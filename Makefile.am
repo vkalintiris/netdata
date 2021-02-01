@@ -229,6 +229,18 @@ HEALTH_PLUGIN_FILES = \
     health/health_log.c \
     $(NULL)
 
+ML_FILES = \
+	ml/ml.h \
+	ml/ml-private.h \
+	ml/ml_train.cc \
+	ml/ml_predict.cc \
+	ml/ml.cc \
+	ml/kmeans/SamplesBuffer.cc \
+	ml/kmeans/SamplesBuffer.h \
+	ml/kmeans/KMeans.cc \
+	ml/kmeans/KMeans.h \
+	$(NULL)
+
 IDLEJITTER_PLUGIN_FILES = \
     collectors/idlejitter.plugin/plugin_idlejitter.c \
     collectors/idlejitter.plugin/plugin_idlejitter.h \
@@ -649,6 +661,7 @@ NETDATA_FILES = \
     $(EXPORTING_ENGINE_FILES) \
     $(CHECKS_PLUGIN_FILES) \
     $(HEALTH_PLUGIN_FILES) \
+	$(ML_FILES) \
     $(IDLEJITTER_PLUGIN_FILES) \
     $(PLUGINSD_PLUGIN_FILES) \
     $(REGISTRY_PLUGIN_FILES) \

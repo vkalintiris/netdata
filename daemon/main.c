@@ -92,6 +92,8 @@ struct netdata_static_thread static_threads[] = {
 
     NETDATA_PLUGIN_HOOK_PLUGINSD
     NETDATA_PLUGIN_HOOK_HEALTH
+    NETDATA_PLUGIN_HOOK_ML_TRAIN
+    NETDATA_PLUGIN_HOOK_ML_PREDICT
 
     {NULL,                   NULL,                    NULL,         0, NULL, NULL, NULL}
 };
