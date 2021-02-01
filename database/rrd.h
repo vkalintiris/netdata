@@ -26,6 +26,7 @@ struct rrdengine_instance;
 struct pg_cache_page_index;
 #endif
 
+#include "ml/kmeans/kmeans-c.h"
 #include "../daemon/common.h"
 #include "web/api/queries/query.h"
 #include "rrdvar.h"
@@ -554,6 +555,12 @@ struct rrdset {
     struct rrdset *next;                            // linking of rrdsets
 
     // ------------------------------------------------------------------------
+    // kmeans bookkeeping
+
+    time_t last_trained_at;                         // last time this chart was trained
+    kmeans_ref km_ref;                              // ref to the kmeans implementation
+
+    // ------------------------------------------------------------------------
     // local variables
 
     calculated_number green;                        // green threshold for this chart
@@ -575,7 +582,6 @@ struct rrdset {
 
     avl_tree_lock dimensions_index;                 // the root of the dimensions index
     RRDDIM *dimensions;                             // the actual data for every dimension
-
 };
 
 #define rrdset_rdlock(st) netdata_rwlock_rdlock(&((st)->rrdset_rwlock))
