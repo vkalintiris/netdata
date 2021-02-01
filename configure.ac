@@ -598,6 +598,33 @@ fi
 
 
 # -----------------------------------------------------------------------------
+# libdlib
+
+AC_MSG_CHECKING([for libdlib])
+AC_LANG_SAVE
+AC_LANG_CPLUSPLUS
+save_LIBS="${LIBS}"
+LIBS="-ldlib -llapack -lblas"
+save_CXXFLAGS="${CXXFLAGS}"
+CXXFLAGS="${CXXFLAGS} -std=c++11"
+
+AC_LINK_IFELSE([
+    AC_LANG_SOURCE([[
+        #include <dlib/matrix.h>
+        int main() { dlib::matrix<double,0,1> column_vector;; }
+    ]])
+    ],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_ERROR([could not find dlib headers!])]
+)
+
+LIBS="${save_LIBS} ${LIBS}"
+CXXFLAGS="${save_CXXFLAGS}"
+AC_LANG_RESTORE
+AC_MSG_RESULT([${have_libdlib}])
+
+
+# -----------------------------------------------------------------------------
 # libcap
 
 PKG_CHECK_MODULES(
@@ -1389,7 +1416,8 @@ AC_MSG_RESULT([${enable_lto}])
 
 AM_CONDITIONAL([ENABLE_CXX_LINKER], [test "${enable_backend_kinesis}" = "yes" \
                                      -o "${enable_exporting_pubsub}" = "yes" \
-                                     -o "${enable_backend_prometheus_remote_write}" = "yes"])
+                                     -o "${enable_backend_prometheus_remote_write}" = "yes" \
+                                     -o "yes" = "yes"])
 
 AC_DEFINE_UNQUOTED([NETDATA_USER], ["${with_user}"], [use this user to drop privileged])
 
@@ -1558,6 +1586,8 @@ AC_CONFIG_FILES([
     exporting/tests/Makefile
     health/Makefile
     health/notifications/Makefile
+    ml/Makefile
+    ml/kmeans/Makefile
     libnetdata/Makefile
     libnetdata/tests/Makefile
     libnetdata/adaptive_resortable_list/Makefile
