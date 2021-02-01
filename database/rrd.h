@@ -553,6 +553,10 @@ struct rrdset {
 
     struct rrdset *next;                            // linking of rrdsets
 
+    time_t last_trained_at;
+    calculated_number *train_data;
+    size_t num_dims;
+
     // ------------------------------------------------------------------------
     // local variables
 
