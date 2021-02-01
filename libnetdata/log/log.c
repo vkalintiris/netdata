@@ -578,8 +578,8 @@ void open_all_log_files() {
 // ----------------------------------------------------------------------------
 // error log throttling
 
-time_t error_log_throttle_period = 1200;
-unsigned long error_log_errors_per_period = 200;
+time_t error_log_throttle_period = 60;
+unsigned long error_log_errors_per_period = 1000000;
 unsigned long error_log_errors_per_period_backup = 0;
 
 int error_log_limit(int reset) {
