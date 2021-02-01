@@ -1228,6 +1228,27 @@ declare -A pkg_libelf=(
   ['alpine-3.3']="libelf-dev"
 )
 
+declare -A pkg_dlib=(
+  ['fedora']="dlib-devel"
+  ['ubuntu']="libdlib-dev"
+  ['debian']="libdlib-dev"
+  ['default']="NOTREQUIRED"
+)
+
+declare -A pkg_lapack=(
+  ['fedora']="lapack-devel"
+  ['ubuntu']="liblapack-dev"
+  ['debian']="liblapack-dev"
+  ['default']="NOTREQUIRED"
+)
+
+declare -A pkg_cxx=(
+  ['fedora']="gcc-c++"
+  ['ubuntu']="g++"
+  ['debian']="g++"
+  ['default']="NOTREQUIRED"
+)
+
 validate_package_trees() {
   if type -t validate_tree_${tree} > /dev/null; then
     validate_tree_${tree}
@@ -1354,6 +1375,9 @@ packages() {
     suitable_package libuuid-dev
     suitable_package libmnl-dev
     suitable_package json-c-dev
+    suitable_package dlib
+    suitable_package lapack
+    suitable_package cxx
   fi
 
   # -------------------------------------------------------------------------
