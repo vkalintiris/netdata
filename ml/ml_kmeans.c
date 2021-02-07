@@ -20,10 +20,10 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
 
         st_num = query_ops->next_metric(&query_handle, &curr_time);
         if (!does_storage_number_exist(st_num)) {
-            mti.dim_name = dim->name ? dim->name : "unnamed";
-            mti.dim_latest_time = latest_time;
-            mti.dim_oldest_time = oldest_time;
-            mti.status = ML_ERR_NO_STORAGE_NUMBER;
+            fprintf(mti.log_fp, "\"%s.%s\" missing storage number in [%ld, %ld]\n",
+                    mti.chart_name, dim->name ? dim->name : "unnamed",
+                    oldest_time, latest_time);
+            mti.num_skipped_charts++;
             return false;
         }
 
@@ -35,11 +35,10 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
     query_ops->finalize(&query_handle);
 
     if (num_collected_samples != mti.num_samples) {
-        mti.dim_name = dim->name ? dim->name : "unnamed";
-        mti.dim_latest_time = latest_time;
-        mti.dim_oldest_time = oldest_time;
-        mti.num_collected_samples = num_collected_samples;
-        mti.status = ML_ERR_NOT_ENOUGH_SAMPLES;
+        fprintf(mti.log_fp, "\"%s.%s\" has only %ld samples in [%ld, %ld]\n",
+                mti.chart_name, dim->name ? dim->name : "unnamed",
+                num_collected_samples, oldest_time, latest_time);
+        mti.num_skipped_charts++;
         return false;
     }
 
@@ -47,67 +46,94 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
 }
 
 void ml_kmeans(void) {
-    // Fill ML thread info struct with data specific to this chart
     mti.chart_name = mti.set->name ? mti.set->name : "unnamed";
-
-    if (mti.set->update_every != 1) {
-        mti.status = ML_ERR_SET_UPDATE;
+    if (strcmp(mti.chart_name, "system.cpu")) {
+        mti.num_skipped_charts++;
         return;
     }
 
+    // Skip charts with update_every != 1
+    if (mti.set->update_every != 1) {
+        fprintf(mti.log_fp, "\"%s\" has update_every != 1\n", mti.chart_name);
+        mti.num_skipped_charts++;
+        return;
+    }
+
+    // Find the number of dims in this chart
     mti.num_dims_per_sample = 0;
     for (RRDDIM *dim = mti.set->dimensions; dim; dim = dim->next) {
         mti.num_dims_per_sample++;
 
+        // Skip charts with dims that have update every != 1
         if (dim->update_every != 1) {
-            mti.dim_name = dim->name ? dim->name : "unnamed";
-            mti.status = ML_ERR_DIM_UPDATE;
+            fprintf(mti.log_fp, "\"%s.%s\" has update_every != 1\n",
+                    mti.chart_name, dim->name ? dim->name : "unnamed");
+            mti.num_skipped_charts++;
             return;
         }
     }
 
+    // Skip charts with no dims
     if (mti.num_dims_per_sample == 0) {
-        mti.status = ML_ERR_ZERO_DIMS;
+        fprintf(mti.log_fp, "\"%s\" has 0 dims\n", mti.chart_name);
+        mti.num_skipped_charts++;
         return;
     }
 
-    mti.curr_training_time = now_realtime_sec();
-
     // Make sure this is the right time to train this set
-    if (now_realtime_sec() < (mti.set->last_trained_at + mti.train_every)) {
-        mti.status = ML_OK;
+    if (now_realtime_sec() < (mti.set->last_trained_at + mti.train_every - 1)) {
+        fprintf(mti.log_fp, "Skipping because %s's last trained at %ld\n",
+                mti.chart_name, mti.set->last_trained_at);
+        mti.num_skipped_charts++;
         return;
     }
 
     // Collect updated sample data
     now_monotonic_high_precision_timeval(&mti.update_begin);
 
-    mti.bytes_per_feature =
-        sizeof(calculated_number) * mti.num_dims_per_sample * (mti.lag_n + 1);
+        mti.curr_training_time = now_realtime_sec();
 
-    mti.train_data = callocz(mti.num_samples, mti.bytes_per_feature);
+        mti.bytes_per_feature =
+            sizeof(calculated_number) * mti.num_dims_per_sample * (mti.lag_n + 1);
 
-    size_t dim_idx = 0;
-    for (RRDDIM *dim = mti.set->dimensions; dim; dim = dim->next) {
-        if (!kmeans_update_dim(dim, dim_idx))
-            return;
+        mti.set->train_data = callocz(mti.num_samples, mti.bytes_per_feature);
 
-        dim_idx++;
-    }
+        size_t dim_idx = 0;
+        for (RRDDIM *dim = mti.set->dimensions; dim; dim = dim->next) {
+            if (!kmeans_update_dim(dim, dim_idx)) {
+                freez(mti.set->train_data);
+                return;
+            }
 
-    now_monotonic_high_precision_timeval(&mti.update_end);
+            dim_idx++;
+        }
 
     // Run the actual k-means clustering
-    now_monotonic_high_precision_timeval(&mti.train_begin);
+    now_monotonic_high_precision_timeval(&mti.update_end);
 
-    kmeans_ref km_ref = kmeans_new(2);
-    kmeans_train(km_ref, mti.set->train_data,
-                 mti.num_samples, mti.num_dims_per_sample,
-                 mti.diff_n, mti.smooth_n, mti.lag_n);
-    kmeans_delete(km_ref);
+        now_monotonic_high_precision_timeval(&mti.train_begin);
 
-    // Save training time
-    mti.set->last_trained_at = now_realtime_sec();
+        kmeans_ref km_ref = kmeans_new(2);
+        kmeans_train(km_ref, mti.set->train_data,
+                     mti.num_samples, mti.num_dims_per_sample,
+                     mti.diff_n, mti.smooth_n, mti.lag_n);
+        kmeans_delete(km_ref);
+        freez(mti.set->train_data);
+
+        // Save training time
+        mti.set->last_trained_at = now_realtime_sec();
+        mti.num_trained_charts++;
 
     now_monotonic_high_precision_timeval(&mti.train_end);
+
+    usec_t update_dt = dt_usec(&mti.update_end, &mti.update_begin);
+    if (update_dt > mti.max_update_duration)
+        mti.max_update_duration = update_dt;
+
+    usec_t train_dt = dt_usec(&mti.train_end, &mti.train_begin);
+    if (train_dt > mti.max_train_duration)
+        mti.max_train_duration = train_dt;
+
+    fprintf(mti.log_fp, "update_dt = %Lu usec, train_dt = %Lu usec\n",
+            update_dt, train_dt);
 }
