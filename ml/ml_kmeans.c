@@ -47,10 +47,6 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
 
 void ml_kmeans(void) {
     mti.chart_name = mti.set->name ? mti.set->name : "unnamed";
-    if (strcmp(mti.chart_name, "system.cpu")) {
-        mti.num_skipped_charts++;
-        return;
-    }
 
     // Skip charts with update_every != 1
     if (mti.set->update_every != 1) {
