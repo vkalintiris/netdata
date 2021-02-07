@@ -230,7 +230,9 @@ HEALTH_PLUGIN_FILES = \
     $(NULL)
 
 ML_FILES = \
-	ml/ml.c \
+	ml/ml_main.c \
+	ml/ml_kmeans.c \
+	ml/ml-private.h \
 	ml/ml.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
