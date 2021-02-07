@@ -42,54 +42,6 @@ ml_thread_cleanup(void *ptr) {
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-static void
-report_ml_kmeans_status() {
-    fprintf(mti.log_fp, "loop %zu: ", mti.loop_counter);
-
-    switch (mti.status) {
-        case ML_ERR_SET_UPDATE:
-            fprintf(mti.log_fp, "\"%s\" has update_every != 1\n", mti.chart_name);
-            break;
-        case ML_ERR_DIM_UPDATE:
-            fprintf(mti.log_fp, "\"%s.%s\" has update_every != 1\n",
-                    mti.chart_name, mti.dim_name);
-            break;
-        case ML_ERR_ZERO_DIMS:
-            fprintf(mti.log_fp, "\"%s\" has 0 dims\n", mti.chart_name);
-            break;
-        case ML_ERR_NO_STORAGE_NUMBER:
-            fprintf(mti.log_fp, "\"%s.%s\" missing storage number in [%ld, %ld]\n",
-                    mti.chart_name, mti.dim_name,
-                    mti.dim_oldest_time, mti.dim_latest_time);
-            break;
-        case ML_ERR_NOT_ENOUGH_SAMPLES:
-            fprintf(mti.log_fp, "\"%s.%s\" has only %zu values in [%ld, %ld]\n",
-                    mti.chart_name, mti.dim_name,
-                    mti.num_collected_samples,
-                    mti.dim_oldest_time, mti.dim_latest_time);
-            break;
-        case ML_OK: {
-            mti.num_trained_charts++;
-
-            usec_t update_dt = dt_usec(&mti.update_end, &mti.update_begin);
-            if (update_dt > mti.max_update_duration)
-                mti.max_update_duration = update_dt;
-
-            usec_t train_dt = dt_usec(&mti.train_end, &mti.train_begin);
-            if (train_dt > mti.max_train_duration)
-                mti.max_train_duration = train_dt;
-
-            fprintf(mti.log_fp, "update_dt = %Lu usec, train_dt = %Lu\n usec\n",
-                    update_dt, train_dt);
-
-            return;
-        }
-        default:
-            fatal("bad ml kmeans status %zu\n", mti.status);
-    }
-
-    mti.num_skipped_charts++;
-}
 
 void *
 ml_main(void *ptr) {
@@ -97,11 +49,11 @@ ml_main(void *ptr) {
 
     memset(&mti, 0, sizeof(mti));
 
-    mti.train_every = 20;
-    mti.num_samples = 60;
+    mti.train_every = 3;
+    mti.num_samples = 10;
     mti.diff_n = 1;
     mti.smooth_n = 3;
-    mti.lag_n = 5;
+    mti.lag_n = 3;
 
     mti.log_fp = fopen("/tmp/ml.log", "w");
     if (!mti.log_fp)
@@ -124,10 +76,10 @@ ml_main(void *ptr) {
             rrdhost_rdlock(mti.host);
             rrdset_foreach_read(mti.set, mti.host) {
                 rrdset_rdlock(mti.set);
-                ml_kmeans();
-                rrdset_unlock(mti.set);
 
-                report_ml_kmeans_status();
+                ml_kmeans();
+
+                rrdset_unlock(mti.set);
             }
             rrdhost_unlock(mti.host);
         }
@@ -141,7 +93,7 @@ ml_main(void *ptr) {
 
         fprintf(mti.log_fp, "max update duration so far: %Lu\n",
                 mti.max_update_duration);
-        fprintf(mti.log_fp, "max train duration so far: %Lu\n",
+        fprintf(mti.log_fp, "max train duration so far: %Lu\n\n",
                 mti.max_train_duration);
 
         fflush(mti.log_fp);

@@ -9,6 +9,7 @@
 #define ML_ERR_DIM_UPDATE         4
 #define ML_ERR_NO_STORAGE_NUMBER  5
 #define ML_ERR_NOT_ENOUGH_SAMPLES 6
+#define ML_OK_NOT_YET             7
 
 struct ml_thread_info {
     RRDHOST *host;
