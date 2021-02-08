@@ -51,6 +51,8 @@ struct ml_thread_info {
     size_t num_trained_charts;
 
     size_t max_feature_size;
+
+    usec_t loop_duration;
 };
 
 extern struct ml_thread_info mti;

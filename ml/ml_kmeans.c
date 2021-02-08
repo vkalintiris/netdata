@@ -57,13 +57,10 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
         time_t curr_time;
 
         st_num = query_ops->next_metric(&query_handle, &curr_time);
-        if (!does_storage_number_exist(st_num)) {
-            num_collected_samples++;
-            continue;
+        if (does_storage_number_exist(st_num)) {
+            size_t offset = (num_collected_samples * mti.num_dims_per_sample) + dim_idx;
+            mti.set->train_data[offset] = unpack_storage_number(st_num);;
         }
-
-        size_t offset = (num_collected_samples * mti.num_dims_per_sample) + dim_idx;
-        mti.set->train_data[offset] = unpack_storage_number(st_num);;
 
         num_collected_samples++;
     } while (!query_ops->is_finished(&query_handle));
