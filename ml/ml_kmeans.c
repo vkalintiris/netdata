@@ -19,13 +19,22 @@ kmeans_update_dim(RRDDIM *dim, size_t dim_idx) {
         time_t curr_time;
 
         st_num = query_ops->next_metric(&query_handle, &curr_time);
+#if 0
         if (!does_storage_number_exist(st_num)) {
-            fprintf(mti.log_fp, "\"%s.%s\" missing storage number in [%ld, %ld]\n",
+            fprintf(mti.log_fp,
+                    "\"%s.%s\" missing storage number in [%ld, %ld] (curr: %ld)\n",
                     mti.chart_name, dim->name ? dim->name : "unnamed",
-                    oldest_time, latest_time);
+                    oldest_time, latest_time, curr_time);
             mti.num_skipped_charts++;
             return false;
         }
+
+#else
+        if (!does_storage_number_exist(st_num)) {
+            num_collected_samples++;
+            continue;
+        }
+#endif
 
         size_t offset = (num_collected_samples * mti.num_dims_per_sample) + dim_idx;
         mti.set->train_data[offset] = unpack_storage_number(st_num);;
@@ -91,6 +100,7 @@ void ml_kmeans(void) {
 
         mti.bytes_per_feature =
             sizeof(calculated_number) * mti.num_dims_per_sample * (mti.lag_n + 1);
+        mti.total_feature_size += mti.bytes_per_feature;
 
         mti.set->train_data = callocz(mti.num_samples, mti.bytes_per_feature);
 
