@@ -5,6 +5,13 @@
 
 static bool
 should_train_now(void) {
+    mti.num_total_charts++;
+
+#if 0
+    if (strcmp(mti.set->name, "system.cpu"))
+        return false;
+#endif
+
     // Never train sets with update every != 1s
     if (mti.set->update_every != 1)
         return false;
@@ -106,6 +113,7 @@ run_kmeans(void) {
     freez(mti.set->train_data);
 
     mti.num_trained_charts++;
+    return true;
 }
 
 void ml_kmeans(void) {

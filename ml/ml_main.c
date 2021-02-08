@@ -20,7 +20,7 @@ static void init_ml_thread() {
     memset(&mti, 0, sizeof(mti));
 
     mti.train_every = 60;
-    mti.num_samples = 3600;
+    mti.num_samples = 300;
     mti.diff_n = 1;
     mti.smooth_n = 3;
     mti.lag_n = 5;
@@ -55,12 +55,13 @@ ml_main(void *ptr) {
 
     heartbeat_t hb;
     heartbeat_init(&hb);
-    usec_t hb_step = 1 * USEC_PER_SEC;
+    usec_t hb_step = 5 * USEC_PER_SEC;
 
     while (!netdata_exit) {
         netdata_thread_testcancel();
+
         heartbeat_next(&hb, hb_step);
-        if (!netdata_exit)
+        if (netdata_exit)
             break;
 
         mti.num_total_charts = 0;
@@ -74,9 +75,9 @@ ml_main(void *ptr) {
         now_monotonic_high_precision_timeval(&mti.curr_loop_end);
 
         usec_t loop_duration = dt_usec(&mti.curr_loop_end, &mti.curr_loop_begin);
-        fprintf(mti.log_fp, "loop %zu took %Lu usec (skipped = %zu, trained = %zu)\n",
+        fprintf(mti.log_fp, "loop %zu took %Lu usec (trained = %zu/%zu)\n",
                 mti.loop_counter, loop_duration,
-                mti.num_trained_charts);
+                mti.num_trained_charts, mti.num_total_charts);
 
         fprintf(mti.log_fp, "max update duration so far: %Lu\n",
                 mti.max_update_duration);
