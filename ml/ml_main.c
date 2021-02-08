@@ -49,11 +49,11 @@ ml_main(void *ptr) {
 
     memset(&mti, 0, sizeof(mti));
 
-    mti.train_every = 3;
-    mti.num_samples = 10;
+    mti.train_every = 60;
+    mti.num_samples = 3600;
     mti.diff_n = 1;
     mti.smooth_n = 3;
-    mti.lag_n = 3;
+    mti.lag_n = 5;
 
     mti.log_fp = fopen("/tmp/ml.log", "w");
     if (!mti.log_fp)
