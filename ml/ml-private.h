@@ -15,8 +15,6 @@ struct ml_thread_info {
     RRDHOST *host;
     RRDSET *set;
 
-    const char *chart_name;
-
     size_t train_every;
     size_t num_samples, num_dims_per_sample;
     size_t diff_n, smooth_n, lag_n;
@@ -49,10 +47,10 @@ struct ml_thread_info {
     size_t num_collected_samples;
     const char *dim_name;
 
-    size_t num_skipped_charts;
+    size_t num_total_charts;
     size_t num_trained_charts;
 
-    size_t total_feature_size;
+    size_t max_feature_size;
 };
 
 extern struct ml_thread_info mti;
