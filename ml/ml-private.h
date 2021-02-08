@@ -51,6 +51,8 @@ struct ml_thread_info {
 
     size_t num_skipped_charts;
     size_t num_trained_charts;
+
+    size_t total_feature_size;
 };
 
 extern struct ml_thread_info mti;

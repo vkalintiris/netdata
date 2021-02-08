@@ -67,6 +67,7 @@ ml_main(void *ptr) {
 
         mti.num_skipped_charts = 0;
         mti.num_trained_charts = 0;
+        mti.total_feature_size = 0;
 
         now_monotonic_high_precision_timeval(&mti.curr_loop_begin);
 
@@ -93,8 +94,10 @@ ml_main(void *ptr) {
 
         fprintf(mti.log_fp, "max update duration so far: %Lu\n",
                 mti.max_update_duration);
-        fprintf(mti.log_fp, "max train duration so far: %Lu\n\n",
+        fprintf(mti.log_fp, "max train duration so far: %Lu\n",
                 mti.max_train_duration);
+        fprintf(mti.log_fp, "total feature size: %zu\n\n",
+                mti.total_feature_size);
 
         fflush(mti.log_fp);
     }
