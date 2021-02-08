@@ -5,32 +5,6 @@
 
 struct ml_thread_info mti;
 
-static int
-yield_at_most(time_t loop_every) {
-    static time_t current_loop_time = 0;
-
-    // this will be the first loop
-    if (current_loop_time == 0) {
-        current_loop_time = now_realtime_sec();
-        goto YIELD_NOW;
-    }
-
-    // processing took more than loop_every
-    time_t time_now = now_realtime_sec();
-    if (time_now >= (current_loop_time + loop_every)) {
-        current_loop_time = time_now;
-        goto YIELD_NOW;
-    }
-
-    // processing took less than loop_every -> sleep
-    time_t time_to_sleep = (current_loop_time + loop_every) - time_now;
-    sleep_usec(USEC_PER_SEC * time_to_sleep);
-    current_loop_time += time_to_sleep;
-
-YIELD_NOW:
-    return !netdata_exit;
-}
-
 static void
 ml_thread_cleanup(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
@@ -42,11 +16,7 @@ ml_thread_cleanup(void *ptr) {
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-
-void *
-ml_main(void *ptr) {
-    netdata_thread_cleanup_push(ml_thread_cleanup, ptr);
-
+static void init_ml_thread() {
     memset(&mti, 0, sizeof(mti));
 
     mti.train_every = 60;
@@ -61,43 +31,59 @@ ml_main(void *ptr) {
 
     mti.max_loop_duration = 0;
     mti.loop_counter = 0;
+}
 
-    while (yield_at_most(mti.train_every)) {
+static void run_ml_kmeans(void) {
+    rrdhost_rdlock(mti.host);
+
+    rrdset_foreach_read(mti.set, mti.host) {
+        mti.num_total_charts++;
+
+        rrdset_rdlock(mti.set);
+        ml_kmeans();
+        rrdset_unlock(mti.set);
+    }
+
+    rrdhost_unlock(mti.host);
+}
+
+void *
+ml_main(void *ptr) {
+    netdata_thread_cleanup_push(ml_thread_cleanup, ptr);
+
+    init_ml_thread();
+
+    heartbeat_t hb;
+    heartbeat_init(&hb);
+    usec_t hb_step = 1 * USEC_PER_SEC;
+
+    while (!netdata_exit) {
+        netdata_thread_testcancel();
+        heartbeat_next(&hb, hb_step);
+        if (!netdata_exit)
+            break;
+
+        mti.num_total_charts = 0;
+        mti.num_trained_charts = 0;
+        mti.max_feature_size = 0;
+        mti.host = localhost;
         mti.loop_counter++;
 
-        mti.num_skipped_charts = 0;
-        mti.num_trained_charts = 0;
-        mti.total_feature_size = 0;
-
         now_monotonic_high_precision_timeval(&mti.curr_loop_begin);
-
-        {
-            mti.host = localhost;
-
-            rrdhost_rdlock(mti.host);
-            rrdset_foreach_read(mti.set, mti.host) {
-                rrdset_rdlock(mti.set);
-
-                ml_kmeans();
-
-                rrdset_unlock(mti.set);
-            }
-            rrdhost_unlock(mti.host);
-        }
-
+        run_ml_kmeans();
         now_monotonic_high_precision_timeval(&mti.curr_loop_end);
 
         usec_t loop_duration = dt_usec(&mti.curr_loop_end, &mti.curr_loop_begin);
         fprintf(mti.log_fp, "loop %zu took %Lu usec (skipped = %zu, trained = %zu)\n",
                 mti.loop_counter, loop_duration,
-                mti.num_skipped_charts, mti.num_trained_charts);
+                mti.num_trained_charts);
 
         fprintf(mti.log_fp, "max update duration so far: %Lu\n",
                 mti.max_update_duration);
         fprintf(mti.log_fp, "max train duration so far: %Lu\n",
                 mti.max_train_duration);
-        fprintf(mti.log_fp, "total feature size: %zu\n\n",
-                mti.total_feature_size);
+        fprintf(mti.log_fp, "max feature size: %zu\n\n",
+                mti.max_feature_size);
 
         fflush(mti.log_fp);
     }
