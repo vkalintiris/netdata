@@ -646,6 +646,7 @@ DAEMON_FILES = \
     daemon/commands.c \
     daemon/commands.h \
     daemon/ml.c \
+    daemon/ml.h \
     daemon/unit_test.c \
     daemon/unit_test.h \
     $(NULL)

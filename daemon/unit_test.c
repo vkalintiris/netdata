@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common.h"
-
-extern void foobar(const char *, time_t, time_t);
+#include "ml.h"
 
 static int check_number_printing(void) {
     struct {
@@ -1928,8 +1927,10 @@ static void generate_dbengine_chart(void *arg)
 
 void generate_dbengine_dataset(unsigned history_seconds)
 {
+    set_kmeans_conf_from_env();
+
     const int DSET_CHARTS = 1;
-    const int DSET_DIMS = 8;
+    const int DSET_DIMS = (int) num_dims_per_sample;
     const uint64_t EXPECTED_COMPRESSION_RATIO = 20;
     RRDHOST *host = NULL;
     struct dbengine_chart_thread **thread_info;

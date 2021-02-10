@@ -2,15 +2,41 @@
 
 #include "common.h"
 #include "ml/kmeans/kmeans-c.h"
+#include "ml.h"
 
-#define DIFF_N 1
-#define SMOOTH_N 3
-#define LAG_N 5
+size_t num_dims_per_sample;
+size_t diff_n;
+size_t smooth_n;
+size_t lag_n;
+
+static size_t size_t_envvar(const char *name) {
+    const char *cbuf = getenv(name);
+    if (!cbuf)
+        fatal("Environment variable \"%s\" is unset", name);
+
+    return atoi(cbuf);
+}
+
+void set_kmeans_conf_from_env(void) {
+    num_dims_per_sample = size_t_envvar("NUM_DIMS_PER_SAMPLE");
+    diff_n = size_t_envvar("DIFF_N");
+    smooth_n = size_t_envvar("SMOOTH_N");
+    lag_n = size_t_envvar("LAG_N");
+
+    size_t sum = num_dims_per_sample + diff_n + smooth_n + lag_n;
+    if (sum > (3600 * 24 * 7)) {
+        fatal("Env values are probably wrong");
+    }
+}
 
 static void
 run_kmeans(calculated_number *cns,
            size_t num_samples, size_t num_dims_per_sample,
            size_t diff_n, size_t smooth_n, size_t lag_n) {
+
+    info("Running kmeans with ns: %zu, ndps: %zu, dn: %zu, sn: %zu, ln: %zu",
+         num_samples, num_dims_per_sample, diff_n, smooth_n, lag_n);
+
     kmeans_ref km_ref = kmeans_new(2);
 
     kmeans_train(km_ref, cns, num_samples, num_dims_per_sample,
@@ -72,7 +98,7 @@ void foobar(const char *hostname, time_t time_after, time_t time_before) {
 
     size_t num_samples = res->rows;
     size_t num_dims_per_sample = res->d;
-    size_t bytes_per_feature = sizeof(calculated_number) * num_dims_per_sample * (LAG_N + 1);
+    size_t bytes_per_feature = sizeof(calculated_number) * num_dims_per_sample * (lag_n + 1);
 
     calculated_number *cns = callocz(num_samples, bytes_per_feature);
     memcpy(cns, res->v, sizeof(calculated_number) * num_dims_per_sample * num_samples);
@@ -86,7 +112,7 @@ void foobar(const char *hostname, time_t time_after, time_t time_before) {
                 fatal("cno[%ld][%ld] != cnn[%ld][%ld]: %Lf != %Lf", i, j, i, j, cno[j], cnn[j]);
     }
 
-    run_kmeans(cns, num_samples, num_dims_per_sample, DIFF_N, SMOOTH_N, LAG_N);
+    run_kmeans(cns, num_samples, num_dims_per_sample, diff_n, smooth_n, lag_n);
 
     info("ALL DONE");
 
