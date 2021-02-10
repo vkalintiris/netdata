@@ -231,8 +231,6 @@ HEALTH_PLUGIN_FILES = \
 
 ML_FILES = \
 	ml/ml_main.c \
-	ml/ml_kmeans.c \
-	ml/ml-private.h \
 	ml/ml.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
@@ -647,6 +645,7 @@ DAEMON_FILES = \
     daemon/signals.h \
     daemon/commands.c \
     daemon/commands.h \
+    daemon/ml.c \
     daemon/unit_test.c \
     daemon/unit_test.h \
     $(NULL)
