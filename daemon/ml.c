@@ -7,6 +7,18 @@
 #define SMOOTH_N 3
 #define LAG_N 5
 
+static void
+run_kmeans(calculated_number *cns,
+           size_t num_samples, size_t num_dims_per_sample,
+           size_t diff_n, size_t smooth_n, size_t lag_n) {
+    kmeans_ref km_ref = kmeans_new(2);
+
+    kmeans_train(km_ref, cns, num_samples, num_dims_per_sample,
+                 diff_n, smooth_n, lag_n);
+
+    kmeans_delete(km_ref);
+};
+
 RRDR *get_rrdr(RRDSET *set, time_t time_after, time_t time_before) {
     if (time_after >= time_before)
         fatal("time_after >= time_before (%ld >= %ld)", time_after, time_before);
@@ -73,6 +85,10 @@ void foobar(const char *hostname, time_t time_after, time_t time_before) {
             if (cno[j] != cnn[j])
                 fatal("cno[%ld][%ld] != cnn[%ld][%ld]: %Lf != %Lf", i, j, i, j, cno[j], cnn[j]);
     }
+
+    run_kmeans(cns, num_samples, num_dims_per_sample, DIFF_N, SMOOTH_N, LAG_N);
+
+    info("ALL DONE");
 
     freez(cns);
     rrdr_free(res);
