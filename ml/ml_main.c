@@ -7,6 +7,8 @@
 #define SMOOTH_N    3
 #define LAG_N       5
 
+static FILE *fp = NULL;
+
 static void
 ml_thread_cleanup(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
@@ -67,8 +69,11 @@ static void
 run_kmeans(calculated_number *cns,
            size_t num_samples, size_t num_dims_per_sample,
            size_t diff_n, size_t smooth_n, size_t lag_n) {
-    info("Running kmeans with ns: %zu, ndps: %zu, dn: %zu, sn: %zu, ln: %zu",
+    info("Running kmeans with {\"ns\": %zu, \"ndps\": %zu, \"dn\": %zu, \"sn\": %zu, \"ln\": %zu }",
          num_samples, num_dims_per_sample, diff_n, smooth_n, lag_n);
+
+    fprintf(fp, "{ \"ns\": %zu, \"ndps\": %zu, \"dn\": %zu, \"sn\": %zu, \"ln\": %zu }\n",
+            num_samples, num_dims_per_sample, diff_n, smooth_n, lag_n);
 
     kmeans_ref km_ref = kmeans_new(2);
     kmeans_train(km_ref, cns, num_samples, num_dims_per_sample,
@@ -78,11 +83,12 @@ run_kmeans(calculated_number *cns,
 
 static void
 ml_kmeans(time_t time_after, time_t time_before) {
+    RRDSET *set;
     struct timeval tv_begin, tv_end;
+    size_t num_sets = 0;
 
     now_monotonic_high_precision_timeval(&tv_begin);
 
-    RRDSET *set;
     rrdset_foreach_read(set, localhost) {
         struct timeval tv_st_begin, tv_st_end;
         struct timeval tv_sb_begin, tv_sb_end;
@@ -128,18 +134,28 @@ ml_kmeans(time_t time_after, time_t time_before) {
         now_monotonic_high_precision_timeval(&tv_st_end);
 
         usec_t sb_dt = dt_usec(&tv_sb_end, &tv_sb_begin);
-        info("sb: %Lu usec", sb_dt);
-
         usec_t km_dt = dt_usec(&tv_km_end, &tv_km_begin);
-        info("km: %Lu usec", km_dt);
-
         usec_t st_dt = dt_usec(&tv_st_end, &tv_st_begin);
-        info("st: %Lu usec", st_dt);
+        info("sb: %Lu, km: %Lu, st: %Lu (usec)", sb_dt, km_dt, st_dt);
+        fprintf(fp, "{ \"sb\": %Lu, \"km\": %Lu, \"st\": %Lu }\n", sb_dt, km_dt, st_dt);
+
+        num_sets++;
     }
 
     now_monotonic_high_precision_timeval(&tv_end);
     usec_t dt = dt_usec(&tv_end, &tv_begin);
-    info("total thread time: %Lu usec", dt);
+    info("total thread time: %Lu usec, num sets: %zu", dt, num_sets);
+    fprintf(fp, "total thread time: %Lu usec, num sets: %zu\n", dt, num_sets);
+    fflush(fp);
+}
+
+static void ml_kmeans_repeat(size_t n, time_t time_after, time_t time_before) {
+    fprintf(fp, "running kmeans %zu times\n", n);
+
+    for (size_t i = 0; i != n; i++) {
+        fprintf(fp, "kmeans run %zu\n", i);
+        ml_kmeans(time_after, time_before);
+    }
 }
 
 void *
@@ -149,28 +165,35 @@ ml_main(void *ptr) {
     for (size_t i = 0; i != 120; i++)
         sleep_usec(USEC_PER_SEC);
 
+    fp = fopen("/tmp/ml.log", "w");
+    if (!fp)
+        fatal("Could not open log file");
+
     time_t time_before = now_realtime_sec();
     time_t time_after;
 
-    time_after = time_before - 20;
-    ml_kmeans(time_after, time_before);
+    time_after = time_before - 3600;
+    ml_kmeans_repeat(5, time_after, time_before);
 
 #if 0
     time_after = time_before - (3600 * 2);
-    ml_kmeans(time_after, time_before);
+    ml_kmeans_repeat(5, time_after, time_before);
 
     time_after = time_before - (3600 * 4);
-    ml_kmeans(time_after, time_before);
+    ml_kmeans_repeat(5, time_after, time_before);
 
     time_after = time_before - (3600 * 6);
-    ml_kmeans(time_after, time_before);
+    ml_kmeans_repeat(5, time_after, time_before);
 
     time_after = time_before - (3600 * 12);
-    ml_kmeans(time_after, time_before);
+    ml_kmeans_repeat(5, time_after, time_before);
 
     time_after = time_before - (3600 * 24);
-    ml_kmeans(time_after, time_before);
+    ml_kmeans_repeat(5, time_after, time_before);
 #endif
+
+    fflush(fp);
+    fclose(fp);
 
     netdata_thread_cleanup_pop(1);
     return NULL;
