@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "kmeans/kmeans-c.h"
 #include "daemon/common.h"
 
-#define HB_STEP 120
-
-struct ml_thread_info mti;
+#define DIFF_N      1
+#define SMOOTH_N    3
+#define LAG_N       5
 
 static void
 ml_thread_cleanup(void *ptr) {
@@ -13,121 +13,135 @@ ml_thread_cleanup(void *ptr) {
 
     thr->enabled = NETDATA_MAIN_THREAD_EXITING;
     info("Cleaning up thread...\n");
-    fflush(mti.log_fp);
-    fclose(mti.log_fp);
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-static void init_ml_thread() {
-    memset(&mti, 0, sizeof(mti));
+static RRDR *
+get_rrdr(RRDSET *set, time_t time_after, time_t time_before) {
+    if (time_after >= time_before)
+        fatal("time_after >= time_before (%ld >= %ld)", time_after, time_before);
 
-    mti.train_every = 60;
-    mti.num_samples = 3600 * 4;
-    mti.diff_n = 1;
-    mti.smooth_n = 3;
-    mti.lag_n = 5;
+    RRDR *res = rrd2rrdr(
+        set,
+        0, /* points_requested */
+        time_after, /* after */
+        time_before, /* before */
+        RRDR_GROUPING_AVERAGE, /* grouping method */
+        0, /* resampling time */
+        0, /* grouping options */
+        NULL, /* dimensions */
+        NULL /* context params */
+    );
 
-    mti.log_fp = fopen("/tmp/ml.log", "w");
-    if (!mti.log_fp)
-        fatal("Could not open ML log file");
+    if (!res)
+        fatal("RRDR result is empty\n");
 
-    mti.max_loop_duration = 0;
-    mti.loop_counter = 0;
-}
+    size_t max_possible_rows = time_before - time_after;
+    if (res->rows > max_possible_rows)
+        fatal("res->rows > max_possible_rows (%ld > %zu)", res->rows, max_possible_rows);
 
-static void run_ml_kmeans(void) {
-    rrdhost_rdlock(mti.host);
-
-    rrdset_foreach_read(mti.set, mti.host) {
-        mti.num_total_charts++;
-
-        rrdset_rdlock(mti.set);
-        ml_kmeans();
-        rrdset_unlock(mti.set);
+    size_t row_diff = max_possible_rows - res->rows;
+    if (row_diff > 2) {
+        info("Result of set %s has only %zu rows",
+             set->name ? set->name : "unnamed", res->rows);
+        rrdr_free(res);
+        return NULL;
     }
 
-    rrdhost_unlock(mti.host);
-}
+    info("result contains %ld rows", res->rows);
+#ifdef KMEANS_CHECK
+    for (long i = 0; i != res->rows; i++) {
+        calculated_number *cn = &res->v[res->d * i];
+        RRDR_VALUE_FLAGS *vf = &res->o[res->d * i];
 
+        for (long j = 0; j != res->d; j++)
+            if (vf[j] && RRDR_VALUE_EMPTY)
+                fatal("Found empty value!");
+    }
+#endif
+
+    return res;
+}
 
 static void
-stats_collect(void) {
-    static RRDSET *st_num_charts_trained = NULL;
-    static RRDDIM *rd_num_charts_trained = NULL;
+run_kmeans(calculated_number *cns,
+           size_t num_samples, size_t num_dims_per_sample,
+           size_t diff_n, size_t smooth_n, size_t lag_n) {
+    info("Running kmeans with ns: %zu, ndps: %zu, dn: %zu, sn: %zu, ln: %zu",
+         num_samples, num_dims_per_sample, diff_n, smooth_n, lag_n);
 
-    if (!st_num_charts_trained) {
-        st_num_charts_trained = rrdset_create_localhost(
-            "netdata", "trained_charts", NULL, "ml", NULL, "Number of charts trained",
-            "num charts trained", "netdata", "stats", 606060, HB_STEP, RRDSET_TYPE_AREA);
+    kmeans_ref km_ref = kmeans_new(2);
+    kmeans_train(km_ref, cns, num_samples, num_dims_per_sample,
+                 diff_n, smooth_n, lag_n);
+    kmeans_delete(km_ref);
+};
 
-        rd_num_charts_trained = rrddim_add(st_num_charts_trained, "trained charts", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    } else {
-        rrdset_next(st_num_charts_trained);
+static void
+ml_kmeans(time_t time_after, time_t time_before) {
+    RRDSET *set;
+
+    rrdset_foreach_read(set, localhost) {
+        size_t num_dims = 0;
+        for (RRDDIM *dim = set->dimensions; dim; dim = dim->next)
+            num_dims++;
+
+        if (num_dims == 0)
+            fatal("Set %s has zero dims", set->name ? set->name : "unnamed");
+
+        if (set->update_every != 1) {
+            info("Set %s has update every %d secs",
+                 set->name ? set->name : "unnamed", set->update_every);
+            continue;
+        }
+
+        RRDR *res = get_rrdr(set, time_after, time_before);
+        if (!res)
+            continue;
+
+        size_t num_samples = res->rows;
+        size_t num_dims_per_sample = res->d;
+        size_t bytes_per_feature =
+            sizeof(calculated_number) * num_dims_per_sample * (LAG_N + 1);
+
+        calculated_number *cns = callocz(num_samples, bytes_per_feature);
+        memcpy(cns, res->v, sizeof(calculated_number) * num_dims_per_sample * num_samples);
+
+        run_kmeans(cns, num_samples, num_dims_per_sample, DIFF_N, SMOOTH_N, LAG_N);
+
+        freez(cns);
+        rrdr_free(res);
     }
-
-    rrddim_set_by_pointer(st_num_charts_trained, rd_num_charts_trained, mti.num_trained_charts);
-    rrdset_done(st_num_charts_trained);
-
-    static RRDSET *st_total_time = NULL;
-    static RRDDIM *rd_total_time = NULL;
-
-    if (!st_total_time) {
-        st_total_time = rrdset_create_localhost(
-            "netdata", "ml_loop_time", NULL, "ml", NULL, "Total time spent in ML loop",
-            "time running ML loop", "netdata", "stats", 606061, HB_STEP, RRDSET_TYPE_AREA);
-
-        rd_total_time = rrddim_add(st_total_time, "ML loop time", NULL, 1, 1000, RRD_ALGORITHM_ABSOLUTE);
-    } else {
-        rrdset_next(st_total_time);
-    }
-
-    rrddim_set_by_pointer(st_total_time, rd_total_time, mti.loop_duration);
-    rrdset_done(st_total_time);
 }
 
 void *
 ml_main(void *ptr) {
     netdata_thread_cleanup_push(ml_thread_cleanup, ptr);
 
-    init_ml_thread();
+    for (size_t i = 0; i != 120; i++)
+        sleep_usec(USEC_PER_SEC);
 
-    heartbeat_t hb;
-    heartbeat_init(&hb);
-    usec_t hb_step = HB_STEP * USEC_PER_SEC;
+    time_t time_before = now_realtime_sec();
+    time_t time_after;
 
-    while (!netdata_exit) {
-        netdata_thread_testcancel();
+    time_after = time_before - 20;
+    ml_kmeans(time_after, time_before);
 
-        heartbeat_next(&hb, hb_step);
-        if (netdata_exit)
-            break;
+#if 0
+    time_after = time_before - (3600 * 2);
+    ml_kmeans(time_after, time_before);
 
-        mti.num_total_charts = 0;
-        mti.num_trained_charts = 0;
-        mti.max_feature_size = 0;
-        mti.host = localhost;
-        mti.loop_counter++;
+    time_after = time_before - (3600 * 4);
+    ml_kmeans(time_after, time_before);
 
-        now_monotonic_high_precision_timeval(&mti.curr_loop_begin);
-        run_ml_kmeans();
-        now_monotonic_high_precision_timeval(&mti.curr_loop_end);
+    time_after = time_before - (3600 * 6);
+    ml_kmeans(time_after, time_before);
 
-        mti.loop_duration = dt_usec(&mti.curr_loop_end, &mti.curr_loop_begin);
-        fprintf(mti.log_fp, "loop %zu took %Lu usec (trained = %zu/%zu)\n",
-                mti.loop_counter, mti.loop_duration,
-                mti.num_trained_charts, mti.num_total_charts);
+    time_after = time_before - (3600 * 12);
+    ml_kmeans(time_after, time_before);
 
-        fprintf(mti.log_fp, "max update duration so far: %Lu\n",
-                mti.max_update_duration);
-        fprintf(mti.log_fp, "max train duration so far: %Lu\n",
-                mti.max_train_duration);
-        fprintf(mti.log_fp, "max feature size: %zu\n\n",
-                mti.max_feature_size);
-
-        fflush(mti.log_fp);
-
-        stats_collect();
-    }
+    time_after = time_before - (3600 * 24);
+    ml_kmeans(time_after, time_before);
+#endif
 
     netdata_thread_cleanup_pop(1);
     return NULL;
