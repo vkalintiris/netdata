@@ -78,9 +78,19 @@ run_kmeans(calculated_number *cns,
 
 static void
 ml_kmeans(time_t time_after, time_t time_before) {
-    RRDSET *set;
+    struct timeval tv_begin, tv_end;
 
+    now_monotonic_high_precision_timeval(&tv_begin);
+
+    RRDSET *set;
     rrdset_foreach_read(set, localhost) {
+        struct timeval tv_st_begin, tv_st_end;
+        struct timeval tv_sb_begin, tv_sb_end;
+        struct timeval tv_km_begin, tv_km_end;
+
+        now_monotonic_high_precision_timeval(&tv_st_begin);
+        now_monotonic_high_precision_timeval(&tv_sb_begin);
+
         size_t num_dims = 0;
         for (RRDDIM *dim = set->dimensions; dim; dim = dim->next)
             num_dims++;
@@ -106,11 +116,30 @@ ml_kmeans(time_t time_after, time_t time_before) {
         calculated_number *cns = callocz(num_samples, bytes_per_feature);
         memcpy(cns, res->v, sizeof(calculated_number) * num_dims_per_sample * num_samples);
 
+        now_monotonic_high_precision_timeval(&tv_sb_end);
+
+        now_monotonic_high_precision_timeval(&tv_km_begin);
         run_kmeans(cns, num_samples, num_dims_per_sample, DIFF_N, SMOOTH_N, LAG_N);
+        now_monotonic_high_precision_timeval(&tv_km_end);
 
         freez(cns);
         rrdr_free(res);
+
+        now_monotonic_high_precision_timeval(&tv_st_end);
+
+        usec_t sb_dt = dt_usec(&tv_sb_end, &tv_sb_begin);
+        info("sb: %Lu usec", sb_dt);
+
+        usec_t km_dt = dt_usec(&tv_km_end, &tv_km_begin);
+        info("km: %Lu usec", km_dt);
+
+        usec_t st_dt = dt_usec(&tv_st_end, &tv_st_begin);
+        info("st: %Lu usec", st_dt);
     }
+
+    now_monotonic_high_precision_timeval(&tv_end);
+    usec_t dt = dt_usec(&tv_end, &tv_begin);
+    info("total thread time: %Lu usec", dt);
 }
 
 void *
