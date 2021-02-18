@@ -1,6 +1,8 @@
 #ifndef NETDATA_ML_H
 #define NETDATA_ML_H
 
+void *ml_loop(void *ptr);
+
 #define NETDATA_PLUGIN_HOOK_ML_TRAIN \
 { \
     .name = "MLTRAIN", \
@@ -9,7 +11,7 @@
     .enabled = 1, \
     .thread = NULL, \
     .init_routine = NULL, \
-    .start_routine = ml_train \
+    .start_routine = ml_loop \
 },
 
 #define NETDATA_PLUGIN_HOOK_ML_PREDICT \
@@ -20,11 +22,7 @@
     .enabled = 1, \
     .thread = NULL, \
     .init_routine = NULL, \
-    .start_routine = ml_predict \
+    .start_routine = ml_loop \
 },
-
-void *ml_train(void *arg);
-
-void *ml_predict(void *arg);
 
 #endif /* NETDATA_ML_H */
