@@ -235,6 +235,8 @@ ML_FILES = \
 	ml/ml.c \
 	ml/ml_train.c \
 	ml/ml_predict.c \
+	ml/go/ml-cgo.c \
+	ml/go/ml-cgo.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/KMeans.cc \

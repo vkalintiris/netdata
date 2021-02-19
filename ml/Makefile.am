@@ -5,4 +5,5 @@ MAINTAINERCLEANFILES = $(srcdir)/Makefile.in
 
 SUBDIRS = \
     kmeans \
+    go \
     $(NULL)
