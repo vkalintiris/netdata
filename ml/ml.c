@@ -66,12 +66,12 @@ ml_heartbeat(struct ml_conf *mlc) {
 }
 
 static RRDR *
-get_rrdr(RRDSET *set, size_t num_samples) {
+get_rrdr(struct ml_conf *mlc, RRDSET *st, size_t num_samples) {
     time_t time_before = now_realtime_sec();
     time_t time_after = time_before - num_samples;
 
     RRDR *res = rrd2rrdr(
-        set,
+        st,
         0, /* points_requested */
         time_after, /* after */
         time_before, /* before */
@@ -83,7 +83,8 @@ get_rrdr(RRDSET *set, size_t num_samples) {
     );
 
     if (!res) {
-        error("RRDR result is empty\n");
+        fprintf(mlc->fp, "[%zu][%s] - RRDR result is empty\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed");
         return NULL;
     }
 
@@ -93,13 +94,14 @@ get_rrdr(RRDSET *set, size_t num_samples) {
 
     size_t row_diff = max_possible_rows - res->rows;
     if (row_diff > 2) {
-        info("result of set %s has only %zu rows",
-             set->name ? set->name : "unnamed", res->rows);
+        fprintf(mlc->fp, "[%zu][%s] rrdr has only %zu rows\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed", res->rows);
         rrdr_free(res);
         return NULL;
     }
 
-    info("result contains %ld rows", res->rows);
+    fprintf(mlc->fp, "[%zu][%s] result contains %ld rows\n",
+            mlc->loop_counter, st->name ? st->name : "unnamed", res->rows);
 
 #ifdef KMEANS_CHECK
     size_t num_empty_samples = 0;
@@ -116,8 +118,8 @@ get_rrdr(RRDSET *set, size_t num_samples) {
     }
 
     if (num_empty_samples) {
-        error("found %zu empty value(s) in rrd result of \"%s\"",
-              num_empty_samples, set->name ? set->name : "unnamed");
+        fprintf(mlc->fp, "[%zu][%s] found %zu empty value(s) in rrd result\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed", num_empty_samples);
         rrdr_free(res);
         return NULL;
     }
@@ -128,9 +130,12 @@ get_rrdr(RRDSET *set, size_t num_samples) {
 
 calculated_number *
 ml_get_calculated_numbers(struct ml_conf *mlc, RRDSET *st, size_t *ns, size_t *ndps) {
-    RRDR *res = get_rrdr(st, mlc->num_samples);
-    if (!res)
+    RRDR *res = get_rrdr(mlc, st, mlc->num_samples);
+    if (!res) {
+        fprintf(mlc->fp, "[%zu][%s] got null rrdr\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed");
         return NULL;
+    }
 
     *ns = res->rows;
     *ndps = res->d;
