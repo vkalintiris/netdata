@@ -3,6 +3,7 @@
 
 typedef struct rrdset* RRDSETP;
 
+const char *rrdset_name(RRDSETP st);
 int rrdset_num_dims(RRDSETP st);
 int rrdset_update_every(RRDSETP st);
 

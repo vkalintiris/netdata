@@ -79,11 +79,11 @@ void train_charts(struct ml_conf *mlc) {
 
     rrdhost_rdlock(localhost);
 
-    GoHelloWorld();
-
-#if 0
+#if 1
     RRDSET *st;
     rrdset_foreach_read(st, localhost) {
+        curr_set = st;
+        GoHelloWorld();
     }
 #endif
 

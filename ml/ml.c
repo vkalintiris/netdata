@@ -162,7 +162,7 @@ ml_loop(void *ptr) {
         goto EXIT_THREAD;
 
     while (ml_heartbeat(&mlc)) {
-        is_train_thread ?  train_charts(&mlc) : predict_charts(&mlc);
+        is_train_thread ? train_charts(&mlc) : predict_charts(&mlc);
         mlc.loop_counter++;
     }
 

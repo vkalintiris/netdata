@@ -20,6 +20,7 @@ typedef struct { const char *p; ptrdiff_t n; } _GoString_;
 
 
 #line 3 "mlgo.go"
+
  #include "ml-cgo.h"
 
 #line 1 "cgo-generated-wrapper"
