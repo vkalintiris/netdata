@@ -237,6 +237,7 @@ ML_FILES = \
 	ml/ml_predict.c \
 	ml/go/ml-cgo.c \
 	ml/go/ml-cgo.h \
+	ml/go/mlgo.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/KMeans.cc \
@@ -700,6 +701,7 @@ if LINUX
 endif
 
 NETDATA_COMMON_LIBS = \
+	ml/go/mlgo.a \
     $(OPTIONAL_MATH_LIBS) \
     $(OPTIONAL_BPF_LIBS) \
     $(OPTIONAL_ZLIB_LIBS) \

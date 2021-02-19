@@ -1,6 +1,7 @@
 #ifndef ML_COMMON_H
 #define ML_COMMON_H
 
+#include "go/mlgo.h"
 #include "ml.h"
 #include "kmeans/kmeans-c.h"
 #include "daemon/common.h"

@@ -46,6 +46,7 @@ train_chart(struct ml_conf *mlc, RRDSET *st) {
     return true;
 }
 
+#if 0
 void
 train_charts(struct ml_conf *mlc) {
     size_t num_trained_charts = 0;
@@ -70,3 +71,22 @@ train_charts(struct ml_conf *mlc) {
 
     info("Trained %zu charts", num_trained_charts);
 }
+#else
+extern void GoHelloWorld(void);
+
+void train_charts(struct ml_conf *mlc) {
+    (void) mlc;
+
+    rrdhost_rdlock(localhost);
+
+    GoHelloWorld();
+
+#if 0
+    RRDSET *st;
+    rrdset_foreach_read(st, localhost) {
+    }
+#endif
+
+    rrdhost_unlock(localhost);
+}
+#endif
