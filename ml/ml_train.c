@@ -25,8 +25,12 @@ train_chart(struct ml_conf *mlc, RRDSET *st) {
     size_t ns, ndps;
 
     calculated_number *cns = ml_get_calculated_numbers(mlc, st, &ns, &ndps);
-    kmeans_train(st->km_ref, cns, ns, ndps,
-                 mlc->diff_n, mlc->smooth_n, mlc->lag_n);
+    if (!cns)
+        return false;
+
+    if (!st->km_ref)
+        st->km_ref = kmeans_new(2);
+    kmeans_train(st->km_ref, cns, ns, ndps, mlc->diff_n, mlc->smooth_n, mlc->lag_n);
     freez(cns);
 
     st->last_trained_at = now_realtime_sec();
@@ -41,8 +45,13 @@ train_charts(struct ml_conf *mlc) {
 
     RRDSET *st;
     rrdset_foreach_read(st, localhost) {
+        fprintf(mlc->fp, "[%zu][%s] - Loop start\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed");
         if (train_chart(mlc, st))
             num_trained_charts++;
+        fprintf(mlc->fp, "[%zu][%s] - Loop end\n",
+                mlc->loop_counter, st->name ? st->name : "unnamed");
+        fflush(mlc->fp);
     }
 
     rrdhost_unlock(localhost);

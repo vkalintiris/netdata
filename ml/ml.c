@@ -156,8 +156,10 @@ ml_loop(void *ptr) {
     if (!mlc.enabled)
         goto EXIT_THREAD;
 
-    while (ml_heartbeat(&mlc))
+    while (ml_heartbeat(&mlc)) {
         is_train_thread ?  train_charts(&mlc) : predict_charts(&mlc);
+        mlc.loop_counter++;
+    }
 
 EXIT_THREAD:
     netdata_thread_cleanup_pop(1);
