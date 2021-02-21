@@ -706,6 +706,7 @@ if LINUX
 endif
 
 cgo/cgo.a: cgo/database.go cgo/ml_train.go
+	CGO_CFLAGS="${CPPFLAGS}"; CGO_CFLAGS="${CGO_CFLAGS} ${CFLAGS}"; export CGO_CFLAGS
 	go build -o $@ -buildmode=c-archive $^
 
 NETDATA_COMMON_LIBS = \

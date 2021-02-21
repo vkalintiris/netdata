@@ -17,5 +17,9 @@ func GoMLTrain() {
 	defer fp.Close()
 
 	localhost := NewLocalHost()
+
 	fmt.Fprintf(fp, "Hello from %s\n", localhost.HostName())
+	for _, set := range localhost.Sets() {
+		fmt.Fprintf(fp, "\tset name %s\n", set.Name())
+	}
 }
