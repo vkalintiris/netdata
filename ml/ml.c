@@ -53,18 +53,6 @@ ml_should_ignore_set(RRDSET *st) {
     return false;
 }
 
-static bool
-ml_heartbeat(struct ml_conf *mlc) {
-    if (mlc->fp)
-        fflush(mlc->fp);
-
-    usec_t dt = heartbeat_next(&mlc->hb, USEC_PER_SEC);
-    if (netdata_exit)
-        return false;
-
-    return true;
-}
-
 static RRDR *
 get_rrdr(struct ml_conf *mlc, RRDSET *st, size_t num_samples) {
     time_t time_before = now_realtime_sec();
@@ -149,22 +137,16 @@ ml_get_calculated_numbers(struct ml_conf *mlc, RRDSET *st, size_t *ns, size_t *n
     return cns;
 }
 
+extern void GoMLTrain(void);
+
 void *
 ml_loop(void *ptr) {
-    netdata_thread_cleanup_push(ml_thread_cleanup, ptr);
-
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
-    bool is_train_thread = !strcmp(thr->name, "MLTRAIN");
 
-    struct ml_conf mlc;
-    ml_read_conf(&mlc);
-    if (!mlc.enabled)
-        goto EXIT_THREAD;
+    netdata_thread_cleanup_push(ml_thread_cleanup, thr);
 
-    while (ml_heartbeat(&mlc)) {
-        is_train_thread ? train_charts(&mlc) : predict_charts(&mlc);
-        mlc.loop_counter++;
-    }
+    if (!strcmp(thr->name, "MLTRAIN"))
+        GoMLTrain();
 
 EXIT_THREAD:
     netdata_thread_cleanup_pop(1);
