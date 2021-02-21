@@ -44,6 +44,18 @@ func (rs *RrdSet) UpdateEvery() int {
 	return int(C.rrdsetp_update_every(rs.c_set))
 }
 
+func (rs *RrdSet) NumDims() int {
+	return int(C.rrdsetp_num_dims(rs.c_set))
+}
+
+func (rs *RrdSet) ReadLock() {
+	C.rrdsetp_rdlock(rs.c_set)
+}
+
+func (rs *RrdSet) UnLock() {
+	C.rrdsetp_unlock(rs.c_set)
+}
+
 func (rh *RrdHost) Sets() []RrdSet {
 	rh.ReadLock()
 	defer rh.UnLock()

@@ -28,3 +28,20 @@ const char *rrdsetp_name(RRDSETP set) {
 int rrdsetp_update_every(RRDSETP set) {
     return set->update_every;
 }
+
+int rrdsetp_num_dims(RRDSETP set) {
+    int cntr = 0;
+
+    for (RRDDIM *dim = set->dimensions; dim; dim = dim->next)
+        cntr++;
+
+    return cntr;
+}
+
+void rrdsetp_rdlock(RRDSETP set) {
+    rrdset_rdlock(set);
+}
+
+void rrdsetp_unlock(RRDSETP set) {
+    rrdset_unlock(set);
+}
