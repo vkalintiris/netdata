@@ -4,6 +4,10 @@ package main
 // #include "bindings/database.h"
 import "C"
 
+import (
+	"unsafe"
+)
+
 type RrdHost struct {
 	c_host C.RRDHOSTP
 }
@@ -69,6 +73,16 @@ func (rh *RrdHost) Sets() []RrdSet {
 	}
 
 	return sets
+}
+
+func ConfigGetNum(section string, name string, value int) int {
+	csection := C.CString(section)
+	defer C.free(unsafe.Pointer(csection))
+
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	return int(C.cfg_get_number(csection, cname, C.longlong(value)))
 }
 
 func main() {}
