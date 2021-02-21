@@ -24,3 +24,7 @@ RRDSETP rrdsetp_next_set(RRDSETP set) {
 const char *rrdsetp_name(RRDSETP set) {
     return set->name ? set->name : "";
 }
+
+int rrdsetp_update_every(RRDSETP set) {
+    return set->update_every;
+}

@@ -40,6 +40,10 @@ func (rs *RrdSet) Name() string {
 	return C.GoString(C.rrdsetp_name(rs.c_set))
 }
 
+func (rs *RrdSet) UpdateEvery() int {
+	return int(C.rrdsetp_update_every(rs.c_set))
+}
+
 func (rh *RrdHost) Sets() []RrdSet {
 	rh.ReadLock()
 	defer rh.UnLock()

@@ -14,5 +14,6 @@ RRDSETP rrdhostp_root_set(RRDHOSTP host);
 
 RRDSETP rrdsetp_next_set(RRDSETP set);
 const char *rrdsetp_name(RRDSETP set);
+int rrdsetp_update_every(RRDSETP set);
 
 #endif /* CGO_DATABASE_H */

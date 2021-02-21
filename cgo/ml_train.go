@@ -20,6 +20,6 @@ func GoMLTrain() {
 
 	fmt.Fprintf(fp, "Hello from %s\n", localhost.HostName())
 	for _, set := range localhost.Sets() {
-		fmt.Fprintf(fp, "\tset name %s\n", set.Name())
+		fmt.Fprintf(fp, "\tset: %s, update every: %d\n", set.Name(), set.UpdateEvery())
 	}
 }
