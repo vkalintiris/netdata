@@ -72,19 +72,21 @@ train_charts(struct ml_conf *mlc) {
     info("Trained %zu charts", num_trained_charts);
 }
 #else
-extern void GoHelloWorld(void);
+extern void GoMLTrain(void);
 
 void train_charts(struct ml_conf *mlc) {
     (void) mlc;
 
     rrdhost_rdlock(localhost);
 
-#if 1
+#if 0
     RRDSET *st;
     rrdset_foreach_read(st, localhost) {
         curr_set = st;
         GoHelloWorld();
     }
+#else
+    GoMLTrain();
 #endif
 
     rrdhost_unlock(localhost);

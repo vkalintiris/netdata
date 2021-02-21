@@ -208,3 +208,6 @@ netdata.cbp
 
 # External dependencies
 externaldeps/
+
+# CGO header
+cgo/cgo.h

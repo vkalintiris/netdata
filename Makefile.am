@@ -118,6 +118,8 @@ SUBDIRS += \
     parser \
     aclk/legacy \
     spawn \
+	ml \
+	cgo \
     $(NULL)
 
 
@@ -235,14 +237,16 @@ ML_FILES = \
 	ml/ml.c \
 	ml/ml_train.c \
 	ml/ml_predict.c \
-	ml/go/ml-cgo.c \
-	ml/go/ml-cgo.h \
-	ml/go/mlgo.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/KMeans.cc \
 	ml/kmeans/KMeans.h \
 	$(NULL)
+
+CGO_BINDINGS_FILES = \
+    cgo/bindings/database.c \
+    cgo/bindings/database.h \
+    $(NULL)
 
 IDLEJITTER_PLUGIN_FILES = \
     collectors/idlejitter.plugin/plugin_idlejitter.c \
@@ -676,6 +680,7 @@ NETDATA_FILES = \
     $(PARSER_FILES) \
     $(ACLK_FILES) \
     $(SPAWN_PLUGIN_FILES) \
+    $(CGO_BINDINGS_FILES) \
     $(NULL)
 
 if FREEBSD
@@ -700,8 +705,10 @@ if LINUX
 
 endif
 
+cgo/cgo.a: cgo/database.go cgo/ml_train.go
+	go build -o $@ -buildmode=c-archive $^
+
 NETDATA_COMMON_LIBS = \
-	ml/go/mlgo.a \
     $(OPTIONAL_MATH_LIBS) \
     $(OPTIONAL_BPF_LIBS) \
     $(OPTIONAL_ZLIB_LIBS) \
@@ -731,6 +738,7 @@ netdata_SOURCES = $(NETDATA_FILES)
 
 if ENABLE_ACLK
 netdata_LDADD = \
+    cgo/cgo.a \
     externaldeps/mosquitto/libmosquitto.a \
     $(OPTIONAL_LIBCAP_LIBS) \
     $(OPTIONAL_LWS_LIBS) \
@@ -738,6 +746,7 @@ netdata_LDADD = \
     $(NULL)
 else
 netdata_LDADD = \
+    cgo/cgo.a \
     $(NETDATA_COMMON_LIBS) \
     $(NULL)
 endif

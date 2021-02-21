@@ -1549,6 +1549,8 @@ AC_CONFIG_FILES([
     backends/prometheus/remote_write/Makefile
     backends/aws_kinesis/Makefile
     backends/mongodb/Makefile
+    cgo/Makefile
+    cgo/bindings/Makefile
     collectors/Makefile
     collectors/apps.plugin/Makefile
     collectors/cgroups.plugin/Makefile

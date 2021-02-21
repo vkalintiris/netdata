@@ -2,7 +2,3 @@
 
 AUTOMAKE_OPTIONS = subdir-objects
 MAINTAINERCLEANFILES = $(srcdir)/Makefile.in
-
-SUBDIRS = \
-    kmeans \
-    $(NULL)
