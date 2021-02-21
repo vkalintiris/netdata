@@ -16,5 +16,6 @@ func GoMLTrain() {
 	}
 	defer fp.Close()
 
-	fmt.Fprintf(fp, "Hello from GO\n")
+	localhost := NewLocalHost()
+	fmt.Fprintf(fp, "Hello from %s\n", localhost.HostName())
 }
