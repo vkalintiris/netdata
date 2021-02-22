@@ -3,64 +3,98 @@ package main
 import "C"
 
 import (
-	"fmt"
+	"log"
 	"os"
 	"time"
 )
 
 type MlConfig struct {
-	num_samples int
-	train_every int
+	NumSamples int
+	TrainEvery int
 
-	diff_n   int
-	smooth_n int
-	lag_n    int
+	DiffN   int
+	SmoothN int
+	LagN    int
 }
 
-func GetMlConfig() *MlConfig {
-	num_samples := ConfigGetNum("ml", "num samples to train", 300)
-	train_every := ConfigGetNum("ml", "train every secs", 30)
+func NewMlConfig() *MlConfig {
+	var mlc MlConfig
 
-	diff_n := ConfigGetNum("ml", "num samples to diff", 1)
-	smooth_n := ConfigGetNum("ml", "num samples to smooth", 3)
-	lag_n := ConfigGetNum("ml", "num samples to lag", 5)
+	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 300)
+	mlc.TrainEvery = ConfigGetNum("ml", "train every secs", 30)
 
-	return &MlConfig{
-		num_samples: num_samples,
-		train_every: train_every,
+	mlc.DiffN = ConfigGetNum("ml", "num samples to diff", 1)
+	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
+	mlc.LagN = ConfigGetNum("ml", "num samples to lag", 5)
 
-		diff_n:   diff_n,
-		smooth_n: smooth_n,
-		lag_n:    lag_n,
-	}
+	return &mlc
 }
 
-func WriteInfo(cfg *MlConfig) {
-	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
-	fp, err := os.OpenFile("/tmp/go.log", flags, 0644)
-	if err != nil {
-		panic(err)
-	}
-	defer fp.Close()
+type MlChart struct {
+	Config *MlConfig
 
+	Set           RrdSet
+	Name          string
+	LastTrainedAt int
+}
+
+func (chart *MlChart) Train(mlc *MlConfig) bool {
+	if chart.Set.NumDims() == 0 || chart.Set.UpdateEvery() != 1 {
+		return false
+	}
+
+	return true
+}
+
+type MlInfo struct {
+	Config *MlConfig
+	Charts map[string]MlChart
+}
+
+func NewMlInfo() *MlInfo {
+	return &MlInfo{Config: NewMlConfig(), Charts: map[string]MlChart{}}
+}
+
+func (mli *MlInfo) CollectCharts() {
 	localhost := NewLocalHost()
-	fmt.Fprintf(fp, "Hello from %s\n", localhost.HostName())
-	fmt.Fprintf(fp, "%#v", cfg)
 
 	for _, set := range localhost.Sets() {
 		set.ReadLock()
 		defer set.UnLock()
 
-		fmt.Fprintf(fp, "\tset: %s, update every: %d, num dims: %d\n",
-			set.Name(), set.UpdateEvery(), set.NumDims())
+		name := set.Name()
+		if chart, ok := mli.Charts[name]; ok {
+			log.Printf("Found chart %s\n", chart.Name)
+		} else {
+			log.Printf("Adding new chart %s\n", name)
+			mli.Charts[name] = MlChart{mli.Config, set, name, 0}
+		}
+	}
+}
+
+func TrainModels(mli *MlInfo) {
+	mli.CollectCharts()
+
+	for _, chart := range mli.Charts {
+		if chart.Train(mli.Config) == false {
+			log.Printf("Could not train: %+v\n", chart)
+		}
 	}
 }
 
 //export GoMLTrain
 func GoMLTrain() {
-	cfg := GetMlConfig()
+	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
+	fp, err := os.OpenFile("/tmp/go.log", flags, 0664)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer fp.Close()
+	log.SetOutput(fp)
+
+	mli := NewMlInfo()
 
 	for _ = range time.Tick(5 * time.Second) {
-		WriteInfo(cfg)
+		TrainModels(mli)
 	}
 }
