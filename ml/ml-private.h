@@ -24,7 +24,6 @@ struct ml_conf {
 };
 
 void ml_read_conf(struct ml_conf *mlc);
-bool ml_should_ignore_set(RRDSET *st);
 
 calculated_number *ml_get_calculated_numbers(struct ml_conf *mlc, RRDSET *st,
                                              size_t *ns, size_t *ndps);

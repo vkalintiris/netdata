@@ -6,12 +6,6 @@
 
 static bool
 should_train_set(struct ml_conf *mlc, RRDSET *st) {
-    if (ml_should_ignore_set(st)) {
-        fprintf(mlc->fp, "[%zu][%s] - should ignore set\n",
-                mlc->loop_counter, st->name ? st->name : "unnamed");
-        return false;
-    }
-
     time_t now = now_realtime_sec();
 
     if (st->last_trained_at == 0)

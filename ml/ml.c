@@ -11,48 +11,6 @@ ml_thread_cleanup(void *ptr) {
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-void
-ml_read_conf(struct ml_conf *mlc) {
-    mlc->enabled = config_get_boolean(CONFIG_SECTION_ML, "enabled", 1);
-
-    mlc->num_samples = config_get_number(CONFIG_SECTION_ML, "num samples to train", 300);
-    mlc->train_every = config_get_number(CONFIG_SECTION_ML, "train every secs", 30);
-
-    mlc->diff_n = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
-    mlc->smooth_n = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
-    mlc->lag_n = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
-
-    heartbeat_init(&mlc->hb);
-
-    mlc->loop_counter = 0;
-
-    mlc->fp = fopen(ML_LOG_FILE, "a");
-    if (!mlc->fp)
-        fatal("Could not open log file %s", ML_LOG_FILE);
-}
-
-bool
-ml_should_ignore_set(RRDSET *st) {
-    const char *name = st->name ? st->name : "unnamed";
-
-    size_t num_dims = 0;
-    for (RRDDIM *dim = st->dimensions; dim; dim = dim->next)
-        num_dims++;
-
-    if (num_dims == 0) {
-        info("ignoring set \"%s\" because it has 0 dims", name);
-        return true;
-    }
-
-    if (st->update_every != 1) {
-        info("will not predict set \"%s\" because it updates every %d secs",
-             name, st->update_every);
-        return true;
-    }
-
-    return false;
-}
-
 static RRDR *
 get_rrdr(struct ml_conf *mlc, RRDSET *st, size_t num_samples) {
     time_t time_before = now_realtime_sec();

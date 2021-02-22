@@ -56,7 +56,16 @@ func (chart *MlChart) Train(mlc *MlConfig) bool {
 		return false
 	}
 
-	log.Printf("Training %s\n\t(LTA: %s, p: %p)", chart.Name, chart.LastTrainedAt, chart)
+	log.Printf("Training %s\n", chart.Name)
+	log.Printf("\t(LTA: %s, p: %p)", chart.LastTrainedAt, chart)
+
+	res := chart.Set.GetResult(mlc.NumSamples)
+	if res == nil {
+		log.Printf("Got empty result")
+	} else {
+		log.Printf("Got valid result with %d rows", res.NumRows())
+	}
+
 	chart.LastTrainedAt = time.Now()
 	return true
 }

@@ -5,6 +5,7 @@
 
 typedef struct rrdhost* RRDHOSTP;
 typedef struct rrdset* RRDSETP;
+typedef struct rrdresult* RRDRP;
 
 extern RRDHOSTP localhost;
 
@@ -23,5 +24,9 @@ int rrdsetp_update_every(RRDSETP set);
 int rrdsetp_num_dims(RRDSETP set);
 
 long long cfg_get_number(const char *section, const char *name, long long value);
+
+RRDRP rrdrp_get(RRDSETP set, int num_samples);
+
+long rrdrp_num_rows(RRDRP res);
 
 #endif /* CGO_DATABASE_H */

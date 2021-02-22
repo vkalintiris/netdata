@@ -49,3 +49,26 @@ void rrdsetp_unlock(RRDSETP set) {
 long long cfg_get_number(const char *section, const char *name, long long value) {
     return config_get_number(section, name, value);
 }
+
+RRDRP rrdrp_get(RRDSETP set, int num_samples) {
+    time_t time_before = now_realtime_sec();
+    time_t time_after = time_before - num_samples;
+
+    RRDRP res = rrd2rrdr(
+        set,
+        0, /* points requested */
+        time_after, /* after */
+        time_before, /* before */
+        RRDR_GROUPING_AVERAGE, /* grouping method */
+        0, /* resampling time */
+        0, /* grouping options */
+        NULL, /* dimensions */
+        NULL /* context params */
+    );
+
+    return res;
+}
+
+long rrdrp_num_rows(RRDRP res) {
+    return res->rows;
+}

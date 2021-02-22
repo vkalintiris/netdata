@@ -16,6 +16,10 @@ type RrdSet struct {
 	c_set C.RRDSETP
 }
 
+type RrdResult struct {
+	c_res C.RRDRP
+}
+
 func NewLocalHost() RrdHost {
 	return RrdHost{c_host: C.localhost}
 }
@@ -58,6 +62,15 @@ func (rs *RrdSet) ReadLock() {
 
 func (rs *RrdSet) UnLock() {
 	C.rrdsetp_unlock(rs.c_set)
+}
+
+func (rs *RrdSet) GetResult(NumSamples int) *RrdResult {
+	c_res := C.rrdrp_get(rs.c_set, C.int(NumSamples))
+	return &RrdResult{c_res: c_res}
+}
+
+func (res *RrdResult) NumRows() int {
+	return int(C.rrdrp_num_rows(res.c_res))
 }
 
 func (rh *RrdHost) Sets() []RrdSet {
