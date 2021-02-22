@@ -5,6 +5,7 @@ import "C"
 import (
 	"log"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -65,23 +66,23 @@ func (chart *MlChart) Train() bool {
 	cfg := chart.Config
 
 	if set.NumDims() == 0 {
-		log.Printf("Skipping %s because it has 0 dims\n", chart.Name)
+		log.Printf("Not training %s because it has 0 dims\n", chart.Name)
 		return false
 	}
 
 	if set.UpdateEvery() != 1 {
-		log.Printf("Skipping %s because it has update every %d\n", chart.Name, set.UpdateEvery())
+		log.Printf("Not training %s because it has update every %d\n", chart.Name, set.UpdateEvery())
 		return false
 	}
 
 	res := set.GetResult(cfg.NumSamples)
 	if res == nil {
-		log.Printf("Skipping %s because it has empty result", chart.Name)
+		log.Printf("Not training %s because it has empty result", chart.Name)
 		return false
 	}
 
 	if cfg.NumSamples-res.NumRows() > 2 {
-		log.Printf("Skipping %s because it has %d/%d rows\n", chart.Name, res.NumRows(), cfg.NumSamples)
+		log.Printf("Not training %s because it has %d/%d rows\n", chart.Name, res.NumRows(), cfg.NumSamples)
 		res.Free()
 		return false
 	}
@@ -94,11 +95,41 @@ func (chart *MlChart) Train() bool {
 	return true
 }
 
-//export GoMLTrain
-func GoMLTrain() {
-	fp := redirectLog("/tmp/go.log")
-	defer fp.Close()
+func (chart *MlChart) Predict() bool {
+	set := chart.Set
+	cfg := chart.Config
 
+	if set.NumDims() == 0 {
+		log.Printf("Not predicting %s because it has 0 dims\n", chart.Name)
+		return false
+	}
+
+	if set.UpdateEvery() != 1 {
+		log.Printf("Not predicting %s because it has update every %d\n", chart.Name, set.UpdateEvery())
+		return false
+	}
+
+	res := set.GetResult(cfg.DiffN + cfg.SmoothN + cfg.LagN)
+	if res == nil {
+		log.Printf("Not predicting %s because it has empty result", chart.Name)
+		return false
+	}
+
+	if cfg.NumSamples-res.NumRows() > 2 {
+		log.Printf("Not predicting %s because it has %d/%d rows\n", chart.Name, res.NumRows(), cfg.NumSamples)
+		res.Free()
+		return false
+	}
+
+	log.Printf("Predicting %s with %d rows", chart.Name, res.NumRows())
+
+	chart.KM.Predict(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
+	chart.LastTrainedAt = time.Now()
+
+	return true
+}
+
+func GoMLTrain() {
 	log.Printf("Heartbeat\n")
 
 	cfg := NewMlConfig()
@@ -129,4 +160,24 @@ func GoMLTrain() {
 		}
 		log.Printf("Loop end\n")
 	}
+}
+
+func GoMLPredict() {
+	for _ = range time.Tick(1 * time.Second) {
+		log.Printf("Running Prediction...")
+	}
+}
+
+//export GoMLMain
+func GoMLMain() {
+	fp := redirectLog("/tmp/go.log")
+	defer fp.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() { GoMLTrain(); wg.Done() }()
+	go func() { GoMLPredict(); wg.Done() }()
+
+	wg.Wait()
 }

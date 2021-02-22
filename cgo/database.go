@@ -52,6 +52,10 @@ func (km *KMeans) Train(Res *RrdResult, DiffN int, SmoothN int, LagN int) {
 	C.kmref_train(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN))
 }
 
+func (km *KMeans) Predict(Res *RrdResult, DiffN int, SmoothN int, LagN int) float64 {
+	return float64(C.kmref_predict(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN)))
+}
+
 func (rs *RrdSet) NextSet() RrdSet {
 	return RrdSet{c_set: C.rrdsetp_next_set(rs.c_set)}
 }

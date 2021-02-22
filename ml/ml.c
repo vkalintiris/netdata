@@ -95,7 +95,7 @@ ml_get_calculated_numbers(struct ml_conf *mlc, RRDSET *st, size_t *ns, size_t *n
     return cns;
 }
 
-extern void GoMLTrain(void);
+extern void GoMLMain(void);
 
 void *
 ml_loop(void *ptr) {
@@ -104,7 +104,7 @@ ml_loop(void *ptr) {
     netdata_thread_cleanup_push(ml_thread_cleanup, thr);
 
     if (!strcmp(thr->name, "MLTRAIN"))
-        GoMLTrain();
+        GoMLMain();
 
 EXIT_THREAD:
     netdata_thread_cleanup_pop(1);

@@ -34,5 +34,6 @@ void rrdrp_free(RRDRP res);
 KMREF kmref_new(int num_centers);
 
 void kmref_train(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n);
+double kmref_predict(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n);
 
 #endif /* CGO_DATABASE_H */
