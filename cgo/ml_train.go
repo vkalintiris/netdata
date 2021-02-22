@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+func redirectLog(path string) *os.File {
+	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
+
+	fp, err := os.OpenFile(path, flags, 0664)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.SetOutput(fp)
+	return fp
+}
+
 type MlConfig struct {
 	NumSamples int
 	TrainEvery time.Duration
@@ -20,8 +32,8 @@ type MlConfig struct {
 func NewMlConfig() *MlConfig {
 	var mlc MlConfig
 
-	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 300)
-	mlc.TrainEvery = time.Duration(ConfigGetNum("ml", "train every secs", 30)) * time.Second
+	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 600)
+	mlc.TrainEvery = time.Duration(ConfigGetNum("ml", "train every secs", 60)) * time.Second
 
 	mlc.DiffN = ConfigGetNum("ml", "num samples to diff", 1)
 	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
@@ -31,97 +43,90 @@ func NewMlConfig() *MlConfig {
 }
 
 type MlChart struct {
-	Config *MlConfig
-
+	Config        *MlConfig
 	Set           RrdSet
 	Name          string
+	KM            KMeans
 	LastTrainedAt time.Time
 }
 
-func (chart *MlChart) ShouldTrain() bool {
-	if chart.Set.NumDims() == 0 {
-		return false
+func NewMlChart(mlc *MlConfig, set RrdSet, name string) *MlChart {
+	return &MlChart{
+		Config:        mlc,
+		Set:           set,
+		Name:          name,
+		KM:            KMeansNew(2),
+		LastTrainedAt: time.Now(),
 	}
-
-	if chart.Set.UpdateEvery() != 1 {
-		return false
-	}
-
-	elapsed := time.Now().Sub(chart.LastTrainedAt)
-	return elapsed >= chart.Config.TrainEvery
 }
 
-func (chart *MlChart) Train(mlc *MlConfig) bool {
-	if !chart.ShouldTrain() {
+func (chart *MlChart) Train() bool {
+	set := chart.Set
+	cfg := chart.Config
+
+	if set.NumDims() == 0 {
+		log.Printf("Skipping %s because it has 0 dims\n", chart.Name)
 		return false
 	}
 
-	log.Printf("Training %s\n", chart.Name)
-	log.Printf("\t(LTA: %s, p: %p)", chart.LastTrainedAt, chart)
+	if set.UpdateEvery() != 1 {
+		log.Printf("Skipping %s because it has update every %d\n", chart.Name, set.UpdateEvery())
+		return false
+	}
 
-	res := chart.Set.GetResult(mlc.NumSamples)
+	res := set.GetResult(cfg.NumSamples)
 	if res == nil {
-		log.Printf("Got empty result")
-	} else {
-		log.Printf("Got valid result with %d rows", res.NumRows())
+		log.Printf("Skipping %s because it has empty result", chart.Name)
+		return false
 	}
 
+	if cfg.NumSamples-res.NumRows() > 2 {
+		log.Printf("Skipping %s because it has %d/%d rows\n", chart.Name, res.NumRows(), cfg.NumSamples)
+		res.Free()
+		return false
+	}
+
+	log.Printf("Training %s with %d rows", chart.Name, res.NumRows())
+
+	chart.KM.Train(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
 	chart.LastTrainedAt = time.Now()
+
 	return true
-}
-
-type MlInfo struct {
-	Config *MlConfig
-	Charts map[string]*MlChart
-}
-
-func NewMlInfo() *MlInfo {
-	return &MlInfo{Config: NewMlConfig(), Charts: map[string]*MlChart{}}
-}
-
-func (mli *MlInfo) CollectCharts() {
-	localhost := NewLocalHost()
-	now := time.Now()
-
-	for _, set := range localhost.Sets() {
-		set.ReadLock()
-		defer set.UnLock()
-
-		name := set.Name()
-		if name != "system.cpu" {
-			continue
-		}
-
-		if _, ok := mli.Charts[name]; !ok {
-			log.Printf("Adding new chart %s\n", name)
-			mli.Charts[name] = &MlChart{mli.Config, set, name, now}
-		}
-	}
-}
-
-func TrainModels(mli *MlInfo) {
-	mli.CollectCharts()
-
-	for _, chart := range mli.Charts {
-		if chart.Train(mli.Config) == false {
-			log.Printf("Could not train: %+v\n", chart)
-		}
-	}
 }
 
 //export GoMLTrain
 func GoMLTrain() {
-	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
-	fp, err := os.OpenFile("/tmp/go.log", flags, 0664)
-	if err != nil {
-		log.Fatal(err)
-	}
+	fp := redirectLog("/tmp/go.log")
 	defer fp.Close()
-	log.SetOutput(fp)
 
-	mli := NewMlInfo()
+	log.Printf("Heartbeat\n")
 
-	for _ = range time.Tick(5 * time.Second) {
-		TrainModels(mli)
+	cfg := NewMlConfig()
+	charts := map[string]*MlChart{}
+
+	for _ = range time.Tick(10 * time.Second) {
+		log.Printf("Loop start\n")
+
+		localhost := NewLocalHost()
+		for _, set := range localhost.Sets() {
+			name := set.Name()
+
+			if _, ok := charts[name]; !ok {
+				log.Printf("Adding new chart %s\n", name)
+				charts[name] = NewMlChart(cfg, set, name)
+			}
+		}
+
+		log.Printf("Have %d charts\n", len(charts))
+
+		for _, chart := range charts {
+			elapsed := time.Now().Sub(chart.LastTrainedAt)
+			if elapsed < chart.Config.TrainEvery {
+				continue
+			}
+
+			chart.Train()
+		}
+		log.Printf("Loop end\n")
 	}
 }

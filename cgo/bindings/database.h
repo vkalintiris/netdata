@@ -6,6 +6,7 @@
 typedef struct rrdhost* RRDHOSTP;
 typedef struct rrdset* RRDSETP;
 typedef struct rrdresult* RRDRP;
+typedef struct KMeans* KMREF;
 
 extern RRDHOSTP localhost;
 
@@ -28,5 +29,10 @@ long long cfg_get_number(const char *section, const char *name, long long value)
 RRDRP rrdrp_get(RRDSETP set, int num_samples);
 
 long rrdrp_num_rows(RRDRP res);
+void rrdrp_free(RRDRP res);
+
+KMREF kmref_new(int num_centers);
+
+void kmref_train(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n);
 
 #endif /* CGO_DATABASE_H */

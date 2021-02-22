@@ -20,6 +20,10 @@ type RrdResult struct {
 	c_res C.RRDRP
 }
 
+type KMeans struct {
+	c_kmref C.KMREF
+}
+
 func NewLocalHost() RrdHost {
 	return RrdHost{c_host: C.localhost}
 }
@@ -38,6 +42,14 @@ func (rh *RrdHost) UnLock() {
 
 func (rh *RrdHost) RootSet() RrdSet {
 	return RrdSet{c_set: C.rrdhostp_root_set(rh.c_host)}
+}
+
+func KMeansNew(NumCenters int) KMeans {
+	return KMeans{c_kmref: C.kmref_new(C.int(NumCenters))}
+}
+
+func (km *KMeans) Train(Res *RrdResult, DiffN int, SmoothN int, LagN int) {
+	C.kmref_train(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN))
 }
 
 func (rs *RrdSet) NextSet() RrdSet {
@@ -71,6 +83,10 @@ func (rs *RrdSet) GetResult(NumSamples int) *RrdResult {
 
 func (res *RrdResult) NumRows() int {
 	return int(C.rrdrp_num_rows(res.c_res))
+}
+
+func (res *RrdResult) Free() {
+	C.rrdrp_free(res.c_res)
 }
 
 func (rh *RrdHost) Sets() []RrdSet {
