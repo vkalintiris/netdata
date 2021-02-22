@@ -82,6 +82,10 @@ func (rs *RrdSet) UnLock() {
 
 func (rs *RrdSet) GetResult(NumSamples int) *RrdResult {
 	c_res := C.rrdrp_get(rs.c_set, C.int(NumSamples))
+	if c_res == nil {
+		return nil
+	}
+
 	return &RrdResult{c_res: c_res}
 }
 

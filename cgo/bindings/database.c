@@ -52,7 +52,7 @@ long long cfg_get_number(const char *section, const char *name, long long value)
 }
 
 RRDRP rrdrp_get(RRDSETP set, int num_samples) {
-    time_t time_before = now_realtime_sec();
+    time_t time_before = now_realtime_sec() - 1;
     time_t time_after = time_before - num_samples;
 
     RRDRP res = rrd2rrdr(
@@ -66,6 +66,33 @@ RRDRP rrdrp_get(RRDSETP set, int num_samples) {
         NULL, /* dimensions */
         NULL /* context params */
     );
+
+    if (!res)
+        return NULL;
+
+    size_t num_empty_samples = 0;
+    for (long i = 0; i != res->rows; i++) {
+        calculated_number *cn = &res->v[res->d * i];
+        RRDR_VALUE_FLAGS *vf = &res->o[res->d * i];
+
+        for (long j = 0; j != res->d; j++) {
+            if (vf[j] && RRDR_VALUE_EMPTY) {
+                //cn[j] = 0.0L;
+                num_empty_samples++;
+                break;
+            }
+        }
+    }
+
+    if (num_empty_samples) {
+        info("result in [%ld, %ld] for %s",
+             time_after, time_before, set->name ? set->name : "unnamed");
+
+        info("found %zu empty value(s) in rrd result of %s (%ld/%d)\n",
+             num_empty_samples, set->name ? set->name : "unnamed", res->rows, num_samples);
+        rrdr_free(res);
+        return NULL;
+    }
 
     return res;
 }

@@ -1,7 +1,15 @@
 #include "KMeans.h"
 #include <dlib/clustering.h>
 
+#include <iostream>
+#include <fstream>
+#include <limits>
+
 void KMeans::train(std::vector<DSample> &Samples) {
+    MinDist = std::numeric_limits<CalculatedNumber>::max();
+    MaxDist = std::numeric_limits<CalculatedNumber>::min();
+
+    ClusterCenters.clear();
     dlib::pick_initial_centers(NumClusters, ClusterCenters, Samples);
     dlib::find_clusters_using_kmeans(Samples, ClusterCenters);
 
@@ -28,6 +36,16 @@ CalculatedNumber KMeans::anomalyScore(DSample &Sample) {
         MeanDist += dlib::length(CC - Sample);
 
     MeanDist /= NumClusters;
+
+    std::ofstream fp;
+    fp.open("/tmp/kmeans.log", std::ofstream::out | std::ofstream::app);
+    fp << "MinDist: " << MinDist << std::endl;;
+    fp << "MaxDist: " << MaxDist << std::endl;;
+    fp << "MeanDist: " << MeanDist << std::endl;;
+    fp << "MaxDist - MinDist: " << MaxDist - MinDist << std::endl;;
+    fp << "MeanDist - MinDist: " << MeanDist - MinDist << "\n" << std::endl;;
+    fp.close();
+
 
     // TODO: Make sure we don't divide by zero
     return (MeanDist - MinDist) / (MaxDist - MinDist);

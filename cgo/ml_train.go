@@ -33,7 +33,7 @@ type MlConfig struct {
 func NewMlConfig() *MlConfig {
 	var mlc MlConfig
 
-	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 600)
+	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 120)
 	mlc.TrainEvery = time.Duration(ConfigGetNum("ml", "train every secs", 60)) * time.Second
 
 	mlc.DiffN = ConfigGetNum("ml", "num samples to diff", 1)
@@ -49,6 +49,7 @@ type MlChart struct {
 	Name          string
 	KM            KMeans
 	LastTrainedAt time.Time
+	AnomalyScore  float64
 }
 
 func NewMlChart(mlc *MlConfig, set RrdSet, name string) *MlChart {
@@ -58,6 +59,7 @@ func NewMlChart(mlc *MlConfig, set RrdSet, name string) *MlChart {
 		Name:          name,
 		KM:            KMeansNew(2),
 		LastTrainedAt: time.Now(),
+		AnomalyScore:  -1.0,
 	}
 }
 
@@ -98,6 +100,7 @@ func (chart *MlChart) Train() bool {
 func (chart *MlChart) Predict() bool {
 	set := chart.Set
 	cfg := chart.Config
+	numSamples := cfg.DiffN + cfg.SmoothN + cfg.LagN
 
 	if set.NumDims() == 0 {
 		log.Printf("Not predicting %s because it has 0 dims\n", chart.Name)
@@ -109,33 +112,29 @@ func (chart *MlChart) Predict() bool {
 		return false
 	}
 
-	res := set.GetResult(cfg.DiffN + cfg.SmoothN + cfg.LagN)
+	res := set.GetResult(numSamples)
 	if res == nil {
 		log.Printf("Not predicting %s because it has empty result", chart.Name)
 		return false
 	}
 
-	if cfg.NumSamples-res.NumRows() > 2 {
-		log.Printf("Not predicting %s because it has %d/%d rows\n", chart.Name, res.NumRows(), cfg.NumSamples)
+	if numSamples-res.NumRows() > 1 {
+		log.Printf("Not predicting %s because it has %d/%d rows\n", chart.Name, res.NumRows(), numSamples)
 		res.Free()
 		return false
 	}
 
 	log.Printf("Predicting %s with %d rows", chart.Name, res.NumRows())
 
-	chart.KM.Predict(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
-	chart.LastTrainedAt = time.Now()
+	chart.AnomalyScore = chart.KM.Predict(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
 
 	return true
 }
 
-func GoMLTrain() {
+func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
 	log.Printf("Heartbeat\n")
 
-	cfg := NewMlConfig()
-	charts := map[string]*MlChart{}
-
-	for _ = range time.Tick(10 * time.Second) {
+	for _ = range time.Tick(15 * time.Second) {
 		log.Printf("Loop start\n")
 
 		localhost := NewLocalHost()
@@ -151,6 +150,10 @@ func GoMLTrain() {
 		log.Printf("Have %d charts\n", len(charts))
 
 		for _, chart := range charts {
+			if chart.Name != "system.cpu" {
+				continue
+			}
+
 			elapsed := time.Now().Sub(chart.LastTrainedAt)
 			if elapsed < chart.Config.TrainEvery {
 				continue
@@ -162,9 +165,16 @@ func GoMLTrain() {
 	}
 }
 
-func GoMLPredict() {
+func GoMLPredict(cfg *MlConfig, charts map[string]*MlChart) {
 	for _ = range time.Tick(1 * time.Second) {
-		log.Printf("Running Prediction...")
+		chart, ok := charts["system.cpu"]
+		if !ok {
+			continue
+		}
+
+		chart.Predict()
+
+		log.Printf("%s has anomaly score %f\n", chart.Name, chart.AnomalyScore)
 	}
 }
 
@@ -176,8 +186,11 @@ func GoMLMain() {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	go func() { GoMLTrain(); wg.Done() }()
-	go func() { GoMLPredict(); wg.Done() }()
+	cfg := NewMlConfig()
+	charts := map[string]*MlChart{}
+
+	go func() { GoMLTrain(cfg, charts); wg.Done() }()
+	go func() { GoMLPredict(cfg, charts); wg.Done() }()
 
 	wg.Wait()
 }
