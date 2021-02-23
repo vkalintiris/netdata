@@ -232,11 +232,7 @@ HEALTH_PLUGIN_FILES = \
     $(NULL)
 
 ML_FILES = \
-	ml/ml-private.h \
-	ml/ml.h \
 	ml/ml.c \
-	ml/ml_train.c \
-	ml/ml_predict.c \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/KMeans.cc \

@@ -46,10 +46,6 @@ void rrdsetp_unlock(RRDSETP set) {
     rrdset_unlock(set);
 }
 
-long long cfg_get_number(const char *section, const char *name, long long value) {
-    return config_get_number(section, name, value);
-}
-
 RRDRP rrdrp_get(RRDSETP set, int num_samples) {
     time_t time_before = now_realtime_sec() - 1;
     time_t time_after = time_before - num_samples;
