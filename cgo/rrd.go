@@ -4,10 +4,6 @@ package main
 // #include "bindings/cgo-rrd.h"
 import "C"
 
-import (
-	"unsafe"
-)
-
 type RrdHost struct {
 	c_host C.RRDHOSTP
 }
@@ -22,10 +18,6 @@ type RrdDim struct {
 
 type RrdResult struct {
 	c_res C.RRDRP
-}
-
-type KMeans struct {
-	c_kmref C.KMREF
 }
 
 func NewLocalHost() RrdHost {
@@ -46,18 +38,6 @@ func (rh *RrdHost) UnLock() {
 
 func (rh *RrdHost) RootSet() RrdSet {
 	return RrdSet{c_set: C.rrdhostp_root_set(rh.c_host)}
-}
-
-func KMeansNew(NumCenters int) KMeans {
-	return KMeans{c_kmref: C.kmref_new(C.int(NumCenters))}
-}
-
-func (km *KMeans) Train(Res RrdResult, DiffN int, SmoothN int, LagN int) {
-	C.kmref_train(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN))
-}
-
-func (km *KMeans) Predict(Res RrdResult, DiffN int, SmoothN int, LagN int) float64 {
-	return float64(C.kmref_predict(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN)))
 }
 
 func (rs *RrdSet) NextSet() RrdSet {
@@ -139,15 +119,3 @@ func (rs *RrdSet) AddDim(id string, name string) RrdDim {
 		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
 	}
 }
-
-func ConfigGetNum(section string, name string, value int) int {
-	csection := C.CString(section)
-	defer C.free(unsafe.Pointer(csection))
-
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
-	return int(C.cfg_get_number(csection, cname, C.longlong(value)))
-}
-
-func main() {}
