@@ -98,7 +98,7 @@ func (chart *MlChart) Train() bool {
 	set := chart.Set
 	cfg := chart.Config
 
-	if chart.InBlockList {
+	if chart.InBlockList() {
 		return false
 	}
 
@@ -126,7 +126,7 @@ func (chart *MlChart) Predict() bool {
 	cfg := chart.Config
 	numSamples := cfg.DiffN + cfg.SmoothN + cfg.LagN
 
-	if chart.InBlockList {
+	if chart.InBlockList() {
 		return false
 	}
 
