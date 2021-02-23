@@ -57,7 +57,7 @@ RRDRP rrdrp_get(RRDSETP set, int num_samples) {
         time_before, /* before */
         RRDR_GROUPING_AVERAGE, /* grouping method */
         0, /* resampling time */
-        0, /* grouping options */
+        0, /* options */
         NULL, /* dimensions */
         NULL /* context params */
     );
@@ -65,16 +65,26 @@ RRDRP rrdrp_get(RRDSETP set, int num_samples) {
     if (!res)
         return NULL;
 
-    for (long i = 0; i != res->rows; i++) {
-        calculated_number *cn = &res->v[res->d * i];
-        RRDR_VALUE_FLAGS *vf = &res->o[res->d * i];
+    long num_empty_values = 0;
 
-        for (long j = 0; j != res->d; j++) {
-            if (vf[j] && RRDR_VALUE_EMPTY) {
-                rrdr_free(res);
-                return NULL;
+    for (long dim = 0; dim != res->d; dim++) {
+        bool is_hidden = res->od[dim] & RRDR_DIMENSION_HIDDEN;
+
+        for (long row = 0; row != res->rows; row++) {
+            long idx = (row * res->d) + dim;
+
+            if (is_hidden) {
+                res->v[idx] = 0.0L;
+            } else if (res->o[idx] && RRDR_VALUE_EMPTY) {
+                num_empty_values++;
             }
         }
+    }
+
+    info("%ld empty values in %s", num_empty_values, set->name ? set->name : "unknown");
+    if (num_empty_values) {
+        rrdr_free(res);
+        return NULL;
     }
 
     return res;

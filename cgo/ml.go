@@ -38,7 +38,7 @@ func NewMlConfig() *MlConfig {
 	var mlc MlConfig
 
 	mlc.NumSamples = ConfigGetNum("ml", "num samples to train", 120)
-	mlc.TrainEvery = time.Duration(ConfigGetNum("ml", "train every secs", 60)) * time.Second
+	mlc.TrainEvery = time.Duration(ConfigGetNum("ml", "train every secs", 30)) * time.Second
 
 	mlc.DiffN = ConfigGetNum("ml", "num samples to diff", 1)
 	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
@@ -74,9 +74,33 @@ func NewMlChart(mlc *MlConfig, set RrdSet, name string) *MlChart {
 	}
 }
 
+func (chart *MlChart) InBlockList() bool {
+	blocklistedNames := []string{
+		"apps.cpu", "apps.cpu_system", "apps.cpu_user", "apps.files",
+		"apps.lreads", "apps.lwrites", "apps.major_faults", "apps.mem",
+		"apps.minor_faults", "apps.pipes", "apps.preads", "apps.processes",
+		"apps.pwrites", "apps.sockets", "apps.swap", "apps.threads",
+		"apps.uptime_avg", "apps.uptime", "apps.uptime_max", "apps.uptime_min",
+		"apps.vmem", "services.cpu", "services.mem_usage",
+		"services.throttle_io_ops_read", "services.throttle_io_ops_write",
+		"services.throttle_io_read", "services.throttle_io_write",
+	}
+
+	for _, name := range blocklistedNames {
+		if chart.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (chart *MlChart) Train() bool {
 	set := chart.Set
 	cfg := chart.Config
+
+	if chart.InBlockList {
+		return false
+	}
 
 	res := set.GetResult(cfg.NumSamples)
 	if res.c_res == nil {
@@ -91,7 +115,6 @@ func (chart *MlChart) Train() bool {
 	}
 
 	log.Printf("Training %s with %d rows", chart.Name, res.NumRows())
-
 	chart.KM.Train(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
 	chart.LastTrainedAt = time.Now()
 
@@ -103,13 +126,7 @@ func (chart *MlChart) Predict() bool {
 	cfg := chart.Config
 	numSamples := cfg.DiffN + cfg.SmoothN + cfg.LagN
 
-	if set.NumDims() == 0 {
-		log.Printf("Not predicting %s because it has 0 dims\n", chart.Name)
-		return false
-	}
-
-	if set.UpdateEvery() != 1 {
-		log.Printf("Not predicting %s because it has update every %d\n", chart.Name, set.UpdateEvery())
+	if chart.InBlockList {
 		return false
 	}
 
@@ -126,7 +143,6 @@ func (chart *MlChart) Predict() bool {
 	}
 
 	log.Printf("Predicting %s with %d rows", chart.Name, res.NumRows())
-
 	chart.AnomalyScore = chart.KM.Predict(res, cfg.DiffN, cfg.SmoothN, cfg.LagN)
 
 	return true
@@ -155,16 +171,14 @@ func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
 
 		// Train charts
 		for _, chart := range chartsToTrain {
-			if chart.Name == "disk.nvme0n1" {
-				chart.Train()
-			}
+			chart.Train()
 		}
 	}
 }
 
 func GoMLPredict(cfg *MlConfig, charts map[string]*MlChart) {
 	for _ = range time.Tick(1 * time.Second) {
-		chart, ok := charts["disk.nvme0n1"]
+		chart, ok := charts["system.cpu"]
 		if !ok {
 			continue
 		}
