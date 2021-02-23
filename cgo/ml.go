@@ -44,8 +44,8 @@ func NewMlConfig() *MlConfig {
 	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
 	mlc.LagN = ConfigGetNum("ml", "num samples to lag", 5)
 
-	mlc.Localhost = LocalHostRef()
-	mlc.AnomalyDetectionSet = mlc.Localhost.CreateRrdSet(
+	localhost := LocalHostRef()
+	mlc.AnomalyDetectionSet = localhost.CreateRrdSet(
 		"ml", "st_id", "anomaly_detection", "st_family",
 		"st_context", "st_title", "st_units", "st_plugin", "st_module",
 		1, 1,
@@ -77,16 +77,6 @@ func NewMlChart(mlc *MlConfig, set RrdSet, name string) *MlChart {
 func (chart *MlChart) Train() bool {
 	set := chart.Set
 	cfg := chart.Config
-
-	if set.NumDims() == 0 {
-		log.Printf("Not training %s because it has 0 dims\n", chart.Name)
-		return false
-	}
-
-	if set.UpdateEvery() != 1 {
-		log.Printf("Not training %s because it has update every %d\n", chart.Name, set.UpdateEvery())
-		return false
-	}
 
 	res := set.GetResult(cfg.NumSamples)
 	if res.c_res == nil {
@@ -143,36 +133,32 @@ func (chart *MlChart) Predict() bool {
 }
 
 func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
-	log.Printf("Heartbeat\n")
-
 	for _ = range time.Tick(15 * time.Second) {
-		log.Printf("Loop start\n")
-
+		// Collect new charts
 		localhost := LocalHostRef()
 		for _, set := range localhost.Sets() {
 			name := set.Name()
 
 			if _, ok := charts[name]; !ok {
-				log.Printf("Adding new chart %s\n", name)
 				charts[name] = NewMlChart(cfg, set, name)
 			}
 		}
 
-		log.Printf("Have %d charts\n", len(charts))
-
+		// Filter charts to train
+		chartsToTrain := []*MlChart{}
 		for _, chart := range charts {
-			if chart.Name != "disk.nvme0n1" {
-				continue
-			}
-
 			elapsed := time.Now().Sub(chart.LastTrainedAt)
-			if elapsed < chart.Config.TrainEvery {
-				continue
+			if elapsed > chart.Config.TrainEvery {
+				chartsToTrain = append(chartsToTrain, chart)
 			}
-
-			chart.Train()
 		}
-		log.Printf("Loop end\n")
+
+		// Train charts
+		for _, chart := range chartsToTrain {
+			if chart.Name == "disk.nvme0n1" {
+				chart.Train()
+			}
+		}
 	}
 }
 
@@ -195,13 +181,9 @@ func GoMLMain() {
 	defer fp.Close()
 
 	cfg := NewMlConfig()
-	for _ = range time.Tick(5 * time.Second) {
-		log.Printf("hostname: %s\n", cfg.Localhost.HostName())
+	charts := map[string]*MlChart{}
 
-		for idx, set := range cfg.Localhost.Sets() {
-			log.Printf("\t[%d] chart %s\n", idx, set.Name())
-		}
-	}
+	GoMLTrain(cfg, charts)
 
 	/*
 		var wg sync.WaitGroup
