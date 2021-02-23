@@ -1,5 +1,5 @@
-#ifndef CGO_DATABASE_H
-#define CGO_DATABASE_H
+#ifndef CGO_RRD_H
+#define CGO_RRD_H
 
 #include <stdlib.h>
 
@@ -49,4 +49,4 @@ RRDDIMP rrdsetp_add_dim(
     RRDSETP st, const char *id, const char *name
 );
 
-#endif /* CGO_DATABASE_H */
+#endif /* CGO_RRD_H */

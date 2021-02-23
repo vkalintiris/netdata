@@ -1,4 +1,4 @@
-#include "database.h"
+#include "cgo-rrd.h"
 #include "database/rrd.h"
 #include "ml/kmeans/kmeans-c.h"
 

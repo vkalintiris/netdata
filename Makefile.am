@@ -244,8 +244,8 @@ ML_FILES = \
 	$(NULL)
 
 CGO_BINDINGS_FILES = \
-    cgo/bindings/database.c \
-    cgo/bindings/database.h \
+    cgo/bindings/cgo-rrd.c \
+    cgo/bindings/cgo-rrd.h \
     $(NULL)
 
 IDLEJITTER_PLUGIN_FILES = \
@@ -705,7 +705,7 @@ if LINUX
 
 endif
 
-cgo/cgo.a: cgo/database.go cgo/ml_train.go
+cgo/cgo.a: cgo/rrd.go cgo/ml_train.go
 	CGO_CFLAGS="${CPPFLAGS}"; CGO_CFLAGS="${CGO_CFLAGS} ${CFLAGS}"; export CGO_CFLAGS
 	go build -o $@ -buildmode=c-archive $^
 
