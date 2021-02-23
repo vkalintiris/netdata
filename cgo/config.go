@@ -1,7 +1,8 @@
 package main
 
 // #cgo LDFLAGS: -Wl,--unresolved-symbols=ignore-all
-// #include "bindings/cgo-rrd.h"
+// #include "bindings/cgo-config.h"
+// #include <stdlib.h>
 import "C"
 
 import (

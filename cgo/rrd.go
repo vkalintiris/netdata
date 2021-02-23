@@ -109,9 +109,13 @@ func (rs *RrdSet) UnLock() {
 }
 
 func (rs *RrdSet) AddDim(id string, name string) RrdDim {
-	return RrdDim{
-		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
-	}
+	c_id := C.CString(id)
+	defer C.free(unsafe.Pointer(c_id))
+
+	c_name := C.CString(id)
+	defer C.free(unsafe.Pointer(c_name))
+
+	return RrdDim{c_dim: C.rrdsetp_add_dim(rs.c_set, c_id, c_name)}
 }
 
 func (rs *RrdSet) GetResult(NumSamples int) RrdResult {

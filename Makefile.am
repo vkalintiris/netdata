@@ -705,7 +705,7 @@ if LINUX
 
 endif
 
-cgo/cgo.a: cgo/config.go cgo/rrd.go cgo/kmeans.go cgo/ml_train.go
+cgo/cgo.a: cgo/config.go cgo/rrd.go cgo/kmeans.go cgo/ml.go
 	CGO_CFLAGS="${CPPFLAGS}"; CGO_CFLAGS="${CGO_CFLAGS} ${CFLAGS}"; export CGO_CFLAGS
 	go build -o $@ -buildmode=c-archive $^
 

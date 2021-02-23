@@ -19,9 +19,9 @@ ml_main(void *ptr) {
 
     netdata_thread_cleanup_push(ml_thread_cleanup, thr);
 
-    if (!strcmp(thr->name, "MLTRAIN"))
-        GoMLMain();
+    GoMLMain();
 
     netdata_thread_cleanup_pop(1);
+
     return NULL;
 }
