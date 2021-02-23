@@ -16,6 +16,10 @@ type RrdSet struct {
 	c_set C.RRDSETP
 }
 
+type RrdDim struct {
+	c_dim C.RRDDIMP
+}
+
 type RrdResult struct {
 	c_res C.RRDRP
 }
@@ -48,11 +52,11 @@ func KMeansNew(NumCenters int) KMeans {
 	return KMeans{c_kmref: C.kmref_new(C.int(NumCenters))}
 }
 
-func (km *KMeans) Train(Res *RrdResult, DiffN int, SmoothN int, LagN int) {
+func (km *KMeans) Train(Res RrdResult, DiffN int, SmoothN int, LagN int) {
 	C.kmref_train(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN))
 }
 
-func (km *KMeans) Predict(Res *RrdResult, DiffN int, SmoothN int, LagN int) float64 {
+func (km *KMeans) Predict(Res RrdResult, DiffN int, SmoothN int, LagN int) float64 {
 	return float64(C.kmref_predict(km.c_kmref, Res.c_res, C.int(DiffN), C.int(SmoothN), C.int(LagN)))
 }
 
@@ -80,13 +84,9 @@ func (rs *RrdSet) UnLock() {
 	C.rrdsetp_unlock(rs.c_set)
 }
 
-func (rs *RrdSet) GetResult(NumSamples int) *RrdResult {
+func (rs *RrdSet) GetResult(NumSamples int) RrdResult {
 	c_res := C.rrdrp_get(rs.c_set, C.int(NumSamples))
-	if c_res == nil {
-		return nil
-	}
-
-	return &RrdResult{c_res: c_res}
+	return RrdResult{c_res: c_res}
 }
 
 func (res *RrdResult) NumRows() int {
@@ -110,6 +110,34 @@ func (rh *RrdHost) Sets() []RrdSet {
 	}
 
 	return sets
+}
+
+func (rh *RrdHost) CreateRrdSet(
+	ty, id, name, family, context, title, units, plugin, module string,
+	priority, update_every int) RrdSet {
+	c_ty := C.CString(ty)
+	c_id := C.CString(id)
+	c_name := C.CString(name)
+	c_family := C.CString(family)
+	c_context := C.CString(context)
+	c_title := C.CString(title)
+	c_units := C.CString(units)
+	c_plugin := C.CString(plugin)
+	c_module := C.CString(module)
+
+	c_set := C.rrdsetp_create(
+		c_ty, c_id, c_name, c_family, c_context,
+		c_title, c_units, c_plugin, c_module,
+		C.long(priority), C.int(update_every),
+	)
+
+	return RrdSet{c_set: c_set}
+}
+
+func (rs *RrdSet) AddDim(id string, name string) RrdDim {
+	return RrdDim{
+		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
+	}
 }
 
 func ConfigGetNum(section string, name string, value int) int {

@@ -70,28 +70,16 @@ RRDRP rrdrp_get(RRDSETP set, int num_samples) {
     if (!res)
         return NULL;
 
-    size_t num_empty_samples = 0;
     for (long i = 0; i != res->rows; i++) {
         calculated_number *cn = &res->v[res->d * i];
         RRDR_VALUE_FLAGS *vf = &res->o[res->d * i];
 
         for (long j = 0; j != res->d; j++) {
             if (vf[j] && RRDR_VALUE_EMPTY) {
-                //cn[j] = 0.0L;
-                num_empty_samples++;
-                break;
+                rrdr_free(res);
+                return NULL;
             }
         }
-    }
-
-    if (num_empty_samples) {
-        info("result in [%ld, %ld] for %s",
-             time_after, time_before, set->name ? set->name : "unnamed");
-
-        info("found %zu empty value(s) in rrd result of %s (%ld/%d)\n",
-             num_empty_samples, set->name ? set->name : "unnamed", res->rows, num_samples);
-        rrdr_free(res);
-        return NULL;
     }
 
     return res;
@@ -138,4 +126,19 @@ double kmref_predict(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n
     free(cns);
 
     return d;
+}
+
+RRDSETP rrdsetp_create(
+        const char *type, const char *id, const char *name, const char *family,
+        const char *context, const char *title, const char *units,
+        const char *plugin, const char *module,
+        long priority, int update_every) {
+    return rrdset_create_localhost(
+        type, id, name, family,
+        context, title, units, plugin,
+        module, priority, update_every, RRDSET_TYPE_AREA);
+}
+
+RRDDIMP rrdsetp_add_dim(RRDSETP st, const char *id, const char *name) {
+    rrddim_add(st, id, NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
 }

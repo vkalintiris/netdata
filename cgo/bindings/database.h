@@ -5,7 +5,9 @@
 
 typedef struct rrdhost* RRDHOSTP;
 typedef struct rrdset* RRDSETP;
+typedef struct rrddim* RRDDIMP;
 typedef struct rrdresult* RRDRP;
+
 typedef struct KMeans* KMREF;
 
 extern RRDHOSTP localhost;
@@ -35,5 +37,16 @@ KMREF kmref_new(int num_centers);
 
 void kmref_train(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n);
 double kmref_predict(KMREF kmref, RRDRP res, int diff_n, int smooth_n, int lag_n);
+
+RRDSETP rrdsetp_create(
+    const char *type, const char *id, const char *name, const char *family,
+    const char *context, const char *title, const char *units,
+    const char *plugin, const char *module,
+    long priority, int update_every
+);
+
+RRDDIMP rrdsetp_add_dim(
+    RRDSETP st, const char *id, const char *name
+);
 
 #endif /* CGO_DATABASE_H */

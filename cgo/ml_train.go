@@ -5,7 +5,7 @@ import "C"
 import (
 	"log"
 	"os"
-	"sync"
+	_ "sync"
 	"time"
 )
 
@@ -28,6 +28,10 @@ type MlConfig struct {
 	DiffN   int
 	SmoothN int
 	LagN    int
+
+	Localhost           RrdHost
+	AnomalyDetectionSet RrdSet
+	NvmeDim             RrdDim
 }
 
 func NewMlConfig() *MlConfig {
@@ -39,6 +43,13 @@ func NewMlConfig() *MlConfig {
 	mlc.DiffN = ConfigGetNum("ml", "num samples to diff", 1)
 	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
 	mlc.LagN = ConfigGetNum("ml", "num samples to lag", 5)
+
+	mlc.Localhost = NewLocalHost()
+	mlc.AnomalyDetectionSet = mlc.Localhost.CreateRrdSet(
+		"ml", "st_id", "anomaly_detection", "st_family",
+		"st_context", "st_title", "st_units", "st_plugin", "st_module",
+		1, 1,
+	)
 
 	return &mlc
 }
@@ -78,7 +89,7 @@ func (chart *MlChart) Train() bool {
 	}
 
 	res := set.GetResult(cfg.NumSamples)
-	if res == nil {
+	if res.c_res == nil {
 		log.Printf("Not training %s because it has empty result", chart.Name)
 		return false
 	}
@@ -113,7 +124,7 @@ func (chart *MlChart) Predict() bool {
 	}
 
 	res := set.GetResult(numSamples)
-	if res == nil {
+	if res.c_res == nil {
 		log.Printf("Not predicting %s because it has empty result", chart.Name)
 		return false
 	}
@@ -150,7 +161,7 @@ func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
 		log.Printf("Have %d charts\n", len(charts))
 
 		for _, chart := range charts {
-			if chart.Name != "system.cpu" {
+			if chart.Name != "disk.nvme0n1" {
 				continue
 			}
 
@@ -167,7 +178,7 @@ func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
 
 func GoMLPredict(cfg *MlConfig, charts map[string]*MlChart) {
 	for _ = range time.Tick(1 * time.Second) {
-		chart, ok := charts["system.cpu"]
+		chart, ok := charts["disk.nvme0n1"]
 		if !ok {
 			continue
 		}
@@ -183,14 +194,25 @@ func GoMLMain() {
 	fp := redirectLog("/tmp/go.log")
 	defer fp.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-
 	cfg := NewMlConfig()
-	charts := map[string]*MlChart{}
+	for _ = range time.Tick(5 * time.Second) {
+		log.Printf("hostname: %s\n", cfg.Localhost.HostName())
 
-	go func() { GoMLTrain(cfg, charts); wg.Done() }()
-	go func() { GoMLPredict(cfg, charts); wg.Done() }()
+		for idx, set := range cfg.Localhost.Sets() {
+			log.Printf("\t[%d] chart %s\n", idx, set.Name())
+		}
+	}
 
-	wg.Wait()
+	/*
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		cfg := NewMlConfig()
+		charts := map[string]*MlChart{}
+
+		go func() { GoMLTrain(cfg, charts); wg.Done() }()
+		go func() { GoMLPredict(cfg, charts); wg.Done() }()
+
+		wg.Wait()
+	*/
 }
