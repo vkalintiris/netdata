@@ -3,24 +3,14 @@ package main
 // #cgo LDFLAGS: -Wl,--unresolved-symbols=ignore-all
 // #include "bindings/cgo-rrd.h"
 import "C"
+import "unsafe"
 
-type RrdHost struct {
-	c_host C.RRDHOSTP
-}
+type RrdHost struct{ c_host C.RRDHOSTP }
+type RrdSet struct{ c_set C.RRDSETP }
+type RrdDim struct{ c_dim C.RRDDIMP }
+type RrdResult struct{ c_res C.RRDRP }
 
-type RrdSet struct {
-	c_set C.RRDSETP
-}
-
-type RrdDim struct {
-	c_dim C.RRDDIMP
-}
-
-type RrdResult struct {
-	c_res C.RRDRP
-}
-
-func NewLocalHost() RrdHost {
+func LocalHostRef() RrdHost {
 	return RrdHost{c_host: C.localhost}
 }
 
@@ -36,8 +26,58 @@ func (rh *RrdHost) UnLock() {
 	C.rrdhostp_unlock(rh.c_host)
 }
 
-func (rh *RrdHost) RootSet() RrdSet {
-	return RrdSet{c_set: C.rrdhostp_root_set(rh.c_host)}
+func (rh *RrdHost) Sets() []RrdSet {
+	rh.ReadLock()
+	defer rh.UnLock()
+
+	sets := []RrdSet{}
+	rs := RrdSet{c_set: C.rrdhostp_root_set(rh.c_host)}
+
+	for rs.c_set != nil {
+		sets = append(sets, rs)
+		rs = rs.NextSet()
+	}
+
+	return sets
+}
+
+func (rh *RrdHost) CreateRrdSet(
+	ty, id, name, family, context, title, units, plugin, module string,
+	priority, update_every int) RrdSet {
+	c_ty := C.CString(ty)
+	defer C.free(unsafe.Pointer(c_ty))
+
+	c_id := C.CString(id)
+	defer C.free(unsafe.Pointer(c_id))
+
+	c_name := C.CString(name)
+	defer C.free(unsafe.Pointer(c_name))
+
+	c_family := C.CString(family)
+	defer C.free(unsafe.Pointer(c_family))
+
+	c_context := C.CString(context)
+	defer C.free(unsafe.Pointer(c_context))
+
+	c_title := C.CString(title)
+	defer C.free(unsafe.Pointer(c_title))
+
+	c_units := C.CString(units)
+	defer C.free(unsafe.Pointer(c_units))
+
+	c_plugin := C.CString(plugin)
+	defer C.free(unsafe.Pointer(c_plugin))
+
+	c_module := C.CString(module)
+	defer C.free(unsafe.Pointer(c_module))
+
+	c_set := C.rrdsetp_create(
+		c_ty, c_id, c_name, c_family, c_context,
+		c_title, c_units, c_plugin, c_module,
+		C.long(priority), C.int(update_every),
+	)
+
+	return RrdSet{c_set: c_set}
 }
 
 func (rs *RrdSet) NextSet() RrdSet {
@@ -69,53 +109,16 @@ func (rs *RrdSet) GetResult(NumSamples int) RrdResult {
 	return RrdResult{c_res: c_res}
 }
 
+func (rs *RrdSet) AddDim(id string, name string) RrdDim {
+	return RrdDim{
+		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
+	}
+}
+
 func (res *RrdResult) NumRows() int {
 	return int(C.rrdrp_num_rows(res.c_res))
 }
 
 func (res *RrdResult) Free() {
 	C.rrdrp_free(res.c_res)
-}
-
-func (rh *RrdHost) Sets() []RrdSet {
-	rh.ReadLock()
-	defer rh.UnLock()
-
-	sets := []RrdSet{}
-	rs := rh.RootSet()
-
-	for rs.c_set != nil {
-		sets = append(sets, rs)
-		rs = rs.NextSet()
-	}
-
-	return sets
-}
-
-func (rh *RrdHost) CreateRrdSet(
-	ty, id, name, family, context, title, units, plugin, module string,
-	priority, update_every int) RrdSet {
-	c_ty := C.CString(ty)
-	c_id := C.CString(id)
-	c_name := C.CString(name)
-	c_family := C.CString(family)
-	c_context := C.CString(context)
-	c_title := C.CString(title)
-	c_units := C.CString(units)
-	c_plugin := C.CString(plugin)
-	c_module := C.CString(module)
-
-	c_set := C.rrdsetp_create(
-		c_ty, c_id, c_name, c_family, c_context,
-		c_title, c_units, c_plugin, c_module,
-		C.long(priority), C.int(update_every),
-	)
-
-	return RrdSet{c_set: c_set}
-}
-
-func (rs *RrdSet) AddDim(id string, name string) RrdDim {
-	return RrdDim{
-		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
-	}
 }

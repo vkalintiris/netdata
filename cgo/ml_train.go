@@ -44,7 +44,7 @@ func NewMlConfig() *MlConfig {
 	mlc.SmoothN = ConfigGetNum("ml", "num samples to smooth", 3)
 	mlc.LagN = ConfigGetNum("ml", "num samples to lag", 5)
 
-	mlc.Localhost = NewLocalHost()
+	mlc.Localhost = LocalHostRef()
 	mlc.AnomalyDetectionSet = mlc.Localhost.CreateRrdSet(
 		"ml", "st_id", "anomaly_detection", "st_family",
 		"st_context", "st_title", "st_units", "st_plugin", "st_module",
@@ -148,7 +148,7 @@ func GoMLTrain(cfg *MlConfig, charts map[string]*MlChart) {
 	for _ = range time.Tick(15 * time.Second) {
 		log.Printf("Loop start\n")
 
-		localhost := NewLocalHost()
+		localhost := LocalHostRef()
 		for _, set := range localhost.Sets() {
 			name := set.Name()
 
