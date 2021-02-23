@@ -10,6 +10,10 @@ type RrdSet struct{ c_set C.RRDSETP }
 type RrdDim struct{ c_dim C.RRDDIMP }
 type RrdResult struct{ c_res C.RRDRP }
 
+/*
+ * RRD Host
+ */
+
 func LocalHostRef() RrdHost {
 	return RrdHost{c_host: C.localhost}
 }
@@ -35,7 +39,7 @@ func (rh *RrdHost) Sets() []RrdSet {
 
 	for rs.c_set != nil {
 		sets = append(sets, rs)
-		rs = rs.NextSet()
+		rs = RrdSet{c_set: C.rrdsetp_next_set(rs.c_set)}
 	}
 
 	return sets
@@ -80,9 +84,9 @@ func (rh *RrdHost) CreateRrdSet(
 	return RrdSet{c_set: c_set}
 }
 
-func (rs *RrdSet) NextSet() RrdSet {
-	return RrdSet{c_set: C.rrdsetp_next_set(rs.c_set)}
-}
+/*
+ * RRD Set
+ */
 
 func (rs *RrdSet) Name() string {
 	return C.GoString(C.rrdsetp_name(rs.c_set))
@@ -104,15 +108,15 @@ func (rs *RrdSet) UnLock() {
 	C.rrdsetp_unlock(rs.c_set)
 }
 
-func (rs *RrdSet) GetResult(NumSamples int) RrdResult {
-	c_res := C.rrdrp_get(rs.c_set, C.int(NumSamples))
-	return RrdResult{c_res: c_res}
-}
-
 func (rs *RrdSet) AddDim(id string, name string) RrdDim {
 	return RrdDim{
 		c_dim: C.rrdsetp_add_dim(rs.c_set, C.CString(id), C.CString(name)),
 	}
+}
+
+func (rs *RrdSet) GetResult(NumSamples int) RrdResult {
+	c_res := C.rrdrp_get(rs.c_set, C.int(NumSamples))
+	return RrdResult{c_res: c_res}
 }
 
 func (res *RrdResult) NumRows() int {
