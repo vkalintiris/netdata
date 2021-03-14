@@ -99,6 +99,7 @@ dist_noinst_SCRIPTS = \
 # Compile netdata binaries
 
 SUBDIRS += \
+    ng/cgo \
     backends \
     collectors \
     daemon \
@@ -692,8 +693,14 @@ DAEMON_FILES = \
     daemon/unit_test.h \
     $(NULL)
 
+CGO_FILES = \
+    ng/cgo/cgo.h \
+    ng/cgo/cgo.c \
+    $(NULL)
+
 NETDATA_FILES = \
     collectors/all.h \
+    $(CGO_FILES) \
     $(DAEMON_FILES) \
     $(LIBNETDATA_FILES) \
     $(API_PLUGIN_FILES) \
@@ -762,17 +769,47 @@ NETDATACLI_FILES = \
     cli/cli.h \
     $(NULL)
 
-sbin_PROGRAMS += netdata
-netdata_SOURCES = $(NETDATA_FILES)
+noinst_LIBRARIES = ng/cgo/libndgo.a
+ng_cgo_libndgo_a_SOURCES = $(NETDATA_FILES)
 
+GO_FILES = \
+    ng/cgo/cgo.go \
+    ng/cmd/main.go \
+    $(NULL)
 
-netdata_LDADD = \
+EXTRA_DIST += \
+    go.mod \
+    $(GO_FILES) \
+    $(NULL)
+
+if ENABLE_CXX_LINKER
+    EXTLD = $(CXXLD)
+else
+    EXTLD = $(CCLD)
+endif
+
+netdata: ng/cgo/libndgo.a $(GO_FILES)
+	CGO_CFLAGS="$(CGO_COMPILER_FLAGS)" CGO_LDFLAGS="$(CGO_LINKER_FLAGS)" \
+    go build -a -x -ldflags="-extld=$(EXTLD)" -o netdata ng/cmd/main.go
+
+sbin_SCRIPTS = netdata
+
+CGO_COMPILER_FLAGS = \
+    $(DEFS) \
+	$(AM_CPPFLAGS) \
+	$(CPPFLAGS) \
+	$(CFLAGS) \
+	-Wno-all -Wno-extra \
+	$(NULL)
+
+CGO_LINKER_FLAGS = \
+    -L ng/cgo -lndgo \
     $(NETDATA_COMMON_LIBS) \
     $(NULL)
 
 if !ACLK_NG
 if ENABLE_ACLK
-netdata_LDADD += \
+CGO_LINKER_FLAGS += \
     $(abs_top_srcdir)/externaldeps/mosquitto/libmosquitto.a \
     $(OPTIONAL_LIBCAP_LIBS) \
     $(OPTIONAL_LWS_LIBS) \
@@ -780,12 +817,6 @@ netdata_LDADD += \
     $(NULL)
 endif #ENABLE_ACLK
 endif #ACLK_NG
-
-if ENABLE_CXX_LINKER
-    netdata_LINK = $(CXXLD) $(CXXFLAGS) $(LDFLAGS) -o $@
-else
-    netdata_LINK = $(CCLD) $(CFLAGS) $(LDFLAGS) -o $@
-endif
 
 sbin_PROGRAMS += netdatacli
 netdatacli_SOURCES = $(NETDATACLI_FILES)
@@ -876,23 +907,23 @@ if ENABLE_PLUGIN_SLABINFO
 endif
 
 if ENABLE_BACKEND_KINESIS
-    netdata_SOURCES += $(KINESIS_BACKEND_FILES) $(KINESIS_EXPORTING_FILES)
-    netdata_LDADD += $(OPTIONAL_KINESIS_LIBS)
+    ng_cgo_libndgo_a_SOURCES += $(KINESIS_BACKEND_FILES) $(KINESIS_EXPORTING_FILES)
+    CGO_LINKER_FLAGS += $(OPTIONAL_KINESIS_LIBS)
 endif
 
 if ENABLE_EXPORTING_PUBSUB
-    netdata_SOURCES += $(PUBSUB_EXPORTING_FILES)
-    netdata_LDADD += $(OPTIONAL_PUBSUB_LIBS)
+    ng_cgo_libndgo_a_SOURCES += $(PUBSUB_EXPORTING_FILES)
+    CGO_LINKER_FLAGS += $(OPTIONAL_PUBSUB_LIBS)
 endif
 
 if ENABLE_BACKEND_PROMETHEUS_REMOTE_WRITE
-    netdata_SOURCES += $(PROMETHEUS_REMOTE_WRITE_BACKEND_FILES) $(PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES)
-    netdata_LDADD += $(OPTIONAL_PROMETHEUS_REMOTE_WRITE_LIBS)
+    ng_cgo_libndgo_a_SOURCES += $(PROMETHEUS_REMOTE_WRITE_BACKEND_FILES) $(PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES)
+    CGO_LINKER_FLAGS += $(OPTIONAL_PROMETHEUS_REMOTE_WRITE_LIBS)
     BUILT_SOURCES = \
         exporting/prometheus/remote_write/remote_write.pb.cc \
         exporting/prometheus/remote_write/remote_write.pb.h \
         $(NULL)
-    nodist_netdata_SOURCES = $(BUILT_SOURCES)
+    nodist_ng_cgo_libndgo_a_SOURCES = $(BUILT_SOURCES)
 
 exporting/prometheus/remote_write/remote_write.pb.cc \
 exporting/prometheus/remote_write/remote_write.pb.h: exporting/prometheus/remote_write/remote_write.proto
@@ -901,8 +932,8 @@ exporting/prometheus/remote_write/remote_write.pb.h: exporting/prometheus/remote
 endif
 
 if ENABLE_BACKEND_MONGODB
-    netdata_SOURCES += $(MONGODB_BACKEND_FILES) $(MONGODB_EXPORTING_FILES)
-    netdata_LDADD += $(OPTIONAL_MONGOC_LIBS)
+    ng_cgo_libndgo_a_SOURCES += $(MONGODB_BACKEND_FILES) $(MONGODB_EXPORTING_FILES)
+    CGO_LINKER_FLAGS += $(OPTIONAL_MONGOC_LIBS)
 endif
 
 if ENABLE_UNITTESTS

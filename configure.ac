@@ -39,6 +39,7 @@ AC_PROG_CC
 AC_PROG_CC_C99
 AM_PROG_CC_C_O
 AC_PROG_CXX
+AC_PROG_RANLIB
 AC_PROG_INSTALL
 PKG_PROG_PKG_CONFIG
 AC_USE_SYSTEM_EXTENSIONS
@@ -1635,6 +1636,7 @@ AC_CONFIG_FILES([
     libnetdata/url/Makefile
     libnetdata/json/Makefile
     libnetdata/health/Makefile
+    ng/cgo/Makefile
     registry/Makefile
     streaming/Makefile
     system/Makefile

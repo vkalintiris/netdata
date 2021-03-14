@@ -297,13 +297,7 @@ struct option_def option_definitions[] = {
     { 'W', "See Advanced options below.",                 "options",     NULL},
 };
 
-int help(int exitcode) {
-    FILE *stream;
-    if(exitcode == 0)
-        stream = stdout;
-    else
-        stream = stderr;
-
+static void help(FILE *stream) {
     int num_opts = sizeof(option_definitions) / sizeof(struct option_def);
     int i;
     int max_len_arg = 0;
@@ -385,7 +379,6 @@ int help(int exitcode) {
     );
 
     fflush(stream);
-    return exitcode;
 }
 
 #ifdef ENABLE_HTTPS
@@ -707,7 +700,7 @@ void post_conf_load(char **user)
     appconfig_get(&cloud_config, CONFIG_SECTION_GLOBAL, "cloud base url", DEFAULT_CLOUD_BASE_URL);
 }
 
-int main(int argc, char **argv) {
+int cgo_main(int argc, char **argv) {
     int i;
     int config_loaded = 0;
     int dont_fork = 0;
@@ -722,7 +715,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], SPAWN_SERVER_COMMAND_LINE_ARGUMENT) == 0) {
         // don't run netdata, this is the spawn server
         spawn_server();
-        exit(0);
+        return CGO_MAIN_EXIT_SUCCESS;
     }
 
     // parse options
@@ -749,7 +742,7 @@ int main(int argc, char **argv) {
                 case 'c':
                     if(load_netdata_conf(optarg, 1) != 1) {
                         error("Cannot load configuration file %s.", optarg);
-                        return 1;
+                        return CGO_MAIN_EXIT_FAILURE;
                     }
                     else {
                         debug(D_OPTIONS, "Configuration loaded from %s.", optarg);
@@ -765,7 +758,8 @@ int main(int argc, char **argv) {
                     dont_fork = 0;
                     break;
                 case 'h':
-                    return help(0);
+                    help(stdout);
+                    return CGO_MAIN_EXIT_SUCCESS;
                 case 'i':
                     config_set(CONFIG_SECTION_WEB, "bind to", optarg);
                     break;
@@ -788,7 +782,7 @@ int main(int argc, char **argv) {
                 case 'v':
                 case 'V':
                     printf("%s %s\n", program_name, program_version);
-                    return 0;
+                    return CGO_MAIN_EXIT_SUCCESS;
                 case 'W':
                     {
                         char* stacksize_string = "stacksize=";
@@ -800,8 +794,12 @@ int main(int argc, char **argv) {
 #endif
 
                         if(strcmp(optarg, "unittest") == 0) {
-                            if(unit_test_buffer()) return 1;
-                            if(unit_test_str2ld()) return 1;
+                            if(unit_test_buffer())
+                                return CGO_MAIN_EXIT_FAILURE;
+
+                            if(unit_test_str2ld())
+                                return CGO_MAIN_EXIT_FAILURE;
+
                             // No call to load the config file on this code-path
                             post_conf_load(&user);
                             get_netdata_configured_variables();
@@ -809,25 +807,32 @@ int main(int argc, char **argv) {
                             default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
                             default_health_enabled = 0;
                             registry_init();
+
                             if(rrd_init("unittest", NULL)) {
                                 fprintf(stderr, "rrd_init failed for unittest\n");
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
+
                             default_rrdpush_enabled = 0;
-                            if(run_all_mockup_tests()) return 1;
-                            if(unit_test_storage()) return 1;
+
+                            if(run_all_mockup_tests())
+                                return CGO_MAIN_EXIT_FAILURE;
+
+                            if(unit_test_storage())
+                                return CGO_MAIN_EXIT_FAILURE;
 #ifdef ENABLE_DBENGINE
-                            if(test_dbengine()) return 1;
+                            if(test_dbengine())
+                                return CGO_MAIN_EXIT_FAILURE;
 #endif
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
 #ifdef ENABLE_DBENGINE
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);
                             unsigned history_seconds = strtoul(optarg, NULL, 0);
                             generate_dbengine_dataset(history_seconds);
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
                         else if(strncmp(optarg, stresstest_string, strlen(stresstest_string)) == 0) {
                             char *endptr;
@@ -849,7 +854,7 @@ int main(int argc, char **argv) {
 
                             dbengine_stress_test(test_duration_sec, dset_charts, query_threads, ramp_up_seconds,
                                                  page_cache_mb, disk_space_mb);
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
 #endif
                         else if(strcmp(optarg, "simple-pattern") == 0) {
@@ -874,7 +879,7 @@ int main(int argc, char **argv) {
                                         "   -W simple-pattern '!/path/*/*.ext /path/*.ext' '/path/test.ext'\n"
                                         "\n"
                                 );
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
 
                             const char *haystack = argv[optind];
@@ -888,11 +893,11 @@ int main(int argc, char **argv) {
 
                             if(ret) {
                                 fprintf(stdout, "RESULT: MATCHED - pattern '%s' matches '%s', wildcarded '%s'\n", haystack, needle, wildcarded);
-                                return 0;
+                                return CGO_MAIN_EXIT_SUCCESS;
                             }
                             else {
                                 fprintf(stdout, "RESULT: NOT MATCHED - pattern '%s' does not match '%s', wildcarded '%s'\n", haystack, needle, wildcarded);
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
                         }
                         else if(strncmp(optarg, stacksize_string, strlen(stacksize_string)) == 0) {
@@ -918,7 +923,7 @@ int main(int argc, char **argv) {
                                         " parameters."
                                         "\n"
                                 );
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
                             const char *section = argv[optind];
                             const char *key = argv[optind + 1];
@@ -949,7 +954,7 @@ int main(int argc, char **argv) {
                                         " conf_file can be \"cloud\" or \"netdata\".\n"
                                         "\n"
                                 );
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
                             const char *conf_file = argv[optind]; /* "cloud" is cloud.conf, otherwise netdata.conf */
                             struct config *tmp_config = strcmp(conf_file, "cloud") ? &netdata_config : &cloud_config;
@@ -976,7 +981,7 @@ int main(int argc, char **argv) {
                                         " -c netdata.conf has to be given before -W get.\n"
                                         "\n"
                                 );
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
 
                             if(!config_loaded) {
@@ -992,7 +997,7 @@ int main(int argc, char **argv) {
                             const char *def = argv[optind + 2];
                             const char *value = config_get(section, key, def);
                             printf("%s\n", value);
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
                         else if(strcmp(optarg, "get2") == 0) {
                             if(optind + 4 > argc) {
@@ -1004,7 +1009,7 @@ int main(int argc, char **argv) {
                                         " conf_file can be \"cloud\" or \"netdata\".\n"
                                         "\n"
                                 );
-                                return 1;
+                                return CGO_MAIN_EXIT_FAILURE;
                             }
 
                             if(!config_loaded) {
@@ -1023,7 +1028,7 @@ int main(int argc, char **argv) {
                             const char *def = argv[optind + 3];
                             const char *value = appconfig_get(tmp_config, section, key, def);
                             printf("%s\n", value);
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
                         else if(strncmp(optarg, claim_string, strlen(claim_string)) == 0) {
                             /* will trigger a claiming attempt when the agent is initialized */
@@ -1032,22 +1037,24 @@ int main(int argc, char **argv) {
                         else if(strcmp(optarg, "buildinfo") == 0) {
                             printf("Version: %s %s\n", program_name, program_version);
                             print_build_info();
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
                         else if(strcmp(optarg, "buildinfojson") == 0) {
                             print_build_info_json();
-                            return 0;
+                            return CGO_MAIN_EXIT_SUCCESS;
                         }
                         else {
                             fprintf(stderr, "Unknown -W parameter '%s'\n", optarg);
-                            return help(1);
+                            help(stderr);
+                            return CGO_MAIN_EXIT_FAILURE;
                         }
                     }
                     break;
 
                 default: /* ? */
                     fprintf(stderr, "Unknown parameter '%c'\n", opt);
-                    return help(1);
+                    help(stderr);
+                    return CGO_MAIN_EXIT_FAILURE;
             }
         }
     }
@@ -1331,12 +1338,6 @@ int main(int argc, char **argv) {
 
     signals_unblock();
 
-    // ------------------------------------------------------------------------
-    // Handle signals
-
-    signals_handle();
-
-    // should never reach this point
-    // but we need it for rpmlint #2752
-    return 1;
+    // return to Go runtime.
+    return CGO_MAIN_BLOCK;
 }
