@@ -35,7 +35,8 @@ void Host::updateCharts() {
         if (It == ChartsMap.end())
             ChartsMap[RS] = new Chart(RS);
 
-        ChartsMap[RS]->updateUnits();
+        ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
+                                   Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     }
 
     rrdhost_unlock(RH);

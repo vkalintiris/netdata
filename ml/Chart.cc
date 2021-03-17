@@ -65,7 +65,8 @@ void Chart::updateMLChart() {
 /*
  * Update the units referenced by the chart.
  */
-void Chart::updateUnits() {
+void Chart::updateUnits(time_t TrainSecs, time_t TrainEvery,
+                        unsigned DiffN, unsigned SmoothN, unsigned LagN) {
     RRDDIM *RD;
 
     netdata_rwlock_wrlock(&UnitsLock);
@@ -81,8 +82,8 @@ void Chart::updateUnits() {
 
         std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);
         if (It == UnitsMap.end())
-            UnitsMap[RD] = new Unit(RD, Cfg.TrainSecs, Cfg.TrainEvery,
-                                    Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+            UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery,
+                                    DiffN, SmoothN, LagN);
     }
 
     rrdset_unlock(RS);
