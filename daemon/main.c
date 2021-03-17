@@ -239,7 +239,7 @@ void cancel_main_threads() {
     error_log_limit_unlimited();
 
     int i, found = 0;
-    usec_t max = 5 * USEC_PER_SEC, step = 100000;
+    usec_t max = 30 * USEC_PER_SEC, step = 100000;
     for (i = 0; static_threads[i].name != NULL ; i++) {
         if(static_threads[i].enabled == NETDATA_MAIN_THREAD_RUNNING) {
             info("EXIT: Stopping main thread: %s", static_threads[i].name);
