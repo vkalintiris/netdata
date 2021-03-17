@@ -31,7 +31,7 @@ void ml_init(void) {
 
     Cfg.DisablePredictionThread = config_get_number(CONFIG_SECTION_ML, "disable prediction thread", 0);
 
-    netdata_rwlock_init(&Cfg.ChartsMapLock);
+    netdata_rwlock_init(&Cfg.HostsLock);
 
     Cfg.Initialized = true;
 }

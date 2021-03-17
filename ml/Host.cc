@@ -10,7 +10,7 @@ using namespace ml;
 void Host::updateCharts() {
     RRDSET *RS;
 
-    netdata_rwlock_wrlock(&Cfg.ChartsMapLock);
+    wrLock();
     rrdhost_rdlock(RH);
 
     rrdset_foreach_read(RS, RH) {
@@ -40,5 +40,5 @@ void Host::updateCharts() {
     }
 
     rrdhost_unlock(RH);
-    netdata_rwlock_unlock(&Cfg.ChartsMapLock);
+    unLock();
 }

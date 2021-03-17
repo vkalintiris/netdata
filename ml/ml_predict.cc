@@ -16,43 +16,45 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
-    Host H = Host(localhost, Cfg.ChartsMap);
+    std::map<RRDHOST *, Host *> &Hosts = Cfg.Hosts;
 
     while (!netdata_exit) {
-        struct timeval BTV, ETV;
+        netdata_rwlock_rdlock(&Cfg.HostsLock);
+        for (auto &P : Hosts) {
+            unsigned NumPredicted = 0, NumUnits = 0;
 
-        now_monotonic_high_precision_timeval(&BTV);
+            struct timeval BTV, ETV;
+            now_monotonic_high_precision_timeval(&BTV);
 
-        unsigned NumPredicted = 0, NumUnits = 0;
+            Host *H = P.second;
+            H->rdLock();
+            for (auto &P : H->ChartsMap) {
+                Chart *C = P.second;
 
-        netdata_rwlock_rdlock(&Cfg.ChartsMapLock);
+                for (auto &P : C->UnitsMap) {
+                    Unit *U = P.second;
 
-        for (auto &P : H.ChartsMap) {
-            Chart *C = P.second;
+                    NumUnits++;
 
-            for (auto &P : C->UnitsMap) {
-                Unit *U = P.second;
+                    if (U->rdTryLock())
+                        continue;
 
-                NumUnits++;
+                    if (U->predict())
+                        NumPredicted++;
 
-                if (U->rdTryLock())
-                    continue;
+                    U->unLock();
+                }
 
-                if (U->predict())
-                    NumPredicted++;
-
-                U->unLock();
+                C->updateMLChart();
             }
+            H->unLock();
 
-            C->updateMLChart();
+            now_monotonic_high_precision_timeval(&ETV);
+
+            info("Predicted %u/%u units in %llu usec", NumPredicted, NumUnits,
+                 dt_usec(&ETV, &BTV));
         }
-
-        netdata_rwlock_unlock(&Cfg.ChartsMapLock);
-
-        now_monotonic_high_precision_timeval(&ETV);
-
-        info("Predicted %u/%u units in %llu usec", NumPredicted, NumUnits,
-             dt_usec(&ETV, &BTV));
+        netdata_rwlock_unlock(&Cfg.HostsLock);
 
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
     }

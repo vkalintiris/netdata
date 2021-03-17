@@ -7,13 +7,14 @@
 
 namespace ml {
 
-class Chart;
+class Host;
 
 /*
  * Global configuration shared between the prediction and the training
  * threads.
  */
-struct Config {
+class Config {
+public:
     // Time window over which we should train our models.
     time_t TrainSecs;
 
@@ -25,13 +26,11 @@ struct Config {
     unsigned SmoothN;
     unsigned LagN;
 
-    // Every RRD set is mapped to a chart that will train each dimension
-    // and commit the anomaly scores in a new RRD set.
-    std::map<RRDSET *, Chart *> ChartsMap;
+    // List of hosts that we want to train/predict.
+    std::map<RRDHOST *, Host *> Hosts;
 
-    // Lock to allow prediction/training threads to iterate the charts map
-    // safely.
-    netdata_rwlock_t ChartsMapLock;
+    // Lock to allow safe access to list of hosts between training/prediction thread.
+    netdata_rwlock_t HostsLock;
 
     // Set of anomaly score sets.
     std::set<RRDSET *> MLSets;
@@ -43,6 +42,8 @@ struct Config {
     bool DisablePredictionThread;
 
     bool Initialized;
+
+    void updateHosts();
 };
 
 extern Config Cfg;

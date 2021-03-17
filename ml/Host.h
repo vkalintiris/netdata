@@ -9,14 +9,21 @@ namespace ml {
 
 class Host {
 public:
-    Host(RRDHOST *RH, std::map<RRDSET *, Chart *> &ChartsMap)
-        : RH(RH), ChartsMap(ChartsMap) {};
+    Host(RRDHOST *RH) : RH(RH) {
+        netdata_rwlock_init(&RWLock);
+    };
 
     void updateCharts();
 
+    void rdLock() { netdata_rwlock_rdlock(&RWLock); }
+    void wrLock() { netdata_rwlock_wrlock(&RWLock); }
+    void unLock() { netdata_rwlock_unlock(&RWLock); }
+
 public:
     RRDHOST *RH;
-    std::map<RRDSET *, Chart *> &ChartsMap;
+
+    std::map<RRDSET *, Chart *> ChartsMap;
+    netdata_rwlock_t RWLock;
 };
 
 };

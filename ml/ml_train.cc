@@ -18,32 +18,36 @@ void trainMain(struct netdata_static_thread *Thread) {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
-    Host H = Host(localhost, Cfg.ChartsMap);
-
     while (!netdata_exit) {
-        H.updateCharts();
+        Cfg.updateHosts();
 
-        unsigned NumTrainedUnits = 0;
+        for (auto &P : Cfg.Hosts) {
+            Host *H = P.second;
 
-        for (auto &P: H.ChartsMap) {
-            Chart *C = P.second;
+            H->updateCharts();
 
-            for (auto &P : C->UnitsMap) {
-                Unit *U = P.second;
+            unsigned NumTrainedUnits = 0;
 
-                if (!U->shouldTrain())
-                    continue;
+            for (auto &P: H->ChartsMap) {
+                Chart *C = P.second;
 
-                U->wrLock();
-                if (U->train())
-                    NumTrainedUnits++;
-                U->unLock();
+                for (auto &P : C->UnitsMap) {
+                    Unit *U = P.second;
+
+                    if (!U->shouldTrain())
+                        continue;
+
+                    U->wrLock();
+                    if (U->train())
+                        NumTrainedUnits++;
+                    U->unLock();
+                }
             }
+
+            info("Units trained on : %u", NumTrainedUnits);
+
+            heartbeat_next(&HB, 10 * USEC_PER_SEC);
         }
-
-        info("Units trained: %u", NumTrainedUnits);
-
-        heartbeat_next(&HB, 10 * USEC_PER_SEC);
     }
 
     netdata_thread_cleanup_pop(1);
