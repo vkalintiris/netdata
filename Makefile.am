@@ -239,6 +239,11 @@ HEALTH_PLUGIN_FILES = \
 
 ML_FILES = \
 	ml/ml.h \
+	ml/Chart.h \
+	ml/Config.h \
+	ml/Host.h \
+	ml/Unit.h \
+	ml/Window.h \
 	ml/ml-private.h \
 	ml/ml_train.cc \
 	ml/ml_predict.cc \
