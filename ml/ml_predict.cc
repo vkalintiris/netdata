@@ -19,6 +19,10 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     Host H = Host(localhost, Cfg.ChartsMap);
 
     while (!netdata_exit) {
+        struct timeval BTV, ETV;
+
+        now_monotonic_high_precision_timeval(&BTV);
+
         unsigned NumPredicted = 0, NumUnits = 0;
 
         netdata_rwlock_rdlock(&Cfg.ChartsMapLock);
@@ -45,7 +49,10 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
 
         netdata_rwlock_unlock(&Cfg.ChartsMapLock);
 
-        info("Predicted %u/%u units", NumPredicted, NumUnits);
+        now_monotonic_high_precision_timeval(&ETV);
+
+        info("Predicted %u/%u units in %llu usec", NumPredicted, NumUnits,
+             dt_usec(&ETV, &BTV));
 
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
     }
