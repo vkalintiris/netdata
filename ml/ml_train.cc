@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
+#include "Database.h"
+#include "Host.h"
+#include "Chart.h"
+#include "Unit.h"
 
 static void cleanupTrainThread(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
@@ -15,35 +19,12 @@ namespace ml {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    heartbeat_t HB;
-    heartbeat_init(&HB);
-
-    Host H = Host(localhost, Cfg.ChartsMap);
+    size_t LoopCounter = 1;
 
     while (!netdata_exit) {
-        H.updateCharts();
-
-        unsigned NumTrainedUnits = 0;
-
-        for (auto &P: H.ChartsMap) {
-            Chart *C = P.second;
-
-            for (auto &P : C->UnitsMap) {
-                Unit *U = P.second;
-
-                if (!U->shouldTrain())
-                    continue;
-
-                U->wrLock();
-                if (U->train())
-                    NumTrainedUnits++;
-                U->unLock();
-            }
-        }
-
-        info("Units trained: %u", NumTrainedUnits);
-
-        heartbeat_next(&HB, 10 * USEC_PER_SEC);
+        info("[%zu] Training loop start", LoopCounter);
+        DB.trainUnits();
+        info("[%zu] Training loop end", LoopCounter++);
     }
 
     netdata_thread_cleanup_pop(1);
