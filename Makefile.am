@@ -240,10 +240,14 @@ HEALTH_PLUGIN_FILES = \
 ML_FILES = \
 	ml/ml.h \
 	ml/Chart.h \
+	ml/Chart.cc \
 	ml/Config.h \
 	ml/Host.h \
+	ml/Host.cc \
 	ml/Unit.h \
+	ml/Unit.cc \
 	ml/Window.h \
+	ml/Window.cc \
 	ml/ml-private.h \
 	ml/ml_train.cc \
 	ml/ml_predict.cc \

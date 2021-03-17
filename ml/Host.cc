@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "ml-private.h"
+
+using namespace ml;
+
+/*
+ * Update the charts referenced by the host.
+ */
+void Host::updateCharts() {
+    RRDSET *RS;
+
+    netdata_rwlock_wrlock(&Cfg.ChartsMapLock);
+    rrdhost_rdlock(RH);
+
+    rrdset_foreach_read(RS, RH) {
+        if (RS->update_every != 1)
+            continue;
+
+        if (Cfg.MLSets.count(RS))
+            continue;
+
+        if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
+            continue;
+
+        bool IsObsolete = rrdset_flag_check(RS, RRDSET_FLAG_ARCHIVED) ||
+            rrdset_flag_check(RS, RRDSET_FLAG_OBSOLETE);
+
+        if (IsObsolete) {
+            ChartsMap.erase(RS);
+            continue;
+        }
+
+        std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
+        if (It == ChartsMap.end())
+            ChartsMap[RS] = new Chart(RS);
+
+        ChartsMap[RS]->updateUnits();
+    }
+
+    rrdhost_unlock(RH);
+    netdata_rwlock_unlock(&Cfg.ChartsMapLock);
+}
