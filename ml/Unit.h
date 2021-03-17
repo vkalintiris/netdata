@@ -12,9 +12,13 @@ namespace ml {
 */
 class Unit {
 public:
-    Unit(RRDDIM *RD) :
-        RD(RD), MLRD(nullptr), KM(KMeans()), AnomalyScore(0.0),
-        LastTrainedAt(now_realtime_sec() + Cfg.TrainSecs) {
+    Unit(RRDDIM *RD, time_t TrainSecs, time_t TrainEvery,
+         unsigned DiffN, unsigned SmoothN, unsigned LagN) :
+        RD(RD), TrainSecs(TrainSecs), TrainEvery(TrainEvery),
+        DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
+        MLRD(nullptr),
+        KM(KMeans()), AnomalyScore(0.0),
+        LastTrainedAt(now_realtime_sec() + TrainSecs) {
         netdata_rwlock_init(&RwLock);
 
         std::stringstream SS;
@@ -40,7 +44,7 @@ public:
     };
 
     bool shouldTrain() const {
-        return LastTrainedAt + Cfg.TrainEvery < now_realtime_sec();
+        return (LastTrainedAt + TrainEvery) < now_realtime_sec();
     }
 
     bool operator<(const Unit& RHS) const {
@@ -93,6 +97,14 @@ public:
 
 private:
     RRDDIM *RD;
+
+    time_t TrainSecs;
+    time_t TrainEvery;
+
+    unsigned DiffN;
+    unsigned SmoothN;
+    unsigned LagN;
+
     RRDDIM *MLRD;
 
     KMeans KM;

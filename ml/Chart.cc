@@ -81,7 +81,8 @@ void Chart::updateUnits() {
 
         std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);
         if (It == UnitsMap.end())
-            UnitsMap[RD] = new Unit(RD);
+            UnitsMap[RD] = new Unit(RD, Cfg.TrainSecs, Cfg.TrainEvery,
+                                    Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     }
 
     rrdset_unlock(RS);

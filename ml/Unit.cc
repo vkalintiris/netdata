@@ -8,7 +8,7 @@ using namespace ml;
  * Run KMeans on the unit.
  */
 bool ml::Unit::train() {
-    unsigned NumSamples = Cfg.TrainEvery / updateEvery();
+    unsigned NumSamples = TrainEvery / updateEvery();
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
@@ -20,7 +20,7 @@ bool ml::Unit::train() {
         Trained = false;
     } else {
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
-                                         Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+                                         DiffN, SmoothN, LagN);
         KM.train(SB);
         Trained = true;
     }
@@ -36,7 +36,7 @@ bool ml::Unit::predict() {
     if (!Trained)
         return false;
 
-    unsigned NumSamples = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
+    unsigned NumSamples = DiffN + SmoothN + LagN;
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
@@ -46,7 +46,7 @@ bool ml::Unit::predict() {
         Predicted = false;
     } else {
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
-                                         Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+                                         DiffN, SmoothN, LagN);
 
         // Waiting for the next iteration is fine.
         AnomalyScore = KM.anomalyScore(SB);
