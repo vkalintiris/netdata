@@ -90,8 +90,6 @@ CalculatedNumber *ml::Window::getCalculatedNumbers() {
 
     unsigned Idx = 0;
 
-    std::stringstream SS;
-
     Ops->init(RD, &Handle, AfterT, BeforeT);
     while (!Ops->is_finished(&Handle)) {
         time_t CurrT;
