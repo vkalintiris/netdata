@@ -43,10 +43,6 @@ public:
         return RD->update_every;
     };
 
-    bool shouldTrain() const {
-        return (LastTrainedAt + TrainEvery) < now_realtime_sec();
-    }
-
     bool operator<(const Unit& RHS) const {
         return RD < RHS.RD;
     }
@@ -58,9 +54,6 @@ public:
     bool operator!=(const Unit& RHS) const {
         return RD == RHS.RD;
     }
-
-    bool train();
-    bool predict();
 
     CalculatedNumber getAnomalyScore() const {
         return AnomalyScore;
@@ -94,6 +87,12 @@ public:
         if (rrddim_flag_check(RD, RRDDIM_FLAG_HIDDEN))
             rrddim_flag_set(MLRD, RRDDIM_FLAG_HIDDEN);
     };
+
+    bool shouldTrain() const;
+
+    bool train();
+
+    bool predict();
 
 private:
     RRDDIM *RD;

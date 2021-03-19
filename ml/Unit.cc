@@ -4,10 +4,21 @@
 
 using namespace ml;
 
+bool Unit::shouldTrain() const {
+    return (LastTrainedAt + TrainEvery) < now_realtime_sec();
+}
+
 /*
  * Run KMeans on the unit.
  */
 bool ml::Unit::train() {
+    if (!shouldTrain())
+        return false;
+
+    info("Training dim %s\n", c_uid());
+
+    wrLock();
+
     unsigned NumSamples = TrainEvery / updateEvery();
 
     Window W = Window(this, NumSamples);
@@ -24,6 +35,8 @@ bool ml::Unit::train() {
         KM.train(SB);
         Trained = true;
     }
+
+    unLock();
 
     delete[] CNs;
     return Trained;

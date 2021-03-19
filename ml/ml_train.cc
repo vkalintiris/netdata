@@ -23,31 +23,20 @@ void trainMain(struct netdata_static_thread *Thread) {
 
         for (auto &P : Cfg.Hosts) {
             Host *H = P.second;
-
             H->updateCharts();
-
-            unsigned NumTrainedUnits = 0;
 
             for (auto &P: H->ChartsMap) {
                 Chart *C = P.second;
 
                 for (auto &P : C->UnitsMap) {
                     Unit *U = P.second;
-
-                    if (!U->shouldTrain())
-                        continue;
-
-                    U->wrLock();
-                    if (U->train())
-                        NumTrainedUnits++;
-                    U->unLock();
+                    U->train();
                 }
             }
 
-            info("Units trained on : %u", NumTrainedUnits);
-
-            heartbeat_next(&HB, 10 * USEC_PER_SEC);
         }
+
+        heartbeat_next(&HB, 10 * USEC_PER_SEC);
     }
 
     netdata_thread_cleanup_pop(1);

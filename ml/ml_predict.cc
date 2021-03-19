@@ -19,6 +19,9 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     std::map<RRDHOST *, Host *> &Hosts = Cfg.Hosts;
 
     while (!netdata_exit) {
+        heartbeat_next(&HB, 1 * USEC_PER_SEC);
+        continue;
+
         netdata_rwlock_rdlock(&Cfg.HostsLock);
         for (auto &P : Hosts) {
             unsigned NumPredicted = 0, NumUnits = 0;
