@@ -33,7 +33,6 @@ void trainMain(struct netdata_static_thread *Thread) {
                     U->train();
                 }
             }
-
         }
 
         heartbeat_next(&HB, 10 * USEC_PER_SEC);
