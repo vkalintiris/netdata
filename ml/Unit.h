@@ -7,6 +7,8 @@
 
 namespace ml {
 
+static unsigned Counter = 0;
+
 /*
  * A ML unit wraps the pointer to the dimension that we want to train/predict.
 */
@@ -17,9 +19,12 @@ public:
         RD(RD), TrainSecs(TrainSecs), TrainEvery(TrainEvery),
         DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
         MLRD(nullptr),
-        KM(KMeans()), AnomalyScore(0.0),
-        LastTrainedAt(now_realtime_sec() + TrainSecs) {
+        KM(KMeans()), AnomalyScore(0.0) {
         netdata_rwlock_init(&RwLock);
+
+        Counter += 1;
+        Counter %= TrainEvery;
+        LastTrainedAt = now_realtime_sec() + TrainSecs + Counter;
 
         std::stringstream SS;
         SS << RD->rrdset->id << "." << RD->id;
