@@ -17,8 +17,8 @@ void ml_init(void) {
     if (Cfg.Initialized)
         return;
 
-    Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 10 * 60);
-    Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 2 * 60);
+    Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60);
+    Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60);
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
