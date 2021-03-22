@@ -19,7 +19,7 @@ bool ml::Unit::train() {
 
     wrLock();
 
-    unsigned NumSamples = TrainEvery / updateEvery();
+    unsigned NumSamples = TrainSecs / updateEvery();
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
