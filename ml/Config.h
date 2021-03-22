@@ -43,7 +43,10 @@ public:
 
     bool Initialized;
 
+    size_t NumUnits;
+
     void updateHosts();
+
 };
 
 extern Config Cfg;

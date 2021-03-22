@@ -9,7 +9,7 @@ namespace ml {
 
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH) {
+    Host(RRDHOST *RH) : RH(RH), NumUnits(0) {
         netdata_rwlock_init(&RWLock);
     };
 
@@ -19,8 +19,11 @@ public:
     void wrLock() { netdata_rwlock_wrlock(&RWLock); }
     void unLock() { netdata_rwlock_unlock(&RWLock); }
 
+    size_t numUnits() const { return NumUnits; }
+
 public:
     RRDHOST *RH;
+    size_t NumUnits;
 
     std::map<RRDSET *, Chart *> ChartsMap;
     netdata_rwlock_t RWLock;

@@ -13,8 +13,11 @@ public:
         netdata_rwlock_init(&UnitsLock);
     }
 
+    size_t numUnits() const { return UnitsMap.size(); }
+
     void updateUnits(time_t TrainSecs, time_t TrainEvery,
                      unsigned DiffN, unsigned SmoothN, unsigned LagN);
+
     void updateMLChart();
 
 public:

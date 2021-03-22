@@ -13,6 +13,8 @@ void Host::updateCharts() {
     wrLock();
     rrdhost_rdlock(RH);
 
+    NumUnits = 0;
+
     rrdset_foreach_read(RS, RH) {
         if (RS->update_every != 1)
             continue;
@@ -37,6 +39,8 @@ void Host::updateCharts() {
 
         ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
                                    Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+
+        NumUnits += ChartsMap[RS]->numUnits();
     }
 
     rrdhost_unlock(RH);
