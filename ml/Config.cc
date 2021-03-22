@@ -11,7 +11,6 @@ void Config::updateHosts() {
     rrd_rdlock();
 
     NumUnits = 0;
-
     rrdhost_foreach_read(RH) {
         if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED))
             continue;
@@ -20,6 +19,7 @@ void Config::updateHosts() {
         if (It == Cfg.Hosts.end())
             Cfg.Hosts[RH] = new Host(RH);
 
+        Cfg.Hosts[RH]->updateCharts();
         NumUnits += Cfg.Hosts[RH]->numUnits();
     }
 

@@ -39,7 +39,6 @@ void Host::updateCharts() {
 
         ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
                                    Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-
         NumUnits += ChartsMap[RS]->numUnits();
     }
 

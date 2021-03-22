@@ -18,18 +18,21 @@ void trainMain(struct netdata_static_thread *Thread) {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
+
     while (!netdata_exit) {
         Cfg.updateHosts();
 
+        info("Num Units: %zu", Cfg.NumUnits);
+
         for (auto &P : Cfg.Hosts) {
             Host *H = P.second;
-            H->updateCharts();
 
             for (auto &P: H->ChartsMap) {
                 Chart *C = P.second;
 
                 for (auto &P : C->UnitsMap) {
                     Unit *U = P.second;
+
                     U->train();
                 }
             }
