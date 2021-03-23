@@ -145,7 +145,7 @@ CalculatedNumber *ml::Window::getCalculatedNumbers() {
  * Run KMeans on the unit.
  */
 bool ml::Unit::train() {
-    unsigned NumSamples = Cfg.TrainEvery / updateEvery();
+    unsigned NumSamples = Cfg.TrainSecs / updateEvery();
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
