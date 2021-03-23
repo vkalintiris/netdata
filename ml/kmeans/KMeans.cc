@@ -43,7 +43,7 @@ CalculatedNumber KMeans::anomalyScore(SamplesBuffer &SB) {
     if (MaxDist == MinDist)
         return 0.0;
 
-    CalculatedNumber AnomalyScore = std::abs((MeanDist - MinDist) / (MaxDist - MinDist));
+    CalculatedNumber AnomalyScore = 100.0 * std::abs((MeanDist - MinDist) / (MaxDist - MinDist));
     return (AnomalyScore > 100.0) ? 100.0 : AnomalyScore;
 }
 
