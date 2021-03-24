@@ -4,6 +4,7 @@
 #define ML_PRIVATE_H
 
 #include "kmeans/KMeans.h"
+#include "spdr/spdr.hh"
 
 #include <algorithm>
 #include <cmath>

@@ -259,6 +259,10 @@ ML_FILES = \
 	ml/kmeans/KMeans.h \
 	$(NULL)
 
+UU_SPDR_FILES = \
+	uu.spdr/src/spdr_linux_unit.c \
+	$(NULL)
+
 IDLEJITTER_PLUGIN_FILES = \
     collectors/idlejitter.plugin/plugin_idlejitter.c \
     collectors/idlejitter.plugin/plugin_idlejitter.h \
@@ -714,6 +718,7 @@ NETDATA_FILES = \
     $(PARSER_FILES) \
     $(ACLK_FILES) \
     $(SPAWN_PLUGIN_FILES) \
+	$(UU_SPDR_FILES) \
     $(NULL)
 
 if FREEBSD
