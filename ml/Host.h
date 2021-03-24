@@ -13,6 +13,14 @@ public:
         netdata_rwlock_init(&RWLock);
     };
 
+    std::string uid() const {
+        return RH->hostname;
+    }
+
+    const char *c_uid() const {
+        return RH->hostname;
+    }
+
     void updateCharts();
 
     void rdLock() { netdata_rwlock_rdlock(&RWLock); }

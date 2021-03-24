@@ -47,6 +47,8 @@ void trainMain(struct netdata_static_thread *Thread) {
         for (auto &HP : Cfg.Hosts) {
             Host *H = HP.second;
 
+            info("Processing %zu units on host %s", H->numUnits(), H->c_uid());
+
             // For each chart
             for (auto &CP: H->ChartsMap) {
                 Chart *C = CP.second;
@@ -61,7 +63,7 @@ void trainMain(struct netdata_static_thread *Thread) {
                     if (TimeSpentTraining < UpdateHostsEvery && !netdata_exit)
                         TimeSpentTraining += processUnit(U, HB);
 
-                    info("TimeSpentTraining: %lld", TimeSpentTraining);
+                    info("[%s] TimeSpentTraining: %lld", H->c_uid(), TimeSpentTraining);
                 }
             }
         }

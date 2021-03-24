@@ -17,15 +17,15 @@ void ml_init(void) {
     if (Cfg.Initialized)
         return;
 
-    Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60);
-    Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60);
+    Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60);
+    Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60);
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
     Cfg.LagN = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
 
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML,
-            "charts to skip from training", "!*");
+            "charts to skip from training", "!system.cpu *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(
             ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
