@@ -15,6 +15,10 @@ class Host;
  */
 class Config {
 public:
+    std::vector<char> *Buffer;
+    struct SPDR_Context *SPDR;
+    std::ofstream LogFp;
+
     // Time window over which we should train our models.
     time_t TrainSecs;
 

@@ -2,11 +2,22 @@
 
 #include "ml-private.h"
 
+static void dumpSpdr(const char *string, void *user_data) {
+    (void) user_data;
+
+    ml::Cfg.LogFp << string << std::endl;
+}
+
+
 static void cleanupTrainThread(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
 
     thr->enabled = NETDATA_MAIN_THREAD_EXITING;
     info("Cleaning up train thread");
+
+    spdr_report(ml::Cfg.SPDR, SPDR_CHROME_REPORT, dumpSpdr, nullptr);
+    ml::Cfg.LogFp.close();
+
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
@@ -22,8 +33,11 @@ usec_t processUnit(Unit *U, heartbeat_t &HB) {
     usec_t Duration = dt_usec(&BTV, &ETV);
     usec_t UsecsPerUnit = (Cfg.TrainEvery * USEC_PER_SEC) / Cfg.NumUnits;
 
-    if (Duration < UsecsPerUnit)
+    if (Duration < UsecsPerUnit) {
+        SPDR_BEGIN1(Cfg.SPDR, "cat", "train-unit-sleep", SPDR_STR("unit", U->c_uid()));
         heartbeat_next(&HB, UsecsPerUnit - Duration);
+        SPDR_END(Cfg.SPDR, "cat", "train-unit-sleep");
+    }
 
     return std::max(Duration, UsecsPerUnit);
 }
@@ -47,11 +61,13 @@ void trainMain(struct netdata_static_thread *Thread) {
         for (auto &HP : Cfg.Hosts) {
             Host *H = HP.second;
 
-            info("Processing %zu units on host %s", H->numUnits(), H->c_uid());
+            SPDR_BEGIN1(Cfg.SPDR, "cat", "train-host-loop", SPDR_STR("host", H->c_uid()));
 
             // For each chart
             for (auto &CP: H->ChartsMap) {
                 Chart *C = CP.second;
+
+                SPDR_BEGIN1(Cfg.SPDR, "cat", "train-chart-loop", SPDR_STR("chart", C->RS->id));
 
                 // For each unit
                 for (auto &UP : C->UnitsMap) {
@@ -60,19 +76,23 @@ void trainMain(struct netdata_static_thread *Thread) {
                     if (!U->shouldTrain())
                         continue;
 
+                    SPDR_BEGIN1(Cfg.SPDR, "cat", "train-unit-loop", SPDR_STR("unit", U->c_uid()));
+
                     if (TimeSpentTraining < UpdateHostsEvery && !netdata_exit)
                         TimeSpentTraining += processUnit(U, HB);
 
-                    info("[%s] TimeSpentTraining: %lld", H->c_uid(), TimeSpentTraining);
+                    SPDR_END(Cfg.SPDR, "cat", "train-unit-loop");
                 }
+
+                SPDR_END(Cfg.SPDR, "cat", "train-chart-loop");
             }
+
+            SPDR_END(Cfg.SPDR, "cat", "train-host-loop");
         }
 
         // Sleep if we have to.
-        if (TimeSpentTraining < UpdateHostsEvery && !netdata_exit) {
-            info("Sleeping for %lld usec\n", UpdateHostsEvery - TimeSpentTraining);
+        if (TimeSpentTraining < UpdateHostsEvery && !netdata_exit)
             heartbeat_next(&HB, UpdateHostsEvery - TimeSpentTraining);
-        }
     }
 
     netdata_thread_cleanup_pop(1);
