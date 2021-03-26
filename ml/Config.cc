@@ -10,17 +10,19 @@ void Config::updateHosts() {
     netdata_rwlock_wrlock(&Cfg.HostsLock);
     rrd_rdlock();
 
-    NumUnits = 0;
     rrdhost_foreach_read(RH) {
-        if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED))
-            continue;
+        std::map<RRDHOST *, Host *>::iterator It = Hosts.find(RH);
 
-        std::map<RRDHOST *, Host *>::iterator It = Cfg.Hosts.find(RH);
-        if (It == Cfg.Hosts.end())
-            Cfg.Hosts[RH] = new Host(RH);
+        if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED)) {
+            fatal("Found archived host %s", RH->hostname);
+        } else {
+            if (It == Hosts.end()) {
+                info("Creating new host %s", RH->hostname);
+                Hosts[RH] = new Host(RH);
+            }
 
-        Cfg.Hosts[RH]->updateCharts();
-        NumUnits += Cfg.Hosts[RH]->numUnits();
+            Hosts[RH]->updateCharts();
+        }
     }
 
     rrd_unlock();

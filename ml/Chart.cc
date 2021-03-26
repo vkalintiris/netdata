@@ -76,8 +76,8 @@ void Chart::updateUnits(time_t TrainSecs, time_t TrainEvery,
         bool IsObsolete = rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
                           rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
         if (IsObsolete) {
-            UnitsMap.erase(RD);
-            continue;
+            fatal("Found obsolete dim %s.%s.%s",
+                  RS->rrdhost->hostname, RS->id, RD->id);
         }
 
         std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);

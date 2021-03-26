@@ -49,8 +49,10 @@ void ml_init(void) {
 void *ml_main(void *Ptr) {
     struct netdata_static_thread *Thread = (struct netdata_static_thread *) Ptr;
 
+#if 0
     // Wait for agent to initalize sets.
-    sleep(30);
+    sleep(5);
+#endif
 
     // Get the thread's name and switch to the proper sub-main function.
     std::string ThreadName = Thread->name;

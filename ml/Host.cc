@@ -13,8 +13,6 @@ void Host::updateCharts() {
     wrLock();
     rrdhost_rdlock(RH);
 
-    NumUnits = 0;
-
     rrdset_foreach_read(RS, RH) {
         if (RS->update_every != 1)
             continue;
@@ -28,18 +26,16 @@ void Host::updateCharts() {
         bool IsObsolete = rrdset_flag_check(RS, RRDSET_FLAG_ARCHIVED) ||
             rrdset_flag_check(RS, RRDSET_FLAG_OBSOLETE);
 
-        if (IsObsolete) {
-            ChartsMap.erase(RS);
-            continue;
-        }
-
         std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
-        if (It == ChartsMap.end())
-            ChartsMap[RS] = new Chart(RS);
+        if (IsObsolete) {
+            fatal("Found obsolete chart %s.%s", RS->rrdhost->hostname, RS->id);
+        } else {
+            if (It == ChartsMap.end())
+                ChartsMap[RS] = new Chart(RS);
 
-        ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
-                                   Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-        NumUnits += ChartsMap[RS]->numUnits();
+            ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
+                                       Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+        }
     }
 
     rrdhost_unlock(RH);
