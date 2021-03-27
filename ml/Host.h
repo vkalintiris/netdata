@@ -10,7 +10,7 @@ namespace ml {
 class Host {
 public:
     Host(RRDHOST *RH) : RH(RH) {
-        CreationTime = steady_clock::now();
+        CreationTime = SteadyClock::now();
         netdata_rwlock_init(&RWLock);
     }
 
@@ -30,7 +30,7 @@ public:
 
 public:
     RRDHOST *RH;
-    std::chrono::time_point<std::chrono::steady_clock> CreationTime;
+    TimePoint CreationTime;
 
     std::map<RRDSET *, Chart *> ChartsMap;
     netdata_rwlock_t RWLock;

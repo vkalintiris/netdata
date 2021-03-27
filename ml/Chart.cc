@@ -67,33 +67,29 @@ void Chart::updateMLChart() {
  */
 void Chart::updateUnits(time_t TrainSecs, time_t TrainEvery,
                         unsigned DiffN, unsigned SmoothN, unsigned LagN) {
-    RRDDIM *RD;
-
     netdata_rwlock_wrlock(&UnitsLock);
+    rrdset_rdlock(RS);
 
-    //rrdset_rdlock(RS);
-    if (netdata_rwlock_tryrdlock(&((RS)->rrdset_rwlock)) != 0) {
-        netdata_rwlock_unlock(&UnitsLock);
-        return;
-    }
+    SPDR_BEGIN(Cfg.SPDR, "cat", RS->id);
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", "set-locked");
-
+    RRDDIM *RD;
     rrddim_foreach_read(RD, RS) {
+        SPDR_BEGIN(Cfg.SPDR, "cat", RD->id);
+
         bool IsObsolete = rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
                           rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
-        if (IsObsolete) {
-            fatal("Found obsolete dim %s.%s.%s",
-                  RS->rrdhost->hostname, RS->id, RD->id);
-        }
+        if (IsObsolete)
+            fatal("Found obsolete dim %s.%s.%s", RS->rrdhost->hostname, RS->id, RD->id);
 
         std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);
         if (It == UnitsMap.end())
             UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery,
                                     DiffN, SmoothN, LagN);
+
+        SPDR_END(Cfg.SPDR, "cat", RD->id);
     }
 
-    SPDR_END(Cfg.SPDR, "cat", "set-locked");
+    SPDR_END(Cfg.SPDR, "cat", RS->id);
 
     rrdset_unlock(RS);
     netdata_rwlock_unlock(&UnitsLock);

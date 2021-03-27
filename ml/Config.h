@@ -9,9 +9,9 @@ namespace ml {
 
 using SteadyClock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<SteadyClock>;
-template<typename T>
-using Duration = std::chrono::duration<T>;
 using Seconds = std::chrono::seconds;
+template<typename T>
+using Duration = std::chrono::duration<Seconds, T>;
 
 class Host;
 

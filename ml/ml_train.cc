@@ -45,14 +45,32 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Update charts.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
-        TimePoint Now = SteadyClock::now();
+        const auto Now = SteadyClock::now();
         for (auto &HP : Cfg.Hosts) {
             Host *H = HP.second;
 
-            if (Duration<Seconds>(Now - H->CreationTime) > Cfg.UpdateEvery)
+            const auto D = Now - H->CreationTime;
+            if (D > Cfg.UpdateEvery)
                 H->updateCharts();
         }
         SPDR_END(Cfg.SPDR, "cat", "update-charts");
+
+        /*
+         * Update units.
+         */
+        SPDR_BEGIN(Cfg.SPDR, "cat", "update-units");
+        for (auto &HP : Cfg.Hosts) {
+            Host *H = HP.second;
+
+            for (auto &CP : H->ChartsMap) {
+                Chart *C = CP.second;
+
+                C->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
+                               Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+            }
+        }
+        SPDR_END(Cfg.SPDR, "cat", "update-units");
+
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         std::this_thread::sleep_for(Cfg.UpdateEvery);
