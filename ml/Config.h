@@ -7,6 +7,9 @@
 
 namespace ml {
 
+using steady_clock = std::chrono::steady_clock;
+using time_point = std::chrono::time_point<steady_clock>;
+
 class Host;
 
 /*
