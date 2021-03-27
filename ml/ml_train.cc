@@ -55,7 +55,7 @@ void trainMain(struct netdata_static_thread *Thread) {
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         sleep_usec(Cfg.UpdateEvery);
         SPDR_END(Cfg.SPDR, "cat", "sleep");
-        info("");
+        info("---");
     }
 
     netdata_thread_cleanup_pop(1);
