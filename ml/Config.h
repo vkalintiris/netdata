@@ -19,6 +19,8 @@ public:
     struct SPDR_Context *SPDR;
     std::ofstream LogFp;
 
+    usec_t UpdateEvery;
+
     // Time window over which we should train our models.
     time_t TrainSecs;
 

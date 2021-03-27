@@ -24,6 +24,8 @@ void ml_init(void) {
 
     Cfg.LogFp.open("/home/vk/trace.json");
 
+    Cfg.UpdateEvery = 30 * USEC_PER_SEC;
+
     Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60);
     Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60);
 
@@ -49,13 +51,10 @@ void ml_init(void) {
 void *ml_main(void *Ptr) {
     struct netdata_static_thread *Thread = (struct netdata_static_thread *) Ptr;
 
-#if 1
-    // Wait for agent to initalize sets.
-    sleep(30);
-#endif
-
     // Get the thread's name and switch to the proper sub-main function.
     std::string ThreadName = Thread->name;
+
+    SPDR_METADATA1(Cfg.SPDR, "thread_name", SPDR_STR("name", ThreadName.c_str()));
 
     if (ThreadName.compare("MLTRAIN") == 0)
         ml::trainMain(Thread);

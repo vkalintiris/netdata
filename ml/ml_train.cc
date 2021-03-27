@@ -50,15 +50,12 @@ static std::vector<Unit *> collectUnits(std::map<RRDHOST *, Host *> &Hosts) {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    heartbeat_t HB;
-    heartbeat_init(&HB);
+    sleep_usec(Cfg.UpdateEvery);
 
     size_t LoopCounter = 0;
 
-    SPDR_METADATA1(Cfg.SPDR, "thread_name", SPDR_STR("name", "MLTRAIN"));
-
     while (!netdata_exit) {
-        info("Starting training loop %zu", LoopCounter++);
+        info("\nStarting training loop %zu", LoopCounter++);
         SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
 
         /*
@@ -75,7 +72,7 @@ void trainMain(struct netdata_static_thread *Thread) {
         SPDR_COUNTER1(Cfg.SPDR, "cat", "num-units", SPDR_INT("count", Units.size()));
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
-        heartbeat_next(&HB, 10 * USEC_PER_SEC);
+        sleep_usec(Cfg.UpdateEvery);
         SPDR_END(Cfg.SPDR, "cat", "sleep");
     }
 

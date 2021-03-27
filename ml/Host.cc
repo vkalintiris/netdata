@@ -20,27 +20,29 @@ void Host::updateCharts() {
     SPDR_BEGIN(Cfg.SPDR, "cat", "host-locked");
 
     rrdset_foreach_read(RS, RH) {
-        if (RS->update_every != 1)
-            continue;
-
-        if (Cfg.MLSets.count(RS))
-            continue;
-
-        if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
-            continue;
+        std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
 
         bool IsObsolete = rrdset_flag_check(RS, RRDSET_FLAG_ARCHIVED) ||
             rrdset_flag_check(RS, RRDSET_FLAG_OBSOLETE);
 
-        std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
         if (IsObsolete) {
             if (It != ChartsMap.end()) {
                 error("Found obsolete chart %s.%s", RS->rrdhost->hostname, RS->id);
                 ChartsMap.erase(RS);
             }
         } else {
-            if (It == ChartsMap.end())
+            if (It == ChartsMap.end()) {
+                if (RS->update_every != 1)
+                    continue;
+
+                if (Cfg.MLSets.count(RS))
+                    continue;
+
+                if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
+                    continue;
+
                 ChartsMap[RS] = new Chart(RS);
+            }
 
             ChartsMap[RS]->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
                                        Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
