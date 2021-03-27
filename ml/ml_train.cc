@@ -23,30 +23,6 @@ static void cleanupTrainThread(void *ptr) {
 
 namespace ml {
 
-static std::vector<Unit *> collectUnits(std::map<RRDHOST *, Host *> &Hosts) {
-    std::vector<Unit *> Units;
-
-    SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
-
-    for (auto &HP : Hosts) {
-        Host *H = HP.second;
-
-        for (auto &CP : H->ChartsMap) {
-            Chart *C = CP.second;
-
-            for (auto &UP : C->UnitsMap) {
-                Unit *U = UP.second;
-
-                Units.push_back(U);
-            }
-        }
-    }
-
-    SPDR_END(Cfg.SPDR, "cat", "collect-units");
-
-    return Units;
-}
-
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
@@ -61,15 +37,9 @@ void trainMain(struct netdata_static_thread *Thread) {
         /*
          * Update hosts, charts & units.
          */
-
+        SPDR_BEGIN(Cfg.SPDR, "cat", "update-hosts");
         Cfg.updateHosts();
-
-        /*
-         * Collect units
-        */
-        std::vector<Unit *> Units = collectUnits(Cfg.Hosts);
-
-        SPDR_COUNTER1(Cfg.SPDR, "cat", "num-units", SPDR_INT("count", Units.size()));
+        SPDR_END(Cfg.SPDR, "cat", "update-hosts");
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         sleep_usec(Cfg.UpdateEvery);
