@@ -50,6 +50,8 @@ public:
     bool Initialized;
 
     void updateHosts();
+
+    void updateCharts();
 };
 
 extern Config Cfg;

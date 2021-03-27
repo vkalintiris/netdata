@@ -18,6 +18,7 @@ void Config::updateHosts() {
         std::map<RRDHOST *, Host *>::iterator It = Hosts.find(RH);
 
         if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED)) {
+            // TODO: Remove obsolete hosts.
             fatal("Found archived host %s", RH->hostname);
         } else {
             if (It == Hosts.end()) {

@@ -31,19 +31,31 @@ void trainMain(struct netdata_static_thread *Thread) {
     size_t LoopCounter = 0;
 
     while (!netdata_exit) {
-        info("\nStarting training loop %zu", LoopCounter++);
+        info("Starting training loop %zu", LoopCounter++);
         SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
 
         /*
-         * Update hosts, charts & units.
+         * Update hosts.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-hosts");
         Cfg.updateHosts();
         SPDR_END(Cfg.SPDR, "cat", "update-hosts");
 
+        /*
+         * Update charts.
+         */
+        SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
+        for (auto &HP : Cfg.Hosts) {
+            Host *H = HP.second;
+
+            H->updateCharts();
+        }
+        SPDR_END(Cfg.SPDR, "cat", "update-charts");
+
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         sleep_usec(Cfg.UpdateEvery);
         SPDR_END(Cfg.SPDR, "cat", "sleep");
+        info("");
     }
 
     netdata_thread_cleanup_pop(1);
