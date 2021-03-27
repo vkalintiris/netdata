@@ -70,7 +70,14 @@ void Chart::updateUnits(time_t TrainSecs, time_t TrainEvery,
     RRDDIM *RD;
 
     netdata_rwlock_wrlock(&UnitsLock);
-    rrdset_rdlock(RS);
+
+    //rrdset_rdlock(RS);
+    if (netdata_rwlock_tryrdlock(&((RS)->rrdset_rwlock)) != 0) {
+        netdata_rwlock_unlock(&UnitsLock);
+        return;
+    }
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "set-locked");
 
     rrddim_foreach_read(RD, RS) {
         bool IsObsolete = rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
@@ -85,6 +92,8 @@ void Chart::updateUnits(time_t TrainSecs, time_t TrainEvery,
             UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery,
                                     DiffN, SmoothN, LagN);
     }
+
+    SPDR_END(Cfg.SPDR, "cat", "set-locked");
 
     rrdset_unlock(RS);
     netdata_rwlock_unlock(&UnitsLock);

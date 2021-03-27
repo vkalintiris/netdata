@@ -32,7 +32,7 @@ void ml_init(void) {
     Cfg.LagN = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
 
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML,
-            "charts to skip from training", "!system.cpu *");
+            "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(
             ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
@@ -49,9 +49,9 @@ void ml_init(void) {
 void *ml_main(void *Ptr) {
     struct netdata_static_thread *Thread = (struct netdata_static_thread *) Ptr;
 
-#if 0
+#if 1
     // Wait for agent to initalize sets.
-    sleep(5);
+    sleep(30);
 #endif
 
     // Get the thread's name and switch to the proper sub-main function.

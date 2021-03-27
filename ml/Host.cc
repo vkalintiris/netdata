@@ -11,7 +11,13 @@ void Host::updateCharts() {
     RRDSET *RS;
 
     wrLock();
-    rrdhost_rdlock(RH);
+    //rrdhost_rdlock(RH);
+    if (netdata_rwlock_tryrdlock(&((RH)->rrdhost_rwlock)) != 0) {
+        unLock();
+        return;
+    }
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "host-locked");
 
     rrdset_foreach_read(RS, RH) {
         if (RS->update_every != 1)
@@ -28,7 +34,10 @@ void Host::updateCharts() {
 
         std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
         if (IsObsolete) {
-            fatal("Found obsolete chart %s.%s", RS->rrdhost->hostname, RS->id);
+            if (It != ChartsMap.end()) {
+                error("Found obsolete chart %s.%s", RS->rrdhost->hostname, RS->id);
+                ChartsMap.erase(RS);
+            }
         } else {
             if (It == ChartsMap.end())
                 ChartsMap[RS] = new Chart(RS);
@@ -37,6 +46,8 @@ void Host::updateCharts() {
                                        Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         }
     }
+
+    SPDR_END(Cfg.SPDR, "cat", "host-locked");
 
     rrdhost_unlock(RH);
     unLock();

@@ -23,27 +23,60 @@ static void cleanupTrainThread(void *ptr) {
 
 namespace ml {
 
+static std::vector<Unit *> collectUnits(std::map<RRDHOST *, Host *> &Hosts) {
+    std::vector<Unit *> Units;
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
+
+    for (auto &HP : Hosts) {
+        Host *H = HP.second;
+
+        for (auto &CP : H->ChartsMap) {
+            Chart *C = CP.second;
+
+            for (auto &UP : C->UnitsMap) {
+                Unit *U = UP.second;
+
+                Units.push_back(U);
+            }
+        }
+    }
+
+    SPDR_END(Cfg.SPDR, "cat", "collect-units");
+
+    return Units;
+}
+
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
     heartbeat_t HB;
     heartbeat_init(&HB);
 
-    std::chrono::time_point<std::chrono::steady_clock> StartClock, EndClock;
+    size_t LoopCounter = 0;
+
+    SPDR_METADATA1(Cfg.SPDR, "thread_name", SPDR_STR("name", "MLTRAIN"));
 
     while (!netdata_exit) {
+        info("Starting training loop %zu", LoopCounter++);
+        SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
+
         /*
          * Update hosts, charts & units.
          */
 
-        StartClock = std::chrono::steady_clock::now();
         Cfg.updateHosts();
-        EndClock = std::chrono::steady_clock::now();
 
-        auto Duration = std::chrono::duration_cast<std::chrono::microseconds>(EndClock - StartClock);
-        info("Updated %zu hosts in %ld usec", Cfg.Hosts.size(), Duration.count());
+        /*
+         * Collect units
+        */
+        std::vector<Unit *> Units = collectUnits(Cfg.Hosts);
 
-        heartbeat_next(&HB, 1 * USEC_PER_SEC);
+        SPDR_COUNTER1(Cfg.SPDR, "cat", "num-units", SPDR_INT("count", Units.size()));
+
+        SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
+        heartbeat_next(&HB, 10 * USEC_PER_SEC);
+        SPDR_END(Cfg.SPDR, "cat", "sleep");
     }
 
     netdata_thread_cleanup_pop(1);
