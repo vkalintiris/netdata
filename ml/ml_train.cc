@@ -26,7 +26,7 @@ namespace ml {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    sleep_usec(Cfg.UpdateEvery);
+    std::this_thread::sleep_for(Cfg.UpdateEvery);
 
     size_t LoopCounter = 0;
 
@@ -53,7 +53,7 @@ void trainMain(struct netdata_static_thread *Thread) {
         SPDR_END(Cfg.SPDR, "cat", "update-charts");
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
-        sleep_usec(Cfg.UpdateEvery);
+        std::this_thread::sleep_for(Cfg.UpdateEvery);
         SPDR_END(Cfg.SPDR, "cat", "sleep");
         info("---");
     }

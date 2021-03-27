@@ -7,6 +7,7 @@
 #include "spdr/spdr.hh"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern "C" {

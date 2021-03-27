@@ -24,7 +24,7 @@ void ml_init(void) {
 
     Cfg.LogFp.open("/home/vk/trace.json");
 
-    Cfg.UpdateEvery = 30 * USEC_PER_SEC;
+    Cfg.UpdateEvery = std::chrono::seconds(30);
 
     Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60);
     Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60);
