@@ -8,10 +8,6 @@ using namespace ml;
  * Update the charts referenced by the host.
  */
 void Host::updateCharts() {
-    time_point Now = steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::seconds>(Now - CreationTime) < Cfg.UpdateEvery)
-        return;
-
     wrLock();
     rrdhost_rdlock(RH);
 

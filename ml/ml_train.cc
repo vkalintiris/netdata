@@ -45,10 +45,12 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Update charts.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
+        TimePoint Now = SteadyClock::now();
         for (auto &HP : Cfg.Hosts) {
             Host *H = HP.second;
 
-            H->updateCharts();
+            if (Duration<Seconds>(Now - H->CreationTime) > Cfg.UpdateEvery)
+                H->updateCharts();
         }
         SPDR_END(Cfg.SPDR, "cat", "update-charts");
 
