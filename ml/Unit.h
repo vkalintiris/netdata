@@ -8,6 +8,7 @@
 namespace ml {
 
 static unsigned Counter = 0;
+struct UnitComp;
 
 /*
  * A ML unit wraps the pointer to the dimension that we want to train/predict.
@@ -16,7 +17,8 @@ class Unit {
 public:
     Unit(RRDDIM *RD, time_t TrainSecs, time_t TrainEvery,
          unsigned DiffN, unsigned SmoothN, unsigned LagN) :
-        RD(RD), TrainSecs(TrainSecs), TrainEvery(TrainEvery),
+        RD(RD), SetPtr(reinterpret_cast<uintptr_t>(RD->rrdset)),
+        TrainSecs(TrainSecs), TrainEvery(TrainEvery),
         DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
         MLRD(nullptr),
         KM(KMeans()), AnomalyScore(0.0) {
@@ -47,18 +49,6 @@ public:
     int updateEvery() const {
         return RD->update_every;
     };
-
-    bool operator<(const Unit& RHS) const {
-        return RD < RHS.RD;
-    }
-
-    bool operator==(const Unit& RHS) const {
-        return RD == RHS.RD;
-    }
-
-    bool operator!=(const Unit& RHS) const {
-        return RD == RHS.RD;
-    }
 
     CalculatedNumber getAnomalyScore() const {
         return AnomalyScore;
@@ -99,8 +89,11 @@ public:
 
     bool predict();
 
+    friend UnitComp;
+
 private:
     RRDDIM *RD;
+    uintptr_t SetPtr;
 
     time_t TrainSecs;
     time_t TrainEvery;
@@ -119,6 +112,15 @@ private:
     bool Trained, Predicted;
 
     netdata_rwlock_t RwLock;
+};
+
+struct UnitComp {
+    bool operator()(const Unit *LHS, const Unit *RHS) {
+        if (LHS->SetPtr != RHS->SetPtr)
+            return LHS->RD->rrdset < RHS->RD->rrdset;
+
+        return LHS < RHS;
+    }
 };
 
 };

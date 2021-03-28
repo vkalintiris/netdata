@@ -106,8 +106,7 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Heapify units.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
-        auto comp = [](const Unit *LHS, const Unit *RHS) {return LHS < RHS; };
-        std::make_heap(Units.begin(), Units.end(), comp);
+        std::make_heap(Units.begin(), Units.end(), UnitComp());
         SPDR_END(Cfg.SPDR, "cat", "heapify-units");
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
