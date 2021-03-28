@@ -5,7 +5,7 @@
 using namespace ml;
 
 bool Unit::shouldTrain() const {
-    return (LastTrainedAt + TrainEvery.count()) < now_realtime_sec();
+    return (LastTrainedAt + TrainEvery) < SteadyClock::now();
 }
 
 /*
@@ -24,7 +24,7 @@ bool ml::Unit::train() {
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
 
-    LastTrainedAt = now_realtime_sec();
+    LastTrainedAt = SteadyClock::now();
 
     if (W.ratioFilled() < 0.8) {
         info("%s - sparse training window: %lf", c_uid(), W.ratioFilled());

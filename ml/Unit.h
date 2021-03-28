@@ -23,7 +23,7 @@ public:
         KM(KMeans()), AnomalyScore(0.0) {
         netdata_rwlock_init(&RwLock);
 
-        //LastTrainedAt = now_realtime_sec() + TrainSecs + Counter;
+        LastTrainedAt = SteadyClock::now() + TrainSecs;
 
         std::stringstream SS;
         SS << RD->rrdset->id << "." << RD->id;
@@ -103,7 +103,7 @@ private:
 
     KMeans KM;
     CalculatedNumber AnomalyScore;
-    time_t LastTrainedAt;
+    TimePoint LastTrainedAt;
 
     std::string UniqueID;
     bool Trained, Predicted;
