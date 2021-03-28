@@ -114,9 +114,9 @@ private:
 struct UnitComp {
     bool operator()(const Unit *LHS, const Unit *RHS) {
         if (LHS->SetPtr != RHS->SetPtr)
-            return LHS->RD->rrdset < RHS->RD->rrdset;
+            return LHS->SetPtr < RHS->SetPtr;
 
-        return LHS < RHS;
+        return LHS->LastTrainedAt < RHS->LastTrainedAt;
     }
 };
 
