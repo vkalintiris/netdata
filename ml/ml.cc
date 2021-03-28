@@ -26,8 +26,12 @@ void ml_init(void) {
 
     Cfg.UpdateEvery = std::chrono::seconds(10);
 
-    Cfg.TrainSecs = config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60);
-    Cfg.TrainEvery = config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60);
+    Cfg.TrainSecs = Seconds{
+        config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60)
+    };
+    Cfg.TrainEvery = Seconds{
+        config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60)
+    };
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);

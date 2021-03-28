@@ -5,7 +5,7 @@
 using namespace ml;
 
 bool Unit::shouldTrain() const {
-    return (LastTrainedAt + TrainEvery) < now_realtime_sec();
+    return (LastTrainedAt + TrainEvery.count()) < now_realtime_sec();
 }
 
 /*
@@ -19,7 +19,7 @@ bool ml::Unit::train() {
 
     wrLock();
 
-    unsigned NumSamples = TrainSecs / updateEvery();
+    unsigned NumSamples = TrainSecs.count() / updateEvery();
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();

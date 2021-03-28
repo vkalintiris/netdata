@@ -22,10 +22,10 @@ public:
     std::chrono::seconds UpdateEvery;
 
     // Time window over which we should train our models.
-    time_t TrainSecs;
+    Seconds TrainSecs;
 
     // How often we want to retrain our models.
-    time_t TrainEvery;
+    Seconds TrainEvery;
 
     // Feature extraction parameters.
     unsigned DiffN;

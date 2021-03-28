@@ -7,7 +7,6 @@
 
 namespace ml {
 
-static unsigned Counter = 0;
 struct UnitComp;
 
 /*
@@ -15,7 +14,7 @@ struct UnitComp;
 */
 class Unit {
 public:
-    Unit(RRDDIM *RD, time_t TrainSecs, time_t TrainEvery,
+    Unit(RRDDIM *RD, Seconds TrainSecs, Seconds TrainEvery,
          unsigned DiffN, unsigned SmoothN, unsigned LagN) :
         RD(RD), SetPtr(reinterpret_cast<uintptr_t>(RD->rrdset)),
         TrainSecs(TrainSecs), TrainEvery(TrainEvery),
@@ -24,9 +23,7 @@ public:
         KM(KMeans()), AnomalyScore(0.0) {
         netdata_rwlock_init(&RwLock);
 
-        Counter += 1;
-        Counter %= TrainEvery;
-        LastTrainedAt = now_realtime_sec() + TrainSecs + Counter;
+        //LastTrainedAt = now_realtime_sec() + TrainSecs + Counter;
 
         std::stringstream SS;
         SS << RD->rrdset->id << "." << RD->id;
@@ -95,8 +92,8 @@ private:
     RRDDIM *RD;
     uintptr_t SetPtr;
 
-    time_t TrainSecs;
-    time_t TrainEvery;
+    Seconds TrainSecs;
+    Seconds TrainEvery;
 
     unsigned DiffN;
     unsigned SmoothN;
