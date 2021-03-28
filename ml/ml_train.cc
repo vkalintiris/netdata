@@ -62,12 +62,14 @@ void trainMain(struct netdata_static_thread *Thread) {
         for (auto &HP : Cfg.Hosts) {
             Host *H = HP.second;
 
+            SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
             for (auto &CP : H->ChartsMap) {
                 Chart *C = CP.second;
 
                 C->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
                                Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
             }
+            SPDR_END(Cfg.SPDR, "cat", H->c_uid());
         }
         SPDR_END(Cfg.SPDR, "cat", "update-units");
 
