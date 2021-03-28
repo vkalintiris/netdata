@@ -29,8 +29,7 @@ namespace ml {
 using SteadyClock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<SteadyClock>;
 using Seconds = std::chrono::seconds;
-template<typename T>
-using Duration = std::chrono::duration<Seconds, T>;
+using Millis = std::chrono::milliseconds;
 
 void trainMain(struct netdata_static_thread *Thread);
 void predictMain(struct netdata_static_thread *Thread);

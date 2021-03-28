@@ -30,7 +30,7 @@ void ml_init(void) {
         config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60)
     };
     Cfg.TrainEvery = Seconds{
-        config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60)
+        config_get_number(CONFIG_SECTION_ML, "train every secs", 1800)
     };
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
@@ -38,7 +38,7 @@ void ml_init(void) {
     Cfg.LagN = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
 
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML,
-            "charts to skip from training", "!*");
+            "charts to skip from training", "!system.cpu *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(
             ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 

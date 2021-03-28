@@ -48,10 +48,11 @@ void trainMain(struct netdata_static_thread *Thread) {
 
     std::this_thread::sleep_for(Cfg.UpdateEvery);
 
+
     size_t LoopCounter = 0;
 
     while (!netdata_exit) {
-        info("Starting training loop %zu", LoopCounter++);
+        info("Starting training loop %zu", ++LoopCounter);
         SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
 
         /*
@@ -108,6 +109,41 @@ void trainMain(struct netdata_static_thread *Thread) {
         SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
         std::make_heap(Units.begin(), Units.end(), UnitComp());
         SPDR_END(Cfg.SPDR, "cat", "heapify-units");
+
+        /*
+         * Train units.
+         */
+        if (Units.size() == 0) {
+            SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
+            std::this_thread::sleep_for(Cfg.UpdateEvery);
+            SPDR_END(Cfg.SPDR, "cat", "sleep");
+            continue;
+        }
+
+        Millis TrainDur{std::chrono::duration_cast<Millis>(Cfg.TrainEvery) / Units.size()};
+
+        SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
+        for (auto &HP : Cfg.Hosts) {
+            Host *H = HP.second;
+
+            SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
+            for (auto &CP : H->ChartsMap) {
+                Chart *C = CP.second;
+
+                for (auto &UP : C->UnitsMap) {
+                    Unit *U = UP.second;
+
+                    TimePoint StartTP = SteadyClock::now();
+                    info("Processing %s", U->c_uid());
+                    TimePoint EndTP = SteadyClock::now();
+
+                    auto D = EndTP - StartTP;
+                    D.count();
+                }
+            }
+            SPDR_END(Cfg.SPDR, "cat", H->c_uid());
+        }
+        SPDR_END(Cfg.SPDR, "cat", "train-units");
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         std::this_thread::sleep_for(Cfg.UpdateEvery);

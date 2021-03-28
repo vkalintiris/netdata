@@ -11,6 +11,7 @@ bool Unit::shouldTrain() const {
 /*
  * Run KMeans on the unit.
  */
+#if 0
 bool ml::Unit::train() {
     if (!shouldTrain())
         return false;
@@ -41,6 +42,18 @@ bool ml::Unit::train() {
     delete[] CNs;
     return Trained;
 }
+#else
+bool ml::Unit::train() {
+    if (!shouldTrain())
+        return false;
+
+    info("Training dim %s\n", c_uid());
+    std::this_thread::sleep_for(Millis{100});
+
+    LastTrainedAt = SteadyClock::now();
+    return true;
+}
+#endif
 
 /*
  * Calculate the anomaly score of the unit.
