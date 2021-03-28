@@ -102,6 +102,14 @@ void trainMain(struct netdata_static_thread *Thread) {
 
         info("Found %zu units in %zu hosts", Units.size(), Cfg.Hosts.size());
 
+        /*
+         * Heapify units.
+         */
+        SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
+        auto comp = [](const Unit *LHS, const Unit *RHS) {return LHS < RHS; };
+        std::make_heap(Units.begin(), Units.end(), comp);
+        SPDR_END(Cfg.SPDR, "cat", "heapify-units");
+
         SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
         std::this_thread::sleep_for(Cfg.UpdateEvery);
         SPDR_END(Cfg.SPDR, "cat", "sleep");
