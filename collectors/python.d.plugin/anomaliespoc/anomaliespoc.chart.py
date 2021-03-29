@@ -19,7 +19,7 @@ CHARTS = {
         'lines': []
     },
     'family_flags': {
-        'options': ['family_flags', 'Anomaly', 'count', 'family', 'anomaliespoc.family_flags', 'stacked'],
+        'options': ['family_flags', 'Anomaly Count', 'count', 'family', 'anomaliespoc.family_flags', 'stacked'],
         'lines': []
     },
     'chart_probs': {
@@ -27,7 +27,7 @@ CHARTS = {
         'lines': []
     },
     'chart_flags': {
-        'options': ['chart_flags', 'Anomaly', 'count', 'chart', 'anomaliespoc.chart_flags', 'stacked'],
+        'options': ['chart_flags', 'Anomaly Count', 'count', 'chart', 'anomaliespoc.chart_flags', 'stacked'],
         'lines': []
     },
 }
