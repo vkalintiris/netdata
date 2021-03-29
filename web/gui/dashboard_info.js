@@ -577,6 +577,12 @@ netdataDashboard.menu = {
         info: 'Anomaly scores relating to key system metrics. A high anomaly probability indicates strange behaviour and may trigger an anomaly prediction from the trained models. Read the <a href="https://github.com/netdata/netdata/tree/master/collectors/python.d.plugin/anomalies" target="_blank">anomalies collector docs</a> for more details.'
     },
 
+    'anomaliespoc': {
+        title: 'Anomalies POC',
+        icon: '<i class="fas fa-flask"></i>',
+        info: 'Anomaly scores relating to key system metrics. A high anomaly probability indicates strange behaviour and may trigger an anomaly prediction from the trained models. Read the <a href="https://github.com/netdata/netdata/tree/master/collectors/python.d.plugin/anomaliespoc" target="_blank">anomalies collector docs</a> for more details.'
+    },
+
     'alarms': {
         title: 'Alarms',
         icon: '<i class="fas fa-bell"></i>',
