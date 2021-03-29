@@ -39,8 +39,6 @@ class Service(UrlService):
         raw_data = loads(raw_data)
         raw_data = {k: raw_data[k] for k in raw_data if k.endswith(self.suffix)}
 
-        self.info(raw_data)
-
         data = {}
         for chart in raw_data:
             anomaly_scores = [dim['value'] for dim in raw_data[chart]['dimensions'].values() if dim['value'] is not None]
