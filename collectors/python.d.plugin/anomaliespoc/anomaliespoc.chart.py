@@ -15,19 +15,19 @@ ORDER = [
 
 CHARTS = {
     'family_probs': {
-        'options': [None, 'Family Probabilities', 'Family Probability', 'family probabilities', 'anomaliespoc.family_probability', 'line'],
+        'options': [None, 'Anomaly Probability', 'probability', 'family', 'anomaliespoc.family_probs', 'line'],
         'lines': []
     },
     'family_flags': {
-        'options': [None, 'Family Flags', 'Family Flag', 'family flags', 'anomaliespoc.family_flag', 'stacked'],
+        'options': [None, 'Anomaly', 'count', 'family', 'anomaliespoc.family_flags', 'stacked'],
         'lines': []
     },
     'chart_probs': {
-        'options': [None, 'Chart Probabilities', 'Chart Probability', 'chart probabilities', 'anomaliespoc.chart_probability', 'line'],
+        'options': [None, 'Anomaly Probability', 'probability', 'chart', 'anomaliespoc.chart_probs', 'line'],
         'lines': []
     },
     'chart_flags': {
-        'options': [None, 'Chart Flags', 'Chart Flag', 'chart flags', 'anomaliespoc.chart_flag', 'stacked'],
+        'options': [None, 'Anomaly', 'count', 'chart', 'anomaliespoc.chart_flags', 'stacked'],
         'lines': []
     },
 }
