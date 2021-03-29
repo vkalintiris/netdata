@@ -28,8 +28,8 @@ class Service(UrlService):
         self.definitions = CHARTS
         self.collected_dims = {'charts': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
-        self.suffix = self.configuration.get('url', '_km')
-        self.thold = self.configuration.get('url', 50.0)
+        self.suffix = self.configuration.get('suffix', '_km')
+        self.thold = self.configuration.get('thold', 50.0)
 
     def _get_data(self):
         raw_data = self._get_raw_data()
@@ -49,10 +49,6 @@ class Service(UrlService):
         self.update_charts('charts', data)
 
         return data
-
-    @staticmethod
-    def check():
-        return True
 
     def update_charts(self, chart, data, algorithm='absolute', multiplier=1, divisor=1):
         if not self.charts:
