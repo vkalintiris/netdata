@@ -41,7 +41,7 @@ class Service(UrlService):
         self.collected_dims = {'chart_probs': set(), 'chart_flags': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
         self.suffix = self.configuration.get('suffix', '_km')
-        self.thold = self.configuration.get('thold', 90.0)
+        self.thold = self.configuration.get('thold', 99.0)
         self.display_family = bool(self.configuration.get('display_family', True))
 
     def _get_data(self):
