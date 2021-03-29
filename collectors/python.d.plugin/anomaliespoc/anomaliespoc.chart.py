@@ -7,15 +7,19 @@ from json import loads
 
 from bases.FrameworkServices.UrlService import UrlService
 
-priority = 90000
+priority = 85
 
 ORDER = [
-    'charts',
+    'chart_probs', 'chart_flags'
 ]
 
 CHARTS = {
-    'charts': {
-        'options': [None, 'Charts', 'probability', 'probability', 'anomaliespoc.probability', 'line'],
+    'chart_probs': {
+        'options': [None, 'Chart Probabilities', 'Chart Probability', 'chart probability', 'anomaliespoc.chart_probability', 'line'],
+        'lines': []
+    },
+    'chart_flags': {
+        'options': [None, 'Chart Flags', 'Chart Flag', 'chart flag', 'anomaliespoc.chart_flag', 'stacked'],
         'lines': []
     }
 }
@@ -26,7 +30,7 @@ class Service(UrlService):
         UrlService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
-        self.collected_dims = {'charts': set()}
+        self.collected_dims = {'chart_probs': set(), 'chart_flags': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
         self.suffix = self.configuration.get('suffix', '_km')
         self.thold = self.configuration.get('thold', 50.0)
@@ -39,14 +43,18 @@ class Service(UrlService):
         raw_data = loads(raw_data)
         raw_data = {k: raw_data[k] for k in raw_data if k.endswith(self.suffix)}
 
-        data = {}
+        chart_probs = {}
+        chart_flags = {}
         for chart in raw_data:
+            base_chart = chart.replace(self.suffix, '')
             anomaly_scores = [dim['value'] for dim in raw_data[chart]['dimensions'].values() if dim['value'] is not None]
-            #anomaly_flags = [1 if score >= self.thold else 0 for score in anomaly_scores]
-            anomaly_scores_avg = round(sum(anomaly_scores) / len(anomaly_scores), 2)
-            data[chart] = anomaly_scores_avg
+            chart_probs[base_chart] = round(sum(anomaly_scores) / len(anomaly_scores), 2)
+            chart_flags["{}_flag".format(base_chart)] = max([1 if score >= self.thold else 0 for score in anomaly_scores])
         
-        self.update_charts('charts', data)
+        self.update_charts('chart_probs', chart_probs)
+        self.update_charts('chart_flags', chart_flags)
+
+        data = {**chart_probs, **chart_flags}
 
         return data
 
