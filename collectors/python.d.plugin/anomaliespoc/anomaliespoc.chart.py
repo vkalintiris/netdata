@@ -38,7 +38,7 @@ class Service(UrlService):
         UrlService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
-        self.collected_dims = {'chart_probs': set(), 'chart_flags': set()}
+        self.collected_dims = {'chart_probs': set(), 'chart_flags': set(), 'family_probs': set(), 'family_flags': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
         self.suffix = self.configuration.get('suffix', '_km')
         self.thold = self.configuration.get('thold', 99.0)
@@ -75,7 +75,7 @@ class Service(UrlService):
                 family = chart_family_map.get(chart, None)
                 if family:
                     family_probs[family].append(chart_probs[chart])
-                    family_flags[family].append(chart_flags[chart])
+                    family_flags[family].append(chart_flags["{}_flag".format(chart)])
             family_probs = {"{}_prob".format(f): round(sum(family_probs[f])/len(family_probs[f]), 2) for f in family_probs if len(family_probs[f]) > 0}
             family_flags = {"{}_flag".format(f): round(sum(family_flags[f])/len(family_flags[f]), 2) for f in family_flags if len(family_flags[f]) > 0}
             self.update_charts('family_probs', family_probs)
