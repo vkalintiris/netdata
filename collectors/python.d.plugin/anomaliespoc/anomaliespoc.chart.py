@@ -15,11 +15,11 @@ ORDER = [
 
 CHARTS = {
     'chart_probs': {
-        'options': [None, 'Chart Probabilities', 'Chart Probability', 'chart probability', 'anomaliespoc.chart_probability', 'line'],
+        'options': [None, 'Chart Probabilities', 'Chart Probability', 'chart probabilities', 'anomaliespoc.chart_probability', 'line'],
         'lines': []
     },
     'chart_flags': {
-        'options': [None, 'Chart Flags', 'Chart Flag', 'chart flag', 'anomaliespoc.chart_flag', 'stacked'],
+        'options': [None, 'Chart Flags', 'Chart Flag', 'chart flags', 'anomaliespoc.chart_flag', 'stacked'],
         'lines': []
     }
 }
@@ -33,7 +33,7 @@ class Service(UrlService):
         self.collected_dims = {'chart_probs': set(), 'chart_flags': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
         self.suffix = self.configuration.get('suffix', '_km')
-        self.thold = self.configuration.get('thold', 50.0)
+        self.thold = self.configuration.get('thold', 90.0)
 
     def _get_data(self):
         raw_data = self._get_raw_data()
