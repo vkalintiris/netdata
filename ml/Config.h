@@ -7,7 +7,7 @@
 
 namespace ml {
 
-class Host;
+class Database;
 
 /*
  * Global configuration shared between the prediction and the training
@@ -18,8 +18,6 @@ public:
     std::vector<char> *Buffer;
     struct SPDR_Context *SPDR;
     std::ofstream LogFp;
-
-    Seconds Foo;
 
     Millis UpdateEvery;
 
@@ -34,15 +32,6 @@ public:
     unsigned SmoothN;
     unsigned LagN;
 
-    // List of hosts that we want to train/predict.
-    std::map<RRDHOST *, Host *> Hosts;
-
-    // Lock to allow safe access to list of hosts between training/prediction thread.
-    netdata_rwlock_t HostsLock;
-
-    // Set of anomaly score sets.
-    std::set<RRDSET *> MLSets;
-
     // Simple expression that allows us to skip certain charts from training.
     SIMPLE_PATTERN *SP_ChartsToSkip;
 
@@ -51,9 +40,7 @@ public:
 
     bool Initialized;
 
-    void updateHosts();
-
-    void updateCharts();
+    Database *DB;
 };
 
 extern Config Cfg;

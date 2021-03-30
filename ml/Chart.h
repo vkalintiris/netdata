@@ -7,6 +7,8 @@
 
 namespace ml {
 
+class Unit;
+
 class Chart {
 public:
     Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {

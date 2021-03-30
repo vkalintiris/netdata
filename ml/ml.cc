@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
 
 using namespace ml;
 
@@ -43,8 +43,6 @@ void ml_init(void) {
             ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.DisablePredictionThread = config_get_number(CONFIG_SECTION_ML, "disable prediction thread", 0);
-
-    netdata_rwlock_init(&Cfg.HostsLock);
 
     Cfg.Initialized = true;
 }

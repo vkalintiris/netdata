@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
+#include "Database.h"
 
 static void cleanupPredictThread(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
@@ -16,12 +17,14 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
-    std::map<RRDHOST *, Host *> &Hosts = Cfg.Hosts;
+    std::map<RRDHOST *, Host *> &Hosts = Cfg.DB->Hosts;
+    (void) Hosts;
 
     while (!netdata_exit) {
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
         continue;
 
+#if 0
         netdata_rwlock_rdlock(&Cfg.HostsLock);
         for (auto &P : Hosts) {
             unsigned NumPredicted = 0, NumUnits = 0;
@@ -60,6 +63,7 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
         netdata_rwlock_unlock(&Cfg.HostsLock);
 
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
+#endif
     }
 
     netdata_thread_cleanup_pop(1);

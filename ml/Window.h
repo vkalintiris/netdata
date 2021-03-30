@@ -7,6 +7,8 @@
 
 namespace ml {
 
+class Unit;
+
 class Window {
 public:
     Window(Unit *U, unsigned NumSamples) :

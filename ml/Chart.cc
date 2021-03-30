@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
+#include "Unit.h"
+#include "Chart.h"
 
 using namespace ml;
 
@@ -57,9 +59,6 @@ void Chart::updateMLChart() {
         Unit *U = P.second;
         U->updateMLUnit(MLRS);
     }
-
-    Cfg.MLSets.insert(MLRS);
-    return;
 }
 
 /*

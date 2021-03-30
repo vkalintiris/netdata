@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -37,11 +38,5 @@ void trainMain(struct netdata_static_thread *Thread);
 void predictMain(struct netdata_static_thread *Thread);
 
 };
-
-#include "Config.h"
-#include "Unit.h"
-#include "Chart.h"
-#include "Host.h"
-#include "Window.h"
 
 #endif /* ML_PRIVATE_H */

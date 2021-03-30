@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
+#include "Window.h"
+#include "Unit.h"
 
 using namespace ml;
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "Config.h"
+#include "Host.h"
+#include "Chart.h"
 
 using namespace ml;
 
@@ -37,7 +39,6 @@ void Host::updateCharts() {
                 shouldSkip |= RS->update_every != 1;
 
                 // Skip if this is a KMeans chart
-                //shouldSkip |= Cfg.MLSets.count(RS) != 0;
                 shouldSkip |= strstr(RS->id, "_km") != NULL;
 
                 // Skip if our users want

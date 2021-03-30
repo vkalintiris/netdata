@@ -243,6 +243,8 @@ ML_FILES = \
 	ml/Chart.cc \
 	ml/Config.h \
 	ml/Config.cc \
+	ml/Database.h \
+	ml/Database.cc \
 	ml/Host.h \
 	ml/Host.cc \
 	ml/Unit.h \

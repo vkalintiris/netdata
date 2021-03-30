@@ -7,6 +7,8 @@
 
 namespace ml {
 
+class Chart;
+
 class Host {
 public:
     Host(RRDHOST *RH) : RH(RH) {
