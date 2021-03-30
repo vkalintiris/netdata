@@ -7,13 +7,20 @@
 
 namespace ml {
 
+class Unit;
 class Host;
 
 class Database {
 public:
-    void updateHosts();
+    void update();
+    std::vector<Unit *> getUnits();
 
-public:
+private:
+    void updateHosts();
+    void updateCharts();
+    void updateUnits();
+
+private:
     std::map<RRDHOST *, Host *> Hosts;
 };
 
