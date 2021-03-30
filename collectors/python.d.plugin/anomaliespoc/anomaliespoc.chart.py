@@ -10,7 +10,7 @@ from bases.FrameworkServices.UrlService import UrlService
 priority = 85
 
 ORDER = [
-    'family_probs', 'family_flags', 'chart_probs', 'chart_flags'
+    'family_probs', 'family_flags', 'prefix_probs', 'prefix_flags', 'chart_probs', 'chart_flags'
 ]
 
 CHARTS = {
@@ -20,6 +20,14 @@ CHARTS = {
     },
     'family_flags': {
         'options': ['family_flags', 'Anomaly Count', 'count', 'family', 'anomaliespoc.family_flags', 'stacked'],
+        'lines': []
+    },
+    'prefix_probs': {
+        'options': ['prefix_probs', 'Anomaly Probability', 'probability', 'prefix', 'anomaliespoc.prefix_probs', 'line'],
+        'lines': []
+    },
+    'prefix_flags': {
+        'options': ['prefix_flags', 'Anomaly Count', 'count', 'prefix', 'anomaliespoc.prefix_flags', 'stacked'],
         'lines': []
     },
     'chart_probs': {
@@ -38,11 +46,12 @@ class Service(UrlService):
         UrlService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
-        self.collected_dims = {'chart_probs': set(), 'chart_flags': set(), 'family_probs': set(), 'family_flags': set()}
+        self.collected_dims = {'chart_probs': set(), 'chart_flags': set(), 'family_probs': set(), 'family_flags': set(), 'prefix_probs': set(), 'prefix_flags': set()}
         self.url = self.configuration.get('url', 'http://127.0.0.1:19999/api/v1/allmetrics?format=json')
         self.suffix = self.configuration.get('suffix', '_km')
         self.thold = self.configuration.get('thold', 99.0)
         self.display_family = bool(self.configuration.get('display_family', True))
+        self.display_prefix = bool(self.configuration.get('display_prefix', True))
 
     def _get_data(self):
         raw_data = self._get_raw_data()
@@ -82,6 +91,24 @@ class Service(UrlService):
             self.update_charts('family_flags', family_flags)
 
             data = {**data, **family_probs, **family_flags}
+        
+        # agg to prefix or netdata 'type' level
+        if self.display_prefix:
+            chart_prefix_map = {k: k.split('.')[0] for k in chart_probs.keys()}
+            chart_prefix_list = list(set(chart_prefix_map.values()))
+            prefix_probs = {prefix: [] for prefix in chart_prefix_list}
+            prefix_flags = {prefix: [] for prefix in chart_prefix_list}
+            for chart in chart_probs:
+                prefix = chart_prefix_map.get(chart, None)
+                if prefix:
+                    prefix_probs[prefix].append(chart_probs[chart])
+                    prefix_flags[prefix].append(chart_flags["{}_flag".format(chart)])
+            prefix_probs = {'{}.'.format(p): round(sum(prefix_probs[p])/len(prefix_probs[p]), 2) for p in prefix_probs if len(prefix_probs[p]) > 0}
+            prefix_flags = {'{}.'.format(p): round(sum(prefix_flags[p])/len(prefix_flags[p]), 2) for p in prefix_flags if len(prefix_flags[p]) > 0}
+            self.update_charts('prefix_probs', prefix_probs)
+            self.update_charts('prefix_flags', prefix_flags)
+
+            data = {**data, **prefix_probs, **prefix_flags}
 
         return data
 
