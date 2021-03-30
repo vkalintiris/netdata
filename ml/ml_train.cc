@@ -38,28 +38,26 @@ void trainMain(struct netdata_static_thread *Thread) {
         info("Starting training loop %zu", ++LoopCounter);
         SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
 
-        /*
-         * Update DB and collect units.
-         */
+        // Update DB and collect units.
         DB.update();
         std::vector<Unit *> Units = DB.getUnits();
 
-        /*
-         * Heapify units.
-         */
+        // Heapify units.
         SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
         std::make_heap(Units.begin(), Units.end(), UnitComp());
         SPDR_END(Cfg.SPDR, "cat", "heapify-units");
 
-        /*
-         * Train units.
-         */
+        // Nothing to do if we don't have any units.
         if (Units.size() == 0) {
             SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
             std::this_thread::sleep_for(Cfg.UpdateEvery);
             SPDR_END(Cfg.SPDR, "cat", "train-sleep");
             continue;
         }
+
+        /*
+         * Train units.
+        */
 
         TimePoint StartTrainingTP = SteadyClock::now();
         Duration<double> AvailableUnitTrainingDuration = Cfg.TrainEvery / Units.size();
@@ -68,10 +66,6 @@ void trainMain(struct netdata_static_thread *Thread) {
         for (Unit *U : Units) {
             if (U->uid().compare("system.cpu.user") != 0)
                 continue;
-
-            /*
-             * Train unit
-             */
 
             SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
             TimePoint STP = SteadyClock::now();
@@ -83,10 +77,6 @@ void trainMain(struct netdata_static_thread *Thread) {
 
             TimePoint ETP = SteadyClock::now();
             SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
-
-            /*
-             * Figure out how long we have to sleep.
-             */
 
             if (ETP - StartTrainingTP > Cfg.UpdateEvery)
                 break;
