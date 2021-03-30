@@ -65,7 +65,7 @@ void Chart::updateMLChart() {
 /*
  * Update the units referenced by the chart.
  */
-void Chart::updateUnits(Seconds TrainSecs, Seconds TrainEvery,
+void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
                         unsigned DiffN, unsigned SmoothN, unsigned LagN) {
     netdata_rwlock_wrlock(&UnitsLock);
     rrdset_rdlock(RS);

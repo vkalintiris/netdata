@@ -14,7 +14,7 @@ struct UnitComp;
 */
 class Unit {
 public:
-    Unit(RRDDIM *RD, Seconds TrainSecs, Seconds TrainEvery,
+    Unit(RRDDIM *RD, Millis TrainSecs, Millis TrainEvery,
          unsigned DiffN, unsigned SmoothN, unsigned LagN) :
         RD(RD), SetPtr(reinterpret_cast<uintptr_t>(RD->rrdset)),
         TrainSecs(TrainSecs), TrainEvery(TrainEvery),
@@ -92,8 +92,8 @@ private:
     RRDDIM *RD;
     uintptr_t SetPtr;
 
-    Seconds TrainSecs;
-    Seconds TrainEvery;
+    Millis TrainSecs;
+    Millis TrainEvery;
 
     unsigned DiffN;
     unsigned SmoothN;
@@ -114,9 +114,10 @@ private:
 struct UnitComp {
     bool operator()(const Unit *LHS, const Unit *RHS) {
         if (LHS->SetPtr != RHS->SetPtr)
-            return LHS->SetPtr < RHS->SetPtr;
+            return LHS->SetPtr > RHS->SetPtr;
 
-        return LHS->LastTrainedAt < RHS->LastTrainedAt;
+        // make_heap returns a max heap
+        return LHS->LastTrainedAt > RHS->LastTrainedAt;
     }
 };
 

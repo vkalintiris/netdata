@@ -24,13 +24,13 @@ void ml_init(void) {
 
     Cfg.LogFp.open("/home/vk/trace.json");
 
-    Cfg.UpdateEvery = std::chrono::seconds(10);
+    Cfg.UpdateEvery = Millis(10 * 1000);
 
-    Cfg.TrainSecs = Seconds{
-        config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60)
+    Cfg.TrainSecs = Millis{
+        config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60) * 1000
     };
-    Cfg.TrainEvery = Seconds{
-        config_get_number(CONFIG_SECTION_ML, "train every secs", 1800)
+    Cfg.TrainEvery = Millis{
+        config_get_number(CONFIG_SECTION_ML, "train every secs", 30) * 1000
     };
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);

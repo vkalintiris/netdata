@@ -48,7 +48,6 @@ void trainMain(struct netdata_static_thread *Thread) {
 
     std::this_thread::sleep_for(Cfg.UpdateEvery);
 
-
     size_t LoopCounter = 0;
 
     while (!netdata_exit) {
@@ -114,40 +113,42 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Train units.
          */
         if (Units.size() == 0) {
-            SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
+            SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
             std::this_thread::sleep_for(Cfg.UpdateEvery);
-            SPDR_END(Cfg.SPDR, "cat", "sleep");
+            SPDR_END(Cfg.SPDR, "cat", "train-sleep");
             continue;
         }
 
-        Millis TrainDur{std::chrono::duration_cast<Millis>(Cfg.TrainEvery) / Units.size()};
+        TimePoint StartTrainingTP = SteadyClock::now();
+        Duration<double> AvailableUnitTrainingDuration = Cfg.TrainEvery / Units.size();
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
-        for (auto &HP : Cfg.Hosts) {
-            Host *H = HP.second;
+        for (Unit *U : Units) {
+            /*
+             * Train unit
+             */
 
-            SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
-            for (auto &CP : H->ChartsMap) {
-                Chart *C = CP.second;
+            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_uid());
+            TimePoint STP = SteadyClock::now();
+            U->train();
+            TimePoint ETP = SteadyClock::now();
+            SPDR_END(Cfg.SPDR, "cat", U->c_uid());
 
-                for (auto &UP : C->UnitsMap) {
-                    Unit *U = UP.second;
+            /*
+             * Figure out how long we have to sleep.
+             */
+            if (ETP - StartTrainingTP > Cfg.UpdateEvery)
+                break;
 
-                    TimePoint StartTP = SteadyClock::now();
-                    info("Processing %s", U->c_uid());
-                    TimePoint EndTP = SteadyClock::now();
-
-                    auto D = EndTP - StartTP;
-                    D.count();
-                }
+            Duration<double> UnitTrainingDuration = ETP - STP;
+            if (AvailableUnitTrainingDuration > UnitTrainingDuration) {
+                SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
+                std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
+                SPDR_END(Cfg.SPDR, "cat", "train-sleep");
             }
-            SPDR_END(Cfg.SPDR, "cat", H->c_uid());
         }
         SPDR_END(Cfg.SPDR, "cat", "train-units");
 
-        SPDR_BEGIN(Cfg.SPDR, "cat", "sleep");
-        std::this_thread::sleep_for(Cfg.UpdateEvery);
-        SPDR_END(Cfg.SPDR, "cat", "sleep");
         info("---");
     }
 

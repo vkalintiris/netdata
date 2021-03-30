@@ -13,7 +13,7 @@ public:
         netdata_rwlock_init(&UnitsLock);
     }
 
-    void updateUnits(Seconds TrainSecs, Seconds TrainEvery,
+    void updateUnits(Millis TrainSecs, Millis TrainEvery,
                      unsigned DiffN, unsigned SmoothN, unsigned LagN);
 
     void updateMLChart();

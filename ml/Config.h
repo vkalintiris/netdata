@@ -19,13 +19,15 @@ public:
     struct SPDR_Context *SPDR;
     std::ofstream LogFp;
 
-    std::chrono::seconds UpdateEvery;
+    Seconds Foo;
+
+    Millis UpdateEvery;
 
     // Time window over which we should train our models.
-    Seconds TrainSecs;
+    Millis TrainSecs;
 
     // How often we want to retrain our models.
-    Seconds TrainEvery;
+    Millis TrainEvery;
 
     // Feature extraction parameters.
     unsigned DiffN;
