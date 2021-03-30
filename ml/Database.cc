@@ -69,13 +69,7 @@ void Database::updateUnits() {
     SPDR_END(Cfg.SPDR, "cat", "update-units");
 }
 
-std::vector<Unit *> Database::getUnits(bool UpdateDB) {
-    if (UpdateDB) {
-        updateHosts();
-        updateCharts();
-        updateUnits();
-    }
-
+std::vector<Unit *> Database::getUnits() {
     std::vector<Unit *> Units;
 
     SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
@@ -100,7 +94,15 @@ std::vector<Unit *> Database::getUnits(bool UpdateDB) {
 }
 
 void Database::trainUnits() {
-    std::vector<Unit *> Units = getUnits(true);
+    {
+        std::unique_lock<std::mutex> Lock(Mutex);
+
+        updateHosts();
+        updateCharts();
+        updateUnits();
+    }
+
+    std::vector<Unit *> Units = getUnits();
 
     SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
     std::make_heap(Units.begin(), Units.end(), UnitComp());
@@ -143,4 +145,28 @@ void Database::trainUnits() {
         }
     }
     SPDR_END(Cfg.SPDR, "cat", "train-units");
+}
+
+void Database::predictUnits() {
+    {
+        std::unique_lock<std::mutex> Lock(Mutex);
+
+        for (Unit *U : getUnits())
+            U->predict();
+    }
+
+    {
+        std::unique_lock<std::mutex> Lock(Mutex);
+
+        for (auto &HP : HostsMap) {
+            Host *H = HP.second;
+
+            for (auto &CP: H->ChartsMap) {
+                Chart *C = CP.second;
+
+                C->updateMLChart();
+            }
+        }
+
+    }
 }

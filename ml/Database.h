@@ -14,10 +14,11 @@ class Database {
 public:
     void trainUnits();
     void predictUnits();
+
     void updateMLCharts();
 
 private:
-    std::vector<Unit *> getUnits(bool UpdateDB);
+    std::vector<Unit *> getUnits();
 
     void updateHosts();
     void updateCharts();
@@ -25,6 +26,7 @@ private:
 
 private:
     std::map<RRDHOST *, Host *> HostsMap;
+    std::mutex Mutex;
 };
 
 extern Database DB;
