@@ -21,7 +21,6 @@ public:
         DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
         MLRD(nullptr),
         KM(KMeans()), AnomalyScore(0.0) {
-        netdata_rwlock_init(&RwLock);
 
         LastTrainedAt = SteadyClock::now() + TrainSecs;
 
@@ -34,64 +33,23 @@ public:
         SpdrID = SpdrSS.str();
     }
 
-    std::string uid() const {
-        return UniqueID;
-    }
-
-    const char *c_uid() const {
-        return UniqueID.c_str();
-    }
-
-    const char *c_spdr_id() const {
-        return SpdrID.c_str();
-    }
+    std::string uid() const { return UniqueID; }
+    const char *c_uid() const { return UniqueID.c_str(); }
+    const char *c_spdr_id() const { return SpdrID.c_str(); }
 
     bool isObsolete() const {
         return rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
                rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
     }
 
-    int updateEvery() const {
-        return RD->update_every;
-    };
+    int updateEvery() const { return RD->update_every; };
+    CalculatedNumber getAnomalyScore() const { return AnomalyScore; };
+    RRDDIM *getDim() { return RD; }
 
-    CalculatedNumber getAnomalyScore() const {
-        return AnomalyScore;
-    };
-
-    void wrLock() {
-        netdata_rwlock_wrlock(&RwLock);
-    }
-
-    int rdTryLock() {
-        return netdata_rwlock_tryrdlock(&RwLock);
-    }
-
-    void unLock() {
-        netdata_rwlock_unlock(&RwLock);
-    }
-
-    RRDDIM *getDim() {
-        return RD;
-    }
-
-    void updateMLUnit(RRDSET *MLRS) {
-        if (MLRD) {
-            rrddim_set_by_pointer(MLRS, MLRD, getAnomalyScore() * 10000.0);
-            return;
-        }
-
-        MLRD = rrddim_add(MLRS, RD->id, NULL, 1, 10000, RRD_ALGORITHM_ABSOLUTE);
-
-        rrddim_flag_clear(MLRD, RRDDIM_FLAG_HIDDEN);
-        if (rrddim_flag_check(RD, RRDDIM_FLAG_HIDDEN))
-            rrddim_flag_set(MLRD, RRDDIM_FLAG_HIDDEN);
-    };
+    void updateMLUnit(RRDSET *MLRS);
 
     bool shouldTrain() const;
-
     bool train();
-
     bool predict();
 
     friend UnitComp;
@@ -116,8 +74,6 @@ private:
     std::string UniqueID;
     std::string SpdrID;
     bool Trained, Predicted;
-
-    netdata_rwlock_t RwLock;
 };
 
 struct UnitComp {

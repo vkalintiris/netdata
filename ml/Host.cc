@@ -10,9 +10,7 @@ using namespace ml;
  * Update the charts referenced by the host.
  */
 void Host::updateCharts() {
-    wrLock();
     rrdhost_rdlock(RH);
-
     SPDR_BEGIN(Cfg.SPDR, "cat", RH->hostname);
 
     RRDSET *RS;
@@ -54,7 +52,5 @@ void Host::updateCharts() {
     }
 
     SPDR_END(Cfg.SPDR, "cat", RH->hostname);
-
     rrdhost_unlock(RH);
-    unLock();
 }

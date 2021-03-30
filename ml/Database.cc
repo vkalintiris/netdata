@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
-
 #include "Config.h"
 #include "Host.h"
 #include "Chart.h"
@@ -10,8 +8,6 @@
 using namespace ml;
 
 void Database::updateHosts() {
-    std::unique_lock<std::mutex> Lock(Mutex);
-
     rrd_rdlock();
     SPDR_BEGIN(Cfg.SPDR, "cat", "rrd-locked");
 

@@ -13,6 +13,8 @@ namespace ml {
  */
 class Config {
 public:
+    bool Initialized;
+
     std::vector<char> *Buffer;
     struct SPDR_Context *SPDR;
     std::ofstream LogFp;
@@ -26,17 +28,10 @@ public:
     Millis TrainEvery;
 
     // Feature extraction parameters.
-    unsigned DiffN;
-    unsigned SmoothN;
-    unsigned LagN;
+    unsigned DiffN, SmoothN, LagN;
 
     // Simple expression that allows us to skip certain charts from training.
     SIMPLE_PATTERN *SP_ChartsToSkip;
-
-    // Option to allow us to disable the prediction thread.
-    bool DisablePredictionThread;
-
-    bool Initialized;
 };
 
 extern Config Cfg;

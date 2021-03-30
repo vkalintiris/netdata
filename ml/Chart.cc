@@ -66,7 +66,6 @@ void Chart::updateMLChart() {
  */
 void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
                         unsigned DiffN, unsigned SmoothN, unsigned LagN) {
-    netdata_rwlock_wrlock(&UnitsLock);
     rrdset_rdlock(RS);
 
     SPDR_BEGIN(Cfg.SPDR, "cat", RS->id);
@@ -91,5 +90,4 @@ void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
     SPDR_END(Cfg.SPDR, "cat", RS->id);
 
     rrdset_unlock(RS);
-    netdata_rwlock_unlock(&UnitsLock);
 }

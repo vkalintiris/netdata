@@ -11,9 +11,7 @@ class Unit;
 
 class Chart {
 public:
-    Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {
-        netdata_rwlock_init(&UnitsLock);
-    }
+    Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {}
 
     void updateUnits(Millis TrainSecs, Millis TrainEvery,
                      unsigned DiffN, unsigned SmoothN, unsigned LagN);
@@ -25,7 +23,6 @@ public:
     RRDSET *MLRS;
 
     std::map<RRDDIM *, Unit *> UnitsMap;
-    netdata_rwlock_t UnitsLock;
 };
 
 }

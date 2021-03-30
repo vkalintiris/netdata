@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #ifndef ML_DATABASE_H
 #define ML_DATABASE_H
 
@@ -13,7 +15,6 @@ public:
 
 public:
     std::map<RRDHOST *, Host *> Hosts;
-    std::mutex Mutex;
 };
 
 extern Database DB;
