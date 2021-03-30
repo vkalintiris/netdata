@@ -124,13 +124,21 @@ void trainMain(struct netdata_static_thread *Thread) {
 
         SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
         for (Unit *U : Units) {
+            if (U->uid().compare("system.cpu.user") != 0)
+                continue;
+
             /*
              * Train unit
              */
 
             SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
             TimePoint STP = SteadyClock::now();
-            U->train();
+
+            if (U->train())
+                SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "true"));
+            else
+                SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "false"));
+
             TimePoint ETP = SteadyClock::now();
             SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
 

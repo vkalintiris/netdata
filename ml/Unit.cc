@@ -11,16 +11,14 @@ bool Unit::shouldTrain() const {
 /*
  * Run KMeans on the unit.
  */
-#if 0
 bool ml::Unit::train() {
     if (!shouldTrain())
         return false;
 
-    info("Training dim %s\n", c_uid());
-
     wrLock();
 
-    unsigned NumSamples = TrainSecs.count() / updateEvery();
+    unsigned NumSamples = TrainSecs / Millis{updateEvery() * 1000};
+    info("Training with %u samples", NumSamples);
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
@@ -31,6 +29,7 @@ bool ml::Unit::train() {
         info("%s - sparse training window: %lf", c_uid(), W.ratioFilled());
         Trained = false;
     } else {
+        info("%s - trained\n", c_uid());
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
         KM.train(SB);
@@ -42,18 +41,6 @@ bool ml::Unit::train() {
     delete[] CNs;
     return Trained;
 }
-#else
-bool ml::Unit::train() {
-    if (!shouldTrain())
-        return false;
-
-    info("Training dim %s\n", c_uid());
-    std::this_thread::sleep_for(Millis{100});
-
-    LastTrainedAt = SteadyClock::now();
-    return true;
-}
-#endif
 
 /*
  * Calculate the anomaly score of the unit.
