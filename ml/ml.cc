@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Config.h"
+#include "Database.h"
 
 using namespace ml;
 
@@ -9,6 +10,12 @@ using namespace ml;
  * prediction threads.
  */
 Config ml::Cfg;
+
+/*
+ * Global database instance to be shared between training and
+ * prediction threads.
+ */
+Database ml::DB;
 
 /*
  * Initialize global configuration variable.

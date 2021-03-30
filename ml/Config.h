@@ -7,8 +7,6 @@
 
 namespace ml {
 
-class Database;
-
 /*
  * Global configuration shared between the prediction and the training
  * threads.
@@ -39,8 +37,6 @@ public:
     bool DisablePredictionThread;
 
     bool Initialized;
-
-    Database *DB;
 };
 
 extern Config Cfg;

@@ -16,6 +16,8 @@ public:
     std::mutex Mutex;
 };
 
+extern Database DB;
+
 }
 
 #endif /* ML_DATABASE_H */

@@ -50,8 +50,6 @@ static std::vector<Unit *> collectUnits(std::map<RRDHOST *, Host *> &Hosts) {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    Database *DB = Cfg.DB;
-
     std::this_thread::sleep_for(Cfg.UpdateEvery);
 
     size_t LoopCounter = 0;
@@ -64,7 +62,7 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Update hosts.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-hosts");
-        DB->updateHosts();
+        DB.updateHosts();
         SPDR_END(Cfg.SPDR, "cat", "update-hosts");
 
         /*
@@ -72,7 +70,7 @@ void trainMain(struct netdata_static_thread *Thread) {
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
         const auto Now = SteadyClock::now();
-        for (auto &HP : DB->Hosts) {
+        for (auto &HP : DB.Hosts) {
             Host *H = HP.second;
 
             const auto D = Now - H->CreationTime;
@@ -85,7 +83,7 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Update units.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "update-units");
-        for (auto &HP : DB->Hosts) {
+        for (auto &HP : DB.Hosts) {
             Host *H = HP.second;
 
             SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
@@ -103,10 +101,10 @@ void trainMain(struct netdata_static_thread *Thread) {
          * Collect units.
          */
         SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
-        std::vector<Unit *> Units = collectUnits(DB->Hosts);
+        std::vector<Unit *> Units = collectUnits(DB.Hosts);
         SPDR_END(Cfg.SPDR, "cat", "collect-units");
 
-        info("Found %zu units in %zu hosts", Units.size(), DB->Hosts.size());
+        info("Found %zu units in %zu hosts", Units.size(), DB.Hosts.size());
 
         /*
          * Heapify units.
