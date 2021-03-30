@@ -24,7 +24,7 @@ private:
     void updateUnits();
 
 private:
-    std::map<RRDHOST *, Host *> Hosts;
+    std::map<RRDHOST *, Host *> HostsMap;
 };
 
 extern Database DB;

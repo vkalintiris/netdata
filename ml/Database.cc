@@ -18,15 +18,15 @@ void Database::updateHosts() {
         rrdhost_rdlock(RH);
         SPDR_BEGIN(Cfg.SPDR, "cat", RH->hostname);
 
-        std::map<RRDHOST *, Host *>::iterator It = Hosts.find(RH);
+        std::map<RRDHOST *, Host *>::iterator It = HostsMap.find(RH);
 
         if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED)) {
             // TODO: Remove obsolete hosts.
             fatal("Found archived host %s", RH->hostname);
         } else {
-            if (It == Hosts.end()) {
+            if (It == HostsMap.end()) {
                 info("Creating new host %s", RH->hostname);
-                Hosts[RH] = new Host(RH);
+                HostsMap[RH] = new Host(RH);
             }
         }
 
@@ -42,7 +42,7 @@ void Database::updateHosts() {
 void Database::updateCharts() {
     SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
     const auto Now = SteadyClock::now();
-    for (auto &HP : DB.Hosts) {
+    for (auto &HP : DB.HostsMap) {
         Host *H = HP.second;
 
         const auto D = Now - H->CreationTime;
@@ -54,7 +54,7 @@ void Database::updateCharts() {
 
 void Database::updateUnits() {
     SPDR_BEGIN(Cfg.SPDR, "cat", "update-units");
-    for (auto &HP : DB.Hosts) {
+    for (auto &HP : DB.HostsMap) {
         Host *H = HP.second;
 
         SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
@@ -125,7 +125,7 @@ std::vector<Unit *> Database::getUnits(bool UpdateDB) {
     std::vector<Unit *> Units;
 
     SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
-    for (auto &HP : Hosts) {
+    for (auto &HP : HostsMap) {
         Host *H = HP.second;
 
         for (auto &CP : H->ChartsMap) {
@@ -140,7 +140,7 @@ std::vector<Unit *> Database::getUnits(bool UpdateDB) {
     }
     SPDR_END(Cfg.SPDR, "cat", "collect-units");
 
-    info("Found %zu units in %zu hosts", Units.size(), DB.Hosts.size());
+    info("Found %zu units in %zu hosts", Units.size(), DB.HostsMap.size());
 
     return Units;
 }
