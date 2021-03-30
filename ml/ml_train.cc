@@ -128,11 +128,11 @@ void trainMain(struct netdata_static_thread *Thread) {
              * Train unit
              */
 
-            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_uid());
+            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
             TimePoint STP = SteadyClock::now();
             U->train();
             TimePoint ETP = SteadyClock::now();
-            SPDR_END(Cfg.SPDR, "cat", U->c_uid());
+            SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
 
             /*
              * Figure out how long we have to sleep.

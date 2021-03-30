@@ -25,10 +25,14 @@ public:
 
         LastTrainedAt = SteadyClock::now() + TrainSecs;
 
-        std::stringstream SS;
-        SS << RD->rrdset->id << "." << RD->id;
-        UniqueID = SS.str();
-    };
+        std::stringstream UidSS;
+        UidSS << RD->rrdset->id << "." << RD->id;
+        UniqueID = UidSS.str();
+
+        std::stringstream SpdrSS;
+        SpdrSS << RD->rrdset->rrdhost->hostname << "." << UniqueID;
+        SpdrID = SpdrSS.str();
+    }
 
     std::string uid() const {
         return UniqueID;
@@ -36,6 +40,10 @@ public:
 
     const char *c_uid() const {
         return UniqueID.c_str();
+    }
+
+    const char *c_spdr_id() const {
+        return SpdrID.c_str();
     }
 
     bool isObsolete() const {
@@ -106,6 +114,7 @@ private:
     TimePoint LastTrainedAt;
 
     std::string UniqueID;
+    std::string SpdrID;
     bool Trained, Predicted;
 
     netdata_rwlock_t RwLock;
