@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Config.h"
+#include "Database.h"
 #include "Host.h"
 #include "Chart.h"
-#include "Database.h"
+#include "Unit.h"
 
 using namespace ml;
 
@@ -68,13 +69,59 @@ void Database::updateUnits() {
     SPDR_END(Cfg.SPDR, "cat", "update-units");
 }
 
-void Database::update() {
-    updateHosts();
-    updateCharts();
-    updateUnits();
+void Database::trainUnits() {
+    std::vector<Unit *> Units = getUnits(true);
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
+    std::make_heap(Units.begin(), Units.end(), UnitComp());
+    SPDR_END(Cfg.SPDR, "cat", "heapify-units");
+
+    if (Units.size() == 0) {
+        SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
+        std::this_thread::sleep_for(Cfg.UpdateEvery);
+        SPDR_END(Cfg.SPDR, "cat", "train-sleep");
+        return;
+    }
+
+    TimePoint StartTrainingTP = SteadyClock::now();
+    Duration<double> AvailableUnitTrainingDuration = Cfg.TrainEvery / Units.size();
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
+    for (Unit *U : Units) {
+        if (U->uid().compare("system.cpu.user") != 0)
+            continue;
+
+        SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
+        TimePoint STP = SteadyClock::now();
+
+        if (U->train())
+            SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "true"));
+        else
+            SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "false"));
+
+        TimePoint ETP = SteadyClock::now();
+        SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
+
+        if (ETP - StartTrainingTP > Cfg.UpdateEvery)
+            break;
+
+        Duration<double> UnitTrainingDuration = ETP - STP;
+        if (AvailableUnitTrainingDuration > UnitTrainingDuration) {
+            SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
+            std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
+            SPDR_END(Cfg.SPDR, "cat", "train-sleep");
+        }
+    }
+    SPDR_END(Cfg.SPDR, "cat", "train-units");
 }
 
-std::vector<Unit *> Database::getUnits() {
+std::vector<Unit *> Database::getUnits(bool UpdateDB) {
+    if (UpdateDB) {
+        updateHosts();
+        updateCharts();
+        updateUnits();
+    }
+
     std::vector<Unit *> Units;
 
     SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");

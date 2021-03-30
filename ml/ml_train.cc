@@ -30,65 +30,16 @@ namespace ml {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    size_t LoopCounter = 0;
+    size_t LoopCounter = 1;
 
     while (!netdata_exit) {
-        info("Starting training loop %zu", ++LoopCounter);
+        info("[%zu] Training loop start", LoopCounter);
+
         SPDR_COUNTER1(Cfg.SPDR, "cat", "training-loop", SPDR_INT("iteration", LoopCounter));
-
-        // Update DB and collect units.
-        DB.update();
-        std::vector<Unit *> Units = DB.getUnits();
-
-        // Heapify units.
-        SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
-        std::make_heap(Units.begin(), Units.end(), UnitComp());
-        SPDR_END(Cfg.SPDR, "cat", "heapify-units");
-
-        // Nothing to do if we don't have any units.
-        if (Units.size() == 0) {
-            SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
-            std::this_thread::sleep_for(Cfg.UpdateEvery);
-            SPDR_END(Cfg.SPDR, "cat", "train-sleep");
-            continue;
-        }
-
-        /*
-         * Train units.
-        */
-
-        TimePoint StartTrainingTP = SteadyClock::now();
-        Duration<double> AvailableUnitTrainingDuration = Cfg.TrainEvery / Units.size();
-
-        SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
-        for (Unit *U : Units) {
-            if (U->uid().compare("system.cpu.user") != 0)
-                continue;
-
-            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
-            TimePoint STP = SteadyClock::now();
-
-            if (U->train())
-                SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "true"));
-            else
-                SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "false"));
-
-            TimePoint ETP = SteadyClock::now();
-            SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
-
-            if (ETP - StartTrainingTP > Cfg.UpdateEvery)
-                break;
-
-            Duration<double> UnitTrainingDuration = ETP - STP;
-            if (AvailableUnitTrainingDuration > UnitTrainingDuration) {
-                SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
-                std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
-                SPDR_END(Cfg.SPDR, "cat", "train-sleep");
-            }
-        }
+        DB.trainUnits();
         SPDR_END(Cfg.SPDR, "cat", "train-units");
 
-        info("---");
+        info("[%zu] Training loop end", LoopCounter++);
     }
 
     netdata_thread_cleanup_pop(1);

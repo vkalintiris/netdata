@@ -12,10 +12,13 @@ class Host;
 
 class Database {
 public:
-    void update();
-    std::vector<Unit *> getUnits();
+    void trainUnits();
+    void predictUnits();
+    void updateMLCharts();
 
 private:
+    std::vector<Unit *> getUnits(bool UpdateDB);
+
     void updateHosts();
     void updateCharts();
     void updateUnits();

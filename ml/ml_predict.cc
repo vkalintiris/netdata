@@ -19,58 +19,12 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     heartbeat_init(&HB);
 
     while (!netdata_exit) {
-        for (Unit *U : DB.getUnits())
-            U->predict();
-
-
 #if 0
-    std::map<RRDHOST *, Host *> &Hosts = DB.Hosts;
+        DB.predictUnits();
+        DB.updateMLCharts();
 #endif
 
-    while (!netdata_exit) {
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
-        continue;
-
-#if 0
-        netdata_rwlock_rdlock(&Cfg.HostsLock);
-        for (auto &P : Hosts) {
-            unsigned NumPredicted = 0, NumUnits = 0;
-
-            struct timeval BTV, ETV;
-            now_monotonic_high_precision_timeval(&BTV);
-
-            Host *H = P.second;
-            H->rdLock();
-            for (auto &P : H->ChartsMap) {
-                Chart *C = P.second;
-
-                for (auto &P : C->UnitsMap) {
-                    Unit *U = P.second;
-
-                    NumUnits++;
-
-                    if (U->rdTryLock())
-                        continue;
-
-                    if (U->predict())
-                        NumPredicted++;
-
-                    U->unLock();
-                }
-
-                C->updateMLChart();
-            }
-            H->unLock();
-
-            now_monotonic_high_precision_timeval(&ETV);
-
-            info("Predicted %u/%u units in %llu usec", NumPredicted, NumUnits,
-                 dt_usec(&ETV, &BTV));
-        }
-        netdata_rwlock_unlock(&Cfg.HostsLock);
-
-        heartbeat_next(&HB, 1 * USEC_PER_SEC);
-#endif
     }
 
     netdata_thread_cleanup_pop(1);
