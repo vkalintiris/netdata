@@ -19,11 +19,7 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     heartbeat_init(&HB);
 
     while (!netdata_exit) {
-#if 0
         DB.predictUnits();
-        DB.updateMLCharts();
-#endif
-
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
     }
 

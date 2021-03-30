@@ -148,13 +148,22 @@ void Database::trainUnits() {
 }
 
 void Database::predictUnits() {
+    SPDR_BEGIN(Cfg.SPDR, "cat", "predict-units");
     {
         std::unique_lock<std::mutex> Lock(Mutex);
 
-        for (Unit *U : getUnits())
-            U->predict();
-    }
+        for (Unit *U : getUnits()) {
+            if (U->uid().compare("system.cpu.user") != 0)
+                continue;
 
+            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
+            U->predict();
+            SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
+        }
+    }
+    SPDR_END(Cfg.SPDR, "cat", "predict-units");
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "update-ml-charts");
     {
         std::unique_lock<std::mutex> Lock(Mutex);
 
@@ -167,6 +176,6 @@ void Database::predictUnits() {
                 C->updateMLChart();
             }
         }
-
     }
+    SPDR_END(Cfg.SPDR, "cat", "update-ml-charts");
 }
