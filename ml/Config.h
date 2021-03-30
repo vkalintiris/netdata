@@ -41,6 +41,6 @@ public:
 
 extern Config Cfg;
 
-};
+}
 
 #endif /* ML_CONFIG_H */

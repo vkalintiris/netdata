@@ -28,6 +28,6 @@ public:
     netdata_rwlock_t UnitsLock;
 };
 
-};
+}
 
 #endif /* ML_CHART_H */

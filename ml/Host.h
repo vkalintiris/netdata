@@ -38,6 +38,6 @@ public:
     netdata_rwlock_t RWLock;
 };
 
-};
+}
 
 #endif /* ML_HOST_H */

@@ -130,6 +130,6 @@ struct UnitComp {
     }
 };
 
-};
+}
 
 #endif /* ML_UNIT_H */
