@@ -17,8 +17,9 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
+#if 0
     std::map<RRDHOST *, Host *> &Hosts = DB.Hosts;
-    (void) Hosts;
+#endif
 
     while (!netdata_exit) {
         heartbeat_next(&HB, 1 * USEC_PER_SEC);
