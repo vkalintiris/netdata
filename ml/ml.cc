@@ -50,8 +50,9 @@ void ml_init(void) {
 void *ml_main(void *Ptr) {
     struct netdata_static_thread *Thread = (struct netdata_static_thread *) Ptr;
 
-    std::string ThreadName = Thread->name;
+    std::this_thread::sleep_for(Cfg.UpdateEvery);
 
+    std::string ThreadName = Thread->name;
     SPDR_METADATA1(Cfg.SPDR, "thread_name", SPDR_STR("name", ThreadName.c_str()));
 
     if (ThreadName.compare("MLTRAIN") == 0)

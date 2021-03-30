@@ -30,8 +30,6 @@ namespace ml {
 void trainMain(struct netdata_static_thread *Thread) {
     netdata_thread_cleanup_push(cleanupTrainThread, Thread);
 
-    std::this_thread::sleep_for(Cfg.UpdateEvery);
-
     size_t LoopCounter = 0;
 
     while (!netdata_exit) {

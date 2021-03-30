@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Database.h"
+#include "Unit.h"
 
 static void cleanupPredictThread(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
@@ -16,6 +17,11 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
 
     heartbeat_t HB;
     heartbeat_init(&HB);
+
+    while (!netdata_exit) {
+        for (Unit *U : DB.getUnits())
+            U->predict();
+
 
 #if 0
     std::map<RRDHOST *, Host *> &Hosts = DB.Hosts;
