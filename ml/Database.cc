@@ -69,6 +69,36 @@ void Database::updateUnits() {
     SPDR_END(Cfg.SPDR, "cat", "update-units");
 }
 
+std::vector<Unit *> Database::getUnits(bool UpdateDB) {
+    if (UpdateDB) {
+        updateHosts();
+        updateCharts();
+        updateUnits();
+    }
+
+    std::vector<Unit *> Units;
+
+    SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
+    for (auto &HP : HostsMap) {
+        Host *H = HP.second;
+
+        for (auto &CP : H->ChartsMap) {
+            Chart *C = CP.second;
+
+            for (auto &UP : C->UnitsMap) {
+                    Unit *U = UP.second;
+
+                    Units.push_back(U);
+            }
+        }
+    }
+    SPDR_END(Cfg.SPDR, "cat", "collect-units");
+
+    info("Found %zu units in %zu hosts", Units.size(), DB.HostsMap.size());
+
+    return Units;
+}
+
 void Database::trainUnits() {
     std::vector<Unit *> Units = getUnits(true);
 
@@ -113,34 +143,4 @@ void Database::trainUnits() {
         }
     }
     SPDR_END(Cfg.SPDR, "cat", "train-units");
-}
-
-std::vector<Unit *> Database::getUnits(bool UpdateDB) {
-    if (UpdateDB) {
-        updateHosts();
-        updateCharts();
-        updateUnits();
-    }
-
-    std::vector<Unit *> Units;
-
-    SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
-    for (auto &HP : HostsMap) {
-        Host *H = HP.second;
-
-        for (auto &CP : H->ChartsMap) {
-            Chart *C = CP.second;
-
-            for (auto &UP : C->UnitsMap) {
-                    Unit *U = UP.second;
-
-                    Units.push_back(U);
-            }
-        }
-    }
-    SPDR_END(Cfg.SPDR, "cat", "collect-units");
-
-    info("Found %zu units in %zu hosts", Units.size(), DB.HostsMap.size());
-
-    return Units;
 }
