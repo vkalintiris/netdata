@@ -12,7 +12,6 @@ static void dumpSpdr(const char *string, void *user_data) {
     ml::Cfg.LogFp << string << std::endl;
 }
 
-
 static void cleanupTrainThread(void *ptr) {
     struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
 
