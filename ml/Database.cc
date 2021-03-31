@@ -24,10 +24,8 @@ void Database::updateHosts() {
             // TODO: Remove obsolete hosts.
             fatal("Found archived host %s", RH->hostname);
         } else {
-            if (It == HostsMap.end()) {
-                info("Creating new host %s", RH->hostname);
+            if (It == HostsMap.end())
                 HostsMap[RH] = new Host(RH);
-            }
         }
 
         SPDR_END(Cfg.SPDR, "cat", RH->hostname);
@@ -120,9 +118,6 @@ void Database::trainUnits() {
 
     SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
     for (Unit *U : Units) {
-        if (U->uid().compare("system.cpu.user") != 0)
-            continue;
-
         SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
         TimePoint STP = SteadyClock::now();
 
@@ -153,9 +148,6 @@ void Database::predictUnits() {
         std::unique_lock<std::mutex> Lock(Mutex);
 
         for (Unit *U : getUnits()) {
-            if (U->uid().compare("system.cpu.user") != 0)
-                continue;
-
             SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
             U->predict();
             SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());

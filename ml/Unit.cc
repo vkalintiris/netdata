@@ -30,7 +30,6 @@ bool ml::Unit::train() {
         return false;
 
     unsigned NumSamples = TrainSecs / Millis{updateEvery() * 1000};
-    info("Training with %u samples", NumSamples);
 
     Window W = Window(this, NumSamples);
     CalculatedNumber *CNs = W.getCalculatedNumbers();
@@ -41,7 +40,6 @@ bool ml::Unit::train() {
         info("%s - sparse training window: %lf", c_uid(), W.ratioFilled());
         Trained = false;
     } else {
-        info("%s - trained\n", c_uid());
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
         KM.train(SB);
