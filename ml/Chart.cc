@@ -69,12 +69,8 @@ void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
                         unsigned DiffN, unsigned SmoothN, unsigned LagN) {
     rrdset_rdlock(RS);
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", RS->id);
-
     RRDDIM *RD;
     rrddim_foreach_read(RD, RS) {
-        SPDR_BEGIN(Cfg.SPDR, "cat", RD->id);
-
         bool IsObsolete = rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
                           rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
         if (IsObsolete)
@@ -84,11 +80,7 @@ void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
         if (It == UnitsMap.end())
             UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery,
                                     DiffN, SmoothN, LagN);
-
-        SPDR_END(Cfg.SPDR, "cat", RD->id);
     }
-
-    SPDR_END(Cfg.SPDR, "cat", RS->id);
 
     rrdset_unlock(RS);
 }

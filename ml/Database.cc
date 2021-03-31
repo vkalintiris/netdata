@@ -9,14 +9,11 @@
 using namespace ml;
 
 void Database::updateHosts() {
-    SPDR_BEGIN(Cfg.SPDR, "cat", "update-hosts");
     rrd_rdlock();
-    SPDR_BEGIN(Cfg.SPDR, "cat", "rrd-locked");
 
     RRDHOST *RH;
     rrdhost_foreach_read(RH) {
         rrdhost_rdlock(RH);
-        SPDR_BEGIN(Cfg.SPDR, "cat", RH->hostname);
 
         std::map<RRDHOST *, Host *>::iterator It = HostsMap.find(RH);
 
@@ -28,17 +25,13 @@ void Database::updateHosts() {
                 HostsMap[RH] = new Host(RH);
         }
 
-        SPDR_END(Cfg.SPDR, "cat", RH->hostname);
         rrdhost_unlock(RH);
     }
 
-    SPDR_END(Cfg.SPDR, "cat", "rrd-locked");
     rrd_unlock();
-    SPDR_END(Cfg.SPDR, "cat", "update-hosts");
 }
 
 void Database::updateCharts() {
-    SPDR_BEGIN(Cfg.SPDR, "cat", "update-charts");
     const auto Now = SteadyClock::now();
     for (auto &HP : DB.HostsMap) {
         Host *H = HP.second;
@@ -47,30 +40,24 @@ void Database::updateCharts() {
         if (D > Cfg.UpdateEvery)
             H->updateCharts();
     }
-    SPDR_END(Cfg.SPDR, "cat", "update-charts");
 }
 
 void Database::updateUnits() {
-    SPDR_BEGIN(Cfg.SPDR, "cat", "update-units");
     for (auto &HP : DB.HostsMap) {
         Host *H = HP.second;
 
-        SPDR_BEGIN(Cfg.SPDR, "cat", H->c_uid());
         for (auto &CP : H->ChartsMap) {
             Chart *C = CP.second;
 
             C->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery,
                            Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         }
-        SPDR_END(Cfg.SPDR, "cat", H->c_uid());
     }
-    SPDR_END(Cfg.SPDR, "cat", "update-units");
 }
 
 std::vector<Unit *> Database::getUnits() {
     std::vector<Unit *> Units;
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", "collect-units");
     for (auto &HP : HostsMap) {
         Host *H = HP.second;
 
@@ -84,7 +71,6 @@ std::vector<Unit *> Database::getUnits() {
             }
         }
     }
-    SPDR_END(Cfg.SPDR, "cat", "collect-units");
 
     info("Found %zu units in %zu hosts", Units.size(), DB.HostsMap.size());
 
@@ -102,60 +88,47 @@ void Database::trainUnits() {
 
     std::vector<Unit *> Units = getUnits();
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", "heapify-units");
     std::make_heap(Units.begin(), Units.end(), UnitComp());
-    SPDR_END(Cfg.SPDR, "cat", "heapify-units");
 
     if (Units.size() == 0) {
-        SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
         std::this_thread::sleep_for(Cfg.UpdateEvery);
-        SPDR_END(Cfg.SPDR, "cat", "train-sleep");
         return;
     }
 
     TimePoint StartTrainingTP = SteadyClock::now();
     Duration<double> AvailableUnitTrainingDuration = Cfg.TrainEvery / Units.size();
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", "train-units");
     for (Unit *U : Units) {
-        SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
         TimePoint STP = SteadyClock::now();
 
-        if (U->train())
-            SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "true"));
-        else
-            SPDR_EVENT1(Cfg.SPDR, "cat", "trained", SPDR_STR(U->c_spdr_id(), "false"));
+        if (!U->train())
+            continue;
 
         TimePoint ETP = SteadyClock::now();
-        SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
 
         if (ETP - StartTrainingTP > Cfg.UpdateEvery)
             break;
 
         Duration<double> UnitTrainingDuration = ETP - STP;
-        if (AvailableUnitTrainingDuration > UnitTrainingDuration) {
-            SPDR_BEGIN(Cfg.SPDR, "cat", "train-sleep");
+        if (AvailableUnitTrainingDuration > UnitTrainingDuration)
             std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
-            SPDR_END(Cfg.SPDR, "cat", "train-sleep");
-        }
     }
-    SPDR_END(Cfg.SPDR, "cat", "train-units");
+
+    TimePoint EndTrainingTP = SteadyClock::now();
+    Duration<double> TrainingDuration = EndTrainingTP - StartTrainingTP;
+    if (TrainingDuration < Cfg.UpdateEvery)
+        std::this_thread::sleep_for(Cfg.UpdateEvery - TrainingDuration);
 }
 
 void Database::predictUnits() {
-    SPDR_BEGIN(Cfg.SPDR, "cat", "predict-units");
     {
         std::unique_lock<std::mutex> Lock(Mutex);
 
         for (Unit *U : getUnits()) {
-            SPDR_BEGIN(Cfg.SPDR, "cat", U->c_spdr_id());
             U->predict();
-            SPDR_END(Cfg.SPDR, "cat", U->c_spdr_id());
         }
     }
-    SPDR_END(Cfg.SPDR, "cat", "predict-units");
 
-    SPDR_BEGIN(Cfg.SPDR, "cat", "update-ml-charts");
     {
         std::unique_lock<std::mutex> Lock(Mutex);
 
@@ -169,5 +142,4 @@ void Database::predictUnits() {
             }
         }
     }
-    SPDR_END(Cfg.SPDR, "cat", "update-ml-charts");
 }

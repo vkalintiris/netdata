@@ -37,14 +37,16 @@ bool ml::Unit::train() {
     LastTrainedAt = SteadyClock::now();
 
     if (W.ratioFilled() < 0.8) {
-        info("%s - sparse training window: %lf", c_uid(), W.ratioFilled());
         Trained = false;
+        error("%s -%straining window: %lf, score: %lf",
+              c_uid(), Trained ? " " : " sparse ", W.ratioFilled(), AnomalyScore);
     } else {
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
         KM.train(SB);
         Trained = true;
     }
+
 
     delete[] CNs;
     return Trained;
@@ -63,13 +65,13 @@ bool ml::Unit::predict() {
     CalculatedNumber *CNs = W.getCalculatedNumbers();
 
     if (W.NumCollected != W.NumSamples) {
-        info("%s - sparse prediction window: %lf", c_uid(), W.ratioFilled());
         Predicted = false;
+        error("%s -%sprediction window: %lf, score: %lf",
+              c_uid(), Predicted ? " " : " sparse ", W.ratioFilled(), AnomalyScore);
     } else {
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
 
-        // Waiting for the next iteration is fine.
         AnomalyScore = KM.anomalyScore(SB);
         Predicted = true;
     }

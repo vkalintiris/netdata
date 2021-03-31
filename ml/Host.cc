@@ -11,12 +11,10 @@ using namespace ml;
  */
 void Host::updateCharts() {
     rrdhost_rdlock(RH);
-    SPDR_BEGIN(Cfg.SPDR, "cat", RH->hostname);
 
     RRDSET *RS;
     rrdset_foreach_read(RS, RH) {
         rrdset_rdlock(RS);
-        SPDR_BEGIN(Cfg.SPDR, "cat", RS->id);
 
         std::map<RRDSET *, Chart *>::iterator It = ChartsMap.find(RS);
 
@@ -47,10 +45,8 @@ void Host::updateCharts() {
             }
         }
 
-        SPDR_END(Cfg.SPDR, "cat", RS->id);
         rrdset_unlock(RS);
     }
 
-    SPDR_END(Cfg.SPDR, "cat", RH->hostname);
     rrdhost_unlock(RH);
 }

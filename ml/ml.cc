@@ -32,15 +32,15 @@ void ml_init(void) {
     Cfg.LogFp.open("/home/vk/trace.json");
 #endif
 
-    Cfg.UpdateEvery = Millis{10 * 1000};
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 5 * 60) * 1000};
-    Cfg.TrainEvery = Millis{ config_get_number(CONFIG_SECTION_ML, "train every secs", 60) * 1000};
+    Cfg.UpdateEvery = Millis{15 * 1000};
+    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60) * 1000};
+    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 15 * 60) * 1000};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
     Cfg.LagN = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
 
-    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!disk.nvme0n1 *");
+    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.Initialized = true;
@@ -55,7 +55,6 @@ void *ml_main(void *Ptr) {
     std::this_thread::sleep_for(Cfg.UpdateEvery);
 
     std::string ThreadName = Thread->name;
-    SPDR_METADATA1(Cfg.SPDR, "thread_name", SPDR_STR("name", ThreadName.c_str()));
 
     if (ThreadName.compare("MLTRAIN") == 0)
         ml::trainMain(Thread);

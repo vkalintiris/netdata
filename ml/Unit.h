@@ -20,8 +20,8 @@ public:
         TrainSecs(TrainSecs), TrainEvery(TrainEvery),
         DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
         MLRD(nullptr),
-        KM(KMeans()), AnomalyScore(0.0) {
-
+        KM(KMeans()), AnomalyScore(0.0),
+        Trained(false), Predicted(false) {
         LastTrainedAt = SteadyClock::now() + TrainSecs;
 
         std::stringstream UidSS;
@@ -69,11 +69,12 @@ private:
 
     KMeans KM;
     CalculatedNumber AnomalyScore;
-    TimePoint LastTrainedAt;
+    bool Trained;
+    bool Predicted;
 
+    TimePoint LastTrainedAt;
     std::string UniqueID;
     std::string SpdrID;
-    bool Trained, Predicted;
 };
 
 struct UnitComp {
