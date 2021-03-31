@@ -40,7 +40,7 @@ void ml_init(void) {
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
     Cfg.LagN = config_get_number(CONFIG_SECTION_ML, "num samples to lag", 5);
 
-    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
+    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!disk.nvme0n1 *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.Initialized = true;

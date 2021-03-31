@@ -40,6 +40,7 @@ bool ml::Unit::train() {
         info("%s - sparse training window: %lf", c_uid(), W.ratioFilled());
         Trained = false;
     } else {
+        info("%s - training window ratio: %lf", c_uid(), W.ratioFilled());
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
         KM.train(SB);
@@ -66,6 +67,7 @@ bool ml::Unit::predict() {
         info("%s - sparse prediction window: %lf", c_uid(), W.ratioFilled());
         Predicted = false;
     } else {
+        info("%s - prediction window ratio: %lf", c_uid(), W.ratioFilled());
         SamplesBuffer SB = SamplesBuffer(CNs, W.NumCollected, 1,
                                          DiffN, SmoothN, LagN);
 

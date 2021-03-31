@@ -20,7 +20,8 @@ void ml::predictMain(struct netdata_static_thread *Thread) {
 
     while (!netdata_exit) {
         DB.predictUnits();
-        heartbeat_next(&HB, 1 * USEC_PER_SEC);
+        sleep_usec(1 * USEC_PER_SEC);
+        //heartbeat_next(&HB, 1 * USEC_PER_SEC);
     }
 
     netdata_thread_cleanup_pop(1);
