@@ -104,7 +104,7 @@ class Service(UrlService):
                     prefix_probs[prefix].append(chart_probs[chart])
                     prefix_flags[prefix].append(chart_flags["{}_flag".format(chart)])
             prefix_probs = {'{}.'.format(p): round(sum(prefix_probs[p])/len(prefix_probs[p]), 2) for p in prefix_probs if len(prefix_probs[p]) > 0}
-            prefix_flags = {'{}.'.format(p): round(sum(prefix_flags[p])/len(prefix_flags[p]), 2) for p in prefix_flags if len(prefix_flags[p]) > 0}
+            prefix_flags = {'{}._flag'.format(p): round(sum(prefix_flags[p])/len(prefix_flags[p]), 2) for p in prefix_flags if len(prefix_flags[p]) > 0}
             self.update_charts('prefix_probs', prefix_probs)
             self.update_charts('prefix_flags', prefix_flags)
 
