@@ -39,7 +39,8 @@ void Chart::updateMLChart() {
 
     // Use properties of the wrapped set to make the ML set appear
     // next to the wrapped set.
-    MLRS = rrdset_create_localhost(
+    MLRS = rrdset_create(
+            RS->rrdhost,        // host
             RS->type,           // type
             Name.c_str(),       // id
             NULL,               // name
