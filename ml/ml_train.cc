@@ -6,6 +6,7 @@
 #include "Chart.h"
 #include "Unit.h"
 
+#if defined(TRACING_ENABLED)
 static void dumpSpdr(const char *string, void *user_data) {
     (void) user_data;
 
@@ -23,6 +24,15 @@ static void cleanupTrainThread(void *ptr) {
 
     thr->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
+#else
+static void cleanupTrainThread(void *ptr) {
+    struct netdata_static_thread *thr = (struct netdata_static_thread *) ptr;
+
+    thr->enabled = NETDATA_MAIN_THREAD_EXITING;
+    info("Cleaning up train thread");
+    thr->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
+#endif
 
 namespace ml {
 

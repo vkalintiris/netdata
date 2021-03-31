@@ -24,11 +24,13 @@ void ml_init(void) {
     if (Cfg.Initialized)
         return;
 
+#if defined(TRACING_ENABLED)
     size_t BufferSize = 256 * 1024 * 1024;
     Cfg.Buffer = new std::vector<char>(BufferSize);
     spdr_init(&Cfg.SPDR, &Cfg.Buffer->front(), BufferSize);
     spdr_enable_trace(Cfg.SPDR, 1);
     Cfg.LogFp.open("/home/vk/trace.json");
+#endif
 
     Cfg.UpdateEvery = Millis{10 * 1000};
     Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60) * 1000};
