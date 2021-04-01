@@ -52,6 +52,7 @@ class Service(UrlService):
         self.thold = self.configuration.get('thold', 99.0)
         self.display_family = bool(self.configuration.get('display_family', True))
         self.display_prefix = bool(self.configuration.get('display_prefix', True))
+        self.display_chart = bool(self.configuration.get('display_chart', True))
 
     def _get_data(self):
         raw_data = self._get_raw_data()
@@ -63,6 +64,8 @@ class Service(UrlService):
         chart_families = list(set(chart_family_map.values()))
         raw_data = {k: raw_data[k] for k in raw_data if k.endswith(self.suffix)}
 
+        data = {}
+
         # get chart level data
         chart_probs = {}
         chart_flags = {}
@@ -71,10 +74,11 @@ class Service(UrlService):
             anomaly_scores = [dim['value'] for dim in raw_data[chart]['dimensions'].values() if dim['value'] is not None]
             chart_probs[base_chart] = round(sum(anomaly_scores) / len(anomaly_scores), 2)
             chart_flags["{}_flag".format(base_chart)] = max([1 if score >= self.thold else 0 for score in anomaly_scores])        
-        self.update_charts('chart_probs', chart_probs)
-        self.update_charts('chart_flags', chart_flags)
 
-        data = {**chart_probs, **chart_flags}
+        if self.display_chart:
+            self.update_charts('chart_probs', chart_probs)
+            self.update_charts('chart_flags', chart_flags)
+            data = {**chart_probs, **chart_flags}
 
         # agg to family level
         if self.display_family:
