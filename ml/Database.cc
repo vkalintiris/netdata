@@ -15,14 +15,16 @@ void Database::updateHosts() {
     rrdhost_foreach_read(RH) {
         rrdhost_rdlock(RH);
 
-        std::map<RRDHOST *, Host *>::iterator It = HostsMap.find(RH);
+        if (!simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname)) {
+            std::map<RRDHOST *, Host *>::iterator It = HostsMap.find(RH);
 
-        if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED)) {
-            // TODO: Remove obsolete hosts.
-            fatal("Found archived host %s", RH->hostname);
-        } else {
-            if (It == HostsMap.end())
-                HostsMap[RH] = new Host(RH);
+            if (rrdhost_flag_check(RH, RRDHOST_FLAG_ARCHIVED)) {
+                // TODO: Remove obsolete hosts.
+                fatal("Found archived host %s", RH->hostname);
+            } else {
+                if (It == HostsMap.end())
+                    HostsMap[RH] = new Host(RH);
+            }
         }
 
         rrdhost_unlock(RH);

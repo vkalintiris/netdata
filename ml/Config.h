@@ -26,6 +26,9 @@ public:
     // Feature extraction parameters.
     unsigned DiffN, SmoothN, LagN;
 
+    // Simple expression that allows us to skip certain hosts from training.
+    SIMPLE_PATTERN *SP_HostsToSkip;
+
     // Simple expression that allows us to skip certain charts from training.
     SIMPLE_PATTERN *SP_ChartsToSkip;
 };
