@@ -238,7 +238,6 @@ HEALTH_PLUGIN_FILES = \
     $(NULL)
 
 ML_FILES = \
-	dlib/dlib/all/source.cpp \
 	ml/ml.h \
 	ml/Chart.h \
 	ml/Chart.cc \

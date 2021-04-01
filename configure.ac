@@ -288,7 +288,7 @@ AC_MSG_RESULT([${build_target} with id ${build_target_id}])
 
 ACX_PTHREAD(, [AC_MSG_ERROR([Cannot initialize pthread environment])])
 LIBS="${PTHREAD_LIBS} ${LIBS}"
-CFLAGS="${CFLAGS} ${PTHREAD_CFLAGS} -DDLIB_NO_GUI_SUPPORT -Idlib"
+CFLAGS="${CFLAGS} ${PTHREAD_CFLAGS}"
 CC="${PTHREAD_CC}"
 
 AC_CHECK_LIB(
@@ -603,6 +603,34 @@ else
         AC_C_MALLINFO
     fi
 fi
+
+
+# -----------------------------------------------------------------------------
+# libdlib
+
+AC_MSG_CHECKING([for libdlib])
+AC_LANG_SAVE
+AC_LANG_CPLUSPLUS
+save_LIBS="${LIBS}"
+LIBS="-ldlib -llapack -lblas"
+save_CXXFLAGS="${CXXFLAGS}"
+CXXFLAGS="${CXXFLAGS} -std=c++11"
+
+AC_LINK_IFELSE([
+    AC_LANG_SOURCE([[
+        #include <dlib/matrix.h>
+        int main() { dlib::matrix<double,0,1> column_vector;; }
+    ]])
+    ],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_ERROR([could not find dlib headers!])]
+)
+
+LIBS="${save_LIBS} ${LIBS}"
+CXXFLAGS="${save_CXXFLAGS}"
+AC_LANG_RESTORE
+AC_MSG_RESULT([${have_libdlib}])
+
 
 # -----------------------------------------------------------------------------
 # libcap
