@@ -22,6 +22,13 @@ void SamplesBuffer::print(std::ostream &OS) const {
 }
 
 void SamplesBuffer::diffSamples() {
+    // Panda's DataFrame default behaviour is to subtract each element from
+    // itself. For us `DiffN = 0` means "disable diff-ing" when preprocessing
+    // the samples buffer. This deviation will make it easier for us to test
+    // the KMeans implementation.
+    if (DiffN == 0)
+        return;
+
     for (size_t Idx = 0; Idx != (NumSamples - DiffN); Idx++) {
         size_t High = (NumSamples - 1) - Idx;
         size_t Low = High - DiffN;
