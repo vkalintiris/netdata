@@ -71,15 +71,19 @@ void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
 
     RRDDIM *RD;
     rrddim_foreach_read(RD, RS) {
+        std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);
+
         bool IsObsolete = rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
                           rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
-        if (IsObsolete)
-            fatal("Found obsolete dim %s.%s.%s", RS->rrdhost->hostname, RS->id, RD->id);
-
-        std::map<RRDDIM *, Unit *>::iterator It = UnitsMap.find(RD);
-        if (It == UnitsMap.end())
-            UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery,
-                                    DiffN, SmoothN, LagN);
+        if (IsObsolete) {
+            if (It != UnitsMap.end()) {
+                error("Found obsolete dim %s.%s.%s", RS->rrdhost->hostname, RS->id, RD->id);
+                UnitsMap.erase(RD);
+            }
+        } else {
+            if (It == UnitsMap.end())
+                UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery, DiffN, SmoothN, LagN);
+        }
     }
 
     rrdset_unlock(RS);
