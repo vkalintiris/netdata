@@ -47,6 +47,9 @@ public:
     bool train();
     bool predict();
 
+    bool isTrained() const { return Trained; }
+    bool isPredicted() const { return Predicted; };
+
     friend UnitComp;
 
 private:
@@ -69,16 +72,6 @@ private:
 
     TimePoint LastTrainedAt;
     std::string UniqueID;
-};
-
-struct UnitComp {
-    bool operator()(const Unit *LHS, const Unit *RHS) {
-        if (LHS->SetPtr != RHS->SetPtr)
-            return LHS->SetPtr > RHS->SetPtr;
-
-        // make_heap returns a max heap
-        return LHS->LastTrainedAt > RHS->LastTrainedAt;
-    }
 };
 
 }

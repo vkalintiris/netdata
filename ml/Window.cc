@@ -99,8 +99,8 @@ CalculatedNumber *ml::Window::getCalculatedNumbers() {
         storage_number SN = Ops->next_metric(&Handle, &CurrT);
 
         if (!does_storage_number_exist(SN)) {
-            NumEmpty++;
             CNs[Idx] = std::numeric_limits<CalculatedNumber>::quiet_NaN();
+            NumEmpty++;
         } else if (did_storage_number_reset(SN)) {
             NumReset++;
         }
@@ -117,6 +117,10 @@ CalculatedNumber *ml::Window::getCalculatedNumbers() {
 
     if (NumEmpty == 0 && NumCollected == NumSamples)
         return CNs;
+
+    if (NumReset) {
+        error("Found %u overflown numbers", NumReset);
+    }
 
     /*
      * Pack numbers that are not NaNs to the beginning of the array.
