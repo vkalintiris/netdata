@@ -6,7 +6,7 @@
 FROM netdata/builder:latest as builder
 
 # install dlib dependencies
-RUN sudo apt-get update --yes --quiet && sudo apt install libdlib-dev liblapack-dev liblapack3 --yes --quiet
+RUN apt-get update --yes --quiet && apt install libdlib-dev liblapack-dev liblapack3 --yes --quiet
 
 # One of 'nightly' or 'stable'
 ARG RELEASE_CHANNEL=nightly
