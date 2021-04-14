@@ -72,7 +72,9 @@ class Service(UrlService):
         for chart in raw_data:
             base_chart = chart.replace(self.suffix, '')
             anomaly_scores = [dim['value'] for dim in raw_data[chart]['dimensions'].values() if dim['value'] is not None]
+            # average across dimensions for each chart
             chart_probs[base_chart] = round(sum(anomaly_scores) / len(anomaly_scores), 2)
+            # if any dimension has an anomaly then the chart is anomalous
             chart_flags["{}_flag".format(base_chart)] = max([1 if score >= self.thold else 0 for score in anomaly_scores])        
 
         if self.display_chart:
@@ -89,7 +91,9 @@ class Service(UrlService):
                 if family:
                     family_probs[family].append(chart_probs[chart])
                     family_flags[family].append(chart_flags["{}_flag".format(chart)])
+            # average across charts for each family
             family_probs = {"{}_prob".format(f): round(sum(family_probs[f])/len(family_probs[f]), 2) for f in family_probs if len(family_probs[f]) > 0}
+            # average the flags across charts for each family (just using a max here would be too noisey)
             family_flags = {"{}_flag".format(f): round(sum(family_flags[f])/len(family_flags[f]), 2) for f in family_flags if len(family_flags[f]) > 0}
             self.update_charts('family_probs', family_probs)
             self.update_charts('family_flags', family_flags)
@@ -107,7 +111,9 @@ class Service(UrlService):
                 if prefix:
                     prefix_probs[prefix].append(chart_probs[chart])
                     prefix_flags[prefix].append(chart_flags["{}_flag".format(chart)])
+            # average across charts for each prefix
             prefix_probs = {'{}.'.format(p): round(sum(prefix_probs[p])/len(prefix_probs[p]), 2) for p in prefix_probs if len(prefix_probs[p]) > 0}
+            # average the flags across charts for each prefix (just using a max here would be too noisey)
             prefix_flags = {'{}._flag'.format(p): round(sum(prefix_flags[p])/len(prefix_flags[p]), 2) for p in prefix_flags if len(prefix_flags[p]) > 0}
             self.update_charts('prefix_probs', prefix_probs)
             self.update_charts('prefix_flags', prefix_flags)
