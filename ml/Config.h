@@ -31,6 +31,9 @@ public:
 
     // Simple expression that allows us to skip certain charts from training.
     SIMPLE_PATTERN *SP_ChartsToSkip;
+
+    // Anomaly score threshold.
+    double AnomalyScoreThreshold;
 };
 
 extern Config Cfg;

@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Database.h"
+#include "Host.h"
 
 using namespace ml;
 
@@ -22,11 +23,11 @@ Database ml::DB;
  */
 void ml_init(void) {
     if (Cfg.Initialized)
-        return;
+        fatal("Global ML configuration has been already initialized");
 
     Cfg.UpdateEvery = Millis{15 * 1000};
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60) * 1000};
-    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60) * 1000};
+    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 4 * 3600) * 1000};
+    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 3600) * 1000};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -35,26 +36,23 @@ void ml_init(void) {
     std::string HostsToSkip = config_get(CONFIG_SECTION_ML, "hosts to skip from training", "!*");
     Cfg.SP_HostsToSkip = simple_pattern_create(HostsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!system.* !cpu.* !mem.* !disk.* !disk_* !ip.* !ipv4.* !ipv6.* !net.* !net_* !netfilter.* !services.* !apps.* !groups.* !users.* !ebpf.* !netdata.* *");
+    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
+
+    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
 
     Cfg.Initialized = true;
 }
 
-/*
- * Main entry point
- */
-void *ml_main(void *Ptr) {
-    struct netdata_static_thread *Thread = (struct netdata_static_thread *) Ptr;
+void ml_host_create(RRDHOST *RH) {
+    static std::once_flag ml_init_once_flag;
+    std::call_once(ml_init_once_flag, ml_init);
 
-    std::this_thread::sleep_for(Cfg.UpdateEvery);
+    Host *H = DB.addHost(RH);
 
-    std::string ThreadName = Thread->name;
+    std::thread TrainingThread(&Host::train, H);
+    TrainingThread.detach();
 
-    if (ThreadName.compare("MLTRAIN") == 0)
-        ml::trainMain(Thread);
-    else
-        ml::predictMain(Thread);
-
-    return NULL;
+    std::thread PredictionThread(&Host::predict, H);
+    PredictionThread.detach();
 }

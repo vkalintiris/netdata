@@ -8,6 +8,7 @@
 namespace ml {
 
 class Chart;
+class Unit;
 
 class Host {
 public:
@@ -18,13 +19,28 @@ public:
     std::string uid() const { return RH->hostname; }
     const char *c_uid() const { return RH->hostname; }
 
-    void updateCharts();
+    std::vector<Unit *> getUnits();
 
-public:
+    void train();
+    void predict();
+
+private:
+    void updateCharts();
+    void updateMLStats();
+
+private:
     RRDHOST *RH;
     std::map<RRDSET *, Chart *> ChartsMap;
+    std::mutex Mutex;
 
     TimePoint CreationTime;
+
+    collected_number NumUnits;
+    collected_number NumTrainedUnits;
+    collected_number NumPredictedUnits;
+    collected_number NumAnomalies;
+
+    usec_t PredictionDuration;
 };
 
 }

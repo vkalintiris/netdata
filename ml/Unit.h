@@ -27,10 +27,14 @@ public:
         std::stringstream UidSS;
         UidSS << RD->rrdset->id << "." << RD->id;
         UniqueID = UidSS.str();
+
+        Family = RD->rrdset->family;
     }
 
     std::string uid() const { return UniqueID; }
     const char *c_uid() const { return UniqueID.c_str(); }
+
+    std::string getFamily() const { return Family; }
 
     bool isObsolete() const {
         return rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
@@ -49,6 +53,10 @@ public:
 
     bool isTrained() const { return Trained; }
     bool isPredicted() const { return Predicted; };
+
+    bool isAnomalous(CalculatedNumber AnomalyThreshold) const {
+        return AnomalyScore > AnomalyThreshold;
+    }
 
     friend UnitComp;
 
@@ -72,6 +80,7 @@ private:
 
     TimePoint LastTrainedAt;
     std::string UniqueID;
+    std::string Family;
 };
 
 }

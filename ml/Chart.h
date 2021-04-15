@@ -13,6 +13,8 @@ class Chart {
 public:
     Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {}
 
+    std::string getFamily() const { return RS->family; }
+
     void updateUnits(Millis TrainSecs, Millis TrainEvery,
                      unsigned DiffN, unsigned SmoothN, unsigned LagN);
 

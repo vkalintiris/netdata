@@ -399,6 +399,9 @@ RRDHOST *rrdhost_create(const char *hostname,
 
     rrd_hosts_available++;
 
+    // Create prediction/training threads for host.
+    ml_host_create(host);
+
     return host;
 }
 

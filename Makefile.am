@@ -244,8 +244,6 @@ ML_FILES = \
 	ml/Window.h \
 	ml/Window.cc \
 	ml/ml-private.h \
-	ml/ml_train.cc \
-	ml/ml_predict.cc \
 	ml/ml.cc \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
