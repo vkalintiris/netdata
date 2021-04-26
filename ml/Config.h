@@ -20,6 +20,9 @@ public:
     // Time window over which we should train our models.
     Millis TrainSecs;
 
+    // Minimum time window we can use to train models.
+    Millis MinTrainSecs;
+
     // How often we want to retrain our models.
     Millis TrainEvery;
 

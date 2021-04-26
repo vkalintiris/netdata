@@ -12,8 +12,10 @@ void Host::updateMLStats() {
     static thread_local RRDSET *StatsRS = nullptr;
     static thread_local RRDDIM *NumUnitsRD, *NumTrainedUnitsRD, *NumPredictedUnitsRD, *NumAnomaliesRD;
 
+    std::string HostName = getHostname();
+
     if (!StatsRS) {
-        std::string SetId = uid() + "_" + "units";
+        std::string SetId = HostName + "_" + "units";
 
         StatsRS = rrdset_create_localhost(
                 "ml",
@@ -53,7 +55,7 @@ void Host::updateMLStats() {
     static thread_local RRDDIM *PredictionTimeRD;
 
     if (!PredictionTimeRS) {
-        std::string SetId = uid() + "_" + "ptime";
+        std::string SetId = HostName + "_" + "ptime";
 
         PredictionTimeRS = rrdset_create_localhost(
                 "ml",
@@ -86,7 +88,7 @@ void Host::updateMLStats() {
     static thread_local FamilyCountMap FCM;
 
     if (!FamilyRS) {
-        std::string SetId = uid() + "_" + "famas";
+        std::string SetId = HostName + "_" + "famas";
 
         FamilyRS = rrdset_create_localhost(
                 "ml",
@@ -122,7 +124,7 @@ void Host::updateMLStats() {
             if (It == FCM.end())
                 continue;
 
-            if (U->isAnomalous(Cfg.AnomalyScoreThreshold))
+            if (U->isAnomalous())
                 FCM[Family].second++;
         }
     }
@@ -206,7 +208,7 @@ void Host::updateCharts() {
 
     for (auto &CP : ChartsMap) {
         Chart *C = CP.second;
-        C->updateUnits(Cfg.TrainSecs, Cfg.TrainEvery, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+        C->updateUnits();
     }
 }
 
@@ -240,7 +242,9 @@ void Host::train() {
         for (Unit *U : Units) {
             // Train unit
             TimePoint STP = SteadyClock::now();
-            if (!U->train())
+            if (U->shouldTrain())
+                U->train();
+            else
                 continue;
             TimePoint ETP = SteadyClock::now();
 
@@ -286,7 +290,7 @@ void Host::predict() {
 
                 NumTrainedUnits += U->isTrained() ? 1 : 0;
                 NumPredictedUnits += U->isPredicted() ? 1 : 0;
-                NumAnomalies += U->isAnomalous(Cfg.AnomalyScoreThreshold);
+                NumAnomalies += U->isAnomalous();
             }
 
             for (auto &CP : ChartsMap) {

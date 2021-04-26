@@ -5,72 +5,68 @@
 
 #include "ml-private.h"
 
+#include "Config.h"
+
 namespace ml {
 
-struct UnitComp;
-
-/*
- * A ML unit wraps the pointer to the dimension that we want to train/predict.
-*/
 class Unit {
 public:
-    Unit(RRDDIM *RD, Millis TrainSecs, Millis TrainEvery,
-         unsigned DiffN, unsigned SmoothN, unsigned LagN) :
-        RD(RD), SetPtr(reinterpret_cast<uintptr_t>(RD->rrdset)),
-        TrainSecs(TrainSecs), TrainEvery(TrainEvery),
-        DiffN(DiffN), SmoothN(SmoothN), LagN(LagN),
-        MLRD(nullptr),
-        KM(KMeans()), AnomalyScore(0.0),
-        Trained(false), Predicted(false) {
-        LastTrainedAt = SteadyClock::now() + TrainSecs;
+    Unit(RRDDIM *RD) : RD(RD), MLRD(nullptr) {
+        KM = KMeans();
+        AnomalyScore = 0.0;
 
-        std::stringstream UidSS;
-        UidSS << RD->rrdset->id << "." << RD->id;
-        UniqueID = UidSS.str();
+        Trained = false;
+        Predicted = false;
 
-        Family = RD->rrdset->family;
+        LastTrainedAt = SteadyClock::now();
+
+        std::stringstream SS;
+        SS << RD->rrdset->id << "." << RD->id;
+        UniqueID = SS.str();
     }
 
-    std::string uid() const { return UniqueID; }
-    const char *c_uid() const { return UniqueID.c_str(); }
-
-    std::string getFamily() const { return Family; }
-
-    bool isObsolete() const {
-        return rrddim_flag_check(RD, RRDDIM_FLAG_ARCHIVED) ||
-               rrddim_flag_check(RD, RRDDIM_FLAG_OBSOLETE);
+    RRDDIM *getDim() const {
+        return RD;
     }
 
-    int updateEvery() const { return RD->update_every; };
-    CalculatedNumber getAnomalyScore() const { return AnomalyScore; };
-    RRDDIM *getDim() { return RD; }
+    std::string getFamily() const {
+        return RD->rrdset->family;
+    }
+
+    int updateEvery() const {
+        return RD->update_every;
+    }
+
+    CalculatedNumber getAnomalyScore() const {
+        return AnomalyScore;
+    }
+
+    bool isAnomalous() const {
+        return AnomalyScore > Cfg.AnomalyScoreThreshold;
+    }
+
+    bool isTrained() const {
+        return Trained;
+    }
+
+    bool isPredicted() const {
+        return Predicted;
+    }
+
+    bool shouldTrain() const {
+        return (LastTrainedAt + Cfg.TrainEvery) < SteadyClock::now();
+    }
+
+    std::pair<CalculatedNumber *, unsigned>
+    getCalculatedNumbers(unsigned N, unsigned MinN);
+
+    void train();
+    void predict();
 
     void updateMLUnit(RRDSET *MLRS);
 
-    bool shouldTrain() const;
-    bool train();
-    bool predict();
-
-    bool isTrained() const { return Trained; }
-    bool isPredicted() const { return Predicted; };
-
-    bool isAnomalous(CalculatedNumber AnomalyThreshold) const {
-        return AnomalyScore > AnomalyThreshold;
-    }
-
-    friend UnitComp;
-
 private:
     RRDDIM *RD;
-    uintptr_t SetPtr;
-
-    Millis TrainSecs;
-    Millis TrainEvery;
-
-    unsigned DiffN;
-    unsigned SmoothN;
-    unsigned LagN;
-
     RRDDIM *MLRD;
 
     KMeans KM;
@@ -80,7 +76,6 @@ private:
 
     TimePoint LastTrainedAt;
     std::string UniqueID;
-    std::string Family;
 };
 
 }

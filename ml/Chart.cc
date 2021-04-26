@@ -6,13 +6,8 @@
 
 using namespace ml;
 
-/*
- * Create/Update the ML set that will contain the anomaly scores of each
- * unit in this chart.
- */
 void Chart::updateMLChart() {
     if (MLRS) {
-        // Update each dimension with the anomaly score of each unit.
         rrdset_next(MLRS);
         for (auto &P : UnitsMap) {
             Unit *U = P.second;
@@ -21,10 +16,6 @@ void Chart::updateMLChart() {
         rrdset_done(MLRS);
         return;
     }
-
-    /*
-     * Create a new ML set.
-     */
 
     std::string Name = std::string(RS->name);
     std::string Dot(".");
@@ -37,8 +28,6 @@ void Chart::updateMLChart() {
 
     Name = Name.substr(Pos + 1, Name.npos) + "_km";
 
-    // Use properties of the wrapped set to make the ML set appear
-    // next to the wrapped set.
     MLRS = rrdset_create(
             RS->rrdhost,        // host
             RS->type,           // type
@@ -55,18 +44,13 @@ void Chart::updateMLChart() {
             RRDSET_TYPE_LINE    // chart_type
             );
 
-    // Create a dim for each unit in the chart.
     for (auto &P : UnitsMap) {
         Unit *U = P.second;
         U->updateMLUnit(MLRS);
     }
 }
 
-/*
- * Update the units referenced by the chart.
- */
-void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
-                        unsigned DiffN, unsigned SmoothN, unsigned LagN) {
+void Chart::updateUnits() {
     rrdset_rdlock(RS);
 
     RRDDIM *RD;
@@ -82,7 +66,7 @@ void Chart::updateUnits(Millis TrainSecs, Millis TrainEvery,
             }
         } else {
             if (It == UnitsMap.end())
-                UnitsMap[RD] = new Unit(RD, TrainSecs, TrainEvery, DiffN, SmoothN, LagN);
+                UnitsMap[RD] = new Unit(RD);
         }
     }
 

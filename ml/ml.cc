@@ -26,8 +26,9 @@ void ml_init(void) {
         fatal("Global ML configuration has been already initialized");
 
     Cfg.UpdateEvery = Millis{15 * 1000};
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 4 * 3600) * 1000};
-    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 3600) * 1000};
+    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 6 * 3600) * 1000};
+    Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 2 * 3600) * 1000};
+    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 3600) * 1000};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -45,6 +46,9 @@ void ml_init(void) {
 }
 
 void ml_host_create(RRDHOST *RH) {
+    if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
+        return;
+
     static std::once_flag ml_init_once_flag;
     std::call_once(ml_init_once_flag, ml_init);
 

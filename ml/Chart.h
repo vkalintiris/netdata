@@ -15,9 +15,7 @@ public:
 
     std::string getFamily() const { return RS->family; }
 
-    void updateUnits(Millis TrainSecs, Millis TrainEvery,
-                     unsigned DiffN, unsigned SmoothN, unsigned LagN);
-
+    void updateUnits();
     void updateMLChart();
 
 public:

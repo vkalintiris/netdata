@@ -16,8 +16,7 @@ public:
         CreationTime = SteadyClock::now();
     }
 
-    std::string uid() const { return RH->hostname; }
-    const char *c_uid() const { return RH->hostname; }
+    std::string getHostname() const { return RH->hostname; }
 
     std::vector<Unit *> getUnits();
 
