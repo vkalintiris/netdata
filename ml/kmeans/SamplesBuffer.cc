@@ -115,6 +115,7 @@ std::vector<DSample> SamplesBuffer::preprocess() {
     OutN -= LagN;
     lagSamples();
 
+    DSamples.reserve(OutN);
     Preprocessed = true;
 
     for (size_t Idx = NumSamples - OutN; Idx != NumSamples; Idx++) {
