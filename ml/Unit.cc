@@ -144,13 +144,14 @@ void Unit::train() {
         KM.train(SB);
 
         Trained = true;
+        HasModel = true;
     }
 
     delete[] CNs;
 }
 
 void Unit::predict() {
-    if (!Trained)
+    if (!HasModel)
         return;
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;

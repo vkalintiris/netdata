@@ -15,6 +15,7 @@ public:
         KM = KMeans();
         AnomalyScore = 0.0;
 
+        HasModel = false;
         Trained = false;
         Predicted = false;
 
@@ -73,6 +74,7 @@ private:
     CalculatedNumber AnomalyScore;
     bool Trained;
     bool Predicted;
+    bool HasModel;
 
     TimePoint LastTrainedAt;
     std::string UniqueID;
