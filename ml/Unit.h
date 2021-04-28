@@ -58,6 +58,8 @@ public:
         return (LastTrainedAt + Cfg.TrainEvery) < SteadyClock::now();
     }
 
+    KMeans &getKMeansRef() { return KM; }
+
     std::pair<CalculatedNumber *, unsigned>
     getCalculatedNumbers(unsigned N, unsigned MinN);
 

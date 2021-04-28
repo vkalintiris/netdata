@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "buildinfo.h"
+#include "ml/Perf.h"
 
 int netdata_zero_metrics_enabled;
 int netdata_anonymous_statistics_enabled;
@@ -840,6 +841,7 @@ int main(int argc, char **argv) {
                         char* createdataset_string = "createdataset=";
                         char* stresstest_string = "stresstest=";
 #endif
+                        char* mlperf_string = "mlperf";
 
                         if(strcmp(optarg, "unittest") == 0) {
                             if(unit_test_buffer()) return 1;
@@ -894,6 +896,10 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 #endif
+                        else if (strncmp(optarg, mlperf_string, strlen(mlperf_string)) == 0) {
+                            ml_perf();
+                            return 0;
+                        }
                         else if(strcmp(optarg, "simple-pattern") == 0) {
                             if(optind + 2 > argc) {
                                 fprintf(stderr, "%s", "\nUSAGE: -W simple-pattern 'pattern' 'string'\n\n"

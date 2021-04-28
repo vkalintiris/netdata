@@ -77,10 +77,12 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
         return { CNs, 0 };
 
     // Start the query.
-    using Extent = std::pair<unsigned /* Offset */, unsigned /* Length */>;
-
-    Extent MaxExtent{0, 0}, CurrExtent{0, 0};
     unsigned Idx = 0;
+    unsigned CollectedValues = 0;
+    unsigned TotalValues = 0;
+
+    CalculatedNumber QuietNaN = std::numeric_limits<CalculatedNumber>::quiet_NaN();
+    CalculatedNumber LastValue = QuietNaN;
 
     Ops->init(RD, &Handle, AfterT, BeforeT);
     while (!Ops->is_finished(&Handle)) {
@@ -90,27 +92,29 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
         time_t CurrT;
         storage_number SN = Ops->next_metric(&Handle, &CurrT);
 
-        if (!does_storage_number_exist(SN)) {
-            CurrExtent = { ++Idx , 0 };
-            continue;
-        }
+        if (does_storage_number_exist(SN)) {
+            CNs[Idx] = unpack_storage_number_dbl(SN);
+            LastValue = CNs[Idx];
+            CollectedValues++;
+        } else
+            CNs[Idx] = LastValue;
 
-        if (++CurrExtent.second >= MaxExtent.second)
-            MaxExtent = CurrExtent;
-
-        CNs[Idx++] = unpack_storage_number_dbl(SN);
+        Idx++;
     }
+    TotalValues = Idx;
     Ops->finalize(&Handle);
 
-    // Return if we didn't manage to collect enough samples.
-    if (MaxExtent.second < MinN)
+    if (CollectedValues < MinN)
         return { CNs, 0 };
 
-    // Move window to the beggining of the buffer.
-    if (MaxExtent.first && MaxExtent.second)
-        memmove(CNs, &CNs[MaxExtent.first], sizeof(int) * MaxExtent.second);
+    // Find first non-NaN value.
+    for (Idx = 0; std::isnan(CNs[Idx]); Idx++, TotalValues--) { }
 
-    return { CNs, MaxExtent.second };
+    // Overwrite NaN values.
+    if (Idx != 0)
+        memmove(CNs, &CNs[Idx], sizeof(CalculatedNumber) * TotalValues);
+
+    return { CNs, TotalValues };
 }
 
 void Unit::updateMLUnit(RRDSET *MLRS) {

@@ -1926,8 +1926,8 @@ static void generate_dbengine_chart(void *arg)
 
 void generate_dbengine_dataset(unsigned history_seconds)
 {
-    const int DSET_CHARTS = 16;
-    const int DSET_DIMS = 128;
+    const int DSET_CHARTS = 1;
+    const int DSET_DIMS = 1;
     const uint64_t EXPECTED_COMPRESSION_RATIO = 20;
     RRDHOST *host = NULL;
     struct dbengine_chart_thread **thread_info;
@@ -1978,9 +1978,12 @@ void generate_dbengine_dataset(unsigned history_seconds)
         freez(thread_info[i]);
     }
     freez(thread_info);
+
+#if 0
     rrd_wrlock();
     rrdhost_free(host);
     rrd_unlock();
+#endif
 }
 
 struct dbengine_query_thread {
