@@ -774,6 +774,7 @@ ng_cgo_libndgo_a_SOURCES = $(NETDATA_FILES)
 
 GO_FILES = \
     ng/cgo/cgo.go \
+    ng/cgo/config.go \
     ng/cmd/main.go \
     $(NULL)
 

@@ -1,16 +1,48 @@
 package main
 
 import (
+	"log"
 	"os"
 
 	"github.com/netdata/netdata/ng/cgo"
 )
+
+func setupLogger(path string) *os.File {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		panic("Could not create Go's log file")
+	}
+
+	log.SetOutput(file)
+
+	return file
+}
 
 func main() {
 	switch rc := cgo.CGOMain(os.Args); rc {
 	case cgo.CGoMainExitSuccess, cgo.CGoMainExitFailure:
 		os.Exit(rc)
 	case cgo.CGoMainBlock:
+		logFile := setupLogger("/tmp/ng.log")
+		defer logFile.Close()
+
+		conf := cgo.GetNetdataConfig()
+
+		section := "health"
+		key := "script to execute on alarm"
+		confDir := conf.GetString(section, key, "tsimpa ena arxidi")
+		log.Printf("script: %s\n", confDir)
+
+		section = "global"
+		key = "process nice level"
+		niceness := conf.GetInt(section, key, 5)
+		log.Printf("niceness: %d\n", niceness)
+
+		section = "statsd"
+		key = "histograms and timers percentile (percentThreshold)"
+		percentile := conf.GetFloat(section, key, 0.87654321)
+		log.Printf("percentile: %f\n", percentile)
+
 		cgo.CGoSignalsHandle()
 	}
 }
