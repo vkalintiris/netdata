@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"runtime"
 
 	"github.com/netdata/netdata/ng/cgo"
 )
@@ -18,6 +19,25 @@ func setupLogger(path string) *os.File {
 	return file
 }
 
+func testConf() {
+	conf := cgo.GetNetdataConfig()
+
+	section := "health"
+	key := "script to execute on alarm"
+	confDir := conf.GetString(section, key, "tsimpa ena arxidi")
+	log.Printf("script: %s\n", confDir)
+
+	section = "global"
+	key = "process nice level"
+	niceness := conf.GetInt(section, key, 5)
+	log.Printf("niceness: %d\n", niceness)
+
+	section = "statsd"
+	key = "histograms and timers percentile (percentThreshold)"
+	percentile := conf.GetFloat(section, key, 0.87654321)
+	log.Printf("percentile: %f\n", percentile)
+}
+
 func main() {
 	switch rc := cgo.CGOMain(os.Args); rc {
 	case cgo.CGoMainExitSuccess, cgo.CGoMainExitFailure:
@@ -26,22 +46,12 @@ func main() {
 		logFile := setupLogger("/tmp/ng.log")
 		defer logFile.Close()
 
-		conf := cgo.GetNetdataConfig()
+		testConf()
 
-		section := "health"
-		key := "script to execute on alarm"
-		confDir := conf.GetString(section, key, "tsimpa ena arxidi")
-		log.Printf("script: %s\n", confDir)
+		host := cgo.GetLocalHost()
+		log.Printf("host name: %s\n", host.GetName())
 
-		section = "global"
-		key = "process nice level"
-		niceness := conf.GetInt(section, key, 5)
-		log.Printf("niceness: %d\n", niceness)
-
-		section = "statsd"
-		key = "histograms and timers percentile (percentThreshold)"
-		percentile := conf.GetFloat(section, key, 0.87654321)
-		log.Printf("percentile: %f\n", percentile)
+		log.Printf("os: '%s'\n", runtime.GOOS)
 
 		cgo.CGoSignalsHandle()
 	}

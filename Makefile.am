@@ -775,6 +775,7 @@ ng_cgo_libndgo_a_SOURCES = $(NETDATA_FILES)
 GO_FILES = \
     ng/cgo/cgo.go \
     ng/cgo/config.go \
+    ng/cgo/host.go \
     ng/cmd/main.go \
     $(NULL)
 
@@ -791,7 +792,7 @@ endif
 
 netdata: ng/cgo/libndgo.a $(GO_FILES)
 	CGO_CFLAGS="$(CGO_COMPILER_FLAGS)" CGO_LDFLAGS="$(CGO_LINKER_FLAGS)" \
-    go build -a -x -ldflags="-extld=$(EXTLD)" -o netdata ng/cmd/main.go
+    go build -x -ldflags="-extld=$(EXTLD)" -o netdata ng/cmd/main.go
 
 sbin_SCRIPTS = netdata
 
