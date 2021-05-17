@@ -40,11 +40,6 @@ void send_statistics( const char *action, const char *action_result, const char 
     return;
 }
 
-// callbacks required by popen()
-void signals_block(void) {};
-void signals_unblock(void) {};
-void signals_reset(void) {};
-
 // callback required by eval()
 int health_variable_lookup(const char *variable, uint32_t hash, struct rrdcalc *rc, calculated_number *result) {
     (void)variable;

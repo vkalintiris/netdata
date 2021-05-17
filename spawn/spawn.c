@@ -258,10 +258,8 @@ void spawn_init(void)
         }
         goto after_error;
     }
-#ifdef CONCURRENT_STRESS_TEST
-    signals_reset();
-    signals_unblock();
 
+#ifdef CONCURRENT_STRESS_TEST
     sleep(60);
     uint64_t serial[CONCURRENT_SPAWNS];
     for (int j = 0 ; j < SPAWN_ITERATIONS ; ++j) {
@@ -283,6 +281,7 @@ void spawn_init(void)
     }
     exit(0);
 #endif
+
     return;
 
     after_error:

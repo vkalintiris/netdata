@@ -1144,16 +1144,6 @@ int cgo_main(int argc, char **argv) {
         set_silencers_filename();
         health_initialize_global_silencers();
 
-        // --------------------------------------------------------------------
-        // setup process signals
-
-        // block signals while initializing threads.
-        // this causes the threads to block signals.
-        signals_block();
-
-        // setup the signals we want to use
-        signals_init();
-
         // setup threads configs
         default_stacksize = netdata_threads_init();
 
@@ -1219,14 +1209,6 @@ int cgo_main(int argc, char **argv) {
     registry_init();
     // fork the spawn server
     spawn_init();
-    /*
-     * Libuv uv_spawn() uses SIGCHLD internally:
-     * https://github.com/libuv/libuv/blob/cc51217a317e96510fbb284721d5e6bc2af31e33/src/unix/process.c#L485
-     * and inadvertently replaces the netdata signal handler which was setup during initialization.
-     * Thusly, we must explicitly restore the signal handler for SIGCHLD.
-     * Warning: extreme care is needed when mixing and matching POSIX and libuv.
-     */
-    signals_restore_SIGCHLD();
 
     // ------------------------------------------------------------------------
     // initialize rrd, registry, health, rrdpush, etc.
@@ -1283,7 +1265,7 @@ int cgo_main(int argc, char **argv) {
     }
 
     // ------------------------------------------------------------------------
-    // Initialize netdata agent command serving from cli and signals
+    // Initialize netdata agent command serving from cli.
 
     commands_init();
 
@@ -1332,11 +1314,6 @@ int cgo_main(int argc, char **argv) {
             close(fd);
     }
 #endif
-
-    // ------------------------------------------------------------------------
-    // unblock signals
-
-    signals_unblock();
 
     // return to Go runtime.
     return CGO_MAIN_BLOCK;

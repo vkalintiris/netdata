@@ -6,7 +6,12 @@ package cgo
 import "C"
 
 import (
+	"log"
+	"os"
+	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -27,6 +32,40 @@ func CGOMain(args []string) int {
 	return int(C.cgo_main(argc, argvp))
 }
 
-func CGoSignalsHandle() {
-	C.signals_handle()
+func CGoExitCleanly(sig os.Signal) {
+	C.error_log_limit_unlimited()
+	sigName := unix.SignalName(sig.(syscall.Signal))
+	log.Printf("SIGNAL: Received %s. Cleaning up to exit...", sigName)
+
+	C.commands_exit()
+	C.netdata_cleanup_and_exit(0)
+
+	os.Exit(0)
+}
+
+func CGoSaveDatabase(sig os.Signal) {
+	C.error_log_limit_unlimited()
+	sigName := unix.SignalName(sig.(syscall.Signal))
+	log.Printf("[GO] SIGNAL: Received %s. Saving databases...", sigName)
+	C.error_log_limit_reset()
+
+	C.execute_command(C.CMD_SAVE_DATABASE, nil, nil)
+}
+
+func CGoReloadHealth(sig os.Signal) {
+	C.error_log_limit_unlimited()
+	sigName := unix.SignalName(sig.(syscall.Signal))
+	log.Printf("[GO] SIGNAL: Received %s. Reloading HEALTH configuration...", sigName)
+	C.error_log_limit_reset()
+
+	C.execute_command(C.CMD_RELOAD_HEALTH, nil, nil)
+}
+
+func CGoReopenLogs(sig os.Signal) {
+	C.error_log_limit_unlimited()
+	sigName := unix.SignalName(sig.(syscall.Signal))
+	log.Printf("[GO] SIGNAL: Received %s. Reopening all log files...", sigName)
+	C.error_log_limit_reset()
+
+	C.execute_command(C.CMD_REOPEN_LOGS, nil, nil)
 }

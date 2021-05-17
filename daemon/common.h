@@ -80,7 +80,6 @@
 // the netdata daemon
 #include "daemon.h"
 #include "main.h"
-#include "signals.h"
 #include "commands.h"
 #include "analytics.h"
 

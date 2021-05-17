@@ -3,7 +3,9 @@ package main
 import (
 	"log"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/netdata/netdata/ng/cgo"
 )
@@ -36,8 +38,45 @@ func testConf() {
 	key = "histograms and timers percentile (percentThreshold)"
 	percentile := conf.GetFloat(section, key, 0.87654321)
 	log.Printf("percentile: %f\n", percentile)
+
+	host := cgo.GetLocalHost()
+	log.Printf("host name: %s\n", host.GetName())
+
+	log.Printf("os: '%s'\n", runtime.GOOS)
 }
 
+func handleSignals() {
+	signal.Ignore(syscall.SIGPIPE)
+
+	signalsToHandle := []os.Signal{
+		syscall.SIGINT,
+		syscall.SIGQUIT,
+		syscall.SIGTERM,
+		syscall.SIGUSR1,
+		syscall.SIGUSR2,
+		syscall.SIGHUP,
+	}
+
+	sigCh := make(chan os.Signal)
+	signal.Notify(sigCh, signalsToHandle...)
+
+	for {
+		switch sig := <-sigCh; sig {
+		case syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM:
+			cgo.CGoExitCleanly(sig)
+		case syscall.SIGUSR1:
+			cgo.CGoSaveDatabase(sig)
+		case syscall.SIGUSR2:
+			cgo.CGoReloadHealth(sig)
+		case syscall.SIGHUP:
+			cgo.CGoReopenLogs(sig)
+		default:
+			log.Fatalf("Received unknown signal: %s", sig)
+		}
+	}
+}
+
+// TODO: Add go-reaper
 func main() {
 	switch rc := cgo.CGOMain(os.Args); rc {
 	case cgo.CGoMainExitSuccess, cgo.CGoMainExitFailure:
@@ -48,11 +87,6 @@ func main() {
 
 		testConf()
 
-		host := cgo.GetLocalHost()
-		log.Printf("host name: %s\n", host.GetName())
-
-		log.Printf("os: '%s'\n", runtime.GOOS)
-
-		cgo.CGoSignalsHandle()
+		handleSignals()
 	}
 }

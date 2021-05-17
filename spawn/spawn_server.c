@@ -328,8 +328,6 @@ void spawn_server(void)
             fprintf(stderr, "SPAWN: Failed to change signal handler for signal: %d.\n", signals_to_ignore[i]);
     }
 
-    signals_unblock();
-
     loop = uv_default_loop();
     loop->data = NULL;
 

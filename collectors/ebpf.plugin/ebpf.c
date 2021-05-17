@@ -30,11 +30,6 @@ void send_statistics(const char *action, const char *action_result, const char *
     UNUSED(action_data);
 }
 
-// callbacks required by popen()
-void signals_block(void){};
-void signals_unblock(void){};
-void signals_reset(void){};
-
 // required by get_system_cpus()
 char *netdata_configured_host_prefix = "";
 

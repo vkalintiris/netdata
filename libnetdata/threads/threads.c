@@ -168,6 +168,15 @@ void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1])
 static void *thread_start(void *ptr) {
     netdata_thread = (NETDATA_THREAD *)ptr;
 
+    sigset_t sigset;
+    sigfillset(&sigset);
+
+    // We only want the main thread to be responsible for signal handling.
+    if (!pthread_sigmask(SIG_BLOCK, &sigset, NULL)) {
+        const char *name = netdata_thread->tag ? netdata_thread->tag : "";
+        error("Could not block signals for thread: name=%s, tid=%d)", name, gettid());
+    }
+
     if(!(netdata_thread->options & NETDATA_THREAD_OPTION_DONT_LOG_STARTUP))
         info("thread created with task id %d", gettid());
 
