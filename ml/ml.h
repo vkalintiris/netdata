@@ -9,7 +9,21 @@ extern "C" {
 
 #include "daemon/common.h"
 
-void ml_host_create(RRDHOST *host);
+typedef struct ml_host_handle {
+    void* HostPtr;
+} ml_host_handle_t;
+
+ml_host_handle_t *ml_host_new(RRDHOST *RH);
+void ml_host_delete(ml_host_handle_t *host_handle);
+
+typedef struct ml_unit_handle {
+    void *UnitPtr;
+} ml_unit_handle_t;
+
+ml_unit_handle_t *ml_unit_new(RRDDIM *RD);
+void ml_unit_delete(ml_unit_handle_t *unit_handle);
+
+void ml_init(void);
 
 #ifdef __cplusplus
 };

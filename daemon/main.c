@@ -1186,6 +1186,10 @@ int main(int argc, char **argv) {
         health_initialize_global_silencers();
 
         // --------------------------------------------------------------------
+        // Initialize ML configuration
+        ml_init();
+
+        // --------------------------------------------------------------------
         // setup process signals
 
         // block signals while initializing threads.

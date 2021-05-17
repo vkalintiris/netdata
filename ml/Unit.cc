@@ -117,19 +117,6 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     return { CNs, TotalValues };
 }
 
-void Unit::updateMLUnit(RRDSET *MLRS) {
-    if (MLRD) {
-        rrddim_set_by_pointer(MLRS, MLRD, getAnomalyScore() * 10000.0);
-        return;
-    }
-
-    MLRD = rrddim_add(MLRS, RD->id, NULL, 1, 10000, RRD_ALGORITHM_ABSOLUTE);
-
-    rrddim_flag_clear(MLRD, RRDDIM_FLAG_HIDDEN);
-    if (rrddim_flag_check(RD, RRDDIM_FLAG_HIDDEN))
-        rrddim_flag_set(MLRD, RRDDIM_FLAG_HIDDEN);
-}
-
 void Unit::train() {
     LastTrainedAt = SteadyClock::now();
 

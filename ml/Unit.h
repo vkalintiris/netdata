@@ -11,7 +11,7 @@ namespace ml {
 
 class Unit {
 public:
-    Unit(RRDDIM *RD) : RD(RD), MLRD(nullptr) {
+    Unit(RRDDIM *RD) : RD(RD) {
         KM = KMeans();
         AnomalyScore = 0.0;
 
@@ -20,10 +20,6 @@ public:
         Predicted = false;
 
         LastTrainedAt = SteadyClock::now();
-
-        std::stringstream SS;
-        SS << RD->rrdset->id << "." << RD->id;
-        UniqueID = SS.str();
     }
 
     RRDDIM *getDim() const {
@@ -66,11 +62,8 @@ public:
     void train();
     void predict();
 
-    void updateMLUnit(RRDSET *MLRS);
-
 private:
     RRDDIM *RD;
-    RRDDIM *MLRD;
 
     KMeans KM;
     CalculatedNumber AnomalyScore;
@@ -79,7 +72,6 @@ private:
     bool HasModel;
 
     TimePoint LastTrainedAt;
-    std::string UniqueID;
 };
 
 }

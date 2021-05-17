@@ -14,6 +14,8 @@ typedef struct rrdcalc RRDCALC;
 typedef struct rrdcalctemplate RRDCALCTEMPLATE;
 typedef struct alarm_entry ALARM_ENTRY;
 typedef struct context_param CONTEXT_PARAM;
+typedef struct ml_host_handle ml_host_handle_t;
+typedef struct ml_unit_handle ml_unit_handle_t;
 
 // forward declarations
 struct rrddim_volatile;
@@ -420,6 +422,8 @@ struct rrddim_volatile {
         // get the timestamp of the first entry of this metric
         time_t (*oldest_time)(RRDDIM *rd);
     } query_ops;
+
+    ml_unit_handle_t *ml_unit_handle;
 };
 
 // ----------------------------------------------------------------------------
@@ -863,6 +867,10 @@ struct rrdhost {
     // locks
 
     netdata_rwlock_t rrdhost_rwlock;                // lock for this RRDHOST (protects rrdset_root linked list)
+
+    // ------------------------------------------------------------------------
+    // ML handle
+    ml_host_handle_t *ml_host_handle;
 
     // ------------------------------------------------------------------------
     // Support for host-level labels

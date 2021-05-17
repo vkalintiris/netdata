@@ -358,6 +358,8 @@ RRDHOST *rrdhost_create(const char *hostname,
         else localhost = host;
     }
 
+    host->ml_host_handle = ml_host_new(host);
+
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
                  ", timezone '%s'"
@@ -398,9 +400,6 @@ RRDHOST *rrdhost_create(const char *hostname,
     );
 
     rrd_hosts_available++;
-
-    // Create prediction/training threads for host.
-    ml_host_create(host);
 
     return host;
 }
@@ -851,6 +850,10 @@ void rrdhost_free(RRDHOST *host) {
     if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
         rrdeng_exit(host->rrdeng_ctx);
 #endif
+
+    // ------------------------------------------------------------------------
+    // delete ML handle
+    ml_host_delete(host->ml_host_handle);
 
     // ------------------------------------------------------------------------
     // remove it from the indexes

@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Database.h"
 #include "Host.h"
+#include "Unit.h"
 
 using namespace ml;
 
@@ -22,13 +23,10 @@ Database ml::DB;
  * Initialize global configuration variable.
  */
 void ml_init(void) {
-    if (Cfg.Initialized)
-        fatal("Global ML configuration has been already initialized");
-
     Cfg.UpdateEvery = Millis{15 * 1000};
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 6 * 3600) * 1000};
-    Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 5 * 3600) * 1000};
-    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 3600) * 1000};
+    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60) * 1000};
+    Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 30) * 1000};
+    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 30) * 1000};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -41,22 +39,41 @@ void ml_init(void) {
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
-
-    Cfg.Initialized = true;
 }
 
-void ml_host_create(RRDHOST *RH) {
+ml_host_handle_t *ml_host_new(RRDHOST *RH) {
+    if (!RH)
+        return nullptr;
+
     if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
+        return nullptr;
+
+    ml_host_handle_t *handle = new ml_host_handle_t;
+    handle->HostPtr = new Host(RH);
+    return handle;
+}
+
+void ml_host_delete(ml_host_handle_t *host_handle) {
+    if (!host_handle)
         return;
 
-    static std::once_flag ml_init_once_flag;
-    std::call_once(ml_init_once_flag, ml_init);
+    delete static_cast<Host *>(host_handle->HostPtr);
+    delete host_handle;
+}
 
-    Host *H = DB.addHost(RH);
+ml_unit_handle_t *ml_unit_new(RRDDIM *RD) {
+    if (!RD)
+        return nullptr;
 
-    std::thread TrainingThread(&Host::train, H);
-    TrainingThread.detach();
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
+        return nullptr;
 
-    std::thread PredictionThread(&Host::predict, H);
-    PredictionThread.detach();
+    ml_unit_handle_t *handle = new ml_unit_handle_t;
+    handle->UnitPtr = new Unit(RD);
+    return handle;
+}
+
+void ml_unit_delete(ml_unit_handle_t *unit_handle) {
+    delete static_cast<Unit *>(unit_handle->UnitPtr);
+    delete unit_handle;
 }

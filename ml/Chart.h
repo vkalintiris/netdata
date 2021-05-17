@@ -11,16 +11,14 @@ class Unit;
 
 class Chart {
 public:
-    Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {}
+    Chart(RRDSET *RS) : RS(RS) {}
 
     std::string getFamily() const { return RS->family; }
 
     void updateUnits();
-    void updateMLChart();
 
 public:
     RRDSET *RS;
-    RRDSET *MLRS;
 
     std::map<RRDDIM *, Unit *> UnitsMap;
 };
