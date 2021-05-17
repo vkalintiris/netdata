@@ -870,3 +870,15 @@ void log_access( const char *fmt, ... ) {
             netdata_mutex_unlock(&access_mutex);
     }
 }
+
+void error_log_limit_reset() {
+    error_log_errors_per_period = error_log_errors_per_period_backup;
+    error_log_limit(1);
+}
+
+void error_log_limit_unlimited() {
+    error_log_limit_reset();
+
+    error_log_errors_per_period =
+        ((error_log_errors_per_period_backup * 10) < 10000) ? 10000 : (error_log_errors_per_period_backup * 10);
+}
