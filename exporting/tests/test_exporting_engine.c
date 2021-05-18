@@ -312,12 +312,12 @@ static void test_exporting_calculate_value_from_stored_data(void **state)
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 0);
     expect_function_call(__mock_rrddim_query_next_metric);
-    will_return(__mock_rrddim_query_next_metric, pack_storage_number(27, SN_EXISTS));
+    will_return(__mock_rrddim_query_next_metric, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 0);
     expect_function_call(__mock_rrddim_query_next_metric);
-    will_return(__mock_rrddim_query_next_metric, pack_storage_number(45, SN_EXISTS));
+    will_return(__mock_rrddim_query_next_metric, pack_storage_number(45, SN_DEFAULT_FLAGS));
 
     expect_function_call(__mock_rrddim_query_is_finished);
     will_return(__mock_rrddim_query_is_finished, 1);
@@ -431,13 +431,13 @@ static void test_format_dimension_stored_graphite_plaintext(void **state)
     struct engine *engine = *state;
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     RRDDIM *rd = localhost->rrdset_root->dimensions;
     assert_int_equal(format_dimension_stored_graphite_plaintext(engine->instance_root, rd), 0);
     assert_string_equal(
         buffer_tostring(engine->instance_root->buffer),
-        "netdata.test-host.chart_name.dimension_name;TAG1=VALUE1 TAG2=VALUE2 690565856.0000000 15052\n");
+        "netdata.test-host.chart_name.dimension_name;TAG1=VALUE1 TAG2=VALUE2 673788640.0000000 15052\n");
 }
 
 static void test_format_dimension_collected_json_plaintext(void **state)
@@ -459,7 +459,7 @@ static void test_format_dimension_stored_json_plaintext(void **state)
     struct engine *engine = *state;
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     RRDDIM *rd = localhost->rrdset_root->dimensions;
     assert_int_equal(format_dimension_stored_json_plaintext(engine->instance_root, rd), 0);
@@ -468,7 +468,7 @@ static void test_format_dimension_stored_json_plaintext(void **state)
         "{\"prefix\":\"netdata\",\"hostname\":\"test-host\",\"host_tags\":\"TAG1=VALUE1 TAG2=VALUE2\","
         "\"chart_id\":\"chart_id\",\"chart_name\":\"chart_name\",\"chart_family\":\"(null)\"," \
         "\"chart_context\": \"(null)\",\"chart_type\":\"(null)\",\"units\": \"(null)\",\"id\":\"dimension_id\","
-        "\"name\":\"dimension_name\",\"value\":690565856.0000000,\"timestamp\": 15052}\n");
+        "\"name\":\"dimension_name\",\"value\":673788640.0000000,\"timestamp\": 15052}\n");
 }
 
 static void test_format_dimension_collected_opentsdb_telnet(void **state)
@@ -487,13 +487,13 @@ static void test_format_dimension_stored_opentsdb_telnet(void **state)
     struct engine *engine = *state;
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     RRDDIM *rd = localhost->rrdset_root->dimensions;
     assert_int_equal(format_dimension_stored_opentsdb_telnet(engine->instance_root, rd), 0);
     assert_string_equal(
         buffer_tostring(engine->instance_root->buffer),
-        "put netdata.chart_name.dimension_name 15052 690565856.0000000 host=test-host TAG1=VALUE1 TAG2=VALUE2\n");
+        "put netdata.chart_name.dimension_name 15052 673788640.0000000 host=test-host TAG1=VALUE1 TAG2=VALUE2\n");
 }
 
 static void test_format_dimension_collected_opentsdb_http(void **state)
@@ -515,7 +515,7 @@ static void test_format_dimension_stored_opentsdb_http(void **state)
     struct engine *engine = *state;
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     RRDDIM *rd = localhost->rrdset_root->dimensions;
     assert_int_equal(format_dimension_stored_opentsdb_http(engine->instance_root, rd), 0);
@@ -523,7 +523,7 @@ static void test_format_dimension_stored_opentsdb_http(void **state)
         buffer_tostring(engine->instance_root->buffer),
         "{\"metric\":\"netdata.chart_name.dimension_name\","
         "\"timestamp\":15052,"
-        "\"value\":690565856.0000000,"
+        "\"value\":673788640.0000000,"
         "\"tags\":{\"host\":\"test-host TAG1=VALUE1 TAG2=VALUE2\"}}");
 }
 
@@ -1070,7 +1070,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     will_return(__wrap_now_realtime_sec, 2);
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(localhost, buffer, "test_server", "test_prefix", 0, 0);
 
@@ -1079,7 +1079,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
         "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
         "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
         "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
-        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\"} 690565856.0000000\n");
+        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\"} 673788640.0000000\n");
 
     buffer_flush(buffer);
 
@@ -1087,7 +1087,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     will_return(__wrap_now_realtime_sec, 2);
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(
         localhost, buffer, "test_server", "test_prefix", 0, PROMETHEUS_OUTPUT_NAMES | PROMETHEUS_OUTPUT_TYPES);
@@ -1098,7 +1098,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
         "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
         "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
         "# TYPE test_prefix_test_context gauge\n"
-        "test_prefix_test_context{chart=\"chart_name\",family=\"test_family\",dimension=\"dimension_name\"} 690565856.0000000\n");
+        "test_prefix_test_context{chart=\"chart_name\",family=\"test_family\",dimension=\"dimension_name\"} 673788640.0000000\n");
 
     buffer_flush(buffer);
 
@@ -1106,7 +1106,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
     will_return(__wrap_now_realtime_sec, 2);
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(localhost, buffer, "test_server", "test_prefix", 0, 0);
 
@@ -1115,7 +1115,7 @@ static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
         "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
         "netdata_host_tags_info{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
         "netdata_host_tags{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
-        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\",instance=\"test_hostname\"} 690565856.0000000\n");
+        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\",instance=\"test_hostname\"} 673788640.0000000\n");
 
     free(localhost->rrdset_root->context);
     free(localhost->rrdset_root->family);
@@ -1265,7 +1265,7 @@ static void test_format_dimension_prometheus_remote_write(void **state)
     RRDDIM *rd = localhost->rrdset_root->dimensions;
 
     expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
-    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_DEFAULT_FLAGS));
 
     expect_function_call(__wrap_add_metric);
     expect_value(__wrap_add_metric, write_request_p, 0xff);
@@ -1274,7 +1274,7 @@ static void test_format_dimension_prometheus_remote_write(void **state)
     expect_string(__wrap_add_metric, family, "");
     expect_string(__wrap_add_metric, dimension, "dimension_name");
     expect_string(__wrap_add_metric, instance, "test-host");
-    expect_value(__wrap_add_metric, value, 0x292932e0);
+    expect_value(__wrap_add_metric, value, 0x282932e0);
     expect_value(__wrap_add_metric, timestamp, 15052 * MSEC_PER_SEC);
 
     assert_int_equal(format_dimension_prometheus_remote_write(instance, rd), 0);
