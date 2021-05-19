@@ -4,6 +4,7 @@
 #define ML_UNIT_H
 
 #include "ml-private.h"
+#include "Host.h"
 
 #include "Config.h"
 

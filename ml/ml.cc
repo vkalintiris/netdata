@@ -41,6 +41,11 @@ void ml_init(void) {
     Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
 }
 
+/*
+ * Assumptions:
+ *  1) hosts outlive their dimensions,
+ *  2) dimensions always have a set that has a host.
+ */
 ml_host_handle_t *ml_host_new(RRDHOST *RH) {
     if (!RH)
         return nullptr;
@@ -48,9 +53,7 @@ ml_host_handle_t *ml_host_new(RRDHOST *RH) {
     if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
         return nullptr;
 
-    ml_host_handle_t *host_handle = new ml_host_handle_t;
-    host_handle->HostPtr = new Host(RH);
-    return host_handle;
+    return new ml_host_handle_t{new Host(RH)};
 }
 
 void ml_host_delete(ml_host_handle_t *host_handle) {
@@ -68,15 +71,24 @@ ml_unit_handle_t *ml_unit_new(RRDDIM *RD) {
     if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
         return nullptr;
 
-    ml_unit_handle_t *unit_handle = new ml_unit_handle_t;
-    unit_handle->UnitPtr = new Unit(RD);
-    return unit_handle;
+    RRDHOST *RH = RD->rrdset->rrdhost;
+    if (!RH->ml_host_handle)
+        return nullptr;
+
+    static_cast<Host *>(RH->ml_host_handle->HostPtr)->incrNumUnits();
+    return new ml_unit_handle_t{new Unit(RD)};
 }
 
 void ml_unit_delete(ml_unit_handle_t *unit_handle) {
     if (!unit_handle)
         return;
 
+    Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
+
+    RRDDIM *RD = U->getDim();
+    RRDHOST *RH = RD->rrdset->rrdhost;
+
+    static_cast<Host *>(RH->ml_host_handle->HostPtr)->decrNumUnits();
     delete static_cast<Unit *>(unit_handle->UnitPtr);
     delete unit_handle;
 }
@@ -86,6 +98,8 @@ bool ml_unit_is_anomalous(ml_unit_handle_t *unit_handle) {
         return false;
 
     Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
+
     U->predict();
+
     return U->isAnomalous();
 }

@@ -5,6 +5,8 @@
 
 #include "ml-private.h"
 
+#include "Unit.h"
+
 namespace ml {
 
 class Host {
@@ -13,9 +15,14 @@ public:
 
     std::string getHostname() const { return RH->hostname; }
 
+    void incrNumUnits() { NumUnits++; }
+    void decrNumUnits() { NumUnits--; }
+
 private:
     RRDHOST *RH;
     TimePoint CreationTime;
+
+    std::atomic<int> NumUnits;
 };
 
 }
