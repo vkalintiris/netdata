@@ -146,13 +146,10 @@ void Unit::predict() {
         return;
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
-
     std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(N, N);
-
     CalculatedNumber *CNs = P.first;
 
     Predicted = false;
-
     if (P.second == N) {
         SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         AnomalyScore = KM.anomalyScore(SB);

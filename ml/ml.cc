@@ -48,9 +48,9 @@ ml_host_handle_t *ml_host_new(RRDHOST *RH) {
     if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
         return nullptr;
 
-    ml_host_handle_t *handle = new ml_host_handle_t;
-    handle->HostPtr = new Host(RH);
-    return handle;
+    ml_host_handle_t *host_handle = new ml_host_handle_t;
+    host_handle->HostPtr = new Host(RH);
+    return host_handle;
 }
 
 void ml_host_delete(ml_host_handle_t *host_handle) {
@@ -68,12 +68,24 @@ ml_unit_handle_t *ml_unit_new(RRDDIM *RD) {
     if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
         return nullptr;
 
-    ml_unit_handle_t *handle = new ml_unit_handle_t;
-    handle->UnitPtr = new Unit(RD);
-    return handle;
+    ml_unit_handle_t *unit_handle = new ml_unit_handle_t;
+    unit_handle->UnitPtr = new Unit(RD);
+    return unit_handle;
 }
 
 void ml_unit_delete(ml_unit_handle_t *unit_handle) {
+    if (!unit_handle)
+        return;
+
     delete static_cast<Unit *>(unit_handle->UnitPtr);
     delete unit_handle;
+}
+
+bool ml_unit_is_anomalous(ml_unit_handle_t *unit_handle) {
+    if (!unit_handle)
+        return false;
+
+    Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
+    U->predict();
+    return U->isAnomalous();
 }

@@ -23,6 +23,8 @@ typedef struct ml_unit_handle {
 ml_unit_handle_t *ml_unit_new(RRDDIM *RD);
 void ml_unit_delete(ml_unit_handle_t *unit_handle);
 
+bool ml_unit_is_anomalous(ml_unit_handle_t *unit_handle);
+
 void ml_init(void);
 
 #ifdef __cplusplus
