@@ -387,7 +387,9 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rd->last_collected_time.tv_usec = 0;
     rd->rrdset = st;
     rd->state = mallocz(sizeof(*rd->state));
-    rd->state->ml_unit_handle = ml_unit_new(rd);
+
+    ml_host_new_unit(rd);
+
     if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
 #ifdef ENABLE_DBENGINE
         uuid_t *dim_uuid = find_dimension_uuid(st, rd);
@@ -502,7 +504,7 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
     // free(rd->annotations);
     freez(rd->state->metric_uuid);
 
-    ml_unit_delete(rd->state->ml_unit_handle);
+    ml_host_delete_unit(rd);
 
     RRD_MEMORY_MODE rrd_memory_mode = rd->rrd_memory_mode;
     switch(rrd_memory_mode) {

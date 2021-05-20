@@ -64,46 +64,29 @@ void ml_host_delete(ml_host_handle_t *host_handle) {
     delete host_handle;
 }
 
-ml_unit_handle_t *ml_unit_new(RRDDIM *RD) {
+void ml_host_new_unit(RRDDIM *RD) {
     if (!RD)
-        return nullptr;
-
-    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
-        return nullptr;
+        return;
 
     RRDHOST *RH = RD->rrdset->rrdhost;
     if (!RH->ml_host_handle)
-        return nullptr;
-
-    Unit *U = new Unit(RD);
-
-    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    H->addUnit(U);
-
-    return new ml_unit_handle_t{U};
-}
-
-void ml_unit_delete(ml_unit_handle_t *unit_handle) {
-    if (!unit_handle)
         return;
 
-    Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
-
-    RRDDIM *RD = U->getDim();
-    RRDHOST *RH = RD->rrdset->rrdhost;
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
+        return;
 
     Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    H->removeUnit(U);
-
-    delete U;
-    delete unit_handle;
+    H->newUnit(RD);
 }
 
-bool ml_unit_is_anomalous(ml_unit_handle_t *unit_handle) {
-    if (!unit_handle)
-        return false;
+void ml_host_delete_unit(RRDDIM *RD) {
+    if (!RD)
+        return;
 
-    Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
-    U->predict();
-    return U->isAnomalous();
+    RRDHOST *RH = RD->rrdset->rrdhost;
+    if (!RH->ml_host_handle)
+        return;
+
+    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
+    H->deleteUnit(RD);
 }

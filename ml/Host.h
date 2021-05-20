@@ -9,24 +9,23 @@
 
 namespace ml {
 
-class Unit;
-
 class Host {
 public:
     Host(RRDHOST *RH) : RH(RH) { }
 
-    void addUnit(Unit *U) {
+    void newUnit(RRDDIM *RD) {
         std::unique_lock<std::mutex> Lock(Mutex);
-        auto Pos = std::find_if(Units.begin(), Units.end(),
-                                [U](Unit *RHS) { return U < RHS; });
-        Units.insert(Pos, U);
+
+        UnitsMap[RD] = new Unit(RD);
     }
 
-    void removeUnit(Unit *U) {
+    void deleteUnit(RRDDIM *RD) {
         std::unique_lock<std::mutex> Lock(Mutex);
-        auto Pos = std::find_if(Units.begin(), Units.end(),
-                                [U](Unit *RHS) { return U < RHS; });
-        Units.erase(Pos);
+
+        Unit *U = UnitsMap[RD];
+        delete U;
+
+        UnitsMap.erase(RD);
     }
 
     void trainUnits();
@@ -35,7 +34,7 @@ private:
     RRDHOST *RH;
 
     std::mutex Mutex;
-    std::vector<Unit *> Units;
+    std::map<RRDDIM *, Unit *> UnitsMap;
 };
 
 }
