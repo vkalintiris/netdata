@@ -18,6 +18,7 @@ void ml_host_delete(ml_host_handle_t *host_handle);
 
 void ml_host_new_unit(RRDDIM *RD);
 void ml_host_delete_unit(RRDDIM *RD);
+bool ml_host_is_unit_anomalous(RRDDIM *RD);
 
 void ml_init(void);
 

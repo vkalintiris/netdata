@@ -1242,10 +1242,8 @@ static inline size_t rrdset_done_interpolate(
             }
 
             if(likely(rd->updated && rd->collections_counter > 1 && iterations < st->gap_when_lost_iterations_above)) {
-#if 0
-                if (ml_unit_is_anomalous(rd->state->ml_unit_handle))
+                if (ml_host_is_unit_anomalous(rd))
                     storage_flags |= SN_ANOMALOUS;
-#endif
 
                 rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, storage_flags));
 //                rd->values[current_entry] = pack_storage_number(new_value, storage_flags );

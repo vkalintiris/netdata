@@ -90,3 +90,17 @@ void ml_host_delete_unit(RRDDIM *RD) {
     Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
     H->deleteUnit(RD);
 }
+
+bool ml_host_is_unit_anomalous(RRDDIM *RD) {
+    if (!RD)
+        return false;
+
+    RRDHOST *RH = RD->rrdset->rrdhost;
+    if (!RH->ml_host_handle)
+        return false;
+
+    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
+    Unit *U = H->getUnit(RD);
+
+    return U->isAnomalous();
+}

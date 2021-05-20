@@ -28,6 +28,10 @@ public:
         UnitsMap.erase(RD);
     }
 
+    Unit *getUnit(RRDDIM *RD) {
+        return UnitsMap[RD];
+    }
+
     void trainUnits();
 
 private:
