@@ -28,11 +28,11 @@ public:
         UnitsMap.erase(RD);
     }
 
-    Unit *getUnit(RRDDIM *RD) {
-        return UnitsMap[RD];
+    bool isUnitAnomalous(RRDDIM *RD) {
+        std::unique_lock<std::mutex> Lock(Mutex);
+        Unit *U = UnitsMap[RD];
+        return U->isAnomalous();
     }
-
-    void trainUnits();
 
 private:
     RRDHOST *RH;

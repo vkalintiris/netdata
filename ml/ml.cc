@@ -100,7 +100,5 @@ bool ml_host_is_unit_anomalous(RRDDIM *RD) {
         return false;
 
     Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    Unit *U = H->getUnit(RD);
-
-    return U->isAnomalous();
+    return H->isUnitAnomalous(RD);
 }
