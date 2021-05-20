@@ -9,20 +9,33 @@
 
 namespace ml {
 
+class Unit;
+
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH), CreationTime(SteadyClock::now()) { }
+    Host(RRDHOST *RH) : RH(RH) { }
 
-    std::string getHostname() const { return RH->hostname; }
+    void addUnit(Unit *U) {
+        std::unique_lock<std::mutex> Lock(Mutex);
+        auto Pos = std::find_if(Units.begin(), Units.end(),
+                                [U](Unit *RHS) { return U < RHS; });
+        Units.insert(Pos, U);
+    }
 
-    void incrNumUnits() { NumUnits++; }
-    void decrNumUnits() { NumUnits--; }
+    void removeUnit(Unit *U) {
+        std::unique_lock<std::mutex> Lock(Mutex);
+        auto Pos = std::find_if(Units.begin(), Units.end(),
+                                [U](Unit *RHS) { return U < RHS; });
+        Units.erase(Pos);
+    }
+
+    void trainUnits();
 
 private:
     RRDHOST *RH;
-    TimePoint CreationTime;
 
-    std::atomic<int> NumUnits;
+    std::mutex Mutex;
+    std::vector<Unit *> Units;
 };
 
 }

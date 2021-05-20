@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <queue>
 
 extern "C" {
 

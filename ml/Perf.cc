@@ -1,4 +1,6 @@
+#if 0
 #include "Unit.h"
+#endif
 #include "Perf.h"
 
 #include "ml-private.h"
@@ -11,6 +13,7 @@ using namespace ml;
 extern void ml_init(void);
 
 void ml_perf() {
+#if 0
     default_health_enabled = 0;
     sql_init_database();
     generate_dbengine_dataset(3600 * 24 * 30);
@@ -38,4 +41,5 @@ void ml_perf() {
 
     std::cout << "MinDist: " << KM.getMinDist() << std::endl;
     std::cout << "MaxDist: " << KM.getMaxDist() << std::endl;
+#endif
 }

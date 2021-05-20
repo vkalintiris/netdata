@@ -3,7 +3,6 @@
 #include "Config.h"
 #include "Database.h"
 #include "Host.h"
-#include "Chart.h"
 #include "Unit.h"
 
 using namespace ml;

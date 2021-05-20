@@ -75,8 +75,12 @@ ml_unit_handle_t *ml_unit_new(RRDDIM *RD) {
     if (!RH->ml_host_handle)
         return nullptr;
 
-    static_cast<Host *>(RH->ml_host_handle->HostPtr)->incrNumUnits();
-    return new ml_unit_handle_t{new Unit(RD)};
+    Unit *U = new Unit(RD);
+
+    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
+    H->addUnit(U);
+
+    return new ml_unit_handle_t{U};
 }
 
 void ml_unit_delete(ml_unit_handle_t *unit_handle) {
@@ -88,8 +92,10 @@ void ml_unit_delete(ml_unit_handle_t *unit_handle) {
     RRDDIM *RD = U->getDim();
     RRDHOST *RH = RD->rrdset->rrdhost;
 
-    static_cast<Host *>(RH->ml_host_handle->HostPtr)->decrNumUnits();
-    delete static_cast<Unit *>(unit_handle->UnitPtr);
+    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
+    H->removeUnit(U);
+
+    delete U;
     delete unit_handle;
 }
 
@@ -98,8 +104,6 @@ bool ml_unit_is_anomalous(ml_unit_handle_t *unit_handle) {
         return false;
 
     Unit *U = static_cast<Unit *>(unit_handle->UnitPtr);
-
     U->predict();
-
     return U->isAnomalous();
 }
