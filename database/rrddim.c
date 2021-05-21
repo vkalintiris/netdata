@@ -388,8 +388,6 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rd->rrdset = st;
     rd->state = mallocz(sizeof(*rd->state));
 
-    ml_host_new_unit(rd);
-
     if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
 #ifdef ENABLE_DBENGINE
         uuid_t *dim_uuid = find_dimension_uuid(st, rd);
@@ -457,6 +455,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
     calc_link_to_rrddim(rd);
 
+    ml_new_unit(rd);
+
     rrdset_unlock(st);
 #ifdef ENABLE_ACLK
     rrdset_flag_set(st, RRDSET_FLAG_ACLK);
@@ -469,6 +469,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
 void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 {
+    ml_delete_unit(rd);
+
 #ifndef ENABLE_ACLK
     UNUSED(db_rotated);
 #endif
@@ -503,8 +505,6 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 
     // free(rd->annotations);
     freez(rd->state->metric_uuid);
-
-    ml_host_delete_unit(rd);
 
     RRD_MEMORY_MODE rrd_memory_mode = rd->rrd_memory_mode;
     switch(rrd_memory_mode) {

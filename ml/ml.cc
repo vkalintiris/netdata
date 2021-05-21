@@ -46,59 +46,65 @@ void ml_init(void) {
  *  1) hosts outlive their dimensions,
  *  2) dimensions always have a set that has a host.
  */
-ml_host_handle_t *ml_host_new(RRDHOST *RH) {
+void ml_new_host(RRDHOST *RH) {
     if (!RH)
-        return nullptr;
-
-    if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
-        return nullptr;
-
-    return new ml_host_handle_t{new Host(RH)};
-}
-
-void ml_host_delete(ml_host_handle_t *host_handle) {
-    if (!host_handle)
         return;
 
-    delete static_cast<Host *>(host_handle->HostPtr);
-    delete host_handle;
+    if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
+        return;
+
+    Host *H = new Host(RH);
+    H->runMLThreads();
+
+    RH->ml_host = static_cast<ml_host_t>(H);
 }
 
-void ml_host_new_unit(RRDDIM *RD) {
+void ml_delete_host(RRDHOST *RH) {
+    if (!RH)
+        return;
+
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return;
+
+    H->stopMLThreads();
+
+    delete H;
+}
+
+void ml_new_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
     RRDHOST *RH = RD->rrdset->rrdhost;
-    if (!RH->ml_host_handle)
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
         return;
 
     if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
         return;
 
-    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    H->newUnit(RD);
+    RD->state->ml_unit = static_cast<ml_unit_t>(new Unit(RD));
 }
 
-void ml_host_delete_unit(RRDDIM *RD) {
+void ml_delete_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
-    RRDHOST *RH = RD->rrdset->rrdhost;
-    if (!RH->ml_host_handle)
+    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
+    if (!U)
         return;
 
-    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    H->deleteUnit(RD);
+    delete U;
 }
 
-bool ml_host_is_unit_anomalous(RRDDIM *RD) {
+bool ml_is_anomalous(RRDDIM *RD) {
     if (!RD)
         return false;
 
-    RRDHOST *RH = RD->rrdset->rrdhost;
-    if (!RH->ml_host_handle)
+    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
+    if (!U)
         return false;
 
-    Host *H = static_cast<Host *>(RH->ml_host_handle->HostPtr);
-    return H->isUnitAnomalous(RD);
+    return U->isAnomalous();
 }

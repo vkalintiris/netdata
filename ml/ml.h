@@ -9,18 +9,18 @@ extern "C" {
 
 #include "daemon/common.h"
 
-typedef struct ml_host_handle {
-    void* HostPtr;
-} ml_host_handle_t;
-
-ml_host_handle_t *ml_host_new(RRDHOST *RH);
-void ml_host_delete(ml_host_handle_t *host_handle);
-
-void ml_host_new_unit(RRDDIM *RD);
-void ml_host_delete_unit(RRDDIM *RD);
-bool ml_host_is_unit_anomalous(RRDDIM *RD);
-
 void ml_init(void);
+
+typedef void* ml_host_t;
+typedef void* ml_unit_t;
+
+void ml_new_host(RRDHOST *RH);
+void ml_delete_host(RRDHOST *RH);
+
+void ml_new_unit(RRDDIM *RD);
+void ml_delete_unit(RRDDIM *RD);
+
+bool ml_is_anomalous(RRDDIM *RD);
 
 #ifdef __cplusplus
 };

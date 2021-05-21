@@ -1242,7 +1242,7 @@ static inline size_t rrdset_done_interpolate(
             }
 
             if(likely(rd->updated && rd->collections_counter > 1 && iterations < st->gap_when_lost_iterations_above)) {
-                if (ml_host_is_unit_anomalous(rd))
+                if (ml_is_anomalous(rd))
                     storage_flags |= SN_ANOMALOUS;
 
                 rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, storage_flags));

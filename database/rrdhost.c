@@ -358,7 +358,7 @@ RRDHOST *rrdhost_create(const char *hostname,
         else localhost = host;
     }
 
-    host->ml_host_handle = ml_host_new(host);
+    ml_new_host(host);
 
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
@@ -853,7 +853,7 @@ void rrdhost_free(RRDHOST *host) {
 
     // ------------------------------------------------------------------------
     // delete ML handle
-    ml_host_delete(host->ml_host_handle);
+    ml_delete_host(host);
 
     // ------------------------------------------------------------------------
     // remove it from the indexes
