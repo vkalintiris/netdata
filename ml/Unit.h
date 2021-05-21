@@ -26,16 +26,16 @@ public:
         return RD->update_every;
     }
 
-    bool isAnomalous() const {
-        return AnomalyScore > Cfg.AnomalyScoreThreshold;
-    }
-
     bool isTrained() const {
         return Trained;
     }
 
     bool isPredicted() const {
         return Predicted;
+    }
+
+    bool isAnomalous() const {
+        return AnomalyScore > Cfg.AnomalyScoreThreshold;
     }
 
     bool shouldTrain() const {
