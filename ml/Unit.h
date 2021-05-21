@@ -22,20 +22,8 @@ public:
         LastTrainedAt = SteadyClock::now();
     }
 
-    RRDDIM *getDim() const {
-        return RD;
-    }
-
-    std::string getFamily() const {
-        return RD->rrdset->family;
-    }
-
     int updateEvery() const {
         return RD->update_every;
-    }
-
-    CalculatedNumber getAnomalyScore() const {
-        return AnomalyScore;
     }
 
     bool isAnomalous() const {
@@ -53,8 +41,6 @@ public:
     bool shouldTrain() const {
         return (LastTrainedAt + Cfg.TrainEvery) < SteadyClock::now();
     }
-
-    KMeans &getKMeansRef() { return KM; }
 
     std::pair<CalculatedNumber *, unsigned>
     getCalculatedNumbers(unsigned N, unsigned MinN);
