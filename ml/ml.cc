@@ -72,16 +72,39 @@ void ml_delete_host(RRDHOST *RH) {
     delete H;
 }
 
-void ml_new_unit(RRDDIM *RD) {
-    if (!RD)
+void ml_new_chart(RRDSET *RS) {
+    if (!RS)
         return;
 
-    RRDHOST *RH = RD->rrdset->rrdhost;
+    RRDHOST *RH = RS->rrdhost;
     Host *H = static_cast<Host *>(RH->ml_host);
     if (!H)
         return;
 
-    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
+        return;
+
+    RS->state->ml_chart = static_cast<ml_chart_t>(new Chart(RS));
+}
+
+void ml_delete_chart(RRDSET *RS) {
+    if (!RS)
+        return;
+
+    Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+    if (!C)
+        return;
+
+    delete C;
+}
+
+void ml_new_unit(RRDDIM *RD) {
+    if (!RD)
+        return;
+
+    RRDSET *RS = RD->rrdset;
+    Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+    if (!C)
         return;
 
     RD->state->ml_unit = static_cast<ml_unit_t>(new Unit(RD));

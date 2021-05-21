@@ -231,6 +231,8 @@ HEALTH_PLUGIN_FILES = \
 ML_FILES = \
 	dlib/dlib/all/source.cpp \
 	ml/ml.h \
+	ml/Chart.h \
+	ml/Chart.cc \
 	ml/Config.h \
 	ml/Config.cc \
 	ml/Database.h \

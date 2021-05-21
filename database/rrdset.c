@@ -322,6 +322,9 @@ void rrdset_free(RRDSET *st) {
 
     rrdhost_check_wrlock(host);  // make sure we have a write lock on the host
     rrdset_wrlock(st);                  // lock this RRDSET
+
+    ml_delete_chart(st);
+
     // info("Removing chart '%s' ('%s')", st->id, st->name);
 
     // ------------------------------------------------------------------------
@@ -947,6 +950,9 @@ RRDSET *rrdset_create_custom(
         aclk_add_collector(host, plugin, module);
     rrdset_flag_set(st, RRDSET_FLAG_ACLK);
 #endif
+
+    ml_new_chart(st);
+
     return(st);
 }
 
