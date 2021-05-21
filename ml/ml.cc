@@ -118,7 +118,7 @@ void ml_delete_unit(RRDDIM *RD) {
     if (!U)
         return;
 
-    delete U;
+    U->unrefDim();
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {

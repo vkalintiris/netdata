@@ -8,7 +8,10 @@
 using namespace ml;
 
 void Chart::updateUnits() {
-    Units.clear();
+    for (Unit *U : Units) {
+        if (!U->HasRD)
+            delete U;
+    }
 
     rrdset_rdlock(RS);
 
