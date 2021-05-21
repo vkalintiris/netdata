@@ -13,18 +13,14 @@ void Chart::updateUnits() {
             delete U;
     }
 
-    rrdset_rdlock(RS);
+    Units.clear();
 
     RRDDIM *RD;
+
+    rrdset_rdlock(RS);
     rrddim_foreach_read(RD, RS) {
         Unit *U = static_cast<Unit *>(RD->state->ml_unit);
-        if (!U)
-            continue;
-
-        //  - push only if there's a live RD
-        //  - free memory otherwise
         Units.push_back(U);
     }
-
     rrdset_unlock(RS);
 }
