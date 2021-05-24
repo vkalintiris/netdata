@@ -4,7 +4,7 @@
 #define ML_HOST_H
 
 #include "ml-private.h"
-#include "Chart.h"
+#include "Unit.h"
 
 namespace ml {
 
@@ -15,10 +15,9 @@ public:
     void runMLThreads();
     void stopMLThreads();
 
-private:
-    void updateCharts();
-    std::vector<Unit *> getUnits();
+    void addUnit(Unit *U);
 
+private:
     void predictUnits();
     void trainUnits();
 
@@ -29,7 +28,7 @@ private:
     std::thread PredictionThread;
 
     std::mutex Mutex;
-    std::vector<Chart *> Charts;
+    std::vector<Unit *> Units;
 };
 
 }

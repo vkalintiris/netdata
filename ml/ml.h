@@ -12,14 +12,10 @@ extern "C" {
 void ml_init(void);
 
 typedef void* ml_host_t;
-typedef void* ml_chart_t;
 typedef void* ml_unit_t;
 
 void ml_new_host(RRDHOST *RH);
 void ml_delete_host(RRDHOST *RH);
-
-void ml_new_chart(RRDSET *RS);
-void ml_delete_chart(RRDSET *RS);
 
 void ml_new_unit(RRDDIM *RD);
 void ml_delete_unit(RRDDIM *RD);
