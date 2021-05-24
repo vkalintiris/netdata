@@ -117,10 +117,11 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     return { CNs, TotalValues };
 }
 
-void Unit::train() {
+bool Unit::train(TimePoint &Now) {
     std::unique_lock<std::mutex> Lock(Mutex);
-    if (!HasRD)
-        return;
+
+    if ((LastTrainedAt + Cfg.TrainEvery) > Now)
+        return false;
 
     LastTrainedAt = SteadyClock::now();
 
@@ -143,13 +144,15 @@ void Unit::train() {
     }
 
     delete[] CNs;
+    return true;
 }
 
 void Unit::predict() {
     if (!Mutex.try_lock())
         return;
 
-    if (!HasRD || !HasModel)
+
+    if (!HasModel)
         return;
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;

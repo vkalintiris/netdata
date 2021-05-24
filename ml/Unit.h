@@ -9,6 +9,8 @@
 
 namespace ml {
 
+class Host;
+
 class Unit {
 public:
     Unit(RRDDIM *RD) : RD(RD) {
@@ -18,7 +20,7 @@ public:
         HasModel = false;
         Trained = false;
         Predicted = false;
-        HasRD = true;
+        ShouldTrain = false;
 
         LastTrainedAt = SteadyClock::now();
     }
@@ -39,26 +41,11 @@ public:
         return AnomalyScore > Cfg.AnomalyScoreThreshold;
     }
 
-    bool shouldTrain() const {
-        return (LastTrainedAt + Cfg.TrainEvery) < SteadyClock::now();
-    }
-
-    void unrefDim() {
-        // Need the lock because another thread might be training/predicting
-        // this dimension, in which case we don't want to nullify RD until
-        // they are done.
-        std::unique_lock<std::mutex> Lock(Mutex);
-        HasRD = false;
-    }
-
     std::pair<CalculatedNumber *, unsigned>
     getCalculatedNumbers(unsigned N, unsigned MinN);
 
-    void train();
+    bool train(TimePoint &Now);
     void predict();
-
-public:
-    std::atomic<bool> HasRD;
 
 private:
     RRDDIM *RD;
@@ -68,10 +55,13 @@ private:
     bool Trained;
     bool Predicted;
     bool HasModel;
+    bool ShouldTrain;
 
     TimePoint LastTrainedAt;
 
     std::mutex Mutex;
+
+    friend class Host;
 };
 
 }

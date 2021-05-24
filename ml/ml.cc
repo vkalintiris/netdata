@@ -23,7 +23,6 @@ Database ml::DB;
  * Initialize global configuration variable.
  */
 void ml_init(void) {
-    Cfg.UpdateEvery = Millis{15 * 1000};
     Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60) * 1000};
     Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 30) * 1000};
     Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 30) * 1000};
@@ -76,13 +75,14 @@ void ml_new_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
+        return;
+
     RRDHOST *RH = RD->rrdset->rrdhost;
     Host *H = static_cast<Host *>(RH->ml_host);
     if (!H)
         return;
 
-    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RD->rrdset->name))
-        return;
 
     Unit *U = new Unit(RD);
     H->addUnit(U);
@@ -97,7 +97,14 @@ void ml_delete_unit(RRDDIM *RD) {
     if (!U)
         return;
 
-    U->unrefDim();
+    RRDHOST *RH = RD->rrdset->rrdhost;
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return;
+
+    H->removeUnit(U);
+
+    delete U;
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {

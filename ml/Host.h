@@ -16,19 +16,18 @@ public:
     void stopMLThreads();
 
     void addUnit(Unit *U);
+    void removeUnit(Unit *U);
 
 private:
-    void predictUnits();
     void trainUnits();
 
 private:
     RRDHOST *RH;
 
     std::thread TrainingThread;
-    std::thread PredictionThread;
 
     std::mutex Mutex;
-    std::vector<Unit *> Units;
+    std::map<RRDDIM *, Unit *> UnitsMap;
 };
 
 }

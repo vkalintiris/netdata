@@ -9,7 +9,6 @@ namespace ml {
 
 class Config {
 public:
-    Millis UpdateEvery;
     Millis TrainSecs;
     Millis MinTrainSecs;
     Millis TrainEvery;
