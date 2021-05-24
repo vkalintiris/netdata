@@ -26,18 +26,14 @@ void Host::trainUnits() {
         {
             std::unique_lock<std::mutex> Lock(Mutex);
 
-            int NumUnits = UnitsMap.size();
-            if (NumUnits == 0)
-                NumUnits = 1;
-
-            AvailableUnitTrainingDuration = Cfg.TrainEvery / NumUnits;
-
             for (auto &UP : UnitsMap) {
                 Unit *U = UP.second;
 
                 if (U->train(TrainingStartTP))
                     break;
             }
+
+            AvailableUnitTrainingDuration = Cfg.TrainEvery / (UnitsMap.size() + 1);
         }
         Duration<double> UnitTrainingDuration = SteadyClock::now() - TrainingStartTP;
 
