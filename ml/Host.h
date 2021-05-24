@@ -17,6 +17,7 @@ public:
 
 private:
     void updateCharts();
+    std::vector<Unit *> getUnits();
 
     void predictUnits();
     void trainUnits();

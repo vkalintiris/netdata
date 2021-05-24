@@ -7,17 +7,41 @@
 using namespace ml;
 
 void Host::updateCharts() {
+    // Clear the vector we use for tracking charts.
     Charts.clear();
 
     rrdhost_rdlock(RH);
 
     RRDSET *RS;
     rrdset_foreach_read(RS, RH) {
-        Charts.push_back(new Chart(RS));
+        Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+
+        // This set does not have a chart.
+        if (!C)
+            continue;
+
+        // This chart's RRD ref has been deleted.
+        if (!C->HasRD)
+            delete C;
+
+        // We can use this chart.
+        Charts.push_back(C);
     }
 
     rrdhost_unlock(RH);
 }
+
+std::vector<Unit *> Host::getUnits() {
+    std::vector<Unit *> Units;
+
+    for (Chart *C : Charts) {
+        std::vector<Unit *> V = C->getUnits();
+        Units.insert(Units.end(), V.begin(), V.end());
+    }
+
+    return Units;
+}
+
 
 void Host::predictUnits() {
     std::this_thread::sleep_for(Millis{5000});

@@ -10,13 +10,26 @@ namespace ml {
 
 class Chart {
 public:
-    Chart(RRDSET *RS) : RS(RS) { }
+    Chart(RRDSET *RS) : RS(RS) { HasRD = true; }
 
+    void unrefSet() { HasRD = false; }
+
+    std::vector<Unit *> getUnits() {
+        updateUnits();
+        return Units;
+    }
+
+private:
     void updateUnits();
+
+public:
+    std::atomic<bool> HasRD;
+
 
 private:
     RRDSET *RS;
 
+    std::mutex Mutex;
     std::vector<Unit *> Units;
 };
 

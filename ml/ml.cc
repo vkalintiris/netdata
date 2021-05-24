@@ -95,7 +95,7 @@ void ml_delete_chart(RRDSET *RS) {
     if (!C)
         return;
 
-    delete C;
+    C->unrefSet();
 }
 
 void ml_new_unit(RRDDIM *RD) {
