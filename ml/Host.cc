@@ -37,9 +37,10 @@ void Host::trainUnits() {
         }
         Duration<double> UnitTrainingDuration = SteadyClock::now() - TrainingStartTP;
 
-        if (AvailableUnitTrainingDuration > UnitTrainingDuration)
+        if (AvailableUnitTrainingDuration > UnitTrainingDuration) {
+            info("Sleeping for %lf seconds", (AvailableUnitTrainingDuration - UnitTrainingDuration).count());
             std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
-        else
+        } else
             fatal("AvailableUnitTrainingDuration < UnitTrainingDuration");
     }
 }
