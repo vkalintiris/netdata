@@ -18,8 +18,6 @@ public:
         AnomalyScore = 0.0;
 
         HasModel = false;
-        Trained = false;
-        Predicted = false;
         ShouldTrain = false;
 
         LastTrainedAt = SteadyClock::now();
@@ -27,14 +25,6 @@ public:
 
     int updateEvery() const {
         return RD->update_every;
-    }
-
-    bool isTrained() const {
-        return Trained;
-    }
-
-    bool isPredicted() const {
-        return Predicted;
     }
 
     bool isAnomalous() const {
@@ -52,8 +42,6 @@ private:
 
     KMeans KM;
     CalculatedNumber AnomalyScore;
-    bool Trained;
-    bool Predicted;
     bool HasModel;
     bool ShouldTrain;
 

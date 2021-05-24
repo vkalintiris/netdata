@@ -133,13 +133,9 @@ bool Unit::train(TimePoint &Now) {
     CalculatedNumber *CNs = P.first;
     unsigned N = P.second;
 
-    Trained = false;
-
     if (N >= MinN) {
         SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         KM.train(SB);
-
-        Trained = true;
         HasModel = true;
     }
 
@@ -151,7 +147,6 @@ void Unit::predict() {
     if (!Mutex.try_lock())
         return;
 
-
     if (!HasModel)
         return;
 
@@ -159,12 +154,9 @@ void Unit::predict() {
     std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(N, N);
     CalculatedNumber *CNs = P.first;
 
-    Predicted = false;
     if (P.second == N) {
         SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         AnomalyScore = KM.anomalyScore(SB);
-
-        Predicted = true;
     }
 
     delete[] CNs;
