@@ -24,7 +24,6 @@ public:
     }
 
     bool isAnomalous() {
-        predict();
         return AnomalyScore > Cfg.AnomalyScoreThreshold;
     }
 

@@ -20,11 +20,13 @@ public:
 
 private:
     void trainUnits();
+    void trackAnomalyStatus();
 
 private:
     RRDHOST *RH;
 
     std::thread TrainingThread;
+    std::thread TrackAnomalyStatusThread;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Unit *> UnitsMap;

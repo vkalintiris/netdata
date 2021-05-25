@@ -44,10 +44,62 @@ void Host::trainUnits() {
     }
 }
 
+void Host::trackAnomalyStatus() {
+    std::this_thread::sleep_for(Seconds{10});
+
+    RRDSET *HostAnomalyRS = nullptr;
+    std::string SetId = "host_anomaly_status";
+
+    HostAnomalyRS = rrdset_create_localhost(
+        "ml",
+        SetId.c_str(),
+        NULL,
+        "ml",
+        NULL,
+        "Number of anomalous units",
+        "number of units",
+        "ml_units",
+        NULL,
+        39183,
+        1,
+        RRDSET_TYPE_LINE);
+
+    RRDDIM *NumTotalUnitsRD = rrddim_add(HostAnomalyRS, "num_total_units",
+                                         NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+    RRDDIM *NumAnomalousUnitsRD = rrddim_add(HostAnomalyRS, "num_anomalous_units",
+                                             NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+
+    while (!netdata_exit) {
+        std::this_thread::sleep_for(Seconds{1});
+
+        collected_number NumTotalUnits = 0;
+        collected_number NumAnomalousUnits = 0;
+        {
+            std::lock_guard<std::mutex> Lock(Mutex);
+
+            NumTotalUnits = UnitsMap.size();
+
+            for (auto &UP : UnitsMap) {
+                Unit *U = UP.second;
+
+                if (U->isAnomalous())
+                    NumAnomalousUnits++;
+            }
+        }
+
+        rrddim_set_by_pointer(HostAnomalyRS, NumTotalUnitsRD, NumTotalUnits);
+        rrddim_set_by_pointer(HostAnomalyRS, NumAnomalousUnitsRD, NumAnomalousUnits);
+        rrdset_done(HostAnomalyRS);
+        rrdset_next(HostAnomalyRS);
+    }
+}
+
 void Host::runMLThreads() {
     TrainingThread = std::thread(&Host::trainUnits, this);
+    TrackAnomalyStatusThread = std::thread(&Host::trackAnomalyStatus, this);
 }
 
 void Host::stopMLThreads() {
     TrainingThread.join();
+    TrackAnomalyStatusThread.join();
 }

@@ -118,5 +118,6 @@ bool ml_is_anomalous(RRDDIM *RD) {
     if (!U)
         return false;
 
+    U->predict();
     return U->isAnomalous();
 }
