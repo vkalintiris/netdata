@@ -118,8 +118,6 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
 }
 
 bool Unit::train(TimePoint &Now) {
-    std::lock_guard<std::mutex> Lock(Mutex);
-
     if ((LastTrainedAt + Cfg.TrainEvery) > Now)
         return false;
 
@@ -128,24 +126,30 @@ bool Unit::train(TimePoint &Now) {
     unsigned MinN = Cfg.MinTrainSecs / Millis{updateEvery() * 1000};
     unsigned MaxN = Cfg.TrainSecs / Millis{updateEvery() * 1000};
 
-    std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(MinN, MaxN);
+    std::pair<CalculatedNumber *, unsigned> P;
 
-    CalculatedNumber *CNs = P.first;
-    unsigned N = P.second;
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
 
-    if (N >= MinN) {
-        SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-        KM.train(SB);
-        HasModel = true;
+        P = getCalculatedNumbers(MinN, MaxN);
+        CalculatedNumber *CNs = P.first;
+        unsigned N = P.second;
+
+        if (N >= MinN) {
+            SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+            KM.train(SB);
+            HasModel = true;
+            error("Trained %s", RD->name);
+        }
+
+        delete[] CNs;
     }
 
-    delete[] CNs;
     return true;
 }
 
 void Unit::predict() {
     std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
-
     if (!Lock.try_lock())
         return;
 
@@ -161,5 +165,6 @@ void Unit::predict() {
         AnomalyScore = KM.anomalyScore(SB);
     }
 
+    error("Predicted %s: (AS: %lf)", RD->name, AnomalyScore);
     delete[] CNs;
 }
