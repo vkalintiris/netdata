@@ -1077,6 +1077,33 @@ inline int web_client_api_request_v1_info_fill_buffer(RRDHOST *host, BUFFER *wb)
     return 0;
 }
 
+int web_client_api_request_v1_anomaly_status(RRDHOST *host, struct web_client *w, char *url) {
+    (void) host;
+    (void) url;
+
+    if (!netdata_ready)
+        return HTTP_RESP_BACKEND_FETCH_FAILED;
+
+    const char *chart = "ml.host_anomaly_status";
+    RRDSET *st = rrdset_find(host, chart);
+    if (!st)
+        st = rrdset_find_byname(host, chart);
+
+    BUFFER *wb = w->response.data;
+    buffer_flush(wb);
+
+    if (!st) {
+        buffer_strcat(wb, "Could not find chart: ");
+        buffer_strcat_htmlescape(wb, chart);
+        return HTTP_RESP_NOT_FOUND;
+    }
+
+    wb->contenttype = CT_APPLICATION_JSON;
+    buffer_strcat(wb, "\n{ \"metrics-count\": \"Hello there!\" }");
+    buffer_no_cacheable(wb);
+    return HTTP_RESP_OK;
+}
+
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
     (void)url;
     if (!netdata_ready) return HTTP_RESP_BACKEND_FETCH_FAILED;
@@ -1096,6 +1123,7 @@ static struct api_command {
     WEB_CLIENT_ACL acl;
     int (*callback)(RRDHOST *host, struct web_client *w, char *url);
 } api_commands[] = {
+        { "anomaly_status",  0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_status  },
         { "info",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_info            },
         { "data",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_data            },
         { "chart",           0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_chart           },
