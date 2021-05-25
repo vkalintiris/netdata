@@ -13,21 +13,18 @@ class Host;
 
 class Unit {
 public:
-    Unit(RRDDIM *RD) : RD(RD) {
-        KM = KMeans();
-        AnomalyScore = 0.0;
-
-        HasModel = false;
-        ShouldTrain = false;
-
-        LastTrainedAt = SteadyClock::now();
-    }
+    Unit(RRDDIM *RD) :
+        RD(RD),
+        KM(KMeans()), AnomalyScore(0.0),
+        HasModel(false), ShouldTrain(false),
+        LastTrainedAt(SteadyClock::now()) { }
 
     int updateEvery() const {
         return RD->update_every;
     }
 
-    bool isAnomalous() const {
+    bool isAnomalous() {
+        predict();
         return AnomalyScore > Cfg.AnomalyScoreThreshold;
     }
 
@@ -42,6 +39,7 @@ private:
 
     KMeans KM;
     CalculatedNumber AnomalyScore;
+
     bool HasModel;
     bool ShouldTrain;
 

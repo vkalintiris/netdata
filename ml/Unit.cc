@@ -118,7 +118,7 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
 }
 
 bool Unit::train(TimePoint &Now) {
-    std::unique_lock<std::mutex> Lock(Mutex);
+    std::lock_guard<std::mutex> Lock(Mutex);
 
     if ((LastTrainedAt + Cfg.TrainEvery) > Now)
         return false;
@@ -144,7 +144,9 @@ bool Unit::train(TimePoint &Now) {
 }
 
 void Unit::predict() {
-    if (!Mutex.try_lock())
+    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
+
+    if (!Lock.try_lock())
         return;
 
     if (!HasModel)
@@ -160,5 +162,4 @@ void Unit::predict() {
     }
 
     delete[] CNs;
-    Mutex.unlock();
 }

@@ -7,12 +7,12 @@
 using namespace ml;
 
 void Host::addUnit(Unit *U) {
-    std::unique_lock<std::mutex> Lock(Mutex);
+    std::lock_guard<std::mutex> Lock(Mutex);
     UnitsMap[U->RD] = U;
 }
 
 void Host::removeUnit(Unit *U) {
-    std::unique_lock<std::mutex> Lock(Mutex);
+    std::lock_guard<std::mutex> Lock(Mutex);
     UnitsMap.erase(U->RD);
 }
 
@@ -24,7 +24,7 @@ void Host::trainUnits() {
 
         TimePoint TrainingStartTP = SteadyClock::now();
         {
-            std::unique_lock<std::mutex> Lock(Mutex);
+            std::lock_guard<std::mutex> Lock(Mutex);
 
             for (auto &UP : UnitsMap) {
                 Unit *U = UP.second;

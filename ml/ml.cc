@@ -37,7 +37,7 @@ void ml_init(void) {
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!system.cpu *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
+    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.1);
 }
 
 /*
@@ -83,9 +83,11 @@ void ml_new_unit(RRDDIM *RD) {
     if (!H)
         return;
 
+    error("creating new unit for %s", RD->name);
+
     Unit *U = new Unit(RD);
     H->addUnit(U);
-    RD->state->ml_unit = static_cast<ml_unit_t>(new Unit(RD));
+    RD->state->ml_unit = static_cast<ml_unit_t>(U);
 }
 
 void ml_delete_unit(RRDDIM *RD) {
@@ -100,6 +102,8 @@ void ml_delete_unit(RRDDIM *RD) {
     Host *H = static_cast<Host *>(RH->ml_host);
     if (!H)
         return;
+
+    error("deleting unit for %s", RD->name);
 
     H->removeUnit(U);
 
