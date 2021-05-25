@@ -1084,24 +1084,56 @@ int web_client_api_request_v1_anomaly_status(RRDHOST *host, struct web_client *w
     if (!netdata_ready)
         return HTTP_RESP_BACKEND_FETCH_FAILED;
 
+    uint32_t after = 0, before = 0;
+
+    while (url) {
+        char *value = mystrsep(&url, "&");
+        if (!value || !*value)
+            continue;
+
+        char *name = mystrsep(&value, "=");
+        if (!name || !*name)
+            continue;
+        if (!value || !*value)
+            continue;
+
+        if (!strcmp(name, "after"))
+            after = (uint32_t) strtoul(value, NULL, 0);
+        else if (!strcmp(name, "before"))
+            before = (uint32_t) strtoul(value, NULL, 0);
+    }
+
+    if (before == 0)
+        before = now_realtime_sec();
+
+    if ((after == 0) || ((after + 3600) >= before))
+        after = before - 3600;
+
+    error("after: %u, before: %u", after, before);
+
+    char *s = ml_find_anomaly_events(host, after, before);
+    if (!s)
+        s = "{\"No\": \"value\" }\n";
+
+    BUFFER *wb = w->response.data;
+    buffer_flush(wb);
+    wb->contenttype = CT_APPLICATION_JSON;
+    buffer_strcat(wb, s);
+    buffer_no_cacheable(wb);
+    return HTTP_RESP_OK;
+
+#if 0
     const char *chart = "ml.host_anomaly_status";
     RRDSET *st = rrdset_find(host, chart);
     if (!st)
         st = rrdset_find_byname(host, chart);
-
-    BUFFER *wb = w->response.data;
-    buffer_flush(wb);
 
     if (!st) {
         buffer_strcat(wb, "Could not find chart: ");
         buffer_strcat_htmlescape(wb, chart);
         return HTTP_RESP_NOT_FOUND;
     }
-
-    wb->contenttype = CT_APPLICATION_JSON;
-    buffer_strcat(wb, "\n{ \"metrics-count\": \"Hello there!\" }");
-    buffer_no_cacheable(wb);
-    return HTTP_RESP_OK;
+#endif
 }
 
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {

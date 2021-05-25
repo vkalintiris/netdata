@@ -22,6 +22,8 @@ void ml_delete_unit(RRDDIM *RD);
 
 bool ml_is_anomalous(RRDDIM *RD);
 
+char *ml_find_anomaly_events(RRDHOST *RH, time_t after, time_t before);
+
 #ifdef __cplusplus
 };
 #endif

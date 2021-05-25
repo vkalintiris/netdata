@@ -18,6 +18,8 @@ public:
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
 
+    char *findAnomalyEvents(time_t After, time_t Before);
+
 private:
     void trainUnits();
     void trackAnomalyStatus();

@@ -103,3 +103,10 @@ void Host::stopMLThreads() {
     TrainingThread.join();
     TrackAnomalyStatusThread.join();
 }
+
+char *Host::findAnomalyEvents(time_t After, time_t Before) {
+    (void) After;
+    (void) Before;
+
+    return nullptr;
+}

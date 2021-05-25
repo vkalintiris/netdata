@@ -121,3 +121,14 @@ bool ml_is_anomalous(RRDDIM *RD) {
     U->predict();
     return U->isAnomalous();
 }
+
+char *ml_find_anomaly_events(RRDHOST *RH, time_t After, time_t Before) {
+    if (!RH)
+        return nullptr;
+
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return nullptr;
+
+    return H->findAnomalyEvents(After, Before);
+}
