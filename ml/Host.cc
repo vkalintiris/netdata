@@ -68,6 +68,8 @@ void Host::trackAnomalyStatus() {
                                          NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
     RRDDIM *NumAnomalousUnitsRD = rrddim_add(HostAnomalyRS, "num_anomalous_units",
                                              NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+    RRDDIM *AnomalyRateRD = rrddim_add(HostAnomalyRS, "anomaly_rate",
+                                       NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
     while (!netdata_exit) {
         std::this_thread::sleep_for(Seconds{1});
@@ -87,8 +89,13 @@ void Host::trackAnomalyStatus() {
             }
         }
 
+        CalculatedNumber AnomalyRate = 0;
+        if (NumAnomalousUnits != 0)
+            AnomalyRate = (100.0 * NumAnomalousUnits) / NumTotalUnits;
+
         rrddim_set_by_pointer(HostAnomalyRS, NumTotalUnitsRD, NumTotalUnits);
         rrddim_set_by_pointer(HostAnomalyRS, NumAnomalousUnitsRD, NumAnomalousUnits);
+        rrddim_set_by_pointer(HostAnomalyRS, AnomalyRateRD, AnomalyRate);
         rrdset_done(HostAnomalyRS);
         rrdset_next(HostAnomalyRS);
     }
