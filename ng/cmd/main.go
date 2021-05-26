@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/netdata/netdata/ng/cgo"
+	"github.com/netdata/netdata/ng/health"
 )
 
 func setupLogger(path string) *os.File {
@@ -85,8 +86,8 @@ func main() {
 		logFile := setupLogger("/tmp/ng.log")
 		defer logFile.Close()
 
-		testConf()
-
-		handleSignals()
+		go health.HandleHealth()
 	}
+
+	handleSignals()
 }

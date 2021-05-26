@@ -593,15 +593,22 @@ static SILENCE_TYPE check_silenced(RRDCALC *rc, char* host, SILENCERS *silencers
  */
 static int update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
     uint32_t rrdcalc_flags_old = rc->rrdcalc_flags;
+
     // Clear the flags
     rc->rrdcalc_flags &= ~(RRDCALC_FLAG_DISABLED | RRDCALC_FLAG_SILENCED);
+
     if (unlikely(silencers->all_alarms)) {
-        if (silencers->stype == STYPE_DISABLE_ALARMS) rc->rrdcalc_flags |= RRDCALC_FLAG_DISABLED;
-        else if (silencers->stype == STYPE_SILENCE_NOTIFICATIONS) rc->rrdcalc_flags |= RRDCALC_FLAG_SILENCED;
+        if (silencers->stype == STYPE_DISABLE_ALARMS)
+            rc->rrdcalc_flags |= RRDCALC_FLAG_DISABLED;
+        else if (silencers->stype == STYPE_SILENCE_NOTIFICATIONS)
+            rc->rrdcalc_flags |= RRDCALC_FLAG_SILENCED;
     } else {
         SILENCE_TYPE st = check_silenced(rc, host->hostname, silencers);
-        if (st == STYPE_DISABLE_ALARMS) rc->rrdcalc_flags |= RRDCALC_FLAG_DISABLED;
-        else if (st == STYPE_SILENCE_NOTIFICATIONS) rc->rrdcalc_flags |= RRDCALC_FLAG_SILENCED;
+
+        if (st == STYPE_DISABLE_ALARMS)
+            rc->rrdcalc_flags |= RRDCALC_FLAG_DISABLED;
+        else if (st == STYPE_SILENCE_NOTIFICATIONS)
+            rc->rrdcalc_flags |= RRDCALC_FLAG_SILENCED;
     }
 
     if (rrdcalc_flags_old != rc->rrdcalc_flags) {
@@ -614,6 +621,7 @@ static int update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
              (rc->rrdcalc_flags & RRDCALC_FLAG_SILENCED)?"true":"false"
         );
     }
+
     if (rc->rrdcalc_flags & RRDCALC_FLAG_DISABLED)
         return 1;
     else

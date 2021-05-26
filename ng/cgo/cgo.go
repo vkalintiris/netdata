@@ -69,3 +69,7 @@ func CGoReopenLogs(sig os.Signal) {
 
 	C.execute_command(C.CMD_REOPEN_LOGS, nil, nil)
 }
+
+func CGoRrdCalcLabelsUnlink() {
+	C.rrdcalc_labels_unlink()
+}
