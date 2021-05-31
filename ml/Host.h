@@ -19,6 +19,7 @@ public:
     void removeUnit(Unit *U);
 
     std::string findAnomalyEvents(time_t After, time_t Before);
+    std::string getAnomalyEventInfo(time_t After, time_t Before);
 
 private:
     void trainUnits();

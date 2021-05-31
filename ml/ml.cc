@@ -135,3 +135,17 @@ char *ml_find_anomaly_events(RRDHOST *RH, time_t After, time_t Before) {
     strcpy(JsonBuffer, JsonResult.c_str());
     return JsonBuffer;
 }
+
+char *ml_get_anomaly_event_info(RRDHOST *RH, time_t After, time_t Before) {
+    if (!RH)
+        return nullptr;
+
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return nullptr;
+
+    std::string JsonResult = H->getAnomalyEventInfo(After, Before);
+    char *JsonBuffer = new char[JsonResult.length() + 1];
+    strcpy(JsonBuffer, JsonResult.c_str());
+    return JsonBuffer;
+}

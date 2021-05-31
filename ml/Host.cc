@@ -182,8 +182,74 @@ std::string Host::findAnomalyEvents(time_t AfterT, time_t BeforeT) {
         storage_number SN = Ops->next_metric(&Handle, &CurrT);
         NodeAnomalyStatus.push_back(SN & SN_ANOMALOUS);
     }
+    Ops->finalize(&Handle);
 
     Json J;
     J["anomaly_events"] = getAnomalyEvents(NodeAnomalyStatus, 30, 0.01);
+    return J.dump(4);
+}
+
+
+std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
+    typedef struct {
+        std::string Name;
+        std::vector<char> AnomalyStatus;
+        CalculatedNumber AnomalyRate;
+    } AnomalyEventInfo;
+
+    std::vector<AnomalyEventInfo> V;
+
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
+
+        for (const auto &UP : UnitsMap) {
+            RRDDIM *RD = UP.first;
+
+            struct rrddim_volatile::rrddim_query_ops *Ops = &RD->state->query_ops;
+            struct rrddim_query_handle Handle;
+
+            (void) AfterT;
+            (void) BeforeT;
+
+            std::vector<char> AnomalyStatus(BeforeT - AfterT + 1, 0);
+            double AnomalyRate = 0.0;
+
+            Ops->init(RD, &Handle, AfterT, BeforeT);
+            long Counter = 0;
+            while (!Ops->is_finished(&Handle)) {
+                time_t CurrT;
+
+                storage_number SN = Ops->next_metric(&Handle, &CurrT);
+
+                AnomalyStatus.push_back(SN & SN_ANOMALOUS);
+                AnomalyRate += ((SN & SN_ANOMALOUS) != 0);
+                Counter++;
+            }
+            Ops->finalize(&Handle);
+
+            error("AfterT: %ld, BeforeT: %ld, Counter: %ld", AfterT, BeforeT, Counter);
+
+            AnomalyRate /= AnomalyStatus.size();
+            V.push_back(AnomalyEventInfo{RD->name, AnomalyStatus, AnomalyRate});
+        }
+    }
+
+    Json J;
+    std::sort(V.begin(), V.end(), [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
+        return (LHS.AnomalyRate > RHS.AnomalyRate);
+    });
+
+    // TODO: add config opt.
+    if (V.size() > 20)
+        V.resize(20);
+
+    for (const AnomalyEventInfo &AEI : V) {
+        Json JEntry;
+
+        JEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;
+        JEntry[AEI.Name]["anomaly_status"] = AEI.AnomalyStatus;
+        J["dimensions"].push_back(JEntry);
+    }
+
     return J.dump(4);
 }
