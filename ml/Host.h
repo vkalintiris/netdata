@@ -10,7 +10,7 @@ namespace ml {
 
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH) { }
+    Host(RRDHOST *RH) : RH(RH), AnomalyRateRD(nullptr) { }
 
     void runMLThreads();
     void stopMLThreads();
@@ -18,7 +18,7 @@ public:
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
 
-    char *findAnomalyEvents(time_t After, time_t Before);
+    std::string findAnomalyEvents(time_t After, time_t Before);
 
 private:
     void trainUnits();
@@ -26,12 +26,13 @@ private:
 
 private:
     RRDHOST *RH;
-
-    std::thread TrainingThread;
-    std::thread TrackAnomalyStatusThread;
+    RRDDIM *AnomalyRateRD;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Unit *> UnitsMap;
+
+    std::thread TrainingThread;
+    std::thread TrackAnomalyStatusThread;
 };
 
 }

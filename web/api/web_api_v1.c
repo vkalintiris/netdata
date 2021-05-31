@@ -1120,20 +1120,9 @@ int web_client_api_request_v1_anomaly_status(RRDHOST *host, struct web_client *w
     wb->contenttype = CT_APPLICATION_JSON;
     buffer_strcat(wb, s);
     buffer_no_cacheable(wb);
+
+    freez(s);
     return HTTP_RESP_OK;
-
-#if 0
-    const char *chart = "ml.host_anomaly_status";
-    RRDSET *st = rrdset_find(host, chart);
-    if (!st)
-        st = rrdset_find_byname(host, chart);
-
-    if (!st) {
-        buffer_strcat(wb, "Could not find chart: ");
-        buffer_strcat_htmlescape(wb, chart);
-        return HTTP_RESP_NOT_FOUND;
-    }
-#endif
 }
 
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
