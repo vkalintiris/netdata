@@ -1077,7 +1077,7 @@ inline int web_client_api_request_v1_info_fill_buffer(RRDHOST *host, BUFFER *wb)
     return 0;
 }
 
-int web_client_api_request_v1_anomaly_status(RRDHOST *host, struct web_client *w, char *url) {
+int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w, char *url) {
     (void) host;
     (void) url;
 
@@ -1144,7 +1144,7 @@ static struct api_command {
     WEB_CLIENT_ACL acl;
     int (*callback)(RRDHOST *host, struct web_client *w, char *url);
 } api_commands[] = {
-        { "anomaly_status",  0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_status  },
+        { "anomaly_events",  0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_events  },
         { "info",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_info            },
         { "data",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_data            },
         { "chart",           0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_chart           },
