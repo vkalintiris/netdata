@@ -189,7 +189,6 @@ std::string Host::findAnomalyEvents(time_t AfterT, time_t BeforeT) {
     return J.dump(4);
 }
 
-
 std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
     typedef struct {
         std::string Name;
