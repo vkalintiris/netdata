@@ -840,6 +840,9 @@ int main(int argc, char **argv) {
                         char* createdataset_string = "createdataset=";
                         char* stresstest_string = "stresstest=";
 #endif
+
+                        char *mltest_string = "mltest";
+
                         if(strcmp(optarg, "unittest") == 0) {
                             if(unit_test_buffer()) return 1;
                             if(unit_test_str2ld()) return 1;
@@ -864,6 +867,12 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 #ifdef ENABLE_DBENGINE
+                        else if(strncmp(optarg, mltest_string, strlen(mltest_string)) == 0) {
+                            optarg += strlen(mltest_string);
+                            ml_test();
+                            return 0;
+                        }
+
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);
                             unsigned history_seconds = strtoul(optarg, NULL, 0);

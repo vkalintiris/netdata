@@ -26,6 +26,8 @@ char *ml_find_anomaly_events(RRDHOST *RH, time_t after, time_t before);
 
 char *ml_get_anomaly_event_info(RRDHOST *RH, time_t after, time_t before);
 
+void ml_test();
+
 #ifdef __cplusplus
 };
 #endif
