@@ -214,14 +214,14 @@ std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
             std::vector<char> AnomalyStatus(BeforeT - AfterT + 1, 0);
             double AnomalyRate = 0.0;
 
-            Ops->init(RD, &Handle, AfterT, BeforeT);
             long Counter = 0;
+            Ops->init(RD, &Handle, AfterT, BeforeT);
             while (!Ops->is_finished(&Handle)) {
                 time_t CurrT;
 
                 storage_number SN = Ops->next_metric(&Handle, &CurrT);
 
-                AnomalyStatus.push_back(SN & SN_ANOMALOUS);
+                AnomalyStatus.push_back((SN & SN_ANOMALOUS) != 0);
                 AnomalyRate += ((SN & SN_ANOMALOUS) != 0);
                 Counter++;
             }
