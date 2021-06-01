@@ -21,7 +21,7 @@
 
 extern "C" {
 
-#include "daemon/common.h"
+#include "ml.h"
 
 }
 
@@ -35,9 +35,6 @@ using Duration = std::chrono::duration<T>;
 
 using Seconds = std::chrono::seconds;
 using Millis = std::chrono::milliseconds;
-
-void trainMain(struct netdata_static_thread *Thread);
-void predictMain(struct netdata_static_thread *Thread);
 
 }
 
