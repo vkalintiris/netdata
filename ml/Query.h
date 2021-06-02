@@ -3,6 +3,8 @@
 
 #include "ml-private.h"
 
+namespace ml {
+
 class Query {
 public:
     Query(RRDDIM *RD) : RD(RD) {
@@ -41,5 +43,7 @@ private:
     struct rrddim_volatile::rrddim_query_ops *Ops;
     struct rrddim_query_handle Handle;
 };
+
+}
 
 #endif /* QUERY_H */
