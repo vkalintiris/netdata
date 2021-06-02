@@ -869,8 +869,7 @@ int main(int argc, char **argv) {
 #ifdef ENABLE_DBENGINE
                         else if(strncmp(optarg, mltest_string, strlen(mltest_string)) == 0) {
                             optarg += strlen(mltest_string);
-                            ml_test();
-                            return 0;
+                            return ml_test(argc, argv);
                         }
 
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {

@@ -372,6 +372,23 @@ else
 fi
 AC_MSG_RESULT([${with_zlib}])
 
+# -----------------------------------------------------------------------------
+# gtest/gmock
+
+AC_MSG_CHECKING([if gtest and gmock can be found])
+
+PKG_CHECK_MODULES([GTEST], [gtest], [have_gtest=yes], [have_gtest=no])
+PKG_CHECK_MODULES([GMOCK], [gmock], [have_gmock=yes], [have_gmock=no])
+
+if test "${have_gtest}" = "yes" -a "${have_gmock}" = "yes"; then
+    with_gtest="yes"
+    AC_DEFINE([NETDATA_WITH_GTEST], [1], [gtest support])
+    OPTIONAL_GTEST_CFLAGS="${GTEST_CFLAGS} ${GMOCK_CFLAGS}"
+    OPTIONAL_GTEST_LIBS="${GTEST_LIBS} ${GMOCK_LIBS}"
+else
+    with_gtest="no"
+fi
+AC_MSG_RESULT([${with_gtest}])
 
 # -----------------------------------------------------------------------------
 # libuuid
@@ -1477,7 +1494,7 @@ CFLAGS="${CFLAGS} ${OPTIONAL_MATH_CFLAGS} ${OPTIONAL_NFACCT_CFLAGS} ${OPTIONAL_Z
     ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS} ${OPTIONAL_CUPS_CFLAGS} ${OPTIONAL_XENSTAT_FLAGS} \
     ${OPTIONAL_KINESIS_CFLAGS} ${OPTIONAL_PUBSUB_CFLAGS} ${OPTIONAL_PROMETHEUS_REMOTE_WRITE_CFLAGS} \
     ${OPTIONAL_MONGOC_CFLAGS} ${LWS_CFLAGS} ${OPTIONAL_JSONC_STATIC_CFLAGS} ${OPTIONAL_BPF_CFLAGS} ${OPTIONAL_JUDY_CFLAGS} \
-    ${OPTIONAL_ACLK_NG_CFLAGS}"
+    ${OPTIONAL_ACLK_NG_CFLAGS} ${OPTIONAL_GTEST_CFLAGS}"
 
 CXXFLAGS="${CFLAGS} ${CXX11FLAG}"
 
@@ -1528,6 +1545,8 @@ AC_SUBST([OPTIONAL_MONGOC_CFLAGS])
 AC_SUBST([OPTIONAL_MONGOC_LIBS])
 AC_SUBST([OPTIONAL_LWS_LIBS])
 AC_SUBST([OPTIONAL_ACLK_NG_CFLAGS])
+AC_SUBST([OPTIONAL_GTEST_CFLAGS])
+AC_SUBST([OPTIONAL_GTEST_LIBS])
 
 # -----------------------------------------------------------------------------
 # Check if cmocka is available - needed for unit testing
