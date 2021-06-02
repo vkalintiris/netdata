@@ -237,6 +237,7 @@ ML_FILES = \
 	ml/Host.cc \
 	ml/Unit.h \
 	ml/Unit.cc \
+	ml/Query.h \
 	ml/Test.cc \
 	ml/ml-private.h \
 	ml/ml.cc \

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Unit.h"
+#include "Query.h"
 
 using namespace ml;
 
@@ -57,8 +58,7 @@ std::pair<CalculatedNumber *, unsigned>
 Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
 
-    struct rrddim_volatile::rrddim_query_ops *Ops = &RD->state->query_ops;
-    struct rrddim_query_handle Handle;
+    Query Q = Query(RD);
 
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
@@ -67,10 +67,10 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     BeforeT -=  (BeforeT % updateEvery());
     AfterT -= (AfterT % updateEvery());
 
-    time_t LastT = Ops->latest_time(RD);
+    time_t LastT = Q.latestTime();
     BeforeT = (BeforeT > LastT) ? LastT : BeforeT;
 
-    time_t FirstT = Ops->oldest_time(RD);
+    time_t FirstT = Q.oldestTime();
     AfterT = (AfterT < FirstT) ? FirstT : AfterT;
 
     if (AfterT >= BeforeT)
@@ -84,13 +84,13 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     CalculatedNumber QuietNaN = std::numeric_limits<CalculatedNumber>::quiet_NaN();
     CalculatedNumber LastValue = QuietNaN;
 
-    Ops->init(RD, &Handle, AfterT, BeforeT);
-    while (!Ops->is_finished(&Handle)) {
+    Q.init(AfterT, BeforeT);
+    while (!Q.isFinished()) {
         if (Idx == MaxN)
             break;
 
-        time_t CurrT;
-        storage_number SN = Ops->next_metric(&Handle, &CurrT);
+        auto P = Q.nextMetric();
+        storage_number SN = P.second;
 
         if (does_storage_number_exist(SN)) {
             CNs[Idx] = unpack_storage_number_dbl(SN);
@@ -102,7 +102,6 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
         Idx++;
     }
     TotalValues = Idx;
-    Ops->finalize(&Handle);
 
     if (CollectedValues < MinN)
         return { CNs, 0 };
