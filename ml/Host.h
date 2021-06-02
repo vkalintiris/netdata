@@ -12,11 +12,11 @@ class Host {
 public:
     Host(RRDHOST *RH) : RH(RH), AnomalyRateRD(nullptr) { }
 
-    void runMLThreads();
-    void stopMLThreads();
-
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
+
+    void runMLThreads();
+    void stopMLThreads();
 
     std::string findAnomalyEvents(time_t After, time_t Before);
     std::string getAnomalyEventInfo(time_t After, time_t Before);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "AnomalyDetector.h"
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
@@ -114,124 +115,36 @@ void Host::stopMLThreads() {
     TrackAnomalyStatusThread.join();
 }
 
-using AnomalyEvent = std::pair<int, int>;
-
-static std::vector<AnomalyEvent>
-getAnomalyEvents(std::vector<bool> AnomalyStatus, unsigned MinSize, double MinRate) {
-    std::vector<AnomalyEvent> V;
-
-    if (AnomalyStatus.size() < MinSize)
-        return V;
-
-    int WindowStart = 0;
-    int WindowEnd = MinSize - 1;
-
-    double Counter = 0;
-    for (unsigned Idx = 0; Idx != MinSize; Idx++)
-        Counter += AnomalyStatus[Idx];
-
-    double Rate = Counter / MinSize;
-    if (Rate >= MinRate)
-        V.push_back(std::make_pair(WindowStart, WindowEnd));
-
-    for (unsigned Idx = MinSize; Idx != AnomalyStatus.size(); Idx++) {
-        WindowStart++;
-        WindowEnd++;
-
-        Counter += AnomalyStatus[Idx] - AnomalyStatus[Idx - MinSize];
-        Rate = Counter / MinSize;
-
-        if (Rate >= MinRate)
-            V.push_back(std::make_pair(WindowStart, WindowEnd));
-    }
-
-    if (V.size() == 0)
-        return V;
-
-    int NumAnomalyEvents = 1;
-    AnomalyEvent &AE = V[0];
-
-    for (unsigned Idx = 1; Idx != V.size(); Idx++) {
-        AnomalyEvent CurrAE = V[Idx];
-
-        if (CurrAE.first <= AE.second) {
-            AE.second = CurrAE.second;
-        } else {
-            V[NumAnomalyEvents] = AE;
-            AE = CurrAE;
-            NumAnomalyEvents += 1;
-        }
-    }
-
-    V.resize(NumAnomalyEvents);
-    return V;
-}
-
 std::string Host::findAnomalyEvents(time_t AfterT, time_t BeforeT) {
-    std::vector<bool> NodeAnomalyStatus(BeforeT - AfterT + 1, false);
-
-    Query Q = Query(AnomalyRateRD);
-    Q.init(AfterT, BeforeT);
-    while (!Q.isFinished()) {
-        auto P = Q.nextMetric();
-        storage_number SN = P.second;
-
-        NodeAnomalyStatus.push_back(SN & SN_ANOMALOUS);
-    }
+    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
+    std::vector<AnomalyEvent> AEV = AD.getAnomalyEvents(AnomalyRateRD, 30, 0.01);
 
     Json J;
-    J["anomaly_events"] = getAnomalyEvents(NodeAnomalyStatus, 30, 0.01);
+    J["anomaly_events"] = AEV;
     return J.dump(4);
 }
 
 std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
-    typedef struct {
-        std::string Name;
-        std::vector<char> AnomalyStatus;
-        CalculatedNumber AnomalyRate;
-    } AnomalyEventInfo;
-
-    std::vector<AnomalyEventInfo> V;
+    std::vector<AnomalyEventInfo> AEIV;
+    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
 
     {
         std::lock_guard<std::mutex> Lock(Mutex);
 
-        for (const auto &UP : UnitsMap) {
-            RRDDIM *RD = UP.first;
-            Query Q = Query(RD);
-
-            std::vector<char> AnomalyStatus(BeforeT - AfterT + 1, 0);
-            double AnomalyRate = 0.0;
-
-            long Counter = 0;
-            Q.init(AfterT, BeforeT);
-            while (!Q.isFinished()) {
-                auto P = Q.nextMetric();
-
-                storage_number SN = P.second;
-                AnomalyStatus.push_back((SN & SN_ANOMALOUS) != 0);
-                AnomalyRate += ((SN & SN_ANOMALOUS) != 0);
-
-                Counter++;
-            }
-
-            error("AfterT: %ld, BeforeT: %ld, Counter: %ld", AfterT, BeforeT, Counter);
-
-            AnomalyRate /= AnomalyStatus.size();
-            V.push_back(AnomalyEventInfo{RD->name, AnomalyStatus, AnomalyRate});
-        }
+        for (const auto &UP : UnitsMap)
+            AEIV.push_back(AD.getAnomalyEventInfo(UP.first));
     }
 
     Json J;
-    std::sort(V.begin(), V.end(), [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
+    std::sort(AEIV.begin(), AEIV.end(), [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
         return (LHS.AnomalyRate > RHS.AnomalyRate);
     });
 
     // TODO: add config opt.
-    if (V.size() > 20)
-        V.resize(20);
+    if (AEIV.size() > 20)
+        AEIV.resize(20);
 
-    for (const AnomalyEventInfo &AEI : V) {
+    for (const AnomalyEventInfo &AEI : AEIV) {
         Json JEntry;
 
         JEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;

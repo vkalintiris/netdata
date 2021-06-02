@@ -231,6 +231,8 @@ HEALTH_PLUGIN_FILES = \
 ML_FILES = \
 	dlib/dlib/all/source.cpp \
 	ml/ml.h \
+	ml/AnomalyDetector.h \
+	ml/AnomalyDetector.cc \
 	ml/Config.h \
 	ml/Config.cc \
 	ml/Host.h \
