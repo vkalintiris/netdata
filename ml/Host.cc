@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
+#include "Query.h"
 #include "json.hpp"
 
 using namespace ml;
@@ -167,22 +168,16 @@ getAnomalyEvents(std::vector<bool> AnomalyStatus, unsigned MinSize, double MinRa
 }
 
 std::string Host::findAnomalyEvents(time_t AfterT, time_t BeforeT) {
-    struct rrddim_volatile::rrddim_query_ops *Ops = &AnomalyRateRD->state->query_ops;
-    struct rrddim_query_handle Handle;
-
-    (void) AfterT;
-    (void) BeforeT;
-
     std::vector<bool> NodeAnomalyStatus(BeforeT - AfterT + 1, false);
 
-    Ops->init(AnomalyRateRD, &Handle, AfterT, BeforeT);
-    while (!Ops->is_finished(&Handle)) {
-        time_t CurrT;
+    Query Q = Query(AnomalyRateRD);
+    Q.init(AfterT, BeforeT);
+    while (!Q.isFinished()) {
+        auto P = Q.nextMetric();
+        storage_number SN = P.second;
 
-        storage_number SN = Ops->next_metric(&Handle, &CurrT);
         NodeAnomalyStatus.push_back(SN & SN_ANOMALOUS);
     }
-    Ops->finalize(&Handle);
 
     Json J;
     J["anomaly_events"] = getAnomalyEvents(NodeAnomalyStatus, 30, 0.01);
@@ -203,28 +198,22 @@ std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
 
         for (const auto &UP : UnitsMap) {
             RRDDIM *RD = UP.first;
-
-            struct rrddim_volatile::rrddim_query_ops *Ops = &RD->state->query_ops;
-            struct rrddim_query_handle Handle;
-
-            (void) AfterT;
-            (void) BeforeT;
+            Query Q = Query(RD);
 
             std::vector<char> AnomalyStatus(BeforeT - AfterT + 1, 0);
             double AnomalyRate = 0.0;
 
             long Counter = 0;
-            Ops->init(RD, &Handle, AfterT, BeforeT);
-            while (!Ops->is_finished(&Handle)) {
-                time_t CurrT;
+            Q.init(AfterT, BeforeT);
+            while (!Q.isFinished()) {
+                auto P = Q.nextMetric();
 
-                storage_number SN = Ops->next_metric(&Handle, &CurrT);
-
+                storage_number SN = P.second;
                 AnomalyStatus.push_back((SN & SN_ANOMALOUS) != 0);
                 AnomalyRate += ((SN & SN_ANOMALOUS) != 0);
+
                 Counter++;
             }
-            Ops->finalize(&Handle);
 
             error("AfterT: %ld, BeforeT: %ld, Counter: %ld", AfterT, BeforeT, Counter);
 
