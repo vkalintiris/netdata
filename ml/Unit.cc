@@ -138,7 +138,6 @@ bool Unit::train(TimePoint &Now) {
             SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
             KM.train(SB);
             HasModel = true;
-            error("Trained %s", RD->name);
         }
 
         delete[] CNs;
@@ -164,6 +163,5 @@ void Unit::predict() {
         AnomalyScore = KM.anomalyScore(SB);
     }
 
-    error("Predicted %s: (AS: %lf)", RD->name, AnomalyScore);
     delete[] CNs;
 }
