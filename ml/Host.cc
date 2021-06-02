@@ -4,11 +4,9 @@
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
-#include "Query.h"
 #include "json.hpp"
 
 using namespace ml;
-using Json = nlohmann::json;
 
 void Host::addUnit(Unit *U) {
     std::lock_guard<std::mutex> Lock(Mutex);
@@ -115,16 +113,16 @@ void Host::stopMLThreads() {
     TrackAnomalyStatusThread.join();
 }
 
-std::string Host::findAnomalyEvents(time_t AfterT, time_t BeforeT) {
+std::string Host::getAnomalyEventsJson(time_t AfterT, time_t BeforeT) {
     AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
     std::vector<AnomalyEvent> AEV = AD.getAnomalyEvents(AnomalyRateRD, 30, 0.01);
 
-    Json J;
-    J["anomaly_events"] = AEV;
-    return J.dump(4);
+    nlohmann::json JsonResponse;
+    JsonResponse["anomaly_events"] = AEV;
+    return JsonResponse.dump(4);
 }
 
-std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
+std::string Host::getAnomalyEventInfoJson(time_t AfterT, time_t BeforeT) {
     std::vector<AnomalyEventInfo> AEIV;
     AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
 
@@ -135,7 +133,6 @@ std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
             AEIV.push_back(AD.getAnomalyEventInfo(UP.first));
     }
 
-    Json J;
     std::sort(AEIV.begin(), AEIV.end(), [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
         return (LHS.AnomalyRate > RHS.AnomalyRate);
     });
@@ -144,13 +141,14 @@ std::string Host::getAnomalyEventInfo(time_t AfterT, time_t BeforeT) {
     if (AEIV.size() > 20)
         AEIV.resize(20);
 
+    nlohmann::json JsonResponse;
     for (const AnomalyEventInfo &AEI : AEIV) {
-        Json JEntry;
+        nlohmann::json JsonEntry;
 
-        JEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;
-        JEntry[AEI.Name]["anomaly_status"] = AEI.AnomalyStatus;
-        J["dimensions"].push_back(JEntry);
+        JsonEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;
+        JsonEntry[AEI.Name]["anomaly_status"] = AEI.AnomalyStatus;
+        JsonResponse["dimensions"].push_back(JsonEntry);
     }
 
-    return J.dump(4);
+    return JsonResponse.dump(4);
 }
