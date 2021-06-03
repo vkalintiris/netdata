@@ -19,6 +19,7 @@ public:
     SIMPLE_PATTERN *SP_ChartsToSkip;
 
     double AnomalyScoreThreshold;
+    double AnomalousHostRateThreshold;
 
     double ADWindowSize;
     double ADWindowRateThreshold;

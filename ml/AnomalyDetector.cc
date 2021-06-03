@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "AnomalyDetector.h"
+#include "Config.h"
 #include "Query.h"
 
 using namespace ml;
 
-std::vector<bool> AnomalyDetector::getAnomalyBitVector(RRDDIM *RD) {
+std::vector<bool> AnomalyDetector::getAnomalyBitVector(RRDDIM *RD, bool IsAnomalyRateRD) {
     std::vector<bool> ABV(BeforeT - AfterT + 1, false);
 
     Query Q = Query(RD);
@@ -22,7 +23,11 @@ std::vector<bool> AnomalyDetector::getAnomalyBitVector(RRDDIM *RD) {
         auto P = Q.nextMetric();
         unsigned Idx = P.first - AfterT;
         assert(Idx < ABV.size());
-        ABV[Idx] = P.second & SN_ANOMALOUS;
+
+        if (IsAnomalyRateRD && does_storage_number_exist(P.second))
+            ABV[Idx] = (unpack_storage_number(P.second) >= Cfg.AnomalousHostRateThreshold);
+        else
+            ABV[Idx] = P.second & SN_ANOMALOUS;
     }
 
     return ABV;
@@ -32,7 +37,7 @@ std::vector<AnomalyEvent>
 AnomalyDetector::getAnomalyEvents(RRDDIM *RD, unsigned MinSize, double MinRate) {
     std::vector<AnomalyEvent> AEV;
 
-    std::vector<bool> ABV = getAnomalyBitVector(RD);
+    std::vector<bool> ABV = getAnomalyBitVector(RD, true);
     if (ABV.size() < MinSize)
         return AEV;
 

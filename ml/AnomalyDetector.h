@@ -26,7 +26,7 @@ public:
     AnomalyEventInfo getAnomalyEventInfo(RRDDIM *RD);
 
 private:
-    std::vector<bool> getAnomalyBitVector(RRDDIM *RD);
+    std::vector<bool> getAnomalyBitVector(RRDDIM *RD, bool IsAnomalyRateRD = false);
 
 private:
     time_t AfterT;
