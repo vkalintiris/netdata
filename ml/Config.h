@@ -19,6 +19,10 @@ public:
     SIMPLE_PATTERN *SP_ChartsToSkip;
 
     double AnomalyScoreThreshold;
+
+    double ADWindowSize;
+    double ADWindowRateThreshold;
+    double ADUnitRateThreshold;
 };
 
 extern Config Cfg;

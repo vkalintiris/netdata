@@ -116,7 +116,9 @@ void Host::stopMLThreads() {
 
 std::string Host::getAnomalyEventsJson(time_t AfterT, time_t BeforeT) {
     AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
-    std::vector<AnomalyEvent> AEV = AD.getAnomalyEvents(AnomalyRateRD, 30, 0.01);
+
+    std::vector<AnomalyEvent> AEV =
+        AD.getAnomalyEvents(AnomalyRateRD, Cfg.ADWindowSize, Cfg.ADWindowRateThreshold);
 
     nlohmann::json JsonResponse;
     JsonResponse["anomaly_events"] = AEV;
@@ -130,17 +132,23 @@ std::string Host::getAnomalyEventInfoJson(time_t AfterT, time_t BeforeT) {
     {
         std::lock_guard<std::mutex> Lock(Mutex);
 
-        for (const auto &UP : UnitsMap)
-            AEIV.push_back(AD.getAnomalyEventInfo(UP.first));
+        for (const auto &UP : UnitsMap) {
+            AnomalyEventInfo AEI = AD.getAnomalyEventInfo(UP.first);
+
+            if (AEI.AnomalyRate >= Cfg.ADUnitRateThreshold)
+                AEIV.push_back(AEI);
+        }
     }
 
-    std::sort(AEIV.begin(), AEIV.end(), [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
-        return (LHS.AnomalyRate > RHS.AnomalyRate);
-    });
-
+#if 0
     // TODO: add config opt.
     if (AEIV.size() > 20)
         AEIV.resize(20);
+#endif
+    auto CmpL =  [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
+        return (LHS.AnomalyRate > RHS.AnomalyRate);
+    };
+    std::sort(AEIV.begin(), AEIV.end(), CmpL);
 
     nlohmann::json JsonResponse;
     for (const AnomalyEventInfo &AEI : AEIV) {
