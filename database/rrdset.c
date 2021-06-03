@@ -322,6 +322,7 @@ void rrdset_free(RRDSET *st) {
 
     rrdhost_check_wrlock(host);  // make sure we have a write lock on the host
     rrdset_wrlock(st);                  // lock this RRDSET
+
     // info("Removing chart '%s' ('%s')", st->id, st->name);
 
     // ------------------------------------------------------------------------
@@ -947,6 +948,7 @@ RRDSET *rrdset_create_custom(
         aclk_add_collector(host, plugin, module);
     rrdset_flag_set(st, RRDSET_FLAG_ACLK);
 #endif
+
     return(st);
 }
 
@@ -1236,12 +1238,15 @@ static inline size_t rrdset_done_interpolate(
             }
 
             if(unlikely(!store_this_entry)) {
-                rd->state->collect_ops.store_metric(rd, next_store_ut, SN_EMPTY_SLOT); //pack_storage_number(0, SN_NOT_EXISTS)
-//                rd->values[current_entry] = SN_EMPTY_SLOT; //pack_storage_number(0, SN_NOT_EXISTS);
+                rd->state->collect_ops.store_metric(rd, next_store_ut, SN_EMPTY_SLOT);
+//                rd->values[current_entry] = SN_EMPTY_SLOT;
                 continue;
             }
 
             if(likely(rd->updated && rd->collections_counter > 1 && iterations < st->gap_when_lost_iterations_above)) {
+                if (ml_is_anomalous(rd))
+                    storage_flags |= SN_ANOMALOUS;
+
                 rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, storage_flags));
 //                rd->values[current_entry] = pack_storage_number(new_value, storage_flags );
                 rd->last_stored_value = new_value;
@@ -1265,8 +1270,8 @@ static inline size_t rrdset_done_interpolate(
                 );
                 #endif
 
-//                rd->values[current_entry] = SN_EMPTY_SLOT; // pack_storage_number(0, SN_NOT_EXISTS);
-                rd->state->collect_ops.store_metric(rd, next_store_ut, SN_EMPTY_SLOT); //pack_storage_number(0, SN_NOT_EXISTS)
+//                rd->values[current_entry] = SN_EMPTY_SLOT;
+                rd->state->collect_ops.store_metric(rd, next_store_ut, SN_EMPTY_SLOT);
                 rd->last_stored_value = NAN;
             }
 
@@ -1304,7 +1309,7 @@ static inline size_t rrdset_done_interpolate(
             #endif
         }
         // reset the storage flags for the next point, if any;
-        storage_flags = SN_EXISTS;
+        storage_flags = SN_DEFAULT_FLAGS;
 
         st->counter = ++counter;
         st->current_entry = current_entry = ((current_entry + 1) >= st->entries) ? 0 : current_entry + 1;
@@ -1535,7 +1540,7 @@ after_first_database_work:
             st->collected_total += rd->collected_value;
     }
 
-    uint32_t storage_flags = SN_EXISTS;
+    uint32_t storage_flags = SN_DEFAULT_FLAGS;
 
     // process all dimensions to calculate their values
     // based on the collected figures only
@@ -1632,7 +1637,7 @@ after_first_database_work:
                           , rd->collected_value);
 
                     if(!(rrddim_flag_check(rd, RRDDIM_FLAG_DONT_DETECT_RESETS_OR_OVERFLOWS)))
-                        storage_flags = SN_EXISTS_RESET;
+                        storage_flags = SN_RESET;
 
                     uint64_t last = (uint64_t)rd->last_collected_value;
                     uint64_t new = (uint64_t)rd->collected_value;
@@ -1703,7 +1708,7 @@ after_first_database_work:
                     );
 
                     if(!(rrddim_flag_check(rd, RRDDIM_FLAG_DONT_DETECT_RESETS_OR_OVERFLOWS)))
-                        storage_flags = SN_EXISTS_RESET;
+                        storage_flags = SN_RESET;
 
                     rd->last_collected_value = rd->collected_value;
                 }

@@ -228,6 +228,27 @@ HEALTH_PLUGIN_FILES = \
     health/health_log.c \
     $(NULL)
 
+ML_FILES = \
+	dlib/dlib/all/source.cpp \
+	ml/ml.h \
+	ml/AnomalyDetector.h \
+	ml/AnomalyDetector.cc \
+	ml/Config.h \
+	ml/Config.cc \
+	ml/Host.h \
+	ml/Host.cc \
+	ml/Unit.h \
+	ml/Unit.cc \
+	ml/Query.h \
+	ml/Test.cc \
+	ml/ml-private.h \
+	ml/ml.cc \
+	ml/kmeans/SamplesBuffer.cc \
+	ml/kmeans/SamplesBuffer.h \
+	ml/kmeans/KMeans.cc \
+	ml/kmeans/KMeans.h \
+	$(NULL)
+
 IDLEJITTER_PLUGIN_FILES = \
     collectors/idlejitter.plugin/plugin_idlejitter.c \
     collectors/idlejitter.plugin/plugin_idlejitter.h \
@@ -710,6 +731,7 @@ NETDATA_FILES = \
     $(EXPORTING_ENGINE_FILES) \
     $(CHECKS_PLUGIN_FILES) \
     $(HEALTH_PLUGIN_FILES) \
+    $(ML_FILES) \
     $(IDLEJITTER_PLUGIN_FILES) \
     $(PLUGINSD_PLUGIN_FILES) \
     $(REGISTRY_PLUGIN_FILES) \
@@ -761,6 +783,7 @@ NETDATA_COMMON_LIBS = \
     $(OPTIONAL_JUDY_LIBS) \
     $(OPTIONAL_SSL_LIBS) \
     $(OPTIONAL_JSONC_LIBS) \
+    $(OPTIONAL_GTEST_LIBS) \
     $(NULL)
 
 if LINK_STATIC_JSONC

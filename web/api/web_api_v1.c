@@ -1089,6 +1089,102 @@ inline int web_client_api_request_v1_info_fill_buffer(RRDHOST *host, BUFFER *wb)
     return 0;
 }
 
+int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w, char *url) {
+    (void) host;
+    (void) url;
+
+    if (!netdata_ready)
+        return HTTP_RESP_BACKEND_FETCH_FAILED;
+
+    uint32_t after = 0, before = 0;
+
+    while (url) {
+        char *value = mystrsep(&url, "&");
+        if (!value || !*value)
+            continue;
+
+        char *name = mystrsep(&value, "=");
+        if (!name || !*name)
+            continue;
+        if (!value || !*value)
+            continue;
+
+        if (!strcmp(name, "after"))
+            after = (uint32_t) strtoul(value, NULL, 0);
+        else if (!strcmp(name, "before"))
+            before = (uint32_t) strtoul(value, NULL, 0);
+    }
+
+    char *s;
+    if (!before || !after)
+        s = strdup("{\"No\": \"time range given\" }\n");
+    else {
+        s = ml_find_anomaly_events(host, after, before);
+        if (!s)
+            s = strdup("{\"No\": \"value\" }\n");
+    }
+
+
+    BUFFER *wb = w->response.data;
+    buffer_flush(wb);
+
+    wb->contenttype = CT_APPLICATION_JSON;
+    buffer_strcat(wb, s);
+    buffer_no_cacheable(wb);
+
+    freez(s);
+
+    return HTTP_RESP_OK;
+}
+
+int web_client_api_request_v1_anomaly_event_info(RRDHOST *host, struct web_client *w, char *url) {
+    (void) host;
+    (void) url;
+
+    if (!netdata_ready)
+        return HTTP_RESP_BACKEND_FETCH_FAILED;
+
+    uint32_t after = 0, before = 0;
+
+    while (url) {
+        char *value = mystrsep(&url, "&");
+        if (!value || !*value)
+            continue;
+
+        char *name = mystrsep(&value, "=");
+        if (!name || !*name)
+            continue;
+        if (!value || !*value)
+            continue;
+
+        if (!strcmp(name, "after"))
+            after = (uint32_t) strtoul(value, NULL, 0);
+        else if (!strcmp(name, "before"))
+            before = (uint32_t) strtoul(value, NULL, 0);
+    }
+
+    if (before == 0)
+        before = now_realtime_sec();
+
+    if (after == 0)
+        after = before - (60 * 15);
+
+    error("after: %u, before: %u", after, before);
+
+    char *s = ml_get_anomaly_event_info(host, after, before);
+    if (!s)
+        s = "{\"No\": \"value\" }\n";
+
+    BUFFER *wb = w->response.data;
+    buffer_flush(wb);
+    wb->contenttype = CT_APPLICATION_JSON;
+    buffer_strcat(wb, s);
+    buffer_no_cacheable(wb);
+
+    freez(s);
+    return HTTP_RESP_OK;
+}
+
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
     (void)url;
     if (!netdata_ready) return HTTP_RESP_BACKEND_FETCH_FAILED;
@@ -1108,6 +1204,8 @@ static struct api_command {
     WEB_CLIENT_ACL acl;
     int (*callback)(RRDHOST *host, struct web_client *w, char *url);
 } api_commands[] = {
+        { "anomaly_events",  0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_events  },
+        { "anomaly_event_info", 0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_event_info },
         { "info",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_info            },
         { "data",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_data            },
         { "chart",           0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_chart           },
