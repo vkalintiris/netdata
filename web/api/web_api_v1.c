@@ -1105,20 +1105,23 @@ int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w
 
     char *s;
     if (!before || !after)
-        s = "{\"No\": \"time range given\" }\n";
+        s = strdup("{\"No\": \"time range given\" }\n");
     else {
         s = ml_find_anomaly_events(host, after, before);
         if (!s)
-            s = "{\"No\": \"value\" }\n";
+            s = strdup("{\"No\": \"value\" }\n");
     }
+
 
     BUFFER *wb = w->response.data;
     buffer_flush(wb);
+
     wb->contenttype = CT_APPLICATION_JSON;
     buffer_strcat(wb, s);
     buffer_no_cacheable(wb);
 
     freez(s);
+
     return HTTP_RESP_OK;
 }
 
