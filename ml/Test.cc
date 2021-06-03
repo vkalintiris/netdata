@@ -5,6 +5,7 @@
 #include "AnomalyDetector.h"
 #include "Unit.h"
 #include "Host.h"
+#include "Query.h"
 
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
@@ -32,17 +33,19 @@ public:
         return 0;
     }
 
-    void initOp(RRDDIM *RD, struct rrddim_query_handle *Handle,
-                time_t StartT, time_t EndT) {
-        (void) RD, (void) Handle, (void) StartT, (void) EndT;
+    void initOp(RRDDIM *RD, struct rrddim_query_handle *Handle, time_t AfterT, time_t BeforeT) {
+        (void) RD, (void) Handle;
 
-        Iter = SNs.begin();
+        IterAfterT = SNs.begin() + AfterT;
+        IterBeforeT = SNs.begin() + BeforeT + 1;
+
+        Iter = SNs.begin() + AfterT;
     }
 
     int isFinishedOp(struct rrddim_query_handle *Handle) {
         (void) Handle;
 
-        return Iter == SNs.end();
+        return std::distance(Iter, IterBeforeT) == 0;
     }
 
     storage_number nextMetricOp(struct rrddim_query_handle *Handle, time_t *CurrT) {
@@ -61,6 +64,8 @@ public:
 private:
     StorageNumbers &SNs;
     StorageNumbersIterator Iter;
+    StorageNumbersIterator IterAfterT;
+    StorageNumbersIterator IterBeforeT;
 };
 
 static QueryOp *GlobalQOp;
@@ -123,7 +128,6 @@ private:
     std::string Name;
     RRDDIM *RD;
 };
-
 
 TEST(AnomalyDetectorTest, AnomalyEvents) {
     AnomalyDetector AD = AnomalyDetector(0, 4);
@@ -194,26 +198,70 @@ TEST(AnomalyDetectorTest, AnomalyEvents) {
     EXPECT_EQ(AEV[0], AnomalyEvent(0, SNs.size() - 1));
 }
 
-#if 0
 TEST(AnomalyDetectorTest, AnomalyEventInfo) {
-    AnomalyDetector AD = AnomalyDetector(0, 5);
+    AnomalyDetector AD = AnomalyDetector(0, 3);
     AnomalyEventInfo AEI;
     
     StorageNumbers SNs;
     Dimension Dim("TestRD", SNs);
-    
-    SNs = { 0, 0, 0, 0, 0 };
+
+    SNs = { 0, 0, SN_ANOMALOUS, SN_ANOMALOUS };
     
     AEI = AD.getAnomalyEventInfo(Dim.getRD());
     EXPECT_EQ(AEI.Name, "TestRD");
-    EXPECT_EQ(AEI.AnomalyRate, 0.0);
-    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 0, 0, 0, 0));
-}
-#endif
+    EXPECT_EQ(AEI.AnomalyRate, 0.5);
+    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 0, 1, 1));
 
+    SNs = { 0, 0, SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS };
+    
+    AEI = AD.getAnomalyEventInfo(Dim.getRD());
+    EXPECT_EQ(AEI.Name, "TestRD");
+    EXPECT_EQ(AEI.AnomalyRate, 0.5);
+    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 0, 1, 1));
+
+    AD = AnomalyDetector(1, 3);
+
+    SNs = { 0, 0, SN_ANOMALOUS, SN_ANOMALOUS };
+    
+    AEI = AD.getAnomalyEventInfo(Dim.getRD());
+    EXPECT_EQ(AEI.Name, "TestRD");
+    EXPECT_EQ(AEI.AnomalyRate, 2.0 / 3);
+    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 1, 1));
+
+    SNs = { 0, 0, SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS };
+    
+    AEI = AD.getAnomalyEventInfo(Dim.getRD());
+    EXPECT_EQ(AEI.Name, "TestRD");
+    EXPECT_EQ(AEI.AnomalyRate, 2.0 / 3);
+    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 1, 1));
+}
 
 int ml_test(int argc, char *argv[]) {
-    ::testing::InitGoogleTest(&argc, argv);
+#if 0
+    StorageNumbers SNs;
+    Dimension Dim("TestRD", SNs);
+    
+    SNs = { 0, 0, SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS };
 
+    time_t AfterT = 0;
+    time_t BeforeT = SNs.size() - 1;
+
+    std::vector<bool> ABV(BeforeT - AfterT + 1, false);
+
+    Query Q = Query(Dim.getRD());
+    Q.init(AfterT, BeforeT);
+
+    while (!Q.isFinished()) {
+        auto P = Q.nextMetric();
+        std::cout << P.first << ", " << P.second << std::endl;
+        unsigned Idx = P.first - AfterT;
+        assert(Idx < ABV.size());
+        ABV[Idx] = P.second & SN_ANOMALOUS;
+    }
+
+    return 0;
+#else
+    ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+#endif
 }
