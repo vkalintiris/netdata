@@ -57,7 +57,7 @@ AnomalyDetector::getAnomalyEvents(RRDDIM *RD, unsigned MinSize, double MinRate) 
         Rate = Counter / MinSize;
 
         if (Rate >= MinRate)
-            AEV.push_back(std::make_pair(WindowStart, WindowEnd));
+            AEV.push_back(std::make_pair(AfterT + WindowStart, AfterT + WindowEnd));
     }
 
     if (AEV.size() == 0)
