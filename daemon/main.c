@@ -248,7 +248,7 @@ void cancel_main_threads() {
     error_log_limit_unlimited();
 
     int i, found = 0;
-    usec_t max = 5 * USEC_PER_SEC, step = 100000;
+    usec_t max = 30 * USEC_PER_SEC, step = 100000;
     for (i = 0; static_threads[i].name != NULL ; i++) {
         if(static_threads[i].enabled == NETDATA_MAIN_THREAD_RUNNING) {
             info("EXIT: Stopping main thread: %s", static_threads[i].name);
@@ -802,6 +802,8 @@ int main(int argc, char **argv) {
                         char* stresstest_string = "stresstest=";
 #endif
 
+                        char *mltest_string = "mltest";
+
                         if(strcmp(optarg, "unittest") == 0) {
                             if(unit_test_buffer()) return 1;
                             if(unit_test_str2ld()) return 1;
@@ -826,6 +828,11 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 #ifdef ENABLE_DBENGINE
+                        else if(strncmp(optarg, mltest_string, strlen(mltest_string)) == 0) {
+                            optarg += strlen(mltest_string);
+                            return ml_test(argc, argv);
+                        }
+
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);
                             unsigned history_seconds = strtoul(optarg, NULL, 0);
@@ -1139,6 +1146,10 @@ int main(int argc, char **argv) {
         // This is the safest place to start the SILENCERS structure
         set_silencers_filename();
         health_initialize_global_silencers();
+
+        // --------------------------------------------------------------------
+        // Initialize ML configuration
+        ml_init();
 
         // --------------------------------------------------------------------
         // setup process signals
