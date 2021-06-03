@@ -126,12 +126,12 @@ private:
 
 
 TEST(AnomalyDetectorTest, AnomalyEvents) {
-    AnomalyDetector AD = AnomalyDetector(0, 5);
+    AnomalyDetector AD = AnomalyDetector(0, 4);
     std::vector<AnomalyEvent> AEV;
     
     StorageNumbers SNs;
     Dimension Dim("TestRD", SNs);
-    
+
     SNs = { 0, 0, 0, 0, 0 };
     
     AEV = AD.getAnomalyEvents(Dim.getRD(), 0, 1.0);

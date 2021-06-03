@@ -36,22 +36,19 @@ AnomalyDetector::getAnomalyEvents(RRDDIM *RD, unsigned MinSize, double MinRate) 
     if (ABV.size() < MinSize)
         return AEV;
 
-    int WindowStart = 0;
-    int WindowEnd = MinSize - 1;
-
     double Counter = 0;
     for (unsigned Idx = 0; Idx != MinSize; Idx++)
         Counter += ABV[Idx];
 
     double Rate = Counter / MinSize;
     if (Rate >= MinRate)
-        AEV.push_back(std::make_pair(WindowStart, WindowEnd));
+        AEV.push_back(std::make_pair(0, MinSize - 1));
 
-    for (unsigned Idx = MinSize; Idx < ((ABV.size() + 1) - MinSize); Idx++) {
-        WindowStart++;
-        WindowEnd++;
-
-        Counter += ABV[Idx] - ABV[Idx - MinSize];
+    for (unsigned WindowStart = 1, WindowEnd = MinSize;
+         WindowEnd != ABV.size();
+         WindowStart++, WindowEnd++)
+    {
+        Counter += ABV[WindowEnd] - ABV[WindowStart - 1];
         Rate = Counter / MinSize;
 
         if (Rate >= MinRate)
