@@ -20,15 +20,9 @@ std::vector<bool> AnomalyDetector::getAnomalyBitVector(RRDDIM *RD) {
 
     while (!Q.isFinished()) {
         auto P = Q.nextMetric();
-
-        time_t CurrT = P.first;
-        if ((CurrT < AfterT) || (CurrT > BeforeT))
-            continue;
-
-        storage_number SN = P.second;
-
-        unsigned Idx = CurrT - AfterT;
-        ABV[Idx] = SN & SN_ANOMALOUS;
+        unsigned Idx = P.first - AfterT;
+        assert(Idx < ABV.size());
+        ABV[Idx] = P.second & SN_ANOMALOUS;
     }
 
     return ABV;
