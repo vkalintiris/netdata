@@ -119,7 +119,7 @@ inline int rrddim_set_divisor(RRDSET *st, RRDDIM *rd, collected_number divisor) 
 // RRDDIM legacy data collection functions
 
 static void rrddim_collect_init(RRDDIM *rd) {
-    rd->values[rd->rrdset->current_entry] = SN_EMPTY_SLOT; // pack_storage_number(0, SN_NOT_EXISTS);
+    rd->values[rd->rrdset->current_entry] = SN_EMPTY_SLOT;
 }
 static void rrddim_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_number number) {
     (void)point_in_time;
@@ -386,8 +386,9 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rd->last_collected_time.tv_sec = 0;
     rd->last_collected_time.tv_usec = 0;
     rd->rrdset = st;
-    rd->state = mallocz(sizeof(*rd->state));
+    rd->state = callocz(1, sizeof(*rd->state));
     (void) find_dimension_uuid(st, rd, &(rd->state->metric_uuid));
+
     if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
 #ifdef ENABLE_DBENGINE
         rrdeng_metric_init(rd);
@@ -451,6 +452,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
     calc_link_to_rrddim(rd);
 
+    ml_new_unit(rd);
+
     rrdset_unlock(st);
 #ifdef ENABLE_ACLK
     rrdset_flag_set(st, RRDSET_FLAG_ACLK);
@@ -463,6 +466,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
 void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 {
+    ml_delete_unit(rd);
+
 #ifndef ENABLE_ACLK
     UNUSED(db_rotated);
 #endif

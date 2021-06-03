@@ -4,3 +4,6 @@
 [submodule "aclk/aclk-schemas"]
 	path = aclk/aclk-schemas
 	url = https://github.com/netdata/aclk-schemas.git
+[submodule "dlib"]
+	path = dlib
+	url = https://github.com/davisking/dlib.git

@@ -368,6 +368,8 @@ RRDHOST *rrdhost_create(const char *hostname,
         else localhost = host;
     }
 
+    ml_new_host(host);
+
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
                  ", timezone '%s'"
@@ -868,6 +870,10 @@ void rrdhost_free(RRDHOST *host) {
     if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
         rrdeng_exit(host->rrdeng_ctx);
 #endif
+
+    // ------------------------------------------------------------------------
+    // delete ML handle
+    ml_delete_host(host);
 
     // ------------------------------------------------------------------------
     // remove it from the indexes
