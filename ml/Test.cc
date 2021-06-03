@@ -7,6 +7,8 @@
 #include "Host.h"
 
 #include "gtest/gtest.h"
+#include "gmock/gmock.h"
+
 
 using namespace ml;
 
@@ -21,7 +23,7 @@ public:
     time_t latestTimeOp(RRDDIM *RD) {
         (void) RD;
 
-        return SNs.size() - 1;
+        return SNs.size() ? SNs.size() - 1 : 0;
     }
 
     time_t oldestTimeOp(RRDDIM *RD) {
@@ -65,9 +67,10 @@ static QueryOp *GlobalQOp;
 
 class Dimension {
 public:
-    Dimension(std::string Name, StorageNumbers &SNs) {
+    Dimension(std::string Name, StorageNumbers &SNs) : Name(Name) {
         RD = new RRDDIM;
-        RD->name = Name.c_str();
+
+        RD->name = this->Name.c_str();
 
         RD->state = new struct rrddim_volatile;
         RD->state->query_ops.latest_time = &Dimension::latestTimeOp;
@@ -117,24 +120,96 @@ private:
     }
 
 private:
+    std::string Name;
     RRDDIM *RD;
 };
 
 
-TEST(ANomalyDetectorTest, AnomalyEvents) {
-    AnomalyDetector AD = AnomalyDetector(0, 4);
-
-    StorageNumbers SNs = { 0, SN_ANOMALOUS, 0, SN_ANOMALOUS, 0 };
+TEST(AnomalyDetectorTest, AnomalyEvents) {
+    AnomalyDetector AD = AnomalyDetector(0, 5);
+    std::vector<AnomalyEvent> AEV;
+    
+    StorageNumbers SNs;
     Dimension Dim("TestRD", SNs);
+    
+    SNs = { 0, 0, 0, 0, 0 };
+    
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 0, 1.0);
+    EXPECT_EQ(AEV.size(), 0);
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 1, 1.0);
+    EXPECT_EQ(AEV.size(), 0);
 
-    std::vector<AnomalyEvent> AEV = AD.getAnomalyEvents(Dim.getRD(), 4, 0.5);
-
+    SNs = { SN_ANOMALOUS, 0, 0, 0, 0 };
+    
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 1, 1.0);
     EXPECT_EQ(AEV.size(), 1);
-    EXPECT_EQ(AEV[0].first, 0);
-    EXPECT_EQ(AEV[0].second, 4);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, 0));
 
-    std::cout << AEV[0].second << std::endl;
+    SNs = { 0, 0, 0, 0, SN_ANOMALOUS };
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 1, 1.0);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(SNs.size() -1 , SNs.size() - 1));
+
+    SNs = { SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS, SN_ANOMALOUS };
+
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 5, 1.0);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0 , SNs.size() - 1));
+
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 1, 1.0);
+    EXPECT_EQ(AEV.size(), SNs.size());
+    for (unsigned Idx = 0; Idx != SNs.size(); Idx++)
+        EXPECT_EQ(AEV[Idx], AnomalyEvent(Idx, Idx));
+
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 2, 1.0);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, SNs.size() - 1));
+
+    SNs = { SN_ANOMALOUS, SN_ANOMALOUS, 0, 0, 0 };
+
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 2, 1.0);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, 1));
+
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 3, 0.5);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, 2));
+
+    SNs = { 0, SN_ANOMALOUS, 0, SN_ANOMALOUS, 0 };
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 2, 0.5);
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, SNs.size() - 1));
+
+    SNs = { 0, SN_ANOMALOUS, 0, 0,  SN_ANOMALOUS };
+    
+    AEV = AD.getAnomalyEvents(Dim.getRD(), 2, 0.5);
+    EXPECT_EQ(AEV.size(), 2);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, 2));
+    EXPECT_EQ(AEV[1], AnomalyEvent(3, 4));
+
+    SNs = { 0, 0, 0, 0, SN_ANOMALOUS };
+    
+    AEV = AD.getAnomalyEvents(Dim.getRD(), SNs.size(), 1.0 / SNs.size());
+    EXPECT_EQ(AEV.size(), 1);
+    EXPECT_EQ(AEV[0], AnomalyEvent(0, SNs.size() - 1));
 }
+
+#if 0
+TEST(AnomalyDetectorTest, AnomalyEventInfo) {
+    AnomalyDetector AD = AnomalyDetector(0, 5);
+    AnomalyEventInfo AEI;
+    
+    StorageNumbers SNs;
+    Dimension Dim("TestRD", SNs);
+    
+    SNs = { 0, 0, 0, 0, 0 };
+    
+    AEI = AD.getAnomalyEventInfo(Dim.getRD());
+    EXPECT_EQ(AEI.Name, "TestRD");
+    EXPECT_EQ(AEI.AnomalyRate, 0.0);
+    EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 0, 0, 0, 0));
+}
+#endif
 
 
 int ml_test(int argc, char *argv[]) {

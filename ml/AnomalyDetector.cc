@@ -47,7 +47,7 @@ AnomalyDetector::getAnomalyEvents(RRDDIM *RD, unsigned MinSize, double MinRate) 
     if (Rate >= MinRate)
         AEV.push_back(std::make_pair(WindowStart, WindowEnd));
 
-    for (unsigned Idx = MinSize; Idx != ABV.size(); Idx++) {
+    for (unsigned Idx = MinSize; Idx < ((ABV.size() + 1) - MinSize); Idx++) {
         WindowStart++;
         WindowEnd++;
 
@@ -61,22 +61,19 @@ AnomalyDetector::getAnomalyEvents(RRDDIM *RD, unsigned MinSize, double MinRate) 
     if (AEV.size() == 0)
         return AEV;
 
-    int NumAnomalyEvents = 1;
-    AnomalyEvent &AE = AEV[0];
+    unsigned N = 1;
 
     for (unsigned Idx = 1; Idx != AEV.size(); Idx++) {
-        AnomalyEvent CurrAE = AEV[Idx];
+        AnomalyEvent &PrevAE = AEV[N - 1];
+        AnomalyEvent &CurrAE = AEV[Idx];
 
-        if (CurrAE.first <= AE.second) {
-            AE.second = CurrAE.second;
-        } else {
-            AEV[NumAnomalyEvents] = AE;
-            AE = CurrAE;
-            NumAnomalyEvents += 1;
-        }
+        if (CurrAE.first <= PrevAE.second)
+            PrevAE.second = CurrAE.second;
+        else
+            AEV[N++] = CurrAE;
     }
 
-    AEV.resize(NumAnomalyEvents);
+    AEV.resize(N);
     return AEV;
 }
 
