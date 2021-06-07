@@ -5,35 +5,66 @@
 
 #include "ml-private.h"
 #include "Unit.h"
+#include "Database.h"
 
 namespace ml {
 
-class Host {
+template<typename BaseT>
+class DetectableHost {
 public:
-    Host(RRDHOST *RH) : RH(RH), AnomalyRateRD(nullptr) { }
+    void detect();
+    void detectOnce();
 
-    void addUnit(Unit *U);
-    void removeUnit(Unit *U);
-
-    void runMLThreads();
-    void stopMLThreads();
-
-    std::string getAnomalyEventsJson(time_t After, time_t Before);
-    std::string getAnomalyEventInfoJson(time_t After, time_t Before);
+    void startAnomalyDetectionThreads();
+    void stopAnomalyDetectionThreads();
 
 private:
-    void trainUnits();
-    void trackAnomalyStatus();
+    std::thread TrainingThread;
+    std::thread DetectionThread;
+
+    RollingBitWindow RBW{5, 3};
+    CalculatedNumber AnomalyRate{0.0};
+
+    Database DB{Cfg.AnomalyDBPath};
+};
+
+template<typename BaseT>
+class TrainableHost : public DetectableHost<BaseT> {
+public:
+    void train();
+    void trainOne(TimePoint &Now);
+
+    CalculatedNumber predict();
+};
+
+class Host : public TrainableHost<Host> {
+public:
+    Host(RRDHOST *RH) : RH(RH) {}
+
+    RRDHOST *getRH() { return RH; }
+
+    std::string getUUID() {
+        char S[UUID_STR_LEN];
+        uuid_unparse_lower(RH->host_uuid, S);
+        return S;
+    }
+
+    void addDimension(Dimension *D);
+    void removeDimension(Dimension *D);
+
+    size_t getNumDimensions() const {
+        return NumDimensions;
+    }
+
+    void forEachDimension(std::function<bool(Dimension *)> Func);
 
 private:
     RRDHOST *RH;
-    RRDDIM *AnomalyRateRD;
 
     std::mutex Mutex;
-    std::map<RRDDIM *, Unit *> UnitsMap;
+    std::map<RRDDIM *, Dimension *> DimensionsMap;
 
-    std::thread TrainingThread;
-    std::thread TrackAnomalyStatusThread;
+    std::atomic<size_t> NumDimensions{0};
 };
 
 }

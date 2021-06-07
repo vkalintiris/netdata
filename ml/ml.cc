@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
+#include "Database.h"
 
 using namespace ml;
 
@@ -16,9 +17,9 @@ Config ml::Cfg;
  * Initialize global configuration variable.
  */
 void ml_init(void) {
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60) * 1000};
-    Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 40 * 60) * 1000};
-    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60) * 1000};
+    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60)};
+    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 30)};
+    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 30)};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -36,6 +37,11 @@ void ml_init(void) {
     Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "anomaly detector window size", 120);
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector window rate threshold", 0.25);
     Cfg.ADUnitRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector unit rate threshold", 0.1);
+
+    // ML database path
+    std::stringstream SS;
+    SS << netdata_configured_cache_dir << "/" << "netdata-ml.db";
+    Cfg.AnomalyDBPath = SS.str();
 }
 
 /*
@@ -51,7 +57,7 @@ void ml_new_host(RRDHOST *RH) {
         return;
 
     Host *H = new Host(RH);
-    H->runMLThreads();
+    H->startAnomalyDetectionThreads();
 
     RH->ml_host = static_cast<ml_host_t>(H);
 }
@@ -64,7 +70,7 @@ void ml_delete_host(RRDHOST *RH) {
     if (!H)
         return;
 
-    H->stopMLThreads();
+    H->stopAnomalyDetectionThreads();
 
     delete H;
 }
@@ -81,17 +87,17 @@ void ml_new_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    Unit *U = new Unit(RD);
-    H->addUnit(U);
-    RD->state->ml_unit = static_cast<ml_unit_t>(U);
+    Dimension *D = new Dimension(RD);
+    H->addDimension(D);
+    RD->state->ml_unit = static_cast<ml_unit_t>(D);
 }
 
 void ml_delete_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
-    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
-    if (!U)
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
+    if (!D)
         return;
 
     RRDHOST *RH = RD->rrdset->rrdhost;
@@ -99,45 +105,61 @@ void ml_delete_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    H->removeUnit(U);
+    H->removeDimension(D);
 
-    delete U;
+    delete D;
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {
     if (!RD)
         return false;
 
-    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
-    if (!U)
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
+    if (!D)
         return false;
 
-    U->predict();
-    return U->isAnomalous();
+    return D->getAnomalyBit();
 }
 
-char *ml_find_anomaly_events(RRDHOST *RH, time_t After, time_t Before) {
+char *ml_get_anomaly_events(const char *AnomalyDetectorName,
+                            int AnomalyDetectorVersion,
+                            RRDHOST *RH,
+                            time_t After, time_t Before)
+{
     if (!RH)
         return nullptr;
 
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
+    std::vector<std::pair<time_t, time_t>> TimeRanges;
+
+    Database DB{Cfg.AnomalyDBPath};
+    bool Res = DB.getAnomaliesInRange(TimeRanges, AnomalyDetectorName,
+                                                  AnomalyDetectorVersion,
+                                                  RH->host_uuid,
+                                                  After, Before);
+    if (!Res)
         return nullptr;
 
-    std::string JsonResult = H->getAnomalyEventsJson(After, Before);
-    return strdup(JsonResult.c_str());
+    nlohmann::json Json = TimeRanges;
+    return strdup(Json.dump(4).c_str());
 }
 
-char *ml_get_anomaly_event_info(RRDHOST *RH, time_t After, time_t Before) {
+char *ml_get_anomaly_event_info(const char *AnomalyDetectorName,
+                                int AnomalyDetectorVersion,
+                                RRDHOST *RH,
+                                time_t After, time_t Before)
+{
     if (!RH)
         return nullptr;
 
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
+    nlohmann::json Json;
+
+    Database DB{Cfg.AnomalyDBPath};
+    bool Res = DB.getAnomalyInfo(Json, AnomalyDetectorName,
+                                       AnomalyDetectorVersion,
+                                       RH->host_uuid,
+                                       After, Before);
+    if (!Res)
         return nullptr;
 
-    std::string JsonResult = H->getAnomalyEventInfoJson(After, Before);
-    char *JsonBuffer = new char[JsonResult.length() + 1];
-    strcpy(JsonBuffer, JsonResult.c_str());
-    return JsonBuffer;
+    return strdup(Json.dump(4).c_str());
 }
