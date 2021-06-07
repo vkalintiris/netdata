@@ -9,9 +9,9 @@ namespace ml {
 
 class Config {
 public:
-    Millis TrainSecs;
-    Millis MinTrainSecs;
-    Millis TrainEvery;
+    Seconds TrainSecs;
+    Seconds MinTrainSecs;
+    Seconds TrainEvery;
 
     unsigned DiffN, SmoothN, LagN;
 
@@ -24,6 +24,8 @@ public:
     double ADWindowSize;
     double ADWindowRateThreshold;
     double ADUnitRateThreshold;
+
+    std::string AnomalyDBPath;
 };
 
 extern Config Cfg;

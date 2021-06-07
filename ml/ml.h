@@ -22,9 +22,11 @@ void ml_delete_unit(RRDDIM *RD);
 
 bool ml_is_anomalous(RRDDIM *RD);
 
-char *ml_find_anomaly_events(RRDHOST *RH, time_t after, time_t before);
+char *ml_get_anomaly_events(const char *ad_name, int ad_version, RRDHOST *RH,
+                            time_t after, time_t before);
 
-char *ml_get_anomaly_event_info(RRDHOST *RH, time_t after, time_t before);
+char *ml_get_anomaly_event_info(const char *ad_name, int ad_version, RRDHOST *RH,
+                                time_t after, time_t before);
 
 int ml_test(int argc, char *argv[]);
 
