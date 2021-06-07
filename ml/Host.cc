@@ -1,163 +1,193 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "AnomalyDetector.h"
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
+#include "RollingBitCounter.h"
 
 #include "json.hpp"
 
 using namespace ml;
+using namespace nlohmann;
 
-void Host::addUnit(Unit *U) {
-    std::lock_guard<std::mutex> Lock(Mutex);
-    UnitsMap[U->RD] = U;
+static void updateMLChart(collected_number NumTotalDimensions,
+                          collected_number NumAnomalousDimensions,
+                          collected_number AnomalyRate) {
+    static thread_local RRDSET *RS = nullptr;
+    static thread_local RRDDIM *NumTotalDimensionsRD = nullptr;
+    static thread_local RRDDIM *NumAnomalousDimensionsRD = nullptr;
+    static thread_local RRDDIM *AnomalyRateRD = nullptr;
+
+    if (!RS) {
+        RS = rrdset_create_localhost(
+            "ml",
+            "host_anomaly_status",
+            NULL,
+            "ml",
+            NULL,
+            "Number of anomalous units",
+            "number of units",
+            "ml_units",
+            NULL,
+            39183,
+            1,
+            RRDSET_TYPE_LINE);
+
+        NumTotalDimensionsRD = rrddim_add(RS, "num_total_dimensions", NULL,
+                                     1, 1, RRD_ALGORITHM_ABSOLUTE);
+        NumAnomalousDimensionsRD = rrddim_add(RS, "num_anomalous_dimensions", NULL,
+                                              1, 1, RRD_ALGORITHM_ABSOLUTE);
+        AnomalyRateRD = rrddim_add(RS, "anomaly_rate", NULL,
+                                   1, 1, RRD_ALGORITHM_ABSOLUTE);
+    } else 
+        rrdset_next(RS);
+
+    rrddim_set_by_pointer(RS, NumTotalDimensionsRD, NumTotalDimensions);
+    rrddim_set_by_pointer(RS, NumAnomalousDimensionsRD, NumAnomalousDimensions);
+    rrddim_set_by_pointer(RS, AnomalyRateRD, AnomalyRate);
+
+    rrdset_done(RS);
 }
 
-void Host::removeUnit(Unit *U) {
-    std::lock_guard<std::mutex> Lock(Mutex);
-    UnitsMap.erase(U->RD);
-}
-
-void Host::trainUnits() {
-    std::this_thread::sleep_for(Seconds{10});
-
-    while (!netdata_exit) {
-        Duration<double> AvailableUnitTrainingDuration;
-
-        TimePoint TrainingStartTP = SteadyClock::now();
-        {
-            std::lock_guard<std::mutex> Lock(Mutex);
-
-            for (auto &UP : UnitsMap) {
-                Unit *U = UP.second;
-
-                if (U->train(TrainingStartTP))
-                    break;
-            }
-
-            AvailableUnitTrainingDuration = Cfg.TrainEvery / (UnitsMap.size() + 1);
-        }
-        Duration<double> UnitTrainingDuration = SteadyClock::now() - TrainingStartTP;
-
-        if (AvailableUnitTrainingDuration > UnitTrainingDuration)
-            std::this_thread::sleep_for(AvailableUnitTrainingDuration - UnitTrainingDuration);
-        else
-            fatal("AvailableUnitTrainingDuration < UnitTrainingDuration");
-    }
-}
-
-void Host::trackAnomalyStatus() {
-    std::this_thread::sleep_for(Seconds{10});
-
-    RRDSET *HostAnomalyRS = nullptr;
-    std::string SetId = "host_anomaly_status";
-
-    HostAnomalyRS = rrdset_create_localhost(
-        "ml",
-        SetId.c_str(),
-        NULL,
-        "ml",
-        NULL,
-        "Number of anomalous units",
-        "number of units",
-        "ml_units",
-        NULL,
-        39183,
-        1,
-        RRDSET_TYPE_LINE);
-
-    RRDDIM *NumTotalUnitsRD = rrddim_add(HostAnomalyRS, "num_total_units",
-                                         NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    RRDDIM *NumAnomalousUnitsRD = rrddim_add(HostAnomalyRS, "num_anomalous_units",
-                                             NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    AnomalyRateRD = rrddim_add(HostAnomalyRS, "anomaly_rate",
-                               NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-
-    while (!netdata_exit) {
-        std::this_thread::sleep_for(Seconds{1});
-
-        collected_number NumTotalUnits = 0;
-        collected_number NumAnomalousUnits = 0;
-        {
-            std::lock_guard<std::mutex> Lock(Mutex);
-
-            NumTotalUnits = UnitsMap.size();
-
-            for (auto &UP : UnitsMap) {
-                Unit *U = UP.second;
-
-                if (U->isAnomalous())
-                    NumAnomalousUnits++;
-            }
-        }
-
-        CalculatedNumber AnomalyRate = 0;
-        if (NumAnomalousUnits != 0)
-            AnomalyRate = (100.0 * NumAnomalousUnits) / NumTotalUnits;
-
-        rrddim_set_by_pointer(HostAnomalyRS, NumTotalUnitsRD, NumTotalUnits);
-        rrddim_set_by_pointer(HostAnomalyRS, NumAnomalousUnitsRD, NumAnomalousUnits);
-        rrddim_set_by_pointer(HostAnomalyRS, AnomalyRateRD, AnomalyRate);
-        rrdset_done(HostAnomalyRS);
-        rrdset_next(HostAnomalyRS);
-    }
-}
-
-void Host::runMLThreads() {
-    TrainingThread = std::thread(&Host::trainUnits, this);
-    TrackAnomalyStatusThread = std::thread(&Host::trackAnomalyStatus, this);
-}
-
-void Host::stopMLThreads() {
-    TrainingThread.join();
-    TrackAnomalyStatusThread.join();
-}
-
-std::string Host::getAnomalyEventsJson(time_t AfterT, time_t BeforeT) {
-    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
-
-    std::vector<AnomalyEvent> AEV =
-        AD.getAnomalyEvents(AnomalyRateRD, Cfg.ADWindowSize, Cfg.ADWindowRateThreshold);
-
-    nlohmann::json JsonResponse;
-    JsonResponse["anomaly_events"] = AEV;
-    return JsonResponse.dump(4);
-}
-
-std::string Host::getAnomalyEventInfoJson(time_t AfterT, time_t BeforeT) {
-    std::vector<AnomalyEventInfo> AEIV;
-    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
-
+void Host::addDimension(Dimension *D) {
     {
         std::lock_guard<std::mutex> Lock(Mutex);
+        DimensionsMap[D->getRD()] = D;
+    }
 
-        for (const auto &UP : UnitsMap) {
-            AnomalyEventInfo AEI = AD.getAnomalyEventInfo(UP.first);
+    NumDimensions++;
+}
 
-            if (AEI.AnomalyRate >= Cfg.ADUnitRateThreshold)
-                AEIV.push_back(AEI);
+void Host::removeDimension(Dimension *D) {
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
+        DimensionsMap.erase(D->getRD());
+    }
+
+    NumDimensions--;
+}
+
+void Host::forEachDimension(std::function<bool(Dimension *)> Func) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+    for (auto &DP : DimensionsMap) {
+        Dimension *Dim = DP.second;
+
+        if (Func(Dim))
+            break;
+    }
+}
+
+template<>
+void TrainableHost<Host>::trainOne(TimePoint &Now) {
+    Host *H = static_cast<Host *>(this);
+
+    H->forEachDimension([&](Dimension *D) {
+        MLError Result = D->train(Now);
+
+        switch (Result) {
+        case MLError::TryLockFailed:
+            return false;
+        case MLError::ShouldNotTrainNow:
+            return false;
+        case MLError::MissingData:
+            return false;
+        case MLError::Success:
+            return true;
+        default:
+            fatal("Unhandled MLError enumeration value");
         }
+    });
+}
+
+template<>
+void TrainableHost<Host>::train() {
+    Host *H = static_cast<Host *>(this);
+
+    while (!netdata_exit) {
+        TimePoint StartTP = SteadyClock::now();
+        trainOne(StartTP);
+        TimePoint EndTP = SteadyClock::now();
+
+        Duration<double> RealDuration = EndTP - StartTP;
+        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->getNumDimensions() + 1);
+
+        if (RealDuration >= AllottedDuration)
+            continue;
+
+        std::this_thread::sleep_for(AllottedDuration - RealDuration);
     }
+}
 
-#if 0
-    // TODO: add config opt.
-    if (AEIV.size() > 20)
-        AEIV.resize(20);
-#endif
-    auto CmpL =  [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
-        return (LHS.AnomalyRate > RHS.AnomalyRate);
-    };
-    std::sort(AEIV.begin(), AEIV.end(), CmpL);
+template<>
+void DetectableHost<Host>::detectOnce() {
+    Host *H = static_cast<Host *>(this);
 
-    nlohmann::json JsonResponse;
-    for (const AnomalyEventInfo &AEI : AEIV) {
-        nlohmann::json JsonEntry;
+    auto P = RBW.insert(AnomalyRate >= 0.5);
+    RollingBitWindow::Edge E = P.first;
+    size_t WindowLength = P.second;
 
-        JsonEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;
-        JsonEntry[AEI.Name]["anomaly_status"] = AEI.AnomalyStatus;
-        JsonResponse["dimensions"].push_back(JsonEntry);
+    bool ResetBitCounter = (E.first == RollingBitWindow::State::BelowThreshold) &&
+                           (E.second == RollingBitWindow::State::BelowThreshold);
+
+    size_t NumAnomalousDimensions = 0;
+    size_t NumTotalDimensions = H->getNumDimensions();
+
+    H->forEachDimension([&](Dimension *D) {
+        if (ResetBitCounter)
+            D->reset();
+
+        NumAnomalousDimensions += D->detect();
+
+        return false;
+    });
+
+    AnomalyRate = 0;
+    if (NumAnomalousDimensions != 0)
+        AnomalyRate = static_cast<CalculatedNumber>(NumAnomalousDimensions) / NumTotalDimensions;
+    updateMLChart(NumTotalDimensions, NumAnomalousDimensions, AnomalyRate * 100.0);
+    error("anomaly rate: %lf", AnomalyRate);
+
+    bool NewAnomalyEvent = (E.first == RollingBitWindow::State::AboveThreshold) &&
+                           (E.second == RollingBitWindow::State::BelowThreshold);
+
+    if (!NewAnomalyEvent)
+        return;
+
+    error("new anomaly length: %zu", WindowLength);
+
+    std::vector<std::pair<double, std::string>> AnomalousUnits;
+    AnomalousUnits.reserve(NumTotalDimensions);
+    H->forEachDimension([&](Dimension *D) {
+        AnomalousUnits.push_back({D->anomalyRate(WindowLength), D->getID()});
+        return false;
+    });
+
+    nlohmann::json J = AnomalousUnits;
+    time_t Now = now_realtime_sec();
+    DB.insertAnomaly("AD1", 1, H->getUUID(), Now - WindowLength, Now, J.dump(4));
+
+    error("num anomalous units: %zu", AnomalousUnits.size());
+}
+
+template<>
+void DetectableHost<Host>::detect() {
+    std::this_thread::sleep_for(Seconds{10});
+
+    while (!netdata_exit) {
+        detectOnce();
+        std::this_thread::sleep_for(Seconds{1});
     }
+}
 
-    return JsonResponse.dump(4);
+template<>
+void DetectableHost<Host>::startAnomalyDetectionThreads() {
+    Host *H = static_cast<Host *>(this);
+    TrainingThread = std::thread(&Host::train, H);
+    DetectionThread = std::thread(&Host::detect, H);
+}
+
+template<>
+void DetectableHost<Host>::stopAnomalyDetectionThreads() {
+    TrainingThread.join();
+    DetectionThread.join();
 }
