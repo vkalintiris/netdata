@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #ifndef ROLLING_BIT_COUNTER_H
 #define ROLLING_BIT_COUNTER_H
 
