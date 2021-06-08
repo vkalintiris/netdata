@@ -3,36 +3,21 @@
 using namespace ml;
 
 void RollingBitCounter::print(std::ostream &OS) const {
-    OS << "Start: " << start() << ", Size: " << size() << ", N: " << N << std::endl;
+    std::vector<bool> Buffer = getBuffer();
 
-    std::cout << "\tV: ";
+    std::cout << "V: ";
 
-    size_t StartIdx = start();
-    size_t EndIdx = StartIdx + size();
-
-    for (size_t I = StartIdx; I != EndIdx; I++)
-        OS << V[I % V.size()];
+    for (bool B : Buffer)
+        OS << B;
 
     OS << " (set bits: " << NumSetBits << ")";
 }
 
-#if 0
-int main(int argc, char *argv[]) {
-    (void) argc;
-    (void) argv;
+std::vector<bool> RollingBitCounter::getBuffer() const {
+    std::vector<bool> Buffer;
 
-    std::vector<bool> V{0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0};
+    for (size_t Idx = start(); Idx != (start() + size()); Idx++)
+        Buffer.push_back(V[Idx % V.size()]);
 
-    RollingBitCounter RBC(4);
-
-    std::cout << "Starting BW:\n\t" << RBC << "\n" << std::endl;
-
-    for (bool B : V) {
-        RBC.append(B);
-        std::cout << "\t" << RBC << std::endl;
-        std::cout << std::endl;
-    }
-
-    return 0;
+    return Buffer;
 }
-#endif

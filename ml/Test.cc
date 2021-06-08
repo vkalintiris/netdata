@@ -244,12 +244,47 @@ TEST(AnomalyDetectorTest, AnomalyEventInfo) {
 TEST(RollingBitCounterTest, RollingBitCounter) {
     RollingBitCounter RBC{4};
 
-    std::vector<bool> V{0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0};
-    for (bool B : V) {
-        RBC.insert(B);
-        std::cout << "\t" << RBC << std::endl;
-        std::cout << std::endl;
-    }
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 0);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 0);
+
+    RBC.insert(1);
+    EXPECT_EQ(RBC.numSetBits(), 1);
+
+    RBC.insert(1);
+    EXPECT_EQ(RBC.numSetBits(), 2);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 2);
+
+    RBC.insert(1);
+    EXPECT_EQ(RBC.numSetBits(), 3);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 2);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 1);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 1);
+
+    RBC.insert(1);
+    EXPECT_EQ(RBC.numSetBits(), 1);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 1);
+
+    RBC.insert(1);
+    EXPECT_EQ(RBC.numSetBits(), 2);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 2);
+
+    RBC.insert(0);
+    EXPECT_EQ(RBC.numSetBits(), 1);
 }
 
 int ml_test(int argc, char *argv[]) {

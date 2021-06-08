@@ -21,8 +21,10 @@ public:
         return NumSetBits;
     }
 
-    void print(std::ostream &OS) const;
+    std::vector<bool> getBuffer() const;
 
+    void print(std::ostream &OS) const;
+    
 private:
     inline size_t size() const {
         return N < V.size() ? N : V.size();
