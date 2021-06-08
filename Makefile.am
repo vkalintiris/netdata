@@ -241,6 +241,8 @@ ML_FILES = \
 	ml/Unit.cc \
 	ml/Query.h \
 	ml/Test.cc \
+	ml/RollingBitCounter.h \
+	ml/RollingBitCounter.cc \
 	ml/ml-private.h \
 	ml/ml.cc \
 	ml/kmeans/SamplesBuffer.cc \
