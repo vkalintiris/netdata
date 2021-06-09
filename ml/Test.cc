@@ -287,6 +287,15 @@ TEST(RollingBitCounterTest, RollingBitCounter) {
     EXPECT_EQ(RBC.numSetBits(), 1);
 }
 
+TEST(RollingBitWindowTest, RollingBitWindow) {
+    RollingBitWindow RBW{4, 2};
+
+    std::vector<bool> V{0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0};
+
+    for (bool B : V)
+        RBW.insert(B);
+}
+
 int ml_test(int argc, char *argv[]) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
