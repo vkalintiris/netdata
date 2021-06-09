@@ -60,6 +60,9 @@ inline std::ostream& operator<<(std::ostream &OS, const ml::RollingBitCounter &R
 namespace ml {
 
 class RollingBitWindow {
+    using AboveThresholdCallback = std::function<bool(size_t)>;
+
+private:
     enum class State {
         NotFilled,
         BelowThreshold,
@@ -108,15 +111,14 @@ class RollingBitWindow {
     };
 
 public:
-    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold) :
-        MinLength(MinLength), SetBitsThreshold(SetBitsThreshold),
+    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold, AboveThresholdCallback Callback) :
+        MinLength(MinLength), SetBitsThreshold(SetBitsThreshold), Callback(Callback),
         CurrState(State::NotFilled), CurrLength(0), RBC(MinLength)  {}
 
     void insert(bool Bit) {
         Edge E;
 
         RBC.insert(Bit);
-
         switch (CurrState) {
             case State::NotFilled: {
                 if (RBC.isFilled()) {
@@ -157,62 +159,52 @@ public:
 
 private:
     void onRoundtripNotFilled(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength++;
     }
 
     void onRoundtripBelowThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength = MinLength;
     }
 
     void onRoundtripAboveThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength++;
     }
 
     void onNotFilledToBelowThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength = MinLength;
     }
 
     void onNotFilledToAboveThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength++;
     }
 
     void onBelowToAboveThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
         CurrLength = MinLength;
     }
 
     void onAboveToBelowThreshold(State PrevState, bool NewBit) {
-        (void) PrevState;
-        (void) NewBit;
+        (void) PrevState, (void) NewBit;
 
-        size_t WindowLength = CurrLength;
+        Callback(CurrLength);
         CurrLength = MinLength;
-
-        std::cout << "Went Below threshold!\n";
-        std::cout << "\t" << "Length: " << WindowLength << "\n";
-        std::cout << "\t" << "RBC: " << RBC << "\n";
     }
 
 private:
     size_t MinLength;
     size_t SetBitsThreshold;
+    AboveThresholdCallback Callback;
 
     State CurrState;
     size_t CurrLength;
