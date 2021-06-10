@@ -3,8 +3,7 @@
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
-
-#include "json.hpp"
+#include "RollingBitCounter.h"
 
 using namespace ml;
 
@@ -73,11 +72,19 @@ void Host::trackAnomalyStatus() {
     AnomalyRateRD = rrddim_add(HostAnomalyRS, "anomaly_rate",
                                NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
+
+    auto Callback = [](size_t Length) {
+        error("New anomaly length: %zu", Length);
+        return false;
+    };
+    RollingBitWindow RBW{5, 3, Callback};
+
     while (!netdata_exit) {
         std::this_thread::sleep_for(Seconds{1});
 
         collected_number NumTotalUnits = 0;
         collected_number NumAnomalousUnits = 0;
+
         {
             std::lock_guard<std::mutex> Lock(Mutex);
 
@@ -100,6 +107,8 @@ void Host::trackAnomalyStatus() {
         rrddim_set_by_pointer(HostAnomalyRS, AnomalyRateRD, AnomalyRate);
         rrdset_done(HostAnomalyRS);
         rrdset_next(HostAnomalyRS);
+
+        RBW.insert(NumAnomalousUnits > 4);
     }
 }
 
