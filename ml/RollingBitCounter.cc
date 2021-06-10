@@ -23,3 +23,53 @@ std::vector<bool> RollingBitCounter::getBuffer() const {
 
     return Buffer;
 }
+
+void RollingBitCounter::insert(bool Bit) {
+    if (N >= V.size())
+        NumSetBits -= (V[start()] == true);
+
+    NumSetBits += (Bit == true);
+    V[N++ % V.size()] = Bit;
+}
+
+void RollingBitWindow::insert(bool Bit) {
+    Edge E;
+
+    RBC.insert(Bit);
+    switch (CurrState) {
+        case State::NotFilled: {
+            if (RBC.isFilled()) {
+                if (RBC.numSetBits() < SetBitsThreshold) {
+                    CurrState = State::BelowThreshold;
+                } else {
+                    CurrState = State::AboveThreshold;
+                }
+            } else {
+                CurrState = State::NotFilled;
+            }
+
+            E = {State::NotFilled, CurrState};
+            break;
+        } case State::BelowThreshold: {
+            if (RBC.numSetBits() >= SetBitsThreshold) {
+                CurrState = State::AboveThreshold;
+            }
+
+            E = {State::BelowThreshold, CurrState};
+            break;
+        } case State::AboveThreshold: {
+            if (RBC.numSetBits() < SetBitsThreshold) {
+                CurrState = State::BelowThreshold;
+            }
+
+            E = {State::AboveThreshold, CurrState};
+            break;
+        }
+    }
+
+    if (!EdgeActions.count(E))
+        return;
+
+    Action A =  EdgeActions[E];
+    (this->*A)(E.first, Bit);
+}

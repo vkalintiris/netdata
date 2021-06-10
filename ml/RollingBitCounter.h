@@ -15,13 +15,7 @@ public:
        return N == V.size(); 
     }
 
-    void insert(bool Bit) {
-        if (N >= V.size())
-            NumSetBits -= (V[start()] == true);
-
-        NumSetBits += (Bit == true);
-        V[N++ % V.size()] = Bit;
-    }
+    void insert(bool Bit);
 
     size_t numSetBits() const {
         return NumSetBits;
@@ -115,47 +109,7 @@ public:
         MinLength(MinLength), SetBitsThreshold(SetBitsThreshold), Callback(Callback),
         CurrState(State::NotFilled), CurrLength(0), RBC(MinLength)  {}
 
-    void insert(bool Bit) {
-        Edge E;
-
-        RBC.insert(Bit);
-        switch (CurrState) {
-            case State::NotFilled: {
-                if (RBC.isFilled()) {
-                    if (RBC.numSetBits() < SetBitsThreshold) {
-                        CurrState = State::BelowThreshold;
-                    } else {
-                        CurrState = State::AboveThreshold;
-                    }
-                } else {
-                    CurrState = State::NotFilled;
-                }
-                
-                E = {State::NotFilled, CurrState};
-                break;
-            } case State::BelowThreshold: {
-                if (RBC.numSetBits() >= SetBitsThreshold) {
-                    CurrState = State::AboveThreshold;
-                }
-
-                E = {State::BelowThreshold, CurrState};
-                break;
-            } case State::AboveThreshold: {
-                if (RBC.numSetBits() < SetBitsThreshold) {
-                    CurrState = State::BelowThreshold;
-                }
-
-                E = {State::AboveThreshold, CurrState};
-                break;
-            }
-        }
-
-        if (!EdgeActions.count(E))
-            return;
-
-        Action A =  EdgeActions[E];
-        (this->*A)(E.first, Bit);
-    }
+    void insert(bool Bit);
 
 private:
     void onRoundtripNotFilled(State PrevState, bool NewBit) {
