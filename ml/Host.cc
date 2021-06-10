@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "AnomalyDetector.h"
 #include "Config.h"
 #include "Host.h"
 #include "Unit.h"
@@ -112,52 +111,4 @@ void Host::runMLThreads() {
 void Host::stopMLThreads() {
     TrainingThread.join();
     TrackAnomalyStatusThread.join();
-}
-
-std::string Host::getAnomalyEventsJson(time_t AfterT, time_t BeforeT) {
-    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
-
-    std::vector<AnomalyEvent> AEV =
-        AD.getAnomalyEvents(AnomalyRateRD, Cfg.ADWindowSize, Cfg.ADWindowRateThreshold);
-
-    nlohmann::json JsonResponse;
-    JsonResponse["anomaly_events"] = AEV;
-    return JsonResponse.dump(4);
-}
-
-std::string Host::getAnomalyEventInfoJson(time_t AfterT, time_t BeforeT) {
-    std::vector<AnomalyEventInfo> AEIV;
-    AnomalyDetector AD = AnomalyDetector(AfterT, BeforeT);
-
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
-
-        for (const auto &UP : UnitsMap) {
-            AnomalyEventInfo AEI = AD.getAnomalyEventInfo(UP.first);
-
-            if (AEI.AnomalyRate >= Cfg.ADUnitRateThreshold)
-                AEIV.push_back(AEI);
-        }
-    }
-
-#if 0
-    // TODO: add config opt.
-    if (AEIV.size() > 20)
-        AEIV.resize(20);
-#endif
-    auto CmpL =  [](const AnomalyEventInfo &LHS, const AnomalyEventInfo &RHS) {
-        return (LHS.AnomalyRate > RHS.AnomalyRate);
-    };
-    std::sort(AEIV.begin(), AEIV.end(), CmpL);
-
-    nlohmann::json JsonResponse;
-    for (const AnomalyEventInfo &AEI : AEIV) {
-        nlohmann::json JsonEntry;
-
-        JsonEntry[AEI.Name]["anomaly_rate"] = AEI.AnomalyRate;
-        JsonEntry[AEI.Name]["anomaly_status"] = AEI.AnomalyStatus;
-        JsonResponse["dimensions"].push_back(JsonEntry);
-    }
-
-    return JsonResponse.dump(4);
 }

@@ -201,7 +201,6 @@ TEST(AnomalyDetectorTest, AnomalyEvents) {
     EXPECT_EQ(AEV.size(), 1);
     EXPECT_EQ(AEV[0], AnomalyEvent(0, SNs.size() - 1));
 }
-#endif
 
 TEST(AnomalyDetectorTest, AnomalyEventInfo) {
     AnomalyDetector AD = AnomalyDetector(0, 3);
@@ -240,6 +239,7 @@ TEST(AnomalyDetectorTest, AnomalyEventInfo) {
     EXPECT_EQ(AEI.AnomalyRate, 2.0 / 3);
     EXPECT_THAT(AEI.AnomalyStatus, testing::ElementsAre(0, 1, 1));
 }
+#endif
 
 TEST(RollingBitCounterTest, RollingBitCounter) {
     RollingBitCounter RBC{4};

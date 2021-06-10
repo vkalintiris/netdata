@@ -18,9 +18,6 @@ public:
     void runMLThreads();
     void stopMLThreads();
 
-    std::string getAnomalyEventsJson(time_t After, time_t Before);
-    std::string getAnomalyEventInfoJson(time_t After, time_t Before);
-
 private:
     void trainUnits();
     void trackAnomalyStatus();

@@ -124,8 +124,8 @@ char *ml_find_anomaly_events(RRDHOST *RH, time_t After, time_t Before) {
     if (!H)
         return nullptr;
 
-    std::string JsonResult = H->getAnomalyEventsJson(After, Before);
-    return strdup(JsonResult.c_str());
+    (void) After, (void) Before;
+    return strdup("{}");
 }
 
 char *ml_get_anomaly_event_info(RRDHOST *RH, time_t After, time_t Before) {
@@ -136,6 +136,6 @@ char *ml_get_anomaly_event_info(RRDHOST *RH, time_t After, time_t Before) {
     if (!H)
         return nullptr;
 
-    std::string JsonResult = H->getAnomalyEventInfoJson(After, Before);
-    return strdup(JsonResult.c_str());
+    (void) After, (void) Before;
+    return strdup("{}");
 }
