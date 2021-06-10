@@ -96,6 +96,8 @@ void Host::trackAnomalyStatus() {
                 if (U->isAnomalous())
                     NumAnomalousUnits++;
             }
+
+            RBW.insert(NumAnomalousUnits > 4);
         }
 
         CalculatedNumber AnomalyRate = 0;
@@ -108,7 +110,6 @@ void Host::trackAnomalyStatus() {
         rrdset_done(HostAnomalyRS);
         rrdset_next(HostAnomalyRS);
 
-        RBW.insert(NumAnomalousUnits > 4);
     }
 }
 
