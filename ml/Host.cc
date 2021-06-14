@@ -134,7 +134,7 @@ void Host::detectAnomalies() {
 
         json J = AnomalousUnits;
         time_t Now = now_realtime_sec();
-        DB.insertIntoAnomalyEvents("AD1", 1, RH->host_uuid, Now - WindowLength, Now, J);
+        DB.insertAnomaly("AD1", 1, RH->host_uuid, Now - WindowLength, Now, J);
 
         WindowLength = 0;
         AnomalousUnits.clear();
