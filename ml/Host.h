@@ -9,10 +9,24 @@
 
 namespace ml {
 
+class AnomalyStatusChart {
+public:
+    AnomalyStatusChart(const std::string Name);
+
+    void update(size_t NumTotalUnits, size_t NumAnomalousUnits);
+
+private:
+    RRDSET *RS;
+
+    RRDDIM *NumTotalUnitsRD;
+    RRDDIM *NumAnomalousUnitsRD;
+    RRDDIM *AnomalyRateRD;
+};
+
 class Host {
 public:
     Host(RRDHOST *RH) :
-        RH(RH), AnomalyRateRD(nullptr), DB(Cfg.AnomalyDBPath) {}
+        RH(RH), DB(Cfg.AnomalyDBPath) {}
 
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
@@ -22,19 +36,17 @@ public:
 
 private:
     void trainUnits();
-    void trackAnomalyStatus();
+    void detectAnomalies();
 
 private:
     RRDHOST *RH;
-    RRDDIM *AnomalyRateRD;
-
     Database DB;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Unit *> UnitsMap;
 
     std::thread TrainingThread;
-    std::thread TrackAnomalyStatusThread;
+    std::thread AnomalyDetectionThread;
 };
 
 }

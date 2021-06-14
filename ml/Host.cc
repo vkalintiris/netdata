@@ -10,6 +10,42 @@
 using namespace ml;
 using namespace nlohmann;
 
+AnomalyStatusChart::AnomalyStatusChart(const std::string Name) {
+    RS = rrdset_create_localhost(
+        "ml",
+        Name.c_str(),
+        NULL,
+        "ml",
+        NULL,
+        "Number of anomalous units",
+        "number of units",
+        "ml_units",
+        NULL,
+        39183,
+        1,
+        RRDSET_TYPE_LINE);
+
+    NumTotalUnitsRD = rrddim_add(RS, "num_total_units", NULL,
+                                 1, 1, RRD_ALGORITHM_ABSOLUTE);
+    NumAnomalousUnitsRD = rrddim_add(RS, "num_anomalous_units", NULL,
+                                     1, 1, RRD_ALGORITHM_ABSOLUTE);
+    AnomalyRateRD = rrddim_add(RS, "anomaly_rate", NULL,
+                               1, 1, RRD_ALGORITHM_ABSOLUTE);
+}
+
+void AnomalyStatusChart::update(size_t NumTotalUnits, size_t NumAnomalousUnits) {
+    rrddim_set_by_pointer(RS, NumTotalUnitsRD, NumTotalUnits);
+    rrddim_set_by_pointer(RS, NumAnomalousUnitsRD, NumAnomalousUnits);
+
+    CalculatedNumber AnomalyRate = 0;
+    if (NumAnomalousUnits != 0)
+        AnomalyRate = (100.0 * NumAnomalousUnits) / NumTotalUnits;
+    rrddim_set_by_pointer(RS, AnomalyRateRD, AnomalyRate);
+
+    rrdset_done(RS);
+    rrdset_next(RS);
+}
+
 void Host::addUnit(Unit *U) {
     std::lock_guard<std::mutex> Lock(Mutex);
     UnitsMap[U->RD] = U;
@@ -48,32 +84,9 @@ void Host::trainUnits() {
     }
 }
 
-void Host::trackAnomalyStatus() {
+
+void Host::detectAnomalies() {
     std::this_thread::sleep_for(Seconds{10});
-
-    RRDSET *HostAnomalyRS = nullptr;
-    std::string SetId = "host_anomaly_status";
-
-    HostAnomalyRS = rrdset_create_localhost(
-        "ml",
-        SetId.c_str(),
-        NULL,
-        "ml",
-        NULL,
-        "Number of anomalous units",
-        "number of units",
-        "ml_units",
-        NULL,
-        39183,
-        1,
-        RRDSET_TYPE_LINE);
-
-    RRDDIM *NumTotalUnitsRD = rrddim_add(HostAnomalyRS, "num_total_units",
-                                         NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    RRDDIM *NumAnomalousUnitsRD = rrddim_add(HostAnomalyRS, "num_anomalous_units",
-                                             NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    AnomalyRateRD = rrddim_add(HostAnomalyRS, "anomaly_rate",
-                               NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
     std::vector<std::pair<double, std::string>> AnomalousUnits;
     size_t WindowLength = 0;
@@ -90,6 +103,8 @@ void Host::trackAnomalyStatus() {
         return false;
     };
     RollingBitWindow RBW{5, 3, Callback};
+
+    AnomalyStatusChart ASC{"host_anomaly_status"};
 
     while (!netdata_exit) {
         std::this_thread::sleep_for(Seconds{1});
@@ -108,19 +123,10 @@ void Host::trackAnomalyStatus() {
                 if (U->isAnomalous())
                     NumAnomalousUnits++;
             }
-
-            RBW.insert(NumAnomalousUnits > 4);
         }
 
-        CalculatedNumber AnomalyRate = 0;
-        if (NumAnomalousUnits != 0)
-            AnomalyRate = (100.0 * NumAnomalousUnits) / NumTotalUnits;
-
-        rrddim_set_by_pointer(HostAnomalyRS, NumTotalUnitsRD, NumTotalUnits);
-        rrddim_set_by_pointer(HostAnomalyRS, NumAnomalousUnitsRD, NumAnomalousUnits);
-        rrddim_set_by_pointer(HostAnomalyRS, AnomalyRateRD, AnomalyRate);
-        rrdset_done(HostAnomalyRS);
-        rrdset_next(HostAnomalyRS);
+        ASC.update(NumTotalUnits, NumAnomalousUnits);
+        RBW.insert(NumAnomalousUnits > 4);
 
         if (AnomalousUnits.size() == 0)
             continue;
@@ -136,10 +142,10 @@ void Host::trackAnomalyStatus() {
 
 void Host::runMLThreads() {
     TrainingThread = std::thread(&Host::trainUnits, this);
-    TrackAnomalyStatusThread = std::thread(&Host::trackAnomalyStatus, this);
+    AnomalyDetectionThread = std::thread(&Host::detectAnomalies, this);
 }
 
 void Host::stopMLThreads() {
     TrainingThread.join();
-    TrackAnomalyStatusThread.join();
+    AnomalyDetectionThread.join();
 }
