@@ -33,6 +33,9 @@ const char *ml::Database::SQL_SELECT_ANOMALY_EVENTS =
 using namespace ml;
 
 bool Statement::prepare(sqlite3 *Conn) {
+    if (!Conn)
+        return false;
+
     if (ParsedStmt)
         return true;
 

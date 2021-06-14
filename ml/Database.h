@@ -53,17 +53,11 @@ public:
 
     template<class ...ArgTypes>
     bool insertAnomaly(ArgTypes&&... Args) {
-        if (!Conn)
-            return false;
-
         return InsertAnomalyStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
     }
 
     template<class ...ArgTypes>
     bool getAnomaliesInRange(ArgTypes&&... Args) {
-        if (!Conn)
-            return false;
-
         return GetAnomaliesInRangeStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
     }
 
