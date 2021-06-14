@@ -13,7 +13,7 @@ class AnomalyStatusChart {
 public:
     AnomalyStatusChart(const std::string Name);
 
-    void update(size_t NumTotalUnits, size_t NumAnomalousUnits);
+    void update(collected_number NumTotalUnits, collected_number NumAnomalousUnits);
 
 private:
     RRDSET *RS;
@@ -25,8 +25,7 @@ private:
 
 class Host {
 public:
-    Host(RRDHOST *RH) :
-        RH(RH), DB(Cfg.AnomalyDBPath) {}
+    Host(RRDHOST *RH) : RH(RH) {}
 
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
@@ -40,7 +39,6 @@ private:
 
 private:
     RRDHOST *RH;
-    Database DB;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Unit *> UnitsMap;

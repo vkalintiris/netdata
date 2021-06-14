@@ -33,7 +33,7 @@ AnomalyStatusChart::AnomalyStatusChart(const std::string Name) {
                                1, 1, RRD_ALGORITHM_ABSOLUTE);
 }
 
-void AnomalyStatusChart::update(size_t NumTotalUnits, size_t NumAnomalousUnits) {
+void AnomalyStatusChart::update(collected_number NumTotalUnits, collected_number NumAnomalousUnits) {
     rrddim_set_by_pointer(RS, NumTotalUnitsRD, NumTotalUnits);
     rrddim_set_by_pointer(RS, NumAnomalousUnitsRD, NumAnomalousUnits);
 
@@ -105,6 +105,7 @@ void Host::detectAnomalies() {
     RollingBitWindow RBW{5, 3, Callback};
 
     AnomalyStatusChart ASC{"host_anomaly_status"};
+    Database DB{Cfg.AnomalyDBPath};
 
     while (!netdata_exit) {
         std::this_thread::sleep_for(Seconds{1});
