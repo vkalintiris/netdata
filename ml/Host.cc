@@ -5,7 +5,10 @@
 #include "Unit.h"
 #include "RollingBitCounter.h"
 
+#include "json.hpp"
+
 using namespace ml;
+using namespace nlohmann;
 
 void Host::addUnit(Unit *U) {
     std::lock_guard<std::mutex> Lock(Mutex);
@@ -72,9 +75,18 @@ void Host::trackAnomalyStatus() {
     AnomalyRateRD = rrddim_add(HostAnomalyRS, "anomaly_rate",
                                NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
+    std::vector<std::pair<double, std::string>> AnomalousUnits;
+    size_t WindowLength = 0;
 
-    auto Callback = [](size_t Length) {
+    auto Callback = [this, &AnomalousUnits, &WindowLength](size_t Length) {
+        WindowLength = Length;
         error("New anomaly length: %zu", Length);
+
+        for (auto &UP : UnitsMap) {
+            Unit *U = UP.second;
+            AnomalousUnits.push_back({U->anomalyRate(Length), U->RD->id});
+        }
+
         return false;
     };
     RollingBitWindow RBW{5, 3, Callback};
@@ -110,6 +122,15 @@ void Host::trackAnomalyStatus() {
         rrdset_done(HostAnomalyRS);
         rrdset_next(HostAnomalyRS);
 
+        if (AnomalousUnits.size() == 0)
+            continue;
+
+        json J = AnomalousUnits;
+        time_t Now = now_realtime_sec();
+        DB.insertIntoAnomalyEvents("AD1", 1, RH->host_uuid, Now - WindowLength, Now, J);
+
+        WindowLength = 0;
+        AnomalousUnits.clear();
     }
 }
 

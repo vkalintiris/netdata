@@ -5,12 +5,14 @@
 
 #include "ml-private.h"
 #include "Unit.h"
+#include "Database.h"
 
 namespace ml {
 
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH), AnomalyRateRD(nullptr) { }
+    Host(RRDHOST *RH) :
+        RH(RH), AnomalyRateRD(nullptr), DB(Cfg.AnomalyDBPath) {}
 
     void addUnit(Unit *U);
     void removeUnit(Unit *U);
@@ -25,6 +27,8 @@ private:
 private:
     RRDHOST *RH;
     RRDDIM *AnomalyRateRD;
+
+    Database DB;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Unit *> UnitsMap;

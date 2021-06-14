@@ -245,6 +245,8 @@ ML_FILES = \
 	ml/RollingBitCounter.cc \
 	ml/ml-private.h \
 	ml/ml.cc \
+	ml/Database.cc \
+	ml/Database.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/KMeans.cc \

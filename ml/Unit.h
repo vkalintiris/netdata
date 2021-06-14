@@ -6,6 +6,7 @@
 #include "ml-private.h"
 
 #include "Config.h"
+#include "RollingBitCounter.h"
 
 namespace ml {
 
@@ -17,7 +18,8 @@ public:
         RD(RD),
         KM(KMeans()), AnomalyScore(0.0),
         HasModel(false), ShouldTrain(false),
-        LastTrainedAt(SteadyClock::now()) { }
+        LastTrainedAt(SteadyClock::now()),
+        RBC(5), BitCounter(0) {}
 
     int updateEvery() const {
         return RD->update_every;
@@ -25,6 +27,12 @@ public:
 
     bool isAnomalous() {
         return AnomalyScore > Cfg.AnomalyScoreThreshold;
+    }
+
+    double anomalyRate(size_t WindowLength) {
+        double Rate = static_cast<double>(BitCounter) / WindowLength;
+        BitCounter = RBC.numSetBits();
+        return Rate;
     }
 
     std::pair<CalculatedNumber *, unsigned>
@@ -44,7 +52,15 @@ private:
 
     TimePoint LastTrainedAt;
 
+    RollingBitCounter RBC;
+    size_t BitCounter;
+
     std::mutex Mutex;
+
+    // RBC{MinLength} + Counter = 0
+    // if !RBC.isFilled() -> RBC.insert() and Counter += AnomalyBit;
+    // else -> RBC.insert() and Counter += AnomalyBit;
+    // Above -> Below: (Counter / WindowLength) and (Counter = RBC.numSetBits())
 
     friend class Host;
 };

@@ -36,6 +36,11 @@ void ml_init(void) {
     Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "anomaly detector window size", 120);
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector window rate threshold", 0.25);
     Cfg.ADUnitRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector unit rate threshold", 0.1);
+
+    // ML database path
+    std::stringstream SS;
+    SS << netdata_configured_cache_dir << "/" << "netdata-ml.db";
+    Cfg.AnomalyDBPath = SS.str();
 }
 
 /*

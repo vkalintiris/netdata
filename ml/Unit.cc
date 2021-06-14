@@ -163,5 +163,8 @@ void Unit::predict() {
         AnomalyScore = KM.anomalyScore(SB);
     }
 
+    BitCounter += isAnomalous();
+    RBC.insert(isAnomalous());
+
     delete[] CNs;
 }

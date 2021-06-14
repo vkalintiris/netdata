@@ -24,6 +24,8 @@ public:
     double ADWindowSize;
     double ADWindowRateThreshold;
     double ADUnitRateThreshold;
+
+    std::string AnomalyDBPath;
 };
 
 extern Config Cfg;
