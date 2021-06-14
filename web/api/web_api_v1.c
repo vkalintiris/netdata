@@ -1107,11 +1107,10 @@ int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w
     if (!before || !after)
         s = strdup("{\"No\": \"time range given\" }\n");
     else {
-        s = ml_find_anomaly_events(host, after, before);
+        s = ml_get_anomaly_events("AD1", 1, host, after, before);
         if (!s)
             s = strdup("{\"No\": \"value\" }\n");
     }
-
 
     BUFFER *wb = w->response.data;
     buffer_flush(wb);
