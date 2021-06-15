@@ -27,6 +27,13 @@ public:
                              time_t After,
                              time_t Before);
 
+    bool exec(sqlite3 *Conn, nlohmann::json &Json,
+                             std::string AnomalyDetectorName,
+                             int AnomalyDetectorVersion,
+                             uuid_t HostUUID,
+                             time_t After,
+                             time_t Before);
+
 private:
     bool prepare(sqlite3 *Conn);
 
@@ -46,6 +53,7 @@ class Database {
 private:
     static const char *SQL_CREATE_ANOMALIES_TABLE;
     static const char *SQL_INSERT_ANOMALY;
+    static const char *SQL_SELECT_ANOMALY;
     static const char *SQL_SELECT_ANOMALY_EVENTS;
 
 public:
@@ -57,14 +65,21 @@ public:
     }
 
     template<class ...ArgTypes>
+    bool getAnomalyInfo(ArgTypes&&... Args) {
+        return GetAnomalyInfoStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
+    }
+
+    template<class ...ArgTypes>
     bool getAnomaliesInRange(ArgTypes&&... Args) {
         return GetAnomaliesInRangeStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
     }
+
 
 private:
     sqlite3 *Conn;
 
     Statement InsertAnomalyStmt{SQL_INSERT_ANOMALY};
+    Statement GetAnomalyInfoStmt{SQL_SELECT_ANOMALY};
     Statement GetAnomaliesInRangeStmt{SQL_SELECT_ANOMALY_EVENTS};
 };
 

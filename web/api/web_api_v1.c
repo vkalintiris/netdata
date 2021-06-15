@@ -1150,17 +1150,14 @@ int web_client_api_request_v1_anomaly_event_info(RRDHOST *host, struct web_clien
             before = (uint32_t) strtoul(value, NULL, 0);
     }
 
-    if (before == 0)
-        before = now_realtime_sec();
-
-    if (after == 0)
-        after = before - (60 * 15);
-
-    error("after: %u, before: %u", after, before);
-
-    char *s = ml_get_anomaly_event_info(host, after, before);
-    if (!s)
-        s = "{\"No\": \"value\" }\n";
+    char *s;
+    if (!before || !after)
+        s = strdup("{\"No\": \"time range given\" }\n");
+    else {
+        s = ml_get_anomaly_event_info("AD1", 1, host, after, before);
+        if (!s)
+            s = strdup("{\"No\": \"value\" }\n");
+    }
 
     BUFFER *wb = w->response.data;
     buffer_flush(wb);

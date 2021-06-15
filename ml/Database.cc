@@ -22,6 +22,14 @@ const char *ml::Database::SQL_INSERT_ANOMALY =
     "     host_id, after, before, anomaly_event_info) "
     "VALUES (?1, ?2, ?3, ?4, ?5, ?6);";
 
+const char *ml::Database::SQL_SELECT_ANOMALY =
+    "SELECT anomaly_event_info FROM anomaly_events WHERE"
+    "   anomaly_detector_name == ?1 AND"
+    "   anomaly_detector_version == ?2 AND"
+    "   host_id == ?3 AND"
+    "   after == ?4 AND"
+    "   before == ?5;";
+
 const char *ml::Database::SQL_SELECT_ANOMALY_EVENTS =
     "SELECT after, before FROM anomaly_events WHERE"
     "   anomaly_detector_name == ?1 AND"
@@ -186,6 +194,50 @@ bool Statement::exec(sqlite3 *Conn, std::vector<std::pair<time_t, time_t>> &Time
             time_t After = sqlite3_column_int64(ParsedStmt, 0);
             time_t Before = sqlite3_column_int64(ParsedStmt, 1);
             TimeRanges.push_back({After, Before});
+            continue;
+        }
+        case SQLITE_DONE:
+            return resetAndClear(true);
+        default:
+            error("Stepping through '%s' returned rc=%d", RawStmt, RC);
+            return resetAndClear(false);
+        }
+    }
+}
+
+bool Statement::exec(sqlite3 *Conn, nlohmann::json &Json,
+                                    std::string AnomalyDetectorName,
+                                    int AnomalyDetectorVersion,
+                                    uuid_t HostUUID,
+                                    time_t After,
+                                    time_t Before)
+{
+    if (!prepare(Conn))
+        return false;
+
+    size_t numSuccessfulBindings = bind(1, AnomalyDetectorName) +
+                                   bind(2, AnomalyDetectorVersion) +
+                                   bind(3, HostUUID) +
+                                   bind(4, After) +
+                                   bind(5, Before);
+
+    switch (numSuccessfulBindings) {
+    case 0:
+        return false;
+    case 5:
+        break;
+    default:
+        return resetAndClear(false);
+    }
+
+    while (true) {
+        switch (int RC = sqlite3_step(ParsedStmt)) {
+        case SQLITE_BUSY:
+        case SQLITE_LOCKED:
+            usleep(SQLITE_INSERT_DELAY * USEC_PER_MS);
+            continue;
+        case SQLITE_ROW: {
+            Json = nlohmann::json::parse(static_cast<const char *>(sqlite3_column_blob(ParsedStmt, 0)));
             continue;
         }
         case SQLITE_DONE:

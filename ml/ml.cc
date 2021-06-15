@@ -133,11 +133,10 @@ char *ml_get_anomaly_events(const char *AnomalyDetectorName,
     std::vector<std::pair<time_t, time_t>> TimeRanges;
 
     Database DB{Cfg.AnomalyDBPath};
-    bool Res = DB.getAnomaliesInRange(TimeRanges,
-                                      AnomalyDetectorName,
-                                      AnomalyDetectorVersion,
-                                      RH->host_uuid,
-                                      After, Before);
+    bool Res = DB.getAnomaliesInRange(TimeRanges, AnomalyDetectorName,
+                                                  AnomalyDetectorVersion,
+                                                  RH->host_uuid,
+                                                  After, Before);
     if (!Res)
         return nullptr;
 
@@ -145,14 +144,23 @@ char *ml_get_anomaly_events(const char *AnomalyDetectorName,
     return strdup(Json.dump(4).c_str());
 }
 
-char *ml_get_anomaly_event_info(RRDHOST *RH, time_t After, time_t Before) {
+char *ml_get_anomaly_event_info(const char *AnomalyDetectorName,
+                                int AnomalyDetectorVersion,
+                                RRDHOST *RH,
+                                time_t After, time_t Before)
+{
     if (!RH)
         return nullptr;
 
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
+    nlohmann::json Json;
+
+    Database DB{Cfg.AnomalyDBPath};
+    bool Res = DB.getAnomalyInfo(Json, AnomalyDetectorName,
+                                       AnomalyDetectorVersion,
+                                       RH->host_uuid,
+                                       After, Before);
+    if (!Res)
         return nullptr;
 
-    (void) After, (void) Before;
-    return strdup("{}");
+    return strdup(Json.dump(4).c_str());
 }
