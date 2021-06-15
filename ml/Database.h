@@ -90,7 +90,8 @@ public:
     template<typename ...ArgTypes>
     bool getAnomalyInfo(nlohmann::json &Json, ArgTypes&&... Args) {
         Statement::RowCallback RowCb = [&](sqlite3_stmt *Stmt) {
-            Json = nlohmann::json::parse(static_cast<const char *>(sqlite3_column_blob(Stmt, 0)));
+            const char *Text = static_cast<const char *>(sqlite3_column_blob(Stmt, 0));
+            Json = nlohmann::json::parse(Text);
         };
         return GetAnomalyInfoStmt.exec(Conn, RowCb, Args...);
     }
@@ -98,9 +99,10 @@ public:
     template<typename ...ArgTypes>
     bool getAnomaliesInRange(std::vector<std::pair<time_t, time_t>> &V, ArgTypes&&... Args) {
         Statement::RowCallback RowCb = [&](sqlite3_stmt *Stmt) {
-            time_t After = sqlite3_column_int64(Stmt, 0);
-            time_t Before = sqlite3_column_int64(Stmt, 1);
-            V.push_back({After, Before});
+            V.push_back({
+                sqlite3_column_int64(Stmt, 0),
+                sqlite3_column_int64(Stmt, 1)
+            });
         };
         return GetAnomaliesInRangeStmt.exec(Conn, RowCb, Args...);
     }
