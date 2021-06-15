@@ -105,9 +105,11 @@ private:
     };
 
 public:
-    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold, AboveThresholdCallback Callback) :
-        MinLength(MinLength), SetBitsThreshold(SetBitsThreshold), Callback(Callback),
-        CurrState(State::NotFilled), CurrLength(0), RBC(MinLength)  {}
+    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold,
+                     AboveThresholdCallback Callback) :
+        MinLength(MinLength), SetBitsThreshold(SetBitsThreshold),
+        Callback(Callback), CurrState(State::NotFilled), CurrLength(0),
+        RBC(MinLength) {}
 
     void insert(bool Bit);
 
