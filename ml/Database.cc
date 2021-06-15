@@ -62,8 +62,7 @@ bool Statement::bindValue(size_t Pos, const std::string &Value) {
     if (RC == SQLITE_OK)
         return true;
 
-    std::string Msg = "Failed to bind text '%s' (pos = %zu) in statement '%s'.";
-    error(Msg.c_str(), Value.c_str(), Pos, RawStmt);
+    error("Failed to bind text '%s' (pos = %zu) in statement '%s'.", Value.c_str(), Pos, RawStmt);
     return false;
 }
 
@@ -72,8 +71,7 @@ bool Statement::bindValue(size_t Pos, const int Value) {
     if (RC == SQLITE_OK)
         return true;
 
-    std::string Msg = "Failed to bind integer %d (pos = %zu) in statement '%s'.";
-    error(Msg.c_str(), Value, Pos, RawStmt);
+    error("Failed to bind integer %d (pos = %zu) in statement '%s'.", Value, Pos, RawStmt);
     return false;
 }
 
@@ -85,24 +83,9 @@ bool Statement::bindValue(size_t Pos, const uuid_t Value) {
     char UUIDStr[UUID_STR_LEN];
     uuid_unparse_lower(Value, UUIDStr);
 
-    std::string Msg = "Failed to bind uuid_t %s (pos = %zu) in statement '%s'.";
-    error(Msg.c_str(), UUIDStr, Pos, RawStmt);
+    error("Failed to bind uuid_t %s (pos = %zu) in statement '%s'.", UUIDStr, Pos, RawStmt);
     return false;
 }
-
-#if 0
-bool Statement::bindValue(size_t Pos, const nlohmann::json &Value) {
-    std::string JsonString = Value.dump(4);
-
-    int RC = sqlite3_bind_text(ParsedStmt, Pos, JsonString.c_str(), -1, SQLITE_TRANSIENT);
-    if (RC == SQLITE_OK)
-        return true;
-
-    std::string Msg = "Failed to bind json (pos = %zu) in statement '%s'.";
-    error(Msg.c_str(), Pos, RawStmt);
-    return false;
-}
-#endif
 
 bool Statement::resetAndClear(bool Ret) {
     int RC = sqlite3_reset(ParsedStmt);
