@@ -57,7 +57,7 @@ bool Statement::prepare(sqlite3 *Conn) {
     return false;
 }
 
-bool Statement::bind(size_t Pos, const std::string &Value) {
+bool Statement::bindValue(size_t Pos, const std::string &Value) {
     int RC = sqlite3_bind_text(ParsedStmt, Pos, Value.c_str(), -1, SQLITE_TRANSIENT);
     if (RC == SQLITE_OK)
         return true;
@@ -67,7 +67,7 @@ bool Statement::bind(size_t Pos, const std::string &Value) {
     return false;
 }
 
-bool Statement::bind(size_t Pos, int Value) {
+bool Statement::bindValue(size_t Pos, const int Value) {
     int RC = sqlite3_bind_int(ParsedStmt, Pos, Value);
     if (RC == SQLITE_OK)
         return true;
@@ -77,7 +77,7 @@ bool Statement::bind(size_t Pos, int Value) {
     return false;
 }
 
-bool Statement::bind(size_t Pos, const uuid_t Value) {
+bool Statement::bindValue(size_t Pos, const uuid_t Value) {
     int RC = sqlite3_bind_blob(ParsedStmt, Pos, Value, sizeof(*Value), SQLITE_TRANSIENT);
     if (RC == SQLITE_OK)
         return true;
@@ -90,7 +90,8 @@ bool Statement::bind(size_t Pos, const uuid_t Value) {
     return false;
 }
 
-bool Statement::bind(size_t Pos, const nlohmann::json &Value) {
+#if 0
+bool Statement::bindValue(size_t Pos, const nlohmann::json &Value) {
     std::string JsonString = Value.dump(4);
 
     int RC = sqlite3_bind_text(ParsedStmt, Pos, JsonString.c_str(), -1, SQLITE_TRANSIENT);
@@ -101,6 +102,7 @@ bool Statement::bind(size_t Pos, const nlohmann::json &Value) {
     error(Msg.c_str(), Pos, RawStmt);
     return false;
 }
+#endif
 
 bool Statement::resetAndClear(bool Ret) {
     int RC = sqlite3_reset(ParsedStmt);
@@ -116,137 +118,6 @@ bool Statement::resetAndClear(bool Ret) {
     }
 
     return Ret;
-}
-
-bool Statement::exec(sqlite3 *Conn, std::string AnomalyDetectorName,
-                                    int AnomalyDetectorVersion,
-                                    uuid_t HostUUID,
-                                    time_t After,
-                                    time_t Before,
-                                    const nlohmann::json &Json)
-{
-    if (!prepare(Conn))
-        return false;
-
-    size_t numSuccessfulBindings = bind(1, AnomalyDetectorName) +
-                                   bind(2, AnomalyDetectorVersion) +
-                                   bind(3, HostUUID) +
-                                   bind(4, After) +
-                                   bind(5, Before) +
-                                   bind(6, Json);
-
-    switch (numSuccessfulBindings) {
-    case 6:
-        break;
-    case 0:
-        return false;
-    default:
-        return resetAndClear(false);
-    }
-
-    while (true) {
-        switch (int RC = sqlite3_step(ParsedStmt)) {
-        case SQLITE_BUSY:
-        case SQLITE_LOCKED:
-            usleep(SQLITE_INSERT_DELAY * USEC_PER_MS);
-            continue;
-        case SQLITE_DONE:
-            return resetAndClear(true);
-        default:
-            error("Stepping through '%s' returned rc=%d", RawStmt, RC);
-            return resetAndClear(false);
-        }
-    }
-}
-
-bool Statement::exec(sqlite3 *Conn, std::vector<std::pair<time_t, time_t>> &TimeRanges,
-                                    std::string AnomalyDetectorName,
-                                    int AnomalyDetectorVersion,
-                                    uuid_t HostUUID,
-                                    time_t After,
-                                    time_t Before)
-{
-    if (!prepare(Conn))
-        return false;
-
-    size_t numSuccessfulBindings = bind(1, AnomalyDetectorName) +
-                                   bind(2, AnomalyDetectorVersion) +
-                                   bind(3, HostUUID) +
-                                   bind(4, After) +
-                                   bind(5, Before);
-
-    switch (numSuccessfulBindings) {
-    case 0:
-        return false;
-    case 5:
-        break;
-    default:
-        return resetAndClear(false);
-    }
-
-    while (true) {
-        switch (int RC = sqlite3_step(ParsedStmt)) {
-        case SQLITE_BUSY:
-        case SQLITE_LOCKED:
-            usleep(SQLITE_INSERT_DELAY * USEC_PER_MS);
-            continue;
-        case SQLITE_ROW: {
-            time_t After = sqlite3_column_int64(ParsedStmt, 0);
-            time_t Before = sqlite3_column_int64(ParsedStmt, 1);
-            TimeRanges.push_back({After, Before});
-            continue;
-        }
-        case SQLITE_DONE:
-            return resetAndClear(true);
-        default:
-            error("Stepping through '%s' returned rc=%d", RawStmt, RC);
-            return resetAndClear(false);
-        }
-    }
-}
-
-bool Statement::exec(sqlite3 *Conn, nlohmann::json &Json,
-                                    std::string AnomalyDetectorName,
-                                    int AnomalyDetectorVersion,
-                                    uuid_t HostUUID,
-                                    time_t After,
-                                    time_t Before)
-{
-    if (!prepare(Conn))
-        return false;
-
-    size_t numSuccessfulBindings = bind(1, AnomalyDetectorName) +
-                                   bind(2, AnomalyDetectorVersion) +
-                                   bind(3, HostUUID) +
-                                   bind(4, After) +
-                                   bind(5, Before);
-
-    switch (numSuccessfulBindings) {
-    case 0:
-        return false;
-    case 5:
-        break;
-    default:
-        return resetAndClear(false);
-    }
-
-    while (true) {
-        switch (int RC = sqlite3_step(ParsedStmt)) {
-        case SQLITE_BUSY:
-        case SQLITE_LOCKED:
-            usleep(SQLITE_INSERT_DELAY * USEC_PER_MS);
-            continue;
-        case SQLITE_ROW: {
-            Json = nlohmann::json::parse(static_cast<const char *>(sqlite3_column_blob(ParsedStmt, 0)));
-            continue;
-        }
-        case SQLITE_DONE:
-            return resetAndClear(true);
-        default:
-            error("Stepping through '%s' returned rc=%d", RawStmt, RC);
-            return resetAndClear(false);
-        }
-    }
 }
 
 Database::Database(const std::string Path) {

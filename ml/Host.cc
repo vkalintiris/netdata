@@ -132,9 +132,9 @@ void Host::detectAnomalies() {
         if (AnomalousUnits.size() == 0)
             continue;
 
-        json J = AnomalousUnits;
+        nlohmann::json J = AnomalousUnits;
         time_t Now = now_realtime_sec();
-        DB.insertAnomaly("AD1", 1, RH->host_uuid, Now - WindowLength, Now, J);
+        DB.insertAnomaly("AD1", 1, RH->host_uuid, Now - WindowLength, Now, J.dump(4));
 
         WindowLength = 0;
         AnomalousUnits.clear();

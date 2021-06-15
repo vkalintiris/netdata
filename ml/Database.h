@@ -11,36 +11,58 @@ namespace ml {
 
 class Statement {
 public:
+    using RowCallback = std::function<void(sqlite3_stmt *Stmt)>;
+
+public:
     Statement(const char *RawStmt) : RawStmt(RawStmt), ParsedStmt(nullptr) {}
 
-    bool exec(sqlite3 *Conn, std::string AnomalyDetectorName,
-                             int AnomalyDetectorVersion,
-                             uuid_t HostUUID,
-                             time_t After,
-                             time_t Before,
-                             const nlohmann::json &Json);
+    template<typename ...ArgTypes>
+    bool exec(sqlite3 *Conn, RowCallback RowCb, ArgTypes ...Args) {
+        if (!prepare(Conn))
+            return false;
 
-    bool exec(sqlite3 *Conn, std::vector<std::pair<time_t, time_t>> &TimeRanges,
-                             std::string AnomalyDetectorName,
-                             int AnomalyDetectorVersion,
-                             uuid_t HostUUID,
-                             time_t After,
-                             time_t Before);
+        switch (bind(1, Args...)) {
+        case 0:
+            return false;
+        case sizeof...(Args):
+            break;
+        default:
+            return resetAndClear(false);
+        }
 
-    bool exec(sqlite3 *Conn, nlohmann::json &Json,
-                             std::string AnomalyDetectorName,
-                             int AnomalyDetectorVersion,
-                             uuid_t HostUUID,
-                             time_t After,
-                             time_t Before);
+        while (true) {
+            switch (int RC = sqlite3_step(ParsedStmt)) {
+            case SQLITE_BUSY: case SQLITE_LOCKED:
+                usleep(SQLITE_INSERT_DELAY * USEC_PER_MS);
+                continue;
+            case SQLITE_ROW:
+                RowCb(ParsedStmt);
+                continue;
+            case SQLITE_DONE:
+                return resetAndClear(true);
+            default:
+                error("Stepping through '%s' returned rc=%d", RawStmt, RC);
+                return resetAndClear(false);
+            }
+        }
+    }
 
 private:
     bool prepare(sqlite3 *Conn);
 
-    bool bind(size_t Pos, const std::string &Value);
-    bool bind(size_t Pos, int Value);
-    bool bind(size_t Pos, const uuid_t Value);
-    bool bind(size_t Pos, const nlohmann::json &Value);
+    bool bindValue(size_t Pos, const int Value);
+    bool bindValue(size_t Pos, const uuid_t Value);
+    bool bindValue(size_t Pos, const std::string &Value);
+
+    template<typename ArgType, typename ...ArgTypes>
+    size_t bind(size_t Pos, ArgType T) {
+        return bindValue(Pos, T);
+    }
+
+    template<typename ArgType, typename ...ArgTypes>
+    size_t bind(size_t Pos, ArgType T, ArgTypes ...Args) {
+        return bindValue(Pos, T) + bind(Pos + 1, Args...);
+    }
 
     bool resetAndClear(bool Ret);
 
@@ -59,21 +81,29 @@ private:
 public:
     Database(const std::string Path);
 
-    template<class ...ArgTypes>
-    bool insertAnomaly(ArgTypes&&... Args) {
-        return InsertAnomalyStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
+    template<typename ...ArgTypes>
+    bool insertAnomaly(ArgTypes... Args) {
+        Statement::RowCallback RowCb = [](sqlite3_stmt *Stmt) { (void) Stmt; };
+        return InsertAnomalyStmt.exec(Conn, RowCb, Args...);
     }
 
-    template<class ...ArgTypes>
-    bool getAnomalyInfo(ArgTypes&&... Args) {
-        return GetAnomalyInfoStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
+    template<typename ...ArgTypes>
+    bool getAnomalyInfo(nlohmann::json &Json, ArgTypes&&... Args) {
+        Statement::RowCallback RowCb = [&](sqlite3_stmt *Stmt) {
+            Json = nlohmann::json::parse(static_cast<const char *>(sqlite3_column_blob(Stmt, 0)));
+        };
+        return GetAnomalyInfoStmt.exec(Conn, RowCb, Args...);
     }
 
-    template<class ...ArgTypes>
-    bool getAnomaliesInRange(ArgTypes&&... Args) {
-        return GetAnomaliesInRangeStmt.exec(Conn, std::forward<ArgTypes>(Args)...);
+    template<typename ...ArgTypes>
+    bool getAnomaliesInRange(std::vector<std::pair<time_t, time_t>> &V, ArgTypes&&... Args) {
+        Statement::RowCallback RowCb = [&](sqlite3_stmt *Stmt) {
+            time_t After = sqlite3_column_int64(Stmt, 0);
+            time_t Before = sqlite3_column_int64(Stmt, 1);
+            V.push_back({After, Before});
+        };
+        return GetAnomaliesInRangeStmt.exec(Conn, RowCb, Args...);
     }
-
 
 private:
     sqlite3 *Conn;
