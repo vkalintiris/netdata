@@ -84,7 +84,6 @@ void Host::trainUnits() {
     }
 }
 
-
 void Host::detectAnomalies() {
     std::this_thread::sleep_for(Seconds{10});
 
