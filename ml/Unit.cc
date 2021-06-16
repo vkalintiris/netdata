@@ -166,5 +166,7 @@ void Unit::predict() {
     BitCounter += isAnomalous();
     RBC.insert(isAnomalous());
 
+    error("ID: %s, BitCounter: %zu, RBC: %zu", RD->id, BitCounter, RBC.numSetBits());
+
     delete[] CNs;
 }

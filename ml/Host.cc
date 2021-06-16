@@ -118,6 +118,18 @@ void Host::detectAnomalies() {
         auto P = RBW.insert(NumAnomalousUnits > 4);
 
         RollingBitWindow::Edge E = P.first;
+        if (E.first == RollingBitWindow::State::BelowThreshold &&
+            E.second == RollingBitWindow::State::BelowThreshold) {
+            {
+                std::lock_guard<std::mutex> Lock(Mutex);
+
+                for (auto &UP : UnitsMap) {
+                    Unit *U = UP.second;
+                    U->BitCounter = U->RBC.numSetBits();
+                }
+            }
+        }
+
         if (E.first != RollingBitWindow::State::AboveThreshold ||
             E.second != RollingBitWindow::State::BelowThreshold)
             continue;
