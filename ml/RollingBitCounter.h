@@ -12,7 +12,7 @@ public:
     RollingBitCounter(size_t Capacity) : V(Capacity, 0), NumSetBits(0), N(0) {}
 
     bool isFilled() const {
-       return N == V.size(); 
+       return N >= V.size();
     }
 
     void insert(bool Bit);

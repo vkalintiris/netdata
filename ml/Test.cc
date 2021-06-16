@@ -241,7 +241,6 @@ TEST(AnomalyDetectorTest, AnomalyEventInfo) {
 }
 #endif
 
-#if 0
 TEST(RollingBitCounterTest, RollingBitCounter) {
     RollingBitCounter RBC{4};
 
@@ -292,48 +291,38 @@ TEST(RollingBitWindowTest, RollingBitWindow) {
     std::vector<bool> V{0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0};
 
     std::vector<size_t> WindowLengths;
-    auto Callback = [&WindowLengths](size_t Length) {
-        WindowLengths.push_back(Length);
-        return false;
+    RollingBitWindow RBW{4, 2};
+
+    auto insertBit = [&](bool B) {
+        auto P = RBW.insert(B);
+        auto Edge = P.first;
+        auto Length = P.second;
+
+        if (Edge.first == RollingBitWindow::State::AboveThreshold &&
+            Edge.second == RollingBitWindow::State::BelowThreshold) {
+            WindowLengths.push_back(Length);
+        }
     };
 
-    RollingBitWindow RBW{4, 2, Callback};
-    for (bool B : V)
-        RBW.insert(B);
+    std::for_each(V.cbegin(), V.cend(), insertBit);
 
     EXPECT_EQ(WindowLengths.size(), 2);
     EXPECT_EQ(WindowLengths[0], 7); // 0 0 1 1 0 1 0
     EXPECT_EQ(WindowLengths[1], 5); // 0 1 0 1 0
 
+    RBW = RollingBitWindow(4, 3);
     WindowLengths.clear();
-    RBW = RollingBitWindow(4, 3, Callback);
-    for (bool B : V)
-        RBW.insert(B);
+    std::for_each(V.cbegin(), V.cend(), insertBit);
 
     EXPECT_EQ(WindowLengths.size(), 1);
     EXPECT_EQ(WindowLengths[0], 4); // 1 1 0 1
 
+    RBW = RollingBitWindow(4, 4);
     WindowLengths.clear();
-    RBW = RollingBitWindow(4, 4, Callback);
-    for (bool B : V)
-        RBW.insert(B);
+    std::for_each(V.cbegin(), V.cend(), insertBit);
 
     EXPECT_EQ(WindowLengths.size(), 0);
-
-    WindowLengths.clear();
-    RBW = RollingBitWindow(4, 4, Callback);
-
-    for (size_t Idx = 0; Idx != 10; Idx++)
-        RBW.insert(true);
-    EXPECT_EQ(WindowLengths.size(), 0);
-
-    for (size_t Idx = 0; Idx != 10; Idx++)
-        RBW.insert(false);
-
-    EXPECT_EQ(WindowLengths.size(), 1);
-    EXPECT_EQ(WindowLengths[0], 10);
 }
-#endif
 
 int ml_test(int argc, char *argv[]) {
     ::testing::InitGoogleTest(&argc, argv);
