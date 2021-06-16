@@ -87,24 +87,12 @@ void Host::trainUnits() {
 void Host::detectAnomalies() {
     std::this_thread::sleep_for(Seconds{10});
 
-    std::vector<std::pair<double, std::string>> AnomalousUnits;
-    size_t WindowLength = 0;
-
-    auto Callback = [this, &AnomalousUnits, &WindowLength](size_t Length) {
-        WindowLength = Length;
-        error("New anomaly length: %zu", Length);
-
-        for (auto &UP : UnitsMap) {
-            Unit *U = UP.second;
-            AnomalousUnits.push_back({U->anomalyRate(Length), U->RD->id});
-        }
-
-        return false;
-    };
-    RollingBitWindow RBW{5, 3, Callback};
-
     AnomalyStatusChart ASC{"host_anomaly_status"};
+
+    RollingBitWindow RBW{5, 3};
     Database DB{Cfg.AnomalyDBPath};
+
+    std::vector<std::pair<double, std::string>> AnomalousUnits;
 
     while (!netdata_exit) {
         std::this_thread::sleep_for(Seconds{1});
@@ -126,7 +114,25 @@ void Host::detectAnomalies() {
         }
 
         ASC.update(NumTotalUnits, NumAnomalousUnits);
-        RBW.insert(NumAnomalousUnits > 4);
+
+        auto P = RBW.insert(NumAnomalousUnits > 4);
+
+        RollingBitWindow::Edge E = P.first;
+        if (E.first != RollingBitWindow::State::AboveThreshold ||
+            E.second != RollingBitWindow::State::BelowThreshold)
+            continue;
+
+        size_t WindowLength = P.second;
+        error("New anomaly length: %zu", WindowLength);
+
+        {
+            std::lock_guard<std::mutex> Lock(Mutex);
+
+            for (auto &UP : UnitsMap) {
+                Unit *U = UP.second;
+                AnomalousUnits.push_back({U->anomalyRate(WindowLength), U->RD->id});
+            }
+        }
 
         if (AnomalousUnits.size() == 0)
             continue;

@@ -54,9 +54,7 @@ inline std::ostream& operator<<(std::ostream &OS, const ml::RollingBitCounter &R
 namespace ml {
 
 class RollingBitWindow {
-    using AboveThresholdCallback = std::function<bool(size_t)>;
-
-private:
+public:
     enum class State {
         NotFilled,
         BelowThreshold,
@@ -66,6 +64,7 @@ private:
     using Edge = std::pair<State, State>;
     using Action = void (RollingBitWindow::*)(State PrevState, bool NewBit);
 
+private:
     std::map<Edge, Action> EdgeActions = {
         // From == To
         {
@@ -105,13 +104,11 @@ private:
     };
 
 public:
-    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold,
-                     AboveThresholdCallback Callback) :
+    RollingBitWindow(size_t MinLength, size_t SetBitsThreshold) :
         MinLength(MinLength), SetBitsThreshold(SetBitsThreshold),
-        Callback(Callback), CurrState(State::NotFilled), CurrLength(0),
-        RBC(MinLength) {}
+        CurrState(State::NotFilled), CurrLength(0), PrevLength(0), RBC(MinLength) {}
 
-    void insert(bool Bit);
+    std::pair<Edge, size_t> insert(bool Bit);
 
 private:
     void onRoundtripNotFilled(State PrevState, bool NewBit) {
@@ -153,17 +150,16 @@ private:
     void onAboveToBelowThreshold(State PrevState, bool NewBit) {
         (void) PrevState, (void) NewBit;
 
-        Callback(CurrLength);
         CurrLength = MinLength;
     }
 
 private:
     size_t MinLength;
     size_t SetBitsThreshold;
-    AboveThresholdCallback Callback;
 
     State CurrState;
     size_t CurrLength;
+    size_t PrevLength;
     RollingBitCounter RBC;
 };
 

@@ -241,6 +241,7 @@ TEST(AnomalyDetectorTest, AnomalyEventInfo) {
 }
 #endif
 
+#if 0
 TEST(RollingBitCounterTest, RollingBitCounter) {
     RollingBitCounter RBC{4};
 
@@ -332,6 +333,7 @@ TEST(RollingBitWindowTest, RollingBitWindow) {
     EXPECT_EQ(WindowLengths.size(), 1);
     EXPECT_EQ(WindowLengths[0], 10);
 }
+#endif
 
 int ml_test(int argc, char *argv[]) {
     ::testing::InitGoogleTest(&argc, argv);

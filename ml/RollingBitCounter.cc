@@ -32,8 +32,10 @@ void RollingBitCounter::insert(bool Bit) {
     V[N++ % V.size()] = Bit;
 }
 
-void RollingBitWindow::insert(bool Bit) {
+std::pair<RollingBitWindow::Edge, size_t> RollingBitWindow::insert(bool Bit) {
     Edge E;
+
+    PrevLength = CurrLength;
 
     RBC.insert(Bit);
     switch (CurrState) {
@@ -67,9 +69,10 @@ void RollingBitWindow::insert(bool Bit) {
         }
     }
 
-    if (!EdgeActions.count(E))
-        return;
+    if (EdgeActions.count(E)) {
+        Action A =  EdgeActions[E];
+        (this->*A)(E.first, Bit);
+    }
 
-    Action A =  EdgeActions[E];
-    (this->*A)(E.first, Bit);
+    return {E, PrevLength};
 }
