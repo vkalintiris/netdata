@@ -48,12 +48,12 @@ void AnomalyStatusChart::update(collected_number NumTotalUnits, collected_number
 
 void Host::addUnit(Unit *U) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    UnitsMap[U->RD] = U;
+    UnitsMap[U->getRD()] = U;
 }
 
 void Host::removeUnit(Unit *U) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    UnitsMap.erase(U->RD);
+    UnitsMap.erase(U->getRD());
 }
 
 void Host::trainUnits() {
@@ -115,6 +115,7 @@ void Host::detectAnomalies() {
 
         ASC.update(NumTotalUnits, NumAnomalousUnits);
 
+#if 0
         auto P = RBW.insert(NumAnomalousUnits > 4);
 
         RollingBitWindow::Edge E = P.first;
@@ -155,6 +156,7 @@ void Host::detectAnomalies() {
 
         WindowLength = 0;
         AnomalousUnits.clear();
+#endif
     }
 }
 

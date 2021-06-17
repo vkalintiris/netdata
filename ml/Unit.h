@@ -12,21 +12,16 @@ namespace ml {
 
 class Host;
 
-class Unit {
+template <class BaseT>
+class Detectable {
 public:
-    Unit(RRDDIM *RD) :
-        RD(RD),
-        KM(KMeans()), AnomalyScore(0.0),
-        HasModel(false), ShouldTrain(false),
-        LastTrainedAt(SteadyClock::now()),
-        RBC(5), BitCounter(0) {}
+    void detect() {
+        BaseT &Derived = static_cast<BaseT&>(*this);
 
-    int updateEvery() const {
-        return RD->update_every;
-    }
-
-    bool isAnomalous() {
-        return AnomalyScore > Cfg.AnomalyScoreThreshold;
+        bool isAnomalous = Derived.isAnomalous();
+        BitCounter += isAnomalous;
+        RBC.insert(isAnomalous);
+        error("ID: %s, BitCounter: %zu, RBC: %zu", Derived.getName(), BitCounter, RBC.numSetBits());
     }
 
     double anomalyRate(size_t WindowLength) {
@@ -35,35 +30,63 @@ public:
         return Rate;
     }
 
-    std::pair<CalculatedNumber *, unsigned>
-    getCalculatedNumbers(unsigned N, unsigned MinN);
+private:
+    RollingBitCounter RBC{static_cast<size_t>(Cfg.DiffN)};
+    size_t BitCounter{0};
+};
+
+template <class BaseT>
+class Trainable : public Detectable<BaseT> {
+public:
+    RRDDIM *getRD() const {
+        BaseT& Derived = static_cast<BaseT&>(*this);
+        return Derived.getRD();
+    }
 
     bool train(TimePoint &Now);
     void predict();
 
+    bool isAnomalous() {
+        return AnomalyScore >= Cfg.AnomalyScoreThreshold;
+    }
+
 private:
-    RRDDIM *RD;
+    std::pair<CalculatedNumber *, size_t>
+    getCalculatedNumbers(size_t MinN, size_t MaxN);
 
+private:
     KMeans KM;
-    CalculatedNumber AnomalyScore;
+    CalculatedNumber AnomalyScore{0.0};
 
-    bool HasModel;
-    bool ShouldTrain;
+    bool HasModel{false};
+    bool ShouldTrain{false};
 
     TimePoint LastTrainedAt;
 
-    RollingBitCounter RBC;
-    size_t BitCounter;
-
     std::mutex Mutex;
+};
 
-    // RBC{MinLength} + Counter = 0
-    // if !RBC.isFilled() -> RBC.insert() and Counter += AnomalyBit;
-    // else -> RBC.insert() and Counter += AnomalyBit;
-    // Above -> Below: (Counter / WindowLength) and (Counter = RBC.numSetBits())
+class Dimension : public Trainable<Dimension> {
+public:
+    Dimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
+
+    RRDDIM *getRD() const { return RD; }
+
+    const char *getID() const { return RD->id; }
+    const char *getName() const { return RD->name; }
+    size_t updateEvery() const { return static_cast<size_t>(RD->update_every); }
+
+    time_t latestTime() { return Ops->latest_time(RD); }
+    time_t oldestTime() { return Ops->oldest_time(RD); }
+
+private:
+    RRDDIM *RD;
+    struct rrddim_volatile::rrddim_query_ops *Ops;
 
     friend class Host;
 };
+
+using Unit = Dimension;
 
 }
 

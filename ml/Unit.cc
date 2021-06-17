@@ -54,23 +54,25 @@ static CalculatedNumber unpack_storage_number_dbl(storage_number value) {
     return CN;
 }
 
-std::pair<CalculatedNumber *, unsigned>
-Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
+template<>
+std::pair<CalculatedNumber *, size_t>
+Trainable<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
 
-    Query Q = Query(RD);
+    Dimension& Dim = static_cast<Dimension&>(*this);
+    RRDDIM *RD = Dim.getRD();
 
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
-    time_t AfterT = BeforeT - (MaxN * updateEvery());
+    time_t AfterT = BeforeT - (MaxN * Dim.updateEvery());
 
-    BeforeT -=  (BeforeT % updateEvery());
-    AfterT -= (AfterT % updateEvery());
+    BeforeT -=  (BeforeT % Dim.updateEvery());
+    AfterT -= (AfterT % Dim.updateEvery());
 
-    time_t LastT = Q.latestTime();
+    time_t LastT = Dim.latestTime();
     BeforeT = (BeforeT > LastT) ? LastT : BeforeT;
 
-    time_t FirstT = Q.oldestTime();
+    time_t FirstT = Dim.oldestTime();
     AfterT = (AfterT < FirstT) ? FirstT : AfterT;
 
     if (AfterT >= BeforeT)
@@ -83,6 +85,8 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
 
     CalculatedNumber QuietNaN = std::numeric_limits<CalculatedNumber>::quiet_NaN();
     CalculatedNumber LastValue = QuietNaN;
+
+    Query Q = Query(RD);
 
     Q.init(AfterT, BeforeT);
     while (!Q.isFinished()) {
@@ -116,14 +120,16 @@ Unit::getCalculatedNumbers(unsigned MinN, unsigned MaxN) {
     return { CNs, TotalValues };
 }
 
-bool Unit::train(TimePoint &Now) {
+template<>
+bool Trainable<Dimension>::train(TimePoint &Now) {
     if ((LastTrainedAt + Cfg.TrainEvery) > Now)
         return false;
 
     LastTrainedAt = SteadyClock::now();
 
-    unsigned MinN = Cfg.MinTrainSecs / Millis{updateEvery() * 1000};
-    unsigned MaxN = Cfg.TrainSecs / Millis{updateEvery() * 1000};
+    Dimension &Dim = static_cast<Dimension&>(*this);
+    unsigned MinN = Cfg.MinTrainSecs / Millis{Dim.updateEvery() * 1000};
+    unsigned MaxN = Cfg.TrainSecs / Millis{Dim.updateEvery() * 1000};
 
     std::pair<CalculatedNumber *, unsigned> P;
 
@@ -146,7 +152,8 @@ bool Unit::train(TimePoint &Now) {
     return true;
 }
 
-void Unit::predict() {
+template<>
+void Trainable<Dimension>::predict() {
     std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
     if (!Lock.try_lock())
         return;
@@ -162,11 +169,6 @@ void Unit::predict() {
         SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
         AnomalyScore = KM.anomalyScore(SB);
     }
-
-    BitCounter += isAnomalous();
-    RBC.insert(isAnomalous());
-
-    error("ID: %s, BitCounter: %zu, RBC: %zu", RD->id, BitCounter, RBC.numSetBits());
 
     delete[] CNs;
 }
