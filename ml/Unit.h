@@ -10,18 +10,48 @@
 
 namespace ml {
 
+const std::error_category &MLErrorCategory();
+
+enum class MLError {
+    Success = 0,
+    TryLockFailed,
+    MissingData,
+    ShouldNotTrainNow,
+    NoModel,
+};
+
+inline std::error_code make_error_code(MLError E) {
+    return std::error_code(static_cast<int>(E), MLErrorCategory());
+};
+
+} // namespace ml
+
+namespace std {
+
+template<>
+struct is_error_code_enum<ml::MLError> : std::true_type {};
+
+} // namespace std
+
+namespace ml {
+
 class Host;
 
 template <class BaseT>
-class Detectable {
+class DetectableDimension {
 public:
-    void detect() {
-        BaseT &Derived = static_cast<BaseT&>(*this);
+    bool detect() {
+        BaseT &Dim = static_cast<BaseT &>(*this);
+        bool AnomalyBit = Dim.predict().second;
 
-        bool isAnomalous = Derived.isAnomalous();
-        BitCounter += isAnomalous;
-        RBC.insert(isAnomalous);
-        error("ID: %s, BitCounter: %zu, RBC: %zu", Derived.getName(), BitCounter, RBC.numSetBits());
+        BitCounter += AnomalyBit;
+        RBC.insert(AnomalyBit);
+
+        return AnomalyBit;
+    }
+
+    void reset() {
+        BitCounter = RBC.numSetBits();
     }
 
     double anomalyRate(size_t WindowLength) {
@@ -36,19 +66,17 @@ private:
 };
 
 template <class BaseT>
-class Trainable : public Detectable<BaseT> {
+class TrainableDimension : public DetectableDimension<BaseT> {
 public:
     RRDDIM *getRD() const {
         BaseT& Derived = static_cast<BaseT&>(*this);
         return Derived.getRD();
     }
 
-    bool train(TimePoint &Now);
-    void predict();
+    MLError train(TimePoint &Now);
+    std::pair<MLError, bool> predict();
 
-    bool isAnomalous() {
-        return AnomalyScore >= Cfg.AnomalyScoreThreshold;
-    }
+    bool getAnomalyBit() { return AnomalyBit; }
 
 private:
     std::pair<CalculatedNumber *, size_t>
@@ -56,17 +84,18 @@ private:
 
 private:
     KMeans KM;
-    CalculatedNumber AnomalyScore{0.0};
 
+    // TODO: Add a couple seconds because the 1st getCalculatedNumbers will fail.
+    TimePoint LastTrainedAt{SteadyClock::now()};
     bool HasModel{false};
-    bool ShouldTrain{false};
 
-    TimePoint LastTrainedAt;
+    CalculatedNumber AnomalyScore{0.0};
+    std::atomic<bool> AnomalyBit{false};
 
     std::mutex Mutex;
 };
 
-class Dimension : public Trainable<Dimension> {
+class Dimension : public TrainableDimension<Dimension> {
 public:
     Dimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
 
@@ -74,7 +103,7 @@ public:
 
     const char *getID() const { return RD->id; }
     const char *getName() const { return RD->name; }
-    size_t updateEvery() const { return static_cast<size_t>(RD->update_every); }
+    Seconds updateEvery() const { return Seconds{RD->update_every}; }
 
     time_t latestTime() { return Ops->latest_time(RD); }
     time_t oldestTime() { return Ops->oldest_time(RD); }
@@ -88,6 +117,6 @@ private:
 
 using Unit = Dimension;
 
-}
+} // namespace ml
 
 #endif /* ML_UNIT_H */

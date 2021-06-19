@@ -17,9 +17,9 @@ Config ml::Cfg;
  * Initialize global configuration variable.
  */
 void ml_init(void) {
-    Cfg.TrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60) * 1000};
-    Cfg.MinTrainSecs = Millis{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 1 * 60) * 1000};
-    Cfg.TrainEvery = Millis{config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60) * 1000};
+    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 120)};
+    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60)};
+    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 60)};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -57,7 +57,7 @@ void ml_new_host(RRDHOST *RH) {
         return;
 
     Host *H = new Host(RH);
-    H->runMLThreads();
+    H->startAnomalyDetectionThreads();
 
     RH->ml_host = static_cast<ml_host_t>(H);
 }
@@ -70,7 +70,7 @@ void ml_delete_host(RRDHOST *RH) {
     if (!H)
         return;
 
-    H->stopMLThreads();
+    H->stopAnomalyDetectionThreads();
 
     delete H;
 }
@@ -87,17 +87,17 @@ void ml_new_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    Unit *U = new Unit(RD);
-    H->addUnit(U);
-    RD->state->ml_unit = static_cast<ml_unit_t>(U);
+    Dimension *D = new Dimension(RD);
+    H->addDimension(D);
+    RD->state->ml_unit = static_cast<ml_unit_t>(D);
 }
 
 void ml_delete_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
-    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
-    if (!U)
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
+    if (!D)
         return;
 
     RRDHOST *RH = RD->rrdset->rrdhost;
@@ -105,22 +105,20 @@ void ml_delete_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    H->removeUnit(U);
+    H->removeDimension(D);
 
-    delete U;
+    delete D;
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {
     if (!RD)
         return false;
 
-    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
-    if (!U)
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
+    if (!D)
         return false;
 
-    U->predict();
-    U->detect();
-    return U->isAnomalous();
+    return D->getAnomalyBit();
 }
 
 char *ml_get_anomaly_events(const char *AnomalyDetectorName,

@@ -56,7 +56,7 @@ static CalculatedNumber unpack_storage_number_dbl(storage_number value) {
 
 template<>
 std::pair<CalculatedNumber *, size_t>
-Trainable<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
+TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
 
     Dimension& Dim = static_cast<Dimension&>(*this);
@@ -64,10 +64,10 @@ Trainable<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
 
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
-    time_t AfterT = BeforeT - (MaxN * Dim.updateEvery());
+    time_t AfterT = BeforeT - (MaxN * Dim.updateEvery().count());
 
-    BeforeT -=  (BeforeT % Dim.updateEvery());
-    AfterT -= (AfterT % Dim.updateEvery());
+    BeforeT -=  (BeforeT % Dim.updateEvery().count());
+    AfterT -= (AfterT % Dim.updateEvery().count());
 
     time_t LastT = Dim.latestTime();
     BeforeT = (BeforeT > LastT) ? LastT : BeforeT;
@@ -108,7 +108,7 @@ Trainable<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     TotalValues = Idx;
 
     if (CollectedValues < MinN)
-        return { CNs, 0 };
+        return { CNs, CollectedValues };
 
     // Find first non-NaN value.
     for (Idx = 0; std::isnan(CNs[Idx]); Idx++, TotalValues--) { }
@@ -121,54 +121,62 @@ Trainable<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
 }
 
 template<>
-bool Trainable<Dimension>::train(TimePoint &Now) {
-    if ((LastTrainedAt + Cfg.TrainEvery) > Now)
-        return false;
+MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
+    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
+    if (!Lock.try_lock())
+        return MLError::TryLockFailed;
 
-    LastTrainedAt = SteadyClock::now();
+    if ((LastTrainedAt + Cfg.TrainEvery) >= Now)
+        return MLError::ShouldNotTrainNow;
+    LastTrainedAt = Now;
 
     Dimension &Dim = static_cast<Dimension&>(*this);
-    unsigned MinN = Cfg.MinTrainSecs / Millis{Dim.updateEvery() * 1000};
-    unsigned MaxN = Cfg.TrainSecs / Millis{Dim.updateEvery() * 1000};
 
-    std::pair<CalculatedNumber *, unsigned> P;
+    unsigned MinN = Cfg.MinTrainSecs / Dim.updateEvery();
+    unsigned MaxN = Cfg.TrainSecs / Dim.updateEvery();
 
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
+    std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(MinN, MaxN);
 
-        P = getCalculatedNumbers(MinN, MaxN);
-        CalculatedNumber *CNs = P.first;
-        unsigned N = P.second;
+    CalculatedNumber *CNs = P.first;
+    unsigned N = P.second;
 
-        if (N >= MinN) {
-            SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-            KM.train(SB);
-            HasModel = true;
-        }
-
+    if (N < MinN) {
+        error("N: %u, MinN: %u", N, MinN);
         delete[] CNs;
+        return MLError::MissingData;
     }
 
-    return true;
+    SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+    KM.train(SB);
+
+    delete[] CNs;
+    HasModel = true;
+    return MLError::Success;
 }
 
 template<>
-void Trainable<Dimension>::predict() {
+std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
     std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
     if (!Lock.try_lock())
-        return;
+        return { MLError::TryLockFailed, AnomalyBit };
 
+    // Should we "reset" AnomalyScore here?
     if (!HasModel)
-        return;
+        return { MLError::NoModel, AnomalyBit };
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
     std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(N, N);
     CalculatedNumber *CNs = P.first;
 
-    if (P.second == N) {
-        SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-        AnomalyScore = KM.anomalyScore(SB);
+    if (P.second != N) {
+        delete[] CNs;
+        return { MLError::MissingData, AnomalyBit };
     }
 
+    SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+    AnomalyScore = KM.anomalyScore(SB);
     delete[] CNs;
+
+    AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
+    return { MLError::Success, AnomalyBit }; 
 }

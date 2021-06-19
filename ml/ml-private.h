@@ -34,7 +34,6 @@ template<typename T>
 using Duration = std::chrono::duration<T>;
 
 using Seconds = std::chrono::seconds;
-using Millis = std::chrono::milliseconds;
 
 }
 
