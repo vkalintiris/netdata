@@ -9,52 +9,45 @@
 
 namespace ml {
 
-class AnomalyStatusChart {
-public:
-    AnomalyStatusChart(const std::string Name);
-
-    void update(collected_number NumTotalUnits,
-                collected_number NumAnomalousUnits,
-                collected_number AnomalyRate);
-
-private:
-    RRDSET *RS;
-
-    RRDDIM *NumTotalUnitsRD;
-    RRDDIM *NumAnomalousUnitsRD;
-    RRDDIM *AnomalyRateRD;
-};
-
 template<typename BaseT>
 class DetectableHost {
 public:
     void detect();
+    void detectOnce();
 
     void startAnomalyDetectionThreads();
     void stopAnomalyDetectionThreads();
 
 private:
-    std::thread TrainingThread; // = std::thread(&Host::trainUnits, this);
+    std::thread TrainingThread;
+    std::thread DetectionThread;
+
     RollingBitWindow RBW{5, 3};
     CalculatedNumber AnomalyRate{0.0};
+
+    Database DB{Cfg.AnomalyDBPath};
 };
 
 template<typename BaseT>
 class TrainableHost : public DetectableHost<BaseT> {
 public:
     void train();
-    CalculatedNumber predict();
-
-private:
     void trainOne(TimePoint &Now);
 
-private:
-    AnomalyStatusChart ASC{"host_anomaly_status"};
+    CalculatedNumber predict();
 };
 
 class Host : public TrainableHost<Host> {
 public:
     Host(RRDHOST *RH) : RH(RH) {}
+
+    RRDHOST *getRH() { return RH; }
+
+    std::string getUUID() {
+        char S[UUID_STR_LEN];
+        uuid_unparse_lower(RH->host_uuid, S);
+        return S;
+    }
 
     void addDimension(Dimension *D);
     void removeDimension(Dimension *D);

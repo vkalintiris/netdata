@@ -10,39 +10,43 @@
 using namespace ml;
 using namespace nlohmann;
 
-AnomalyStatusChart::AnomalyStatusChart(const std::string Name) {
-    RS = rrdset_create_localhost(
-        "ml",
-        Name.c_str(),
-        NULL,
-        "ml",
-        NULL,
-        "Number of anomalous units",
-        "number of units",
-        "ml_units",
-        NULL,
-        39183,
-        1,
-        RRDSET_TYPE_LINE);
+static void updateMLChart(collected_number NumTotalDimensions,
+                          collected_number NumAnomalousDimensions,
+                          collected_number AnomalyRate) {
+    static thread_local RRDSET *RS = nullptr;
+    static thread_local RRDDIM *NumTotalDimensionsRD = nullptr;
+    static thread_local RRDDIM *NumAnomalousDimensionsRD = nullptr;
+    static thread_local RRDDIM *AnomalyRateRD = nullptr;
 
-    NumTotalUnitsRD = rrddim_add(RS, "num_total_units", NULL,
-                                 1, 1, RRD_ALGORITHM_ABSOLUTE);
-    NumAnomalousUnitsRD = rrddim_add(RS, "num_anomalous_units", NULL,
+    if (!RS) {
+        RS = rrdset_create_localhost(
+            "ml",
+            "host_anomaly_status",
+            NULL,
+            "ml",
+            NULL,
+            "Number of anomalous units",
+            "number of units",
+            "ml_units",
+            NULL,
+            39183,
+            1,
+            RRDSET_TYPE_LINE);
+
+        NumTotalDimensionsRD = rrddim_add(RS, "num_total_dimensions", NULL,
                                      1, 1, RRD_ALGORITHM_ABSOLUTE);
-    AnomalyRateRD = rrddim_add(RS, "anomaly_rate", NULL,
-                               1, 1, RRD_ALGORITHM_ABSOLUTE);
-}
+        NumAnomalousDimensionsRD = rrddim_add(RS, "num_anomalous_dimensions", NULL,
+                                              1, 1, RRD_ALGORITHM_ABSOLUTE);
+        AnomalyRateRD = rrddim_add(RS, "anomaly_rate", NULL,
+                                   1, 1, RRD_ALGORITHM_ABSOLUTE);
+    } else 
+        rrdset_next(RS);
 
-void AnomalyStatusChart::update(collected_number NumTotalUnits,
-                                collected_number NumAnomalousUnits,
-                                collected_number AnomalyRate)
-{
-    rrddim_set_by_pointer(RS, NumTotalUnitsRD, NumTotalUnits);
-    rrddim_set_by_pointer(RS, NumAnomalousUnitsRD, NumAnomalousUnits);
+    rrddim_set_by_pointer(RS, NumTotalDimensionsRD, NumTotalDimensions);
+    rrddim_set_by_pointer(RS, NumAnomalousDimensionsRD, NumAnomalousDimensions);
     rrddim_set_by_pointer(RS, AnomalyRateRD, AnomalyRate);
 
     rrdset_done(RS);
-    rrdset_next(RS);
 }
 
 void Host::addDimension(Dimension *D) {
@@ -115,11 +119,12 @@ void TrainableHost<Host>::train() {
 }
 
 template<>
-void DetectableHost<Host>::detect() {
+void DetectableHost<Host>::detectOnce() {
     Host *H = static_cast<Host *>(this);
 
-    auto P = RBW.insert(AnomalyRate >= (3.0 / 5.0));
+    auto P = RBW.insert(AnomalyRate >= 0.5);
     RollingBitWindow::Edge E = P.first;
+    size_t WindowLength = P.second;
 
     bool ResetBitCounter = (E.first == RollingBitWindow::State::BelowThreshold) &&
                            (E.second == RollingBitWindow::State::BelowThreshold);
@@ -131,14 +136,16 @@ void DetectableHost<Host>::detect() {
         if (ResetBitCounter)
             D->reset();
 
-        NumAnomalousDimensions = D->detect();
+        NumAnomalousDimensions += D->detect();
 
         return false;
     });
 
     AnomalyRate = 0;
     if (NumAnomalousDimensions != 0)
-        AnomalyRate = (100.0 * NumAnomalousDimensions) / NumTotalDimensions;
+        AnomalyRate = static_cast<CalculatedNumber>(NumAnomalousDimensions) / NumTotalDimensions;
+    updateMLChart(NumTotalDimensions, NumAnomalousDimensions, AnomalyRate * 100.0);
+    error("anomaly rate: %lf", AnomalyRate);
 
     bool NewAnomalyEvent = (E.first == RollingBitWindow::State::AboveThreshold) &&
                            (E.second == RollingBitWindow::State::BelowThreshold);
@@ -146,8 +153,7 @@ void DetectableHost<Host>::detect() {
     if (!NewAnomalyEvent)
         return;
 
-    size_t WindowLength = P.second;
-    error("New anomaly length: %zu", WindowLength);
+    error("new anomaly length: %zu", WindowLength);
 
     std::vector<std::pair<double, std::string>> AnomalousUnits;
     AnomalousUnits.reserve(NumTotalDimensions);
@@ -156,16 +162,32 @@ void DetectableHost<Host>::detect() {
         return false;
     });
 
-    error("Num anomalous units: %zu", AnomalousUnits.size());
+    nlohmann::json J = AnomalousUnits;
+    time_t Now = now_realtime_sec();
+    DB.insertAnomaly("AD1", 1, H->getUUID(), Now - WindowLength, Now, J.dump(4));
+
+    error("num anomalous units: %zu", AnomalousUnits.size());
+}
+
+template<>
+void DetectableHost<Host>::detect() {
+    std::this_thread::sleep_for(Seconds{10});
+
+    while (!netdata_exit) {
+        detectOnce();
+        std::this_thread::sleep_for(Seconds{1});
+    }
 }
 
 template<>
 void DetectableHost<Host>::startAnomalyDetectionThreads() {
     Host *H = static_cast<Host *>(this);
     TrainingThread = std::thread(&Host::train, H);
+    DetectionThread = std::thread(&Host::detect, H);
 }
 
 template<>
 void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
+    DetectionThread.join();
 }

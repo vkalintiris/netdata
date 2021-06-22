@@ -141,7 +141,6 @@ MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
     unsigned N = P.second;
 
     if (N < MinN) {
-        error("N: %u, MinN: %u", N, MinN);
         delete[] CNs;
         return MLError::MissingData;
     }
