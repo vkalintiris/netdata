@@ -6,7 +6,7 @@ const char *ml::Database::SQL_CREATE_ANOMALIES_TABLE =
     "CREATE TABLE IF NOT EXISTS anomaly_events( "
     "     anomaly_detector_name text NOT NULL, "
     "     anomaly_detector_version int NOT NULL, "
-    "     host_id blob NOT NULL, "
+    "     host_id text NOT NULL, "
     "     after int NOT NULL, "
     "     before int NOT NULL, "
     "     anomaly_event_info text, "
@@ -72,18 +72,6 @@ bool Statement::bindValue(size_t Pos, const int Value) {
         return true;
 
     error("Failed to bind integer %d (pos = %zu) in statement '%s'.", Value, Pos, RawStmt);
-    return false;
-}
-
-bool Statement::bindValue(size_t Pos, const uuid_t Value) {
-    int RC = sqlite3_bind_blob(ParsedStmt, Pos, Value, sizeof(*Value), SQLITE_TRANSIENT);
-    if (RC == SQLITE_OK)
-        return true;
-
-    char UUIDStr[UUID_STR_LEN];
-    uuid_unparse_lower(Value, UUIDStr);
-
-    error("Failed to bind uuid_t %s (pos = %zu) in statement '%s'.", UUIDStr, Pos, RawStmt);
     return false;
 }
 

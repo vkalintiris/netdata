@@ -1118,11 +1118,11 @@ int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w
 
     char *s;
     if (!before || !after)
-        s = strdup("{\"No\": \"time range given\" }\n");
+        s = strdup("{\"error\": \"missing after/before parameters\" }\n");
     else {
         s = ml_get_anomaly_events("AD1", 1, host, after, before);
         if (!s)
-            s = strdup("{\"No\": \"value\" }\n");
+            s = strdup("{\"error\": \"json string is empty\" }\n");
     }
 
     BUFFER *wb = w->response.data;
@@ -1165,11 +1165,11 @@ int web_client_api_request_v1_anomaly_event_info(RRDHOST *host, struct web_clien
 
     char *s;
     if (!before || !after)
-        s = strdup("{\"No\": \"time range given\" }\n");
+        s = strdup("{\"error\": \"missing after/before parameters\" }\n");
     else {
         s = ml_get_anomaly_event_info("AD1", 1, host, after, before);
         if (!s)
-            s = strdup("{\"No\": \"value\" }\n");
+            s = strdup("{\"error\": \"json string is empty\" }\n");
     }
 
     BUFFER *wb = w->response.data;

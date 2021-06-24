@@ -61,7 +61,7 @@ public:
     }
 
 private:
-    RollingBitCounter RBC{static_cast<size_t>(Cfg.DiffN)};
+    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADWindowSize)};
     size_t BitCounter{0};
 };
 
@@ -101,7 +101,12 @@ public:
 
     RRDDIM *getRD() const { return RD; }
 
-    const char *getID() const { return RD->id; }
+    std::string getID() const {
+        std::stringstream SS;
+        SS << RD->rrdset->id << "|" << getName();
+        return SS.str();
+    }
+
     const char *getName() const { return RD->name; }
     Seconds updateEvery() const { return Seconds{RD->update_every}; }
 

@@ -47,11 +47,19 @@ public:
         }
     }
 
+    ~Statement() {
+        if (!ParsedStmt)
+            return;
+
+        int RC = sqlite3_finalize(ParsedStmt);
+        if (RC != SQLITE_OK)
+            error("Could not properly finalized statement (rc=%d)", RC);
+    }
+
 private:
     bool prepare(sqlite3 *Conn);
 
     bool bindValue(size_t Pos, const int Value);
-    bool bindValue(size_t Pos, const uuid_t Value);
     bool bindValue(size_t Pos, const std::string &Value);
 
     template<typename ArgType, typename ...ArgTypes>
@@ -105,6 +113,15 @@ public:
             });
         };
         return GetAnomaliesInRangeStmt.exec(Conn, RowCb, Args...);
+    }
+
+    ~Database() {
+        if (!Conn)
+            return;
+
+        int RC = sqlite3_close(Conn);
+        if (RC != SQLITE_OK)
+            error("Could not close connection properly (rc=%d)", RC);
     }
 
 private:
