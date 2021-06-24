@@ -229,28 +229,29 @@ HEALTH_PLUGIN_FILES = \
     $(NULL)
 
 ML_FILES = \
-	dlib/dlib/all/source.cpp \
-	ml/ml.h \
 	ml/AnomalyDetector.h \
 	ml/AnomalyDetector.cc \
 	ml/Config.h \
 	ml/Config.cc \
+	ml/Database.h \
+	ml/Database.cc \
 	ml/Host.h \
 	ml/Host.cc \
-	ml/Unit.h \
-	ml/Unit.cc \
+	ml/ml-private.h \
+	ml/ml.h \
+	ml/ml.cc \
 	ml/Query.h \
-	ml/Test.cc \
 	ml/RollingBitCounter.h \
 	ml/RollingBitCounter.cc \
-	ml/ml-private.h \
-	ml/ml.cc \
-	ml/Database.cc \
-	ml/Database.h \
-	ml/kmeans/SamplesBuffer.cc \
-	ml/kmeans/SamplesBuffer.h \
-	ml/kmeans/KMeans.cc \
+	ml/Test.cc \
+	ml/Unit.h \
+	ml/Unit.cc \
 	ml/kmeans/KMeans.h \
+	ml/kmeans/KMeans.cc \
+	ml/kmeans/SamplesBuffer.h \
+	ml/kmeans/SamplesBuffer.cc \
+	ml/json.hpp \
+	dlib/dlib/all/source.cpp \
 	$(NULL)
 
 IDLEJITTER_PLUGIN_FILES = \

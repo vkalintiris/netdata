@@ -122,7 +122,7 @@ template<>
 void DetectableHost<Host>::detectOnce() {
     Host *H = static_cast<Host *>(this);
 
-    auto P = RBW.insert(AnomalyRate >= 0.5);
+    auto P = RBW.insert(AnomalyRate >= Cfg.AnomalyRateThreshold);
     RollingBitWindow::Edge E = P.first;
     size_t WindowLength = P.second;
 
@@ -137,9 +137,10 @@ void DetectableHost<Host>::detectOnce() {
             D->reset();
 
         NumAnomalousDimensions += D->detect();
-
         return false;
     });
+
+    error_log_limit_unlimited();
 
     AnomalyRate = 0;
     if (NumAnomalousDimensions != 0)
@@ -156,11 +157,23 @@ void DetectableHost<Host>::detectOnce() {
     error("new anomaly length: %zu", WindowLength);
 
     std::vector<std::pair<double, std::string>> AnomalousUnits;
-    AnomalousUnits.reserve(NumTotalDimensions);
     H->forEachDimension([&](Dimension *D) {
-        AnomalousUnits.push_back({D->anomalyRate(WindowLength), D->getID()});
+        double DimAnomalyRate = D->anomalyRate(WindowLength);
+        if (DimAnomalyRate < Cfg.ADUnitRateThreshold)
+            return false;
+
+        AnomalousUnits.push_back({DimAnomalyRate, D->getID()});
+
         return false;
     });
+
+    if (AnomalousUnits.size() == 0) {
+        error("Found anomaly event without any dimensions");
+        return;
+    }
+
+    std::sort(AnomalousUnits.begin(), AnomalousUnits.end());
+    std::reverse(AnomalousUnits.begin(), AnomalousUnits.end());
 
     nlohmann::json J = AnomalousUnits;
     time_t Now = now_realtime_sec();
