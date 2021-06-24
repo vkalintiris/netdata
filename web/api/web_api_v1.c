@@ -36,6 +36,7 @@ static struct {
         , {"match-names"     , 0    , RRDR_OPTION_MATCH_NAMES}
         , {"showcustomvars"  , 0    , RRDR_OPTION_CUSTOM_VARS}
         , {"allow_past"      , 0    , RRDR_OPTION_ALLOW_PAST}
+        , {"anomaly-bit"     , 0    , RRDR_OPTION_ANOMALY_BIT}
         , {                  NULL, 0, 0}
 };
 
