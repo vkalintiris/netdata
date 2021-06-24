@@ -22,7 +22,10 @@ private:
     std::thread TrainingThread;
     std::thread DetectionThread;
 
-    RollingBitWindow RBW{5, 3};
+    RollingBitWindow RBW{
+        static_cast<size_t>(Cfg.ADWindowSize),
+        static_cast<size_t>(Cfg.ADWindowSize * Cfg.ADWindowRateThreshold)
+    };
     CalculatedNumber AnomalyRate{0.0};
 
     Database DB{Cfg.AnomalyDBPath};
