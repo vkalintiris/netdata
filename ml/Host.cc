@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Host.h"
+#include "Chart.h"
 #include "Unit.h"
 #include "RollingBitCounter.h"
 
@@ -50,21 +51,44 @@ static void updateMLChart(collected_number NumTotalDimensions,
 }
 
 void Host::addDimension(Dimension *D) {
+    RRDDIM *RD = D->getRD();
+    RRDSET *RS = RD->rrdset;
+
     {
         std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap[D->getRD()] = D;
+        DimensionsMap[RD] = D;
+
+        Chart *C = ChartsMap[RS];
+        C->addDimension(D);
     }
+
 
     NumDimensions++;
 }
 
 void Host::removeDimension(Dimension *D) {
+    RRDDIM *RD = D->getRD();
+    RRDSET *RS = RD->rrdset;
+
     {
         std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap.erase(D->getRD());
+        DimensionsMap.erase(RD);
+
+        Chart *C = ChartsMap[RS];
+        C->removeDimension(D);
     }
 
     NumDimensions--;
+}
+
+void Host::addChart(Chart *C) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+    ChartsMap[C->getRS()] = C;
+}
+
+void Host::removeChart(Chart *C) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+    ChartsMap.erase(C->getRS());
 }
 
 void Host::forEachDimension(std::function<bool(Dimension *)> Func) {
@@ -186,9 +210,29 @@ template<>
 void DetectableHost<Host>::detect() {
     std::this_thread::sleep_for(Seconds{10});
 
+    Host *H = static_cast<Host *>(this);
+
     while (!netdata_exit) {
+        TimePoint StartTP = SteadyClock::now();
         detectOnce();
+        TimePoint EndTP = SteadyClock::now();
+        Duration<double> Dur1 = EndTP - StartTP;
+
+        StartTP = SteadyClock::now();
+        H->updateMLCharts();
+        EndTP = SteadyClock::now();
+        Duration<double> Dur2 = EndTP - StartTP;
+
+        error("Detection took %lf seconds, ml charts took %lf seconds", Dur1.count(), Dur2.count());
+
         std::this_thread::sleep_for(Seconds{1});
+    }
+}
+
+void Host::updateMLCharts() {
+    for (auto &CP : ChartsMap) {
+        Chart *C = CP.second;
+        C->updateMLChart();
     }
 }
 

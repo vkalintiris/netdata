@@ -5,6 +5,7 @@
 
 #include "ml-private.h"
 #include "Unit.h"
+#include "Chart.h"
 #include "Database.h"
 
 namespace ml {
@@ -52,6 +53,9 @@ public:
         return S;
     }
 
+    void addChart(Chart *C);
+    void removeChart(Chart *C);
+
     void addDimension(Dimension *D);
     void removeDimension(Dimension *D);
 
@@ -61,11 +65,14 @@ public:
 
     void forEachDimension(std::function<bool(Dimension *)> Func);
 
+    void updateMLCharts();
+
 private:
     RRDHOST *RH;
 
     std::mutex Mutex;
     std::map<RRDDIM *, Dimension *> DimensionsMap;
+    std::map<RRDSET *, Chart *> ChartsMap;
 
     std::atomic<size_t> NumDimensions{0};
 };

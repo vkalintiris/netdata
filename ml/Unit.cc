@@ -179,3 +179,17 @@ std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
     AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
     return { MLError::Success, AnomalyBit }; 
 }
+
+template<>
+void TrainableDimension<Dimension>::updateMLRD(RRDSET *MLRS) {
+    if (MLRD) {
+        rrddim_set_by_pointer(MLRS, MLRD, AnomalyScore * 100);
+        return;
+    }
+
+    MLRD = rrddim_add(MLRS, getRD()->id, NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+
+    rrddim_flag_clear(MLRD, RRDDIM_FLAG_HIDDEN);
+    if (rrddim_flag_check(getRD(), RRDDIM_FLAG_HIDDEN))
+        rrddim_flag_set(MLRD, RRDDIM_FLAG_HIDDEN);
+}

@@ -69,7 +69,7 @@ template <class BaseT>
 class TrainableDimension : public DetectableDimension<BaseT> {
 public:
     RRDDIM *getRD() const {
-        BaseT& Derived = static_cast<BaseT&>(*this);
+        const BaseT& Derived = static_cast<const BaseT&>(*this);
         return Derived.getRD();
     }
 
@@ -78,12 +78,16 @@ public:
 
     bool getAnomalyBit() { return AnomalyBit; }
 
+    void updateMLRD(RRDSET *MLRS);
+
 private:
     std::pair<CalculatedNumber *, size_t>
     getCalculatedNumbers(size_t MinN, size_t MaxN);
 
 private:
     KMeans KM;
+
+    RRDDIM *MLRD{nullptr};
 
     // TODO: Add a couple seconds because the 1st getCalculatedNumbers will fail.
     TimePoint LastTrainedAt{SteadyClock::now()};

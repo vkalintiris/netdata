@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Host.h"
+#include "Chart.h"
 #include "Unit.h"
 #include "Database.h"
 
@@ -17,7 +18,7 @@ Config ml::Cfg;
  * Initialize global configuration variable.
  */
 void ml_init(void) {
-#if 0
+#if 1
     Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 4 * 60)};
     Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60)};
     Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 60)};
@@ -39,9 +40,9 @@ void ml_init(void) {
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector window min anomaly rate", 0.25);
     Cfg.ADUnitRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector unit rate threshold", 0.1);
 #else
-    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60)};
-    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 30 * 60)};
-    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60)};
+    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60)};
+    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60)};
+    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 60)};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -98,11 +99,13 @@ void ml_delete_host(RRDHOST *RH) {
     delete H;
 }
 
-void ml_new_unit(RRDDIM *RD) {
-    if (!RD)
+void ml_new_chart(RRDSET *RS) {
+    if (!RS)
         return;
 
-    RRDSET *RS = RD->rrdset;
+    if (strstr(RS->id, "_km") != NULL)
+        return;
+
     if (RS->update_every != 1)
         return;
 
@@ -114,17 +117,58 @@ void ml_new_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    Dimension *D = new Dimension(RD);
-    H->addDimension(D);
-    RD->state->ml_unit = static_cast<ml_unit_t>(D);
+    Chart *C = new Chart(RS);
+    H->addChart(C);
+    RS->state->ml_chart = static_cast<ml_chart_t>(C);
+}
+
+void ml_delete_chart(RRDSET *RS) {
+    if (!RS)
+        return;
+
+    Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+    if (!C)
+        return;
+
+    RRDHOST *RH = RS->rrdhost;
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return;
+
+    H->removeChart(C);
+    delete C;
+}
+
+void ml_new_unit(RRDDIM *RD) {
+    if (!RD)
+        return;
+
+    RRDSET *RS = RD->rrdset;
+    if (RS->update_every != 1)
+        return;
+
+    if (strstr(RS->id, "_km") != NULL)
+        return;
+
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
+        return;
+
+    RRDHOST *RH = RS->rrdhost;
+    Host *H = static_cast<Host *>(RH->ml_host);
+    if (!H)
+        return;
+
+    Unit *U = new Unit(RD);
+    H->addDimension(U);
+    RD->state->ml_unit = static_cast<ml_unit_t>(U);
 }
 
 void ml_delete_unit(RRDDIM *RD) {
     if (!RD)
         return;
 
-    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
-    if (!D)
+    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
+    if (!U)
         return;
 
     RRDHOST *RH = RD->rrdset->rrdhost;
@@ -132,20 +176,20 @@ void ml_delete_unit(RRDDIM *RD) {
     if (!H)
         return;
 
-    H->removeDimension(D);
+    H->removeDimension(U);
 
-    delete D;
+    delete U;
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {
     if (!RD)
         return false;
 
-    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
-    if (!D)
+    Unit *U = static_cast<Unit *>(RD->state->ml_unit);
+    if (!U)
         return false;
 
-    return D->getAnomalyBit();
+    return U->getAnomalyBit();
 }
 
 char *ml_get_anomaly_events(const char *AnomalyDetectorName,
