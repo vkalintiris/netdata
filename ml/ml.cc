@@ -32,7 +32,7 @@ void ml_init(void) {
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
+    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 99);
     Cfg.AnomalyRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomalous host at this percent of anomalous units", 0.2);
 
     Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "anomaly detector window size", 30);
@@ -53,7 +53,7 @@ void ml_init(void) {
     std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 0.99);
+    Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 99);
     Cfg.AnomalyRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomalous host at this of anomalous units", 0.01);
 
     Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "anomaly detector window size", 120);
