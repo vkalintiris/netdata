@@ -4,7 +4,7 @@
 #define ML_DATABASE_H
 
 #include "ml-private.h"
-#include "Unit.h"
+#include "Dimension.h"
 #include "json.hpp"
 
 namespace ml {

@@ -4,7 +4,7 @@
 /* Default global database instance */
 struct rrdengine_instance multidb_ctx;
 
-int default_rrdeng_page_cache_mb = 32;
+int default_rrdeng_page_cache_mb = 64;
 int default_rrdeng_disk_quota_mb = 256;
 int default_multidb_disk_quota_mb = 256;
 /* Default behaviour is to unblock data collection if the page cache is full of dirty pages by dropping metrics */

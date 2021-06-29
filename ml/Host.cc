@@ -2,7 +2,8 @@
 
 #include "Config.h"
 #include "Host.h"
-#include "Unit.h"
+#include "Chart.h"
+#include "Dimension.h"
 #include "RollingBitCounter.h"
 
 #include "json.hpp"
@@ -49,32 +50,27 @@ static void updateMLChart(collected_number NumTotalDimensions,
     rrdset_done(RS);
 }
 
-void Host::addDimension(Dimension *D) {
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap[D->getRD()] = D;
-    }
-
-    NumDimensions++;
-}
-
-void Host::removeDimension(Dimension *D) {
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap.erase(D->getRD());
-    }
-
-    NumDimensions--;
-}
-
-void Host::forEachDimension(std::function<bool(Dimension *)> Func) {
+void Host::addChart(Chart *C) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    for (auto &DP : DimensionsMap) {
-        Dimension *Dim = DP.second;
+    ChartsMap[C->getRS()] = C;
+}
 
-        if (Func(Dim))
-            break;
+void Host::removeChart(Chart *C) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+    ChartsMap.erase(C->getRS());
+}
+
+bool Host::forEachDimension(std::function<bool(Dimension *)> Func) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+
+    for (auto &CP : ChartsMap) {
+        Chart *C = CP.second;
+
+        if (C->forEachDimension(Func))
+            return true;
     }
+
+    return false;
 }
 
 template<>
@@ -103,18 +99,21 @@ template<>
 void TrainableHost<Host>::train() {
     Host *H = static_cast<Host *>(this);
 
+    Duration<double> MaxSleepFor = Seconds{1};
+
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
         trainOne(StartTP);
         TimePoint EndTP = SteadyClock::now();
 
         Duration<double> RealDuration = EndTP - StartTP;
-        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->getNumDimensions() + 1);
+        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->NumDimensions + 1);
 
         if (RealDuration >= AllottedDuration)
             continue;
 
-        std::this_thread::sleep_for(AllottedDuration - RealDuration);
+        Duration<double> SleepFor = AllottedDuration - RealDuration;
+        std::this_thread::sleep_for(std::min(SleepFor, MaxSleepFor));
     }
 }
 
@@ -130,7 +129,7 @@ void DetectableHost<Host>::detectOnce() {
                            (E.second == RollingBitWindow::State::BelowThreshold);
 
     size_t NumAnomalousDimensions = 0;
-    size_t NumTotalDimensions = H->getNumDimensions();
+    size_t NumTotalDimensions = H->NumDimensions;
 
     H->forEachDimension([&](Dimension *D) {
         if (ResetBitCounter)
@@ -156,39 +155,62 @@ void DetectableHost<Host>::detectOnce() {
 
     error("new anomaly length: %zu", WindowLength);
 
-    std::vector<std::pair<double, std::string>> AnomalousUnits;
+    std::vector<std::pair<double, std::string>> AnomalousDimensions;
     H->forEachDimension([&](Dimension *D) {
         double DimAnomalyRate = D->anomalyRate(WindowLength);
-        if (DimAnomalyRate < Cfg.ADUnitRateThreshold)
+        if (DimAnomalyRate < Cfg.ADDimensionRateThreshold)
             return false;
 
-        AnomalousUnits.push_back({DimAnomalyRate, D->getID()});
+        AnomalousDimensions.push_back({DimAnomalyRate, D->getID()});
 
         return false;
     });
 
-    if (AnomalousUnits.size() == 0) {
+    if (AnomalousDimensions.size() == 0) {
         error("Found anomaly event without any dimensions");
         return;
     }
 
-    std::sort(AnomalousUnits.begin(), AnomalousUnits.end());
-    std::reverse(AnomalousUnits.begin(), AnomalousUnits.end());
+    std::sort(AnomalousDimensions.begin(), AnomalousDimensions.end());
+    std::reverse(AnomalousDimensions.begin(), AnomalousDimensions.end());
 
-    nlohmann::json J = AnomalousUnits;
+    nlohmann::json J = AnomalousDimensions;
     time_t Now = now_realtime_sec();
     DB.insertAnomaly("AD1", 1, H->getUUID(), Now - WindowLength, Now, J.dump(4));
 
-    error("num anomalous units: %zu", AnomalousUnits.size());
+    error("num anomalous units: %zu", AnomalousDimensions.size());
 }
 
 template<>
 void DetectableHost<Host>::detect() {
     std::this_thread::sleep_for(Seconds{10});
 
+    Host *H = static_cast<Host *>(this);
+
     while (!netdata_exit) {
+        TimePoint StartTP = SteadyClock::now();
         detectOnce();
+        TimePoint EndTP = SteadyClock::now();
+        Duration<double> Dur1 = EndTP - StartTP;
+
+        if (Cfg.EnableMLCharts) {
+            StartTP = SteadyClock::now();
+            H->updateMLCharts();
+            EndTP = SteadyClock::now();
+            Duration<double> Dur2 = EndTP - StartTP;
+            error("Updating ML charts took %lf seconds", Dur2.count());
+        }
+
+        error("Detection took %lf seconds", Dur1.count());
+
         std::this_thread::sleep_for(Seconds{1});
+    }
+}
+
+void Host::updateMLCharts() {
+    for (auto &CP : ChartsMap) {
+        Chart *C = CP.second;
+        C->updateMLChart();
     }
 }
 

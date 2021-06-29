@@ -23,9 +23,11 @@ public:
 
     double ADWindowSize;
     double ADWindowRateThreshold;
-    double ADUnitRateThreshold;
+    double ADDimensionRateThreshold;
 
     std::string AnomalyDBPath;
+
+    bool EnableMLCharts;
 };
 
 extern Config Cfg;
