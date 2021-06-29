@@ -5,7 +5,7 @@
 #include "ml-private.h"
 
 #include "AnomalyDetector.h"
-#include "Unit.h"
+#include "Dimension.h"
 #include "Host.h"
 #include "Query.h"
 #include "RollingBitCounter.h"

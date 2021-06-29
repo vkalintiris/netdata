@@ -345,6 +345,8 @@ void rrdset_free(RRDSET *st) {
     while(st->alarms)     rrdcalc_unlink_and_free(st->rrdhost, st->alarms);
     while(st->dimensions) rrddim_free(st, st->dimensions);
 
+    ml_delete_chart(st);
+
     rrdfamily_free(host, st->rrdfamily);
 
     debug(D_RRD_CALLS, "RRDSET: Cleaning up remaining chart variables for host '%s', chart '%s'", host->hostname, st->id);
@@ -941,12 +943,15 @@ RRDSET *rrdset_create_custom(
         aclk_update_chart(st->rrdhost, "dummy-chart", 0);
 #endif
 
+    ml_new_chart(st);
+
     rrdhost_unlock(host);
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting)
         aclk_add_collector(host, plugin, module);
     rrdset_flag_set(st, RRDSET_FLAG_ACLK);
 #endif
+
     return(st);
 }
 

@@ -4,7 +4,8 @@
 #define ML_HOST_H
 
 #include "ml-private.h"
-#include "Unit.h"
+#include "Dimension.h"
+#include "Chart.h"
 #include "Database.h"
 
 namespace ml {
@@ -52,22 +53,20 @@ public:
         return S;
     }
 
-    void addDimension(Dimension *D);
-    void removeDimension(Dimension *D);
+    void addChart(Chart *C);
+    void removeChart(Chart *C);
+    bool forEachDimension(std::function<bool(Dimension *)> Func);
 
-    size_t getNumDimensions() const {
-        return NumDimensions;
-    }
+    void updateMLCharts();
 
-    void forEachDimension(std::function<bool(Dimension *)> Func);
+public:
+    std::atomic<size_t> NumDimensions{0};
 
 private:
     RRDHOST *RH;
 
     std::mutex Mutex;
-    std::map<RRDDIM *, Dimension *> DimensionsMap;
-
-    std::atomic<size_t> NumDimensions{0};
+    std::map<RRDSET *, Chart *> ChartsMap;
 };
 
 }
