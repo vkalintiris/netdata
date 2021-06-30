@@ -87,7 +87,8 @@ private:
 private:
     KMeans KM;
 
-    RRDDIM *MLRD{nullptr};
+    RRDDIM *AnomalyScoreRD{nullptr};
+    RRDDIM *AnomalyBitRD{nullptr};
 
     // TODO: Add a couple seconds because the 1st getCalculatedNumbers will fail.
     TimePoint LastTrainedAt{SteadyClock::now()};

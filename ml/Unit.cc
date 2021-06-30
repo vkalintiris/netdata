@@ -182,14 +182,26 @@ std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
 
 template<>
 void TrainableDimension<Dimension>::updateMLRD(RRDSET *MLRS) {
-    if (MLRD) {
-        rrddim_set_by_pointer(MLRS, MLRD, AnomalyScore * 100);
+    if (AnomalyScoreRD && AnomalyBitRD) {
+        rrddim_set_by_pointer(MLRS, AnomalyScoreRD, AnomalyScore * 100);
+        rrddim_set_by_pointer(MLRS, AnomalyBitRD, AnomalyBit * 100);
         return;
     }
 
-    MLRD = rrddim_add(MLRS, getRD()->id, NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+    std::stringstream AnomalyScoreName;
+    AnomalyScoreName << getRD()->name << "-as";
+    AnomalyScoreRD = rrddim_add(MLRS, AnomalyScoreName.str().c_str(), NULL, 1, 100,
+                                RRD_ALGORITHM_ABSOLUTE);
 
-    rrddim_flag_clear(MLRD, RRDDIM_FLAG_HIDDEN);
-    if (rrddim_flag_check(getRD(), RRDDIM_FLAG_HIDDEN))
-        rrddim_flag_set(MLRD, RRDDIM_FLAG_HIDDEN);
+    std::stringstream AnomalyBitName;
+    AnomalyBitName << getRD()->name << "-ab";
+    AnomalyBitRD = rrddim_add(MLRS, AnomalyBitName.str().c_str(), NULL, 1, 1,
+                              RRD_ALGORITHM_ABSOLUTE);
+
+    rrddim_flag_clear(AnomalyScoreRD, RRDDIM_FLAG_HIDDEN);
+    rrddim_flag_clear(AnomalyBitRD, RRDDIM_FLAG_HIDDEN);
+    if (rrddim_flag_check(getRD(), RRDDIM_FLAG_HIDDEN)) {
+        rrddim_flag_set(AnomalyScoreRD, RRDDIM_FLAG_HIDDEN);
+        rrddim_flag_set(AnomalyBitRD, RRDDIM_FLAG_HIDDEN);
+    }
 }
