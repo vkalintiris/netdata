@@ -99,6 +99,8 @@ template<>
 void TrainableHost<Host>::train() {
     Host *H = static_cast<Host *>(this);
 
+    Duration<double> MaxSleepFor = Seconds{1};
+
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
         trainOne(StartTP);
@@ -110,7 +112,8 @@ void TrainableHost<Host>::train() {
         if (RealDuration >= AllottedDuration)
             continue;
 
-        std::this_thread::sleep_for(AllottedDuration - RealDuration);
+        Duration<double> SleepFor = AllottedDuration - RealDuration;
+        std::this_thread::sleep_for(std::min(SleepFor, MaxSleepFor));
     }
 }
 

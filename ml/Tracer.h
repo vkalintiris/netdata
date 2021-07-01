@@ -7,9 +7,19 @@ namespace ml {
 
 class Tracer {
 public:
+    Tracer(const char *Thread, const char *Name)
+        : Thread(Thread), Name(Name) {
+        SPDR_BEGIN(ml::Cfg.SpdrCtx, Thread, Name);
+    }
+
     Tracer(const char *Thread, const char *Name, const char *Key, const char *Value)
         : Thread(Thread), Name(Name) {
         SPDR_BEGIN1(ml::Cfg.SpdrCtx, Thread, Name, SPDR_STR(Key, Value));
+    }
+
+    Tracer(const char *Thread, const char *Name, const char *Key, size_t Value)
+        : Thread(Thread), Name(Name) {
+        SPDR_BEGIN1(ml::Cfg.SpdrCtx, Thread, Name, SPDR_INT(Key, Value));
     }
 
     virtual ~Tracer() {
@@ -19,26 +29,6 @@ public:
 private:
     const char *Thread;
     const char *Name;
-};
-
-class ReportableTracer : Tracer {
-public:
-    ReportableTracer(const char *Thread, const char *Name, const char *Key, const char *Value)
-        : Tracer(Thread, Name, Key, Value) {}
-
-    virtual ~ReportableTracer() {
-        spdr_report(
-            Cfg.SpdrCtx, SPDR_CHROME_REPORT,
-            [](const char *data, void *user_data) {
-                (void) user_data;
-                fputs(data, Cfg.LogFP);
-            },
-            nullptr
-        );
-
-        fflush(Cfg.LogFP);
-        fclose(Cfg.LogFP);
-    }
 };
 
 } // namespace ml
