@@ -5,8 +5,21 @@
 #include "Chart.h"
 #include "Unit.h"
 #include "Database.h"
+#include "Tracer.h"
 
 using namespace ml;
+
+
+static constexpr size_t SpdrBufferLen = 512 * 1024 * 1024;
+static std::vector<char> SpdrBuffer(SpdrBufferLen);
+
+#if 0
+static void sdprReport(const char* Line, void* UserData)
+{
+    FILE* FP = static_cast<FILE *>(UserData);
+    fputs(Line, FP);
+}
+#endif
 
 /*
  * Global configuration instance to be shared between training and
@@ -66,6 +79,14 @@ void ml_init(void) {
     std::stringstream SS;
     SS << netdata_configured_cache_dir << "/" << "netdata-ml.db";
     Cfg.AnomalyDBPath = SS.str();
+
+    spdr_init(&Cfg.SpdrCtx, &SpdrBuffer.front(), SpdrBufferLen);
+    spdr_enable_trace(Cfg.SpdrCtx, 1);
+
+    Cfg.LogFP = fopen("/tmp/ml-trace.json", "wb");
+    if (!Cfg.LogFP)
+        fatal("Could not open log file");
+    //spdr_set_log_fn(Cfg.SpdrCtx, sdprReport, FP);
 }
 
 /*
@@ -74,55 +95,54 @@ void ml_init(void) {
  *  2) dimensions always have a set that has a host.
  */
 void ml_new_host(RRDHOST *RH) {
-    if (!RH)
-        return;
+    Tracer{"Database", "ml_new_host", "hostname", RH->hostname};
 
     if (simple_pattern_matches(Cfg.SP_HostsToSkip, RH->hostname))
         return;
 
     Host *H = new Host(RH);
-    H->startAnomalyDetectionThreads();
-
     RH->ml_host = static_cast<ml_host_t>(H);
+
+    // H->startAnomalyDetectionThreads();
 }
 
 void ml_delete_host(RRDHOST *RH) {
-    if (!RH)
-        return;
+    ReportableTracer{"Database", "ml_delete_host", "hostname", RH->hostname};
 
     Host *H = static_cast<Host *>(RH->ml_host);
     if (!H)
         return;
 
-    H->stopAnomalyDetectionThreads();
-
+    //H->stopAnomalyDetectionThreads();
     delete H;
+    RH->ml_host = nullptr;
 }
 
 void ml_new_chart(RRDSET *RS) {
-    if (!RS)
-        return;
+    Tracer{"Database", "ml_new_chart", "chart", RS->id};
 
-    if (strstr(RS->id, "_km") != NULL)
+    if (!RS)
         return;
 
     if (RS->update_every != 1)
         return;
 
-    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
+    if (strstr(RS->name, "_km") != NULL)
         return;
 
-    RRDHOST *RH = RS->rrdhost;
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
+    if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->id))
         return;
 
     Chart *C = new Chart(RS);
-    H->addChart(C);
     RS->state->ml_chart = static_cast<ml_chart_t>(C);
+
+    Host *H = static_cast<Host *>(RS->rrdhost->ml_host);
+    H->addChart(C);
 }
 
 void ml_delete_chart(RRDSET *RS) {
+    Tracer{"Database", "ml_delete_chart", "chart", RS->id};
+
     if (!RS)
         return;
 
@@ -130,55 +150,58 @@ void ml_delete_chart(RRDSET *RS) {
     if (!C)
         return;
 
-    RRDHOST *RH = RS->rrdhost;
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
-        return;
-
+    Host *H = static_cast<Host *>(RS->rrdhost->ml_host);
     H->removeChart(C);
+
     delete C;
+    RS->state->ml_chart = nullptr;
 }
 
 void ml_new_unit(RRDDIM *RD) {
+    Tracer{"Database", "ml_new_unit", "chart", RD->id};
+
     if (!RD)
         return;
 
     RRDSET *RS = RD->rrdset;
+
     if (RS->update_every != 1)
         return;
 
-    if (strstr(RS->id, "_km") != NULL)
+    if (strstr(RS->name, "_km") != NULL)
         return;
 
     if (simple_pattern_matches(Cfg.SP_ChartsToSkip, RS->name))
         return;
 
-    RRDHOST *RH = RS->rrdhost;
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
+    Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+    if (!C)
         return;
 
     Unit *U = new Unit(RD);
-    H->addDimension(U);
     RD->state->ml_unit = static_cast<ml_unit_t>(U);
+    C->addDimension(U);
+
+    Host *H = static_cast<Host *>(RS->rrdhost->ml_host);
+    H->NumDimensions++;
 }
 
 void ml_delete_unit(RRDDIM *RD) {
-    if (!RD)
-        return;
+    Tracer{"Database", "ml_delete_unit", "chart", RD->id};
 
     Unit *U = static_cast<Unit *>(RD->state->ml_unit);
     if (!U)
         return;
 
-    RRDHOST *RH = RD->rrdset->rrdhost;
-    Host *H = static_cast<Host *>(RH->ml_host);
-    if (!H)
-        return;
+    RRDSET *RS = RD->rrdset;
+    Chart *C = static_cast<Chart *>(RS->state->ml_chart);
+    C->removeDimension(U);
 
-    H->removeDimension(U);
+    Host *H = static_cast<Host *>(RS->rrdhost->ml_host);
+    H->NumDimensions--;
 
     delete U;
+    RD->state->ml_unit = nullptr;
 }
 
 bool ml_is_anomalous(RRDDIM *RD) {

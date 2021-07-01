@@ -50,37 +50,6 @@ static void updateMLChart(collected_number NumTotalDimensions,
     rrdset_done(RS);
 }
 
-void Host::addDimension(Dimension *D) {
-    RRDDIM *RD = D->getRD();
-    RRDSET *RS = RD->rrdset;
-
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap[RD] = D;
-
-        Chart *C = ChartsMap[RS];
-        C->addDimension(D);
-    }
-
-
-    NumDimensions++;
-}
-
-void Host::removeDimension(Dimension *D) {
-    RRDDIM *RD = D->getRD();
-    RRDSET *RS = RD->rrdset;
-
-    {
-        std::lock_guard<std::mutex> Lock(Mutex);
-        DimensionsMap.erase(RD);
-
-        Chart *C = ChartsMap[RS];
-        C->removeDimension(D);
-    }
-
-    NumDimensions--;
-}
-
 void Host::addChart(Chart *C) {
     std::lock_guard<std::mutex> Lock(Mutex);
     ChartsMap[C->getRS()] = C;
@@ -91,14 +60,17 @@ void Host::removeChart(Chart *C) {
     ChartsMap.erase(C->getRS());
 }
 
-void Host::forEachDimension(std::function<bool(Dimension *)> Func) {
+bool Host::forEachDimension(std::function<bool(Dimension *)> Func) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    for (auto &DP : DimensionsMap) {
-        Dimension *Dim = DP.second;
 
-        if (Func(Dim))
-            break;
+    for (auto &CP : ChartsMap) {
+        Chart *C = CP.second;
+
+        if (C->forEachDimension(Func))
+            return true;
     }
+
+    return false;
 }
 
 template<>
@@ -133,7 +105,7 @@ void TrainableHost<Host>::train() {
         TimePoint EndTP = SteadyClock::now();
 
         Duration<double> RealDuration = EndTP - StartTP;
-        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->getNumDimensions() + 1);
+        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->NumDimensions + 1);
 
         if (RealDuration >= AllottedDuration)
             continue;
@@ -154,7 +126,7 @@ void DetectableHost<Host>::detectOnce() {
                            (E.second == RollingBitWindow::State::BelowThreshold);
 
     size_t NumAnomalousDimensions = 0;
-    size_t NumTotalDimensions = H->getNumDimensions();
+    size_t NumTotalDimensions = H->NumDimensions;
 
     H->forEachDimension([&](Dimension *D) {
         if (ResetBitCounter)
@@ -240,11 +212,11 @@ template<>
 void DetectableHost<Host>::startAnomalyDetectionThreads() {
     Host *H = static_cast<Host *>(this);
     TrainingThread = std::thread(&Host::train, H);
-    DetectionThread = std::thread(&Host::detect, H);
+    //DetectionThread = std::thread(&Host::detect, H);
 }
 
 template<>
 void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
-    DetectionThread.join();
+    //DetectionThread.join();
 }

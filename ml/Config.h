@@ -26,6 +26,9 @@ public:
     double ADUnitRateThreshold;
 
     std::string AnomalyDBPath;
+
+    struct SPDR_Context *SpdrCtx;
+    FILE *LogFP;
 };
 
 extern Config Cfg;

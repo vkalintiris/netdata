@@ -248,12 +248,14 @@ ML_FILES = \
 	ml/Chart.cc \
 	ml/Unit.h \
 	ml/Unit.cc \
+	ml/Tracer.h \
 	ml/kmeans/KMeans.h \
 	ml/kmeans/KMeans.cc \
 	ml/kmeans/SamplesBuffer.h \
 	ml/kmeans/SamplesBuffer.cc \
 	ml/json.hpp \
 	dlib/dlib/all/source.cpp \
+	uu.spdr/src/spdr_linux_unit.c \
 	$(NULL)
 
 IDLEJITTER_PLUGIN_FILES = \

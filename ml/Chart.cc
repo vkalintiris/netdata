@@ -6,11 +6,26 @@
 using namespace ml;
 
 void Chart::addDimension(Dimension *D) {
+    std::lock_guard<std::mutex> Lock(Mutex);
     DimensionsMap[D->getRD()] = D;
 }
 
 void Chart::removeDimension(Dimension *D) {
+    std::lock_guard<std::mutex> Lock(Mutex);
     DimensionsMap.erase(D->getRD());
+}
+
+bool Chart::forEachDimension(std::function<bool(Dimension *)> Func) {
+    std::lock_guard<std::mutex> Lock(Mutex);
+
+    for (auto &DP : DimensionsMap) {
+        Dimension *D = DP.second;
+
+        if (Func(D))
+            return true;
+    }
+
+    return false;
 }
 
 void Chart::updateMLChart() {
@@ -49,5 +64,5 @@ void Chart::updateMLChart() {
             RS->priority,       // priority
             1,                  // update_every
             RRDSET_TYPE_LINE    // chart_type
-            );
+    );
 }

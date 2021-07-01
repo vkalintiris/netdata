@@ -324,8 +324,6 @@ void rrdset_free(RRDSET *st) {
     rrdset_wrlock(st);                  // lock this RRDSET
     // info("Removing chart '%s' ('%s')", st->id, st->name);
 
-    ml_delete_chart(st->state->ml_chart);
-
     // ------------------------------------------------------------------------
     // remove it from the indexes
 
@@ -346,6 +344,8 @@ void rrdset_free(RRDSET *st) {
      * alarms will still be connected to the host, and freed during shutdown. */
     while(st->alarms)     rrdcalc_unlink_and_free(st->rrdhost, st->alarms);
     while(st->dimensions) rrddim_free(st, st->dimensions);
+
+    ml_delete_chart(st);
 
     rrdfamily_free(host, st->rrdfamily);
 

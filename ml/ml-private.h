@@ -5,6 +5,8 @@
 
 #include "kmeans/KMeans.h"
 
+#include "uu.spdr/include/spdr/spdr.hh"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>

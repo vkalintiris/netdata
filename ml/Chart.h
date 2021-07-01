@@ -9,19 +9,22 @@ class Dimension;
 
 class Chart {
 public:
-    Chart(RRDSET *RS) : RS(RS), MLRS(nullptr) {}
+    Chart(RRDSET *RS) : RS(RS) {}
 
     RRDSET *getRS() const { return RS; }
+    const char *getName() const { return RS->name; }
 
     void addDimension(Dimension *D);
     void removeDimension(Dimension *D);
+    bool forEachDimension(std::function<bool(Dimension *)> Func);
 
     void updateMLChart();
 
 public:
     RRDSET *RS;
-    RRDSET *MLRS;
+    RRDSET *MLRS{nullptr};
 
+    std::mutex Mutex;
     std::map<RRDDIM *, Dimension *> DimensionsMap;
 };
 

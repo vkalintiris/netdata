@@ -55,26 +55,18 @@ public:
 
     void addChart(Chart *C);
     void removeChart(Chart *C);
-
-    void addDimension(Dimension *D);
-    void removeDimension(Dimension *D);
-
-    size_t getNumDimensions() const {
-        return NumDimensions;
-    }
-
-    void forEachDimension(std::function<bool(Dimension *)> Func);
+    bool forEachDimension(std::function<bool(Dimension *)> Func);
 
     void updateMLCharts();
+
+public:
+    std::atomic<size_t> NumDimensions{0};
 
 private:
     RRDHOST *RH;
 
     std::mutex Mutex;
-    std::map<RRDDIM *, Dimension *> DimensionsMap;
     std::map<RRDSET *, Chart *> ChartsMap;
-
-    std::atomic<size_t> NumDimensions{0};
 };
 
 }
