@@ -28,7 +28,7 @@ LIBNETDATA_FILES = \
     ../../libnetdata/log/log.o \
     $(NULL)
 
-COMMON_LDFLAGS = $(LIBNETDATA_FILES) -pthread -lm
+COMMON_LDFLAGS = $(LIBNETDATA_FILES) -pthread -lm -lssl
 
 all: statsd-stress benchmark-procfile-parser test-eval benchmark-dictionary benchmark-value-pairs
 
