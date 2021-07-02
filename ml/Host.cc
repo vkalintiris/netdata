@@ -215,11 +215,11 @@ template<>
 void DetectableHost<Host>::startAnomalyDetectionThreads() {
     Host *H = static_cast<Host *>(this);
     TrainingThread = std::thread(&Host::train, H);
-    //DetectionThread = std::thread(&Host::detect, H);
+    DetectionThread = std::thread(&Host::detect, H);
 }
 
 template<>
 void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
-    //DetectionThread.join();
+    DetectionThread.join();
 }

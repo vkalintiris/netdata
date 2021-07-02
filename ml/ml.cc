@@ -19,9 +19,9 @@ Config ml::Cfg;
  */
 void ml_init(void) {
 #if 1
-    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 4 * 60)};
-    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60)};
-    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 60)};
+    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60)};
+    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60 * 60)};
+    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60)};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
