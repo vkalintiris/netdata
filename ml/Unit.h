@@ -121,8 +121,6 @@ public:
 private:
     RRDDIM *RD;
     struct rrddim_volatile::rrddim_query_ops *Ops;
-
-    friend class Host;
 };
 
 using Unit = Dimension;
