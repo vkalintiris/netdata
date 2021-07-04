@@ -64,6 +64,7 @@ extern void procfile_close(procfile *ff);
 
 // (re)read and parse the proc file
 extern procfile *procfile_readall(procfile *ff);
+extern procfile *procfile_readall_v2(procfile *ff, int re2c_use, void (*)(char *, void *), void *);
 
 // open a /proc or /sys file
 extern procfile *procfile_open(const char *filename, const char *separators, uint32_t flags);
@@ -102,5 +103,10 @@ extern int procfile_adaptive_initial_allocation;
 
 // return the Nth word of the current line
 #define procfile_lineword(ff, line, word) (((line) < procfile_lines(ff) && (word) < procfile_linewords((ff), (line))) ? procfile_word((ff), (ff)->lines->lines[(line)].first + (word)) : "")
+
+#include "re2c/proc_pid_io.h"
+#include "re2c/proc_pid_stat.h"
+#include "re2c/proc_pid_status.h"
+#include "re2c/proc_stat.h"
 
 #endif /* NETDATA_PROCFILE_H */

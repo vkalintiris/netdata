@@ -470,3 +470,54 @@ void procfile_print(procfile *ff) {
         }
     }
 }
+
+procfile *procfile_readall_v2(procfile *ff, int re2c_use, void (*fun_ptr)(char *, void *), void *proc_var) {
+    ff->len = 0;    // zero the used size
+    ssize_t r = 1;  // read at least once
+    while(r > 0) {
+        ssize_t s = ff->len;
+        ssize_t x = ff->size - s;
+
+        if(unlikely(!x)) {
+            debug(D_PROCFILE, PF_PREFIX ": Expanding data buffer for file '%s'.", procfile_filename(ff));
+            ff = reallocz(ff, sizeof(procfile) + ff->size + PROCFILE_INCREMENT_BUFFER);
+            ff->size += PROCFILE_INCREMENT_BUFFER;
+        }
+
+        debug(D_PROCFILE, "Reading file '%s', from position %zd with length %zd", procfile_filename(ff), s, (ssize_t)(ff->size - s));
+        r = read(ff->fd, &ff->data[s], ff->size - s);
+        if(unlikely(r == -1)) {
+            if(unlikely(!(ff->flags & PROCFILE_FLAG_NO_ERROR_ON_FILE_IO))) error(PF_PREFIX ": Cannot read from file '%s' on fd %d", procfile_filename(ff), ff->fd);
+            procfile_close(ff);
+            return NULL;
+        }
+
+        ff->len += r;
+    }
+
+    ff->data[ff->len] = '\0';
+
+    // debug(D_PROCFILE, "Rewinding file '%s'", ff->filename);
+    if(unlikely(lseek(ff->fd, 0, SEEK_SET) == -1)) {
+        if(unlikely(!(ff->flags & PROCFILE_FLAG_NO_ERROR_ON_FILE_IO))) error(PF_PREFIX ": Cannot rewind on file '%s'.", procfile_filename(ff));
+        procfile_close(ff);
+        return NULL;
+    }
+
+    if (re2c_use) {
+        fun_ptr(ff->data, proc_var);
+    } else {
+        pflines_reset(ff->lines);
+        pfwords_reset(ff->words);
+        procfile_parser(ff);
+    }
+
+    if(unlikely(procfile_adaptive_initial_allocation)) {
+        if(unlikely(ff->len > procfile_max_allocation)) procfile_max_allocation = ff->len;
+        if(unlikely(ff->lines->len > procfile_max_lines)) procfile_max_lines = ff->lines->len;
+        if(unlikely(ff->words->len > procfile_max_words)) procfile_max_words = ff->words->len;
+    }
+
+    // debug(D_PROCFILE, "File '%s' updated.", ff->filename);
+    return ff;
+}

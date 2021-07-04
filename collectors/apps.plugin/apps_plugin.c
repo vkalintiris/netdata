@@ -7,6 +7,7 @@
  */
 
 #include "libnetdata/libnetdata.h"
+#include <valgrind/callgrind.h>
 
 // ----------------------------------------------------------------------------
 
@@ -38,6 +39,7 @@ int health_variable_lookup(const char *variable, uint32_t hash, struct rrdcalc *
 // required by get_system_cpus()
 char *netdata_configured_host_prefix = "";
 
+bool re2c_use = false;
 
 // ----------------------------------------------------------------------------
 // debugging
@@ -1271,31 +1273,7 @@ static inline int read_proc_pid_status(struct pid_stat *p, void *ptr) {
     p->status_rssshmem         = 0;
     p->status_vmswap           = 0;
 
-#ifdef __FreeBSD__
-    struct kinfo_proc *proc_info = (struct kinfo_proc *)ptr;
-
-    p->uid                  = proc_info->ki_uid;
-    p->gid                  = proc_info->ki_groups[0];
-    p->status_vmsize        = proc_info->ki_size / 1024; // in KiB
-    p->status_vmrss         = proc_info->ki_rssize * pagesize / 1024; // in KiB
-    // TODO: what about shared and swap memory on FreeBSD?
-    return 1;
-#else
     (void)ptr;
-
-    static struct arl_callback_ptr arl_ptr;
-    static procfile *ff = NULL;
-
-    if(unlikely(!p->status_arl)) {
-        p->status_arl = arl_create("/proc/pid/status", NULL, 60);
-        arl_expect_custom(p->status_arl, "Uid", arl_callback_status_uid, &arl_ptr);
-        arl_expect_custom(p->status_arl, "Gid", arl_callback_status_gid, &arl_ptr);
-        arl_expect_custom(p->status_arl, "VmSize", arl_callback_status_vmsize, &arl_ptr);
-        arl_expect_custom(p->status_arl, "VmRSS", arl_callback_status_vmrss, &arl_ptr);
-        arl_expect_custom(p->status_arl, "RssFile", arl_callback_status_rssfile, &arl_ptr);
-        arl_expect_custom(p->status_arl, "RssShmem", arl_callback_status_rssshmem, &arl_ptr);
-        arl_expect_custom(p->status_arl, "VmSwap", arl_callback_status_vmswap, &arl_ptr);
-    }
 
     if(unlikely(!p->status_filename)) {
         char filename[FILENAME_MAX + 1];
@@ -1303,35 +1281,65 @@ static inline int read_proc_pid_status(struct pid_stat *p, void *ptr) {
         p->status_filename = strdupz(filename);
     }
 
+    static procfile *ff = NULL;
+
     ff = procfile_reopen(ff, p->status_filename, (!ff)?" \t:,-()/":NULL, PROCFILE_FLAG_NO_ERROR_ON_FILE_IO);
     if(unlikely(!ff)) return 0;
 
-    ff = procfile_readall(ff);
+    proc_pid_status_t pid_status;
+    ff = procfile_readall_v2(ff, re2c_use, proc_pid_status, &pid_status);
     if(unlikely(!ff)) return 0;
 
-    calls_counter++;
+    if (!re2c_use) {
+        static struct arl_callback_ptr arl_ptr;
 
-    // let ARL use this pid
-    arl_ptr.p = p;
-    arl_ptr.ff = ff;
+        if(unlikely(!p->status_arl)) {
+            p->status_arl = arl_create("/proc/pid/status", NULL, 60);
+            arl_expect_custom(p->status_arl, "Uid", arl_callback_status_uid, &arl_ptr);
+            arl_expect_custom(p->status_arl, "Gid", arl_callback_status_gid, &arl_ptr);
+            arl_expect_custom(p->status_arl, "VmSize", arl_callback_status_vmsize, &arl_ptr);
+            arl_expect_custom(p->status_arl, "VmRSS", arl_callback_status_vmrss, &arl_ptr);
+            arl_expect_custom(p->status_arl, "RssFile", arl_callback_status_rssfile, &arl_ptr);
+            arl_expect_custom(p->status_arl, "RssShmem", arl_callback_status_rssshmem, &arl_ptr);
+            arl_expect_custom(p->status_arl, "VmSwap", arl_callback_status_vmswap, &arl_ptr);
+        }
 
-    size_t lines = procfile_lines(ff), l;
-    arl_begin(p->status_arl);
+        calls_counter++;
 
-    for(l = 0; l < lines ;l++) {
-        // debug_log("CHECK: line %zu of %zu, key '%s' = '%s'", l, lines, procfile_lineword(ff, l, 0), procfile_lineword(ff, l, 1));
-        arl_ptr.line = l;
-        if(unlikely(arl_check(p->status_arl,
-                procfile_lineword(ff, l, 0),
-                procfile_lineword(ff, l, 1)))) break;
+        // let ARL use this pid
+        arl_ptr.p = p;
+        arl_ptr.ff = ff;
+
+        size_t lines = procfile_lines(ff), l;
+        arl_begin(p->status_arl);
+
+        for(l = 0; l < lines ;l++) {
+            // debug_log("CHECK: line %zu of %zu, key '%s' = '%s'", l, lines, procfile_lineword(ff, l, 0), procfile_lineword(ff, l, 1));
+            arl_ptr.line = l;
+            if(unlikely(arl_check(p->status_arl,
+                            procfile_lineword(ff, l, 0),
+                            procfile_lineword(ff, l, 1)))) break;
+        }
+
+        p->status_vmshared = p->status_rssfile + p->status_rssshmem;
+
+        // debug_log("%s uid %d, gid %d, VmSize %zu, VmRSS %zu, RssFile %zu, RssShmem %zu, shared %zu", p->comm, (int)p->uid, (int)p->gid, p->status_vmsize, p->status_vmrss, p->status_rssfile, p->status_rssshmem, p->status_vmshared);
+
+        return 1;
+    } else {
+        p->uid = (uid_t) pid_status.euid;
+        p->gid = (uid_t) pid_status.egid;
+        p->status_vmsize = pid_status.vm_size;
+        p->status_vmrss = pid_status.vm_rss;
+        p->status_rssfile = pid_status.rss_file;
+        p->status_rssshmem = pid_status.rss_shmem;
+        p->status_vmswap = pid_status.vm_swap;
+
+        p->status_vmshared = p->status_rssfile + p->status_rssshmem;
+
+        calls_counter++;
+        return 1;
     }
-
-    p->status_vmshared = p->status_rssfile + p->status_rssshmem;
-
-    // debug_log("%s uid %d, gid %d, VmSize %zu, VmRSS %zu, RssFile %zu, RssShmem %zu, shared %zu", p->comm, (int)p->uid, (int)p->gid, p->status_vmsize, p->status_vmrss, p->status_rssfile, p->status_rssshmem, p->status_vmshared);
-
-    return 1;
-#endif
 }
 
 
@@ -1340,20 +1348,13 @@ static inline int read_proc_pid_status(struct pid_stat *p, void *ptr) {
 static inline int read_proc_pid_stat(struct pid_stat *p, void *ptr) {
     (void)ptr;
 
-#ifdef __FreeBSD__
-    struct kinfo_proc *proc_info = (struct kinfo_proc *)ptr;
-
-    if (unlikely(proc_info->ki_tdflags & TDF_IDLETD))
-        goto cleanup;
-#else
-    static procfile *ff = NULL;
-
     if(unlikely(!p->stat_filename)) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s/proc/%d/stat", netdata_configured_host_prefix, p->pid);
         p->stat_filename = strdupz(filename);
     }
 
+    static procfile *ff = NULL;
     int set_quotes = (!ff)?1:0;
 
     ff = procfile_reopen(ff, p->stat_filename, NULL, PROCFILE_FLAG_NO_ERROR_ON_FILE_IO);
@@ -1363,128 +1364,142 @@ static inline int read_proc_pid_stat(struct pid_stat *p, void *ptr) {
     if(unlikely(set_quotes))
         procfile_set_open_close(ff, "(", ")");
 
-    ff = procfile_readall(ff);
+    proc_pid_stat_t pid_stat;
+    ff = procfile_readall_v2(ff, re2c_use, proc_pid_stat, &pid_stat);
     if(unlikely(!ff)) goto cleanup;
-#endif
 
-    p->last_stat_collected_usec = p->stat_collected_usec;
-    p->stat_collected_usec = now_monotonic_usec();
-    calls_counter++;
+    if (!re2c_use) {
 
-#ifdef __FreeBSD__
-    char *comm          = proc_info->ki_comm;
-    p->ppid             = proc_info->ki_ppid;
-#else
-    // p->pid           = str2pid_t(procfile_lineword(ff, 0, 0));
-    char *comm          = procfile_lineword(ff, 0, 1);
-    // p->state         = *(procfile_lineword(ff, 0, 2));
-    p->ppid             = (int32_t)str2pid_t(procfile_lineword(ff, 0, 3));
-    // p->pgrp          = (int32_t)str2pid_t(procfile_lineword(ff, 0, 4));
-    // p->session       = (int32_t)str2pid_t(procfile_lineword(ff, 0, 5));
-    // p->tty_nr        = (int32_t)str2pid_t(procfile_lineword(ff, 0, 6));
-    // p->tpgid         = (int32_t)str2pid_t(procfile_lineword(ff, 0, 7));
-    // p->flags         = str2uint64_t(procfile_lineword(ff, 0, 8));
-#endif
+        p->last_stat_collected_usec = p->stat_collected_usec;
+        p->stat_collected_usec = now_monotonic_usec();
+        calls_counter++;
 
-    if(strcmp(p->comm, comm) != 0) {
-        if(unlikely(debug_enabled)) {
-            if(p->comm[0])
-                debug_log("\tpid %d (%s) changed name to '%s'", p->pid, p->comm, comm);
-            else
-                debug_log("\tJust added %d (%s)", p->pid, comm);
+        char *comm          = procfile_lineword(ff, 0, 1);
+        p->ppid             = (int32_t)str2pid_t(procfile_lineword(ff, 0, 3));
+
+        if(strcmp(p->comm, comm) != 0) {
+            if(unlikely(debug_enabled)) {
+                if(p->comm[0])
+                    debug_log("\tpid %d (%s) changed name to '%s'", p->pid, p->comm, comm);
+                else
+                    debug_log("\tJust added %d (%s)", p->pid, comm);
+            }
+
+            strncpyz(p->comm, comm, MAX_COMPARE_NAME);
+
+            // /proc/<pid>/cmdline
+            if(likely(proc_pid_cmdline_is_needed))
+                managed_log(p, PID_LOG_CMDLINE, read_proc_pid_cmdline(p));
+
+            assign_target_to_pid(p);
         }
 
-        strncpyz(p->comm, comm, MAX_COMPARE_NAME);
+        pid_incremental_rate(stat, p->minflt,  str2kernel_uint_t(procfile_lineword(ff, 0,  9)));
+        pid_incremental_rate(stat, p->cminflt, str2kernel_uint_t(procfile_lineword(ff, 0, 10)));
+        pid_incremental_rate(stat, p->majflt,  str2kernel_uint_t(procfile_lineword(ff, 0, 11)));
+        pid_incremental_rate(stat, p->cmajflt, str2kernel_uint_t(procfile_lineword(ff, 0, 12)));
+        pid_incremental_rate(stat, p->utime,   str2kernel_uint_t(procfile_lineword(ff, 0, 13)));
+        pid_incremental_rate(stat, p->stime,   str2kernel_uint_t(procfile_lineword(ff, 0, 14)));
+        pid_incremental_rate(stat, p->cutime,  str2kernel_uint_t(procfile_lineword(ff, 0, 15)));
+        pid_incremental_rate(stat, p->cstime,  str2kernel_uint_t(procfile_lineword(ff, 0, 16)));
+        p->num_threads      = (int32_t)str2uint32_t(procfile_lineword(ff, 0, 19));
+        p->collected_starttime        = str2kernel_uint_t(procfile_lineword(ff, 0, 21)) / system_hz;
+        p->uptime           = (global_uptime > p->collected_starttime)?(global_uptime - p->collected_starttime):0;
 
-        // /proc/<pid>/cmdline
-        if(likely(proc_pid_cmdline_is_needed))
-            managed_log(p, PID_LOG_CMDLINE, read_proc_pid_cmdline(p));
+        if(enable_guest_charts) {
+            pid_incremental_rate(stat, p->gtime,  str2kernel_uint_t(procfile_lineword(ff, 0, 42)));
+            pid_incremental_rate(stat, p->cgtime, str2kernel_uint_t(procfile_lineword(ff, 0, 43)));
 
-        assign_target_to_pid(p);
-    }
-
-#ifdef __FreeBSD__
-    pid_incremental_rate(stat, p->minflt,  (kernel_uint_t)proc_info->ki_rusage.ru_minflt);
-    pid_incremental_rate(stat, p->cminflt, (kernel_uint_t)proc_info->ki_rusage_ch.ru_minflt);
-    pid_incremental_rate(stat, p->majflt,  (kernel_uint_t)proc_info->ki_rusage.ru_majflt);
-    pid_incremental_rate(stat, p->cmajflt, (kernel_uint_t)proc_info->ki_rusage_ch.ru_majflt);
-    pid_incremental_rate(stat, p->utime,   (kernel_uint_t)proc_info->ki_rusage.ru_utime.tv_sec * 100 + proc_info->ki_rusage.ru_utime.tv_usec / 10000);
-    pid_incremental_rate(stat, p->stime,   (kernel_uint_t)proc_info->ki_rusage.ru_stime.tv_sec * 100 + proc_info->ki_rusage.ru_stime.tv_usec / 10000);
-    pid_incremental_rate(stat, p->cutime,  (kernel_uint_t)proc_info->ki_rusage_ch.ru_utime.tv_sec * 100 + proc_info->ki_rusage_ch.ru_utime.tv_usec / 10000);
-    pid_incremental_rate(stat, p->cstime,  (kernel_uint_t)proc_info->ki_rusage_ch.ru_stime.tv_sec * 100 + proc_info->ki_rusage_ch.ru_stime.tv_usec / 10000);
-
-    p->num_threads      = proc_info->ki_numthreads;
-
-    if(enable_guest_charts) {
-        enable_guest_charts = 0;
-        info("Guest charts aren't supported by FreeBSD");
-    }
-#else
-    pid_incremental_rate(stat, p->minflt,  str2kernel_uint_t(procfile_lineword(ff, 0,  9)));
-    pid_incremental_rate(stat, p->cminflt, str2kernel_uint_t(procfile_lineword(ff, 0, 10)));
-    pid_incremental_rate(stat, p->majflt,  str2kernel_uint_t(procfile_lineword(ff, 0, 11)));
-    pid_incremental_rate(stat, p->cmajflt, str2kernel_uint_t(procfile_lineword(ff, 0, 12)));
-    pid_incremental_rate(stat, p->utime,   str2kernel_uint_t(procfile_lineword(ff, 0, 13)));
-    pid_incremental_rate(stat, p->stime,   str2kernel_uint_t(procfile_lineword(ff, 0, 14)));
-    pid_incremental_rate(stat, p->cutime,  str2kernel_uint_t(procfile_lineword(ff, 0, 15)));
-    pid_incremental_rate(stat, p->cstime,  str2kernel_uint_t(procfile_lineword(ff, 0, 16)));
-    // p->priority      = str2kernel_uint_t(procfile_lineword(ff, 0, 17));
-    // p->nice          = str2kernel_uint_t(procfile_lineword(ff, 0, 18));
-    p->num_threads      = (int32_t)str2uint32_t(procfile_lineword(ff, 0, 19));
-    // p->itrealvalue   = str2kernel_uint_t(procfile_lineword(ff, 0, 20));
-    p->collected_starttime        = str2kernel_uint_t(procfile_lineword(ff, 0, 21)) / system_hz;
-    p->uptime           = (global_uptime > p->collected_starttime)?(global_uptime - p->collected_starttime):0;
-    // p->vsize         = str2kernel_uint_t(procfile_lineword(ff, 0, 22));
-    // p->rss           = str2kernel_uint_t(procfile_lineword(ff, 0, 23));
-    // p->rsslim        = str2kernel_uint_t(procfile_lineword(ff, 0, 24));
-    // p->starcode      = str2kernel_uint_t(procfile_lineword(ff, 0, 25));
-    // p->endcode       = str2kernel_uint_t(procfile_lineword(ff, 0, 26));
-    // p->startstack    = str2kernel_uint_t(procfile_lineword(ff, 0, 27));
-    // p->kstkesp       = str2kernel_uint_t(procfile_lineword(ff, 0, 28));
-    // p->kstkeip       = str2kernel_uint_t(procfile_lineword(ff, 0, 29));
-    // p->signal        = str2kernel_uint_t(procfile_lineword(ff, 0, 30));
-    // p->blocked       = str2kernel_uint_t(procfile_lineword(ff, 0, 31));
-    // p->sigignore     = str2kernel_uint_t(procfile_lineword(ff, 0, 32));
-    // p->sigcatch      = str2kernel_uint_t(procfile_lineword(ff, 0, 33));
-    // p->wchan         = str2kernel_uint_t(procfile_lineword(ff, 0, 34));
-    // p->nswap         = str2kernel_uint_t(procfile_lineword(ff, 0, 35));
-    // p->cnswap        = str2kernel_uint_t(procfile_lineword(ff, 0, 36));
-    // p->exit_signal   = str2kernel_uint_t(procfile_lineword(ff, 0, 37));
-    // p->processor     = str2kernel_uint_t(procfile_lineword(ff, 0, 38));
-    // p->rt_priority   = str2kernel_uint_t(procfile_lineword(ff, 0, 39));
-    // p->policy        = str2kernel_uint_t(procfile_lineword(ff, 0, 40));
-    // p->delayacct_blkio_ticks = str2kernel_uint_t(procfile_lineword(ff, 0, 41));
-
-    if(enable_guest_charts) {
-
-        pid_incremental_rate(stat, p->gtime,  str2kernel_uint_t(procfile_lineword(ff, 0, 42)));
-        pid_incremental_rate(stat, p->cgtime, str2kernel_uint_t(procfile_lineword(ff, 0, 43)));
-
-        if (show_guest_time || p->gtime || p->cgtime) {
-            p->utime -= (p->utime >= p->gtime) ? p->gtime : p->utime;
-            p->cutime -= (p->cutime >= p->cgtime) ? p->cgtime : p->cutime;
-            show_guest_time = 1;
+            if (show_guest_time || p->gtime || p->cgtime) {
+                p->utime -= (p->utime >= p->gtime) ? p->gtime : p->utime;
+                p->cutime -= (p->cutime >= p->cgtime) ? p->cgtime : p->cutime;
+                show_guest_time = 1;
+            }
         }
+
+        if(unlikely(debug_enabled || (p->target && p->target->debug_enabled)))
+            debug_log_int("READ PROC/PID/STAT: %s/proc/%d/stat, process: '%s' on target '%s' (dt=%llu) VALUES: utime=" KERNEL_UINT_FORMAT ", stime=" KERNEL_UINT_FORMAT ", cutime=" KERNEL_UINT_FORMAT ", cstime=" KERNEL_UINT_FORMAT ", minflt=" KERNEL_UINT_FORMAT ", majflt=" KERNEL_UINT_FORMAT ", cminflt=" KERNEL_UINT_FORMAT ", cmajflt=" KERNEL_UINT_FORMAT ", threads=%d", netdata_configured_host_prefix, p->pid, p->comm, (p->target)?p->target->name:"UNSET", p->stat_collected_usec - p->last_stat_collected_usec, p->utime, p->stime, p->cutime, p->cstime, p->minflt, p->majflt, p->cminflt, p->cmajflt, p->num_threads);
+
+        if(unlikely(global_iterations_counter == 1)) {
+            p->minflt           = 0;
+            p->cminflt          = 0;
+            p->majflt           = 0;
+            p->cmajflt          = 0;
+            p->utime            = 0;
+            p->stime            = 0;
+            p->gtime            = 0;
+            p->cutime           = 0;
+            p->cstime           = 0;
+            p->cgtime           = 0;
+        }
+
+        return 1;
+    } else {
+        p->last_stat_collected_usec = p->stat_collected_usec;
+        p->stat_collected_usec = now_monotonic_usec();
+        calls_counter++;
+
+        char *comm          = pid_stat.comm;
+        p->ppid             = pid_stat.ppid;
+
+        if(strcmp(p->comm, comm) != 0) {
+            if(unlikely(debug_enabled)) {
+                if(p->comm[0])
+                    debug_log("\tpid %d (%s) changed name to '%s'", p->pid, p->comm, comm);
+                else
+                    debug_log("\tJust added %d (%s)", p->pid, comm);
+            }
+
+            strncpyz(p->comm, comm, MAX_COMPARE_NAME);
+
+            // /proc/<pid>/cmdline
+            if(likely(proc_pid_cmdline_is_needed))
+                managed_log(p, PID_LOG_CMDLINE, read_proc_pid_cmdline(p));
+
+            assign_target_to_pid(p);
+        }
+
+        pid_incremental_rate(stat, p->minflt,  pid_stat.minflt);
+        pid_incremental_rate(stat, p->cminflt, pid_stat.cminflt);
+        pid_incremental_rate(stat, p->majflt,  pid_stat.majflt);
+        pid_incremental_rate(stat, p->cmajflt, pid_stat.cmajflt);
+        pid_incremental_rate(stat, p->utime,   pid_stat.utime);
+        pid_incremental_rate(stat, p->stime,   pid_stat.stime);
+        pid_incremental_rate(stat, p->cutime,  pid_stat.cutime);
+        pid_incremental_rate(stat, p->cstime,  pid_stat.cstime);
+        p->num_threads      = (int32_t) pid_stat.num_threads;
+        p->collected_starttime        = pid_stat.starttime / system_hz;
+        p->uptime           = (global_uptime > p->collected_starttime)?(global_uptime - p->collected_starttime):0;
+
+        if(enable_guest_charts) {
+            pid_incremental_rate(stat, p->gtime,  pid_stat.guest_time);
+            pid_incremental_rate(stat, p->cgtime, pid_stat.cguest_time);
+
+            if (show_guest_time || p->gtime || p->cgtime) {
+                p->utime -= (p->utime >= p->gtime) ? p->gtime : p->utime;
+                p->cutime -= (p->cutime >= p->cgtime) ? p->cgtime : p->cutime;
+                show_guest_time = 1;
+            }
+        }
+
+        if(unlikely(debug_enabled || (p->target && p->target->debug_enabled)))
+            debug_log_int("READ PROC/PID/STAT: %s/proc/%d/stat, process: '%s' on target '%s' (dt=%llu) VALUES: utime=" KERNEL_UINT_FORMAT ", stime=" KERNEL_UINT_FORMAT ", cutime=" KERNEL_UINT_FORMAT ", cstime=" KERNEL_UINT_FORMAT ", minflt=" KERNEL_UINT_FORMAT ", majflt=" KERNEL_UINT_FORMAT ", cminflt=" KERNEL_UINT_FORMAT ", cmajflt=" KERNEL_UINT_FORMAT ", threads=%d", netdata_configured_host_prefix, p->pid, p->comm, (p->target)?p->target->name:"UNSET", p->stat_collected_usec - p->last_stat_collected_usec, p->utime, p->stime, p->cutime, p->cstime, p->minflt, p->majflt, p->cminflt, p->cmajflt, p->num_threads);
+
+        if(unlikely(global_iterations_counter == 1)) {
+            p->minflt           = 0;
+            p->cminflt          = 0;
+            p->majflt           = 0;
+            p->cmajflt          = 0;
+            p->utime            = 0;
+            p->stime            = 0;
+            p->gtime            = 0;
+            p->cutime           = 0;
+            p->cstime           = 0;
+            p->cgtime           = 0;
+        }
+
+        return 1;
     }
-#endif
-
-    if(unlikely(debug_enabled || (p->target && p->target->debug_enabled)))
-        debug_log_int("READ PROC/PID/STAT: %s/proc/%d/stat, process: '%s' on target '%s' (dt=%llu) VALUES: utime=" KERNEL_UINT_FORMAT ", stime=" KERNEL_UINT_FORMAT ", cutime=" KERNEL_UINT_FORMAT ", cstime=" KERNEL_UINT_FORMAT ", minflt=" KERNEL_UINT_FORMAT ", majflt=" KERNEL_UINT_FORMAT ", cminflt=" KERNEL_UINT_FORMAT ", cmajflt=" KERNEL_UINT_FORMAT ", threads=%d", netdata_configured_host_prefix, p->pid, p->comm, (p->target)?p->target->name:"UNSET", p->stat_collected_usec - p->last_stat_collected_usec, p->utime, p->stime, p->cutime, p->cstime, p->minflt, p->majflt, p->cminflt, p->cmajflt, p->num_threads);
-
-    if(unlikely(global_iterations_counter == 1)) {
-        p->minflt           = 0;
-        p->cminflt          = 0;
-        p->majflt           = 0;
-        p->cmajflt          = 0;
-        p->utime            = 0;
-        p->stime            = 0;
-        p->gtime            = 0;
-        p->cutime           = 0;
-        p->cstime           = 0;
-        p->cgtime           = 0;
-    }
-
-    return 1;
 
 cleanup:
     p->minflt           = 0;
@@ -1506,10 +1521,6 @@ cleanup:
 
 static inline int read_proc_pid_io(struct pid_stat *p, void *ptr) {
     (void)ptr;
-#ifdef __FreeBSD__
-    struct kinfo_proc *proc_info = (struct kinfo_proc *)ptr;
-#else
-    static procfile *ff = NULL;
 
     if(unlikely(!p->io_filename)) {
         char filename[FILENAME_MAX + 1];
@@ -1517,58 +1528,66 @@ static inline int read_proc_pid_io(struct pid_stat *p, void *ptr) {
         p->io_filename = strdupz(filename);
     }
 
+    static procfile *ff = NULL;
+
     // open the file
     ff = procfile_reopen(ff, p->io_filename, NULL, PROCFILE_FLAG_NO_ERROR_ON_FILE_IO);
-    if(unlikely(!ff)) goto cleanup;
+    if(unlikely(!ff))
+        goto cleanup;
 
-    ff = procfile_readall(ff);
-    if(unlikely(!ff)) goto cleanup;
-#endif
+    proc_pid_io_t pid_io;
+    ff = procfile_readall_v2(ff, re2c_use, proc_pid_io, &pid_io);
+    if(unlikely(!ff))
+        goto cleanup;
 
-    calls_counter++;
+    if (!re2c_use) {
+        calls_counter++;
 
-    p->last_io_collected_usec = p->io_collected_usec;
-    p->io_collected_usec = now_monotonic_usec();
+        p->last_io_collected_usec = p->io_collected_usec;
+        p->io_collected_usec = now_monotonic_usec();
 
-#ifdef __FreeBSD__
-    pid_incremental_rate(io, p->io_storage_bytes_read,       proc_info->ki_rusage.ru_inblock);
-    pid_incremental_rate(io, p->io_storage_bytes_written,    proc_info->ki_rusage.ru_oublock);
-#else
-    pid_incremental_rate(io, p->io_logical_bytes_read,       str2kernel_uint_t(procfile_lineword(ff, 0,  1)));
-    pid_incremental_rate(io, p->io_logical_bytes_written,    str2kernel_uint_t(procfile_lineword(ff, 1,  1)));
-    // pid_incremental_rate(io, p->io_read_calls,               str2kernel_uint_t(procfile_lineword(ff, 2,  1)));
-    // pid_incremental_rate(io, p->io_write_calls,              str2kernel_uint_t(procfile_lineword(ff, 3,  1)));
-    pid_incremental_rate(io, p->io_storage_bytes_read,       str2kernel_uint_t(procfile_lineword(ff, 4,  1)));
-    pid_incremental_rate(io, p->io_storage_bytes_written,    str2kernel_uint_t(procfile_lineword(ff, 5,  1)));
-    // pid_incremental_rate(io, p->io_cancelled_write_bytes,    str2kernel_uint_t(procfile_lineword(ff, 6,  1)));
-#endif
+        pid_incremental_rate(io, p->io_logical_bytes_read,       str2kernel_uint_t(procfile_lineword(ff, 0,  1)));
+        pid_incremental_rate(io, p->io_logical_bytes_written,    str2kernel_uint_t(procfile_lineword(ff, 1,  1)));
+        pid_incremental_rate(io, p->io_storage_bytes_read,       str2kernel_uint_t(procfile_lineword(ff, 4,  1)));
+        pid_incremental_rate(io, p->io_storage_bytes_written,    str2kernel_uint_t(procfile_lineword(ff, 5,  1)));
 
-    if(unlikely(global_iterations_counter == 1)) {
-        p->io_logical_bytes_read        = 0;
-        p->io_logical_bytes_written     = 0;
-        // p->io_read_calls             = 0;
-        // p->io_write_calls            = 0;
-        p->io_storage_bytes_read        = 0;
-        p->io_storage_bytes_written     = 0;
-        // p->io_cancelled_write_bytes  = 0;
+        if(unlikely(global_iterations_counter == 1)) {
+            p->io_logical_bytes_read        = 0;
+            p->io_logical_bytes_written     = 0;
+            p->io_storage_bytes_read        = 0;
+            p->io_storage_bytes_written     = 0;
+        }
+
+        return 1;
+    } else {
+        calls_counter++;
+
+        p->last_io_collected_usec = p->io_collected_usec;
+        p->io_collected_usec = now_monotonic_usec();
+
+        pid_incremental_rate(io, p->io_logical_bytes_read, pid_io.rchar);
+        pid_incremental_rate(io, p->io_logical_bytes_written, pid_io.wchar);
+        pid_incremental_rate(io, p->io_storage_bytes_read, pid_io.read_bytes);
+        pid_incremental_rate(io, p->io_storage_bytes_written, pid_io.write_bytes);
+
+        if(unlikely(global_iterations_counter == 1)) {
+            p->io_logical_bytes_read        = 0;
+            p->io_logical_bytes_written     = 0;
+            p->io_storage_bytes_read        = 0;
+            p->io_storage_bytes_written     = 0;
+        }
+
+        return 1;
     }
 
-    return 1;
-
-#ifndef __FreeBSD__
 cleanup:
-    p->io_logical_bytes_read        = 0;
-    p->io_logical_bytes_written     = 0;
-    // p->io_read_calls             = 0;
-    // p->io_write_calls            = 0;
-    p->io_storage_bytes_read        = 0;
-    p->io_storage_bytes_written     = 0;
-    // p->io_cancelled_write_bytes  = 0;
-    return 0;
-#endif
+        p->io_logical_bytes_read        = 0;
+        p->io_logical_bytes_written     = 0;
+        p->io_storage_bytes_read        = 0;
+        p->io_storage_bytes_written     = 0;
+        return 0;
 }
 
-#ifndef __FreeBSD__
 static inline int read_global_time() {
     static char filename[FILENAME_MAX + 1] = "";
     static procfile *ff = NULL;
@@ -1581,88 +1600,83 @@ static inline int read_global_time() {
         if(unlikely(!ff)) goto cleanup;
     }
 
-    ff = procfile_readall(ff);
+    proc_stat_t pstat;
+    ff = procfile_readall_v2(ff, re2c_use, proc_stat, &pstat);
     if(unlikely(!ff)) goto cleanup;
 
-    last_collected_usec = collected_usec;
-    collected_usec = now_monotonic_usec();
+    if (!re2c_use) {
+        last_collected_usec = collected_usec;
+        collected_usec = now_monotonic_usec();
 
-    calls_counter++;
+        calls_counter++;
 
-    // temporary - it is added global_ntime;
-    kernel_uint_t global_ntime = 0;
-
-    incremental_rate(global_utime, utime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  1)), collected_usec, last_collected_usec);
-    incremental_rate(global_ntime, ntime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  2)), collected_usec, last_collected_usec);
-    incremental_rate(global_stime, stime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  3)), collected_usec, last_collected_usec);
-    incremental_rate(global_gtime, gtime_raw, str2kernel_uint_t(procfile_lineword(ff, 0, 10)), collected_usec, last_collected_usec);
-
-    global_utime += global_ntime;
-
-    if(enable_guest_charts) {
         // temporary - it is added global_ntime;
-        kernel_uint_t global_gntime = 0;
+        kernel_uint_t global_ntime = 0;
 
-        // guest nice time, on guest time
-        incremental_rate(global_gntime, gntime_raw, str2kernel_uint_t(procfile_lineword(ff, 0, 11)), collected_usec, last_collected_usec);
+        incremental_rate(global_utime, utime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  1)), collected_usec, last_collected_usec);
+        incremental_rate(global_ntime, ntime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  2)), collected_usec, last_collected_usec);
+        incremental_rate(global_stime, stime_raw, str2kernel_uint_t(procfile_lineword(ff, 0,  3)), collected_usec, last_collected_usec);
+        incremental_rate(global_gtime, gtime_raw, str2kernel_uint_t(procfile_lineword(ff, 0, 10)), collected_usec, last_collected_usec);
 
-        global_gtime += global_gntime;
+        global_utime += global_ntime;
 
-        // remove guest time from user time
-        global_utime -= (global_utime > global_gtime) ? global_gtime : global_utime;
-    }
+        if(enable_guest_charts) {
+            // temporary - it is added global_ntime;
+            kernel_uint_t global_gntime = 0;
 
-    if(unlikely(global_iterations_counter == 1)) {
-        global_utime = 0;
-        global_stime = 0;
-        global_gtime = 0;
-    }
+            // guest nice time, on guest time
+            incremental_rate(global_gntime, gntime_raw, str2kernel_uint_t(procfile_lineword(ff, 0, 11)), collected_usec, last_collected_usec);
 
-    return 1;
+            global_gtime += global_gntime;
 
-cleanup:
-    global_utime = 0;
-    global_stime = 0;
-    global_gtime = 0;
-    return 0;
-}
-#else
-static inline int read_global_time() {
-    static kernel_uint_t utime_raw = 0, stime_raw = 0, gtime_raw = 0, ntime_raw = 0;
-    static usec_t collected_usec = 0, last_collected_usec = 0;
-    long cp_time[CPUSTATES];
-
-    if (unlikely(CPUSTATES != 5)) {
-        goto cleanup;
-    } else {
-        static int mib[2] = {0, 0};
-
-        if (unlikely(GETSYSCTL_SIMPLE("kern.cp_time", mib, cp_time))) {
-            goto cleanup;
+            // remove guest time from user time
+            global_utime -= (global_utime > global_gtime) ? global_gtime : global_utime;
         }
+
+        if(unlikely(global_iterations_counter == 1)) {
+            global_utime = 0;
+            global_stime = 0;
+            global_gtime = 0;
+        }
+
+        return 1;
+    } else {
+        last_collected_usec = collected_usec;
+        collected_usec = now_monotonic_usec();
+
+        calls_counter++;
+
+        // temporary - it is added global_ntime;
+        kernel_uint_t global_ntime = 0;
+
+        incremental_rate(global_utime, utime_raw, pstat.user, collected_usec, last_collected_usec);
+        incremental_rate(global_ntime, ntime_raw, pstat.nice, collected_usec, last_collected_usec);
+        incremental_rate(global_stime, stime_raw, pstat.system, collected_usec, last_collected_usec);
+        incremental_rate(global_gtime, gtime_raw, pstat.guest, collected_usec, last_collected_usec);
+
+        global_utime += global_ntime;
+
+        if(enable_guest_charts) {
+            // temporary - it is added global_ntime;
+            kernel_uint_t global_gntime = 0;
+
+            // guest nice time, on guest time
+            incremental_rate(global_gntime, gntime_raw, pstat.guest_nice, collected_usec, last_collected_usec);
+
+            global_gtime += global_gntime;
+
+            // remove guest time from user time
+            global_utime -= (global_utime > global_gtime) ? global_gtime : global_utime;
+        }
+
+        if(unlikely(global_iterations_counter == 1)) {
+            global_utime = 0;
+            global_stime = 0;
+            global_gtime = 0;
+        }
+
+        return 1;
     }
-
-    last_collected_usec = collected_usec;
-    collected_usec = now_monotonic_usec();
-
-    calls_counter++;
-
-    // temporary - it is added global_ntime;
-    kernel_uint_t global_ntime = 0;
-
-    incremental_rate(global_utime, utime_raw, cp_time[0] * 100LLU / system_hz, collected_usec, last_collected_usec);
-    incremental_rate(global_ntime, ntime_raw, cp_time[1] * 100LLU / system_hz, collected_usec, last_collected_usec);
-    incremental_rate(global_stime, stime_raw, cp_time[2] * 100LLU / system_hz, collected_usec, last_collected_usec);
-
-    global_utime += global_ntime;
-
-    if(unlikely(global_iterations_counter == 1)) {
-        global_utime = 0;
-        global_stime = 0;
-        global_gtime = 0;
-    }
-
-    return 1;
 
 cleanup:
     global_utime = 0;
@@ -1670,7 +1684,6 @@ cleanup:
     global_gtime = 0;
     return 0;
 }
-#endif /* !__FreeBSD__ */
 
 // ----------------------------------------------------------------------------
 
@@ -4170,7 +4183,22 @@ int main(int argc, char **argv) {
     global_iterations_counter = 1;
     heartbeat_t hb;
     heartbeat_init(&hb);
+
+    FILE *fp = fopen("/tmp/log.txt", "w");
+    if (!fp)
+        fatal("could not open /tmp/log.txt");
+
     for(;1; global_iterations_counter++) {
+        struct timeval start, end;
+
+        if (global_iterations_counter % 120 < 60)
+            re2c_use = false;
+        else
+            re2c_use = true;
+
+        re2c_use = true;
+
+        fprintf(fp, "re2c_enabled: %d\n", re2c_use);
 
 #ifdef NETDATA_PROFILING
 #warning "compiling for profiling"
@@ -4188,36 +4216,84 @@ int main(int argc, char **argv) {
         if (unlikely(pollfd.revents & POLLERR))
             fatal("Cannot write to a pipe");
 
-        if(!collect_data_for_all_processes()) {
+        now_realtime_timeval(&start);
+        CALLGRIND_START_INSTRUMENTATION;
+        int rc = collect_data_for_all_processes();
+        CALLGRIND_STOP_INSTRUMENTATION;
+        now_realtime_timeval(&end);
+        fprintf(fp, "collect_data_for_all_processes: %llu usec\n", dt_usec(&end, &start));
+
+        if (!rc) {
             error("Cannot collect /proc data for running processes. Disabling apps.plugin...");
             printf("DISABLE\n");
             exit(1);
         }
-
         currentmaxfds = 0;
-        calculate_netdata_statistics();
-        normalize_utilization(apps_groups_root_target);
 
+#if 0
+        now_realtime_timeval(&start);
+        calculate_netdata_statistics();
+        now_realtime_timeval(&end);
+        fprintf(fp, "calculate_netdata_statistics: %llu usec\n", dt_usec(&end, &start));
+
+        now_realtime_timeval(&start);
+        normalize_utilization(apps_groups_root_target);
+        now_realtime_timeval(&end);
+        fprintf(fp, "normalize_utilization : %llu usec\n", dt_usec(&end, &start));
+
+        now_realtime_timeval(&start);
         send_resource_usage_to_netdata(dt);
+        now_realtime_timeval(&end);
+        fprintf(fp, "send_resource_usage_to_netdata : %llu usec\n", dt_usec(&end, &start));
 
         // this is smart enough to show only newly added apps, when needed
+        now_realtime_timeval(&start);
         send_charts_updates_to_netdata(apps_groups_root_target, "apps", "Apps");
+        now_realtime_timeval(&end);
+        fprintf(fp, "updates apps: %llu usec\n", dt_usec(&end, &start));
 
-        if(likely(enable_users_charts))
+        if(likely(enable_users_charts)) {
+            now_realtime_timeval(&start);
             send_charts_updates_to_netdata(users_root_target, "users", "Users");
+            now_realtime_timeval(&end);
+            fprintf(fp, "updates users: %llu usec\n", dt_usec(&end, &start));
+        }
 
-        if(likely(enable_groups_charts))
+        if(likely(enable_groups_charts)) {
+            now_realtime_timeval(&start);
             send_charts_updates_to_netdata(groups_root_target, "groups", "User Groups");
+            now_realtime_timeval(&end);
+            fprintf(fp, "updates groups: %llu usec\n", dt_usec(&end, &start));
+        }
 
+        now_realtime_timeval(&start);
         send_collected_data_to_netdata(apps_groups_root_target, "apps", dt);
+        now_realtime_timeval(&end);
+        fprintf(fp, "data apps: %llu usec\n", dt_usec(&end, &start));
 
-        if(likely(enable_users_charts))
+
+        if(likely(enable_users_charts)) {
+            now_realtime_timeval(&start);
             send_collected_data_to_netdata(users_root_target, "users", dt);
+            now_realtime_timeval(&end);
+            fprintf(fp, "data users: %llu usec\n", dt_usec(&end, &start));
+        }
 
-        if(likely(enable_groups_charts))
+        if(likely(enable_groups_charts)) {
+            now_realtime_timeval(&start);
             send_collected_data_to_netdata(groups_root_target, "groups", dt);
+            now_realtime_timeval(&end);
+            fprintf(fp, "data groups: %llu usec\n", dt_usec(&end, &start));
+        }
 
+        now_realtime_timeval(&start);
         fflush(stdout);
+        now_realtime_timeval(&end);
+        fprintf(fp, "flush: %llu usec\n", dt_usec(&end, &start));
+#endif
+
+        fprintf(fp, "\n");
+        fflush(fp);
 
         show_guest_time_old = show_guest_time;
 

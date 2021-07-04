@@ -165,6 +165,15 @@ LIBNETDATA_FILES = \
     libnetdata/popen/popen.h \
     libnetdata/procfile/procfile.c \
     libnetdata/procfile/procfile.h \
+    libnetdata/procfile/re2c/common.h \
+    libnetdata/procfile/re2c/proc_pid_io.h \
+    libnetdata/procfile/re2c/proc_pid_io.c \
+    libnetdata/procfile/re2c/proc_pid_stat.h \
+    libnetdata/procfile/re2c/proc_pid_stat.c \
+    libnetdata/procfile/re2c/proc_pid_status.h \
+    libnetdata/procfile/re2c/proc_pid_status.c \
+    libnetdata/procfile/re2c/proc_stat.h \
+    libnetdata/procfile/re2c/proc_stat.c \
     libnetdata/os.c \
     libnetdata/os.h \
     libnetdata/simple_pattern/simple_pattern.c \
