@@ -226,3 +226,43 @@ void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
     DetectionThread.join();
 }
+
+template<>
+void DetectableHost<Host>::query() {
+    std::this_thread::sleep_for(Seconds{30});
+
+    Host *H = static_cast<Host *>(this);
+
+    size_t NumQueries = 0;
+    size_t NumFailedQueries = 0;
+
+    while (!netdata_exit) {
+        H->forEachDimension([&](Dimension *D) {
+            std::pair<CalculatedNumber *, unsigned> P = D->getCalculatedNumbers(10, 10);
+
+            CalculatedNumber *CNs = P.first;
+            unsigned N = P.second;
+
+            NumQueries += 1;
+            if (N != 10)
+                NumFailedQueries += 1;
+
+            delete CNs;
+            return false;
+        });
+
+        error("NumQueries: %zu, NumFailedQueries: %zu", NumQueries, NumFailedQueries);
+        std::this_thread::sleep_for(Seconds{1});
+    }
+}
+
+template<>
+void DetectableHost<Host>::startQueryThread() {
+    Host *H = static_cast<Host *>(this);
+    QueryThread = std::thread(&Host::query, H);
+}
+
+template<>
+void DetectableHost<Host>::stopQueryThread() {
+    QueryThread.join();
+}

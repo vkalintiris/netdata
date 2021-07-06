@@ -80,7 +80,7 @@ public:
 
     void updateMLRD(RRDSET *MLRS);
 
-private:
+public:
     std::pair<CalculatedNumber *, size_t>
     getCalculatedNumbers(size_t MinN, size_t MaxN);
 

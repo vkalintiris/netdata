@@ -19,9 +19,14 @@ public:
     void startAnomalyDetectionThreads();
     void stopAnomalyDetectionThreads();
 
+    void startQueryThread();
+    void stopQueryThread();
+    void query();
+
 private:
     std::thread TrainingThread;
     std::thread DetectionThread;
+    std::thread QueryThread;
 
     RollingBitWindow RBW{
         static_cast<size_t>(Cfg.ADWindowSize),
