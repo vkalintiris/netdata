@@ -16,7 +16,6 @@ typedef struct alarm_entry ALARM_ENTRY;
 typedef struct context_param CONTEXT_PARAM;
 
 typedef void* ml_host_t;
-typedef void* ml_chart_t;
 typedef void* ml_unit_t;
 
 // forward declarations
@@ -430,7 +429,6 @@ struct rrdset_volatile {
     char *old_context;
     struct label *new_labels;
     struct label_index labels;
-    ml_chart_t ml_chart;
 };
 
 // ----------------------------------------------------------------------------

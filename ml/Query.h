@@ -24,17 +24,17 @@ public:
     }
 
     bool isFinished() {
-        if (!Ops->is_finished(&Handle))
-            return false;
-
-        Ops->finalize(&Handle);
-        return true;
+        return Ops->is_finished(&Handle);
     }
 
     std::pair<time_t, storage_number> nextMetric() {
         time_t CurrT;
         storage_number SN = Ops->next_metric(&Handle, &CurrT);
-        return std::make_pair(CurrT, SN);
+        return { CurrT, SN };
+    }
+
+    ~Query() {
+        Ops->finalize(&Handle);
     }
 
 private:

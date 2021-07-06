@@ -4,15 +4,48 @@
 #define ML_HOST_H
 
 #include "ml-private.h"
+
 #include "Dimension.h"
-#include "Chart.h"
 #include "Database.h"
 
 namespace ml {
 
-template<typename BaseT>
-class DetectableHost {
+class RrdHost {
 public:
+    RrdHost(RRDHOST *RH) : RH(RH) {}
+
+    RRDHOST *getRH() { return RH; }
+
+    std::string getUUID() {
+        char S[UUID_STR_LEN];
+        uuid_unparse_lower(RH->host_uuid, S);
+        return S;
+    }
+
+    void addDimension(Dimension *D);
+    void removeDimension(Dimension *D);
+
+    virtual ~RrdHost() {}
+
+public:
+    RRDHOST *RH;
+
+    std::mutex Mutex;
+    std::map<RRDDIM *, Dimension *> DimensionsMap;
+};
+
+class TrainableHost : public RrdHost {
+public:
+    TrainableHost(RRDHOST *RH) : RrdHost(RH) {}
+
+    void train();
+    void trainOne(TimePoint &Now);
+};
+
+class DetectableHost : public TrainableHost {
+public:
+    DetectableHost(RRDHOST *RH) : TrainableHost(RH) {}
+
     void detect();
     void detectOnce();
 
@@ -32,42 +65,7 @@ private:
     Database DB{Cfg.AnomalyDBPath};
 };
 
-template<typename BaseT>
-class TrainableHost : public DetectableHost<BaseT> {
-public:
-    void train();
-    void trainOne(TimePoint &Now);
-
-    CalculatedNumber predict();
-};
-
-class Host : public TrainableHost<Host> {
-public:
-    Host(RRDHOST *RH) : RH(RH) {}
-
-    RRDHOST *getRH() { return RH; }
-
-    std::string getUUID() {
-        char S[UUID_STR_LEN];
-        uuid_unparse_lower(RH->host_uuid, S);
-        return S;
-    }
-
-    void addChart(Chart *C);
-    void removeChart(Chart *C);
-    bool forEachDimension(std::function<bool(Dimension *)> Func);
-
-    void updateMLCharts();
-
-public:
-    std::atomic<size_t> NumDimensions{0};
-
-private:
-    RRDHOST *RH;
-
-    std::mutex Mutex;
-    std::map<RRDSET *, Chart *> ChartsMap;
-};
+using Host = DetectableHost;
 
 }
 

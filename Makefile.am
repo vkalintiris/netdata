@@ -247,8 +247,6 @@ ML_FILES = \
 	ml/RollingBitCounter.h \
 	ml/RollingBitCounter.cc \
 	ml/Test.cc \
-	ml/Chart.h \
-	ml/Chart.cc \
 	ml/Dimension.h \
 	ml/Dimension.cc \
 	ml/kmeans/KMeans.h \

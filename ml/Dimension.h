@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef ML_UNIT_H
-#define ML_UNIT_H
+#ifndef ML_DIMENSION_H
+#define ML_DIMENSION_H
 
 #include "ml-private.h"
 
@@ -35,74 +35,9 @@ struct is_error_code_enum<ml::MLError> : std::true_type {};
 
 namespace ml {
 
-class Host;
-
-template <class BaseT>
-class DetectableDimension {
+class RrdDimension {
 public:
-    bool detect() {
-        BaseT &Dim = static_cast<BaseT &>(*this);
-        bool AnomalyBit = Dim.predict().second;
-
-        BitCounter += AnomalyBit;
-        RBC.insert(AnomalyBit);
-
-        return AnomalyBit;
-    }
-
-    void reset() {
-        BitCounter = RBC.numSetBits();
-    }
-
-    double anomalyRate(size_t WindowLength) {
-        double Rate = static_cast<double>(BitCounter) / WindowLength;
-        BitCounter = RBC.numSetBits();
-        return Rate;
-    }
-
-private:
-    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADWindowSize)};
-    size_t BitCounter{0};
-};
-
-template <class BaseT>
-class TrainableDimension : public DetectableDimension<BaseT> {
-public:
-    RRDDIM *getRD() const {
-        const BaseT& Derived = static_cast<const BaseT&>(*this);
-        return Derived.getRD();
-    }
-
-    MLError train(TimePoint &Now);
-    std::pair<MLError, bool> predict();
-
-    bool getAnomalyBit() { return AnomalyBit; }
-
-    void updateMLRD(RRDSET *MLRS);
-
-private:
-    std::pair<CalculatedNumber *, size_t>
-    getCalculatedNumbers(size_t MinN, size_t MaxN);
-
-private:
-    KMeans KM;
-
-    RRDDIM *AnomalyScoreRD{nullptr};
-    RRDDIM *AnomalyBitRD{nullptr};
-
-    // TODO: Add a couple seconds because the 1st getCalculatedNumbers will fail.
-    TimePoint LastTrainedAt{SteadyClock::now()};
-    bool HasModel{false};
-
-    CalculatedNumber AnomalyScore{0.0};
-    std::atomic<bool> AnomalyBit{false};
-
-    std::mutex Mutex;
-};
-
-class Dimension : public TrainableDimension<Dimension> {
-public:
-    Dimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
+    RrdDimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
 
     RRDDIM *getRD() const { return RD; }
 
@@ -118,11 +53,85 @@ public:
     time_t latestTime() { return Ops->latest_time(RD); }
     time_t oldestTime() { return Ops->oldest_time(RD); }
 
+    std::pair<CalculatedNumber *, size_t>
+    getCalculatedNumbers(size_t MinN, size_t MaxN);
+
+    virtual ~RrdDimension() {}
+
+protected:
+    std::mutex Mutex;
+
 private:
     RRDDIM *RD;
     struct rrddim_volatile::rrddim_query_ops *Ops;
+
 };
+
+class TrainableDimension : public RrdDimension {
+public:
+    TrainableDimension(RRDDIM *RD) : RrdDimension(RD) {}
+
+    MLError trainModel(TimePoint &Now);
+    CalculatedNumber computeAnomalyScore(SamplesBuffer &SB);
+
+private:
+    std::pair<CalculatedNumber *, unsigned> getNumbersForTraining() {
+        unsigned MinN = Cfg.MinTrainSecs / updateEvery();
+        unsigned MaxN = Cfg.TrainSecs / updateEvery();
+
+        return RrdDimension::getCalculatedNumbers(MinN, MaxN);
+    }
+
+protected:
+    std::atomic<bool> HasModel{false};
+
+private:
+    KMeans KM;
+    TimePoint LastTrainedAt{SteadyClock::now()};
+};
+
+class PredictableDimension : public TrainableDimension {
+public:
+    PredictableDimension(RRDDIM *RD) : TrainableDimension(RD) {}
+
+    std::pair<MLError, bool> predict();
+
+    bool isAnomalous() { return AnomalyBit; }
+
+    void addValue(CalculatedNumber Value, bool Exists);
+
+private:
+    CalculatedNumber AnomalyScore{0.0};
+    std::atomic<bool> AnomalyBit{false};
+
+    std::vector<CalculatedNumber> CNs;
+    std::mutex CNsMutex;
+};
+
+class DetectableDimension : public PredictableDimension {
+public:
+    DetectableDimension(RRDDIM *RD) : PredictableDimension(RD) {}
+
+    std::pair<bool, double> detect(size_t WindowLength, bool Reset) {
+        bool AnomalyBit = isAnomalous();
+
+        if (Reset)
+            NumSetBits = RBC.numSetBits();
+
+        NumSetBits += AnomalyBit;
+        RBC.insert(AnomalyBit);
+
+        double AnomalyRate = static_cast<double>(NumSetBits) / WindowLength;
+        return { AnomalyBit, AnomalyRate };
+    }
+
+private:
+    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADWindowSize)};
+    size_t NumSetBits{0};
+};
+
+using Dimension = DetectableDimension;
 
 } // namespace ml
 
-#endif /* ML_UNIT_H */
+#endif /* ML_DIMENSION_H */

@@ -345,8 +345,6 @@ void rrdset_free(RRDSET *st) {
     while(st->alarms)     rrdcalc_unlink_and_free(st->rrdhost, st->alarms);
     while(st->dimensions) rrddim_free(st, st->dimensions);
 
-    ml_delete_chart(st);
-
     rrdfamily_free(host, st->rrdfamily);
 
     debug(D_RRD_CALLS, "RRDSET: Cleaning up remaining chart variables for host '%s', chart '%s'", host->hostname, st->id);
@@ -943,8 +941,6 @@ RRDSET *rrdset_create_custom(
         aclk_update_chart(st->rrdhost, "dummy-chart", 0);
 #endif
 
-    ml_new_chart(st);
-
     rrdhost_unlock(host);
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting)
@@ -1241,13 +1237,15 @@ static inline size_t rrdset_done_interpolate(
             }
 
             if(unlikely(!store_this_entry)) {
+                ml_is_anomalous(rd, 0, false);
+
                 rd->state->collect_ops.store_metric(rd, next_store_ut, SN_EMPTY_SLOT);
 //                rd->values[current_entry] = SN_EMPTY_SLOT;
                 continue;
             }
 
             if(likely(rd->updated && rd->collections_counter > 1 && iterations < st->gap_when_lost_iterations_above)) {
-                if (ml_is_anomalous(rd))
+                if (ml_is_anomalous(rd, new_value, true))
                     storage_flags |= SN_ANOMALOUS;
 
                 rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, storage_flags));
@@ -1265,6 +1263,7 @@ static inline size_t rrdset_done_interpolate(
 
             }
             else {
+                ml_is_anomalous(rd, 0, false);
 
                 #ifdef NETDATA_INTERNAL_CHECKS
                 rrdset_debug(st, "%s: STORE[%ld] = NON EXISTING "

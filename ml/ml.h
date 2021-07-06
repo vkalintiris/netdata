@@ -17,13 +17,10 @@ typedef void* ml_unit_t;
 void ml_new_host(RRDHOST *RH);
 void ml_delete_host(RRDHOST *RH);
 
-void ml_new_chart(RRDSET *RS);
-void ml_delete_chart(RRDSET *RS);
-
 void ml_new_unit(RRDDIM *RD);
 void ml_delete_unit(RRDDIM *RD);
 
-bool ml_is_anomalous(RRDDIM *RD);
+bool ml_is_anomalous(RRDDIM *RD, double Value, bool Exists);
 
 char *ml_get_anomaly_events(const char *ad_name, int ad_version, RRDHOST *RH,
                             time_t after, time_t before);

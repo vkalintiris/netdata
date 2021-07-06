@@ -2,7 +2,6 @@
 
 #include "Config.h"
 #include "Host.h"
-#include "Chart.h"
 #include "Dimension.h"
 #include "RollingBitCounter.h"
 
@@ -14,17 +13,17 @@ using namespace nlohmann;
 static void updateMLChart(collected_number NumTotalDimensions,
                           collected_number NumAnomalousDimensions,
                           collected_number AnomalyRate) {
-    static thread_local RRDSET *RS = nullptr;
+    static thread_local RRDSET *MLRS = nullptr;
     static thread_local RRDDIM *NumTotalDimensionsRD = nullptr;
     static thread_local RRDDIM *NumAnomalousDimensionsRD = nullptr;
     static thread_local RRDDIM *AnomalyRateRD = nullptr;
 
-    if (!RS) {
-        RS = rrdset_create_localhost(
-            "ml",
+    if (!MLRS) {
+        MLRS = rrdset_create_localhost(
+            "ml_prediction_info",
             "host_anomaly_status",
             NULL,
-            "ml",
+            "ml_prediction_info",
             NULL,
             "Number of anomalous units",
             "number of units",
@@ -32,83 +31,127 @@ static void updateMLChart(collected_number NumTotalDimensions,
             NULL,
             39183,
             1,
-            RRDSET_TYPE_LINE);
+            RRDSET_TYPE_LINE
+        );
 
-        NumTotalDimensionsRD = rrddim_add(RS, "num_total_dimensions", NULL,
-                                     1, 1, RRD_ALGORITHM_ABSOLUTE);
-        NumAnomalousDimensionsRD = rrddim_add(RS, "num_anomalous_dimensions", NULL,
-                                              1, 1, RRD_ALGORITHM_ABSOLUTE);
-        AnomalyRateRD = rrddim_add(RS, "anomaly_rate", NULL,
-                                   1, 1, RRD_ALGORITHM_ABSOLUTE);
-    } else 
-        rrdset_next(RS);
+        NumTotalDimensionsRD = rrddim_add(MLRS, "num_total_dimensions", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        NumAnomalousDimensionsRD = rrddim_add(MLRS, "num_anomalous_dimensions", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        AnomalyRateRD = rrddim_add(MLRS, "anomaly_rate", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+    } else
+        rrdset_next(MLRS);
 
-    rrddim_set_by_pointer(RS, NumTotalDimensionsRD, NumTotalDimensions);
-    rrddim_set_by_pointer(RS, NumAnomalousDimensionsRD, NumAnomalousDimensions);
-    rrddim_set_by_pointer(RS, AnomalyRateRD, AnomalyRate);
+    rrddim_set_by_pointer(MLRS, NumTotalDimensionsRD, NumTotalDimensions);
+    rrddim_set_by_pointer(MLRS, NumAnomalousDimensionsRD, NumAnomalousDimensions);
+    rrddim_set_by_pointer(MLRS, AnomalyRateRD, AnomalyRate);
 
-    rrdset_done(RS);
+    rrdset_done(MLRS);
 }
 
-void Host::addChart(Chart *C) {
+static void updateADChart(std::pair<RollingBitWindow::Edge, size_t> P,
+                          bool ResetBitCounter,
+                          bool NewAnomalyEvent,
+                          collected_number AnomalyRate) {
+    static thread_local RRDSET *ADRS = nullptr;
+    static thread_local RRDDIM *WindowLengthRD = nullptr;
+    static thread_local RRDDIM *AboveThresholdRD = nullptr;
+    static thread_local RRDDIM *ResetBitCounterRD = nullptr;
+    static thread_local RRDDIM *NewAnomalyEventRD = nullptr;
+    static thread_local RRDDIM *AnomalyRateRD = nullptr;
+
+    if (!ADRS) {
+        ADRS = rrdset_create_localhost(
+            "ml_detector_info",
+            "host_anomaly_status",
+            NULL,
+            "ml_detector_info",
+            NULL,
+            "Anomaly detection info",
+            "info",
+            "info",
+            NULL,
+            39184,
+            1,
+            RRDSET_TYPE_LINE
+        );
+
+        WindowLengthRD = rrddim_add(ADRS, "window_length", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        AnomalyRateRD = rrddim_add(ADRS, "anomaly_rate", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        AboveThresholdRD = rrddim_add(ADRS, "above_threshold", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        ResetBitCounterRD = rrddim_add(ADRS, "reset_bit_counter", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+        NewAnomalyEventRD = rrddim_add(ADRS, "new_anomaly_event", NULL,
+                1, 1, RRD_ALGORITHM_ABSOLUTE);
+    } else
+        rrdset_next(ADRS);
+
+    RollingBitWindow::Edge E = P.first;
+    bool AboveThreshold = E.second == RollingBitWindow::State::AboveThreshold;
+    size_t WindowLength = P.second;
+
+    rrddim_set_by_pointer(ADRS, WindowLengthRD, WindowLength);
+    rrddim_set_by_pointer(ADRS, AnomalyRateRD, AnomalyRate);
+    rrddim_set_by_pointer(ADRS, AboveThresholdRD, AboveThreshold);
+    rrddim_set_by_pointer(ADRS, ResetBitCounterRD, ResetBitCounter);
+    rrddim_set_by_pointer(ADRS, NewAnomalyEventRD, NewAnomalyEvent);
+
+    rrdset_done(ADRS);
+}
+
+void RrdHost::addDimension(Dimension *D) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    ChartsMap[C->getRS()] = C;
+    DimensionsMap[D->getRD()] = D;
 }
 
-void Host::removeChart(Chart *C) {
+void RrdHost::removeDimension(Dimension *D) {
     std::lock_guard<std::mutex> Lock(Mutex);
-    ChartsMap.erase(C->getRS());
+    DimensionsMap.erase(D->getRD());
 }
 
-bool Host::forEachDimension(std::function<bool(Dimension *)> Func) {
-    std::lock_guard<std::mutex> Lock(Mutex);
-
-    for (auto &CP : ChartsMap) {
-        Chart *C = CP.second;
-
-        if (C->forEachDimension(Func))
-            return true;
-    }
-
-    return false;
-}
-
-template<>
-void TrainableHost<Host>::trainOne(TimePoint &Now) {
-    Host *H = static_cast<Host *>(this);
-
-    H->forEachDimension([&](Dimension *D) {
-        MLError Result = D->train(Now);
+void TrainableHost::trainOne(TimePoint &Now) {
+    for (auto &DP : DimensionsMap) {
+        Dimension *D = DP.second;
+        MLError Result = D->trainModel(Now);
 
         switch (Result) {
         case MLError::TryLockFailed:
-            return false;
+            continue;
         case MLError::ShouldNotTrainNow:
-            return false;
+            continue;
         case MLError::MissingData:
-            return false;
+            continue;
         case MLError::Success:
-            return true;
+            break;
         default:
             fatal("Unhandled MLError enumeration value");
         }
-    });
+    }
 }
 
-template<>
-void TrainableHost<Host>::train() {
-    Host *H = static_cast<Host *>(this);
-
+void TrainableHost::train() {
     Duration<double> MaxSleepFor = Seconds{1};
 
     while (!netdata_exit) {
-        TimePoint StartTP = SteadyClock::now();
-        trainOne(StartTP);
-        TimePoint EndTP = SteadyClock::now();
+        size_t NumDimensions;
+        Duration<double> RealDuration;
 
-        Duration<double> RealDuration = EndTP - StartTP;
-        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (H->NumDimensions + 1);
+        {
+            std::lock_guard<std::mutex> Lock(Mutex);
 
+            TimePoint StartTP = SteadyClock::now();
+            trainOne(StartTP);
+            TimePoint EndTP = SteadyClock::now();
+
+            NumDimensions = DimensionsMap.size();
+            RealDuration = EndTP - StartTP;
+        }
+
+        Duration<double> AllottedDuration = Duration<double>{Cfg.TrainEvery} / (NumDimensions + 1);
         if (RealDuration >= AllottedDuration)
             continue;
 
@@ -117,75 +160,61 @@ void TrainableHost<Host>::train() {
     }
 }
 
-template<>
-void DetectableHost<Host>::detectOnce() {
-    Host *H = static_cast<Host *>(this);
-
-    auto P = RBW.insert(AnomalyRate >= Cfg.AnomalyRateThreshold);
+void DetectableHost::detectOnce() {
+    auto P = RBW.insert(AnomalyRate >= Cfg.HostAnomalyRateThreshold);
     RollingBitWindow::Edge E = P.first;
     size_t WindowLength = P.second;
 
     bool ResetBitCounter = (E.first == RollingBitWindow::State::BelowThreshold) &&
                            (E.second == RollingBitWindow::State::BelowThreshold);
-
-    size_t NumAnomalousDimensions = 0;
-    size_t NumTotalDimensions = H->NumDimensions;
-
-    H->forEachDimension([&](Dimension *D) {
-        if (ResetBitCounter)
-            D->reset();
-
-        NumAnomalousDimensions += D->detect();
-        return false;
-    });
-
-    error_log_limit_unlimited();
-
-    AnomalyRate = 0;
-    if (NumAnomalousDimensions != 0)
-        AnomalyRate = static_cast<CalculatedNumber>(NumAnomalousDimensions) / NumTotalDimensions;
-    updateMLChart(NumTotalDimensions, NumAnomalousDimensions, AnomalyRate * 100.0);
-    error("anomaly rate: %lf", AnomalyRate);
-
     bool NewAnomalyEvent = (E.first == RollingBitWindow::State::AboveThreshold) &&
                            (E.second == RollingBitWindow::State::BelowThreshold);
 
+    std::vector<std::pair<double, std::string>> AnomalousDimensions;
+
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
+
+        AnomalousDimensions.reserve(DimensionsMap.size());
+
+        for (auto &DP : DimensionsMap) {
+            Dimension *D = DP.second;
+
+            auto P = D->detect(WindowLength, ResetBitCounter);
+            bool IsAnomalous = P.first;
+            double AnomalyRate = P.second;
+
+            if (IsAnomalous)
+                AnomalousDimensions.push_back({ AnomalyRate, D->getID() });
+        }
+
+        AnomalyRate = 0;
+        if (AnomalousDimensions.size() != 0)
+            AnomalyRate = static_cast<double>(AnomalousDimensions.size()) / DimensionsMap.size();
+
+        error("Host anomaly: "
+              "rate=%lf, length=%zu,"
+              "anomalous-dimensions=%zu, total-dimensions= %zu",
+              AnomalyRate, WindowLength,
+              AnomalousDimensions.size(), DimensionsMap.size());
+
+        updateMLChart(DimensionsMap.size(), AnomalousDimensions.size(), 100 * AnomalyRate);
+        updateADChart(P, ResetBitCounter, NewAnomalyEvent, 100 * AnomalyRate);
+    }
+
     if (!NewAnomalyEvent)
         return;
-
-    error("new anomaly length: %zu", WindowLength);
-
-    std::vector<std::pair<double, std::string>> AnomalousDimensions;
-    H->forEachDimension([&](Dimension *D) {
-        double DimAnomalyRate = D->anomalyRate(WindowLength);
-        if (DimAnomalyRate < Cfg.ADDimensionRateThreshold)
-            return false;
-
-        AnomalousDimensions.push_back({DimAnomalyRate, D->getID()});
-
-        return false;
-    });
-
-    if (AnomalousDimensions.size() == 0) {
-        error("Found anomaly event without any dimensions");
-        return;
-    }
 
     std::sort(AnomalousDimensions.begin(), AnomalousDimensions.end());
     std::reverse(AnomalousDimensions.begin(), AnomalousDimensions.end());
 
     nlohmann::json J = AnomalousDimensions;
     time_t Now = now_realtime_sec();
-    DB.insertAnomaly("AD1", 1, H->getUUID(), Now - WindowLength, Now, J.dump(4));
-
-    error("num anomalous units: %zu", AnomalousDimensions.size());
+    DB.insertAnomaly("AD1", 1, getUUID(), Now - WindowLength, Now, J.dump(4));
 }
 
-template<>
-void DetectableHost<Host>::detect() {
+void DetectableHost::detect() {
     std::this_thread::sleep_for(Seconds{10});
-
-    Host *H = static_cast<Host *>(this);
 
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
@@ -193,36 +222,21 @@ void DetectableHost<Host>::detect() {
         TimePoint EndTP = SteadyClock::now();
         Duration<double> Dur1 = EndTP - StartTP;
 
-        if (Cfg.EnableMLCharts) {
-            StartTP = SteadyClock::now();
-            H->updateMLCharts();
-            EndTP = SteadyClock::now();
-            Duration<double> Dur2 = EndTP - StartTP;
-            error("Updating ML charts took %lf seconds", Dur2.count());
-        }
-
         error("Detection took %lf seconds", Dur1.count());
 
         std::this_thread::sleep_for(Seconds{1});
     }
 }
 
-void Host::updateMLCharts() {
-    for (auto &CP : ChartsMap) {
-        Chart *C = CP.second;
-        C->updateMLChart();
-    }
+void DetectableHost::startAnomalyDetectionThreads() {
+    TrainableHost *TH = dynamic_cast<TrainableHost *>(this);
+    TrainingThread = std::thread(&TrainableHost::train, TH);
+
+    DetectableHost *DH = dynamic_cast<DetectableHost *>(this);
+    DetectionThread = std::thread(&DetectableHost::detect, DH);
 }
 
-template<>
-void DetectableHost<Host>::startAnomalyDetectionThreads() {
-    Host *H = static_cast<Host *>(this);
-    TrainingThread = std::thread(&Host::train, H);
-    DetectionThread = std::thread(&Host::detect, H);
-}
-
-template<>
-void DetectableHost<Host>::stopAnomalyDetectionThreads() {
+void DetectableHost::stopAnomalyDetectionThreads() {
     TrainingThread.join();
     DetectionThread.join();
 }

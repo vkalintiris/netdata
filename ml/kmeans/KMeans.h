@@ -5,6 +5,7 @@
 
 #include <vector>
 #include <limits>
+#include <mutex>
 
 #include "SamplesBuffer.h"
 
@@ -23,10 +24,11 @@ public:
 
 private:
     size_t NumClusters;
-
     std::vector<DSample> ClusterCenters;
     CalculatedNumber MinDist;
     CalculatedNumber MaxDist;
+
+    std::mutex Mutex;
 };
 
 #endif /* KMEANS_H */

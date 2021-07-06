@@ -54,38 +54,32 @@ static CalculatedNumber unpack_storage_number_dbl(storage_number value) {
     return CN;
 }
 
-template<>
 std::pair<CalculatedNumber *, size_t>
-TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
-    CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
-
-    Dimension& Dim = static_cast<Dimension&>(*this);
-    RRDDIM *RD = Dim.getRD();
-
+RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
-    time_t AfterT = BeforeT - (MaxN * Dim.updateEvery().count());
+    time_t AfterT = BeforeT - (MaxN * updateEvery().count());
 
-    BeforeT -=  (BeforeT % Dim.updateEvery().count());
-    AfterT -= (AfterT % Dim.updateEvery().count());
+    BeforeT -=  (BeforeT % updateEvery().count());
+    AfterT -= (AfterT % updateEvery().count());
 
-    time_t LastT = Dim.latestTime();
+    time_t LastT = latestTime();
     BeforeT = (BeforeT > LastT) ? LastT : BeforeT;
 
-    time_t FirstT = Dim.oldestTime();
+    time_t FirstT = oldestTime();
     AfterT = (AfterT < FirstT) ? FirstT : AfterT;
 
     if (AfterT >= BeforeT)
-        return { CNs, 0 };
+        return { nullptr, 0 };
+
+    CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
 
     // Start the query.
     unsigned Idx = 0;
     unsigned CollectedValues = 0;
     unsigned TotalValues = 0;
 
-    CalculatedNumber QuietNaN = std::numeric_limits<CalculatedNumber>::quiet_NaN();
-    CalculatedNumber LastValue = QuietNaN;
-
+    CalculatedNumber LastValue = std::numeric_limits<CalculatedNumber>::quiet_NaN();
     Query Q = Query(RD);
 
     Q.init(AfterT, BeforeT);
@@ -107,8 +101,10 @@ TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     }
     TotalValues = Idx;
 
-    if (CollectedValues < MinN)
-        return { CNs, CollectedValues };
+    if (CollectedValues < MinN) {
+        delete[] CNs;
+        return { nullptr, 0 };
+    }
 
     // Find first non-NaN value.
     for (Idx = 0; std::isnan(CNs[Idx]); Idx++, TotalValues--) { }
@@ -120,30 +116,17 @@ TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     return { CNs, TotalValues };
 }
 
-template<>
-MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
-    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
-    if (!Lock.try_lock())
-        return MLError::TryLockFailed;
-
+MLError TrainableDimension::trainModel(TimePoint &Now) {
     if ((LastTrainedAt + Cfg.TrainEvery) >= Now)
         return MLError::ShouldNotTrainNow;
     LastTrainedAt = Now;
 
-    Dimension &Dim = static_cast<Dimension&>(*this);
-
-    unsigned MinN = Cfg.MinTrainSecs / Dim.updateEvery();
-    unsigned MaxN = Cfg.TrainSecs / Dim.updateEvery();
-
-    std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(MinN, MaxN);
-
+    auto P = getNumbersForTraining();
     CalculatedNumber *CNs = P.first;
     unsigned N = P.second;
 
-    if (N < MinN) {
-        delete[] CNs;
+    if (!CNs)
         return MLError::MissingData;
-    }
 
     SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     KM.train(SB);
@@ -153,55 +136,46 @@ MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
     return MLError::Success;
 }
 
-template<>
-std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
-    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
-    if (!Lock.try_lock())
-        return { MLError::TryLockFailed, AnomalyBit };
+CalculatedNumber TrainableDimension::computeAnomalyScore(SamplesBuffer &SB) {
+    return KM.anomalyScore(SB);
+}
 
-    // Should we "reset" AnomalyScore here?
+std::pair<MLError, bool> PredictableDimension::predict() {
+    // TODO; Should we "reset" AnomalyScore here?
     if (!HasModel)
         return { MLError::NoModel, AnomalyBit };
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
-    std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(N, N);
-    CalculatedNumber *CNs = P.first;
-
-    if (P.second != N) {
-        delete[] CNs;
+    if (CNs.size() != N)
         return { MLError::MissingData, AnomalyBit };
-    }
 
-    SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-    AnomalyScore = KM.anomalyScore(SB);
-    delete[] CNs;
+    CalculatedNumber *TmpCNs = new CalculatedNumber[N * (Cfg.LagN + 1)]();
+    std::memcpy(TmpCNs, CNs.data(), N * sizeof(CalculatedNumber));
 
-    AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
-    return { MLError::Success, AnomalyBit }; 
+    SamplesBuffer SB = SamplesBuffer(TmpCNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+    AnomalyScore = computeAnomalyScore(SB);
+    delete[] TmpCNs;
+
+    // TODO: differentiate two cases: (1) try-lock failed, (2) distance is inf.
+    if (AnomalyScore == std::numeric_limits<CalculatedNumber>::quiet_NaN())
+        return { MLError::TryLockFailed, AnomalyBit };
+
+    AnomalyBit = AnomalyScore >= (100 * Cfg.DimensionAnomalyScoreThreshold);
+    return { MLError::Success, AnomalyBit };
 }
 
-template<>
-void TrainableDimension<Dimension>::updateMLRD(RRDSET *MLRS) {
-    if (AnomalyScoreRD && AnomalyBitRD) {
-        rrddim_set_by_pointer(MLRS, AnomalyScoreRD, AnomalyScore * 100);
-        rrddim_set_by_pointer(MLRS, AnomalyBitRD, AnomalyBit * 100);
+void PredictableDimension::addValue(CalculatedNumber Value, bool Exists) {
+    if (!Exists) {
+        CNs.clear();
         return;
     }
 
-    std::stringstream AnomalyScoreName;
-    AnomalyScoreName << getRD()->name << "-as";
-    AnomalyScoreRD = rrddim_add(MLRS, AnomalyScoreName.str().c_str(), NULL, 1, 100,
-                                RRD_ALGORITHM_ABSOLUTE);
-
-    std::stringstream AnomalyBitName;
-    AnomalyBitName << getRD()->name << "-ab";
-    AnomalyBitRD = rrddim_add(MLRS, AnomalyBitName.str().c_str(), NULL, 1, 1,
-                              RRD_ALGORITHM_ABSOLUTE);
-
-    rrddim_flag_clear(AnomalyScoreRD, RRDDIM_FLAG_HIDDEN);
-    rrddim_flag_clear(AnomalyBitRD, RRDDIM_FLAG_HIDDEN);
-    if (rrddim_flag_check(getRD(), RRDDIM_FLAG_HIDDEN)) {
-        rrddim_flag_set(AnomalyScoreRD, RRDDIM_FLAG_HIDDEN);
-        rrddim_flag_set(AnomalyBitRD, RRDDIM_FLAG_HIDDEN);
+    unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
+    if (CNs.size() < N) {
+        CNs.push_back(Value);
+        return;
     }
+
+    std::rotate(std::begin(CNs), std::begin(CNs) + 1, std::end(CNs));
+    CNs[N - 1] = Value;
 }
