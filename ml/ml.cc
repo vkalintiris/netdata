@@ -172,6 +172,14 @@ bool ml_is_anomalous(RRDDIM *RD) {
     return D->isAnomalous();
 }
 
+void ml_push_value(RRDDIM *RD, double Value, bool Exists) {
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_unit);
+    if (!D)
+        return;
+
+    D->addValue(Value, Exists);
+}
+
 char *ml_get_anomaly_events(const char *AnomalyDetectorName,
                             int AnomalyDetectorVersion,
                             RRDHOST *RH,

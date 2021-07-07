@@ -25,6 +25,8 @@ void ml_delete_unit(RRDDIM *RD);
 
 bool ml_is_anomalous(RRDDIM *RD);
 
+void ml_push_value(RRDDIM *RD, double Value, bool Exists);
+
 char *ml_get_anomaly_events(const char *ad_name, int ad_version, RRDHOST *RH,
                             time_t after, time_t before);
 

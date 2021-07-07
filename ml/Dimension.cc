@@ -140,7 +140,7 @@ CalculatedNumber TrainableDimension::computeAnomalyScore(SamplesBuffer &SB) {
     return KM.anomalyScore(SB);
 }
 
-std::pair<MLError, bool> PredictableDimension::predict() {
+std::pair<MLError, bool> PredictableDimension::predict_v1() {
     // Should we "reset" AnomalyScore here?
     if (!HasModel)
         return { MLError::NoModel, AnomalyBit };
@@ -162,7 +162,31 @@ std::pair<MLError, bool> PredictableDimension::predict() {
         return { MLError::TryLockFailed, AnomalyBit };
 
     AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
-    return { MLError::Success, AnomalyBit }; 
+    return { MLError::Success, AnomalyBit };
+}
+
+std::pair<MLError, bool> PredictableDimension::predict_v2() {
+    // Should we "reset" AnomalyScore here?
+    if (!HasModel)
+        return { MLError::NoModel, AnomalyBit };
+
+    unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
+    if (CNs.size() != N)
+        return { MLError::MissingData, AnomalyBit };
+
+    CalculatedNumber *TmpCNs = new CalculatedNumber[N * (Cfg.LagN + 1)]();
+    std::memcpy(TmpCNs, CNs.data(), N);
+
+    SamplesBuffer SB = SamplesBuffer(TmpCNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
+    AnomalyScore = computeAnomalyScore(SB);
+    delete[] TmpCNs;
+
+    // TODO: differentiate two cases: (1) try-lock failed, (2) distance is inf.
+    if (AnomalyScore == std::numeric_limits<CalculatedNumber>::quiet_NaN())
+        return { MLError::TryLockFailed, AnomalyBit };
+
+    AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
+    return { MLError::Success, AnomalyBit };
 }
 
 void PredictableDimension::updateMLRD(RRDSET *MLRS) {
@@ -188,4 +212,20 @@ void PredictableDimension::updateMLRD(RRDSET *MLRS) {
         rrddim_flag_set(AnomalyScoreRD, RRDDIM_FLAG_HIDDEN);
         rrddim_flag_set(AnomalyBitRD, RRDDIM_FLAG_HIDDEN);
     }
+}
+
+void PredictableDimension::addValue(CalculatedNumber Value, bool Exists) {
+    if (!Exists) {
+        CNs.clear();
+        return;
+    }
+
+    unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
+    if (CNs.size() < N) {
+        CNs.push_back(Value);
+        return;
+    }
+
+    std::rotate(std::begin(CNs), std::begin(CNs) + 1, std::end(CNs));
+    CNs[N - 1] = Value;
 }

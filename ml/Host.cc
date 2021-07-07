@@ -122,10 +122,21 @@ void DetectableHost<Host>::detectOnce() {
     Host *H = static_cast<Host *>(this);
 
 #if 1
-    H->forEachDimension([&](Dimension *D) {
-        D->predict();
-        return false;
-    });
+    static int gvd = 0;
+
+    if (gvd % 2 == 0) {
+        H->forEachDimension([&](Dimension *D) {
+            D->predict_v1();
+            return false;
+        });
+    } else {
+        H->forEachDimension([&](Dimension *D) {
+            D->predict_v2();
+            return false;
+        });
+    }
+
+    gvd++;
     return;
 #endif
 

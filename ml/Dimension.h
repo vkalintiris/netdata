@@ -96,11 +96,14 @@ class PredictableDimension : public TrainableDimension {
 public:
     PredictableDimension(RRDDIM *RD) : TrainableDimension(RD) {}
 
-    std::pair<MLError, bool> predict();
+    std::pair<MLError, bool> predict_v1();
+    std::pair<MLError, bool> predict_v2();
 
     bool isAnomalous() { return AnomalyBit; }
 
     void updateMLRD(RRDSET *MLRS);
+
+    void addValue(CalculatedNumber Value, bool Exists);
 
 private:
     CalculatedNumber AnomalyScore{0.0};
@@ -108,6 +111,9 @@ private:
 
     RRDDIM *AnomalyScoreRD{nullptr};
     RRDDIM *AnomalyBitRD{nullptr};
+
+    std::vector<CalculatedNumber> CNs;
+    std::mutex CNsMutex;
 };
 
 class DetectableDimension : public PredictableDimension {
@@ -115,7 +121,7 @@ public:
     DetectableDimension(RRDDIM *RD) : PredictableDimension(RD) {}
 
     bool detect() {
-        bool AnomalyBit = predict().second;
+        bool AnomalyBit = predict_v1().second;
 
         BitCounter += AnomalyBit;
         RBC.insert(AnomalyBit);
