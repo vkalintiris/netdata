@@ -3,9 +3,9 @@
 
 #include "ml-private.h"
 
-namespace ml {
+#include "Dimension.h"
 
-class Dimension;
+namespace ml {
 
 class Chart {
 public:

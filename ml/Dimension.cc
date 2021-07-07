@@ -54,25 +54,21 @@ static CalculatedNumber unpack_storage_number_dbl(storage_number value) {
     return CN;
 }
 
-template<>
 std::pair<CalculatedNumber *, size_t>
-TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
+RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
-
-    Dimension& Dim = static_cast<Dimension&>(*this);
-    RRDDIM *RD = Dim.getRD();
 
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
-    time_t AfterT = BeforeT - (MaxN * Dim.updateEvery().count());
+    time_t AfterT = BeforeT - (MaxN * updateEvery().count());
 
-    BeforeT -=  (BeforeT % Dim.updateEvery().count());
-    AfterT -= (AfterT % Dim.updateEvery().count());
+    BeforeT -=  (BeforeT % updateEvery().count());
+    AfterT -= (AfterT % updateEvery().count());
 
-    time_t LastT = Dim.latestTime();
+    time_t LastT = latestTime();
     BeforeT = (BeforeT > LastT) ? LastT : BeforeT;
 
-    time_t FirstT = Dim.oldestTime();
+    time_t FirstT = oldestTime();
     AfterT = (AfterT < FirstT) ? FirstT : AfterT;
 
     if (AfterT >= BeforeT)
@@ -120,8 +116,7 @@ TrainableDimension<Dimension>::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     return { CNs, TotalValues };
 }
 
-template<>
-MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
+MLError TrainableDimension::trainModel(TimePoint &Now) {
     std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
     if (!Lock.try_lock())
         return MLError::TryLockFailed;
@@ -130,10 +125,8 @@ MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
         return MLError::ShouldNotTrainNow;
     LastTrainedAt = Now;
 
-    Dimension &Dim = static_cast<Dimension&>(*this);
-
-    unsigned MinN = Cfg.MinTrainSecs / Dim.updateEvery();
-    unsigned MaxN = Cfg.TrainSecs / Dim.updateEvery();
+    unsigned MinN = Cfg.MinTrainSecs / updateEvery();
+    unsigned MaxN = Cfg.TrainSecs / updateEvery();
 
     std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(MinN, MaxN);
 
@@ -153,8 +146,11 @@ MLError TrainableDimension<Dimension>::train(TimePoint &Now) {
     return MLError::Success;
 }
 
-template<>
-std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
+CalculatedNumber TrainableDimension::computeAnomalyScore(SamplesBuffer &SB) {
+    return KM.anomalyScore(SB);
+}
+
+std::pair<MLError, bool> PredictableDimension::predict() {
     std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
     if (!Lock.try_lock())
         return { MLError::TryLockFailed, AnomalyBit };
@@ -173,15 +169,14 @@ std::pair<MLError, bool> TrainableDimension<Dimension>::predict() {
     }
 
     SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
-    AnomalyScore = KM.anomalyScore(SB);
+    AnomalyScore = computeAnomalyScore(SB);
     delete[] CNs;
 
     AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
     return { MLError::Success, AnomalyBit }; 
 }
 
-template<>
-void TrainableDimension<Dimension>::updateMLRD(RRDSET *MLRS) {
+void PredictableDimension::updateMLRD(RRDSET *MLRS) {
     if (AnomalyScoreRD && AnomalyBitRD) {
         rrddim_set_by_pointer(MLRS, AnomalyScoreRD, AnomalyScore * 100);
         rrddim_set_by_pointer(MLRS, AnomalyBitRD, AnomalyBit * 100);

@@ -78,7 +78,7 @@ void TrainableHost<Host>::trainOne(TimePoint &Now) {
     Host *H = static_cast<Host *>(this);
 
     H->forEachDimension([&](Dimension *D) {
-        MLError Result = D->train(Now);
+        MLError Result = D->trainModel(Now);
 
         switch (Result) {
         case MLError::TryLockFailed:
@@ -218,11 +218,11 @@ template<>
 void DetectableHost<Host>::startAnomalyDetectionThreads() {
     Host *H = static_cast<Host *>(this);
     TrainingThread = std::thread(&Host::train, H);
-    DetectionThread = std::thread(&Host::detect, H);
+    //DetectionThread = std::thread(&Host::detect, H);
 }
 
 template<>
 void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
-    DetectionThread.join();
+    //DetectionThread.join();
 }

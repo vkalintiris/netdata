@@ -19,9 +19,9 @@ Config ml::Cfg;
  */
 void ml_init(void) {
 #if 1
-    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 60 * 60)};
-    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60 * 60)};
-    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 30 * 60 )};
+    Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 4 * 60)};
+    Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 1 * 60)};
+    Cfg.TrainEvery = Seconds{config_get_number(CONFIG_SECTION_ML, "train every secs", 1 * 60 )};
 
     Cfg.DiffN = config_get_number(CONFIG_SECTION_ML, "num samples to diff", 1);
     Cfg.SmoothN = config_get_number(CONFIG_SECTION_ML, "num samples to smooth", 3);
@@ -30,7 +30,7 @@ void ml_init(void) {
     std::string HostsToSkip = config_get(CONFIG_SECTION_ML, "hosts to skip from training", "!*");
     Cfg.SP_HostsToSkip = simple_pattern_create(HostsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
+    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!system.cpu *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 99);
@@ -169,7 +169,7 @@ bool ml_is_anomalous(RRDDIM *RD) {
     if (!D)
         return false;
 
-    return D->getAnomalyBit();
+    return D->isAnomalous();
 }
 
 char *ml_get_anomaly_events(const char *AnomalyDetectorName,

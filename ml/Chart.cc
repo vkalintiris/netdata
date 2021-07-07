@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "Dimension.h"
 #include "Chart.h"
 
 using namespace ml;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef ML_UNIT_H
-#define ML_UNIT_H
+#ifndef ML_DIMENSION_H
+#define ML_DIMENSION_H
 
 #include "ml-private.h"
 
@@ -37,12 +37,78 @@ namespace ml {
 
 class Host;
 
-template <class BaseT>
-class DetectableDimension {
+class RrdDimension {
 public:
+    RrdDimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
+
+    RRDDIM *getRD() const { return RD; }
+
+    std::string getID() const {
+        std::stringstream SS;
+        SS << RD->rrdset->id << "|" << getName();
+        return SS.str();
+    }
+
+    const char *getName() const { return RD->name; }
+    Seconds updateEvery() const { return Seconds{RD->update_every}; }
+
+    time_t latestTime() { return Ops->latest_time(RD); }
+    time_t oldestTime() { return Ops->oldest_time(RD); }
+
+    std::pair<CalculatedNumber *, size_t>
+    getCalculatedNumbers(size_t MinN, size_t MaxN);
+
+protected:
+    std::mutex Mutex;
+
+private:
+    RRDDIM *RD;
+    struct rrddim_volatile::rrddim_query_ops *Ops;
+
+};
+
+class TrainableDimension : public RrdDimension {
+public:
+    TrainableDimension(RRDDIM *RD) : RrdDimension(RD) {}
+
+    bool hasModel() { return HasModel; };
+
+    MLError trainModel(TimePoint &Now);
+
+    CalculatedNumber computeAnomalyScore(SamplesBuffer &SB);
+
+protected:
+    std::atomic<bool> HasModel{false};
+
+private:
+    KMeans KM;
+    TimePoint LastTrainedAt{SteadyClock::now()};
+};
+
+class PredictableDimension : public TrainableDimension {
+public:
+    PredictableDimension(RRDDIM *RD) : TrainableDimension(RD) {}
+
+    std::pair<MLError, bool> predict();
+
+    bool isAnomalous() { return AnomalyBit; }
+
+    void updateMLRD(RRDSET *MLRS);
+
+private:
+    CalculatedNumber AnomalyScore{0.0};
+    std::atomic<bool> AnomalyBit{false};
+
+    RRDDIM *AnomalyScoreRD{nullptr};
+    RRDDIM *AnomalyBitRD{nullptr};
+};
+
+class DetectableDimension : public PredictableDimension {
+public:
+    DetectableDimension(RRDDIM *RD) : PredictableDimension(RD) {}
+
     bool detect() {
-        BaseT &Dim = static_cast<BaseT &>(*this);
-        bool AnomalyBit = Dim.predict().second;
+        bool AnomalyBit = predict().second;
 
         BitCounter += AnomalyBit;
         RBC.insert(AnomalyBit);
@@ -65,64 +131,8 @@ private:
     size_t BitCounter{0};
 };
 
-template <class BaseT>
-class TrainableDimension : public DetectableDimension<BaseT> {
-public:
-    RRDDIM *getRD() const {
-        const BaseT& Derived = static_cast<const BaseT&>(*this);
-        return Derived.getRD();
-    }
-
-    MLError train(TimePoint &Now);
-    std::pair<MLError, bool> predict();
-
-    bool getAnomalyBit() { return AnomalyBit; }
-
-    void updateMLRD(RRDSET *MLRS);
-
-private:
-    std::pair<CalculatedNumber *, size_t>
-    getCalculatedNumbers(size_t MinN, size_t MaxN);
-
-private:
-    KMeans KM;
-
-    RRDDIM *AnomalyScoreRD{nullptr};
-    RRDDIM *AnomalyBitRD{nullptr};
-
-    // TODO: Add a couple seconds because the 1st getCalculatedNumbers will fail.
-    TimePoint LastTrainedAt{SteadyClock::now()};
-    bool HasModel{false};
-
-    CalculatedNumber AnomalyScore{0.0};
-    std::atomic<bool> AnomalyBit{false};
-
-    std::mutex Mutex;
-};
-
-class Dimension : public TrainableDimension<Dimension> {
-public:
-    Dimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
-
-    RRDDIM *getRD() const { return RD; }
-
-    std::string getID() const {
-        std::stringstream SS;
-        SS << RD->rrdset->id << "|" << getName();
-        return SS.str();
-    }
-
-    const char *getName() const { return RD->name; }
-    Seconds updateEvery() const { return Seconds{RD->update_every}; }
-
-    time_t latestTime() { return Ops->latest_time(RD); }
-    time_t oldestTime() { return Ops->oldest_time(RD); }
-
-private:
-    RRDDIM *RD;
-    struct rrddim_volatile::rrddim_query_ops *Ops;
-};
+using Dimension = DetectableDimension;
 
 } // namespace ml
 
-#endif /* ML_UNIT_H */
+#endif /* ML_DIMENSION_H */
