@@ -56,8 +56,6 @@ static CalculatedNumber unpack_storage_number_dbl(storage_number value) {
 
 std::pair<CalculatedNumber *, size_t>
 RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
-    CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
-
     // Figure out what our time window should be.
     time_t BeforeT = now_realtime_sec() - 1;
     time_t AfterT = BeforeT - (MaxN * updateEvery().count());
@@ -72,7 +70,9 @@ RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     AfterT = (AfterT < FirstT) ? FirstT : AfterT;
 
     if (AfterT >= BeforeT)
-        return { CNs, 0 };
+        return { nullptr, 0 };
+
+    CalculatedNumber *CNs = new CalculatedNumber[MaxN * (Cfg.LagN + 1)]();
 
     // Start the query.
     unsigned Idx = 0;
