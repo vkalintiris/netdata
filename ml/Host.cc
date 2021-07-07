@@ -197,7 +197,9 @@ void DetectableHost<Host>::detect() {
 
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
+        CALLGRIND_START_INSTRUMENTATION;
         detectOnce();
+        CALLGRIND_STOP_INSTRUMENTATION;
         TimePoint EndTP = SteadyClock::now();
         Duration<double> Dur1 = EndTP - StartTP;
 

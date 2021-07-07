@@ -30,7 +30,7 @@ void ml_init(void) {
     std::string HostsToSkip = config_get(CONFIG_SECTION_ML, "hosts to skip from training", "!*");
     Cfg.SP_HostsToSkip = simple_pattern_create(HostsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!system.cpu *");
+    std::string ChartsToSkip = config_get(CONFIG_SECTION_ML, "charts to skip from training", "!*");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     Cfg.AnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly score threshold", 99);
