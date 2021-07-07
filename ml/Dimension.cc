@@ -79,9 +79,7 @@ RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     unsigned CollectedValues = 0;
     unsigned TotalValues = 0;
 
-    CalculatedNumber QuietNaN = std::numeric_limits<CalculatedNumber>::quiet_NaN();
-    CalculatedNumber LastValue = QuietNaN;
-
+    CalculatedNumber LastValue = std::numeric_limits<CalculatedNumber>::quiet_NaN();
     Query Q = Query(RD);
 
     Q.init(AfterT, BeforeT);
@@ -103,8 +101,10 @@ RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
     }
     TotalValues = Idx;
 
-    if (CollectedValues < MinN)
-        return { CNs, CollectedValues };
+    if (CollectedValues < MinN) {
+        delete[] CNs;
+        return { nullptr, 0 };
+    }
 
     // Find first non-NaN value.
     for (Idx = 0; std::isnan(CNs[Idx]); Idx++, TotalValues--) { }
@@ -125,18 +125,12 @@ MLError TrainableDimension::trainModel(TimePoint &Now) {
         return MLError::ShouldNotTrainNow;
     LastTrainedAt = Now;
 
-    unsigned MinN = Cfg.MinTrainSecs / updateEvery();
-    unsigned MaxN = Cfg.TrainSecs / updateEvery();
-
-    std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(MinN, MaxN);
-
+    auto P = getNumbersForTraining();
     CalculatedNumber *CNs = P.first;
     unsigned N = P.second;
 
-    if (N < MinN) {
-        delete[] CNs;
+    if (!CNs)
         return MLError::MissingData;
-    }
 
     SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     KM.train(SB);
@@ -161,10 +155,9 @@ std::pair<MLError, bool> PredictableDimension::predict() {
 
     unsigned N = Cfg.DiffN + Cfg.SmoothN + Cfg.LagN;
     std::pair<CalculatedNumber *, unsigned> P = getCalculatedNumbers(N, N);
-    CalculatedNumber *CNs = P.first;
 
-    if (P.second != N) {
-        delete[] CNs;
+    CalculatedNumber *CNs = P.first;
+    if (!CNs) {
         return { MLError::MissingData, AnomalyBit };
     }
 

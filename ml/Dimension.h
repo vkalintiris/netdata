@@ -58,6 +58,8 @@ public:
     std::pair<CalculatedNumber *, size_t>
     getCalculatedNumbers(size_t MinN, size_t MaxN);
 
+    virtual ~RrdDimension() {}
+
 protected:
     std::mutex Mutex;
 
@@ -76,6 +78,14 @@ public:
     MLError trainModel(TimePoint &Now);
 
     CalculatedNumber computeAnomalyScore(SamplesBuffer &SB);
+
+private:
+    std::pair<CalculatedNumber *, unsigned> getNumbersForTraining() {
+        unsigned MinN = Cfg.MinTrainSecs / updateEvery();
+        unsigned MaxN = Cfg.TrainSecs / updateEvery();
+
+        return RrdDimension::getCalculatedNumbers(MinN, MaxN);
+    }
 
 protected:
     std::atomic<bool> HasModel{false};
