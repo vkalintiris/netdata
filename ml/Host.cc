@@ -121,6 +121,14 @@ template<>
 void DetectableHost<Host>::detectOnce() {
     Host *H = static_cast<Host *>(this);
 
+#if 1
+    H->forEachDimension([&](Dimension *D) {
+        D->predict();
+        return false;
+    });
+    return;
+#endif
+
     auto P = RBW.insert(AnomalyRate >= Cfg.AnomalyRateThreshold);
     RollingBitWindow::Edge E = P.first;
     size_t WindowLength = P.second;
@@ -218,11 +226,11 @@ template<>
 void DetectableHost<Host>::startAnomalyDetectionThreads() {
     Host *H = static_cast<Host *>(this);
     TrainingThread = std::thread(&Host::train, H);
-    //DetectionThread = std::thread(&Host::detect, H);
+    DetectionThread = std::thread(&Host::detect, H);
 }
 
 template<>
 void DetectableHost<Host>::stopAnomalyDetectionThreads() {
     TrainingThread.join();
-    //DetectionThread.join();
+    DetectionThread.join();
 }

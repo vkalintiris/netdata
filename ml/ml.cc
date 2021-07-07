@@ -40,7 +40,7 @@ void ml_init(void) {
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector window min anomaly rate", 0.25);
     Cfg.ADDimensionRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly detector unit rate threshold", 0.1);
 
-    Cfg.EnableMLCharts = config_get_boolean(CONFIG_SECTION_ML, "enable ml charts", false);
+    Cfg.EnableMLCharts = config_get_boolean(CONFIG_SECTION_ML, "enable ml charts", true);
 #else
     Cfg.TrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "num secs to train", 2 * 60)};
     Cfg.MinTrainSecs = Seconds{config_get_number(CONFIG_SECTION_ML, "minimum num secs to train", 60)};
