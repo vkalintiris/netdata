@@ -117,10 +117,6 @@ RrdDimension::getCalculatedNumbers(size_t MinN, size_t MaxN) {
 }
 
 MLError TrainableDimension::trainModel(TimePoint &Now) {
-    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
-    if (!Lock.try_lock())
-        return MLError::TryLockFailed;
-
     if ((LastTrainedAt + Cfg.TrainEvery) >= Now)
         return MLError::ShouldNotTrainNow;
     LastTrainedAt = Now;
@@ -145,10 +141,6 @@ CalculatedNumber TrainableDimension::computeAnomalyScore(SamplesBuffer &SB) {
 }
 
 std::pair<MLError, bool> PredictableDimension::predict() {
-    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
-    if (!Lock.try_lock())
-        return { MLError::TryLockFailed, AnomalyBit };
-
     // Should we "reset" AnomalyScore here?
     if (!HasModel)
         return { MLError::NoModel, AnomalyBit };
@@ -164,6 +156,10 @@ std::pair<MLError, bool> PredictableDimension::predict() {
     SamplesBuffer SB = SamplesBuffer(CNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     AnomalyScore = computeAnomalyScore(SB);
     delete[] CNs;
+
+    // TODO: differentiate two cases: (1) try-lock failed, (2) distance is inf.
+    if (AnomalyScore == std::numeric_limits<CalculatedNumber>::quiet_NaN())
+        return { MLError::TryLockFailed, AnomalyBit };
 
     AnomalyBit = AnomalyScore >= Cfg.AnomalyScoreThreshold;
     return { MLError::Success, AnomalyBit }; 

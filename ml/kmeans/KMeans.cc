@@ -9,32 +9,39 @@ void KMeans::train(SamplesBuffer &SB) {
     MinDist = std::numeric_limits<CalculatedNumber>::max();
     MaxDist = std::numeric_limits<CalculatedNumber>::min();
 
-    ClusterCenters.clear();
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
 
-    dlib::pick_initial_centers(NumClusters, ClusterCenters, Samples);
-    dlib::find_clusters_using_kmeans(Samples, ClusterCenters);
+        ClusterCenters.clear();
 
-    for (const auto &S : Samples) {
-        CalculatedNumber MeanDist = 0.0;
+        dlib::pick_initial_centers(NumClusters, ClusterCenters, Samples);
+        dlib::find_clusters_using_kmeans(Samples, ClusterCenters);
 
-        for (const auto &KMCenter : ClusterCenters)
-            MeanDist += dlib::length(KMCenter - S);
+        for (const auto &S : Samples) {
+            CalculatedNumber MeanDist = 0.0;
 
-        MeanDist /= NumClusters;
+            for (const auto &KMCenter : ClusterCenters)
+                MeanDist += dlib::length(KMCenter - S);
 
-        if (MeanDist < MinDist)
-            MinDist = MeanDist;
+            MeanDist /= NumClusters;
 
-        if (MeanDist > MaxDist)
-            MaxDist = MeanDist;
+            if (MeanDist < MinDist)
+                MinDist = MeanDist;
+
+            if (MeanDist > MaxDist)
+                MaxDist = MeanDist;
+        }
     }
 }
 
 CalculatedNumber KMeans::anomalyScore(SamplesBuffer &SB) {
     std::vector<DSample> DSamples = SB.preprocess();
 
-    CalculatedNumber MeanDist = 0.0;
+    std::unique_lock<std::mutex> Lock(Mutex, std::defer_lock);
+    if (!Lock.try_lock())
+        return std::numeric_limits<CalculatedNumber>::quiet_NaN();
 
+    CalculatedNumber MeanDist = 0.0;
     for (const auto &CC: ClusterCenters)
         MeanDist += dlib::length(CC - DSamples.back());
 

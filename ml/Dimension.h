@@ -73,10 +73,7 @@ class TrainableDimension : public RrdDimension {
 public:
     TrainableDimension(RRDDIM *RD) : RrdDimension(RD) {}
 
-    bool hasModel() { return HasModel; };
-
     MLError trainModel(TimePoint &Now);
-
     CalculatedNumber computeAnomalyScore(SamplesBuffer &SB);
 
 private:
