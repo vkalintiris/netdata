@@ -11,6 +11,8 @@
 using namespace ml;
 using namespace nlohmann;
 
+static int gvd = 0;
+
 static void updateMLChart(collected_number NumTotalDimensions,
                           collected_number NumAnomalousDimensions,
                           collected_number AnomalyRate) {
@@ -122,9 +124,7 @@ void DetectableHost<Host>::detectOnce() {
     Host *H = static_cast<Host *>(this);
 
 #if 1
-    static int gvd = 0;
-
-    if (gvd % 2 == 0) {
+    if (gvd % 120 < 60) {
         H->forEachDimension([&](Dimension *D) {
             D->predict_v1();
             return false;
@@ -136,7 +136,6 @@ void DetectableHost<Host>::detectOnce() {
         });
     }
 
-    gvd++;
     return;
 #endif
 
@@ -208,9 +207,7 @@ void DetectableHost<Host>::detect() {
 
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
-        CALLGRIND_START_INSTRUMENTATION;
         detectOnce();
-        CALLGRIND_STOP_INSTRUMENTATION;
         TimePoint EndTP = SteadyClock::now();
         Duration<double> Dur1 = EndTP - StartTP;
 
@@ -222,7 +219,13 @@ void DetectableHost<Host>::detect() {
             error("Updating ML charts took %lf seconds", Dur2.count());
         }
 
-        error("Detection took %lf seconds", Dur1.count());
+        if (gvd % 120 < 60) {
+            error("[V1] Prediction took %lf msecs", Dur1.count() * 1000);
+        } else {
+            error("[V2] Prediction took %lf msecs", Dur1.count() * 1000);
+        }
+
+        gvd++;
 
         std::this_thread::sleep_for(Seconds{1});
     }

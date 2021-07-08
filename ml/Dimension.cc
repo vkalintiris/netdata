@@ -175,7 +175,7 @@ std::pair<MLError, bool> PredictableDimension::predict_v2() {
         return { MLError::MissingData, AnomalyBit };
 
     CalculatedNumber *TmpCNs = new CalculatedNumber[N * (Cfg.LagN + 1)]();
-    std::memcpy(TmpCNs, CNs.data(), N);
+    std::memcpy(TmpCNs, CNs.data(), N * sizeof(CalculatedNumber));
 
     SamplesBuffer SB = SamplesBuffer(TmpCNs, N, 1, Cfg.DiffN, Cfg.SmoothN, Cfg.LagN);
     AnomalyScore = computeAnomalyScore(SB);
