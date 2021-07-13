@@ -19,8 +19,6 @@
 #include <vector>
 #include <queue>
 
-#include <valgrind/callgrind.h>
-
 extern "C" {
 
 #include "ml.h"
