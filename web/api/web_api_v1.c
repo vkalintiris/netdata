@@ -1111,9 +1111,9 @@ int web_client_api_request_v1_anomaly_events(RRDHOST *host, struct web_client *w
             continue;
 
         if (!strcmp(name, "after"))
-            after = (uint32_t) strtoul(value, NULL, 0);
+            after = (uint32_t) (strtoul(value, NULL, 0) / 1000);
         else if (!strcmp(name, "before"))
-            before = (uint32_t) strtoul(value, NULL, 0);
+            before = (uint32_t) (strtoul(value, NULL, 0) / 1000);
     }
 
     char *s;
