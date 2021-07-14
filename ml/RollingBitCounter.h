@@ -150,7 +150,9 @@ private:
     void onAboveToBelowThreshold(State PrevState, bool NewBit) {
         (void) PrevState, (void) NewBit;
 
-        CurrLength = MinLength;
+        // CurrLength = MinLength;
+        CurrLength = 0;
+        RBC = RollingBitCounter(MinLength);
     }
 
 private:
