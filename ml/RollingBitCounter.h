@@ -96,10 +96,10 @@ private:
             &RollingBitWindow::onBelowToAboveThreshold
         },
 
-        // AboveThreshold => BelowThreshold
+        // AboveThreshold => NotFilled
         {
             Edge(State::AboveThreshold, State::BelowThreshold),
-            &RollingBitWindow::onAboveToBelowThreshold
+            &RollingBitWindow::onAboveToNotFilled
         },
     };
 
@@ -147,7 +147,7 @@ private:
         CurrLength = MinLength;
     }
 
-    void onAboveToBelowThreshold(State PrevState, bool NewBit) {
+    void onAboveToNotFilled(State PrevState, bool NewBit) {
         (void) PrevState, (void) NewBit;
 
         // CurrLength = MinLength;

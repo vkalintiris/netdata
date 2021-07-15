@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "RollingBitCounter.h"
+#include "Config.h"
 
 using namespace ml;
 
@@ -60,8 +61,9 @@ std::pair<RollingBitWindow::Edge, size_t> RollingBitWindow::insert(bool Bit) {
             E = {State::BelowThreshold, CurrState};
             break;
         } case State::AboveThreshold: {
-            if (RBC.numSetBits() < SetBitsThreshold) {
-                CurrState = State::BelowThreshold;
+            if ((RBC.numSetBits() < SetBitsThreshold) ||
+                (CurrLength == (Cfg.ADMaxWindowSize - 1))) {
+                CurrState = State::NotFilled;
             }
 
             E = {State::AboveThreshold, CurrState};

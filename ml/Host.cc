@@ -209,8 +209,8 @@ void DetectableHost::detectOnce() {
     std::reverse(AnomalousDimensions.begin(), AnomalousDimensions.end());
 
     nlohmann::json J = AnomalousDimensions;
-    time_t Now = now_realtime_sec();
-    DB.insertAnomaly("AD1", 1, getUUID(), Now - WindowLength, Now, J.dump(4));
+    time_t PrevSec = now_realtime_sec() - 1;
+    DB.insertAnomaly("AD1", 1, getUUID(), PrevSec - WindowLength, PrevSec, J.dump(4));
 }
 
 void DetectableHost::detect() {
