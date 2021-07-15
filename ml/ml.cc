@@ -35,7 +35,8 @@ void ml_init(void) {
     Cfg.DimensionAnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "dimension anomaly score threshold", 0.99);
     Cfg.HostAnomalyRateThreshold = config_get_float(CONFIG_SECTION_ML, "host anomaly rate threshold", 0.2);
 
-    Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "window min size", 30);
+    Cfg.ADMinWindowSize = config_get_float(CONFIG_SECTION_ML, "window min size", 30);
+    Cfg.ADMaxWindowSize = config_get_float(CONFIG_SECTION_ML, "window max size", 5 * 60);
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "window min anomaly rate", 0.25);
     Cfg.ADDimensionRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly event min dimension rate threshold", 0.1);
 
@@ -58,7 +59,7 @@ void ml_init(void) {
     Cfg.DimensionAnomalyScoreThreshold = config_get_float(CONFIG_SECTION_ML, "dimension anomaly score threshold", 0.99);
     Cfg.HostAnomalyRateThreshold = config_get_float(CONFIG_SECTION_ML, "host anomaly rate threshold", 0.01);
 
-    Cfg.ADWindowSize = config_get_float(CONFIG_SECTION_ML, "window min size", 120);
+    Cfg.ADMinWindowSize = config_get_float(CONFIG_SECTION_ML, "window min size", 120);
     Cfg.ADWindowRateThreshold = config_get_float(CONFIG_SECTION_ML, "window min anomaly rate", 0.25);
     Cfg.ADDimensionRateThreshold = config_get_float(CONFIG_SECTION_ML, "anomaly event min dimension rate threshold", 0.1);
 #endif

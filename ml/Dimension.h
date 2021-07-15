@@ -126,7 +126,7 @@ public:
     }
 
 private:
-    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADWindowSize)};
+    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADMinWindowSize)};
     size_t NumSetBits{0};
 };
 

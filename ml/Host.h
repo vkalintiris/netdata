@@ -57,8 +57,8 @@ private:
     std::thread DetectionThread;
 
     RollingBitWindow RBW{
-        static_cast<size_t>(Cfg.ADWindowSize),
-        static_cast<size_t>(Cfg.ADWindowSize * Cfg.ADWindowRateThreshold)
+        static_cast<size_t>(Cfg.ADMinWindowSize),
+        static_cast<size_t>(Cfg.ADMinWindowSize * Cfg.ADWindowRateThreshold)
     };
     CalculatedNumber AnomalyRate{0.0};
 

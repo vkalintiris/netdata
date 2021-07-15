@@ -21,7 +21,8 @@ public:
     double DimensionAnomalyScoreThreshold;
     double HostAnomalyRateThreshold;
 
-    double ADWindowSize;
+    double ADMinWindowSize;
+    double ADMaxWindowSize;
     double ADWindowRateThreshold;
     double ADDimensionRateThreshold;
 
