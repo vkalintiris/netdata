@@ -110,24 +110,29 @@ private:
 
 class DetectableDimension : public PredictableDimension {
 public:
-    DetectableDimension(RRDDIM *RD) : PredictableDimension(RD) {}
+    DetectableDimension(RRDDIM *RD) : PredictableDimension(RD),
+         RBC(Cfg.ADMinWindowSize), NumSetBits(0) {}
 
-    std::pair<bool, double> detect(size_t WindowLength, bool Reset) {
+    std::pair<bool, double> detect(size_t WindowLength, bool Reset, bool NewAnomalyEvent) {
         bool AnomalyBit = isAnomalous();
+        NumSetBits += AnomalyBit;
+        RBC.insert(AnomalyBit);
+        double AnomalyRate = static_cast<double>(NumSetBits) / WindowLength;
 
         if (Reset)
             NumSetBits = RBC.numSetBits();
 
-        NumSetBits += AnomalyBit;
-        RBC.insert(AnomalyBit);
+        if (NewAnomalyEvent) {
+            RBC = RollingBitCounter(Cfg.ADMinWindowSize);
+            NumSetBits = 0;
+        }
 
-        double AnomalyRate = static_cast<double>(NumSetBits) / WindowLength;
         return { AnomalyBit, AnomalyRate };
     }
 
 private:
-    RollingBitCounter RBC{static_cast<size_t>(Cfg.ADMinWindowSize)};
-    size_t NumSetBits{0};
+    RollingBitCounter RBC;
+    size_t NumSetBits;
 };
 
 using Dimension = DetectableDimension;

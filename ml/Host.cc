@@ -168,7 +168,7 @@ void DetectableHost::detectOnce() {
     bool ResetBitCounter = (E.first == RollingBitWindow::State::BelowThreshold) &&
                            (E.second == RollingBitWindow::State::BelowThreshold);
     bool NewAnomalyEvent = (E.first == RollingBitWindow::State::AboveThreshold) &&
-                           (E.second == RollingBitWindow::State::BelowThreshold);
+                           (E.second == RollingBitWindow::State::NotFilled);
 
     std::vector<std::pair<double, std::string>> AnomalousDimensions;
 
@@ -180,7 +180,7 @@ void DetectableHost::detectOnce() {
         for (auto &DP : DimensionsMap) {
             Dimension *D = DP.second;
 
-            auto P = D->detect(WindowLength, ResetBitCounter);
+            auto P = D->detect(WindowLength, ResetBitCounter, NewAnomalyEvent);
             bool IsAnomalous = P.first;
             double AnomalyRate = P.second;
 
