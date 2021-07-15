@@ -28,7 +28,7 @@ void RollingBitCounter::insert(bool Bit) {
     if (N >= V.size())
         NumSetBits -= (V[start()] == true);
 
-    NumSetBits += (Bit == true);
+    NumSetBits += Bit;
     V[N++ % V.size()] = Bit;
 }
 
