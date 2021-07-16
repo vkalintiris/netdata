@@ -37,14 +37,16 @@ namespace ml {
 
 class RrdDimension {
 public:
-    RrdDimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {}
+    RrdDimension(RRDDIM *RD) : RD(RD), Ops(&RD->state->query_ops) {
+        std::stringstream SS;
+        SS << RD->rrdset->id << "|" << getName();
+        ID = SS.str();
+    }
 
     RRDDIM *getRD() const { return RD; }
 
     std::string getID() const {
-        std::stringstream SS;
-        SS << RD->rrdset->id << "|" << getName();
-        return SS.str();
+        return ID;
     }
 
     const char *getName() const { return RD->name; }
@@ -62,6 +64,7 @@ protected:
     std::mutex Mutex;
 
 private:
+    std::string ID;
     RRDDIM *RD;
     struct rrddim_volatile::rrddim_query_ops *Ops;
 

@@ -2,6 +2,7 @@
 
 #include "Dimension.h"
 #include "Query.h"
+#include "json.hpp"
 
 using namespace ml;
 
@@ -140,6 +141,8 @@ CalculatedNumber TrainableDimension::computeAnomalyScore(SamplesBuffer &SB) {
     return KM.anomalyScore(SB);
 }
 
+static std::mutex LogMutex;
+
 std::pair<MLError, bool> PredictableDimension::predict() {
     // TODO; Should we "reset" AnomalyScore here?
     if (!HasModel)
@@ -159,6 +162,16 @@ std::pair<MLError, bool> PredictableDimension::predict() {
     // TODO: differentiate two cases: (1) try-lock failed, (2) distance is inf.
     if (AnomalyScore == std::numeric_limits<CalculatedNumber>::quiet_NaN())
         return { MLError::TryLockFailed, AnomalyBit };
+
+    nlohmann::json J;
+    J["t"] = now_realtime_sec() -1;
+    J["n"] = getID();
+    J["s"] = AnomalyScore;
+
+    {
+        std::lock_guard<std::mutex> Lock(LogMutex);
+        Cfg.LogOFS << J.dump() << "\n";
+    }
 
     AnomalyBit = AnomalyScore >= (100 * Cfg.DimensionAnomalyScoreThreshold);
     return { MLError::Success, AnomalyBit };

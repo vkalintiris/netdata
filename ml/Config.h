@@ -29,6 +29,9 @@ public:
     std::string AnomalyDBPath;
 
     bool EnableMLCharts;
+
+    std::string LogPath;
+    std::ofstream LogOFS;
 };
 
 extern Config Cfg;

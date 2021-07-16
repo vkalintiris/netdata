@@ -65,9 +65,16 @@ void ml_init(void) {
 #endif
 
     // ML database path
-    std::stringstream SS;
-    SS << netdata_configured_cache_dir << "/" << "netdata-ml.db";
-    Cfg.AnomalyDBPath = SS.str();
+    std::stringstream DbSS;
+    DbSS << netdata_configured_cache_dir << "/" << "netdata-ml.db";
+    Cfg.AnomalyDBPath = DbSS.str();
+
+    std::stringstream LogSS;
+    LogSS << netdata_configured_cache_dir << "/" << "netdata-log.bin";
+    Cfg.LogPath = LogSS.str();
+
+    auto Flags = std::ios::out | std::ios::trunc;
+    Cfg.LogOFS = std::ofstream(Cfg.LogPath, Flags);
 }
 
 /*
