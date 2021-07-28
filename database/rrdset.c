@@ -1245,10 +1245,12 @@ static inline size_t rrdset_done_interpolate(
             }
 
             if(likely(rd->updated && rd->collections_counter > 1 && iterations < st->gap_when_lost_iterations_above)) {
-                if (ml_is_anomalous(rd, new_value, true))
-                    storage_flags |= SN_ANOMALOUS;
+                uint32_t dim_storage_flags = storage_flags;
 
-                rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, storage_flags));
+                if (ml_is_anomalous(rd, new_value, true))
+                    dim_storage_flags |= SN_ANOMALOUS;
+
+                rd->state->collect_ops.store_metric(rd, next_store_ut, pack_storage_number(new_value, dim_storage_flags));
 //                rd->values[current_entry] = pack_storage_number(new_value, storage_flags );
                 rd->last_stored_value = new_value;
 
@@ -1260,7 +1262,6 @@ static inline size_t rrdset_done_interpolate(
                           , unpack_storage_number(rd->values[current_entry]), new_value
                 );
                 #endif
-
             }
             else {
                 ml_is_anomalous(rd, 0, false);
