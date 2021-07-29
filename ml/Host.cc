@@ -126,7 +126,7 @@ void TrainableHost::trainOne(TimePoint &Now) {
         case MLError::MissingData:
             continue;
         case MLError::Success:
-            break;
+            return;
         default:
             fatal("Unhandled MLError enumeration value");
         }
