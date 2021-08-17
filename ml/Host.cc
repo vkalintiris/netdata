@@ -10,7 +10,8 @@
 using namespace ml;
 using namespace nlohmann;
 
-static void updateMLChart(collected_number NumTotalDimensions,
+static void updateMLChart(RRDHOST *RH,
+                          collected_number NumTotalDimensions,
                           collected_number NumAnomalousDimensions,
                           collected_number AnomalyRate) {
     static thread_local RRDSET *MLRS = nullptr;
@@ -19,7 +20,8 @@ static void updateMLChart(collected_number NumTotalDimensions,
     static thread_local RRDDIM *AnomalyRateRD = nullptr;
 
     if (!MLRS) {
-        MLRS = rrdset_create_localhost(
+        MLRS = rrdset_create(
+            RH,
             "ml_prediction_info",
             "host_anomaly_status",
             NULL,
@@ -50,7 +52,8 @@ static void updateMLChart(collected_number NumTotalDimensions,
     rrdset_done(MLRS);
 }
 
-static void updateADChart(std::pair<RollingBitWindow::Edge, size_t> P,
+static void updateADChart(RRDHOST *RH,
+                          std::pair<RollingBitWindow::Edge, size_t> P,
                           bool ResetBitCounter,
                           bool NewAnomalyEvent,
                           collected_number AnomalyRate) {
@@ -62,7 +65,8 @@ static void updateADChart(std::pair<RollingBitWindow::Edge, size_t> P,
     static thread_local RRDDIM *AnomalyRateRD = nullptr;
 
     if (!ADRS) {
-        ADRS = rrdset_create_localhost(
+        ADRS = rrdset_create(
+            RH,
             "ml_detector_info",
             "host_anomaly_status",
             NULL,
@@ -198,8 +202,8 @@ void DetectableHost::detectOnce() {
               AnomalyRate, WindowLength,
               AnomalousDimensions.size(), DimensionsMap.size());
 
-        updateMLChart(DimensionsMap.size(), AnomalousDimensions.size(), 100 * AnomalyRate);
-        updateADChart(P, ResetBitCounter, NewAnomalyEvent, 100 * AnomalyRate);
+        updateMLChart(getRH(), DimensionsMap.size(), AnomalousDimensions.size(), 100 * AnomalyRate);
+        updateADChart(getRH(), P, ResetBitCounter, NewAnomalyEvent, 100 * AnomalyRate);
     }
 
     if (!NewAnomalyEvent)
