@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#if defined(ENABLE_ML)
+
 #include "Config.h"
 #include "Dimension.h"
 #include "Host.h"
@@ -21,12 +23,16 @@ void ml_new_host(RRDHOST *RH) {
 
     Host *H = new Host(RH);
     RH->ml_host = static_cast<ml_host_t>(H);
+
+    H->startTrainingThread();
 }
 
 void ml_delete_host(RRDHOST *RH) {
     Host *H = static_cast<Host *>(RH->ml_host);
     if (!H)
         return;
+
+    H->stopTrainingThread();
 
     delete H;
     RH->ml_host = nullptr;
@@ -58,3 +64,33 @@ void ml_delete_dimension(RRDDIM *RD) {
     delete D;
     RD->state->ml_dimension = nullptr;
 }
+
+bool ml_is_anomalous(RRDDIM *RD, double Value, bool Exists) {
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_dimension);
+    if (!D)
+        return false;
+
+    D->addValue(Value, Exists);
+    return D->predict().second;
+}
+
+#else
+
+#include "ml.h"
+
+void ml_init(void) {}
+
+void ml_new_host(RRDHOST *RH) { (void) RH; }
+
+void ml_delete_host(RRDHOST *RH) { (void) RH; }
+
+void ml_new_dimension(RRDDIM *RD) { (void) RD; }
+
+void ml_delete_dimension(RRDDIM *RD) { (void) RD; }
+
+bool ml_is_anomalous(RRDDIM *RD, double Value, bool Exists) {
+    (void) RD; (void) Value; (void) Exists;
+    return false;
+}
+
+#endif // ENABLE_ML
