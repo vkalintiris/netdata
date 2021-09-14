@@ -939,6 +939,11 @@ set(DAEMON_FILES
         daemon/unit_test.h
         )
 
+set(ML_FILES
+        ml/ml.h
+        ml/ml-dummy.cc
+)
+
 set(NETDATA_FILES
         collectors/all.h
         ${DAEMON_FILES}
@@ -948,6 +953,7 @@ set(NETDATA_FILES
         ${CHECKS_PLUGIN_FILES}
         ${HEALTH_PLUGIN_FILES}
         ${IDLEJITTER_PLUGIN_FILES}
+        ${ML_FILES}
         ${PLUGINSD_PLUGIN_FILES}
         ${RRD_PLUGIN_FILES}
         ${REGISTRY_PLUGIN_FILES}
