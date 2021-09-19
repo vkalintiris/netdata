@@ -8,3 +8,8 @@
 	path = ml/kmeans/dlib
 	url = https://github.com/davisking/dlib.git
 	ignore = dirty
+	shallow = true
+[submodule "ml/json"]
+	path = ml/json
+	url = https://github.com/nlohmann/json.git
+	shallow = true
