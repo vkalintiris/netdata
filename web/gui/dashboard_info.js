@@ -660,6 +660,12 @@ netdataDashboard.menu = {
         icon: '<i class="fas fa-exclamation"></i>',
         info: 'Z scores scores relating to key system metrics.'
     },
+    
+    'anomaly_detection': {
+        title: 'Anomaly Detection',
+        icon: '<i class="fas fa-brain"></i>',
+        info: 'Charts relating to anomaly detection, increased `anomalous` dimensions or a higher than usual `anomaly_rate` could be signs of some abnormal behaviour. Read our <a href="https://learn.netdata.cloud/guides/monitor/anomaly-detection" target="_blank">anomaly detection guide</a> for more details.'
+    },
 
 };
 
