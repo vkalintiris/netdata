@@ -4923,5 +4923,24 @@ netdataDashboard.context = {
         info: 'Scope units are similar to service units, but manage foreign processes instead of starting them as well. ' +
         'See <a href="https://www.freedesktop.org/software/systemd/man/systemd.slice.html#" target="_blank"> systemd.slice(5)</a>.'
     },
+    
+    // ------------------------------------------------------------------------
+    // Anomaly Detection
+    
+    'anomaly_detection.dimensions': {
+        info: 'Total count of dimensions considered anomalous or normal. '
+    },
+    
+    'anomaly_detection.anomaly_rate': {
+        info: 'Percentage of anomalous dimensions. '
+    },
+    
+    'anomaly_detection.detector_window': {
+        info: 'The length of the active window used by the detector. '
+    },
+    
+    'anomaly_detection.detector_events': {
+        info: 'Flags (0 or 1) to show when an anomaly event has been triggered by the detector. '
+    },
 
 };
