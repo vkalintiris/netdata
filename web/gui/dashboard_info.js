@@ -6143,5 +6143,13 @@ netdataDashboard.context = {
     'anomaly_detection.detector_events': {
         info: 'Flags (0 or 1) to show when an anomaly event has been triggered by the detector. '
     },
+    
+    'anomaly_detection.prediction_stats': {
+        info: 'Diagnostic metrics relating to prediction time of anomaly detection. '
+    },
+    
+    'anomaly_detection.training_stats': {
+        info: 'Diagnostic metrics relating to training time of anomaly detection. '
+    },
 
 };
