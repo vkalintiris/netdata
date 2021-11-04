@@ -9,6 +9,7 @@ char exepath[FILENAME_MAX + 1];
 
 void get_netdata_execution_path(void)
 {
+#if 0
     int ret;
     size_t exepath_size = 0;
     struct passwd *passwd = NULL;
@@ -25,6 +26,10 @@ void get_netdata_execution_path(void)
         fatal("Cannot start netdata without getting execution path.");
     }
     exepath[exepath_size] = '\0';
+#else
+    memset(exepath, 0, FILENAME_MAX);
+    strcpy(exepath, "/usr/sbin/netdata");
+#endif
 }
 
 static void chown_open_file(int fd, uid_t uid, gid_t gid) {

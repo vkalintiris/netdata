@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <stdio.h>
-#include "./config.h"
+
+#ifdef HAVE_CONFIG_H
+include "./config.h"
+#endif
+
 #include "common.h"
 #include "buildinfo.h"
 

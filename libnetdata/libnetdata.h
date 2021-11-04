@@ -7,6 +7,10 @@
 extern "C" {
 # endif
 
+#define likely(x)       __builtin_expect(!!(x), 1)
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#define __maybe_unused  __attribute__((unused))
+
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
