@@ -282,6 +282,11 @@ void RrdHost::getConfigAsJson(nlohmann::json &Json) const {
     Json["idle-window-size"] = Cfg.ADIdleWindowSize;
     Json["window-rate-threshold"] = Cfg.ADWindowRateThreshold;
     Json["dimension-rate-threshold"] = Cfg.ADDimensionRateThreshold;
+
+    Json["save-anomaly-percentage-every"] = Cfg.SaveAnomalyPercentageEvery;
+
+    Json["max_anomaly_rate_info_table_size"] = Cfg.MaxAnomalyRateInfoTableSize;
+    Json["max_anomaly_rate_info_age"] = Cfg.MaxAnomalyRateInfoAge;
 }
 
 std::pair<Dimension *, Duration<double>>
@@ -350,6 +355,8 @@ void DetectableHost::detectOnce() {
                            (Edge.second == BitRateWindow::State::Idle);
 
     std::vector<std::pair<double, std::string>> DimsOverThreshold;
+    /*the following vector takes care of the count of the set anomaly bits per dimension*/
+    std::vector<std::pair<double, std::string>> DimsAnomalyRate;
 
     size_t NumAnomalousDimensions = 0;
     size_t NumNormalDimensions = 0;
@@ -362,6 +369,7 @@ void DetectableHost::detectOnce() {
         std::lock_guard<std::mutex> Lock(Mutex);
 
         DimsOverThreshold.reserve(DimensionsMap.size());
+        DimsAnomalyRate.reserve(DimensionsMap.size());
 
         for (auto &DP : DimensionsMap) {
             Dimension *D = DP.second;
@@ -376,8 +384,21 @@ void DetectableHost::detectOnce() {
             MaxTrainingDuration = std::max(MaxTrainingDuration, DimTrainingDuration);
             TotalTrainingDuration += DimTrainingDuration;
 
-            if (IsAnomalous)
+            if (IsAnomalous) {
                 NumAnomalousDimensions += 1;
+                /*count up the number of anomalies for this dimension*/
+                D->setAnomalousBitCount(D->getAnomalousBitCount() + 1);
+            }
+
+            /*regardless the dimension value was anomalous or not, update the value of the percentage of anomalous dimension*/
+            D->setAnomalyPercentage((D->getAnomalousBitCount() / (abs(Cfg.SaveAnomalyPercentageEvery - AnomalyBitCounterWindow) * static_cast<double>(updateEvery()))) * 100.0);
+
+            /*if the counting window is exhausted, push and then reset the counter*/
+            if(AnomalyBitCounterWindow == 0) {
+                double AnomalyPercentage = (D->getAnomalousBitCount() / (Cfg.SaveAnomalyPercentageEvery * static_cast<double>(updateEvery()))) * 100.0;
+                DimsAnomalyRate.push_back({AnomalyPercentage , D->getID() });
+                D->setAnomalousBitCount(0.0);
+            }
 
             if (NewAnomalyEvent && (AnomalyRate >= Cfg.ADDimensionRateThreshold))
                 DimsOverThreshold.push_back({ AnomalyRate, D->getID() });
@@ -389,6 +410,7 @@ void DetectableHost::detectOnce() {
             AnomalyRate = 0.0;
 
         NumNormalDimensions = DimensionsMap.size() - NumAnomalousDimensions;
+
     }
 
     this->NumAnomalousDimensions = NumAnomalousDimensions;
@@ -400,6 +422,26 @@ void DetectableHost::detectOnce() {
     updateWindowLengthChart(getRH(), WindowLength);
     updateEventsChart(getRH(), P, ResetBitCounter, NewAnomalyEvent);
     updateTrainingChart(getRH(), TotalTrainingDuration * 1000.0, MaxTrainingDuration * 1000.0);
+
+    /*code snippet to keep account of the count of the anomalous values of each dimension
+    ...in the anomaly-precentage period configured by (Cfg.SaveAnomalyPercentageEvery)*/
+    if(AnomalyBitCounterWindow == 0) {
+        /*one period is completed, save in the DB the vector that holds the values of the percentages
+        (of the set anomaly bits) for each dimension*/
+        nlohmann::json JsonResult = DimsAnomalyRate;
+
+        time_t Before = now_realtime_sec();
+        time_t After = Before - ((Cfg.SaveAnomalyPercentageEvery+1) * updateEvery());
+
+        DB.insertBulkAnomalyRateInfo(getUUID(), After, Before, JsonResult.dump(4));
+        /*and reset the window size to restart down-counting*/
+        AnomalyBitCounterWindow = Cfg.SaveAnomalyPercentageEvery;
+        /*Save the value of the Before time tag for when it will be checked for timeranges including current time*/
+        setLastSavedBefore(Before);
+    }
+    else {
+        AnomalyBitCounterWindow--;
+    }
 
     if (!NewAnomalyEvent || (DimsOverThreshold.size() == 0))
         return;
@@ -437,6 +479,41 @@ void DetectableHost::detect() {
         updateDetectionChart(getRH(), Dur.count() * 1000);
 
         std::this_thread::sleep_for(Seconds{updateEvery()});
+
+        /*control the size of the database table and shrink them if required*/
+        DB.shrinkAnomalyRateInfoTable(static_cast<int>(Cfg.MaxAnomalyRateInfoTableSize));
+        /*control the age of the data and remove them if required*/
+        time_t OldestTime = now_realtime_sec() - (Cfg.MaxAnomalyRateInfoAge * 3600);
+        DB.removeOldAnomalyRateInfo(OldestTime);
+    }
+}
+
+void DetectableHost::getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::string, double>> &V, time_t After, time_t Before) {
+    for (auto &DP : DimensionsMap) {
+        Dimension *D = DP.second;
+        V.push_back({D->getID(), (D->getAnomalyPercentage() * abs(Before - After) / (Cfg.SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())))});
+    }
+}
+
+void DetectableHost::getAnomalyRateInfoMixedRange(std::vector<std::pair<std::string, double>> &V, std::string HostUUID,time_t After, time_t Before) {
+    std::vector<std::pair<std::string, double>> DimAndAnomalyRateInRange;
+    bool Res = getAnomalyRateInfoInRange(DimAndAnomalyRateInRange, getUUID(), After, getLastSavedBefore());
+    std::vector<std::pair<std::string, double>>::iterator it;
+
+    if (Res) {
+        for (auto &DP : DimensionsMap) {
+            Dimension *D = DP.second;
+
+            /*Search in vector for corresponding dimension IDs, if found, combine and insert*/
+            auto it = std::find_if( DimAndAnomalyRateInRange.begin(), DimAndAnomalyRateInRange.end(),
+            [&D](const std::pair<std::string, int>& element){ return element.first == D->getID();} );
+
+            if( it != DimAndAnomalyRateInRange.end())
+            {
+                double CurrentPercentage = (D->getAnomalyPercentage() * (Before - getLastSavedBefore()) / (Cfg.SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())));
+                V.push_back({D->getID(), abs(((CurrentPercentage * (Before - getLastSavedBefore())) + (it->second * (getLastSavedBefore() - After)))/(Before - After))});
+            }
+        }
     }
 }
 
