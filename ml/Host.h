@@ -41,6 +41,8 @@ protected:
 
     std::map<RRDDIM *, Dimension *> DimensionsMap;
     std::map<Dimension *, std::mutex> LocksMap;
+    //The window size of anomaly bit counting for anomaly percentage
+    double SaveAnomalyPercentageEvery = 15 * 60;
 };
 
 class TrainableHost : public RrdHost {
@@ -56,7 +58,12 @@ private:
 
 class DetectableHost : public TrainableHost {
 public:
-    DetectableHost(RRDHOST *RH) : TrainableHost(RH) {}
+    DetectableHost(RRDHOST *RH) : TrainableHost(RH) {
+        std::pair<int, int> TheLastSavedRange;
+        if(DB.getTheLastSavedAnomalyInfoRange(TheLastSavedRange, getUUID())) {
+            LastSavedBefore = TheLastSavedRange.second;
+        }
+    }
 
     void startAnomalyDetectionThreads();
     void stopAnomalyDetectionThreads();
@@ -71,8 +78,18 @@ public:
         return DB.getAnomaliesInRange(Args...);
     }
 
+    template<typename ...ArgTypes>
+    bool getAnomalyRateInfoInRange(ArgTypes&&... Args) {
+        return DB.getAnomalyRateInfoInRange(Args...);
+    }
+
     void getDetectionInfoAsJson(nlohmann::json &Json) const;
 
+    time_t getLastSavedBefore() { return LastSavedBefore; }
+    void setLastSavedBefore(time_t lastSavedBefore) { LastSavedBefore = lastSavedBefore; }
+    void getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::string, double>> &V, time_t After, time_t Before);
+    void getAnomalyRateInfoMixedRange(std::vector<std::pair<std::string, double>> &V, std::string HostUUID, time_t After, time_t Before);
+    
 private:
     void detect();
     void detectOnce();
@@ -95,6 +112,11 @@ private:
     size_t NumTrainedDimensions{0};
 
     Database DB{Cfg.AnomalyDBPath};
+
+    /*the counter variable to downcount the time window for anomaly bit counting*/
+    size_t AnomalyBitCounterWindow{static_cast<size_t>(SaveAnomalyPercentageEvery)};
+    time_t LastSavedBefore{0};
+
 };
 
 using Host = DetectableHost;

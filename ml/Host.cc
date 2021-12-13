@@ -234,7 +234,7 @@ void RrdHost::addDimension(Dimension *D) {
     std::lock_guard<std::mutex> Lock(Mutex);
 
     DimensionsMap[D->getRD()] = D;
-
+    
     // Default construct mutex for dimension
     LocksMap[D];
 }
@@ -350,7 +350,9 @@ void DetectableHost::detectOnce() {
                            (Edge.second == BitRateWindow::State::Idle);
 
     std::vector<std::pair<double, std::string>> DimsOverThreshold;
-
+    /*the following vector takes care of the count of the set anomaly bits per dimension*/
+    std::vector<std::pair<double, std::string>> DimsAnomalyRate;
+    
     size_t NumAnomalousDimensions = 0;
     size_t NumNormalDimensions = 0;
     size_t NumTrainedDimensions = 0;
@@ -358,11 +360,16 @@ void DetectableHost::detectOnce() {
     double TotalTrainingDuration = 0.0;
     double MaxTrainingDuration = 0.0;
 
+    /*Time variable to hold the oldest time that dbengine holds data, so that 
+    ...the records older than this may be deleted from anomaly rate info*/
+    time_t OldestTimeOfAllDims = now_realtime_sec();
+
     {
         std::lock_guard<std::mutex> Lock(Mutex);
 
         DimsOverThreshold.reserve(DimensionsMap.size());
-
+        DimsAnomalyRate.reserve(DimensionsMap.size());
+        
         for (auto &DP : DimensionsMap) {
             Dimension *D = DP.second;
 
@@ -376,11 +383,30 @@ void DetectableHost::detectOnce() {
             MaxTrainingDuration = std::max(MaxTrainingDuration, DimTrainingDuration);
             TotalTrainingDuration += DimTrainingDuration;
 
-            if (IsAnomalous)
+            if (IsAnomalous) {
                 NumAnomalousDimensions += 1;
+                /*count up the number of anomalies for this dimension*/
+                D->setAnomalousBitCount(D->getAnomalousBitCount() + 1);
+            }
+
+            /*regardless the dimension value was anomalous or not, update the value of the percentage of anomalous dimension*/
+            if(AnomalyBitCounterWindow < SaveAnomalyPercentageEvery) {           
+                D->setAnomalyPercentage((D->getAnomalousBitCount() / ((SaveAnomalyPercentageEvery - AnomalyBitCounterWindow) * static_cast<double>(updateEvery()))) * 100.0);
+            }
+            /*Register the oldest time of this dimension*/
+            OldestTimeOfAllDims = MIN(D->oldestTime(), OldestTimeOfAllDims);
+            
+            /*if the counting window is exhausted, push and then reset the counter*/
+            if(AnomalyBitCounterWindow == 0) {
+                double AnomalyPercentage = (D->getAnomalousBitCount() / (SaveAnomalyPercentageEvery * static_cast<double>(updateEvery()))) * 100.0;
+                DimsAnomalyRate.push_back({AnomalyPercentage , D->getID() });                
+                D->setAnomalousBitCount(0.0);
+            }
 
             if (NewAnomalyEvent && (AnomalyRate >= Cfg.ADDimensionRateThreshold))
                 DimsOverThreshold.push_back({ AnomalyRate, D->getID() });
+
+            
         }
 
         if (NumAnomalousDimensions)
@@ -400,6 +426,30 @@ void DetectableHost::detectOnce() {
     updateWindowLengthChart(getRH(), WindowLength);
     updateEventsChart(getRH(), P, ResetBitCounter, NewAnomalyEvent);
     updateTrainingChart(getRH(), TotalTrainingDuration * 1000.0, MaxTrainingDuration * 1000.0);
+    
+    /*code snippet to keep account of the count of the anomalous values of each dimension
+    ...in the anomaly-precentage period configured by (SaveAnomalyPercentageEvery)*/
+    if(AnomalyBitCounterWindow == 0) {
+        /*one period is completed, save in the DB the vector that holds the values of the percentages 
+        (of the set anomaly bits) for each dimension*/
+        nlohmann::json JsonResult = DimsAnomalyRate;
+
+        time_t Before = now_realtime_sec();
+        time_t After = Before - ((SaveAnomalyPercentageEvery+1) * updateEvery());
+        
+        DB.insertBulkAnomalyRateInfo(getUUID(), After, Before, JsonResult.dump(4));
+        /*and reset the window size to restart down-counting*/
+        AnomalyBitCounterWindow = SaveAnomalyPercentageEvery;
+        /*Save the value of the Before time tag for when it will be checked for timeranges including current time*/
+        setLastSavedBefore(Before);
+
+        //Delete the old records based on the oldest time of dim data in dbengine, i.e. OldestTimeOfAllDims
+        DB.removeOldAnomalyRateInfo(OldestTimeOfAllDims);            
+    }
+    else {
+        AnomalyBitCounterWindow--;
+    }
+    
 
     if (!NewAnomalyEvent || (DimsOverThreshold.size() == 0))
         return;
@@ -427,7 +477,7 @@ void DetectableHost::detectOnce() {
 
 void DetectableHost::detect() {
     std::this_thread::sleep_for(Seconds{10});
-
+    
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
         detectOnce();
@@ -437,6 +487,41 @@ void DetectableHost::detect() {
         updateDetectionChart(getRH(), Dur.count() * 1000);
 
         std::this_thread::sleep_for(Seconds{updateEvery()});
+    }
+}
+
+void DetectableHost::getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::string, double>> &V, time_t After, time_t Before) {
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
+        for (auto &DP : DimensionsMap) {
+            Dimension *D = DP.second;
+            V.push_back({D->getID(), (D->getAnomalyPercentage() * abs(Before - After) / (SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())))});
+        }
+    }
+}
+
+void DetectableHost::getAnomalyRateInfoMixedRange(std::vector<std::pair<std::string, double>> &V, std::string HostUUID,time_t After, time_t Before) {
+    std::vector<std::pair<std::string, double>> DimAndAnomalyRateInRange;
+    bool Res = getAnomalyRateInfoInRange(DimAndAnomalyRateInRange, HostUUID, After, getLastSavedBefore());
+    std::vector<std::pair<std::string, double>>::iterator it;
+    
+    if (Res) {
+        {
+        std::lock_guard<std::mutex> Lock(Mutex);
+            for (auto &DP : DimensionsMap) {
+                Dimension *Dm = DP.second;
+                
+                /*Search in vector for corresponding dimension IDs, if found, combine and insert*/
+                auto it = std::find_if( DimAndAnomalyRateInRange.begin(), DimAndAnomalyRateInRange.end(),
+                [&Dm](const std::pair<std::string, int>& element){ return element.first == Dm->getID();} );
+                
+                if( it != DimAndAnomalyRateInRange.end())
+                {
+                    double CurrentPercentage = (Dm->getAnomalyPercentage() * (Before - getLastSavedBefore()) / (SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())));
+                    V.push_back({Dm->getID(), abs(((CurrentPercentage * (Before - getLastSavedBefore())) + (it->second * (getLastSavedBefore() - After)))/(Before - After))});
+                }
+            }
+        }    
     }
 }
 
