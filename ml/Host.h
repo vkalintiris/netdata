@@ -14,7 +14,24 @@ namespace ml {
 
 class RrdHost {
 public:
-    RrdHost(RRDHOST *RH) : RH(RH) {}
+    RrdHost(RRDHOST *RH) : RH(RH) {
+        AnomalyRateRS = rrdset_create(
+            RH,
+            "ar_type",
+            "ar_id",
+            NULL, // name
+            "ar_family",
+            NULL, // ctx
+            "ar_title",
+            "ar_units",
+            "ar_plugin",
+            "ar_module",
+            39189,
+            Cfg.AnomalyRateEvery,
+            RRDSET_TYPE_LINE
+        );
+        rrdset_flag_set(AnomalyRateRS, RRDSET_FLAG_HIDDEN);
+    }
 
     RRDHOST *getRH() { return RH; }
 
@@ -35,6 +52,7 @@ public:
 
 protected:
     RRDHOST *RH;
+    RRDSET *AnomalyRateRS;
 
     // Protect dimension and lock maps
     std::mutex Mutex;
@@ -88,11 +106,13 @@ private:
         static_cast<size_t>(Cfg.ADMinWindowSize * Cfg.ADWindowRateThreshold)
     };
 
-    CalculatedNumber AnomalyRate{0.0};
+    CalculatedNumber WindowAnomalyRate{0.0};
 
     size_t NumAnomalousDimensions{0};
     size_t NumNormalDimensions{0};
     size_t NumTrainedDimensions{0};
+
+    unsigned AnomalyRateTimer{0};
 
     Database DB{Cfg.AnomalyDBPath};
 };

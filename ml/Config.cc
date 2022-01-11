@@ -31,6 +31,7 @@ void Config::readMLConfig(void) {
     unsigned MaxTrainSamples = config_get_number(ConfigSectionML, "maximum num samples to train", 4 * 3600);
     unsigned MinTrainSamples = config_get_number(ConfigSectionML, "minimum num samples to train", 1 * 3600);
     unsigned TrainEvery = config_get_number(ConfigSectionML, "train every", 1 * 3600);
+    unsigned AnomalyRateEvery = config_get_number(ConfigSectionML, "anomaly rate every", 1 * 60);
 
     unsigned DiffN = config_get_number(ConfigSectionML, "num samples to diff", 1);
     unsigned SmoothN = config_get_number(ConfigSectionML, "num samples to smooth", 3);
@@ -58,6 +59,7 @@ void Config::readMLConfig(void) {
     MaxTrainSamples = clamp(MaxTrainSamples, 1 * 3600u, 6 * 3600u);
     MinTrainSamples = clamp(MinTrainSamples, 1 * 3600u, 6 * 3600u);
     TrainEvery = clamp(TrainEvery, 1 * 3600u, 6 * 3600u);
+    AnomalyRateEvery = clamp(AnomalyRateEvery, 1 * 60u, 30 * 60u);
 
     DiffN = clamp(DiffN, 0u, 1u);
     SmoothN = clamp(SmoothN, 0u, 5u);
@@ -101,6 +103,7 @@ void Config::readMLConfig(void) {
     Cfg.MaxTrainSamples = MaxTrainSamples;
     Cfg.MinTrainSamples = MinTrainSamples;
     Cfg.TrainEvery = TrainEvery;
+    Cfg.AnomalyRateEvery = AnomalyRateEvery;
 
     Cfg.DiffN = DiffN;
     Cfg.SmoothN = SmoothN;
@@ -123,6 +126,15 @@ void Config::readMLConfig(void) {
     Cfg.ChartsToSkip = config_get(ConfigSectionML, "charts to skip from training",
             "!system.* !cpu.* !mem.* !disk.* !disk_* "
             "!ip.* !ipv4.* !ipv6.* !net.* !net_* !netfilter.* "
-            "!services.* !apps.* !groups.* !user.* !ebpf.* !netdata.* *");
+            "!services.* !apps.* !groups.* !user.* !ebpf.* !netdata.* ar_id *");
     Cfg.SP_ChartsToSkip = simple_pattern_create(ChartsToSkip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
+
+#if 0
+    Cfg.MaxTrainSamples = 4 * 60;
+    Cfg.MinTrainSamples = 2 * 60;
+    Cfg.TrainEvery = 60;
+    Cfg.AnomalyRateEvery = 15;
+
+    Cfg.SP_ChartsToSkip = simple_pattern_create("!system.cpu * ar_id", NULL, SIMPLE_PATTERN_EXACT);
+#endif
 }
