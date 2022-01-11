@@ -28,10 +28,15 @@ public:
 
     const std::string getID() const { return ID; }
 
+    void setAnomalyRateRD(RRDDIM *ARRD) { AnomalyRateRD = ARRD; }
+    RRDDIM *getAnomalyRateRD() const { return AnomalyRateRD; }
+
     virtual ~RrdDimension() {}
 
 private:
     RRDDIM *RD;
+    RRDDIM *AnomalyRateRD;
+
     struct rrddim_volatile::rrddim_query_ops *Ops;
 
     std::string ID;
@@ -88,9 +93,20 @@ public:
 
     bool isAnomalous() { return AnomalyBit; }
 
+    void updateAnomalyBitCounter(RRDSET *RS, unsigned Elapsed, bool IsAnomalous) {
+        AnomalyBitCounter += IsAnomalous;
+
+        if (Elapsed == Cfg.AnomalyRateEvery) {
+            double AR = static_cast<double>(AnomalyBitCounter) / Cfg.AnomalyRateEvery;
+            rrddim_set_by_pointer(RS, getAnomalyRateRD(), AR * 1000);
+            AnomalyBitCounter = 0;
+        }
+    }
+
 private:
     CalculatedNumber AnomalyScore{0.0};
     std::atomic<bool> AnomalyBit{false};
+    unsigned AnomalyBitCounter{0};
 
     std::vector<CalculatedNumber> CNs;
 };

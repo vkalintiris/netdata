@@ -14,6 +14,7 @@ public:
     unsigned MaxTrainSamples;
     unsigned MinTrainSamples;
     unsigned TrainEvery;
+    unsigned AnomalyRateEvery;
 
     unsigned DiffN;
     unsigned SmoothN;
