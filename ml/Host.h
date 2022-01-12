@@ -57,8 +57,8 @@ protected:
     // Protect dimension and lock maps
     std::mutex Mutex;
 
-    std::map<RRDDIM *, Dimension *> DimensionsMap;
-    std::map<Dimension *, std::mutex> LocksMap;
+    std::unordered_map<RRDDIM *, Dimension *> DimensionsMap;
+    std::unordered_map<Dimension *, std::mutex> LocksMap;
 };
 
 class TrainableHost : public RrdHost {
