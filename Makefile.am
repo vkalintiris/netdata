@@ -290,6 +290,10 @@ TIMEX_PLUGIN_FILES = \
     collectors/timex.plugin/plugin_timex.c \
     $(NULL)
 
+PROFILE_PLUGIN_FILES = \
+    collectors/profile.plugin/plugin_profile.cc \
+    $(NULL)
+
 FREEIPMI_PLUGIN_FILES = \
     collectors/freeipmi.plugin/freeipmi_plugin.c \
     $(LIBNETDATA_FILES) \
@@ -917,6 +921,7 @@ if LINUX
         $(CGROUPS_PLUGIN_FILES) \
         $(DISKSPACE_PLUGIN_FILES) \
         $(TIMEX_PLUGIN_FILES) \
+        $(PROFILE_PLUGIN_FILES) \
         $(PROC_PLUGIN_FILES) \
         $(TC_PLUGIN_FILES) \
         $(NULL)

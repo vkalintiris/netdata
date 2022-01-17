@@ -11,6 +11,7 @@ SUBDIRS = \
     cups.plugin \
     diskspace.plugin \
     timex.plugin \
+    profile.plugin \
     fping.plugin \
     ioping.plugin \
     freebsd.plugin \

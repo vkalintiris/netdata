@@ -387,6 +387,10 @@ void fix_google_param(char *s) {
 inline int web_client_api_request_v1_data(RRDHOST *host, struct web_client *w, char *url) {
     debug(D_WEB_CLIENT, "%llu: API v1 data with URL '%s'", w->id, url);
 
+    struct timeval start_tv, end_tv;
+
+    now_realtime_timeval(&start_tv);
+
     int ret = HTTP_RESP_BAD_REQUEST;
     BUFFER *dimensions = NULL;
 
@@ -628,6 +632,11 @@ inline int web_client_api_request_v1_data(RRDHOST *host, struct web_client *w, c
 
     cleanup:
     buffer_free(dimensions);
+
+    now_realtime_timeval(&end_tv);
+    usec_t duration_usec = dt_usec(&start_tv, &end_tv);
+    error("Querying data endpoint took %lld usec", duration_usec);
+
     return ret;
 }
 

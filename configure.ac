@@ -1663,6 +1663,7 @@ AC_CONFIG_FILES([
     collectors/checks.plugin/Makefile
     collectors/diskspace.plugin/Makefile
     collectors/timex.plugin/Makefile
+    collectors/profile.plugin/Makefile
     collectors/fping.plugin/Makefile
     collectors/ioping.plugin/Makefile
     collectors/freebsd.plugin/Makefile

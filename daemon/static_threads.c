@@ -11,6 +11,7 @@ extern void *health_main(void *ptr);
 extern void *pluginsd_main(void *ptr);
 extern void *service_main(void *ptr);
 extern void *statsd_main(void *ptr);
+extern void *profile_main(void *ptr);
 
 const struct netdata_static_thread static_threads_common[] = {
     {
@@ -120,6 +121,15 @@ const struct netdata_static_thread static_threads_common[] = {
         .thread = NULL,
         .init_routine = NULL,
         .start_routine = socket_listen_main_static_threaded
+    },
+    {
+        .name = "PLUGIN[profile]",
+        .config_section = CONFIG_SECTION_PLUGINS,
+        .config_name = "profile",
+        .enabled = 1,
+        .thread = NULL,
+        .init_routine = NULL,
+        .start_routine = profile_main
     },
 
 #if defined(ENABLE_ACLK) || defined(ACLK_NG)
