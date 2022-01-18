@@ -350,32 +350,32 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
     rd->cache_filename = strdupz(fullfilename);
 
-#if 0
-    snprintfz(varname, CONFIG_MAX_NAME, "dim %s name", rd->id);
-    rd->name = config_get(st->config_section, varname, (name && *name)?name:rd->id);
-    rd->hash_name = simple_hash(rd->name);
+    if (!st->state->is_ar_chart) {
+        snprintfz(varname, CONFIG_MAX_NAME, "dim %s name", rd->id);
+        rd->name = config_get(st->config_section, varname, (name && *name)?name:rd->id);
+        rd->hash_name = simple_hash(rd->name);
 
-    snprintfz(varname, CONFIG_MAX_NAME, "dim %s algorithm", rd->id);
-    rd->algorithm = rrd_algorithm_id(config_get(st->config_section, varname, rrd_algorithm_name(algorithm)));
+        snprintfz(varname, CONFIG_MAX_NAME, "dim %s algorithm", rd->id);
+        rd->algorithm = rrd_algorithm_id(config_get(st->config_section, varname, rrd_algorithm_name(algorithm)));
 
-    snprintfz(varname, CONFIG_MAX_NAME, "dim %s multiplier", rd->id);
-    rd->multiplier = config_get_number(st->config_section, varname, multiplier);
+        snprintfz(varname, CONFIG_MAX_NAME, "dim %s multiplier", rd->id);
+        rd->multiplier = config_get_number(st->config_section, varname, multiplier);
 
-    snprintfz(varname, CONFIG_MAX_NAME, "dim %s divisor", rd->id);
-    rd->divisor = config_get_number(st->config_section, varname, divisor);
-    if(!rd->divisor) rd->divisor = 1;
-#else
-    rd->name = (name && *name)? name : rd->id;
-    rd->hash_name = simple_hash(rd->name);
+        snprintfz(varname, CONFIG_MAX_NAME, "dim %s divisor", rd->id);
+        rd->divisor = config_get_number(st->config_section, varname, divisor);
+        if(!rd->divisor) rd->divisor = 1;
+    } else {
+        rd->name = (name && *name)? name : rd->id;
+        rd->hash_name = simple_hash(rd->name);
 
-    rd->algorithm = rrd_algorithm_id(rrd_algorithm_name(algorithm));
+        rd->algorithm = rrd_algorithm_id(rrd_algorithm_name(algorithm));
 
-    rd->multiplier = multiplier;
+        rd->multiplier = multiplier;
 
-    rd->divisor = divisor;
-    if(!rd->divisor)
-        rd->divisor = 1;
-#endif
+        rd->divisor = divisor;
+        if(!rd->divisor)
+            rd->divisor = 1;
+    }
 
     rd->entries = st->entries;
     rd->update_every = st->update_every;
@@ -456,13 +456,11 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
         td->next = rd;
     }
 
-#if 0
-    if(host->health_enabled) {
+    if(host->health_enabled && !st->state->is_ar_chart) {
         rrddimvar_create(rd, RRDVAR_TYPE_CALCULATED, NULL, NULL, &rd->last_stored_value, RRDVAR_OPTION_DEFAULT);
         rrddimvar_create(rd, RRDVAR_TYPE_COLLECTED, NULL, "_raw", &rd->last_collected_value, RRDVAR_OPTION_DEFAULT);
         rrddimvar_create(rd, RRDVAR_TYPE_TIME_T, NULL, "_last_collected_t", &rd->last_collected_time.tv_sec, RRDVAR_OPTION_DEFAULT);
     }
-#endif
 
     if(unlikely(rrddim_index_add(st, rd) != rd))
         error("RRDDIM: INTERNAL ERROR: attempt to index duplicate dimension '%s' on chart '%s'", rd->id, st->id);

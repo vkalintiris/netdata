@@ -15,22 +15,25 @@ namespace ml {
 class RrdHost {
 public:
     RrdHost(RRDHOST *RH) : RH(RH) {
-        AnomalyRateRS = rrdset_create(
-            RH,
-            "ar_type",
-            "ar_id",
-            NULL, // name
-            "ar_family",
-            NULL, // ctx
-            "ar_title",
-            "ar_units",
-            "ar_plugin",
-            "ar_module",
-            39189,
-            Cfg.AnomalyRateEvery,
-            RRDSET_TYPE_LINE
-        );
-        rrdset_flag_set(AnomalyRateRS, RRDSET_FLAG_HIDDEN);
+        if (Cfg.EnableDBEngine) {
+            AnomalyRateRS = rrdset_create(
+                    RH,
+                    "ar_type",
+                    "ar_id",
+                    NULL, // name
+                    "ar_family",
+                    NULL, // ctx
+                    "ar_title",
+                    "ar_units",
+                    "ar_plugin",
+                    "ar_module",
+                    39189,
+                    Cfg.DBEngineAnomalyRateEvery,
+                    RRDSET_TYPE_LINE
+                    );
+
+            rrdset_flag_set(AnomalyRateRS, RRDSET_FLAG_HIDDEN);
+        }
     }
 
     RRDHOST *getRH() { return RH; }
@@ -57,6 +60,9 @@ protected:
     // Protect dimension and lock maps
     std::mutex Mutex;
 
+    std::mutex TRUMutex;
+    struct rusage TrainingRU;
+
     std::unordered_map<RRDDIM *, Dimension *> DimensionsMap;
     std::unordered_map<Dimension *, std::mutex> LocksMap;
 };
@@ -70,6 +76,7 @@ public:
 private:
     std::pair<Dimension *, Duration<double>> findDimensionToTrain(const TimePoint &NowTP);
     void trainDimension(Dimension *D, const TimePoint &NowTP);
+
 };
 
 class DetectableHost : public TrainableHost {
@@ -105,7 +112,7 @@ public:
     void setLastSavedBefore(time_t lastSavedBefore) { LastSavedBefore = lastSavedBefore; }
     void getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::string, double>> &V, time_t After, time_t Before);
     void getAnomalyRateInfoMixedRange(std::vector<std::pair<std::string, double>> &V, std::string HostUUID, time_t After, time_t Before);
-    
+
 private:
     void detect();
     void detectOnce();
@@ -132,9 +139,8 @@ private:
     Database DB{Cfg.AnomalyDBPath};
 
     /*the counter variable to downcount the time window for anomaly bit counting*/
-    size_t AnomalyBitCounterWindow{Cfg.SaveAnomalyPercentageEvery};
+    size_t AnomalyBitCounterWindow{Cfg.SQLiteAnomalyRateEvery};
     time_t LastSavedBefore{0};
-
 };
 
 using Host = DetectableHost;

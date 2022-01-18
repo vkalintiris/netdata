@@ -1224,6 +1224,10 @@ int web_client_api_request_v1_anomaly_rate_info(RRDHOST *host, struct web_client
     if (!netdata_ready)
         return HTTP_RESP_BACKEND_FETCH_FAILED;
 
+    struct timeval start_tv, end_tv;
+
+    now_realtime_timeval(&start_tv);
+
     uint32_t after = 0, before = 0;
 
     while (url) {
@@ -1260,6 +1264,10 @@ int web_client_api_request_v1_anomaly_rate_info(RRDHOST *host, struct web_client
     buffer_no_cacheable(wb);
 
     freez(s);
+
+    now_realtime_timeval(&end_tv);
+    usec_t duration_usec = dt_usec(&start_tv, &end_tv);
+    error("Querying anomaly rates endpoint took %lld usec", duration_usec);
 
     return HTTP_RESP_OK;
 }
@@ -1324,7 +1332,7 @@ static struct api_command {
         { "anomaly_events",     0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_events     },
         { "anomaly_event_info", 0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_event_info },
         { "ml_info",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_ml_info            },
-        { "anomaly_rate_info",       0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_rate_info   },
+        { "anomaly_rate_info",  0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_anomaly_rate_info  },
 #endif
 
         { "manage/health",   0, WEB_CLIENT_ACL_MGMT,      web_client_api_request_v1_mgmt_health     },

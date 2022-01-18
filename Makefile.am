@@ -291,6 +291,7 @@ TIMEX_PLUGIN_FILES = \
     $(NULL)
 
 PROFILE_PLUGIN_FILES = \
+    collectors/profile.plugin/plugin_profile.h \
     collectors/profile.plugin/plugin_profile.cc \
     $(NULL)
 

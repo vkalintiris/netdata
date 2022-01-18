@@ -161,79 +161,12 @@ static void updateEventsChart(RRDHOST *RH,
     rrdset_done(RS);
 }
 
-static void updateDetectionChart(RRDHOST *RH, collected_number PredictionDuration) {
-    static thread_local RRDSET *RS = nullptr;
-    static thread_local RRDDIM *PredictiobDurationRD = nullptr;
-
-    if (!RS) {
-        RS = rrdset_create(
-            RH, // host
-            "anomaly_detection", // type
-            "prediction_stats", // id
-            NULL, // name
-            "prediction_stats", // family
-            NULL, // ctx
-            "Time it took to run prediction", // title
-            "milliseconds", // units
-            "netdata", // plugin
-            "ml", // module
-            39187, // priority
-            RH->rrd_update_every, // update_every
-            RRDSET_TYPE_LINE // chart_type
-        );
-
-        PredictiobDurationRD  = rrddim_add(RS, "duration", NULL,
-                1, 1, RRD_ALGORITHM_ABSOLUTE);
-    } else
-        rrdset_next(RS);
-
-    rrddim_set_by_pointer(RS, PredictiobDurationRD, PredictionDuration);
-
-    rrdset_done(RS);
-}
-
-static void updateTrainingChart(RRDHOST *RH,
-                                collected_number TotalTrainingDuration,
-                                collected_number MaxTrainingDuration)
-{
-    static thread_local RRDSET *RS = nullptr;
-    static thread_local RRDDIM *TotalTrainingDurationRD = nullptr;
-    static thread_local RRDDIM *MaxTrainingDurationRD = nullptr;
-
-    if (!RS) {
-        RS = rrdset_create(
-            RH, // host
-            "anomaly_detection", // type
-            "training_stats", // id
-            NULL, // name
-            "training_stats", // family
-            NULL, // ctx
-            "Training step statistics", // title
-            "milliseconds", // units
-            "netdata", // plugin
-            "ml", // module
-            39188, // priority
-            RH->rrd_update_every, // update_every
-            RRDSET_TYPE_LINE // chart_type
-        );
-
-        TotalTrainingDurationRD = rrddim_add(RS, "total_training_duration", NULL,
-                1, 1, RRD_ALGORITHM_ABSOLUTE);
-        MaxTrainingDurationRD = rrddim_add(RS, "max_training_duration", NULL,
-                1, 1, RRD_ALGORITHM_ABSOLUTE);
-    } else
-        rrdset_next(RS);
-
-    rrddim_set_by_pointer(RS, TotalTrainingDurationRD, TotalTrainingDuration);
-    rrddim_set_by_pointer(RS, MaxTrainingDurationRD, MaxTrainingDuration);
-
-    rrdset_done(RS);
-}
-
 void RrdHost::addDimension(Dimension *D) {
-    RRDDIM *AnomalyRateRD = rrddim_add(AnomalyRateRS, D->getID().c_str(), NULL,
-                                       1, 1000, RRD_ALGORITHM_ABSOLUTE);
-    D->setAnomalyRateRD(AnomalyRateRD);
+    if (Cfg.EnableDBEngine) {
+        RRDDIM *AnomalyRateRD = rrddim_add(AnomalyRateRS, D->getID().c_str(), NULL,
+                                           1, 1000, RRD_ALGORITHM_ABSOLUTE);
+        D->setAnomalyRateRD(AnomalyRateRD);
+    }
 
     {
         std::lock_guard<std::mutex> Lock(Mutex);
@@ -346,6 +279,11 @@ void TrainableHost::train() {
 
         SleepFor = std::min(AllottedDuration - RealDuration, MaxSleepFor);
         std::this_thread::sleep_for(SleepFor);
+
+        {
+            std::lock_guard<std::mutex> Lock(TRUMutex);
+            getrusage(RUSAGE_THREAD, &TrainingRU);
+        }
     }
 }
 
@@ -369,7 +307,7 @@ void DetectableHost::detectOnce() {
     double TotalTrainingDuration = 0.0;
     double MaxTrainingDuration = 0.0;
 
-    bool CollectAnomalyRates = (++AnomalyRateTimer == Cfg.AnomalyRateEvery);
+    bool CollectAnomalyRates = (Cfg.EnableDBEngine && (++AnomalyRateTimer == Cfg.DBEngineAnomalyRateEvery));
     if (CollectAnomalyRates)
         rrdset_next(AnomalyRateRS);
 
@@ -381,8 +319,9 @@ void DetectableHost::detectOnce() {
         std::lock_guard<std::mutex> Lock(Mutex);
 
         DimsOverThreshold.reserve(DimensionsMap.size());
-        DimsAnomalyRate.reserve(DimensionsMap.size());
-        
+        if (Cfg.EnableSQLite)
+            DimsAnomalyRate.reserve(DimensionsMap.size());
+
         for (auto &DP : DimensionsMap) {
             Dimension *D = DP.second;
 
@@ -398,25 +337,30 @@ void DetectableHost::detectOnce() {
 
             if (IsAnomalous) {
                 NumAnomalousDimensions += 1;
+
                 /*count up the number of anomalies for this dimension*/
-                D->setAnomalousBitCount(D->getAnomalousBitCount() + 1);
+                if (Cfg.EnableSQLite)
+                    D->setAnomalousBitCount(D->getAnomalousBitCount() + 1);
             }
 
-            /*regardless the dimension value was anomalous or not, update the value of the percentage of anomalous dimension*/
-            if(AnomalyBitCounterWindow < Cfg.SaveAnomalyPercentageEvery) {           
-                D->setAnomalyPercentage((D->getAnomalousBitCount() / (static_cast<double>(Cfg.SaveAnomalyPercentageEvery - AnomalyBitCounterWindow) * static_cast<double>(updateEvery()))) * 100.0);
-            }
-            /*Register the oldest time of this dimension*/
-            OldestTimeOfAllDims = MIN(D->oldestTime(), OldestTimeOfAllDims);
-            
-            /*if the counting window is exhausted, push and then reset the counter*/
-            if(AnomalyBitCounterWindow == 0) {
-                double AnomalyPercentage = (D->getAnomalousBitCount() / (static_cast<double>(Cfg.SaveAnomalyPercentageEvery) * static_cast<double>(updateEvery()))) * 100.0;
-                DimsAnomalyRate.push_back({AnomalyPercentage , D->getID() });                
-                D->setAnomalousBitCount(0.0);
+            if (Cfg.EnableSQLite) {
+                /*regardless the dimension value was anomalous or not, update the value of the percentage of anomalous dimension*/
+                if(AnomalyBitCounterWindow < Cfg.SQLiteAnomalyRateEvery) {
+                    D->setAnomalyPercentage((D->getAnomalousBitCount() / (static_cast<double>(Cfg.SQLiteAnomalyRateEvery - AnomalyBitCounterWindow) * static_cast<double>(updateEvery()))) * 100.0);
+                }
+                /*Register the oldest time of this dimension*/
+                OldestTimeOfAllDims = MIN(D->oldestTime(), OldestTimeOfAllDims);
+
+                /*if the counting window is exhausted, push and then reset the counter*/
+                if(AnomalyBitCounterWindow == 0) {
+                    double AnomalyPercentage = (D->getAnomalousBitCount() / (static_cast<double>(Cfg.SQLiteAnomalyRateEvery) * static_cast<double>(updateEvery()))) * 100.0;
+                    DimsAnomalyRate.push_back({AnomalyPercentage , D->getID() });
+                    D->setAnomalousBitCount(0.0);
+                }
             }
 
-            D->updateAnomalyBitCounter(AnomalyRateRS, AnomalyRateTimer, IsAnomalous);
+            if (Cfg.EnableDBEngine)
+                D->updateAnomalyBitCounter(AnomalyRateRS, AnomalyRateTimer, IsAnomalous);
 
             if (NewAnomalyEvent && (AnomalyScore >= Cfg.ADDimensionRateThreshold))
                 DimsOverThreshold.push_back({ AnomalyScore, D->getID() });
@@ -432,7 +376,7 @@ void DetectableHost::detectOnce() {
 
     if (CollectAnomalyRates) {
         error("[%u/%u] Collect anomaly rates = %s",
-              AnomalyRateTimer, Cfg.AnomalyRateEvery,
+              AnomalyRateTimer, Cfg.DBEngineAnomalyRateEvery,
               CollectAnomalyRates ? "true" : "false");
 
         AnomalyRateTimer = 0;
@@ -453,31 +397,39 @@ void DetectableHost::detectOnce() {
     updateRateChart(getRH(), WindowAnomalyRate * 10000.0);
     updateWindowLengthChart(getRH(), WindowLength);
     updateEventsChart(getRH(), P, ResetBitCounter, NewAnomalyEvent);
-    updateTrainingChart(getRH(), TotalTrainingDuration * 1000.0, MaxTrainingDuration * 1000.0);
-    
-    /*code snippet to keep account of the count of the anomalous values of each dimension
-    ...in the anomaly-precentage period configured by (Cfg.SaveAnomalyPercentageEvery)*/
-    if(AnomalyBitCounterWindow == 0) {
-        /*one period is completed, save in the DB the vector that holds the values of the percentages 
-        (of the set anomaly bits) for each dimension*/
-        nlohmann::json JsonResult = DimsAnomalyRate;
 
-        time_t Before = now_realtime_sec();
-        time_t After = Before - ((Cfg.SaveAnomalyPercentageEvery+1) * updateEvery());
-        
-        DB.insertBulkAnomalyRateInfo(getUUID(), After, Before, JsonResult.dump(4));
-        /*and reset the window size to restart down-counting*/
-        AnomalyBitCounterWindow = Cfg.SaveAnomalyPercentageEvery;
-        /*Save the value of the Before time tag for when it will be checked for timeranges including current time*/
-        setLastSavedBefore(Before);
+    if (Cfg.EnableSQLite) {
+        /*code snippet to keep account of the count of the anomalous values of each dimension
+        ...in the anomaly-precentage period configured by (Cfg.SQLiteAnomalyRateEvery)*/
+        if(AnomalyBitCounterWindow == 0) {
+            struct timeval StartTV, EndTV;
 
-        //Delete the old records based on the oldest time of dim data in dbengine, i.e. OldestTimeOfAllDims
-        DB.removeOldAnomalyRateInfo(OldestTimeOfAllDims);            
+            now_realtime_timeval(&StartTV);
+
+            /*one period is completed, save in the DB the vector that holds the values of the percentages 
+            (of the set anomaly bits) for each dimension*/
+            nlohmann::json JsonResult = DimsAnomalyRate;
+
+            time_t Before = now_realtime_sec();
+            time_t After = Before - ((Cfg.SQLiteAnomalyRateEvery+1) * updateEvery());
+
+            DB.insertBulkAnomalyRateInfo(getUUID(), After, Before, JsonResult.dump(4));
+            /*and reset the window size to restart down-counting*/
+            AnomalyBitCounterWindow = Cfg.SQLiteAnomalyRateEvery;
+            /*Save the value of the Before time tag for when it will be checked for timeranges including current time*/
+            setLastSavedBefore(Before);
+
+            //Delete the old records based on the oldest time of dim data in dbengine, i.e. OldestTimeOfAllDims
+            DB.removeOldAnomalyRateInfo(OldestTimeOfAllDims);
+
+            now_realtime_timeval(&EndTV);
+            usec_t duration_usec = dt_usec(&StartTV, &EndTV);
+            error("Adding ARs to SQLite took %lld usec", duration_usec);
+        }
+        else {
+            AnomalyBitCounterWindow--;
+        }
     }
-    else {
-        AnomalyBitCounterWindow--;
-    }
-    
 
     if (!NewAnomalyEvent || (DimsOverThreshold.size() == 0))
         return;
@@ -503,9 +455,10 @@ void DetectableHost::detectOnce() {
     DB.insertAnomaly("AD1", 1, getUUID(), After, Before, JsonResult.dump(4));
 }
 
+#if 0
 void DetectableHost::detect() {
     std::this_thread::sleep_for(Seconds{10});
-    
+
     while (!netdata_exit) {
         TimePoint StartTP = SteadyClock::now();
         detectOnce();
@@ -517,6 +470,61 @@ void DetectableHost::detect() {
         std::this_thread::sleep_for(Seconds{updateEvery()});
     }
 }
+#else
+void DetectableHost::detect() {
+    std::this_thread::sleep_for(Seconds{10});
+
+    RRDSET *st_cpu = nullptr;
+    RRDDIM *rd_detection_user = nullptr, *rd_detection_system = nullptr;
+    RRDDIM *rd_training_user = nullptr, *rd_training_system = nullptr;
+
+    while (!netdata_exit) {
+        if (unlikely(!st_cpu)) {
+            st_cpu = rrdset_create(
+                    RH,
+                    "netdata",
+                    "ml_rusage",
+                    NULL,
+                    "netdata",
+                    NULL,
+                    "Detection thread CPU usage",
+                    "milliseconds/s",
+                    "netdata",
+                    "stats",
+                    171111,
+                    updateEvery(),
+                    RRDSET_TYPE_STACKED
+            );
+
+            rd_detection_user   = rrddim_add(st_cpu, "detection_user",   NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+            rd_detection_system = rrddim_add(st_cpu, "detection_system", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+            rd_training_user   = rrddim_add(st_cpu, "training_user",   NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+            rd_training_system = rrddim_add(st_cpu, "training_system", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+        }
+        else
+            rrdset_next(st_cpu);
+
+        struct rusage ru;
+        getrusage(RUSAGE_THREAD, &ru);
+
+        rrddim_set_by_pointer(st_cpu, rd_detection_user,   ru.ru_utime.tv_sec * 1000000ULL + ru.ru_utime.tv_usec);
+        rrddim_set_by_pointer(st_cpu, rd_detection_system, ru.ru_stime.tv_sec * 1000000ULL + ru.ru_stime.tv_usec);
+
+        {
+            std::lock_guard<std::mutex> Lock(TRUMutex);
+            ru = TrainingRU;
+        }
+
+        rrddim_set_by_pointer(st_cpu, rd_training_user,   ru.ru_utime.tv_sec * 1000000ULL + ru.ru_utime.tv_usec);
+        rrddim_set_by_pointer(st_cpu, rd_training_system, ru.ru_stime.tv_sec * 1000000ULL + ru.ru_stime.tv_usec);
+
+        rrdset_done(st_cpu);
+
+        detectOnce();
+        std::this_thread::sleep_for(Seconds{updateEvery()});
+    }
+}
+#endif
 
 void DetectableHost::getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::string, double>> &V, time_t After, time_t Before) {
     {
@@ -524,7 +532,7 @@ void DetectableHost::getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::s
         for (auto &DP : DimensionsMap) {
             Dimension *D = DP.second;
             if(D->getAnomalyPercentage() > 0) {
-                V.push_back({D->getID(), (D->getAnomalyPercentage() * abs(Before - After) / (Cfg.SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())))});
+                V.push_back({D->getID(), (D->getAnomalyPercentage() * abs(Before - After) / (Cfg.SQLiteAnomalyRateEvery * static_cast<double>(updateEvery())))});
             }
         }
     }
@@ -533,27 +541,26 @@ void DetectableHost::getAnomalyRateInfoCurrentRange(std::vector<std::pair<std::s
 void DetectableHost::getAnomalyRateInfoMixedRange(std::vector<std::pair<std::string, double>> &V, std::string HostUUID,time_t After, time_t Before) {
     std::vector<std::pair<std::string, double>> DimAndAnomalyRateInRange;
     bool Res = getAnomalyRateInfoInRange(DimAndAnomalyRateInRange, HostUUID, After, getLastSavedBefore());
-    std::vector<std::pair<std::string, double>>::iterator it;
-    
+
     if (Res) {
         {
         std::lock_guard<std::mutex> Lock(Mutex);
             for (auto &DP : DimensionsMap) {
                 Dimension *D = DP.second;
-                
+
                 /*Search in vector for corresponding dimension IDs, if found, combine and insert*/
                 auto it = std::find_if( DimAndAnomalyRateInRange.begin(), DimAndAnomalyRateInRange.end(),
                 [&D](const std::pair<std::string, int>& element){ return element.first == D->getID();} );
-                
+
                 if( it != DimAndAnomalyRateInRange.end())
                 {
-                    double CurrentPercentage = (D->getAnomalyPercentage() * (Before - getLastSavedBefore()) / (Cfg.SaveAnomalyPercentageEvery * static_cast<double>(updateEvery())));
+                    double CurrentPercentage = (D->getAnomalyPercentage() * (Before - getLastSavedBefore()) / (Cfg.SQLiteAnomalyRateEvery * static_cast<double>(updateEvery())));
                     if((CurrentPercentage > 0) || (it->second > 0)){
                         V.push_back({D->getID(), abs(((CurrentPercentage * (Before - getLastSavedBefore())) + (it->second * (getLastSavedBefore() - After)))/(Before - After))});
                     }
                 }
             }
-        }    
+        }
     }
 }
 

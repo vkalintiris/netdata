@@ -96,8 +96,8 @@ public:
     void updateAnomalyBitCounter(RRDSET *RS, unsigned Elapsed, bool IsAnomalous) {
         AnomalyBitCounter += IsAnomalous;
 
-        if (Elapsed == Cfg.AnomalyRateEvery) {
-            double AR = static_cast<double>(AnomalyBitCounter) / Cfg.AnomalyRateEvery;
+        if (Elapsed == Cfg.DBEngineAnomalyRateEvery) {
+            double AR = static_cast<double>(AnomalyBitCounter) / Cfg.DBEngineAnomalyRateEvery;
             rrddim_set_by_pointer(RS, getAnomalyRateRD(), AR * 1000);
             AnomalyBitCounter = 0;
         }

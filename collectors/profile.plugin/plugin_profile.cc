@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "daemon/common.h"
+#include "plugin_profile.h"
 
 #include <chrono>
 #include <vector>

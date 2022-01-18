@@ -10,11 +10,15 @@ namespace ml {
 class Config {
 public:
     bool EnableAnomalyDetection;
+    bool EnableDBEngine;
+    bool EnableSQLite;
 
     unsigned MaxTrainSamples;
     unsigned MinTrainSamples;
     unsigned TrainEvery;
-    unsigned AnomalyRateEvery;
+
+    unsigned DBEngineAnomalyRateEvery;
+    unsigned SQLiteAnomalyRateEvery;
 
     unsigned DiffN;
     unsigned SmoothN;
@@ -30,8 +34,6 @@ public:
     double ADIdleWindowSize;
     double ADWindowRateThreshold;
     double ADDimensionRateThreshold;
-    //The window size of anomaly bit counting for anomaly percentage
-    unsigned long SaveAnomalyPercentageEvery;
 
     std::string HostsToSkip;
     SIMPLE_PATTERN *SP_HostsToSkip;
