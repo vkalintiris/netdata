@@ -81,6 +81,8 @@ static void createCharts(unsigned NumCharts, unsigned NumDimsPerChart) {
             RRDSET_TYPE_LINE
         );
 
+        rrdset_flag_set(RS, RRDSET_FLAG_HIDDEN);
+
         if (!RS)
             fatal("Could not create chart %s", ChartNames[ChartIdx].c_str());
 
