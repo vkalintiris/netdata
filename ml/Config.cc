@@ -24,7 +24,7 @@ void Config::readMLConfig(void) {
 
     bool EnableAnomalyDetection = config_get_boolean(ConfigSectionML, "enabled", true);
 
-    bool EnableSQLite = config_get_boolean(ConfigSectionML, "sqlite enabled", false);
+    bool EnableSQLite = config_get_boolean(ConfigSectionML, "sqlite enabled", true);
     bool EnableDBEngine = config_get_boolean(ConfigSectionML, "dbengine enabled", false);
 
     /*
@@ -36,7 +36,7 @@ void Config::readMLConfig(void) {
     unsigned TrainEvery = config_get_number(ConfigSectionML, "train every", 1 * 3600);
 
     unsigned DBEngineAnomalyRateEvery = config_get_number(ConfigSectionML, "dbengine anomaly rate every", 1 * 60);
-    unsigned SQLiteAnomalyRateEvery = config_get_number(ConfigSectionML, "sqlite anomaly rate every", 5 * 60);
+    unsigned SQLiteAnomalyRateEvery = config_get_number(ConfigSectionML, "sqlite anomaly rate every", 10);
 
     unsigned DiffN = config_get_number(ConfigSectionML, "num samples to diff", 1);
     unsigned SmoothN = config_get_number(ConfigSectionML, "num samples to smooth", 3);
