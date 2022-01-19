@@ -24,7 +24,7 @@ void Config::readMLConfig(void) {
 
     bool EnableAnomalyDetection = config_get_boolean(ConfigSectionML, "enabled", true);
 
-    bool EnableSQLite = config_get_boolean(ConfigSectionML, "sqlite enabled", false);
+    bool EnableSQLite = config_get_boolean(ConfigSectionML, "sqlite enabled", true);
     bool EnableDBEngine = config_get_boolean(ConfigSectionML, "dbengine enabled", false);
 
     /*
