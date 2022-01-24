@@ -150,6 +150,44 @@ char *ml_get_anomaly_event_info(RRDHOST *RH, const char *AnomalyDetectorName,
     return strdup(Json.dump(4, '\t').c_str());
 }
 
+void ml_process_rrdr(RRDR *R, int MaxAnomalyRates) {
+    if (R->rows != 1)
+        return;
+
+    if (MaxAnomalyRates < 1 || MaxAnomalyRates >= R->d)
+        return;
+
+    calculated_number *CNs = R->v;
+    RRDR_DIMENSION_FLAGS *DimFlags = R->od;
+
+    std::vector<std::pair<calculated_number, int>> V;
+
+    V.reserve(R->d);
+    for (int Idx = 0; Idx != R->d; Idx++)
+        V.emplace_back(CNs[Idx], Idx);
+
+    std::sort(V.rbegin(), V.rend());
+
+    for (int Idx = MaxAnomalyRates; Idx != R->d; Idx++) {
+        int UnsortedIdx = V[Idx].second;
+
+        int OldFlags = static_cast<int>(DimFlags[UnsortedIdx]);
+        int NewFlags = OldFlags | RRDR_DIMENSION_HIDDEN;
+
+        DimFlags[UnsortedIdx] = static_cast<rrdr_dimension_flag>(NewFlags);
+    }
+}
+
+void ml_dimension_update_name(RRDSET *RS, RRDDIM *RD, const char *Name) {
+    (void) RS;
+
+    Dimension *D = static_cast<Dimension *>(RD->state->ml_dimension);
+    if (!D)
+        return;
+
+    D->setAnomalyRateRDName(Name);
+}
+
 #if defined(ENABLE_ML_TESTS)
 
 #include "gtest/gtest.h"
@@ -163,3 +201,4 @@ int test_ml(int argc, char *argv[]) {
 }
 
 #endif // ENABLE_ML_TESTS
+#include "ml-private.h"

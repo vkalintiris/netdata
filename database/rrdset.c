@@ -844,6 +844,8 @@ RRDSET *rrdset_create_custom(
     st->type       = config_get(st->config_section, "type", type);
 
     st->state = callocz(1, sizeof(*st->state));
+    st->state->is_ar_chart = strcmp(st->id, ML_ANOMALY_RATES_CHART_ID) == 0;
+
     st->family     = config_get(st->config_section, "family", family?family:st->type);
     json_fix_string(st->family);
 

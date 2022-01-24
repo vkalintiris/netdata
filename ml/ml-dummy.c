@@ -38,4 +38,15 @@ char *ml_get_anomaly_event_info(RRDHOST *RH, const char *AnomalyDetectorName,
     return NULL;
 }
 
+void ml_process_rrdr(RRDR *R, int MaxAnomalyRates) {
+    (void) R;
+    (void) MaxAnomalyRates;
+}
+
+void ml_dimension_update_name(RRDSET *RS, RRDDIM *RD, const char *name) {
+    (void) RS;
+    (void) RD;
+    (void) name;
+}
+
 #endif
