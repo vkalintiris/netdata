@@ -321,6 +321,8 @@ static int web_server_snd_callback(POLLINFO *pi, short int *events) {
 static void web_server_tmr_callback(void *timer_data) {
     worker_private = (struct web_server_static_threaded_worker *)timer_data;
 
+    return;
+
     static __thread RRDSET *st = NULL;
     static __thread RRDDIM *rd_user = NULL, *rd_system = NULL;
 

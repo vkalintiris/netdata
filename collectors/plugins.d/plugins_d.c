@@ -327,6 +327,9 @@ void *pluginsd_main(void *ptr)
                 if (unlikely(strcmp(file->d_name, ".") == 0 || strcmp(file->d_name, "..") == 0))
                     continue;
 
+                if (strcmp(file->d_name, "mycups.plugin"))
+                    continue;
+
                 int len = (int)strlen(file->d_name);
                 if (unlikely(len <= (int)PLUGINSD_FILE_SUFFIX_LEN))
                     continue;
