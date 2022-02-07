@@ -4,15 +4,61 @@ load("//bazel/build_settings:defs.bzl", "if_dbengine", "if_streaming_compression
 # aclk/
 #
 
-ACLK_HEADERS = [
+ACLK_ALWAYS_BUILD_HEADERS = [
     "aclk/aclk_rrdhost_state.h",
     "aclk/aclk_api.h",
     "aclk/aclk_proxy.h",
 ]
 
-ACLK_SOURCES = [
+ACLK_ALWAYS_BUILD_SOURCES = [
     "aclk/aclk_api.c",
     "aclk/aclk_proxy.c",
+]
+
+ACLK_COMMON_HEADERS = [
+    "aclk/aclk_collector_list.h",
+]
+
+ACLK_COMMON_SOURCES = [
+    "aclk/aclk_collector_list.c",
+]
+
+ACLK_HEADERS = [
+    "aclk/aclk.h",
+    "aclk/aclk_util.h",
+    "aclk/aclk_stats.h",
+    "aclk/aclk_query.h",
+    "aclk/aclk_query_queue.h",
+    "aclk/aclk_otp.h",
+    "aclk/aclk_tx_msgs.h",
+    "aclk/aclk_rx_msgs.h",
+    "aclk/https_client.h",
+    "mqtt_websockets/src/include/mqtt_wss_client.h",
+    "mqtt_websockets/src/include/mqtt_wss_log.h",
+    "mqtt_websockets/src/include/ws_client.h",
+    "mqtt_websockets/src/include/common_internal.h",
+    "mqtt_websockets/src/include/endian_compat.h",
+    "mqtt_websockets/c-rbuf/include/ringbuffer.h",
+    "mqtt_websockets/c-rbuf/src/ringbuffer_internal.h",
+    "mqtt_websockets/MQTT-C/include/mqtt.h",
+    "mqtt_websockets/MQTT-C/include/mqtt_pal.h",
+]
+
+ACLK_SOURCES = [
+    "aclk/aclk.c",
+    "aclk/aclk_util.c",
+    "aclk/aclk_stats.c",
+    "aclk/aclk_query.c",
+    "aclk/aclk_query_queue.c",
+    "aclk/aclk_otp.c",
+    "aclk/aclk_tx_msgs.c",
+    "aclk/aclk_rx_msgs.c",
+    "aclk/https_client.c",
+    "mqtt_websockets/src/mqtt_wss_client.c",
+    "mqtt_websockets/src/mqtt_wss_log.c",
+    "mqtt_websockets/src/ws_client.c",
+    "mqtt_websockets/c-rbuf/src/ringbuffer.c",
+    "mqtt_websockets/MQTT-C/src/mqtt.c",
 ]
 
 #
@@ -536,7 +582,10 @@ DUMMY_HEADERS = [
 
 NETDATA_SOURCES = DUMMY_HEADERS
 
-NETDATA_SOURCES += ACLK_HEADERS + ACLK_SOURCES
+NETDATA_SOURCES += ACLK_ALWAYS_BUILD_HEADERS + ACLK_ALWAYS_BUILD_SOURCES
+# NETDATA_SOURCES += ACLK_COMMON_HEADERS + ACLK_COMMON_SOURCES
+# NETDATA_SOURCES += ACLK_HEADERS + ACLK_SOURCES
+
 NETDATA_SOURCES += BACKENDS_HEADERS + BACKENDS_SOURCES
 NETDATA_SOURCES += CLAIM_HEADERS + CLAIM_SOURCES
 NETDATA_SOURCES += DATABASE_HEADERS + DATABASE_SOURCES
@@ -563,7 +612,12 @@ NETDATA_SOURCES += WEB_HEADERS + WEB_SOURCES
 cc_binary(
     name = "netdata",
     srcs = NETDATA_SOURCES ,
-    copts = [ "-I netdata" ],
+    copts = [
+        "-I netdata",
+        "-I netdata/mqtt_websockets/c-rbuf/include",
+        "-I netdata/mqtt_websockets/MQTT-C/include",
+        "-I netdata/mqtt_websockets/src/include",
+    ],
     linkopts = [
         '-lm',
     ],
@@ -573,6 +627,7 @@ cc_binary(
         "//third_party/projects/util-linux:util-linux",
         "//third_party/projects/zlib:zlib",
         "//third_party/projects/openssl:openssl",
+        "//third_party/projects/json-c:json-c",
     ] + [
         '//bazel/build_settings:macro-definitions'
     ] + if_dbengine([
