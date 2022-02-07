@@ -580,6 +580,95 @@ DUMMY_HEADERS = [
     "aclk/schema-wrappers/chart_stream.h",
 ]
 
+#
+# proto
+#
+
+proto_library(
+    name = "aclk_v1_lib_proto",
+    srcs = ["aclk/aclk-schemas/proto/aclk/v1/lib.proto"],
+    deps = ["@com_google_protobuf//:timestamp_proto"],
+    strip_import_prefix = "aclk/aclk-schemas",
+)
+
+proto_library(
+    name = "agent_v1_connection_proto",
+    srcs = ["aclk/aclk-schemas/proto/agent/v1/connection.proto"],
+    deps = [
+        "@com_google_protobuf//:duration_proto",
+        "@com_google_protobuf//:timestamp_proto"
+    ],
+)
+
+proto_library(
+    name = "agent_v1_disconnect_proto",
+    srcs = ["aclk/aclk-schemas/proto/agent/v1/disconnect.proto"],
+    deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
+proto_library(
+    name = "alarm_v1_config_proto",
+    srcs = ["aclk/aclk-schemas/proto/alarm/v1/config.proto"],
+)
+
+proto_library(
+    name = "alarm_v1_stream_proto",
+    srcs = ["aclk/aclk-schemas/proto/alarm/v1/stream.proto"],
+    deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
+proto_library(
+    name = "chart_v1_config_proto",
+    srcs = ["aclk/aclk-schemas/proto/chart/v1/config.proto"],
+)
+
+proto_library(
+    name = "chart_v1_dimension_proto",
+    srcs = ["aclk/aclk-schemas/proto/chart/v1/dimension.proto"],
+    deps = [
+        ":aclk_v1_lib_proto",
+        "@com_google_protobuf//:timestamp_proto",
+    ],
+    strip_import_prefix = "aclk/aclk-schemas",
+)
+
+proto_library(
+    name = "chart_v1_instance_proto",
+    srcs = ["aclk/aclk-schemas/proto/chart/v1/instance.proto"],
+    deps = [
+        ":aclk_v1_lib_proto",
+    ],
+    strip_import_prefix = "aclk/aclk-schemas",
+
+)
+
+proto_library(
+    name = "chart_v1_stream_proto",
+    srcs = ["aclk/aclk-schemas/proto/chart/v1/stream.proto"],
+    deps = [
+        ":chart_v1_dimension_proto",
+        ":chart_v1_instance_proto",
+        "@com_google_protobuf//:timestamp_proto",
+    ],
+)
+
+proto_library(
+    name = "nodeinstance_connection_v1_connection_proto",
+    srcs = ["aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto"],
+    deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
+proto_library(
+    name = "nodeinstance_create_v1_creation_proto",
+    srcs = ["aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto"],
+)
+
+proto_library(
+    name = "nodeinstance_info_v1_info_proto",
+    srcs = ["aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto"],
+    deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
 NETDATA_SOURCES = DUMMY_HEADERS
 
 NETDATA_SOURCES += ACLK_ALWAYS_BUILD_HEADERS + ACLK_ALWAYS_BUILD_SOURCES
