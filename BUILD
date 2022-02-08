@@ -591,6 +591,11 @@ proto_library(
     strip_import_prefix = "aclk/aclk-schemas",
 )
 
+cc_proto_library(
+    name = "aclk_v1_lib_cc_proto",
+    deps = [":aclk_v1_lib_proto"],
+)
+
 proto_library(
     name = "agent_v1_connection_proto",
     srcs = ["aclk/aclk-schemas/proto/agent/v1/connection.proto"],
@@ -600,15 +605,30 @@ proto_library(
     ],
 )
 
+cc_proto_library(
+    name = "agent_v1_connection_cc_proto",
+    deps = [":agent_v1_connection_proto"],
+)
+
 proto_library(
     name = "agent_v1_disconnect_proto",
     srcs = ["aclk/aclk-schemas/proto/agent/v1/disconnect.proto"],
     deps = ["@com_google_protobuf//:timestamp_proto"],
 )
 
+cc_proto_library(
+    name = "agent_v1_disconnect_cc_proto",
+    deps = [":agent_v1_disconnect_proto"],
+)
+
 proto_library(
     name = "alarm_v1_config_proto",
     srcs = ["aclk/aclk-schemas/proto/alarm/v1/config.proto"],
+)
+
+cc_proto_library(
+    name = "alarm_v1_config_cc_proto",
+    deps = [":alarm_v1_config_proto"],
 )
 
 proto_library(
@@ -617,9 +637,19 @@ proto_library(
     deps = ["@com_google_protobuf//:timestamp_proto"],
 )
 
+cc_proto_library(
+    name = "alarm_v1_stream_cc_proto",
+    deps = [":alarm_v1_stream_proto"],
+)
+
 proto_library(
     name = "chart_v1_config_proto",
     srcs = ["aclk/aclk-schemas/proto/chart/v1/config.proto"],
+)
+
+cc_proto_library(
+    name = "chart_v1_config_cc_proto",
+    deps = [":chart_v1_config_proto"],
 )
 
 proto_library(
@@ -632,6 +662,11 @@ proto_library(
     strip_import_prefix = "aclk/aclk-schemas",
 )
 
+cc_proto_library(
+    name = "chart_v1_dimension_cc_proto",
+    deps = [":chart_v1_dimension_proto"],
+)
+
 proto_library(
     name = "chart_v1_instance_proto",
     srcs = ["aclk/aclk-schemas/proto/chart/v1/instance.proto"],
@@ -640,6 +675,11 @@ proto_library(
     ],
     strip_import_prefix = "aclk/aclk-schemas",
 
+)
+
+cc_proto_library(
+    name = "chart_v1_instance_cc_proto",
+    deps = [":chart_v1_instance_proto"],
 )
 
 proto_library(
@@ -652,10 +692,20 @@ proto_library(
     ],
 )
 
+cc_proto_library(
+    name = "chart_v1_stream_cc_proto",
+    deps = [":chart_v1_stream_proto"],
+)
+
 proto_library(
     name = "nodeinstance_connection_v1_connection_proto",
     srcs = ["aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto"],
     deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
+cc_proto_library(
+    name = "nodeinstance_connection_v1_connection_cc_proto",
+    deps = [":nodeinstance_connection_v1_connection_proto"],
 )
 
 proto_library(
@@ -663,10 +713,20 @@ proto_library(
     srcs = ["aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto"],
 )
 
+cc_proto_library(
+    name = "nodeinstance_create_v1_creation_cc_proto",
+    deps = [":nodeinstance_create_v1_creation_proto"],
+)
+
 proto_library(
     name = "nodeinstance_info_v1_info_proto",
     srcs = ["aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto"],
     deps = ["@com_google_protobuf//:timestamp_proto"],
+)
+
+cc_proto_library(
+    name = "nodeinstance_info_v1_info_cc_proto",
+    deps = [":nodeinstance_info_v1_info_proto"],
 )
 
 NETDATA_SOURCES = DUMMY_HEADERS
@@ -714,9 +774,9 @@ cc_binary(
         "//third_party/projects/libuv:libuv",
         "//third_party/projects/lz4:lz4",
         "//third_party/projects/util-linux:util-linux",
-        "//third_party/projects/zlib:zlib",
         "//third_party/projects/openssl:openssl",
         "//third_party/projects/json-c:json-c",
+        "@zlib//:zlib",
     ] + [
         '//bazel/build_settings:macro-definitions'
     ] + if_dbengine([
