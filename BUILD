@@ -729,6 +729,21 @@ cc_proto_library(
     deps = [":nodeinstance_info_v1_info_proto"],
 )
 
+CC_PROTO_LIBRARIES = [
+    "aclk_v1_lib_cc_proto",
+    "agent_v1_connection_cc_proto",
+    "agent_v1_disconnect_cc_proto",
+    "alarm_v1_config_cc_proto",
+    "alarm_v1_stream_cc_proto",
+    "chart_v1_config_cc_proto",
+    "chart_v1_dimension_cc_proto",
+    "chart_v1_instance_cc_proto",
+    "chart_v1_stream_cc_proto",
+    "nodeinstance_connection_v1_connection_cc_proto",
+    "nodeinstance_create_v1_creation_cc_proto",
+    "nodeinstance_info_v1_info_cc_proto",
+]
+
 NETDATA_SOURCES = DUMMY_HEADERS
 
 NETDATA_SOURCES += ACLK_ALWAYS_BUILD_HEADERS + ACLK_ALWAYS_BUILD_SOURCES
@@ -781,7 +796,7 @@ cc_binary(
         '//bazel/build_settings:macro-definitions'
     ] + if_dbengine([
         "//third_party/projects/judy:judy",
-    ]),
+    ]) + CC_PROTO_LIBRARIES,
     defines = [
         # Assume these exist on Linux.
         "HAVE_ACCEPT4",
