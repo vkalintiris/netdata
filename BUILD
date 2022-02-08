@@ -33,6 +33,7 @@ ACLK_HEADERS = [
     "aclk/aclk_tx_msgs.h",
     "aclk/aclk_rx_msgs.h",
     "aclk/https_client.h",
+    "mqtt_websockets/src/include/mqtt_pal.h",
     "mqtt_websockets/src/include/mqtt_wss_client.h",
     "mqtt_websockets/src/include/mqtt_wss_log.h",
     "mqtt_websockets/src/include/ws_client.h",
@@ -59,6 +60,32 @@ ACLK_SOURCES = [
     "mqtt_websockets/src/ws_client.c",
     "mqtt_websockets/c-rbuf/src/ringbuffer.c",
     "mqtt_websockets/MQTT-C/src/mqtt.c",
+]
+
+ACLK_NEW_CLOUD_PROTOCOL = [
+    "aclk/aclk_charts_api.c",
+    "aclk/aclk_charts_api.h",
+    "aclk/aclk_alarm_api.c",
+    "aclk/aclk_alarm_api.h",
+    "aclk/schema-wrappers/connection.cc",
+    "aclk/schema-wrappers/connection.h",
+    "aclk/schema-wrappers/node_connection.cc",
+    "aclk/schema-wrappers/node_connection.h",
+    "aclk/schema-wrappers/node_creation.cc",
+    "aclk/schema-wrappers/node_creation.h",
+    "aclk/schema-wrappers/chart_stream.cc",
+    "aclk/schema-wrappers/chart_stream.h",
+    "aclk/schema-wrappers/chart_config.cc",
+    "aclk/schema-wrappers/chart_config.h",
+    "aclk/schema-wrappers/alarm_stream.cc",
+    "aclk/schema-wrappers/alarm_stream.h",
+    "aclk/schema-wrappers/alarm_config.cc",
+    "aclk/schema-wrappers/alarm_config.h",
+    "aclk/schema-wrappers/node_info.cc",
+    "aclk/schema-wrappers/node_info.h",
+    "aclk/schema-wrappers/schema_wrappers.h",
+    "aclk/schema-wrappers/schema_wrapper_utils.cc",
+    "aclk/schema-wrappers/schema_wrapper_utils.h",
 ]
 
 #
@@ -577,7 +604,8 @@ DUMMY_HEADERS = [
     "collectors/all.h",
     "collectors/freebsd.plugin/plugin_freebsd.h",
     "collectors/macos.plugin/plugin_macos.h",
-    "aclk/schema-wrappers/chart_stream.h",
+    # TODO: FIXME: disable if aclk is enabled
+    # "aclk/schema-wrappers/chart_stream.h",
 ]
 
 #
@@ -585,170 +613,39 @@ DUMMY_HEADERS = [
 #
 
 proto_library(
-    name = "aclk_v1_lib_proto",
-    srcs = ["aclk/aclk-schemas/proto/aclk/v1/lib.proto"],
-    deps = ["@com_google_protobuf//:timestamp_proto"],
-    strip_import_prefix = "aclk/aclk-schemas",
-)
-
-cc_proto_library(
-    name = "aclk_v1_lib_cc_proto",
-    deps = [":aclk_v1_lib_proto"],
-)
-
-proto_library(
-    name = "agent_v1_connection_proto",
-    srcs = ["aclk/aclk-schemas/proto/agent/v1/connection.proto"],
+    name = "aclk_protos",
+    srcs = [
+        "aclk/aclk-schemas/proto/aclk/v1/lib.proto",
+        "aclk/aclk-schemas/proto/alarm/v1/stream.proto",
+        "aclk/aclk-schemas/proto/alarm/v1/config.proto",
+        "aclk/aclk-schemas/proto/chart/v1/stream.proto",
+        "aclk/aclk-schemas/proto/chart/v1/config.proto",
+        "aclk/aclk-schemas/proto/chart/v1/instance.proto",
+        "aclk/aclk-schemas/proto/chart/v1/dimension.proto",
+        "aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto",
+        "aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto",
+        "aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto",
+        "aclk/aclk-schemas/proto/agent/v1/disconnect.proto",
+        "aclk/aclk-schemas/proto/agent/v1/connection.proto",
+    ],
     deps = [
         "@com_google_protobuf//:duration_proto",
-        "@com_google_protobuf//:timestamp_proto"
-    ],
-)
-
-cc_proto_library(
-    name = "agent_v1_connection_cc_proto",
-    deps = [":agent_v1_connection_proto"],
-)
-
-proto_library(
-    name = "agent_v1_disconnect_proto",
-    srcs = ["aclk/aclk-schemas/proto/agent/v1/disconnect.proto"],
-    deps = ["@com_google_protobuf//:timestamp_proto"],
-)
-
-cc_proto_library(
-    name = "agent_v1_disconnect_cc_proto",
-    deps = [":agent_v1_disconnect_proto"],
-)
-
-proto_library(
-    name = "alarm_v1_config_proto",
-    srcs = ["aclk/aclk-schemas/proto/alarm/v1/config.proto"],
-)
-
-cc_proto_library(
-    name = "alarm_v1_config_cc_proto",
-    deps = [":alarm_v1_config_proto"],
-)
-
-proto_library(
-    name = "alarm_v1_stream_proto",
-    srcs = ["aclk/aclk-schemas/proto/alarm/v1/stream.proto"],
-    deps = ["@com_google_protobuf//:timestamp_proto"],
-)
-
-cc_proto_library(
-    name = "alarm_v1_stream_cc_proto",
-    deps = [":alarm_v1_stream_proto"],
-)
-
-proto_library(
-    name = "chart_v1_config_proto",
-    srcs = ["aclk/aclk-schemas/proto/chart/v1/config.proto"],
-)
-
-cc_proto_library(
-    name = "chart_v1_config_cc_proto",
-    deps = [":chart_v1_config_proto"],
-)
-
-proto_library(
-    name = "chart_v1_dimension_proto",
-    srcs = ["aclk/aclk-schemas/proto/chart/v1/dimension.proto"],
-    deps = [
-        ":aclk_v1_lib_proto",
         "@com_google_protobuf//:timestamp_proto",
     ],
     strip_import_prefix = "aclk/aclk-schemas",
 )
 
 cc_proto_library(
-    name = "chart_v1_dimension_cc_proto",
-    deps = [":chart_v1_dimension_proto"],
+    name = "aclk_cc_protos",
+    deps = [":aclk_protos"],
 )
-
-proto_library(
-    name = "chart_v1_instance_proto",
-    srcs = ["aclk/aclk-schemas/proto/chart/v1/instance.proto"],
-    deps = [
-        ":aclk_v1_lib_proto",
-    ],
-    strip_import_prefix = "aclk/aclk-schemas",
-
-)
-
-cc_proto_library(
-    name = "chart_v1_instance_cc_proto",
-    deps = [":chart_v1_instance_proto"],
-)
-
-proto_library(
-    name = "chart_v1_stream_proto",
-    srcs = ["aclk/aclk-schemas/proto/chart/v1/stream.proto"],
-    deps = [
-        ":chart_v1_dimension_proto",
-        ":chart_v1_instance_proto",
-        "@com_google_protobuf//:timestamp_proto",
-    ],
-)
-
-cc_proto_library(
-    name = "chart_v1_stream_cc_proto",
-    deps = [":chart_v1_stream_proto"],
-)
-
-proto_library(
-    name = "nodeinstance_connection_v1_connection_proto",
-    srcs = ["aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto"],
-    deps = ["@com_google_protobuf//:timestamp_proto"],
-)
-
-cc_proto_library(
-    name = "nodeinstance_connection_v1_connection_cc_proto",
-    deps = [":nodeinstance_connection_v1_connection_proto"],
-)
-
-proto_library(
-    name = "nodeinstance_create_v1_creation_proto",
-    srcs = ["aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto"],
-)
-
-cc_proto_library(
-    name = "nodeinstance_create_v1_creation_cc_proto",
-    deps = [":nodeinstance_create_v1_creation_proto"],
-)
-
-proto_library(
-    name = "nodeinstance_info_v1_info_proto",
-    srcs = ["aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto"],
-    deps = ["@com_google_protobuf//:timestamp_proto"],
-)
-
-cc_proto_library(
-    name = "nodeinstance_info_v1_info_cc_proto",
-    deps = [":nodeinstance_info_v1_info_proto"],
-)
-
-CC_PROTO_LIBRARIES = [
-    "aclk_v1_lib_cc_proto",
-    "agent_v1_connection_cc_proto",
-    "agent_v1_disconnect_cc_proto",
-    "alarm_v1_config_cc_proto",
-    "alarm_v1_stream_cc_proto",
-    "chart_v1_config_cc_proto",
-    "chart_v1_dimension_cc_proto",
-    "chart_v1_instance_cc_proto",
-    "chart_v1_stream_cc_proto",
-    "nodeinstance_connection_v1_connection_cc_proto",
-    "nodeinstance_create_v1_creation_cc_proto",
-    "nodeinstance_info_v1_info_cc_proto",
-]
 
 NETDATA_SOURCES = DUMMY_HEADERS
 
 NETDATA_SOURCES += ACLK_ALWAYS_BUILD_HEADERS + ACLK_ALWAYS_BUILD_SOURCES
-# NETDATA_SOURCES += ACLK_COMMON_HEADERS + ACLK_COMMON_SOURCES
-# NETDATA_SOURCES += ACLK_HEADERS + ACLK_SOURCES
+NETDATA_SOURCES += ACLK_COMMON_HEADERS + ACLK_COMMON_SOURCES
+NETDATA_SOURCES += ACLK_HEADERS + ACLK_SOURCES
+NETDATA_SOURCES += ACLK_NEW_CLOUD_PROTOCOL
 
 NETDATA_SOURCES += BACKENDS_HEADERS + BACKENDS_SOURCES
 NETDATA_SOURCES += CLAIM_HEADERS + CLAIM_SOURCES
@@ -777,10 +674,10 @@ cc_binary(
     name = "netdata",
     srcs = NETDATA_SOURCES ,
     copts = [
-        "-I netdata",
+        "-I netdata/mqtt_websockets/src/include",
         "-I netdata/mqtt_websockets/c-rbuf/include",
         "-I netdata/mqtt_websockets/MQTT-C/include",
-        "-I netdata/mqtt_websockets/src/include",
+        "-I netdata",
     ],
     linkopts = [
         '-lm',
@@ -792,11 +689,12 @@ cc_binary(
         "//third_party/projects/openssl:openssl",
         "//third_party/projects/json-c:json-c",
         "@zlib//:zlib",
+        ":aclk_cc_protos",
     ] + [
         '//bazel/build_settings:macro-definitions'
     ] + if_dbengine([
         "//third_party/projects/judy:judy",
-    ]) + CC_PROTO_LIBRARIES,
+    ]),
     defines = [
         # Assume these exist on Linux.
         "HAVE_ACCEPT4",
@@ -850,6 +748,7 @@ cc_binary(
 
         "STORAGE_WITH_MATH",
         "NETDATA_WITH_ZLIB",
+        "ENABLE_JSONC",
 
         'CONFIGURE_COMMAND="\\"trololol\\""',
         'VERSION="\\"123\\""',
