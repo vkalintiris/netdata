@@ -1,4 +1,4 @@
-load("//bazel/build_settings:defs.bzl", "if_dbengine", "if_streaming_compression", "if_https")
+load("//bazel/build_settings:defs.bzl", "if_dbengine", "if_streaming_compression", "if_https", "if_aclk")
 
 #
 # aclk/
@@ -74,7 +74,8 @@ ACLK_NEW_CLOUD_PROTOCOL = [
     "aclk/schema-wrappers/node_creation.cc",
     "aclk/schema-wrappers/node_creation.h",
     "aclk/schema-wrappers/chart_stream.cc",
-    "aclk/schema-wrappers/chart_stream.h",
+    # Required by default
+    # "aclk/schema-wrappers/chart_stream.h",
     "aclk/schema-wrappers/chart_config.cc",
     "aclk/schema-wrappers/chart_config.h",
     "aclk/schema-wrappers/alarm_stream.cc",
@@ -604,8 +605,7 @@ DUMMY_HEADERS = [
     "collectors/all.h",
     "collectors/freebsd.plugin/plugin_freebsd.h",
     "collectors/macos.plugin/plugin_macos.h",
-    # TODO: FIXME: disable if aclk is enabled
-    # "aclk/schema-wrappers/chart_stream.h",
+    "aclk/schema-wrappers/chart_stream.h",
 ]
 
 #
@@ -643,9 +643,7 @@ cc_proto_library(
 NETDATA_SOURCES = DUMMY_HEADERS
 
 NETDATA_SOURCES += ACLK_ALWAYS_BUILD_HEADERS + ACLK_ALWAYS_BUILD_SOURCES
-NETDATA_SOURCES += ACLK_COMMON_HEADERS + ACLK_COMMON_SOURCES
-NETDATA_SOURCES += ACLK_HEADERS + ACLK_SOURCES
-NETDATA_SOURCES += ACLK_NEW_CLOUD_PROTOCOL
+NETDATA_SOURCES += if_aclk(ACLK_COMMON_HEADERS + ACLK_COMMON_SOURCES + ACLK_HEADERS + ACLK_SOURCES + ACLK_NEW_CLOUD_PROTOCOL)
 
 NETDATA_SOURCES += BACKENDS_HEADERS + BACKENDS_SOURCES
 NETDATA_SOURCES += CLAIM_HEADERS + CLAIM_SOURCES
@@ -689,11 +687,12 @@ cc_binary(
         "//third_party/projects/openssl:openssl",
         "//third_party/projects/json-c:json-c",
         "@zlib//:zlib",
-        ":aclk_cc_protos",
     ] + [
         '//bazel/build_settings:macro-definitions'
     ] + if_dbengine([
-        "//third_party/projects/judy:judy",
+        "//third_party/projects/judy:judy"
+    ]) + if_aclk([
+        ":aclk_cc_protos"
     ]),
     defines = [
         # Assume these exist on Linux.
