@@ -1,4 +1,4 @@
-load("//bazel/build_settings:defs.bzl", "if_dbengine", "if_streaming_compression", "if_https", "if_aclk")
+load("//bzl/build_settings:defs.bzl", "if_dbengine", "if_streaming_compression", "if_https", "if_aclk")
 
 #
 # aclk/
@@ -681,16 +681,16 @@ cc_binary(
         '-lm',
     ],
     deps = [
-        "//third_party/projects/libuv:libuv",
-        "//third_party/projects/lz4:lz4",
-        "//third_party/projects/util-linux:util-linux",
-        "//third_party/projects/openssl:openssl",
-        "//third_party/projects/json-c:json-c",
+        "//third_party/libuv:libuv",
+        "//third_party/lz4:lz4",
+        "//third_party/util-linux:util-linux",
+        "//third_party/openssl:openssl",
+        "//third_party/json-c:json-c",
         "@zlib//:zlib",
     ] + [
-        '//bazel/build_settings:macro-definitions'
+        '//bzl/build_settings:macro-definitions'
     ] + if_dbengine([
-        "//third_party/projects/judy:judy"
+        "//third_party/judy:judy"
     ]) + if_aclk([
         ":aclk_cc_protos"
     ]),
