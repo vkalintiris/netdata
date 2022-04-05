@@ -659,6 +659,18 @@ void rrdcalc_foreach_unlink_and_free(RRDHOST *host, RRDCALC *rc) {
     rrdcalc_free(rc);
 }
 
+static bool alarm_sp_matches_host_labels(label_t label, void *data) {
+    SIMPLE_PATTERN *sp = data;
+
+    const char *key = label_key(label);
+    const char *value = label_value(label);
+
+    char cmp[CONFIG_FILE_LINE_MAX+1];
+    snprintf(cmp, CONFIG_FILE_LINE_MAX, "%s=%s", key, value);
+
+    return (simple_pattern_matches(sp, key) || simple_pattern_matches(sp, cmp));
+}
+
 static void rrdcalc_labels_unlink_alarm_loop(RRDHOST *host, RRDCALC *alarms) {
     RRDCALC *rc = alarms;
     while (rc) {
@@ -667,20 +679,10 @@ static void rrdcalc_labels_unlink_alarm_loop(RRDHOST *host, RRDCALC *alarms) {
             continue;
         }
 
-        char cmp[CONFIG_FILE_LINE_MAX+1];
-        struct label *move = host->labels.head;
-        while(move) {
-            snprintf(cmp, CONFIG_FILE_LINE_MAX, "%s=%s", move->key, move->value);
-            if (simple_pattern_matches(rc->splabels, move->key) ||
-                simple_pattern_matches(rc->splabels, cmp)) {
-                break;
-            }
-
-            move = move->next;
-        }
+        bool matched_host = label_list_foreach(host->labels.label_list, alarm_sp_matches_host_labels, rc->splabels);
 
         RRDCALC *next = rc->next;
-        if(!move) {
+        if(!matched_host) {
             info("Health configuration for alarm '%s' cannot be applied, because the host %s does not have the label(s) '%s'",
                  rc->name,
                  host->hostname,
@@ -715,7 +717,7 @@ void rrdcalc_labels_unlink() {
         if (unlikely(!host->health_enabled))
             continue;
 
-        if (host->labels.head) {
+        if (host->labels.label_list) {
             rrdhost_wrlock(host);
 
             rrdcalc_labels_unlink_alarm_from_host(host);

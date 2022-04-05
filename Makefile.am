@@ -151,6 +151,8 @@ LIBNETDATA_FILES = \
     libnetdata/eval/eval.c \
     libnetdata/eval/eval.h \
     libnetdata/inlined.h \
+    libnetdata/labels/labels.cc \
+    libnetdata/labels/labels.h \
     libnetdata/libnetdata.c \
     libnetdata/libnetdata.h \
     libnetdata/required_dummies.h \
@@ -439,6 +441,7 @@ RRD_PLUGIN_FILES = \
     database/rrdfamily.c \
     database/rrdhost.c \
     database/rrdlabels.c \
+    database/rrdlabels.h \
     database/rrd.c \
     database/rrd.h \
     database/rrdset.c \
@@ -1153,6 +1156,10 @@ if ENABLE_UNITTESTS
         $(EXPORTING_ENGINE_TEST_FILES) \
         $(EXPORTING_ENGINE_FILES) \
         $(LIBNETDATA_FILES) \
+        database/rrdlabels.c \
+        database/labels.cc \
+        database/labels.h \
+        database/rrd.h \
         $(NULL)
     exporting_tests_exporting_engine_testdriver_CFLAGS = \
         $(AM_CFLAGS) \
@@ -1241,12 +1248,10 @@ endif
         collectors/cgroups.plugin/tests/test_doubles.c \
         $(CGROUPS_PLUGIN_FILES) \
         database/rrdlabels.c \
+        database/labels.cc \
+        database/labels.h \
         database/rrd.h \
         $(LIBNETDATA_FILES) \
         $(NULL)
     collectors_cgroups_plugin_tests_cgroups_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
-    collectors_cgroups_plugin_tests_cgroups_testdriver_LDFLAGS = \
-        -Wl,--wrap=add_label_to_list \
-        $(NULL)
-
 endif

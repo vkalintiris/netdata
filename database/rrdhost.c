@@ -179,7 +179,10 @@ RRDHOST *rrdhost_create(const char *hostname,
     sender_init(host->sender, host);
     netdata_mutex_init(&host->receiver_lock);
 
-    host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
+    if (is_localhost)
+        host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
+    else
+        host->rrdpush_send_enabled     = false;
     host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
     host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
     host->rrdpush_send_charts_matching = simple_pattern_create(rrdpush_send_charts_matching, NULL, SIMPLE_PATTERN_EXACT);
@@ -973,7 +976,7 @@ void rrdhost_free(RRDHOST *host) {
     freez(host->aclk_state.claimed_id);
     freez(host->aclk_state.prev_claimed_id);
     freez((void *)host->tags);
-    free_label_list(host->labels.head);
+    label_list_delete(host->labels.label_list);
     freez((void *)host->os);
     freez((void *)host->timezone);
     freez((void *)host->abbrev_timezone);
@@ -1035,105 +1038,84 @@ void rrdhost_save_charts(RRDHOST *host) {
     rrdhost_unlock(host);
 }
 
-static struct label *rrdhost_load_auto_labels(void)
+static label_list_t rrdhost_load_auto_labels(void)
 {
-    struct label *label_list = NULL;
+    label_list_t list = label_list_new();
 
     if (localhost->system_info->cloud_provider_type)
-        label_list =
-            add_label_to_list(label_list, "_cloud_provider_type", localhost->system_info->cloud_provider_type, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_cloud_provider_type", localhost->system_info->cloud_provider_type, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->cloud_instance_type)
-        label_list =
-            add_label_to_list(label_list, "_cloud_instance_type", localhost->system_info->cloud_instance_type, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_cloud_instance_type", localhost->system_info->cloud_instance_type, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->cloud_instance_region)
-        label_list =
-            add_label_to_list(label_list, "_cloud_instance_region", localhost->system_info->cloud_instance_region, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_cloud_instance_region", localhost->system_info->cloud_instance_region, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_os_name)
-        label_list =
-            add_label_to_list(label_list, "_os_name", localhost->system_info->host_os_name, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_os_name", localhost->system_info->host_os_name, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_os_version)
-        label_list =
-            add_label_to_list(label_list, "_os_version", localhost->system_info->host_os_version, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_os_version", localhost->system_info->host_os_version, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->kernel_version)
-        label_list =
-            add_label_to_list(label_list, "_kernel_version", localhost->system_info->kernel_version, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_kernel_version", localhost->system_info->kernel_version, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_cores)
-        label_list =
-                add_label_to_list(label_list, "_system_cores", localhost->system_info->host_cores, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_system_cores", localhost->system_info->host_cores, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_cpu_freq)
-        label_list =
-                add_label_to_list(label_list, "_system_cpu_freq", localhost->system_info->host_cpu_freq, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_system_cpu_freq", localhost->system_info->host_cpu_freq, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_ram_total)
-        label_list =
-                add_label_to_list(label_list, "_system_ram_total", localhost->system_info->host_ram_total, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_system_ram_total", localhost->system_info->host_ram_total, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->host_disk_space)
-        label_list =
-                add_label_to_list(label_list, "_system_disk_space", localhost->system_info->host_disk_space, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_system_disk_space", localhost->system_info->host_disk_space, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->architecture)
-        label_list =
-            add_label_to_list(label_list, "_architecture", localhost->system_info->architecture, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_architecture", localhost->system_info->architecture, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->virtualization)
-        label_list =
-            add_label_to_list(label_list, "_virtualization", localhost->system_info->virtualization, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_virtualization", localhost->system_info->virtualization, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->container)
-        label_list =
-            add_label_to_list(label_list, "_container", localhost->system_info->container, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_container", localhost->system_info->container, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->container_detection)
-        label_list =
-            add_label_to_list(label_list, "_container_detection", localhost->system_info->container_detection, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_container_detection", localhost->system_info->container_detection, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->virt_detection)
-        label_list =
-            add_label_to_list(label_list, "_virt_detection", localhost->system_info->virt_detection, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_virt_detection", localhost->system_info->virt_detection, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->is_k8s_node)
-        label_list =
-            add_label_to_list(label_list, "_is_k8s_node", localhost->system_info->is_k8s_node, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_is_k8s_node", localhost->system_info->is_k8s_node, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->install_type)
-        label_list =
-            add_label_to_list(label_list, "_install_type", localhost->system_info->install_type, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_install_type", localhost->system_info->install_type, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->prebuilt_arch)
-        label_list =
-            add_label_to_list(label_list, "_prebuilt_arch", localhost->system_info->prebuilt_arch, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_prebuilt_arch", localhost->system_info->prebuilt_arch, RRDLABEL_SOURCE_AUTO);
 
     if (localhost->system_info->prebuilt_dist)
-        label_list =
-            add_label_to_list(label_list, "_prebuilt_dist", localhost->system_info->prebuilt_dist, LABEL_SOURCE_AUTO);
+            label_list_add(list, "_prebuilt_dist", localhost->system_info->prebuilt_dist, RRDLABEL_SOURCE_AUTO);
 
-    label_list = add_aclk_host_labels(label_list);
+    add_aclk_host_labels(list);
 
-    label_list = add_label_to_list(
-        label_list, "_is_parent", (localhost->next || configured_as_parent()) ? "true" : "false", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_is_parent", (localhost->next || configured_as_parent()) ? "true" : "false", RRDLABEL_SOURCE_AUTO);
 
     if (localhost->rrdpush_send_destination)
-        label_list =
-            add_label_to_list(label_list, "_streams_to", localhost->rrdpush_send_destination, LABEL_SOURCE_AUTO);
+        label_list_add(list, "_streams_to", localhost->rrdpush_send_destination, RRDLABEL_SOURCE_AUTO);
 
-    return label_list;
+    return list;
 }
 
 static inline int rrdhost_is_valid_label_config_option(char *name, char *value)
 {
-    return (is_valid_label_key(name) && is_valid_label_value(value) && strcmp(name, "from environment") &&
+    return (rrdlabel_is_valid_key(name) && rrdlabel_is_valid_value(value) && strcmp(name, "from environment") &&
             strcmp(name, "from kubernetes pods"));
 }
 
-static struct label *rrdhost_load_config_labels()
+static label_list_t rrdhost_load_config_labels()
 {
     int status = config_load(NULL, 1, CONFIG_SECTION_HOST_LABEL);
     if(!status) {
@@ -1141,118 +1123,40 @@ static struct label *rrdhost_load_config_labels()
         error("LABEL: Cannot reload the configuration file '%s', using labels in memory", filename);
     }
 
-    struct label *l = NULL;
+    label_list_t list = label_list_new();
     struct section *co = appconfig_get_section(&netdata_config, CONFIG_SECTION_HOST_LABEL);
     if(co) {
         config_section_wrlock(co);
         struct config_option *cv;
         for(cv = co->values; cv ; cv = cv->next) {
             if(rrdhost_is_valid_label_config_option(cv->name, cv->value)) {
-                l = add_label_to_list(l, cv->name, cv->value, LABEL_SOURCE_NETDATA_CONF);
+                label_list_add(list, cv->name, cv->value, RRDLABEL_SOURCE_NETDATA_CONF);
                 cv->flags |= CONFIG_VALUE_USED;
             } else {
-                error("LABELS: It was not possible to create the label '%s' because it contains invalid character(s) or values."
-                       , cv->name);
+                error("LABELS: It was not possible to create the label '%s' because it contains invalid character(s) or values." , cv->name);
             }
         }
         config_section_unlock(co);
     }
 
-    return l;
+    return list;
 }
 
-struct label *parse_simple_tags(
-    struct label *label_list,
-    const char *tags,
-    char key_value_separator,
-    char label_separator,
-    STRIP_QUOTES_OPTION strip_quotes_from_key,
-    STRIP_QUOTES_OPTION strip_quotes_from_value,
-    SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters)
-{
-    const char *end = tags;
+static bool print_ignored_label(label_t label, void *data) {
+    UNUSED(data);
 
-    while (*end) {
-        const char *start = end;
-        char key[CONFIG_MAX_VALUE + 1];
-        char value[CONFIG_MAX_VALUE + 1];
+    info("Ignoring Label [source id=%s]: \"%s\" -> \"%s\"\n",
+         rrdlabel_source_to_string(label_source(label)),
+         label_key(label),
+         label_value(label));
 
-        while (*end && *end != key_value_separator)
-            end++;
-        strncpyz(key, start, end - start);
-
-        if (*end)
-            start = ++end;
-        while (*end && *end != label_separator)
-            end++;
-        strncpyz(value, start, end - start);
-
-        label_list = add_label_to_list(
-            label_list,
-            strip_quotes_from_key ? strip_double_quotes(trim(key), skip_escaped_characters) : trim(key),
-            strip_quotes_from_value ? strip_double_quotes(trim(value), skip_escaped_characters) : trim(value),
-            LABEL_SOURCE_NETDATA_CONF);
-
-        if (*end)
-            end++;
-    }
-
-    return label_list;
+    return false;
 }
 
-struct label *parse_json_tags(struct label *label_list, const char *tags)
+static label_list_t rrdhost_load_kubernetes_labels(void)
 {
-    char tags_buf[CONFIG_MAX_VALUE + 1];
-    strncpy(tags_buf, tags, CONFIG_MAX_VALUE);
-    char *str = tags_buf;
+    label_list_t list = label_list_new();
 
-    switch (*str) {
-    case '{':
-        str++;
-        strip_last_symbol(str, '}', SKIP_ESCAPED_CHARACTERS);
-
-        label_list = parse_simple_tags(label_list, str, ':', ',', STRIP_QUOTES, STRIP_QUOTES, SKIP_ESCAPED_CHARACTERS);
-
-        break;
-    case '[':
-        str++;
-        strip_last_symbol(str, ']', SKIP_ESCAPED_CHARACTERS);
-
-        char *end = str + strlen(str);
-        size_t i = 0;
-
-        while (str < end) {
-            char key[CONFIG_MAX_VALUE + 1];
-            snprintfz(key, CONFIG_MAX_VALUE, "host_tag%zu", i);
-
-            str = strip_double_quotes(trim(str), SKIP_ESCAPED_CHARACTERS);
-
-            label_list = add_label_to_list(label_list, key, str, LABEL_SOURCE_NETDATA_CONF);
-
-            // skip to the next element in the array
-            str += strlen(str) + 1;
-            while (*str && *str != ',')
-                str++;
-            str++;
-            i++;
-        }
-
-        break;
-    case '"':
-        label_list = add_label_to_list(
-            label_list, "host_tag", strip_double_quotes(str, SKIP_ESCAPED_CHARACTERS), LABEL_SOURCE_NETDATA_CONF);
-        break;
-    default:
-        label_list = add_label_to_list(label_list, "host_tag", str, LABEL_SOURCE_NETDATA_CONF);
-        break;
-    }
-
-    return label_list;
-}
-
-static struct label *rrdhost_load_kubernetes_labels(void)
-{
-    struct label *l=NULL;
     char *label_script = mallocz(sizeof(char) * (strlen(netdata_configured_primary_plugins_dir) + strlen("get-kubernetes-labels.sh") + 2));
     sprintf(label_script, "%s/%s", netdata_configured_primary_plugins_dir, "get-kubernetes-labels.sh");
     if (unlikely(access(label_script, R_OK) != 0)) {
@@ -1279,8 +1183,8 @@ static struct label *rrdhost_load_kubernetes_labels(void)
                 while (*eos && *eos != '\n') eos++;
                 if (*eos == '\n') *eos = '\0';
                 if (strlen(value)>0) {
-                    if (is_valid_label_key(name)){
-                        l = add_label_to_list(l, name, value, LABEL_SOURCE_KUBERNETES);
+                    if (rrdlabel_is_valid_key(name)){
+                        label_list_add(list, name, value, RRDLABEL_SOURCE_KUBERNETES);
                     } else {
                         info("Ignoring invalid label name '%s'", name);
                     }
@@ -1293,39 +1197,38 @@ static struct label *rrdhost_load_kubernetes_labels(void)
             int retcode=mypclose(fp, command_pid);
             if (retcode) {
                 error("%s exited abnormally. No kubernetes labels will be added to the host.", label_script);
-                struct label *ll=l;
-                while (ll != NULL) {
-                    info("Ignoring Label [source id=%s]: \"%s\" -> \"%s\"\n", translate_label_source(ll->label_source), ll->key, ll->value);
-                    ll = ll->next;
-                    freez(l);
-                    l=ll;
-                }
+                label_list_foreach(list, print_ignored_label, NULL);
+                label_list_clear(list);
             }
         }
         freez(label_script);
     }
 
-    return l;
+    return list;
 }
 
 void reload_host_labels(void)
 {
-    struct label *from_auto = rrdhost_load_auto_labels();
-    struct label *from_k8s = rrdhost_load_kubernetes_labels();
-    struct label *from_config = rrdhost_load_config_labels();
+    label_list_t from_auto = rrdhost_load_auto_labels();
+    label_list_t from_k8s = rrdhost_load_kubernetes_labels();
+    label_list_t from_config = rrdhost_load_config_labels();
 
-    struct label *new_labels = merge_label_lists(from_auto, from_k8s);
-    new_labels = merge_label_lists(new_labels, from_config);
+    label_list_update(from_config, from_k8s);
+    label_list_update(from_config, from_auto);
+
+    label_list_delete(from_auto);
+    label_list_delete(from_k8s);
 
     rrdhost_rdlock(localhost);
-    replace_label_list(&localhost->labels, new_labels);
 
+    rrdlabel_index_replace(&localhost->labels, from_config);
     health_label_log_save(localhost);
+
     rrdhost_unlock(localhost);
 
 /*  TODO-GAPS - fix this so that it looks properly at the state and version of the sender
     if(localhost->rrdpush_send_enabled && localhost->rrdpush_sender_buffer){
-        localhost->labels.labels_flag |= LABEL_FLAG_UPDATE_STREAM;
+        localhost->labels.labels_flag |= RRDLABEL_FLAG_UPDATE_STREAM;
         rrdpush_send_labels(localhost);
     }
 */

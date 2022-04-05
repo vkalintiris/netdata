@@ -246,7 +246,7 @@ static inline char *strncpyz(char *dst, const char *src, size_t n) {
     return p;
 }
 
-static inline void sanitize_json_string(char *dst, char *src, size_t len) {
+static inline void sanitize_json_string(char *dst, const char *src, size_t len) {
     while (*src != '\0' && len > 1) {
         if (*src == '\\' || *src == '\"' || *src < 0x1F) {
             if (*src < 0x1F) {

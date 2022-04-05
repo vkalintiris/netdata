@@ -44,20 +44,10 @@ void mountinfo_free_all(struct mountinfo *mi)
     UNUSED(mi);
 }
 
-struct label *__wrap_add_label_to_list(struct label *l, char *key, char *value, LABEL_SOURCE label_source)
-{
-    function_called();
-    check_expected_ptr(l);
-    check_expected_ptr(key);
-    check_expected_ptr(value);
-    check_expected(label_source);
-    return l;
-}
-
-void rrdset_update_labels(RRDSET *st, struct label *labels)
+void rrdset_update_labels(RRDSET *st, label_list_t list)
 {
     UNUSED(st);
-    UNUSED(labels);
+    UNUSED(list);
 }
 
 RRDSET *rrdset_create_custom(
@@ -148,7 +138,7 @@ void update_pressure_chart(struct pressure_chart *chart)
 }
 
 void netdev_rename_device_add(
-    const char *host_device, const char *container_device, const char *container_name, struct label *labels)
+    const char *host_device, const char *container_device, const char *container_name, const label_list_t labels)
 {
     UNUSED(host_device);
     UNUSED(container_device);

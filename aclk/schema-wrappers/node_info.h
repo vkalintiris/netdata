@@ -53,7 +53,7 @@ struct aclk_node_info {
 
     char *machine_guid;
 
-    struct label *host_labels_head;
+    label_list_t host_label_list;
 
     struct machine_learning_info ml_info;
 };

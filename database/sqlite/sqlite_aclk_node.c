@@ -60,7 +60,7 @@ void sql_build_node_info(struct aclk_database_worker_config *wc, struct aclk_dat
 
     struct label_index *labels = &host->labels;
     netdata_rwlock_wrlock(&labels->labels_rwlock);
-    node_info.data.host_labels_head = labels->head;
+    node_info.data.host_label_list = labels->label_list;
 
     aclk_update_node_info(&node_info);
     log_access("ACLK RES [%s (%s)]: NODE INFO SENT for guid [%s] (%s)", wc->node_id, wc->host->hostname, wc->host_guid, wc->host == localhost ? "parent" : "child");

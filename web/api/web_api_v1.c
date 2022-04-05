@@ -928,36 +928,6 @@ static inline void web_client_api_request_v1_info_mirrored_hosts(BUFFER *wb) {
     buffer_strcat(wb, "\n\t],\n");
 }
 
-inline void host_labels2json(RRDHOST *host, BUFFER *wb, size_t indentation) {
-    char tabs[11];
-
-    if (indentation > 10)
-        indentation = 10;
-
-    tabs[0] = '\0';
-    while (indentation) {
-        strcat(tabs, "\t");
-        indentation--;
-    }
-
-    int count = 0;
-    rrdhost_rdlock(host);
-    netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-    for (struct label *label = host->labels.head; label; label = label->next) {
-        if(count > 0) buffer_strcat(wb, ",\n");
-        buffer_strcat(wb, tabs);
-
-        char value[CONFIG_MAX_VALUE * 2 + 1];
-        sanitize_json_string(value, label->value, CONFIG_MAX_VALUE * 2);
-        buffer_sprintf(wb, "\"%s\": \"%s\"", label->key, value);
-
-        count++;
-    }
-    buffer_strcat(wb, "\n");
-    netdata_rwlock_unlock(&host->labels.labels_rwlock);
-    rrdhost_unlock(host);
-}
-
 extern int aclk_connected;
 inline int web_client_api_request_v1_info_fill_buffer(RRDHOST *host, BUFFER *wb)
 {
@@ -1013,8 +983,15 @@ inline int web_client_api_request_v1_info_fill_buffer(RRDHOST *host, BUFFER *wb)
         buffer_sprintf(wb, "\t\"cloud_instance_region\": \"%s\",\n", host->system_info->cloud_instance_region);
 
     buffer_strcat(wb, "\t\"host_labels\": {\n");
-    host_labels2json(host, wb, 2);
-    buffer_strcat(wb, "\t},\n");
+
+    rrdhost_rdlock(host);
+    netdata_rwlock_rdlock(&host->labels.labels_rwlock);
+    label_list_to_json_buffer(host->labels.label_list, wb,
+                              "\"%s\": \"%s\"", ",\n", 2);
+    netdata_rwlock_unlock(&host->labels.labels_rwlock);
+    rrdhost_unlock(host);
+
+    buffer_strcat(wb, "\n\t},\n");
 
     buffer_strcat(wb, "\t\"collectors\": [");
     chartcollectors2json(host, wb);

@@ -5,43 +5,35 @@
 
 // ----------------------------------------------------------------------------
 
+static bool alarm_sp_matches_host_labels(label_t label, void *data) {
+    SIMPLE_PATTERN *sp = data;
+
+    const char *key = label_key(label);
+    const char *value = label_value(label);
+
+    char cmp[CONFIG_FILE_LINE_MAX+1];
+    snprintfz(cmp, CONFIG_FILE_LINE_MAX, "%s=%s", key, value);
+
+    return simple_pattern_matches(sp, key) || simple_pattern_matches(sp, cmp);
+}
+
 static int rrdcalctemplate_is_there_label_restriction(RRDCALCTEMPLATE *rt,  RRDHOST *host) {
     if(!rt->labels)
         return 0;
 
     errno = 0;
-    struct label *move = host->labels.head;
-    char cmp[CONFIG_FILE_LINE_MAX+1];
 
-    int ret;
-    if(move) {
-        rrdhost_check_rdlock(host);
-        netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        while(move) {
-            snprintfz(cmp, CONFIG_FILE_LINE_MAX, "%s=%s", move->key, move->value);
-            if (simple_pattern_matches(rt->splabels, move->key) ||
-                simple_pattern_matches(rt->splabels, cmp)) {
-                break;
-            }
-            move = move->next;
-        }
-        netdata_rwlock_unlock(&host->labels.labels_rwlock);
+    rrdhost_check_rdlock(host);
+    netdata_rwlock_rdlock(&host->labels.labels_rwlock);
+    bool matched_host = label_list_foreach(host->labels.label_list, alarm_sp_matches_host_labels, rt->splabels);
+    netdata_rwlock_unlock(&host->labels.labels_rwlock);
 
-        if(!move) {
-            error("Health template '%s' cannot be applied, because the host %s does not have the label(s) '%s'",
-                   rt->name,
-                   host->hostname,
-                   rt->labels
-            );
-            ret = 1;
-        } else {
-            ret = 0;
-        }
-    } else {
-        ret =0;
+    if(!matched_host) {
+        error("Health template '%s' cannot be applied, because the host %s does not have the label(s) '%s'",
+               rt->name, host->hostname, rt->labels);
     }
 
-    return ret;
+    return matched_host;
 }
 
 static inline int rrdcalctemplate_test_additional_restriction(RRDCALCTEMPLATE *rt, RRDSET *st) {

@@ -123,21 +123,10 @@ int format_host_labels_json_plaintext(struct instance *instance, RRDHOST *host)
 
     buffer_strcat(instance->labels, "\"labels\":{");
 
-    int count = 0;
     rrdhost_check_rdlock(host);
     netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-    for (struct label *label = host->labels.head; label; label = label->next) {
-        if (!should_send_label(instance, label))
-            continue;
-
-        char value[CONFIG_MAX_VALUE * 2 + 1];
-        sanitize_json_string(value, label->value, CONFIG_MAX_VALUE);
-        if (count > 0)
-            buffer_strcat(instance->labels, ",");
-        buffer_sprintf(instance->labels, "\"%s\":\"%s\"", label->key, value);
-
-        count++;
-    }
+    label_list_to_json_buffer(host->labels.label_list, instance->labels,
+                                  "\"%s\":\"%s\"", ",", 0);
     netdata_rwlock_unlock(&host->labels.labels_rwlock);
 
     buffer_strcat(instance->labels, "},");

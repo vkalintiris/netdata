@@ -22,7 +22,6 @@ typedef void *ml_dimension_t;
 struct rrddim_volatile;
 struct rrdset_volatile;
 struct context_param;
-struct label;
 #ifdef ENABLE_DBENGINE
 struct rrdeng_page_descr;
 struct rrdengine_instance;
@@ -39,6 +38,7 @@ struct pg_cache_page_index;
 #include "streaming/rrdpush.h"
 #include "aclk/aclk_rrdhost_state.h"
 #include "sqlite/sqlite_health.h"
+#include "rrdlabels.h"
 
 enum {
     CONTEXT_FLAGS_ARCHIVE = 0x01,
@@ -176,66 +176,13 @@ typedef enum rrddim_flags {
 #define rrddim_flag_set(rd, flag)   __atomic_or_fetch(&((rd)->flags), (flag), __ATOMIC_SEQ_CST)
 #define rrddim_flag_clear(rd, flag) __atomic_and_fetch(&((rd)->flags), ~(flag), __ATOMIC_SEQ_CST)
 
-typedef enum label_source {
-    LABEL_SOURCE_AUTO             = 0,
-    LABEL_SOURCE_NETDATA_CONF     = 1,
-    LABEL_SOURCE_DOCKER           = 2,
-    LABEL_SOURCE_ENVIRONMENT      = 3,
-    LABEL_SOURCE_KUBERNETES       = 4
-} LABEL_SOURCE;
-
-#define LABEL_FLAG_UPDATE_STREAM 1
-#define LABEL_FLAG_STOP_STREAM 2
-
-struct label {
-    char *key, *value;
-    uint32_t key_hash;
-    LABEL_SOURCE label_source;
-    struct label *next;
-};
-
-struct label_index {
-    struct label *head;                     // Label list
-    netdata_rwlock_t labels_rwlock;         // lock for the label list
-    uint32_t labels_flag;                   // Flags for labels
-};
-
-typedef enum strip_quotes {
-    DO_NOT_STRIP_QUOTES,
-    STRIP_QUOTES
-} STRIP_QUOTES_OPTION;
-
-typedef enum skip_escaped_characters {
-    DO_NOT_SKIP_ESCAPED_CHARACTERS,
-    SKIP_ESCAPED_CHARACTERS
-} SKIP_ESCAPED_CHARACTERS_OPTION;
-
-char *translate_label_source(LABEL_SOURCE l);
-struct label *create_label(char *key, char *value, LABEL_SOURCE label_source);
-extern struct label *add_label_to_list(struct label *l, char *key, char *value, LABEL_SOURCE label_source);
-extern void update_label_list(struct label **labels, struct label *new_labels);
-extern void replace_label_list(struct label_index *labels, struct label *new_labels);
-extern int is_valid_label_value(char *value);
-extern int is_valid_label_key(char *key);
-extern void free_label_list(struct label *labels);
-extern struct label *label_list_lookup_key(struct label *head, char *key, uint32_t key_hash);
-extern struct label *label_list_lookup_keylist(struct label *head, char *keylist);
-extern int label_list_contains_keylist(struct label *head, char *keylist);
-extern int label_list_contains_key(struct label *head, char *key, uint32_t key_hash);
-extern int label_list_contains(struct label *head, struct label *check);
-extern struct label *merge_label_lists(struct label *lo_pri, struct label *hi_pri);
-extern void strip_last_symbol(
-    char *str,
-    char symbol,
-    SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters);
-extern char *strip_double_quotes(char *str, SKIP_ESCAPED_CHARACTERS_OPTION skip_escaped_characters);
 void reload_host_labels(void);
-extern void rrdset_add_label_to_new_list(RRDSET *st, char *key, char *value, LABEL_SOURCE source);
 extern void rrdset_finalize_labels(RRDSET *st);
-extern void rrdset_update_labels(RRDSET *st, struct label *labels);
-extern int rrdset_contains_label_keylist(RRDSET *st, char *key);
+
+extern void rrdset_update_labels(RRDSET *st, label_list_t list);
+extern int rrdset_contains_label_keylist(RRDSET *st, char *keylist);
+extern label_t rrdset_lookup_label_key(RRDSET *st, char *key);
 extern int rrdset_matches_label_keys(RRDSET *st, char *key, char *words[], uint32_t *hash_key_list, int *word_count, int size);
-extern struct label *rrdset_lookup_label_key(RRDSET *st, char *key, uint32_t key_hash);
 
 // ----------------------------------------------------------------------------
 // RRD DIMENSION - this is a metric
@@ -400,7 +347,6 @@ struct rrdset_volatile {
     char *old_title;
     char *old_context;
     uuid_t hash_id;
-    struct label *new_labels;
     struct label_index labels;
     bool is_ar_chart;
 };

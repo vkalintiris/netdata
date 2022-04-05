@@ -2,34 +2,50 @@
 
 #include "rrdset2json.h"
 
+struct label_data {
+    BUFFER *wb;
+    char tabs[11];
+    int count;
+};
+
+static bool format_label_to_json(label_t label, void *data) {
+    struct label_data *ld = data;
+
+    if(ld->count > 0)
+        buffer_strcat(ld->wb, ",\n");
+
+    buffer_strcat(ld->wb, ld->tabs);
+
+    char value[CONFIG_MAX_VALUE * 2 + 1];
+    sanitize_json_string(value, label_value(label), CONFIG_MAX_VALUE * 2);
+    buffer_sprintf(ld->wb, "\"%s\": \"%s\"", label_key(label), value);
+    ld->count++;
+
+    return false;
+}
+
 void chart_labels2json(RRDSET *st, BUFFER *wb, size_t indentation)
 {
-    char tabs[11];
-    struct label_index *labels = &st->state->labels;
+    struct label_data ld;
+
+    ld.wb = wb;
+    ld.count = 0;
 
     if (indentation > 10)
         indentation = 10;
 
-    tabs[0] = '\0';
+    ld.tabs[0] = '\0';
     while (indentation) {
-        strcat(tabs, "\t");
+        strcat(ld.tabs, "\t");
         indentation--;
     }
 
-    int count = 0;
+    struct label_index *labels = &st->state->labels;
     netdata_rwlock_rdlock(&labels->labels_rwlock);
-    for (struct label *label = labels->head; label; label = label->next) {
-        if(count > 0) buffer_strcat(wb, ",\n");
-        buffer_strcat(wb, tabs);
-
-        char value[CONFIG_MAX_VALUE * 2 + 1];
-        sanitize_json_string(value, label->value, CONFIG_MAX_VALUE * 2);
-        buffer_sprintf(wb, "\"%s\": \"%s\"", label->key, value);
-
-        count++;
-    }
-    buffer_strcat(wb, "\n");
+    label_list_foreach(labels->label_list, format_label_to_json, &ld);
     netdata_rwlock_unlock(&labels->labels_rwlock);
+
+    buffer_strcat(wb, "\n");
 }
 
 // generate JSON for the /api/v1/chart API call

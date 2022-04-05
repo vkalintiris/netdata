@@ -1350,7 +1350,7 @@ void add_migrated_file(char *path, uint64_t file_size)
     "(chart_id, source_type, label_key, label_value, date_created) " \
     "values (@chart, @source, @label, @value, strftime('%s'));"
 
-void sql_store_chart_label(uuid_t *chart_uuid, int source_type, char *label, char *value)
+void sql_store_chart_label(uuid_t *chart_uuid, int source_type, const char *label, const char *value)
 {
     static __thread sqlite3_stmt *res = NULL;
     int rc;

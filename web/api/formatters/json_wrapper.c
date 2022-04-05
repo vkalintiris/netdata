@@ -133,9 +133,6 @@ void rrdr_json_wrapper_begin(RRDR *r, BUFFER *wb, uint32_t format, RRDR_OPTIONS 
             char *label_key = NULL;
             int keys = 0;
             while (pattern && (label_key = simple_pattern_iterate(&pattern))) {
-                uint32_t key_hash = simple_hash(label_key);
-                struct label *current_label;
-
                 if (keys)
                     buffer_strcat(wb, ", ");
                 buffer_sprintf(wb, "%s%s%s : [", kq, label_key, kq);
@@ -149,10 +146,10 @@ void rrdr_json_wrapper_begin(RRDR *r, BUFFER *wb, uint32_t format, RRDR_OPTIONS 
                     if (i)
                         buffer_strcat(wb, ", ");
 
-                    current_label = rrdset_lookup_label_key(rd->rrdset, label_key, key_hash);
+                    label_t current_label = rrdset_lookup_label_key(rd->rrdset, label_key);
                     if (current_label) {
                         buffer_strcat(wb, sq);
-                        buffer_strcat(wb, current_label->value);
+                        buffer_strcat(wb, label_value(current_label));
                         buffer_strcat(wb, sq);
                     } else
                         buffer_strcat(wb, "null");

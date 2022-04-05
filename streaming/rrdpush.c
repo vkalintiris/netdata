@@ -193,21 +193,31 @@ static inline int need_to_send_chart_definition(RRDSET *st) {
 }
 
 // chart labels
+static bool format_clabel_streaming(label_t label, void *data) {
+    BUFFER *wb = data;
+
+    buffer_sprintf(wb, "CLABEL \"%s\" \"%s\" %d\n",
+                   label_key(label),
+                   label_value(label),
+                   label_source(label));
+
+    return false;
+}
+
 void rrdpush_send_clabels(RRDHOST *host, RRDSET *st) {
     struct label_index *labels_c = &st->state->labels;
-    if (labels_c) {
-        netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        struct label *lbl = labels_c->head;
-        while(lbl) {
-            buffer_sprintf(host->sender->build,
-                           "CLABEL \"%s\" \"%s\" %d\n", lbl->key, lbl->value, (int)lbl->label_source);
 
-            lbl = lbl->next;
-        }
-        if (labels_c->head)
-            buffer_sprintf(host->sender->build,"CLABEL_COMMIT\n");
-        netdata_rwlock_unlock(&host->labels.labels_rwlock);
+    if (!labels_c)
+        return;
+
+    netdata_rwlock_rdlock(&host->labels.labels_rwlock);
+
+    if (label_list_size(labels_c->label_list)) {
+        label_list_foreach(labels_c->label_list, format_clabel_streaming, host->sender->build);
+        buffer_sprintf(host->sender->build, "CLABEL_COMMIT\n");
     }
+
+    netdata_rwlock_unlock(&host->labels.labels_rwlock);
 }
 
 // Send the current chart definition.
@@ -364,27 +374,27 @@ void rrdset_done_push(RRDSET *st) {
 }
 
 // labels
+static bool format_label_streaming(label_t label, void *data) {
+    BUFFER *wb = data;
+
+    buffer_sprintf(wb, "LABEL \"%s\" = %d %s\n",
+                   label_key(label),
+                   label_source(label),
+                   label_value(label));
+
+    return false;
+}
+
 void rrdpush_send_labels(RRDHOST *host) {
-    if (!host->labels.head || !(host->labels.labels_flag & LABEL_FLAG_UPDATE_STREAM) || (host->labels.labels_flag & LABEL_FLAG_STOP_STREAM))
+    if (!host->labels.label_list || !(host->labels.labels_flag & RRDLABEL_FLAG_UPDATE_STREAM) || (host->labels.labels_flag & RRDLABEL_FLAG_STOP_STREAM))
         return;
 
     sender_start(host->sender);
     rrdhost_rdlock(host);
     netdata_rwlock_rdlock(&host->labels.labels_rwlock);
 
-    struct label *label_i = host->labels.head;
-    while(label_i) {
-        buffer_sprintf(host->sender->build
-                , "LABEL \"%s\" = %d %s\n"
-                , label_i->key
-                , (int)label_i->label_source
-                , label_i->value);
-
-        label_i = label_i->next;
-    }
-
-    buffer_sprintf(host->sender->build
-            , "OVERWRITE %s\n", "labels");
+    label_list_foreach(host->labels.label_list, format_label_streaming, host->sender->build);
+    buffer_sprintf(host->sender->build, "OVERWRITE %s\n", "labels");
 
     netdata_rwlock_unlock(&host->labels.labels_rwlock);
     rrdhost_unlock(host);
@@ -393,7 +403,7 @@ void rrdpush_send_labels(RRDHOST *host) {
     if(host->rrdpush_sender_pipe[PIPE_WRITE] != -1 && write(host->rrdpush_sender_pipe[PIPE_WRITE], " ", 1) == -1)
         error("STREAM %s [send]: cannot write to internal pipe", host->hostname);
 
-    host->labels.labels_flag &= ~LABEL_FLAG_UPDATE_STREAM;
+    host->labels.labels_flag &= ~RRDLABEL_FLAG_UPDATE_STREAM;
 }
 
 void rrdpush_claimed_id(RRDHOST *host)

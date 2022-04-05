@@ -149,22 +149,16 @@ PARSER_RC pluginsd_dimension_action(void *user, RRDSET *st, char *id, char *name
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_label_action(void *user, char *key, char *value, LABEL_SOURCE source)
+
+PARSER_RC pluginsd_clabel_action(void *user, char *key, char *value, RRDLABEL_SOURCE source)
 {
+    PARSER_USER_OBJECT *user_object = user;
 
-    ((PARSER_USER_OBJECT *) user)->new_labels = add_label_to_list(((PARSER_USER_OBJECT *) user)->new_labels, key, value, source);
-
+    label_list_add(user_object->chart_labels, key, value, source);
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_clabel_action(void *user, char *key, char *value, LABEL_SOURCE source)
-{
-    ((PARSER_USER_OBJECT *) user)->chart_labels = add_label_to_list(((PARSER_USER_OBJECT *) user)->chart_labels, key, value, source);
-
-    return PARSER_RC_OK;
-}
-
-PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, struct label *new_labels)
+PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, label_list_t new_labels)
 {
     RRDSET *st = ((PARSER_USER_OBJECT *)user)->st;
     if (unlikely(!st)) {
@@ -173,22 +167,10 @@ PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, struct label 
     }
 
     rrdset_update_labels(st, new_labels);
+    label_list_clear(new_labels);
     return PARSER_RC_OK;
 }
 
-PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, struct label *new_labels)
-{
-    UNUSED(user);
-
-    if (!host->labels.head) {
-        host->labels.head = new_labels;
-    } else {
-        rrdhost_rdlock(host);
-        replace_label_list(&host->labels, new_labels);
-        rrdhost_unlock(host);
-    }
-    return PARSER_RC_OK;
-}
 
 PARSER_RC pluginsd_set(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
 {
@@ -583,6 +565,42 @@ PARSER_RC pluginsd_label(char **words, void *user, PLUGINSD_ACTION  *plugins_act
     return PARSER_RC_OK;
 }
 
+PARSER_RC pluginsd_label_action(void *user, char *key, char *value, RRDLABEL_SOURCE source)
+{
+    PARSER_USER_OBJECT *user_object = user;
+
+    label_list_add(user_object->new_labels, key, value, source);
+    return PARSER_RC_OK;
+}
+
+PARSER_RC pluginsd_overwrite(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
+{
+    UNUSED(words);
+
+    RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
+    debug(D_PLUGINSD, "requested a OVERWRITE a variable");
+
+    if (plugins_action->overwrite_action)
+        return plugins_action->overwrite_action(user, host, ((PARSER_USER_OBJECT *)user)->new_labels);
+
+    return PARSER_RC_OK;
+}
+
+PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, label_list_t new_labels)
+{
+    UNUSED(user);
+
+    if (!host->labels.label_list)
+        host->labels.label_list = label_list_new();
+
+    rrdhost_rdlock(host);
+    label_list_update(host->labels.label_list, new_labels);
+    rrdhost_unlock(host);
+
+    label_list_clear(new_labels);
+    return PARSER_RC_OK;
+}
+
 PARSER_RC pluginsd_clabel(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
 {
     if (!words[1] || !words[2] || !words[3]) {
@@ -605,29 +623,8 @@ PARSER_RC pluginsd_clabel_commit(char **words, void *user, PLUGINSD_ACTION  *plu
     RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
     debug(D_PLUGINSD, "requested to commit chart labels");
 
-    struct label *chart_labels = ((PARSER_USER_OBJECT *)user)->chart_labels;
-    ((PARSER_USER_OBJECT *)user)->chart_labels = NULL;
-
-    if (plugins_action->clabel_commit_action) {
-        return plugins_action->clabel_commit_action(user, host, chart_labels);
-    }
-
-    return PARSER_RC_OK;
-}
-
-PARSER_RC pluginsd_overwrite(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
-{
-    UNUSED(words);
-
-    RRDHOST *host = ((PARSER_USER_OBJECT *) user)->host;
-    debug(D_PLUGINSD, "requested a OVERWRITE a variable");
-
-    struct label *new_labels = ((PARSER_USER_OBJECT *)user)->new_labels;
-    ((PARSER_USER_OBJECT *)user)->new_labels = NULL;
-
-    if (plugins_action->overwrite_action) {
-        return plugins_action->overwrite_action(user, host, new_labels);
-    }
+    if (plugins_action->clabel_commit_action)
+        return plugins_action->clabel_commit_action(user, host, ((PARSER_USER_OBJECT *)user)->chart_labels);
 
     return PARSER_RC_OK;
 }
@@ -744,10 +741,12 @@ inline size_t pluginsd_process(RRDHOST *host, struct plugind *cd, FILE *fp, int 
     clearerr(fp);
 
     PARSER_USER_OBJECT *user = callocz(1, sizeof(*user));
-    ((PARSER_USER_OBJECT *) user)->enabled = cd->enabled;
-    ((PARSER_USER_OBJECT *) user)->host = host;
-    ((PARSER_USER_OBJECT *) user)->cd = cd;
-    ((PARSER_USER_OBJECT *) user)->trust_durations = trust_durations;
+    user->enabled = cd->enabled;
+    user->host = host;
+    user->cd = cd;
+    user->trust_durations = trust_durations;
+    user->new_labels = label_list_new();
+    user->chart_labels = label_list_new();
 
     PARSER *parser = parser_init(host, user, fp, PARSER_INPUT_SPLIT);
 
@@ -781,6 +780,8 @@ inline size_t pluginsd_process(RRDHOST *host, struct plugind *cd, FILE *fp, int 
     cd->enabled = ((PARSER_USER_OBJECT *) user)->enabled;
     size_t count = ((PARSER_USER_OBJECT *) user)->count;
 
+    label_list_delete(user->new_labels);
+    label_list_delete(user->chart_labels);
     freez(user);
 
     if (likely(count)) {

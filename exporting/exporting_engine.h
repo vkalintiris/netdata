@@ -40,12 +40,6 @@ extern const char *global_exporting_prefix;
 #define sending_labels_configured(instance)                                                                            \
     (instance->config.options & (EXPORTING_OPTION_SEND_CONFIGURED_LABELS | EXPORTING_OPTION_SEND_AUTOMATIC_LABELS))
 
-#define should_send_label(instance, label)                                                                             \
-    ((instance->config.options & EXPORTING_OPTION_SEND_CONFIGURED_LABELS &&                                            \
-      label->label_source == LABEL_SOURCE_NETDATA_CONF) ||                                                             \
-     (instance->config.options & EXPORTING_OPTION_SEND_AUTOMATIC_LABELS &&                                             \
-      label->label_source != LABEL_SOURCE_NETDATA_CONF))
-
 typedef enum exporting_connector_types {
     EXPORTING_CONNECTOR_TYPE_UNKNOWN,                 // Invalid type
     EXPORTING_CONNECTOR_TYPE_GRAPHITE,                // Send plain text to Graphite
@@ -251,6 +245,8 @@ struct engine {
 };
 
 extern struct instance *prometheus_exporter_instance;
+
+bool should_send_label(const struct instance *instance, const label_t label);
 
 void *exporting_main(void *ptr);
 

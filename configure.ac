@@ -549,6 +549,7 @@ AC_MSG_RESULT([${enable_https}])
 AM_CONDITIONAL([ENABLE_HTTPS], [test "${enable_https}" = "yes"])
 
 AC_MSG_CHECKING([if netdata compression should be used])
+enable_compression="no"
 if test "${enable_compression}" != "no"; then
     if test "${LZ4_LIBS_FAST}"; then
         LIBS_BKP="${LIBS}"

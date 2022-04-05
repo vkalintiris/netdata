@@ -12,8 +12,6 @@ static void test_k8s_parse_resolved_name(void **state)
 {
     UNUSED(state);
 
-    struct label *labels = (struct label *)0xff;
-
     struct k8s_test_data {
         char *data;
         char *name;
@@ -77,23 +75,30 @@ static void test_k8s_parse_resolved_name(void **state)
 
     for (int i = 0; test_data[i].data != NULL; i++) {
         char *data = strdup(test_data[i].data);
+        label_list_t list = label_list_new();
+
+        char *name = k8s_parse_resolved_name(list, data);
+        assert_string_equal(name, test_data[i].name);
 
         for (int l = 0; l < 3 && test_data[i].key[l] != NULL; l++) {
             char *key = test_data[i].key[l];
             char *value = test_data[i].value[l];
 
-            expect_function_call(__wrap_add_label_to_list);
-            expect_value(__wrap_add_label_to_list, l, 0xff);
-            expect_string(__wrap_add_label_to_list, key, key);
-            expect_string(__wrap_add_label_to_list, value, value);
-            expect_value(__wrap_add_label_to_list, label_source, LABEL_SOURCE_KUBERNETES);    
+            label_list_add(list, key, value, RRDLABEL_SOURCE_KUBERNETES);
         }
 
-        char *name = k8s_parse_resolved_name(&labels, data);
+        for (int l = 0; l < 3 && test_data[i].key[l] != NULL; l++) {
+            char *key = test_data[i].key[l];
+            char *value = test_data[i].value[l];
 
-        assert_string_equal(name, test_data[i].name);
-        assert_ptr_equal(labels, 0xff);
+            label_t label = label_list_lookup_key(list, key);
 
+            assert_non_null(label);
+            assert_string_equal(label_key(label), key);
+            assert_string_equal(label_value(label), value);
+        }
+
+        label_list_delete(list);
         free(data);
     }
 }

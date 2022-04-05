@@ -69,18 +69,21 @@ static inline void health_log_rotate(RRDHOST *host) {
     }
 }
 
+static bool format_label_health(label_t label, void *data) {
+    BUFFER *wb = data;
+    buffer_sprintf(wb,"%s=%s\t ", label_key(label), label_value(label));
+    return false;
+}
+
 inline void health_label_log_save(RRDHOST *host) {
     health_log_rotate(host);
 
     if(unlikely(host->health_log_fp)) {
         BUFFER *wb = buffer_create(1024);
+
         rrdhost_check_rdlock(host);
         netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        struct label *l=localhost->labels.head;
-        while (l != NULL) {
-            buffer_sprintf(wb,"%s=%s\t ", l->key, l->value);
-            l = l->next;
-        }
+        label_list_foreach(host->labels.label_list, format_label_health, wb);
         netdata_rwlock_unlock(&host->labels.labels_rwlock);
 
         char *write = (char *) buffer_tostring(wb) ;

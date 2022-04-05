@@ -49,7 +49,7 @@ void aclk_host_state_update(RRDHOST *host, int connect);
 
 #endif
 
-struct label *add_aclk_host_labels(struct label *label);
+void add_aclk_host_labels(label_list_t list);
 char *aclk_state(void);
 char *aclk_state_json(void);
 

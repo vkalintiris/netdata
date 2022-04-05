@@ -401,7 +401,8 @@ void rrdset_free(RRDSET *st) {
     freez(st->module_name);
     freez(st->state->old_title);
     freez(st->state->old_context);
-    free_label_list(st->state->labels.head);
+    if (st->state->labels.label_list)
+        label_list_delete(st->state->labels.label_list);
     freez(st->state);
     freez(st->chart_uuid);
 
@@ -1940,67 +1941,57 @@ after_second_database_work:
     netdata_thread_enable_cancelability();
 }
 
-void rrdset_add_label_to_new_list(RRDSET *st, char *key, char *value, LABEL_SOURCE source)
-{
-    st->state->new_labels = add_label_to_list(st->state->new_labels, key, value, source);
+static bool label_store_sql(label_t label, void *data) {
+    uuid_t *chart_uuid = data;
+
+    sql_store_chart_label(chart_uuid,
+                          label_source(label),
+                          label_key(label),
+                          label_value(label));
+    return false;
 }
 
-void rrdset_finalize_labels(RRDSET *st)
+void rrdset_update_labels(RRDSET *st, label_list_t list)
 {
-    struct label *new_labels = st->state->new_labels;
     struct label_index *labels = &st->state->labels;
 
-    if (!labels->head) {
-        labels->head = new_labels;
-    } else {
-        replace_label_list(labels, new_labels);
-    }
-
     netdata_rwlock_wrlock(&labels->labels_rwlock);
-    struct label *lbl = labels->head;
-    while (lbl) {
-        sql_store_chart_label(st->chart_uuid, (int)lbl->label_source, lbl->key, lbl->value);
-        lbl = lbl->next;
-    }
+
+    if (!labels->label_list)
+        labels->label_list = label_list_new();
+    else
+        label_list_clear(labels->label_list);
+
+    label_list_update(labels->label_list, list);
+    label_list_foreach(labels->label_list, label_store_sql, st->chart_uuid);
+
     netdata_rwlock_unlock(&labels->labels_rwlock);
-
-    st->state->new_labels = NULL;
-}
-
-void rrdset_update_labels(RRDSET *st, struct label *labels)
-{
-    if (!labels)
-        return;
-
-    update_label_list(&st->state->new_labels, labels);
-    rrdset_finalize_labels(st);
 }
 
 int rrdset_contains_label_keylist(RRDSET *st, char *keylist)
 {
     struct label_index *labels = &st->state->labels;
-    int ret;
 
-    if (!labels->head)
+    if (!labels->label_list)
         return 0;
 
     netdata_rwlock_rdlock(&labels->labels_rwlock);
-    ret = label_list_contains_keylist(labels->head, keylist);
+    label_t ret = label_list_lookup_keylist(labels->label_list, keylist);
     netdata_rwlock_unlock(&labels->labels_rwlock);
 
-    return ret;
+    return ret != NULL;
 }
 
-struct label *rrdset_lookup_label_key(RRDSET *st, char *key, uint32_t key_hash)
+label_t rrdset_lookup_label_key(RRDSET *st, char *key)
 {
     struct label_index *labels = &st->state->labels;
-    struct label *ret = NULL;
 
-    if (labels->head) {
-        netdata_rwlock_rdlock(&labels->labels_rwlock);
-        ret = label_list_lookup_key(labels->head, key, key_hash);
-        netdata_rwlock_unlock(&labels->labels_rwlock);
-    }
+    if (!labels->label_list)
+        return NULL;
+
+    netdata_rwlock_rdlock(&labels->labels_rwlock);
+    label_t ret = label_list_lookup_key(labels->label_list, key);
+    netdata_rwlock_unlock(&labels->labels_rwlock);
     return ret;
 }
 
@@ -2016,25 +2007,21 @@ static inline int k8s_space(char c) {
 
 int rrdset_matches_label_keys(RRDSET *st, char *keylist, char *words[], uint32_t *hash_key_list, int *word_count, int size)
 {
+    UNUSED(hash_key_list);
+
     struct label_index *labels = &st->state->labels;
-
-    if (!labels->head)
+    if (!labels->label_list)
         return 0;
-
-    struct label *one_label;
 
     if (!*word_count) {
         *word_count = quoted_strings_splitter(keylist, words, size, k8s_space, NULL, NULL, 0);
-        for (int i = 0; i < *word_count - 1; i += 2) {
-            hash_key_list[i] = simple_hash(words[i]);
-        }
     }
 
     int ret = 1;
     netdata_rwlock_rdlock(&labels->labels_rwlock);
     for (int i = 0; ret && i < *word_count - 1; i += 2) {
-        one_label = label_list_lookup_key(labels->head, words[i], hash_key_list[i]);
-        ret = (one_label && !strcmp(one_label->value, words[i + 1]));
+        label_t one_label = label_list_lookup_key(labels->label_list, words[i]);
+        ret = (one_label && !strcmp(label_value(one_label), words[i + 1]));
     }
     netdata_rwlock_unlock(&labels->labels_rwlock);
     return ret;

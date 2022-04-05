@@ -44,13 +44,13 @@ void aclk_single_update_enable()
 }
 #endif /* ENABLE_ACLK */
 
-struct label *add_aclk_host_labels(struct label *label) {
+void add_aclk_host_labels(label_list_t list) {
 #ifdef ENABLE_ACLK
-    label = add_label_to_list(label, "_aclk_ng_available", "true", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_ng_available", "true", RRDLABEL_SOURCE_AUTO);
 #else
-    label = add_label_to_list(label, "_aclk_ng_available", "false", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_ng_available", "false", RRDLABEL_SOURCE_AUTO);
 #endif
-    label = add_label_to_list(label, "_aclk_legacy_available", "false", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_legacy_available", "false", RRDLABEL_SOURCE_AUTO);
 #ifdef ENABLE_ACLK
     ACLK_PROXY_TYPE aclk_proxy;
     char *proxy_str;
@@ -68,15 +68,14 @@ struct label *add_aclk_host_labels(struct label *label) {
             break;
     }
 
-    label = add_label_to_list(label, "_aclk_impl", "Next Generation", LABEL_SOURCE_AUTO);
-    label = add_label_to_list(label, "_aclk_proxy", proxy_str, LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_impl", "Next Generation", RRDLABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_proxy", proxy_str, RRDLABEL_SOURCE_AUTO);
 #ifdef ENABLE_NEW_CLOUD_PROTOCOL
-    label = add_label_to_list(label, "_aclk_ng_new_cloud_protocol", "true", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_ng_new_cloud_protocol", "true", RRDLABEL_SOURCE_AUTO);
 #else
-    label = add_label_to_list(label, "_aclk_ng_new_cloud_protocol", "false", LABEL_SOURCE_AUTO);
+    label_list_add(list, "_aclk_ng_new_cloud_protocol", "false", RRDLABEL_SOURCE_AUTO);
 #endif
 #endif
-    return label;
 }
 
 char *aclk_state(void) {

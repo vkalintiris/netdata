@@ -4,9 +4,14 @@
 
 #include "schema_wrapper_utils.h"
 
+static bool label_map_insert(label_t label, void *data) {
+    auto map = static_cast<google::protobuf::Map<std::string, std::string> *>(data);
+    map->insert({ label_key(label), label_value(label) });
+    return false;
+}
+
 static int generate_node_info(nodeinstance::info::v1::NodeInfo *info, struct aclk_node_info *data)
 {
-    struct label *label;
     google::protobuf::Map<std::string, std::string> *map;
 
     if (data->name)
@@ -67,11 +72,7 @@ static int generate_node_info(nodeinstance::info::v1::NodeInfo *info, struct acl
     ml_info->set_ml_enabled(data->ml_info.ml_enabled);
 
     map = info->mutable_host_labels();
-    label = data->host_labels_head;
-    while (label) {
-        map->insert({label->key, label->value});
-        label = label->next;
-    }
+    label_list_foreach(data->host_label_list, label_map_insert, map);
 
     return 0;
 }

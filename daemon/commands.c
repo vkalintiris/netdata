@@ -210,6 +210,16 @@ static cmd_status_t cmd_reload_claiming_state_execute(char *args, char **message
     return CMD_STATUS_SUCCESS;
 }
 
+static bool format_host_label(label_t label, void *data) {
+    BUFFER *wb = data;
+
+    buffer_sprintf(wb,"Label [source id=%s]: \"%s\" -> \"%s\"\n",
+                   rrdlabel_source_to_string(label_source(label)),
+                   label_key(label),
+                   label_value(label));
+    return false;
+}
+
 static cmd_status_t cmd_reload_labels_execute(char *args, char **message)
 {
     (void)args;
@@ -220,11 +230,9 @@ static cmd_status_t cmd_reload_labels_execute(char *args, char **message)
 
     rrdhost_rdlock(localhost);
     netdata_rwlock_rdlock(&localhost->labels.labels_rwlock);
-    struct label *l = localhost->labels.head;
-    while (l != NULL) {
-        buffer_sprintf(wb,"Label [source id=%s]: \"%s\" -> \"%s\"\n", translate_label_source(l->label_source), l->key, l->value);
-        l = l->next;
-    }
+
+    label_list_foreach(localhost->labels.label_list, format_host_label, wb);
+
     netdata_rwlock_unlock(&localhost->labels.labels_rwlock);
     rrdhost_unlock(localhost);
 

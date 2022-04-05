@@ -346,6 +346,8 @@ size_t streaming_parser(struct receiver_state *rpt, struct plugind *cd, FILE *fp
     user->opaque = rpt;
     user->cd = cd;
     user->trust_durations = 0;
+    user->new_labels = label_list_new();
+    user->chart_labels = label_list_new();
 
     PARSER *parser = parser_init(rpt->host, user, fp, PARSER_INPUT_SPLIT);
     parser_add_keyword(parser, "TIMESTAMP", streaming_timestamp);
@@ -387,11 +389,15 @@ size_t streaming_parser(struct receiver_state *rpt, struct plugind *cd, FILE *fp
                 goto done;
         }
         rpt->last_msg_t = now_realtime_sec();
-    }
-    while(!netdata_exit);
+    } while(!netdata_exit);
+
 done:
     result= user->count;
+
+    user->new_labels = label_list_new();
+    user->chart_labels = label_list_new();
     freez(user);
+
     parser_destroy(parser);
     return result;
 }
@@ -635,7 +641,8 @@ static int rrdpush_receive(struct receiver_state *rpt)
 */
 
 //    rpt->host->connected_senders++;
-    rpt->host->labels.labels_flag = (rpt->stream_version > 0)?LABEL_FLAG_UPDATE_STREAM:LABEL_FLAG_STOP_STREAM;
+
+    rpt->host->labels.labels_flag = (rpt->stream_version > 0) ? RRDLABEL_FLAG_UPDATE_STREAM : RRDLABEL_FLAG_STOP_STREAM;
 
     if(health_enabled != CONFIG_BOOLEAN_NO) {
         if(alarms_delay > 0) {

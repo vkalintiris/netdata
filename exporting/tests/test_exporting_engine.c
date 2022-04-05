@@ -58,7 +58,6 @@ static void test_exporting_engine(void **state)
 
     expect_function_call(__wrap_prepare_buffers);
     expect_memory(__wrap_prepare_buffers, engine, engine, sizeof(struct engine));
-    will_return(__wrap_prepare_buffers, 0);
 
     expect_function_call(__wrap_send_main_rusage);
     expect_value(__wrap_send_main_rusage, st_rusage, NULL);
@@ -381,7 +380,7 @@ static void test_prepare_buffers(void **state)
     expect_value(__mock_end_batch_formatting, instance, instance);
     will_return(__mock_end_batch_formatting, 0);
 
-    assert_int_equal(__real_prepare_buffers(engine), 0);
+    __real_prepare_buffers(engine);
 
     assert_int_equal(instance->stats.buffered_metrics, 1);
 
@@ -393,7 +392,8 @@ static void test_prepare_buffers(void **state)
     instance->end_chart_formatting = NULL;
     instance->end_host_formatting = NULL;
     instance->end_batch_formatting = NULL;
-    assert_int_equal(__real_prepare_buffers(engine), 0);
+
+    __real_prepare_buffers(engine);
 
     assert_int_equal(instance->scheduled, 0);
     assert_int_equal(instance->after, 2);

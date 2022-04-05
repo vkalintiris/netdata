@@ -4,6 +4,13 @@
 
 static struct engine *engine = NULL;
 
+bool should_send_label(const struct instance *instance, const label_t label) {
+    if (label_source(label) == RRDLABEL_SOURCE_NETDATA_CONF)
+        return instance->config.options & EXPORTING_OPTION_SEND_CONFIGURED_LABELS;
+    else
+        return instance->config.options & EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
+}
+
 void analytics_exporting_connectors_ssl(BUFFER *b)
 {
 #ifdef ENABLE_HTTPS

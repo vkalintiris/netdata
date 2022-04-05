@@ -290,6 +290,32 @@ inline char *prometheus_units_copy(char *d, const char *s, size_t usable, int sh
  * @param instance an instance data structure.
  * @param host a data collecting host.
  */
+struct label_data {
+    struct instance *instance;
+    int count;
+};
+
+static bool format_label_prometheus(label_t label, void *data) {
+    struct label_data *ld = data;
+
+    if (should_send_label(ld->instance, label)) {
+        char key[PROMETHEUS_ELEMENT_MAX + 1];
+        char value[PROMETHEUS_ELEMENT_MAX + 1];
+
+        prometheus_name_copy(key, label_key(label), PROMETHEUS_ELEMENT_MAX);
+        prometheus_label_copy(value, label_value(label), PROMETHEUS_ELEMENT_MAX);
+
+        if (*key && *value) {
+            if (ld->count > 0)
+                buffer_strcat(ld->instance->labels, ",");
+            buffer_sprintf(ld->instance->labels, "%s=\"%s\"", key, value);
+            ld->count++;
+        }
+    }
+
+    return false;
+}
+
 void format_host_labels_prometheus(struct instance *instance, RRDHOST *host)
 {
     if (unlikely(!sending_labels_configured(instance)))
@@ -298,26 +324,11 @@ void format_host_labels_prometheus(struct instance *instance, RRDHOST *host)
     if (!instance->labels)
         instance->labels = buffer_create(1024);
 
-    int count = 0;
+    struct label_data ld = { instance, 0 };
+
     rrdhost_check_rdlock(host);
     netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-    for (struct label *label = host->labels.head; label; label = label->next) {
-        if (!should_send_label(instance, label))
-            continue;
-
-        char key[PROMETHEUS_ELEMENT_MAX + 1];
-        char value[PROMETHEUS_ELEMENT_MAX + 1];
-
-        prometheus_name_copy(key, label->key, PROMETHEUS_ELEMENT_MAX);
-        prometheus_label_copy(value, label->value, PROMETHEUS_ELEMENT_MAX);
-
-        if (*key && *value) {
-            if (count > 0)
-                buffer_strcat(instance->labels, ",");
-            buffer_sprintf(instance->labels, "%s=\"%s\"", key, value);
-            count++;
-        }
-    }
+    label_list_foreach(host->labels.label_list, format_label_prometheus, &ld);
     netdata_rwlock_unlock(&host->labels.labels_rwlock);
 }
 

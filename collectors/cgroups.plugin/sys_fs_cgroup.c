@@ -756,7 +756,7 @@ struct cgroup {
 
     char *chart_title;
 
-    struct label *chart_labels;
+    label_list_t chart_labels;
 
     struct cpuacct_stat cpuacct_stat;
     struct cpuacct_usage cpuacct_usage;
@@ -1711,9 +1711,10 @@ static inline void substitute_dots_in_id(char *s) {
     }
 }
 
-char *k8s_parse_resolved_name(struct label **labels, char *data) {
+char *k8s_parse_resolved_name(label_list_t labels, char *data)
+{
     char *name = mystrsep(&data, " ");
-    
+
     if (!data) {
         return name;
     }
@@ -1733,7 +1734,7 @@ char *k8s_parse_resolved_name(struct label **labels, char *data) {
         if (!key || *key == '\0' || !value || *value == '\0')
             continue;
 
-        *labels = add_label_to_list(*labels, key, value, LABEL_SOURCE_KUBERNETES);
+        label_list_add(labels, key, value, RRDLABEL_SOURCE_KUBERNETES);
     }
 
     return name;
@@ -1808,7 +1809,7 @@ static inline void cgroup_free(struct cgroup *cg) {
     freez(cg->chart_id);
     freez(cg->chart_title);
 
-    free_label_list(cg->chart_labels);
+    label_list_delete(cg->chart_labels);
 
     freez(cg);
 
@@ -1866,7 +1867,7 @@ static inline void discovery_rename_cgroup(struct cgroup *cg) {
     }
     char *name = new_name;
     if (!strncmp(new_name, "k8s_", 4)) {
-        free_label_list(cg->chart_labels);
+        label_list_clear(cg->chart_labels);
         name = k8s_parse_resolved_name(&cg->chart_labels, new_name);
     }
     freez(cg->chart_title);
@@ -1947,6 +1948,8 @@ static inline struct cgroup *discovery_cgroup_add(const char *id) {
     cg->chart_id = cgroup_chart_id_strdupz(id);
     substitute_dots_in_id(cg->chart_id);
     cg->hash_chart = simple_hash(cg->chart_id);
+    cg->chart_labels = label_list_new();
+
     if (cgroup_use_unified_cgroups) {
         cg->options |= CGROUP_OPTIONS_IS_UNIFIED;
     }

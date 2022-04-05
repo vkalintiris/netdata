@@ -71,7 +71,7 @@ int init_graphite_instance(struct instance *instance)
  * @param len the maximum number of characters copied.
  */
 
-void sanitize_graphite_label_value(char *dst, char *src, size_t len)
+void sanitize_graphite_label_value(char *dst, const char *src, size_t len)
 {
     while (*src != '\0' && len) {
         if (isspace(*src) || *src == ';' || *src == '~')
@@ -91,6 +91,23 @@ void sanitize_graphite_label_value(char *dst, char *src, size_t len)
  * @param host a data collecting host.
  * @return Always returns 0.
  */
+
+static bool format_label(label_t label, void *data) {
+    struct instance *instance = data;
+
+    if (should_send_label(instance, label)) {
+        char value[CONFIG_MAX_VALUE + 1];
+        sanitize_graphite_label_value(value, label_value(label), CONFIG_MAX_VALUE);
+
+        if (*value) {
+            buffer_strcat(instance->labels, ";");
+            buffer_sprintf(instance->labels, "%s=%s", label_key(label), value);
+        }
+    }
+
+    return false;
+}
+
 int format_host_labels_graphite_plaintext(struct instance *instance, RRDHOST *host)
 {
     if (!instance->labels)
@@ -101,20 +118,8 @@ int format_host_labels_graphite_plaintext(struct instance *instance, RRDHOST *ho
 
     rrdhost_check_rdlock(host);
     netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-    for (struct label *label = host->labels.head; label; label = label->next) {
-        if (!should_send_label(instance, label))
-            continue;
-
-        char value[CONFIG_MAX_VALUE + 1];
-        sanitize_graphite_label_value(value, label->value, CONFIG_MAX_VALUE);
-
-        if (*value) {
-            buffer_strcat(instance->labels, ";");
-            buffer_sprintf(instance->labels, "%s=%s", label->key, value);
-        }
-    }
+    label_list_foreach(host->labels.label_list, format_label, instance);
     netdata_rwlock_unlock(&host->labels.labels_rwlock);
-
     return 0;
 }
 

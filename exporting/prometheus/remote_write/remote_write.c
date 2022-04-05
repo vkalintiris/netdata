@@ -141,6 +141,27 @@ int init_prometheus_remote_write_instance(struct instance *instance)
  * @param host a data collecting host.
  * @return Always returns 0.
  */
+struct label_data {
+    struct instance *instance;
+    struct prometheus_remote_write_specific_data *connector_specific_data;
+};
+
+static bool format_label_prometheus_remote_write(label_t label, void *data) {
+    struct label_data *ld = data;
+
+    if (should_send_label(ld->instance, label)) {
+        char key[PROMETHEUS_ELEMENT_MAX + 1];
+        prometheus_name_copy(key, label_key(label), PROMETHEUS_ELEMENT_MAX);
+
+        char value[PROMETHEUS_ELEMENT_MAX + 1];
+        prometheus_label_copy(value, label_value(label), PROMETHEUS_ELEMENT_MAX);
+
+        add_label(ld->connector_specific_data->write_request, key, value);
+    }
+
+    return false;
+}
+
 int format_host_prometheus_remote_write(struct instance *instance, RRDHOST *host)
 {
     struct simple_connector_data *simple_connector_data =
@@ -159,20 +180,15 @@ int format_host_prometheus_remote_write(struct instance *instance, RRDHOST *host
         "netdata_info", hostname, host->program_name, host->program_version, now_realtime_usec() / USEC_PER_MS);
 
     if (unlikely(sending_labels_configured(instance))) {
+        struct label_data ld = {
+            instance,
+            connector_specific_data
+        };
+
         rrdhost_check_rdlock(host);
         netdata_rwlock_rdlock(&host->labels.labels_rwlock);
-        for (struct label *label = host->labels.head; label; label = label->next) {
-            if (!should_send_label(instance, label))
-                continue;
-
-            char key[PROMETHEUS_ELEMENT_MAX + 1];
-            prometheus_name_copy(key, label->key, PROMETHEUS_ELEMENT_MAX);
-
-            char value[PROMETHEUS_ELEMENT_MAX + 1];
-            prometheus_label_copy(value, label->value, PROMETHEUS_ELEMENT_MAX);
-
-            add_label(connector_specific_data->write_request, key, value);
-        }
+        label_list_foreach(host->labels.label_list,
+                               format_label_prometheus_remote_write, &ld);
         netdata_rwlock_unlock(&host->labels.labels_rwlock);
     }
 
