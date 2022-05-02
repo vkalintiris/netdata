@@ -50,10 +50,15 @@ void rebuild_context_param_list(struct context_param *context_param_list, time_t
     RRDDIM *temp_rd = context_param_list->rd;
     RRDDIM *new_rd_list = NULL, *t;
     int is_archived = (context_param_list->flags & CONTEXT_FLAGS_ARCHIVE);
+
+    bool should_check_last_entry = true;
     while (temp_rd) {
         t = temp_rd->next;
         RRDSET *st = temp_rd->rrdset;
-        time_t last_entry_t = is_archived ? st->last_entry_t : rrdset_last_entry_t(st);
+
+        if (should_check_last_entry)
+            time_t last_entry_t = is_archived ? st->last_entry_t : rrdset_last_entry_t(st);
+        should_check_last_entry = (t != NULL) && (t->rrdset != temp_rd->rrdset);
 
         if (last_entry_t >= after_requested) {
             temp_rd->next = new_rd_list;
