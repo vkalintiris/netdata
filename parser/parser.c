@@ -65,6 +65,7 @@ PARSER *parser_init(RRDHOST *host, void *user, void *input, PARSER_INPUT_TYPE fl
         rc += parser_add_keyword(parser, "CLABEL", pluginsd_clabel);
         rc += parser_add_keyword(parser, PLUGINSD_KEYWORD_BEGIN, pluginsd_begin);
         rc += parser_add_keyword(parser, "SET", pluginsd_set);
+        rc += parser_add_keyword(parser, PLUGINSD_KEYWORD_FILLGAP, pluginsd_fillgap);
     }
 
     return parser;

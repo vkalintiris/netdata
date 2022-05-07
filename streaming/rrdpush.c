@@ -356,6 +356,8 @@ void rrdset_done_push(RRDSET *st) {
 
     rrdpush_send_chart_metrics_nolock(st, host->sender);
 
+    encode_gap_data(host->sender->build);
+
     // signal the sender there are more data
     if(host->rrdpush_sender_pipe[PIPE_WRITE] != -1 && write(host->rrdpush_sender_pipe[PIPE_WRITE], " ", 1) == -1)
         error("STREAM %s [send]: cannot write to internal pipe", host->hostname);

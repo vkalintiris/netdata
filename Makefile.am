@@ -144,6 +144,8 @@ LIBNETDATA_FILES = \
     libnetdata/circular_buffer/circular_buffer.h \
     libnetdata/clocks/clocks.c \
     libnetdata/clocks/clocks.h \
+    libnetdata/codecs/base64.c \
+    libnetdata/clocks/base64.h \
     libnetdata/completion/completion.c \
     libnetdata/completion/completion.h \
     libnetdata/dictionary/dictionary.c \
@@ -552,12 +554,24 @@ API_PLUGIN_FILES = \
     web/api/web_api_v1.h \
     $(NULL)
 
+streaming/replication.pb.cc \
+streaming/replication.pb.h: streaming/replication.proto
+    $(PROTOC) --proto_path=$(srcdir) --cpp_out=$(builddir) $^
+
+dist_noinst_DATA += streaming/replication.proto
+
 STREAMING_PLUGIN_FILES = \
     streaming/rrdpush.c \
     streaming/compression.c \
     streaming/sender.c \
     streaming/receiver.c \
     streaming/rrdpush.h \
+    streaming/base64.cpp \
+    streaming/base64.h \
+    streaming/replication.cc \
+    streaming/replication.h \
+    streaming/replication.pb.cc \
+    streaming/replication.pb.h \
     $(NULL)
 
 REGISTRY_PLUGIN_FILES = \

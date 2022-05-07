@@ -190,6 +190,13 @@ PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, struct label *new
     return PARSER_RC_OK;
 }
 
+PARSER_RC pluginsd_fillgap_action(void *user, char *word) {
+    UNUSED(user);
+
+    decode_gap_data(word);
+    return PARSER_RC_OK;
+}
+
 PARSER_RC pluginsd_set(char **words, void *user, PLUGINSD_ACTION  *plugins_action)
 {
     char *dimension = words[1];
@@ -610,6 +617,20 @@ PARSER_RC pluginsd_clabel_commit(char **words, void *user, PLUGINSD_ACTION  *plu
 
     if (plugins_action->clabel_commit_action) {
         return plugins_action->clabel_commit_action(user, host, chart_labels);
+    }
+
+    return PARSER_RC_OK;
+}
+
+PARSER_RC pluginsd_fillgap(char **words, void *user, PLUGINSD_ACTION *plugins_action) {
+    if (!words[1]) {
+        error("GVD: malformed FILLGAP command");
+        return PARSER_RC_OK;
+    }
+
+    if (plugins_action->fillgap_action) {
+        PARSER_RC rc = plugins_action->fillgap_action(user, words[1]);
+        return rc;
     }
 
     return PARSER_RC_OK;

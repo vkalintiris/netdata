@@ -38,6 +38,6 @@ extern PARSER_RC pluginsd_label_action(void *user, char *key, char *value, LABEL
 extern PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, struct label *new_labels);
 extern PARSER_RC pluginsd_clabel_commit_action(void *user, RRDHOST *host, struct label *new_labels);
 extern PARSER_RC pluginsd_clabel_action(void *user, char *key, char *value, LABEL_SOURCE source);
-
+extern PARSER_RC pluginsd_fillgap_action(void *user, char *word);
 
 #endif //NETDATA_PLUGINSD_PARSER_H

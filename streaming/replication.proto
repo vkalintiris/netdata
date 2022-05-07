@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package replication.pb;
+
+message GapData {
+    string Chart = 1;
+    string Dimension = 2;
+    repeated int64 Timestamps = 3;
+    repeated int64 Values = 4;
+}
