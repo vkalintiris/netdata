@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <queue>
 
 std::unique_ptr<perfetto::TracingSession> TS;
 
@@ -41,6 +42,34 @@ void StopTracing(std::unique_ptr<perfetto::TracingSession> tracing_session) {
   sleep(1);
 }
 
+enum class EventType {
+    Connected,
+    Disconnected,
+    Uknown
+};
+
+static const char* eventTypeToString(EventType ET) throw()
+{
+    switch (ET) {
+    case EventType::Connected:
+        return "Connected";
+    case EventType::Disconnected:
+        return "Disconnected";
+    default:
+        return "UnknownEventType";
+    }
+}
+
+static enum EventType eventTypeFromString(const std::string S) throw()
+{
+    if (!S.compare("Connected"))
+        return EventType::Connected;
+    if (!S.compare("Disconnected"))
+        return EventType::Disconnected;
+
+    return EventType::Uknown;
+}
+
 struct TimeRange {
     time_t After;
     time_t Before;
@@ -54,80 +83,34 @@ struct TimeRange {
     };
 };
 
-enum class EventType {
-    Connected,
-    Disconnected
-};
-
 struct Event {
     EventType Type;
     time_t Timestamp;
     TimeRange EntriesRange;
 };
 
+static struct Event getEvent(RRDHOST *RH, EventType ET) {
+    Event ConnectionEvent = {
+        ET,
+        now_realtime_sec(),
+        { rrdhost_first_entry_t(RH), rrdhost_last_entry_t(RH) }
+    };
+
+    return ConnectionEvent;
+}
+
 class Replicator {
 public:
     Replicator(RRDHOST *RH) : RH(RH) {}
 
-    void connected() {
-        TRACE_EVENT("replication", "connected", "host", RH->hostname);
-
-        Event ConnectionEvent = {
-            EventType::Connected,
-            now_realtime_sec(),
-            { rrdhost_first_entry_t(RH), rrdhost_last_entry_t(RH) }
-        };
-
-        ConnectionEvents.push_back(ConnectionEvent);
-
-        std::stringstream SS;
-        dump(SS);
-        error("%s", SS.str().c_str());
+    void addConnectionEvent(const EventType ET) {
+        ConnectionEvents.push(getEvent(RH, ET));
     }
-
-    void disconnected() {
-        TRACE_EVENT("replication", "disconnected", "host", RH->hostname);
-
-        Event DisconnectionEvent = {
-            EventType::Disconnected,
-            now_realtime_sec(),
-            { rrdhost_first_entry_t(RH), rrdhost_last_entry_t(RH) }
-        };
-
-        DisconnectionEvents.push_back(DisconnectionEvent);
-
-        std::stringstream SS;
-        dump(SS);
-        error("%s", SS.str().c_str());
-    }
-
-    void dump(std::ostream &OS) {
-        OS << "Hostname: " << RH->hostname << "\n";
-
-        OS << "Connection Events:\n";
-        for (const auto &CE : ConnectionEvents) {
-            OS << "\tTimestamp: " << CE.Timestamp << "\n";
-            OS << "\tAfter: " << CE.EntriesRange.After  << "\n";
-            OS << "\tBefore: " << CE.EntriesRange.Before << "\n";
-        }
-
-        OS << "Disconnection Events:\n";
-        for (const auto &DE : DisconnectionEvents) {
-            OS << "\tTimestamp: " << DE.Timestamp << "\n";
-            OS << "\tAfter: " << DE.EntriesRange.After  << "\n";
-            OS << "\tBefore: " << DE.EntriesRange.Before << "\n";
-        }
-
-        OS << "\n";
-    };
 
 private:
     RRDHOST *RH;
-
-    std::vector<Event> ConnectionEvents;
-    std::vector<Event> DisconnectionEvents;
+    std::queue<Event> ConnectionEvents;
 };
-
 
 void replication_init(void) {
     perfetto::TracingInitArgs args;
@@ -154,11 +137,15 @@ void replication_delete(RRDHOST *RH) {
 }
 
 void replication_connected(RRDHOST *RH) {
-    Replicator *R = new Replicator(RH);
-    R->connected();
+    TRACE_EVENT("replication", "connected", "host", RH->hostname);
+
+    Replicator *R = static_cast<Replicator *>(RH->repl_handle);
+    R->addConnectionEvent(EventType::Connected);
 }
 
 void replication_disconnected(RRDHOST *RH) {
-    Replicator *R = new Replicator(RH);
-    R->disconnected();
+    TRACE_EVENT("replication", "disconnected", "host", RH->hostname);
+
+    Replicator *R = static_cast<Replicator *>(RH->repl_handle);
+    R->addConnectionEvent(EventType::Disconnected);
 }

@@ -55,6 +55,14 @@ const char *database_config[] = {
     "on conflict (chart_id, hash_id) do nothing; END; ",
 
     "PRAGMA user_version="DB_METADATA_VERSION";",
+
+    "CREATE TABLE IF NOT EXISTS replication_connection_events("
+    "       host_id blob PRIMARY KEY,"
+    "       first_entry int,"
+    "       last_entry int,"
+    "       timestamp int,"
+    "       disconnection int);",
+
     NULL
 };
 
@@ -2170,3 +2178,70 @@ failed:
 
     return;
 };
+
+#define SQL_REPL_INSERT_CONN_EVENT \
+    "INSERT INTO replication_connection_events(host_id, first_entry, last_entry, timestamp, disconnection) VALUES (?1, ?2, ?3, ?4, ?5);"
+
+int repl_save_connection_event(uuid_t *host_id, time_t after, time_t before,
+                               time_t timestamp, bool disconnection)
+{
+    sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return SQLITE_ERROR;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_REPL_INSERT_CONN_EVENT, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to insert repl conn event, rc = %d", rc);
+            return SQLITE_ERROR;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 2, after);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 3, before);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 4, timestamp);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 5, disconnection);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to insert repl conn event, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in insert repl conn event function, rc = %d", rc);
+
+    return rc;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to save repl conn event, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in save repl conn event function, rc = %d", rc);
+    return rc;
+}

@@ -101,4 +101,8 @@ extern void compute_chart_hash(RRDSET *st);
 extern int sql_set_dimension_option(uuid_t *dim_uuid, char *option);
 char *get_hostname_by_node_id(char *node_id);
 void free_temporary_host(RRDHOST *host);
+
+int repl_save_connection_event(uuid_t *host_id, time_t after, time_t before, time_t timestamp, bool disconnection);
+
+
 #endif //NETDATA_SQLITE_FUNCTIONS_H
