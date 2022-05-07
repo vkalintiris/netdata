@@ -2,6 +2,8 @@
 #include "replication-private.h"
 
 #include <fstream>
+#include <iostream>
+#include <sstream>
 
 std::unique_ptr<perfetto::TracingSession> TS;
 
@@ -52,6 +54,17 @@ struct TimeRange {
     };
 };
 
+enum class EventType {
+    Connected,
+    Disconnected
+};
+
+struct Event {
+    EventType Type;
+    time_t Timestamp;
+    TimeRange EntriesRange;
+};
+
 class Replicator {
 public:
     Replicator(RRDHOST *RH) : RH(RH) {}
@@ -59,26 +72,60 @@ public:
     void connected() {
         TRACE_EVENT("replication", "connected", "host", RH->hostname);
 
-        sleep(1);
+        Event ConnectionEvent = {
+            EventType::Connected,
+            now_realtime_sec(),
+            { rrdhost_first_entry_t(RH), rrdhost_last_entry_t(RH) }
+        };
 
-        HostTimeRange.After = rrdhost_first_entry_t(RH);
-        HostTimeRange.Before = rrdhost_last_entry_t(RH);
-        error("[GVD] Connected");
+        ConnectionEvents.push_back(ConnectionEvent);
+
+        std::stringstream SS;
+        dump(SS);
+        error("%s", SS.str().c_str());
     }
 
     void disconnected() {
         TRACE_EVENT("replication", "disconnected", "host", RH->hostname);
 
-        sleep(1);
+        Event DisconnectionEvent = {
+            EventType::Disconnected,
+            now_realtime_sec(),
+            { rrdhost_first_entry_t(RH), rrdhost_last_entry_t(RH) }
+        };
 
-        HostTimeRange.After = rrdhost_first_entry_t(RH);
-        HostTimeRange.Before = rrdhost_last_entry_t(RH);
-        error("[GVD] Disconnected");
+        DisconnectionEvents.push_back(DisconnectionEvent);
+
+        std::stringstream SS;
+        dump(SS);
+        error("%s", SS.str().c_str());
     }
+
+    void dump(std::ostream &OS) {
+        OS << "Hostname: " << RH->hostname << "\n";
+
+        OS << "Connection Events:\n";
+        for (const auto &CE : ConnectionEvents) {
+            OS << "\tTimestamp: " << CE.Timestamp << "\n";
+            OS << "\tAfter: " << CE.EntriesRange.After  << "\n";
+            OS << "\tBefore: " << CE.EntriesRange.Before << "\n";
+        }
+
+        OS << "Disconnection Events:\n";
+        for (const auto &DE : DisconnectionEvents) {
+            OS << "\tTimestamp: " << DE.Timestamp << "\n";
+            OS << "\tAfter: " << DE.EntriesRange.After  << "\n";
+            OS << "\tBefore: " << DE.EntriesRange.Before << "\n";
+        }
+
+        OS << "\n";
+    };
 
 private:
     RRDHOST *RH;
-    struct TimeRange HostTimeRange;
+
+    std::vector<Event> ConnectionEvents;
+    std::vector<Event> DisconnectionEvents;
 };
 
 
@@ -90,12 +137,10 @@ void replication_init(void) {
     perfetto::TrackEvent::Register();
 
     TS = StartTracing();
-    error("[GVD] Start'd tracing");
 }
 
 void replication_fini(void) {
     StopTracing(std::move(TS));
-    error("[GVD] Stop'd tracing");
 }
 
 void replication_new(RRDHOST *RH) {
