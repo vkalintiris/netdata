@@ -393,6 +393,7 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
 
     ml_new_host(host);
+    replication_new(host);
 
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
