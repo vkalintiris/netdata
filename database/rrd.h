@@ -14,9 +14,12 @@ typedef struct rrdcalc RRDCALC;
 typedef struct rrdcalctemplate RRDCALCTEMPLATE;
 typedef struct alarm_entry ALARM_ENTRY;
 typedef struct context_param CONTEXT_PARAM;
+typedef struct rrddim_past_data RRDDIM_PAST_DATA;
 
 typedef void *ml_host_t;
 typedef void *ml_dimension_t;
+
+typedef void *replication_handle_t;
 
 // forward declarations
 struct rrddim_volatile;
@@ -378,6 +381,20 @@ struct rrddim_query_ops {
     time_t (*oldest_time)(RRDDIM *rd);
 };
 
+// struct to hold gap data
+struct rrddim_past_data {
+    RRDHOST *host;
+    RRDSET *st;
+    RRDDIM *rd;
+    void* page;
+    uint32_t page_length;
+    usec_t start_time;
+    usec_t end_time;
+    struct rrdeng_page_descr* descr;
+    struct rrdengine_instance *ctx;
+    unsigned long page_correlation_id;
+};
+
 // ----------------------------------------------------------------------------
 // volatile state per RRD dimension
 struct rrddim_volatile {
@@ -598,6 +615,7 @@ typedef enum rrdhost_flags {
     RRDHOST_FLAG_ARCHIVED               = 1 << 5, // The host is archived, no collected charts yet
     RRDHOST_FLAG_MULTIHOST              = 1 << 6, // Host belongs to localhost/megadb
     RRDHOST_FLAG_PENDING_FOREACH_ALARMS  = 1 << 7, // contains dims with uninitialized foreach alarms
+    RRDHOST_FLAG_GAP_FILLING             = 1 << 8, // host is performing gap filling
 } RRDHOST_FLAGS;
 
 #define rrdhost_flag_check(host, flag) (__atomic_load_n(&((host)->flags), __ATOMIC_SEQ_CST) & (flag))
@@ -856,6 +874,10 @@ struct rrdhost {
     ml_host_t ml_host;
 
     // ------------------------------------------------------------------------
+    // Replicator handle
+    replication_handle_t repl_handle;
+
+    // ------------------------------------------------------------------------
     // Support for host-level labels
     struct label_index labels;
 
@@ -991,6 +1013,9 @@ extern void __rrd_check_wrlock(const char *file, const char *function, const uns
 #define rrd_check_rdlock() (void)0
 #define rrd_check_wrlock() (void)0
 #endif
+
+void rrdhost_enable_obsoletion(RRDHOST *RH);
+void rrdhost_disable_obsoletion(RRDHOST *RH);
 
 // ----------------------------------------------------------------------------
 // RRDSET functions
@@ -1158,6 +1183,7 @@ static inline time_t rrddim_first_entry_t(RRDDIM *rd) {
 }
 
 time_t rrdhost_last_entry_t(RRDHOST *h);
+time_t rrdhost_first_entry_t(RRDHOST *h);
 
 // get the last slot updated in the round robin database
 #define rrdset_last_slot(st) ((size_t)(((st)->current_entry == 0) ? (st)->entries - 1 : (st)->current_entry - 1))

@@ -490,6 +490,7 @@ if ENABLE_DBENGINE
         database/engine/rrdenginelib.h \
         database/engine/rrdengineapi.c \
         database/engine/rrdengineapi.h \
+        database/engine/rrdenginerepl.c \
         database/engine/pagecache.c \
         database/engine/pagecache.h \
         database/engine/rrdenglocking.c \
@@ -558,11 +559,33 @@ API_PLUGIN_FILES = \
     web/api/web_api_v1.h \
     $(NULL)
 
+streaming/replication/gaps.pb.cc \
+streaming/replication/gaps.pb.h: streaming/replication/gaps.proto
+	$(PROTOC) --proto_path=$(srcdir) --cpp_out=$(builddir) $^
+
+dist_noinst_DATA += streaming/replication/gaps.proto
+
 STREAMING_PLUGIN_FILES = \
     streaming/rrdpush.c \
     streaming/compression.c \
     streaming/sender.c \
     streaming/receiver.c \
+    streaming/replication/collectops.c \
+    streaming/replication/collectops.h \
+    streaming/replication/gaps.pb.cc \
+    streaming/replication/gaps.pb.h \
+    streaming/replication/Base64.cc \
+    streaming/replication/Base64.h \
+    streaming/replication/Config.cc \
+    streaming/replication/Config.h \
+    streaming/replication/GapData.cc \
+    streaming/replication/GapData.h \
+    streaming/replication/TimeRange.cc \
+    streaming/replication/TimeRange.h \
+    streaming/replication/Utils.h \
+    streaming/replication/replication.cc \
+    streaming/replication/replication.h \
+    streaming/replication/replication-private.h \
     streaming/rrdpush.h \
     $(NULL)
 

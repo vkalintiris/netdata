@@ -61,4 +61,12 @@ extern int rrdeng_exit(struct rrdengine_instance *ctx);
 extern void rrdeng_prepare_exit(struct rrdengine_instance *ctx);
 extern int rrdeng_metric_latest_time_by_uuid(uuid_t *dim_uuid, time_t *first_entry_t, time_t *last_entry_t);
 
+extern int rrdeng_page_has_only_empty_metrics(struct rrdeng_page_descr *descr);
+
+extern int rrdeng_store_past_metrics_page_init(RRDDIM_PAST_DATA *dim_past_data);
+extern void rrdeng_store_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data);
+extern void rrdeng_flush_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data);
+extern void rrdeng_store_past_metrics_page_finalize(RRDDIM_PAST_DATA *dim_past_data);
+extern int rrdeng_store_past_metrics_realtime(RRDDIM *rd, RRDDIM_PAST_DATA *dim_past_data);
+
 #endif /* NETDATA_RRDENGINEAPI_H */

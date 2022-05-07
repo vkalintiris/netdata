@@ -384,6 +384,7 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rrdset_flag_set(st, RRDSET_FLAG_PENDING_FOREACH_ALARMS);
     rrdhost_flag_set(host, RRDHOST_FLAG_PENDING_FOREACH_ALARMS);
 
+    replication_new_dimension(st->rrdhost, rd);
     ml_new_dimension(rd);
 
     rrdset_unlock(st);
@@ -395,6 +396,7 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
 
 void rrddim_free(RRDSET *st, RRDDIM *rd)
 {
+    replication_delete_dimension(st->rrdhost, rd);
     ml_delete_dimension(rd);
     
     debug(D_RRD_CALLS, "rrddim_free() %s.%s", st->name, rd->name);

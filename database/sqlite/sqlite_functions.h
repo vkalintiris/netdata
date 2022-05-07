@@ -101,4 +101,11 @@ extern void compute_chart_hash(RRDSET *st);
 extern int sql_set_dimension_option(uuid_t *dim_uuid, char *option);
 char *get_hostname_by_node_id(char *node_id);
 void free_temporary_host(RRDHOST *host);
+
+int replication_save_host_entries_range(uuid_t *host_id, time_t After, time_t Before);
+int replication_load_host_entries_range(uuid_t *host_id, time_t *After, time_t *Before);
+
+int replication_save_gaps(uuid_t *host_id, const char *Buf, size_t Len);
+int replication_load_gaps(uuid_t *host_id, char *Buf, size_t Len);
+
 #endif //NETDATA_SQLITE_FUNCTIONS_H
