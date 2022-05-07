@@ -179,7 +179,10 @@ RRDHOST *rrdhost_create(const char *hostname,
     sender_init(host->sender, host);
     netdata_mutex_init(&host->receiver_lock);
 
-    host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
+    if (is_localhost)
+        host->rrdpush_send_enabled = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
+    else
+        host->rrdpush_send_enabled = false;
     host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
     if (host->rrdpush_send_destination)
         host->destinations = destinations_init(host->rrdpush_send_destination);
@@ -396,6 +399,7 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
 
     ml_new_host(host);
+    replication_new_host(host);
 
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
@@ -851,6 +855,8 @@ void rrdhost_free(RRDHOST *host) {
 
     rrd_check_wrlock();     // make sure the RRDs are write locked
 
+    replication_save_host_entries_range(&host->host_uuid, rrdhost_first_entry_t(host), rrdhost_last_entry_t(host));
+
     rrdhost_wrlock(host);
     ml_delete_host(host);
     rrdhost_unlock(host);
@@ -883,9 +889,8 @@ void rrdhost_free(RRDHOST *host) {
             netdata_mutex_unlock(&host->receiver_lock);
     }
 
-
-
     rrdhost_wrlock(host);   // lock this RRDHOST
+
 #if defined(ENABLE_ACLK) && defined(ENABLE_NEW_CLOUD_PROTOCOL)
     struct aclk_database_worker_config *wc =  host->dbsync_worker;
     if (wc && !netdata_exit) {
@@ -938,6 +943,8 @@ void rrdhost_free(RRDHOST *host) {
     rrdvar_free_remaining_variables(host, &host->rrdvar_root_index);
 
     health_alarm_log_free(host);
+
+    replication_delete_host(host);
 
 #ifdef ENABLE_DBENGINE
     if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
@@ -1545,10 +1552,10 @@ void rrd_cleanup_obsolete_charts()
     rrd_rdlock();
 
     RRDHOST *host;
-    rrdhost_foreach_read(host)
-    {
+    rrdhost_foreach_read(host) {
         if (host->obsolete_charts_count) {
             rrdhost_wrlock(host);
+
 #ifdef ENABLE_ACLK
             host->deleted_charts_count = 0;
 #endif
@@ -1759,6 +1766,19 @@ time_t rrdhost_last_entry_t(RRDHOST *h) {
         time_t st_last = rrdset_last_entry_t(st);
         if (st_last > result)
             result = st_last;
+    }
+    rrdhost_unlock(h);
+    return result;
+}
+
+time_t rrdhost_first_entry_t(RRDHOST *h) {
+    rrdhost_rdlock(h);
+    RRDSET *st;
+    time_t result = LONG_MAX;
+    rrdset_foreach_read(st, h) {
+        time_t st_first = rrdset_first_entry_t(st);
+        if (st_first < result)
+            result = st_first;
     }
     rrdhost_unlock(h);
     return result;

@@ -749,6 +749,9 @@ set(API_PLUGIN_FILES
         web/api/health/health_cmdapi.c
         )
 
+#
+# TODO: Add support for replication.
+#
 set(STREAMING_PLUGIN_FILES
         streaming/rrdpush.c
         streaming/rrdpush.h
