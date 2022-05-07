@@ -653,6 +653,8 @@ static int rrdpush_receive(struct receiver_state *rpt)
     info("STREAM %s [receive from [%s]:%s]: receiving metrics...", rpt->host->hostname, rpt->client_ip, rpt->client_port);
     log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "CONNECTED");
 
+    replication_connected(rpt->host);
+
     cd.version = rpt->stream_version;
 
 #if defined(ENABLE_ACLK)
@@ -668,6 +670,8 @@ static int rrdpush_receive(struct receiver_state *rpt)
                           "DISCONNECTED");
     error("STREAM %s [receive from [%s]:%s]: disconnected (completed %zu updates).", rpt->hostname, rpt->client_ip,
           rpt->client_port, count);
+
+    replication_disconnected(rpt->host);
 
 #if defined(ENABLE_ACLK)
     // in case we have cloud connection we inform cloud

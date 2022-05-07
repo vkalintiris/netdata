@@ -1172,6 +1172,7 @@ static inline time_t rrddim_first_entry_t(RRDDIM *rd) {
 }
 
 time_t rrdhost_last_entry_t(RRDHOST *h);
+time_t rrdhost_first_entry_t(RRDHOST *h);
 
 // get the last slot updated in the round robin database
 #define rrdset_last_slot(st) ((size_t)(((st)->current_entry == 0) ? (st)->entries - 1 : (st)->current_entry - 1))

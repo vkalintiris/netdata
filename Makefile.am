@@ -187,6 +187,8 @@ LIBNETDATA_FILES = \
     libnetdata/health/health.c \
     libnetdata/health/health.h \
     libnetdata/string/utf8.h \
+	libnetdata/perfetto/perfetto.h \
+	libnetdata/perfetto/perfetto.cc \
     $(NULL)
 
 if ENABLE_PLUGIN_EBPF
