@@ -472,6 +472,7 @@ void *socket_listen_main_static_threaded(void *ptr) {
                 config_set(CONFIG_SECTION_WEB, "mode", "static-threaded");
                 def_thread_count = 1;
     }
+    def_thread_count = 2;
     static_threaded_workers_count = config_get_number(CONFIG_SECTION_WEB, "web server threads", def_thread_count);
 
     if (static_threaded_workers_count < 1) static_threaded_workers_count = 1;
