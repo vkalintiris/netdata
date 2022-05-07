@@ -63,7 +63,6 @@ static void createCharts(unsigned NumCharts, unsigned NumDimsPerChart) {
         DimNames.push_back(SS.str());
     }
 
-    auto StartTP(std::chrono::high_resolution_clock::now());
     for (unsigned ChartIdx = 0; ChartIdx != NumCharts; ChartIdx++) {
         RRDSET *RS = rrdset_create(
             localhost,
@@ -100,20 +99,10 @@ static void createCharts(unsigned NumCharts, unsigned NumDimsPerChart) {
             ChartDimsMap[RS].push_back(RD);
         }
     }
-    auto EndTP(std::chrono::high_resolution_clock::now());
-
-    auto Duration(std::chrono::duration_cast<std::chrono::milliseconds>(EndTP - StartTP));
-    error("Created %u charts with %u dimensions each in %ld msec (total dims: %u)",
-          NumCharts, NumDimsPerChart, Duration.count(), NumTotalDims);
-
-    double DimsPerSec = NumTotalDims * 1000.0 / Duration.count();
-    error("total dims = %u, dims/sec = %.2lf)", NumTotalDims, DimsPerSec);
 }
 
 static void updateCharts() {
     static unsigned Counter = 0;
-
-    auto StartTP(std::chrono::high_resolution_clock::now());
 
     unsigned ChartIdx = 0;
 
@@ -131,11 +120,6 @@ static void updateCharts() {
         rrdset_done(RS);
     }
 
-    auto EndTP(std::chrono::high_resolution_clock::now());
-    auto Duration(std::chrono::duration_cast<std::chrono::milliseconds>(EndTP - StartTP));
-
-    error("Updated %u charts with %u dimensions each in %ld msec",
-          NumCharts, NumDimsPerChart, Duration.count());
 
     Counter++;
 }
@@ -146,9 +130,7 @@ void *profile_main(void *ptr)
 
     initCNs();
 
-    error("gvd - will create charts");
     createCharts(NumCharts, NumDimsPerChart);
-    error("gvd - will create charts");
 
     heartbeat_t HB;
     heartbeat_init(&HB);

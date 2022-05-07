@@ -99,7 +99,7 @@ struct sender_state {
     netdata_mutex_t mutex;
     struct circular_buffer *buffer;
     BUFFER *build;
-    char read_buffer[512];
+    char read_buffer[2 * 4096];
     int read_len;
     int32_t version;
 #ifdef ENABLE_COMPRESSION
@@ -129,7 +129,7 @@ struct receiver_state {
     int update_every;
     uint32_t stream_version;
     time_t last_msg_t;
-    char read_buffer[1024];     // Need to allow RRD_ID_LENGTH_MAX * 4 + the other fields
+    char read_buffer[/* PLUGINSD_LINE_MAX = */ 16 * 1024];     // Need to allow RRD_ID_LENGTH_MAX * 4 + the other fields
     int read_len;
     unsigned int shutdown:1;    // Tell the thread to exit
     unsigned int exited;      // Indicates that the thread has exited  (NOT A BITFIELD!)
@@ -167,7 +167,7 @@ void sender_commit(struct sender_state *s);
 extern int rrdpush_init();
 extern int configured_as_parent();
 extern void rrdset_done_push(RRDSET *st);
-extern void rrdset_push_chart_definition_now(RRDSET *st);
+extern bool rrdset_push_chart_definition_now(RRDSET *st);
 extern void *rrdpush_sender_thread(void *ptr);
 extern void rrdpush_send_labels(RRDHOST *host);
 extern void rrdpush_claimed_id(RRDHOST *host);
@@ -190,6 +190,7 @@ extern int connect_to_one_of_destinations(
 struct compressor_state *create_compressor();
 struct decompressor_state *create_decompressor();
 size_t is_compressed_data(const char *data, size_t data_size);
+void deactivate_compression(struct sender_state *s);
 #endif
 
 #endif //NETDATA_RRDPUSH_H

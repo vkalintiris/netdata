@@ -43,6 +43,8 @@
 // streaming metrics between netdata servers
 #include "streaming/rrdpush.h"
 
+#include "streaming/replication/replication.h"
+
 // health monitoring and alarm notifications
 #include "health/health.h"
 

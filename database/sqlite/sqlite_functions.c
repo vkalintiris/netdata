@@ -53,6 +53,16 @@ const char *database_config[] = {
     "on conflict (chart_id, hash_id) do nothing; END; ",
 
     "PRAGMA user_version="DB_METADATA_VERSION";",
+
+    "CREATE TABLE IF NOT EXISTS replication_gaps("
+    "       host_id blob PRIMARY KEY,"
+    "       gaps blob);",
+
+    "CREATE TABLE IF NOT EXISTS replication_host_entries_range("
+    "       host_id blob PRIMARY KEY,"
+    "       after int,"
+    "       before int);",
+
     NULL
 };
 
@@ -2208,3 +2218,216 @@ failed:
 
     return;
 };
+
+#define SQL_REPLICATION_SAVE_HOST_ENTRIES_RANGE \
+    "INSERT OR REPLACE INTO replication_host_entries_range(host_id, after, before) VALUES (?1, ?2, ?3);"
+
+int replication_save_host_entries_range(uuid_t *host_id, time_t After, time_t Before)
+{
+    sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return SQLITE_ERROR;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_REPLICATION_SAVE_HOST_ENTRIES_RANGE, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to save host entries range, rc = %d", rc);
+            return SQLITE_ERROR;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 2, After);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_int(res, 3, Before);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to insert host entries range, rc = %d", rc);
+
+    error("GVD: saved host entries range to sqlite: <%ld, %ld>", After, Before);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_save_host_entries_range function, rc = %d", rc);
+
+    return rc;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to save host entries range, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_save_host_entries_range function, rc = %d", rc);
+    return rc;
+}
+
+#define SQL_REPLICATION_LOAD_HOST_ENTRIES_RANGE \
+    "SELECT after, before FROM replication_host_entries_range WHERE host_id == ?1;"
+
+int replication_load_host_entries_range(uuid_t *host_id, time_t *After, time_t *Before)
+{
+    sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return SQLITE_ERROR;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_REPLICATION_LOAD_HOST_ENTRIES_RANGE, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to load host entries range, rc = %d", rc);
+            return SQLITE_ERROR;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_step(res);
+    if (likely(rc == SQLITE_ROW)) {
+        *After = sqlite3_column_int(res, 0);
+        *Before = sqlite3_column_int(res, 1);
+        error("GVD: loaded host range entries from sqlite: <%ld, %ld>", *After, *Before);
+    }
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement during replication_load_host_entries_range function, rc = %d", rc);
+
+    return rc;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to load host replication range, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_load_host_entries_range function, rc = %d", rc);
+    return rc;
+}
+
+#define SQL_REPLICATION_SAVE_GAPS \
+    "INSERT OR REPLACE INTO replication_gaps(host_id, gaps) VALUES (?1, ?2);"
+
+int replication_save_gaps(uuid_t *host_id, const char *Buf, size_t Len)
+{
+    sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return SQLITE_ERROR;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_REPLICATION_SAVE_GAPS, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to save replication gaps, rc = %d", rc);
+            return SQLITE_ERROR;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    param++;
+    rc = sqlite3_bind_blob(res, 2, Buf, Len, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to insert replication gaps, rc = %d", rc);
+
+    error("GVD: saved gaps to sqlite");
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_save_gaps function, rc = %d", rc);
+
+    return rc;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to save replication gaps, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_save_gaps function, rc = %d", rc);
+    return rc;
+}
+
+#define SQL_REPLICATION_LOAD_GAPS \
+    "SELECT gaps FROM replication_gaps WHERE host_id == ?1;"
+
+int replication_load_gaps(uuid_t *host_id, char *Buf, size_t Len)
+{
+    sqlite3_stmt *res = NULL;
+    int rc, param = 0;
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+            return 0;
+        error_report("Database has not been initialized");
+        return SQLITE_ERROR;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db_meta, SQL_REPLICATION_LOAD_GAPS, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to load replication gaps, rc = %d", rc);
+            return SQLITE_ERROR;
+        }
+    }
+
+    param++;
+    rc = sqlite3_bind_blob(res, 1, host_id, sizeof(*host_id), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_step(res);
+    if (likely(rc == SQLITE_ROW)) {
+        error("GVD: loaded gaps from sqlite");
+        const void *BlobPtr = sqlite3_column_blob(res, 0);
+        size_t BlobLen = sqlite3_column_bytes(res, 0);
+
+        if (BlobPtr && (BlobLen == Len)) {
+            memcpy(Buf, BlobPtr, BlobLen);
+        }
+    }
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement during replication_load_gaps function, rc = %d", rc);
+
+    return rc;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to load replication gaps, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement in replication_load_gaps function, rc = %d", rc);
+    return rc;
+}
