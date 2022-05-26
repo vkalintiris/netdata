@@ -19,10 +19,10 @@ inline std::ostream& operator<<(std::ostream &OS, const std::vector<TimeRange> &
     return OS;
 }
 
-std::vector<TimeRange> splitTimeRange(const TimeRange &TR, size_t Epoch);
-bool serializeTimeRanges(std::vector<TimeRange> TRs, char *Buf, size_t Len);
-bool deserializeTimeRanges(std::vector<TimeRange> &TRs, const char *Buf, size_t Len);
+void serializeTimeRanges(std::vector<TimeRange> TRs, char *Buf, size_t Len);
+std::vector<TimeRange> deserializeTimeRanges(const char *Buf, size_t Len);
 
+std::vector<TimeRange> splitTimeRange(const TimeRange &TR, size_t Epoch);
 std::vector<TimeRange> coalesceTimeRanges(std::vector<TimeRange> &TRs);
 
 } // namespace replication

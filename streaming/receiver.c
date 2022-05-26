@@ -413,10 +413,7 @@ static bool send_gaps_data(struct receiver_state *rpt) {
     char buf[HTTP_HEADER_SIZE];
     memset(buf, 0, HTTP_HEADER_SIZE);
 
-    replication_connected(rpt->host);
-
-    if (!replication_receiver_serialize_gaps(rpt->host, buf, HTTP_HEADER_SIZE))
-        fatal("GVD: Could not serialize gaps");
+    replication_receiver_connect(rpt->host, buf, HTTP_HEADER_SIZE);
 
 #ifdef ENABLE_HTTPS
     if(send_timeout(&rpt->ssl, rpt->fd, buf, HTTP_HEADER_SIZE, 0, 60) != HTTP_HEADER_SIZE) {
@@ -426,11 +423,9 @@ static bool send_gaps_data(struct receiver_state *rpt) {
         log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - CANNOT SEND GAPS DATA");
         error("STREAM %s [receive from [%s]:%s]: cannot send gaps data.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
         close(rpt->fd);
-        replication_disconnected(rpt->host);
         return 1;
     }
 
-    error("GVD: sent gaps data");
     return 0;
 };
 
@@ -715,7 +710,6 @@ static int rrdpush_receive(struct receiver_state *rpt)
         log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - SOCKET ERROR");
         error("STREAM %s [receive from [%s]:%s]: failed to get a FILE for FD %d.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->fd);
         close(rpt->fd);
-        replication_disconnected(rpt->host);
         return 0;
     }
 
@@ -763,8 +757,6 @@ static int rrdpush_receive(struct receiver_state *rpt)
                           "DISCONNECTED");
     error("STREAM %s [receive from [%s]:%s]: disconnected (completed %zu updates).", rpt->hostname, rpt->client_ip,
           rpt->client_port, count);
-
-    replication_disconnected(rpt->host);
 
 #if defined(ENABLE_ACLK)
     // in case we have cloud connection we inform cloud

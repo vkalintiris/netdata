@@ -615,7 +615,6 @@ typedef enum rrdhost_flags {
     RRDHOST_FLAG_ARCHIVED               = 1 << 5, // The host is archived, no collected charts yet
     RRDHOST_FLAG_MULTIHOST              = 1 << 6, // Host belongs to localhost/megadb
     RRDHOST_FLAG_PENDING_FOREACH_ALARMS  = 1 << 7, // contains dims with uninitialized foreach alarms
-    RRDHOST_FLAG_GAP_FILLING             = 1 << 8, // host is performing gap filling
 } RRDHOST_FLAGS;
 
 #define rrdhost_flag_check(host, flag) (__atomic_load_n(&((host)->flags), __ATOMIC_SEQ_CST) & (flag))
@@ -1013,9 +1012,6 @@ extern void __rrd_check_wrlock(const char *file, const char *function, const uns
 #define rrd_check_rdlock() (void)0
 #define rrd_check_wrlock() (void)0
 #endif
-
-void rrdhost_enable_obsoletion(RRDHOST *RH);
-void rrdhost_disable_obsoletion(RRDHOST *RH);
 
 // ----------------------------------------------------------------------------
 // RRDSET functions

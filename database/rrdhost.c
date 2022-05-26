@@ -655,7 +655,6 @@ inline int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected_host, tim
     if(host != protected_host
        && host != localhost
        && rrdhost_flag_check(host, RRDHOST_FLAG_ORPHAN)
-       && !rrdhost_flag_check(host, RRDHOST_FLAG_GAP_FILLING)
        && !host->receiver
        && host->senders_disconnected_time
        && host->senders_disconnected_time + rrdhost_free_orphan_time < now)
@@ -1557,12 +1556,6 @@ void rrd_cleanup_obsolete_charts()
         if (host->obsolete_charts_count) {
             rrdhost_wrlock(host);
 
-            // skip cleanup while we are still backfilling data
-            if (rrdhost_flag_check(host, RRDHOST_FLAG_GAP_FILLING)) {
-                rrdhost_unlock(host);
-                continue;
-            }
-
 #ifdef ENABLE_ACLK
             host->deleted_charts_count = 0;
 #endif
@@ -1789,16 +1782,4 @@ time_t rrdhost_first_entry_t(RRDHOST *h) {
     }
     rrdhost_unlock(h);
     return result;
-}
-
-void rrdhost_disable_obsoletion(RRDHOST *host) {
-   rrdhost_rdlock(host);
-   rrdhost_flag_set(host, RRDHOST_FLAG_GAP_FILLING);
-   rrdhost_unlock(host);
-}
-
-void rrdhost_enable_obsoletion(RRDHOST *host) {
-   rrdhost_rdlock(host);
-   rrdhost_flag_clear(host, RRDHOST_FLAG_GAP_FILLING);
-   rrdhost_unlock(host);
 }

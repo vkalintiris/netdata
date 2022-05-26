@@ -33,28 +33,29 @@ std::vector<TimeRange> replication::splitTimeRange(const TimeRange &TR, size_t E
     return TRs;
 }
 
-bool replication::serializeTimeRanges(std::vector<TimeRange> TRs, char *Buf, size_t Len) {
+void replication::serializeTimeRanges(std::vector<TimeRange> TRs, char *Buf, size_t Len) {
     pb::TimeRanges PBTRs = timeRangesToProto(TRs);;
 
     size_t MsgSize = PROTO_COMPAT_MSG_SIZE(PBTRs);
     if (MsgSize > Len)
-        return false;
+        return;
 
     PBTRs.SerializeToArray(Buf, Len);
-    return true;
 }
 
-bool replication::deserializeTimeRanges(std::vector<TimeRange> &TRs, const char *Buf, size_t Len) {
-    pb::TimeRanges PBTRs;
-    if (PBTRs.ParseFromArray(Buf, Len))
-        return false;
+std::vector<TimeRange> replication::deserializeTimeRanges(const char *Buf, size_t Len) {
+    std::vector<TimeRange> TRs;
 
-    for (int Idx = 0; Idx != PBTRs.trs_size(); Idx++) {
-        pb::TimeRange PBTR = PBTRs.trs(Idx);
-        TRs.emplace_back(PBTR.after(), PBTR.before());
+    pb::TimeRanges PBTRs;
+    if (PBTRs.ParseFromArray(Buf, Len)) {
+        TRs.reserve(PBTRs.trs_size());
+        for (int Idx = 0; Idx != PBTRs.trs_size(); Idx++) {
+            pb::TimeRange PBTR = PBTRs.trs(Idx);
+            TRs.emplace_back(PBTR.after(), PBTR.before());
+        }
     }
 
-    return true;
+    return TRs;
 }
 
 std::vector<TimeRange> replication::coalesceTimeRanges(std::vector<TimeRange> &TRs) {

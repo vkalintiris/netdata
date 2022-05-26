@@ -272,9 +272,7 @@ static bool recv_gaps_data(struct sender_state *s, RRDHOST *host, int timeout) {
         total += received;
     }
 
-    if (!replication_sender_deserialize_gaps(host, ProtoBuf, HTTP_HEADER_SIZE))
-        fatal("GVD: could not deserialize parent gaps");
-
+    replication_sender_connect(host, ProtoBuf, HTTP_HEADER_SIZE);
     return 0;
 }
 
