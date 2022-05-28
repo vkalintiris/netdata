@@ -46,21 +46,21 @@ public:
         std::lock_guard<Mutex> L(ReceiverMutex);
 
         time_t LastEntry = rrdhost_last_entry_t(RH);
-        time_t Timestamp = now_realtime_sec();
+        time_t CurrTime = now_realtime_sec();
 
         if (LastEntry == 0) {
             time_t SavedAfter = 0, SavedBefore = 0;
             replication_load_host_entries_range(&RH->host_uuid, &SavedAfter, &SavedBefore);
             LastEntry = (SavedBefore != 0) ? (SavedBefore + 1) :
-                                             (Timestamp - Cfg.SecondsToReplicateOnFirstConnection + 1);
+                                             (CurrTime - Cfg.SecondsToReplicateOnFirstConnection + 1);
         }
 
-        if (Timestamp <= LastEntry) {
-            error("GVD[%s]: Skipping invalid time range on connect: <%ld, %ld>", RH->hostname, LastEntry, Timestamp);
+        if (CurrTime <= LastEntry) {
+            error("GVD[%s]: Skipping invalid time range on connect: <%ld, %ld>", RH->hostname, LastEntry, CurrTime);
             return;
         }
 
-        TimeRange TR(LastEntry, Timestamp);
+        TimeRange TR(LastEntry, CurrTime);
         std::vector<TimeRange> NewTRs = splitTimeRange(TR, Cfg.MaxEntriesPerGapData);
         for (const TimeRange &NewTR : NewTRs)
             ReceiverGaps.push_back(NewTR);
