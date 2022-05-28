@@ -52,7 +52,7 @@ public:
             time_t SavedAfter = 0, SavedBefore = 0;
             replication_load_host_entries_range(&RH->host_uuid, &SavedAfter, &SavedBefore);
             LastEntry = (SavedBefore != 0) ? (SavedBefore + 1) :
-                                             (Timestamp - Cfg.SecondsToReplicateOnFirstConnection);
+                                             (Timestamp - Cfg.SecondsToReplicateOnFirstConnection + 1);
         }
 
         if (Timestamp <= LastEntry) {
