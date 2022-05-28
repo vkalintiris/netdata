@@ -20,13 +20,13 @@ static pb::TimeRanges timeRangesToProto(std::vector<TimeRange> TRs) {
 }
 
 std::vector<TimeRange> replication::splitTimeRange(const TimeRange &TR, size_t Epoch) {
-    size_t Duration = TR.second - TR.first;
+    size_t Duration = TR.second - TR.first + 1;
     size_t NumEpochs = (Duration / Epoch) + (Duration % Epoch != 0);
 
     std::vector<TimeRange> TRs;
     TRs.reserve(NumEpochs);
 
-    for (time_t Offset = TR.first; Offset < TR.second; Offset += Epoch)
+    for (time_t Offset = TR.first; TRs.size() != NumEpochs; Offset += Epoch)
         TRs.emplace_back(Offset, Offset + (Epoch - 1));
     TRs.back().second = TR.second;
 
