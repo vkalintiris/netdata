@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package replication.pb;
+
+option go_package = "github.com/vkalintiris/replication";
+
+
+message TimeRange {
+    int64 After = 1;
+    int64 Before = 2;
+}
+
+message TimeRanges {
+    repeated TimeRange TRs= 1;
+}

@@ -1,0 +1,742 @@
+commit d3a11de9b1a801b6a92e393e1055b6a227e08ef9
+Author: vkalintiris <vasilis@netdata.cloud>
+Date:   Sat Feb 19 22:30:30 2022 +0200
+
+    Bump
+    
+    Bump
+---
+ database/engine/rrdengineapi.c     |   5 ++
+ database/rrd.h                     |   3 +-
+ database/rrdops.c                  |  43 +++++++++-
+ database/sqlite/sqlite_functions.c | 157 ++++++++++++++++++++++++++++++++-----
+ database/sqlite/sqlite_functions.h |   5 +-
+ 5 files changed, 190 insertions(+), 23 deletions(-)
+
+diff --git a/database/engine/rrdengineapi.c b/database/engine/rrdengineapi.c
+index b080fdfbdb..8427c02adb 100755
+--- a/database/engine/rrdengineapi.c
++++ b/database/engine/rrdengineapi.c
+@@ -342,6 +342,9 @@ static inline uint32_t *pginfo_to_points(struct rrdeng_page_info *page_info)
+     return (uint32_t *)&page_info->scratch[sizeof(uint32_t)];
+ }
+ 
++
++extern void rrddim_initializer(RRDDIM *RD);
++
+ /**
+  * Calculates the regions of different data collection intervals in a netdata chart in the time range
+  * [start_time,end_time]. This call takes the netdata chart read lock.
+@@ -379,6 +382,8 @@ unsigned rrdeng_variable_step_boundaries(RRDSET *st, time_t start_time, time_t e
+     RRDDIM *temp_rd = context_param_list ? context_param_list->rd : NULL;
+     rrdset_rdlock(st);
+     for(rd_iter = temp_rd?temp_rd:st->dimensions, rd = NULL, min_time = (usec_t)-1 ; rd_iter ; rd_iter = rd_iter->next) {
++        rrddim_initializer(rd);
++
+         /*
+          * Choose oldest dimension as reference. This is not equivalent to the union of all dimensions
+          * but it is a best effort approximation with a bias towards older metrics in a chart. It
+diff --git a/database/rrd.h b/database/rrd.h
+index 6f33a896e7..bfe98038c4 100644
+--- a/database/rrd.h
++++ b/database/rrd.h
+@@ -1377,7 +1377,8 @@ void rrddim_query_finalize(struct rrddim_query_handle *handle);
+ time_t rrddim_query_latest_time(RRDDIM *rd);
+ time_t rrddim_query_oldest_time(RRDDIM *rd);
+ 
+-extern void rrddim_ops_initializer(RRDDIM *RD);
++extern void rrddim_ops_initializer(RRDDIM *rd);
++extern void rrddim_initializer(RRDDIM *rd);
+ 
+ #endif /* NETDATA_RRD_INTERNALS */
+ 
+diff --git a/database/rrdops.c b/database/rrdops.c
+index c90259cef0..f80aee700e 100644
+--- a/database/rrdops.c
++++ b/database/rrdops.c
+@@ -1,6 +1,7 @@
+ #define NETDATA_RRD_INTERNALS
+ #include "rrd.h"
+ 
++#if 0
+ static inline void rrddim_initializer(RRDDIM *rd)
+ {
+     if (rrddim_flag_check(rd, RRDDIM_FLAG_OPS_INITIALIZED))
+@@ -30,6 +31,43 @@ static inline void rrddim_initializer(RRDDIM *rd)
+ 
+     rrddim_flag_set(rd, RRDDIM_FLAG_OPS_INITIALIZED);
+ }
++#endif
++
++static inline void rrddim_memory_mode_init(RRDDIM *rd) {
++    // init metric
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_metric_init(rd);
++#endif
++    }
++
++    // collect init
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_store_metric_init(rd);
++#endif
++    } else {
++        rrddim_collect_init(rd);
++    }
++}
++
++void rrddim_initializer(RRDDIM *rd)
++{
++    if (!rd || rrddim_flag_check(rd, RRDDIM_FLAG_OPS_INITIALIZED))
++        return;
++
++    // find/create uuid for **all** dims and mark them active
++    find_or_update_uuid_of_each_dimension(rd->rrdset);
++
++    // initialize **all* dims for the given memory mode.
++    for (RRDDIM *rdp = rd->rrdset->dimensions; rdp != NULL; rdp = rdp->next) {
++        if (rrddim_flag_check(rdp, RRDDIM_FLAG_OPS_INITIALIZED))
++            continue;
++
++        rrddim_memory_mode_init(rdp);
++        rrddim_flag_set(rdp, RRDDIM_FLAG_OPS_INITIALIZED);
++    }
++}
+ 
+ static void wrap_collect_init(RRDDIM *rd)
+ {
+@@ -49,6 +87,7 @@ static void wrap_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_
+     if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+ #ifdef ENABLE_DBENGINE
+         rrdeng_store_metric_next(rd, point_in_time, number);
++        rd->state->collect_ops.store_metric = rrdeng_store_metric_next;
+ #endif
+     } else {
+         rrddim_collect_store_metric(rd, point_in_time, number);
+@@ -61,7 +100,9 @@ static int wrap_collect_finalize(RRDDIM *rd)
+ 
+     if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+ #ifdef ENABLE_DBENGINE
+-        return rrdeng_store_metric_finalize(rd);
++        int ret = rrdeng_store_metric_finalize(rd);
++        rd->state->collect_ops.finalize = rrdeng_store_metric_finalize;
++        return ret;
+ #endif
+     } else {
+         return rrddim_collect_finalize(rd);
+diff --git a/database/sqlite/sqlite_functions.c b/database/sqlite/sqlite_functions.c
+index d5afdb6ee7..8063cb304e 100644
+--- a/database/sqlite/sqlite_functions.c
++++ b/database/sqlite/sqlite_functions.c
+@@ -136,25 +136,25 @@ static int store_active_uuid_object(sqlite3_stmt **res, char *statement, uuid_t
+  */
+ void store_active_chart(uuid_t *chart_uuid)
+ {
+-    sqlite3_stmt *res = NULL;
++    static __thread sqlite3_stmt *res = NULL;
+     int rc;
+ 
++    if (unlikely(!chart_uuid))
++        return;
++
+     if (unlikely(!db_meta)) {
+         if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+             error_report("Database has not been initialized");
+         return;
+     }
+ 
+-    if (unlikely(!chart_uuid))
+-        return;
+-
+     rc = store_active_uuid_object(&res, SQL_STORE_ACTIVE_CHART, chart_uuid);
+     if (rc != SQLITE_DONE)
+         error_report("Failed to store active chart, rc = %d", rc);
+ 
+-    rc = sqlite3_finalize(res);
++    rc = sqlite3_reset(res);
+     if (unlikely(rc != SQLITE_OK))
+-        error_report("Failed to finalize statement in store active chart, rc = %d", rc);
++        error_report("Failed to reset statement in store active chart, rc = %d", rc);
+     return;
+ }
+ 
+@@ -164,25 +164,25 @@ void store_active_chart(uuid_t *chart_uuid)
+  */
+ void store_active_dimension(uuid_t *dimension_uuid)
+ {
+-    sqlite3_stmt *res = NULL;
++    static __thread sqlite3_stmt *res = NULL;
+     int rc;
+ 
++    if (unlikely(!dimension_uuid))
++        return;
++
+     if (unlikely(!db_meta)) {
+         if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+             error_report("Database has not been initialized");
+         return;
+     }
+ 
+-    if (unlikely(!dimension_uuid))
+-        return;
+-
+     rc = store_active_uuid_object(&res, SQL_STORE_ACTIVE_DIMENSION, dimension_uuid);
+     if (rc != SQLITE_DONE)
+         error_report("Failed to store active dimension, rc = %d", rc);
+ 
+-    rc = sqlite3_finalize(res);
++    rc = sqlite3_reset(res);
+     if (unlikely(rc != SQLITE_OK))
+-        error_report("Failed to finalize statement in store active dimension, rc = %d", rc);
++        error_report("Failed to reset statement in store active dimension, rc = %d", rc);
+     return;
+ }
+ 
+@@ -449,7 +449,7 @@ int find_uuid_type(uuid_t *uuid)
+     return 0;
+ }
+ 
+-int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid)
++int find_dimension_uuid(RRDSET *st, RRDDIM *rd)
+ {
+     static __thread sqlite3_stmt *res = NULL;
+     int rc;
+@@ -480,15 +480,9 @@ int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid)
+ 
+     rc = sqlite3_step(res);
+     if (likely(rc == SQLITE_ROW)) {
+-        uuid_copy(*store_uuid, *((uuid_t *) sqlite3_column_blob(res, 0)));
++        uuid_copy(rd->state->metric_uuid, *((uuid_t *) sqlite3_column_blob(res, 0)));
+         status = 0;
+     }
+-    else {
+-        uuid_generate(*store_uuid);
+-        status = sql_store_dimension(store_uuid, st->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor, rd->algorithm);
+-        if (unlikely(status))
+-            error_report("Failed to store dimension metadata in the database");
+-    }
+ 
+     rc = sqlite3_reset(res);
+     if (unlikely(rc != SQLITE_OK))
+@@ -2046,3 +2040,126 @@ void sql_load_node_id(RRDHOST *host)
+ 
+     return;
+ };
++
++/*
++    uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier, collected_number divisor, int algorithm
++*/
++
++int db_begin_transaction() {
++    static sqlite3_stmt *res = NULL;
++    int rc;
++
++    if (unlikely(!res)) {
++        rc = prepare_statement(db_meta, "BEGIN IMMEDIATE TRANSACTION;", &res);
++        if (unlikely(rc != SQLITE_OK)) {
++            error_report("Failed to prepare begin transaction statement, rc = %d", rc);
++            return 1;
++        }
++    }
++
++    int status = 0;
++
++    rc = execute_insert(res);
++    if (unlikely(rc != SQLITE_DONE)) {
++        error_report("Failed to begin transaction, rc = %d", rc);
++        status = 1;
++    }
++
++    rc = sqlite3_reset(res);
++    if (unlikely(rc != SQLITE_OK)) {
++        error_report("Failed to reset begin transaction statement, rc = %d", rc);
++        status = 1;
++    }
++
++    return status;
++}
++
++int db_end_transaction() {
++    static sqlite3_stmt *res = NULL;
++    int rc;
++
++    if (unlikely(!res)) {
++        rc = prepare_statement(db_meta, "END TRANSACTION;", &res);
++        if (unlikely(rc != SQLITE_OK)) {
++            error_report("Failed to prepare end transaction statement, rc = %d", rc);
++            return 1;
++        }
++    }
++
++    int status = 0;
++
++    rc = execute_insert(res);
++    if (unlikely(rc != SQLITE_DONE)) {
++        error_report("Failed to end transaction, rc = %d", rc);
++        status = 1;
++    }
++
++    rc = sqlite3_reset(res);
++    if (unlikely(rc != SQLITE_OK)) {
++        error_report("Failed to reset end transaction statement, rc = %d", rc);
++        status = 1;
++    }
++
++    return status;
++}
++
++int find_or_update_uuid_of_each_dimension(RRDSET *rs)
++{
++    static sqlite3_stmt *res = NULL;
++    int ok = 0;
++    int error = 1;
++    int rc;
++
++    if (unlikely(!db_meta)) {
++        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
++            return ok;
++        error_report("Database has not been initialized");
++        return error;
++    }
++
++    if (unlikely(!res)) {
++        rc = prepare_statement(db_meta, SQL_STORE_DIMENSION, &res);
++        if (unlikely(rc != SQLITE_OK)) {
++            error_report("Failed to prepare statement to store dimension, rc = %d", rc);
++            return error;
++        }
++    }
++
++    // begin transaction
++    db_lock();
++    if (unlikely(db_begin_transaction()))
++        goto unlock_and_return_error;
++
++    // process each dim
++    for (RRDDIM *rd = rs->dimensions; rd != NULL; rd = rd->next) {
++        if (rrddim_flag_check(rd, RRDDIM_FLAG_OPS_INITIALIZED))
++            continue;
++
++        // create a new uuid if we can't find the dimension
++        if (find_dimension_uuid(rs, rd) != 0) {
++            uuid_generate(rd->state->metric_uuid);
++
++            rc = sql_store_dimension(&rd->state->metric_uuid, rs->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor, rd->algorithm);
++            if (unlikely(rc)) {
++                error_report("Failed to store dimension metadata in the database");
++                goto rollback_transaction;
++            }
++        }
++
++        // mark the dim as active
++        store_active_dimension(&rd->state->metric_uuid);
++    }
++
++    // end transaction
++    if (unlikely(db_end_transaction() != 0))
++        goto unlock_and_return_error;
++    db_unlock();
++
++    return ok;
++
++rollback_transaction:
++    db_execute("ROLLBACK TRANSACTION;");
++unlock_and_return_error:
++    db_unlock();
++    return error;
++}
+diff --git a/database/sqlite/sqlite_functions.h b/database/sqlite/sqlite_functions.h
+index 3e41f6aaa2..e03fdd0fba 100644
+--- a/database/sqlite/sqlite_functions.h
++++ b/database/sqlite/sqlite_functions.h
+@@ -67,7 +67,7 @@ extern int sql_store_chart(
+ extern int sql_store_dimension(uuid_t *dim_uuid, uuid_t *chart_uuid, const char *id, const char *name, collected_number multiplier,
+                                collected_number divisor, int algorithm);
+ 
+-extern int find_dimension_uuid(RRDSET *st, RRDDIM *rd, uuid_t *store_uuid);
++extern int find_dimension_uuid(RRDSET *st, RRDDIM *rd);
+ extern void store_active_dimension(uuid_t *dimension_uuid);
+ 
+ extern uuid_t *find_chart_uuid(RRDHOST *host, const char *type, const char *id, const char *name);
+@@ -98,4 +98,7 @@ extern void invalidate_node_instances(uuid_t *host_id, uuid_t *claim_id);
+ extern struct node_instance_list *get_node_list(void);
+ extern void sql_load_node_id(RRDHOST *host);
+ extern void compute_chart_hash(RRDSET *st);
++
++extern int find_or_update_uuid_of_each_dimension(RRDSET *rs);
++
+ #endif //NETDATA_SQLITE_FUNCTIONS_H
+
+commit 3be7ff1953e951a6d6012621a71b9514e104a21f
+Author: vkalintiris <vasilis@netdata.cloud>
+Date:   Sat Feb 19 16:38:04 2022 +0200
+
+    Wrap collect & query ops
+---
+ Makefile.am                    |   1 +
+ database/engine/rrdengineapi.c |   1 +
+ database/rrd.h                 |  19 ++++-
+ database/rrddim.c              |  48 +++---------
+ database/rrdops.c              | 161 +++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 193 insertions(+), 37 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index c41e8db247..861cfe2190 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -439,6 +439,7 @@ RRD_PLUGIN_FILES = \
+     database/rrdlabels.c \
+     database/rrd.c \
+     database/rrd.h \
++    database/rrdops.c \
+     database/rrdset.c \
+     database/rrdsetvar.c \
+     database/rrdsetvar.h \
+diff --git a/database/engine/rrdengineapi.c b/database/engine/rrdengineapi.c
+index 6ebee1459f..b080fdfbdb 100755
+--- a/database/engine/rrdengineapi.c
++++ b/database/engine/rrdengineapi.c
+@@ -533,6 +533,7 @@ void rrdeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_hand
+     unsigned pages_nr;
+ 
+     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
++    rrdimm_handle->rd = rd;
+     rrdimm_handle->start_time = start_time;
+     rrdimm_handle->end_time = end_time;
+     handle = &rrdimm_handle->rrdeng;
+diff --git a/database/rrd.h b/database/rrd.h
+index 680a4a055d..6f33a896e7 100644
+--- a/database/rrd.h
++++ b/database/rrd.h
+@@ -168,7 +168,9 @@ typedef enum rrddim_flags {
+     // No new values have been collected for this dimension since agent start or it was marked RRDDIM_FLAG_OBSOLETE at
+     // least rrdset_free_obsolete_time seconds ago.
+     RRDDIM_FLAG_ARCHIVED                        = (1 << 3),
+-    RRDDIM_FLAG_ACLK                            = (1 << 4)
++    RRDDIM_FLAG_ACLK                            = (1 << 4),
++
++    RRDDIM_FLAG_OPS_INITIALIZED                 = (1 << 5)
+ } RRDDIM_FLAGS;
+ 
+ #ifdef HAVE_C___ATOMIC
+@@ -1362,6 +1364,21 @@ extern RRDHOST *rrdhost_create(
+     char *rrdpush_destination, char *rrdpush_api_key, char *rrdpush_send_charts_matching, struct rrdhost_system_info *system_info,
+     int is_localhost); //TODO: Remove , int is_archived);
+ 
++// RRDDIM legacy collection & query functions
++
++extern void rrddim_collect_init(RRDDIM *rd);
++extern void rrddim_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_number number);
++extern int rrddim_collect_finalize(RRDDIM *rd);
++
++void rrddim_query_init(RRDDIM *rd, struct rrddim_query_handle *handle, time_t start_time, time_t end_time);
++storage_number rrddim_query_next_metric(struct rrddim_query_handle *handle, time_t *current_time);
++int rrddim_query_is_finished(struct rrddim_query_handle *handle);
++void rrddim_query_finalize(struct rrddim_query_handle *handle);
++time_t rrddim_query_latest_time(RRDDIM *rd);
++time_t rrddim_query_oldest_time(RRDDIM *rd);
++
++extern void rrddim_ops_initializer(RRDDIM *RD);
++
+ #endif /* NETDATA_RRD_INTERNALS */
+ 
+ extern void set_host_properties(
+diff --git a/database/rrddim.c b/database/rrddim.c
+index 78885df3dc..b3fc40048b 100644
+--- a/database/rrddim.c
++++ b/database/rrddim.c
+@@ -118,15 +118,15 @@ inline int rrddim_set_divisor(RRDSET *st, RRDDIM *rd, collected_number divisor)
+ // ----------------------------------------------------------------------------
+ // RRDDIM legacy data collection functions
+ 
+-static void rrddim_collect_init(RRDDIM *rd) {
++void rrddim_collect_init(RRDDIM *rd) {
+     rd->values[rd->rrdset->current_entry] = SN_EMPTY_SLOT;
+ }
+-static void rrddim_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_number number) {
++void rrddim_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_number number) {
+     (void)point_in_time;
+ 
+     rd->values[rd->rrdset->current_entry] = number;
+ }
+-static int rrddim_collect_finalize(RRDDIM *rd) {
++int rrddim_collect_finalize(RRDDIM *rd) {
+     (void)rd;
+ 
+     return 0;
+@@ -135,7 +135,7 @@ static int rrddim_collect_finalize(RRDDIM *rd) {
+ // ----------------------------------------------------------------------------
+ // RRDDIM legacy database query functions
+ 
+-static void rrddim_query_init(RRDDIM *rd, struct rrddim_query_handle *handle, time_t start_time, time_t end_time) {
++void rrddim_query_init(RRDDIM *rd, struct rrddim_query_handle *handle, time_t start_time, time_t end_time) {
+     handle->rd = rd;
+     handle->start_time = start_time;
+     handle->end_time = end_time;
+@@ -144,7 +144,7 @@ static void rrddim_query_init(RRDDIM *rd, struct rrddim_query_handle *handle, ti
+     handle->slotted.finished = 0;
+ }
+ 
+-static storage_number rrddim_query_next_metric(struct rrddim_query_handle *handle, time_t *current_time) {
++storage_number rrddim_query_next_metric(struct rrddim_query_handle *handle, time_t *current_time) {
+     RRDDIM *rd = handle->rd;
+     long entries = rd->rrdset->entries;
+     long slot = handle->slotted.slot;
+@@ -160,21 +160,21 @@ static storage_number rrddim_query_next_metric(struct rrddim_query_handle *handl
+     return n;
+ }
+ 
+-static int rrddim_query_is_finished(struct rrddim_query_handle *handle) {
++int rrddim_query_is_finished(struct rrddim_query_handle *handle) {
+     return handle->slotted.finished;
+ }
+ 
+-static void rrddim_query_finalize(struct rrddim_query_handle *handle) {
++void rrddim_query_finalize(struct rrddim_query_handle *handle) {
+     (void)handle;
+ 
+     return;
+ }
+ 
+-static time_t rrddim_query_latest_time(RRDDIM *rd) {
++time_t rrddim_query_latest_time(RRDDIM *rd) {
+     return rrdset_last_entry_t_nolock(rd->rrdset);
+ }
+ 
+-static time_t rrddim_query_oldest_time(RRDDIM *rd) {
++time_t rrddim_query_oldest_time(RRDDIM *rd) {
+     return rrdset_first_entry_t_nolock(rd->rrdset);
+ }
+ 
+@@ -390,33 +390,9 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
+ #ifdef ENABLE_ACLK
+     rd->state->aclk_live_status = -1;
+ #endif
+-    (void) find_dimension_uuid(st, rd, &(rd->state->metric_uuid));
+-    if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+-#ifdef ENABLE_DBENGINE
+-        rrdeng_metric_init(rd);
+-        rd->state->collect_ops.init = rrdeng_store_metric_init;
+-        rd->state->collect_ops.store_metric = rrdeng_store_metric_next;
+-        rd->state->collect_ops.finalize = rrdeng_store_metric_finalize;
+-        rd->state->query_ops.init = rrdeng_load_metric_init;
+-        rd->state->query_ops.next_metric = rrdeng_load_metric_next;
+-        rd->state->query_ops.is_finished = rrdeng_load_metric_is_finished;
+-        rd->state->query_ops.finalize = rrdeng_load_metric_finalize;
+-        rd->state->query_ops.latest_time = rrdeng_metric_latest_time;
+-        rd->state->query_ops.oldest_time = rrdeng_metric_oldest_time;
+-#endif
+-    } else {
+-        rd->state->collect_ops.init         = rrddim_collect_init;
+-        rd->state->collect_ops.store_metric = rrddim_collect_store_metric;
+-        rd->state->collect_ops.finalize     = rrddim_collect_finalize;
+-        rd->state->query_ops.init           = rrddim_query_init;
+-        rd->state->query_ops.next_metric    = rrddim_query_next_metric;
+-        rd->state->query_ops.is_finished    = rrddim_query_is_finished;
+-        rd->state->query_ops.finalize       = rrddim_query_finalize;
+-        rd->state->query_ops.latest_time    = rrddim_query_latest_time;
+-        rd->state->query_ops.oldest_time    = rrddim_query_oldest_time;
+-    }
+-    store_active_dimension(&rd->state->metric_uuid);
+-    rd->state->collect_ops.init(rd);
++
++    rrddim_ops_initializer(rd);
++
+     // append this dimension
+     if(!st->dimensions)
+         st->dimensions = rd;
+diff --git a/database/rrdops.c b/database/rrdops.c
+new file mode 100644
+index 0000000000..c90259cef0
+--- /dev/null
++++ b/database/rrdops.c
+@@ -0,0 +1,161 @@
++#define NETDATA_RRD_INTERNALS
++#include "rrd.h"
++
++static inline void rrddim_initializer(RRDDIM *rd)
++{
++    if (rrddim_flag_check(rd, RRDDIM_FLAG_OPS_INITIALIZED))
++        return;
++
++    // find
++    find_dimension_uuid(rd->rrdset, rd, &(rd->state->metric_uuid));
++
++    // init metric
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_metric_init(rd);
++#endif
++    }
++
++    // store
++    store_active_dimension(&rd->state->metric_uuid);
++
++    // collect init
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_store_metric_init(rd);
++#endif
++    } else {
++        rrddim_collect_init(rd);
++    }
++
++    rrddim_flag_set(rd, RRDDIM_FLAG_OPS_INITIALIZED);
++}
++
++static void wrap_collect_init(RRDDIM *rd)
++{
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_store_metric_init(rd);
++#endif
++    } else {
++        rrddim_collect_init(rd);
++    }
++}
++
++static void wrap_collect_store_metric(RRDDIM *rd, usec_t point_in_time, storage_number number)
++{
++    rrddim_initializer(rd);
++
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_store_metric_next(rd, point_in_time, number);
++#endif
++    } else {
++        rrddim_collect_store_metric(rd, point_in_time, number);
++    }
++}
++
++static int wrap_collect_finalize(RRDDIM *rd)
++{
++    rrddim_initializer(rd);
++
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        return rrdeng_store_metric_finalize(rd);
++#endif
++    } else {
++        return rrddim_collect_finalize(rd);
++    }
++}
++
++static void wrap_query_init(RRDDIM *rd, struct rrddim_query_handle *handle, time_t start_time, time_t end_time)
++{
++    rrddim_initializer(rd);
++
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_load_metric_init(rd, handle, start_time, end_time);
++#endif
++    } else {
++        rrddim_query_init(rd,  handle, start_time, end_time);
++    }
++}
++
++static storage_number wrap_query_next_metric(struct rrddim_query_handle *handle, time_t *current_time)
++{
++    rrddim_initializer(handle->rd);
++
++    if (handle->rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        return rrdeng_load_metric_next(handle, current_time);
++#endif
++    } else {
++        return rrddim_query_next_metric(handle, current_time);
++    }
++}
++
++static int wrap_query_is_finished(struct rrddim_query_handle *handle)
++{
++    rrddim_initializer(handle->rd);
++
++    if (handle->rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        return rrdeng_load_metric_is_finished(handle);
++#endif
++    } else {
++        return rrddim_query_is_finished(handle);
++    }
++}
++
++void wrap_query_finalize(struct rrddim_query_handle *handle)
++{
++    rrddim_initializer(handle->rd);
++
++    if (handle->rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        rrdeng_load_metric_finalize(handle);
++#endif
++    } else {
++        rrddim_query_finalize(handle);
++    }
++}
++
++time_t wrap_query_latest_time(RRDDIM *rd)
++{
++    rrddim_initializer(rd);
++
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        return rrdeng_metric_latest_time(rd);
++#endif
++    } else {
++        return rrddim_query_latest_time(rd);
++    }
++}
++
++time_t wrap_query_oldest_time(RRDDIM *rd)
++{
++    rrddim_initializer(rd);
++
++    if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
++#ifdef ENABLE_DBENGINE
++        return rrdeng_metric_oldest_time(rd);
++#endif
++    } else {
++        return rrddim_query_oldest_time(rd);
++    }
++}
++
++void rrddim_ops_initializer(RRDDIM *rd) {
++    rd->state->collect_ops.init = wrap_collect_init;
++    rd->state->collect_ops.store_metric = wrap_collect_store_metric;
++    rd->state->collect_ops.finalize = wrap_collect_finalize;
++
++    rd->state->query_ops.init = wrap_query_init;
++    rd->state->query_ops.next_metric = wrap_query_next_metric;
++    rd->state->query_ops.is_finished = wrap_query_is_finished;
++    rd->state->query_ops.finalize = wrap_query_finalize;
++
++    rd->state->query_ops.latest_time = wrap_query_latest_time;
++    rd->state->query_ops.oldest_time = wrap_query_oldest_time;
++}
+
+commit 55fefa89108d04e24c79fb94528853f139a6f75d
+Author: vkalintiris <vasilis@netdata.cloud>
+Date:   Sat Feb 19 10:50:48 2022 +0200
+
+    Streaming + XRay required changes.
+---
+ database/rrdhost.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/database/rrdhost.c b/database/rrdhost.c
+index 87d8c73259..6dd699e0fb 100644
+--- a/database/rrdhost.c
++++ b/database/rrdhost.c
+@@ -179,7 +179,11 @@ RRDHOST *rrdhost_create(const char *hostname,
+     sender_init(host->sender, host);
+     netdata_mutex_init(&host->receiver_lock);
+ 
+-    host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
++    if (is_localhost)
++        host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key) ? 1 : 0;
++    else
++        host->rrdpush_send_enabled = false;
++
+     host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
+     host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
+     host->rrdpush_send_charts_matching = simple_pattern_create(rrdpush_send_charts_matching, NULL, SIMPLE_PATTERN_EXACT);
