@@ -96,7 +96,9 @@ void replication_collect_past_metric(RRDDIM_PAST_DATA *dim_past_data, time_t tim
         dim_past_data->page_length = page_length;
         dim_past_data->end_time = timestamp * USEC_PER_SEC;
     }
+#if 0
     error("Collect past metric sample#%u@%ld: "CALCULATED_NUMBER_FORMAT" \n", page_length, timestamp, unpack_storage_number(number));
+#endif
 }
 
 void replication_collect_past_metric_done(RRDDIM_PAST_DATA *dim_past_data) {

@@ -38,7 +38,9 @@ bool GapData::push(struct sender_state *Sender) const {
     buffer_sprintf(Sender->build, "FILLGAP \"%s\"\n", toBase64().c_str());
     sender_commit(Sender);
 
+#if 0
     print();
+#endif
     return true;
 }
 
@@ -91,7 +93,9 @@ GapData GapData::fromBase64(const std::string &EncodedData) {
 bool GapData::flushToDBEngine(RRDHOST *RH) const {
     RRDDIM_PAST_DATA *DPD;
 
+#if 0
     print();
+#endif
 
     DPD = replication_collect_past_metric_init(RH, Chart.c_str(), Dimension.c_str());
     if (!DPD)

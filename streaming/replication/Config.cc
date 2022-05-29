@@ -21,17 +21,21 @@ void Config::readReplicationConfig(void) {
      * Backfill this many seconds on first connection of a child.
      */
     time_t SecondsToReplicateOnFirstConnection =
-        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 600);
+        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 60 * 60);
 
+#if 0
     SecondsToReplicateOnFirstConnection = clamp<time_t>(SecondsToReplicateOnFirstConnection, 0, 2 * 24 * 3600);
+#endif
 
     /*
      * Send at most this amount of <timestamp, storage_number>s for a single dim.
      */
     size_t MaxEntriesPerGapData  =
-        config_get_number(ConfigSectionReplication, "max entries for each dimension gap data", 1000);
+        config_get_number(ConfigSectionReplication, "max entries for each dimension gap data", 1024);
 
+#if 0
     MaxEntriesPerGapData = clamp<size_t>(MaxEntriesPerGapData, 60, 1000);
+#endif
 
     /*
      * Max number of gaps that we want parents to track for a child.
@@ -39,15 +43,19 @@ void Config::readReplicationConfig(void) {
     size_t MaxNumGapsToReplicate =
         config_get_number(ConfigSectionReplication, "max num gaps to replicate", 100);
 
+#if 0
     MaxNumGapsToReplicate = clamp<size_t>(MaxNumGapsToReplicate, 1, 100);
+#endif
 
     /*
      * Max number of queries that we should perform per second
      */
     size_t MaxQueriesPerSecond =
-        config_get_number(ConfigSectionReplication, "max queries per second", 100);
+        config_get_number(ConfigSectionReplication, "max queries per second", 64);
 
+#if 0
     MaxQueriesPerSecond = clamp<size_t>(MaxQueriesPerSecond, 5, 500);
+#endif
 
     Cfg.EnableReplication = EnableReplication;
     Cfg.SecondsToReplicateOnFirstConnection = SecondsToReplicateOnFirstConnection;

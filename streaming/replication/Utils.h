@@ -44,8 +44,10 @@ public:
     {
         std::vector<std::pair<time_t, storage_number>> SNs;
 
-        if (After >= Before) {
-            fatal("GVD: Tried to query rd with <%ld, %ld>", After, Before);
+        if (After > Before) {
+            error("GVD[%s]: tried to query %s.%s with <%ld, %ld>",
+                  RD->rrdset->rrdhost->hostname, RD->rrdset->id, RD->id,
+                  After, Before);
             return SNs;
         }
 

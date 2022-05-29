@@ -23,8 +23,8 @@ static void profile_main_cleanup(void *ptr)
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-static constexpr unsigned NumCharts = 2;
-static constexpr unsigned NumDimsPerChart = 2;
+static constexpr unsigned NumCharts = 300;
+static constexpr unsigned NumDimsPerChart = 5;
 static constexpr unsigned NumTotalDims = NumCharts * NumDimsPerChart;
 
 static std::unordered_map<RRDSET *, std::vector<RRDDIM *>> ChartDimsMap;
@@ -102,8 +102,6 @@ static void createCharts(unsigned NumCharts, unsigned NumDimsPerChart) {
 }
 
 static void updateCharts() {
-    static unsigned Counter = 0;
-
     unsigned ChartIdx = 0;
 
     for (const auto &P : ChartDimsMap) {
@@ -113,15 +111,12 @@ static void updateCharts() {
         rrdset_next(RS);
 
         for (unsigned DimIdx = 0; DimIdx != NumDimsPerChart; DimIdx++) {
-            collected_number CN = CNs[(Counter + ChartIdx++) % NumTotalDims];
+            collected_number CN = ChartIdx++ * NumDimsPerChart + DimIdx;
             rrddim_set_by_pointer(RS, Dims[DimIdx], CN);
         }
 
         rrdset_done(RS);
     }
-
-
-    Counter++;
 }
 
 void *profile_main(void *ptr)
