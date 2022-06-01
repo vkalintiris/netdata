@@ -751,6 +751,8 @@ set(API_PLUGIN_FILES
         )
 
 set(STREAMING_PLUGIN_FILES
+        streaming/replication/collectops.c
+        streaming/replication/collectops.h
         streaming/rrdpush.c
         streaming/rrdpush.h
         streaming/compression.c
