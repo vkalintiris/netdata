@@ -19,6 +19,8 @@ typedef struct rrddim_past_data RRDDIM_PAST_DATA;
 typedef void *ml_host_t;
 typedef void *ml_dimension_t;
 
+typedef void *replication_handle_t;
+
 // forward declarations
 struct rrddim_volatile;
 struct rrdset_volatile;
@@ -871,6 +873,10 @@ struct rrdhost {
     // ------------------------------------------------------------------------
     // ML handle
     ml_host_t ml_host;
+
+    // ------------------------------------------------------------------------
+    // Replicator handle
+    replication_handle_t repl_handle;
 
     // ------------------------------------------------------------------------
     // Support for host-level labels
