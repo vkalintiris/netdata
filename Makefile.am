@@ -559,6 +559,8 @@ API_PLUGIN_FILES = \
     $(NULL)
 
 STREAMING_PLUGIN_FILES = \
+    streaming/replication/collectops.c \
+    streaming/replication/collectops.h \
     streaming/rrdpush.c \
     streaming/compression.c \
     streaming/sender.c \
