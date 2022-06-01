@@ -396,6 +396,7 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
 
     ml_new_host(host);
+    replication_new_host(host);
 
     info("Host '%s' (at registry as '%s') with guid '%s' initialized"
                  ", os '%s'"
@@ -855,6 +856,10 @@ void rrdhost_free(RRDHOST *host) {
 
     rrd_check_wrlock();     // make sure the RRDs are write locked
 
+    replication_save_host_entries_range(&host->host_uuid,
+                                        rrdhost_first_entry_t(host),
+                                        rrdhost_last_entry_t(host));
+
     rrdhost_wrlock(host);
     ml_delete_host(host);
     rrdhost_unlock(host);
@@ -942,6 +947,8 @@ void rrdhost_free(RRDHOST *host) {
     rrdvar_free_remaining_variables(host, &host->rrdvar_root_index);
 
     health_alarm_log_free(host);
+
+    replication_delete_host(host);
 
 #ifdef ENABLE_DBENGINE
     if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
