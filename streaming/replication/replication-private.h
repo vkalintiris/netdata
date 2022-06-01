@@ -21,5 +21,6 @@
 
 #include "Config.h"
 #include "Utils.h"
+#include "TimeRange.h"
 
 #endif /* REPLICATION_PRIVATE_H */
