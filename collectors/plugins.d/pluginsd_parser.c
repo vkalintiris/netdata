@@ -208,19 +208,16 @@ PARSER_RC pluginsd_overwrite_action(void *user, RRDHOST *host, DICTIONARY *new_h
 PARSER_RC pluginsd_fillgap_action(void *user, RRDHOST *host, const char *buf)
 {
     UNUSED(user);
-    UNUSED(host);
-    UNUSED(buf);
 
+    replication_receiver_fill_gap(host, buf);
     return PARSER_RC_OK;
 }
 
 PARSER_RC pluginsd_dropgap_action(void *user, RRDHOST *host, time_t after, time_t before)
 {
     UNUSED(user);
-    UNUSED(host);
-    UNUSED(after);
-    UNUSED(before);
 
+    replication_receiver_drop_gap(host, after, before);
     return PARSER_RC_OK;
 }
 
