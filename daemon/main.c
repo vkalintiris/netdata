@@ -30,6 +30,8 @@ void netdata_cleanup_and_exit(int ret) {
     error_log_limit_unlimited();
     info("EXIT: netdata prepares to exit with code %d...", ret);
 
+    replication_fini();
+
     send_statistics("EXIT", ret?"ERROR":"OK","-");
 
     char agent_crash_file[FILENAME_MAX + 1];
@@ -1256,6 +1258,10 @@ int main(int argc, char **argv) {
         // This is the safest place to start the SILENCERS structure
         set_silencers_filename();
         health_initialize_global_silencers();
+
+        // --------------------------------------------------------------------
+        // Initialize replication configuration
+        replication_init();
 
         // --------------------------------------------------------------------
         // Initialize ML configuration
