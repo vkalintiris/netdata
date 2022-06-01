@@ -247,6 +247,108 @@ static inline long int parse_stream_version(RRDHOST *host, char *http)
     return stream_version;
 }
 
+static bool recv_gaps_data(struct sender_state *s, RRDHOST *host, int timeout) {
+    char ProtoBuf[HTTP_HEADER_SIZE];
+    memset(ProtoBuf, 0, HTTP_HEADER_SIZE);
+
+    ssize_t total = 0;
+    while (total < HTTP_HEADER_SIZE) {
+        ssize_t received;
+
+#ifdef ENABLE_HTTPS
+        received = recv_timeout(&host->ssl,host->rrdpush_sender_socket, ProtoBuf + total, HTTP_HEADER_SIZE - total, 0, timeout);
+        if(received == -1) {
+#else
+        received = recv_timeout(host->rrdpush_sender_socket, ProtoBuf + total, HTTP_HEADER_SIZE - total, 0, timeout);
+        if(received == -1) {
+#endif
+            error("STREAM %s [send to %s]: remote netdata does not respond.", host->hostname, s->connected_to);
+            rrdpush_sender_thread_close_socket(host);
+            return 1;
+        }
+
+        error("GVD: received: %ld, total: %ld, target: %d", received, total + received, HTTP_HEADER_SIZE);
+        total += received;
+    }
+
+    replication_sender_connect(host, ProtoBuf, HTTP_HEADER_SIZE);
+    return 0;
+}
+
+static bool send_gaps_reponse(struct sender_state *s, RRDHOST *host, int timeout) {
+    char ack[5] = {'G', 'A', 'P', 'S', '\0'};
+
+#if ENABLE_HTTPS
+    if(send_timeout(&host->ssl,host->rrdpush_sender_socket, ack, 5, 0, timeout) == -1) {
+#else
+    if(send_timeout(host->rrdpush_sender_socket, ack, 5, 0, timeout) == -1) {
+#endif
+        error("STREAM %s [send to %s]: failed to send GAPS command to remote netdata.", host->hostname, s->connected_to);
+        rrdpush_sender_thread_close_socket(host);
+        return 1;
+    }
+
+    error("GVD: sent gaps response");
+
+    return recv_gaps_data(s, host, timeout);
+}
+
+static bool recv_initial_response(struct sender_state *s, RRDHOST *host, int timeout) {
+    char http[HTTP_HEADER_SIZE];
+
+    ssize_t received;
+#ifdef ENABLE_HTTPS
+    received = recv_timeout(&host->ssl,host->rrdpush_sender_socket, http, HTTP_HEADER_SIZE, 0, timeout);
+    if(received == -1) {
+#else
+    received = recv_timeout(host->rrdpush_sender_socket, http, HTTP_HEADER_SIZE, 0, timeout);
+    if(received == -1) {
+#endif
+        worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT);
+        error("STREAM %s [send to %s]: remote netdata does not respond.", host->hostname, s->connected_to);
+        rrdpush_sender_thread_close_socket(host);
+        return 1;
+    }
+
+    http[received] = '\0';
+
+    debug(D_STREAM, "Response to sender from far end: %s", http);
+    int32_t version = (int32_t)parse_stream_version(host, http);
+    if(version == -1) {
+        error("STREAM %s [send to %s]: server is not replying properly (is it a netdata?).", host->hostname, s->connected_to);
+        rrdpush_sender_thread_close_socket(host);
+        return 1;
+    }
+    else if(version == -2) {
+        error("STREAM %s [send to %s]: remote server is the localhost for [%s].", host->hostname, s->connected_to, host->hostname);
+        rrdpush_sender_thread_close_socket(host);
+        host->destination->disabled_because_of_localhost = 1;
+        return 0;
+    }
+    else if(version == -3) {
+        error("STREAM %s [send to %s]: remote server already receives metrics for [%s].", host->hostname, s->connected_to, host->hostname);
+        rrdpush_sender_thread_close_socket(host);
+        host->destination->disabled_already_streaming = now_realtime_sec();
+        return 0;
+    }
+    else if(version == -4) {
+        error("STREAM %s [send to %s]: remote server denied access for [%s].", host->hostname, s->connected_to, host->hostname);
+        rrdpush_sender_thread_close_socket(host);
+        if (host->destination->next)
+            host->destination->disabled_because_of_denied_access = 1;
+        return 0;
+    }
+    s->version = version;
+
+    error("GVD: received initial response");
+
+    /*
+     * TODO/FIXME: Run only for gaps version
+    */
+
+    return send_gaps_reponse(s, host, timeout);
+}
+
 static int rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_port, int timeout,
     struct sender_state *s) {
 
@@ -463,52 +565,8 @@ if(!s->rrdpush_compression)
 
     info("STREAM %s [send to %s]: waiting response from remote netdata...", host->hostname, s->connected_to);
 
-    ssize_t received;
-#ifdef ENABLE_HTTPS
-    received = recv_timeout(&host->ssl,host->rrdpush_sender_socket, http, HTTP_HEADER_SIZE, 0, timeout);
-    if(received == -1) {
-#else
-    received = recv_timeout(host->rrdpush_sender_socket, http, HTTP_HEADER_SIZE, 0, timeout);
-    if(received == -1) {
-#endif
-        worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT);
-        error("STREAM %s [send to %s]: remote netdata does not respond.", host->hostname, s->connected_to);
-        rrdpush_sender_thread_close_socket(host);
+    if (recv_initial_response(s, host, timeout))
         return 0;
-    }
-
-    http[received] = '\0';
-    debug(D_STREAM, "Response to sender from far end: %s", http);
-    int32_t version = (int32_t)parse_stream_version(host, http);
-    if(version == -1) {
-        worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE);
-        error("STREAM %s [send to %s]: server is not replying properly (is it a netdata?).", host->hostname, s->connected_to);
-        rrdpush_sender_thread_close_socket(host);
-        //catch other reject reasons and force to check other destinations
-        if (host->destination->next)
-            host->destination->disabled_no_proper_reply = 1;
-        return 0;
-    }
-    else if(version == -2) {
-        error("STREAM %s [send to %s]: remote server is the localhost for [%s].", host->hostname, s->connected_to, host->hostname);
-        rrdpush_sender_thread_close_socket(host);
-        host->destination->disabled_because_of_localhost = 1;
-        return 0;
-    }
-    else if(version == -3) {
-        error("STREAM %s [send to %s]: remote server already receives metrics for [%s].", host->hostname, s->connected_to, host->hostname);
-        rrdpush_sender_thread_close_socket(host);
-        host->destination->disabled_already_streaming = now_realtime_sec();
-        return 0;
-    }
-    else if(version == -4) {
-        error("STREAM %s [send to %s]: remote server denied access for [%s].", host->hostname, s->connected_to, host->hostname);
-        rrdpush_sender_thread_close_socket(host);
-        if (host->destination->next)
-            host->destination->disabled_because_of_denied_access = 1;
-        return 0;
-    }
-    s->version = version;
 
 #ifdef ENABLE_COMPRESSION
     s->rrdpush_compression = (s->rrdpush_compression && (s->version >= STREAM_VERSION_COMPRESSION));
@@ -695,6 +753,8 @@ static void rrdpush_sender_thread_cleanup_callback(void *ptr) {
 
     RRDHOST *host = (RRDHOST *)ptr;
 
+    replication_thread_stop(host);
+
     netdata_mutex_lock(&host->sender->mutex);
 
     info("STREAM %s [send]: sending thread cleans up...", host->hostname);
@@ -803,6 +863,8 @@ void *rrdpush_sender_thread(void *ptr) {
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_SEND_ERROR, "disconnect send error");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION, "disconnect no compression");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE, "disconnect bad handshake");
+
+    replication_thread_start(s->host);
 
     netdata_thread_cleanup_push(rrdpush_sender_thread_cleanup_callback, s->host);
     for(; s->host->rrdpush_send_enabled && !netdata_exit ;) {
