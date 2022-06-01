@@ -2,6 +2,7 @@
 #define REPLICATION_PRIVATE_H
 
 #include "replication.h"
+#include "collectops.h"
 
 #include "gaps.pb.h"
 
@@ -16,11 +17,14 @@
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
+#include "Base64.h"
 #include "Config.h"
 #include "Utils.h"
 #include "TimeRange.h"
+#include "GapData.h"
 
 #endif /* REPLICATION_PRIVATE_H */
