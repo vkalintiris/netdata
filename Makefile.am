@@ -567,6 +567,8 @@ STREAMING_PLUGIN_FILES = \
     streaming/replication/Base64.h \
     streaming/replication/Config.cc \
     streaming/replication/Config.h \
+    streaming/replication/TimeRange.cc \
+    streaming/replication/TimeRange.h \
     streaming/replication/Utils.h \
     streaming/replication/collectops.c \
     streaming/replication/collectops.h \
