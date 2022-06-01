@@ -409,6 +409,101 @@ done:
     return result;
 }
 
+static bool send_gaps_data(struct receiver_state *rpt) {
+    char buf[HTTP_HEADER_SIZE];
+    memset(buf, 0, HTTP_HEADER_SIZE);
+
+    replication_receiver_connect(rpt->host, buf, HTTP_HEADER_SIZE);
+
+#ifdef ENABLE_HTTPS
+    if(send_timeout(&rpt->ssl, rpt->fd, buf, HTTP_HEADER_SIZE, 0, 60) != HTTP_HEADER_SIZE) {
+#else
+    if(send_timeout(rpt->fd, buf, HTTP_HEADER_SIZE, 0, 60) != HTTP_HEADER_SIZE) {
+#endif
+        log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - CANNOT SEND GAPS DATA");
+        error("STREAM %s [receive from [%s]:%s]: cannot send gaps data.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+        close(rpt->fd);
+        return 1;
+    }
+
+    return 0;
+};
+
+static bool recv_gaps_response(struct receiver_state *rpt) {
+    char ack[5] = {'G', 'A', 'P', 'S', '\0'};
+
+    ssize_t received;
+#ifdef ENABLE_HTTPS
+    received = recv_timeout(&rpt->ssl, rpt->fd, ack, 5, 0, 60);
+    if (received == -1) {
+#else
+    received = recv_timeout(rpt->fd, ack, 5, 0, 60);
+    if (received == -1) {
+#endif
+        log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - CANNOT RECV GAPS ACK");
+        error("STREAM %s [receive from [%s]:%s]: cannot receive gaps command.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+        close(rpt->fd);
+        return 1;
+    }
+
+    ack[4] = '\0';;
+    if (strcmp(ack, "GAPS")) {
+        log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname,"FAILED - RECV'D NON-GAPS ACK");
+        error("STREAM %s [receive from [%s]:%s]: received non-gaps command.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+        close(rpt->fd);
+        return 1;
+    }
+
+    error("GVD: recv'd GAPS response");
+    return send_gaps_data(rpt);
+}
+
+static bool send_initial_response(struct receiver_state *rpt) {
+    info("STREAM %s [receive from [%s]:%s]: initializing communication...", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+
+    char initial_response[HTTP_HEADER_SIZE];
+    memset(initial_response, 0, HTTP_HEADER_SIZE);
+    if (rpt->stream_version > 1) {
+        if(rpt->stream_version >= STREAM_VERSION_COMPRESSION){
+#ifdef ENABLE_COMPRESSION
+            if(!rpt->rrdpush_compression)
+                rpt->stream_version = STREAM_VERSION_CLABELS;
+#else
+            if(STREAMING_PROTOCOL_CURRENT_VERSION < rpt->stream_version) {
+                rpt->stream_version =  STREAMING_PROTOCOL_CURRENT_VERSION;
+            }
+#endif
+        }
+        info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
+        sprintf(initial_response, "%s%u", START_STREAMING_PROMPT_VN, rpt->stream_version);
+    } else if (rpt->stream_version == 1) {
+        info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
+        sprintf(initial_response, "%s", START_STREAMING_PROMPT_V2);
+    } else {
+        info("STREAM %s [receive from [%s]:%s]: Netdata is using first stream protocol.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+        sprintf(initial_response, "%s", START_STREAMING_PROMPT);
+    }
+    debug(D_STREAM, "Initial response to %s: %s", rpt->client_ip, initial_response);
+
+#ifdef ENABLE_HTTPS
+    rpt->host->stream_ssl.conn = rpt->ssl.conn;
+    rpt->host->stream_ssl.flags = rpt->ssl.flags;
+    if(send_timeout(&rpt->ssl, rpt->fd, initial_response, strlen(initial_response), 0, 60) != (ssize_t)strlen(initial_response)) {
+#else
+    if(send_timeout(rpt->fd, initial_response, strlen(initial_response), 0, 60) != strlen(initial_response)) {
+#endif
+        log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - CANNOT REPLY");
+        error("STREAM %s [receive from [%s]:%s]: cannot send ready command.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
+        close(rpt->fd);
+        return 1;
+    }
+
+    /*
+     * TODO: Bump the streaming version
+     */
+    error("GVD: sent initial response");
+    return recv_gaps_response(rpt);
+}
 
 static int rrdpush_receive(struct receiver_state *rpt)
 {
@@ -596,41 +691,8 @@ static int rrdpush_receive(struct receiver_state *rpt)
     snprintfz(cd.fullfilename, FILENAME_MAX,     "%s:%s", rpt->client_ip, rpt->client_port);
     snprintfz(cd.cmd,          PLUGINSD_CMD_MAX, "%s:%s", rpt->client_ip, rpt->client_port);
 
-    info("STREAM %s [receive from [%s]:%s]: initializing communication...", rpt->host->hostname, rpt->client_ip, rpt->client_port);
-    char initial_response[HTTP_HEADER_SIZE];
-    if (rpt->stream_version > 1) {
-        if(rpt->stream_version >= STREAM_VERSION_COMPRESSION){
-#ifdef ENABLE_COMPRESSION
-            if(!rpt->rrdpush_compression)
-                rpt->stream_version = STREAM_VERSION_CLABELS;
-#else
-            if(STREAMING_PROTOCOL_CURRENT_VERSION < rpt->stream_version) {
-                rpt->stream_version =  STREAMING_PROTOCOL_CURRENT_VERSION;               
-            }
-#endif
-        }
-        info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
-        sprintf(initial_response, "%s%u", START_STREAMING_PROMPT_VN, rpt->stream_version);
-    } else if (rpt->stream_version == 1) {
-        info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
-        sprintf(initial_response, "%s", START_STREAMING_PROMPT_V2);
-    } else {
-        info("STREAM %s [receive from [%s]:%s]: Netdata is using first stream protocol.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
-        sprintf(initial_response, "%s", START_STREAMING_PROMPT);
-    }
-    debug(D_STREAM, "Initial response to %s: %s", rpt->client_ip, initial_response);
-    #ifdef ENABLE_HTTPS
-    rpt->host->stream_ssl.conn = rpt->ssl.conn;
-    rpt->host->stream_ssl.flags = rpt->ssl.flags;
-    if(send_timeout(&rpt->ssl, rpt->fd, initial_response, strlen(initial_response), 0, 60) != (ssize_t)strlen(initial_response)) {
-#else
-    if(send_timeout(rpt->fd, initial_response, strlen(initial_response), 0, 60) != strlen(initial_response)) {
-#endif
-        log_stream_connection(rpt->client_ip, rpt->client_port, rpt->key, rpt->host->machine_guid, rpt->host->hostname, "FAILED - CANNOT REPLY");
-        error("STREAM %s [receive from [%s]:%s]: cannot send ready command.", rpt->host->hostname, rpt->client_ip, rpt->client_port);
-        close(rpt->fd);
+    if (send_initial_response(rpt))
         return 0;
-    }
 
     // remove the non-blocking flag from the socket
     if(sock_delnonblock(rpt->fd) < 0)
