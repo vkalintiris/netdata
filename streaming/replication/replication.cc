@@ -232,3 +232,130 @@ void replication_init(void) {
 
 void replication_fini(void) {
 }
+
+void replication_new_host(RRDHOST *RH) {
+    if (!Cfg.EnableReplication)
+        return;
+
+    /*
+     * Load receiver gaps from sqlite db
+    */
+    size_t Len = 8192;
+    char Buf[Len];
+    memset(Buf, 0, Len);
+    replication_load_gaps(&RH->host_uuid, Buf, Len);
+    std::vector<TimeRange> TRs = deserializeTimeRanges(Buf, Len);
+
+    /*
+     * Log info
+     */
+    std::stringstream SS;
+    SS << "GVD[" << RH->hostname << "] created with gaps: " << TRs;
+    error("%s", SS.str().c_str());
+
+    /*
+     * Create host
+    */
+    Host *H = new Host(RH);
+    H->setReceiverGaps(TRs);
+    RH->repl_handle = static_cast<replication_handle_t>(H);
+}
+
+void replication_delete_host(RRDHOST *RH) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    /*
+     * Save receiver gaps to sqlite DB
+     */
+    size_t Len = 8192;
+    char Buf[Len];
+    memset(Buf, 0, Len);
+
+    std::vector<TimeRange> TRs = H->getReceiverGaps();
+    serializeTimeRanges(TRs, Buf, Len);
+    replication_save_gaps(&RH->host_uuid, Buf, Len);
+
+    /*
+     * Log info
+     */
+    std::stringstream SS;
+    SS << "GVD[" << RH->hostname << "] deleted with gaps: " << TRs;
+    error("%s", SS.str().c_str());
+
+    /*
+     * Delete host
+     */
+    delete H;
+    RH->repl_handle = nullptr;
+}
+
+void replication_thread_start(RRDHOST *RH) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    error("GVD[%s] starting replication thread", RH->hostname);
+    H->startReplicationThread();
+}
+
+void replication_thread_stop(RRDHOST *RH) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    error("GVD[%s] stopping replication thread", RH->hostname);
+    H->stopReplicationThread();
+}
+
+void replication_receiver_connect(RRDHOST *RH, char *Buf, size_t Len) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    H->receiverConnect();
+    std::vector<TimeRange> TRs = H->getReceiverGaps();
+    serializeTimeRanges(TRs, Buf, Len);
+
+    /*
+     * Log info
+     */
+    std::stringstream SS;
+    SS << "GVD[" << RH->hostname << "] receiver connected with gaps: " << TRs;
+    error("%s", SS.str().c_str());
+}
+
+void replication_sender_connect(RRDHOST *RH, const char *Buf, size_t Len) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    std::vector<TimeRange> TRs = deserializeTimeRanges(Buf, Len);
+
+    /*
+     * Log info
+     */
+    std::stringstream SS;
+    SS << "GVD[" << RH->hostname << "] sender connected with gaps: " << TRs;
+    error("%s", SS.str().c_str());
+
+    /* Assign the recv'd gaps to the host. The parent sends the gaps
+     * in increasing timestamp order; reverse the vector because
+     * we always pop from the back */
+    std::reverse(TRs.begin(), TRs.end());
+    H->setSenderGaps(TRs);
+}
+
+bool replication_receiver_fill_gap(RRDHOST *RH, const char *Buf) {
+    GapData GD = GapData::fromBase64(Buf);
+    return GD.flushToDBEngine(RH);
+}
+
+void replication_receiver_drop_gap(RRDHOST *RH, time_t After, time_t Before) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    H->receiverDropGap({ After, Before });
+}
