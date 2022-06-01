@@ -558,6 +558,14 @@ API_PLUGIN_FILES = \
     web/api/web_api_v1.h \
     $(NULL)
 
+# TODO/FIXME: check when/if we have to wrap this in under a condition or an
+# 			  autoconf feature flag
+streaming/replication/gaps.pb.cc \
+streaming/replication/gaps.pb.h: streaming/replication/gaps.proto
+	$(PROTOC) --proto_path=$(srcdir) --cpp_out=$(builddir) $^
+
+dist_noinst_DATA += streaming/replication/gaps.proto
+
 STREAMING_PLUGIN_FILES = \
     streaming/replication/Base64.cc \
     streaming/replication/Base64.h \
@@ -566,6 +574,8 @@ STREAMING_PLUGIN_FILES = \
     streaming/replication/Utils.h \
     streaming/replication/collectops.c \
     streaming/replication/collectops.h \
+    streaming/replication/gaps.pb.cc \
+    streaming/replication/gaps.pb.h \
     streaming/replication/replication.cc \
     streaming/replication/replication.h \
     streaming/replication/replication-private.h \
