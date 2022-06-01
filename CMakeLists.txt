@@ -755,6 +755,7 @@ set(STREAMING_PLUGIN_FILES
         streaming/replication/Base64.h
         streaming/replication/Config.cc
         streaming/replication/Config.h
+        streaming/replication/Utils.h
         streaming/replication/collectops.c
         streaming/replication/collectops.h
         streaming/replication/replication.cc
