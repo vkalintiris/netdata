@@ -129,7 +129,7 @@ struct receiver_state {
     int update_every;
     uint32_t stream_version;
     time_t last_msg_t;
-    char read_buffer[1024];     // Need to allow RRD_ID_LENGTH_MAX * 4 + the other fields
+    char read_buffer[/* PLUGINSD_LINE_MAX = */ 16 * 1024];
     int read_len;
     unsigned int shutdown:1;    // Tell the thread to exit
     unsigned int exited;      // Indicates that the thread has exited  (NOT A BITFIELD!)
