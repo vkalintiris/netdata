@@ -311,17 +311,22 @@ static inline void rrdpush_send_chart_metrics_nolock(RRDSET *st, struct sender_s
 static void rrdpush_sender_thread_spawn(RRDHOST *host);
 
 // Called from the internal collectors to mark a chart obsolete.
-void rrdset_push_chart_definition_now(RRDSET *st) {
+bool rrdset_push_chart_definition_now(RRDSET *st) {
     RRDHOST *host = st->rrdhost;
 
     if(unlikely(!host->rrdpush_send_enabled || !should_send_chart_matching(st)))
-        return;
+        return false;
 
     rrdset_rdlock(st);
-    sender_start(host->sender);
-    rrdpush_send_chart_definition_nolock(st);
-    sender_commit(host->sender);
+
+    if (!rrdset_flag_check(st, RRDSET_FLAG_UPSTREAM_EXPOSED)) {
+        sender_start(host->sender);
+        rrdpush_send_chart_definition_nolock(st);
+        sender_commit(host->sender);
+    }
+
     rrdset_unlock(st);
+    return true;
 }
 
 void rrdset_done_push(RRDSET *st) {
