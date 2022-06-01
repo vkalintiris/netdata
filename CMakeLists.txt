@@ -768,6 +768,8 @@ set(API_PLUGIN_FILES
         )
 
 set(STREAMING_PLUGIN_FILES
+        streaming/replication/Base64.cc
+        streaming/replication/Base64.h
         streaming/replication/collectops.c
         streaming/replication/collectops.h
         streaming/rrdpush.c
