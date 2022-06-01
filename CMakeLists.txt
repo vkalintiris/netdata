@@ -770,8 +770,13 @@ set(API_PLUGIN_FILES
 set(STREAMING_PLUGIN_FILES
         streaming/replication/Base64.cc
         streaming/replication/Base64.h
+        streaming/replication/Config.cc
+        streaming/replication/Config.h
         streaming/replication/collectops.c
         streaming/replication/collectops.h
+        streaming/replication/replication.cc
+        streaming/replication/replication.h
+        streaming/replication/replication-private.h
         streaming/rrdpush.c
         streaming/rrdpush.h
         streaming/compression.c
