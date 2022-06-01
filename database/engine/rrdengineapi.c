@@ -140,23 +140,6 @@ void rrdeng_store_metric_init(RRDDIM *rd)
     uv_rwlock_wrunlock(&page_index->lock);
 }
 
-/* The page must be populated and referenced */
-static int page_has_only_empty_metrics(struct rrdeng_page_descr *descr)
-{
-    unsigned i;
-    uint8_t has_only_empty_metrics = 1;
-    storage_number *page;
-
-    page = descr->pg_cache_descr->page;
-    for (i = 0 ; i < descr->page_length / sizeof(storage_number); ++i) {
-        if (SN_EMPTY_SLOT != page[i]) {
-            has_only_empty_metrics = 0;
-            break;
-        }
-    }
-    return has_only_empty_metrics;
-}
-
 void rrdeng_store_metric_flush_current_page(RRDDIM *rd)
 {
     struct rrdeng_collect_handle *handle;
@@ -176,7 +159,7 @@ void rrdeng_store_metric_flush_current_page(RRDDIM *rd)
 
         rrd_stat_atomic_add(&ctx->stats.metric_API_producers, -1);
 
-        page_is_empty = page_has_only_empty_metrics(descr);
+        page_is_empty = rrdeng_page_has_only_empty_metrics(descr);
         if (page_is_empty) {
             debug(D_RRDENGINE, "Page has empty metrics only, deleting:");
             if (unlikely(debug_flags & D_RRDENGINE))
