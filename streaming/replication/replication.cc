@@ -139,6 +139,24 @@ public:
                 RL.request();
 
                 /*
+                 * Sleep while we are receiving gaps for this host
+                 */
+
+                while (!netdata_exit) {
+                    size_t NumReceiverGaps = 0;
+                    {
+                        std::lock_guard<Mutex> L(ReceiverMutex);
+                        NumReceiverGaps = ReceiverGaps.size();
+                    }
+
+                    if (!NumReceiverGaps)
+                        break;
+
+                    error("GVD[%s] Replication thread sleeping because we are receiving gaps", RH->hostname);
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+
+                /*
                  * Find the dim we are interested in and query it.
                  */
 
