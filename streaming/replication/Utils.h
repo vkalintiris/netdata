@@ -26,7 +26,7 @@ public:
         if (M.try_lock())
             return true;
 
-        netdata_thread_disable_cancelability();
+        netdata_thread_enable_cancelability();
         return false;
     }
 
