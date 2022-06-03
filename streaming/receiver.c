@@ -464,7 +464,7 @@ static bool recv_gaps_response(struct receiver_state *rpt) {
         return 1;
     }
 
-    error("GVD: recv'd GAPS response");
+    error("STREAM[%s] recv'd GAPS response", rpt->host->hostname);
     return send_gaps_data(rpt);
 }
 
@@ -511,7 +511,7 @@ static bool send_initial_response(struct receiver_state *rpt) {
     /*
      * TODO: Bump the streaming version
      */
-    error("GVD: sent initial response");
+    error("STREAM[%s] sent initial response", rpt->host->hostname);
     return recv_gaps_response(rpt);
 }
 

@@ -46,21 +46,25 @@ public:
         std::vector<std::pair<time_t, storage_number>> SNs;
 
         if (After > Before) {
-            error("GVD[%s]: tried to query %s.%s with <%ld, %ld>",
-                  RD->rrdset->rrdhost->hostname, RD->rrdset->id, RD->id,
-                  After, Before);
+            debug(D_REPLICATION, "[%s] Tried to query %s.%s with <%ld, %ld>",
+                  RD->rrdset->rrdhost->hostname, RD->rrdset->id, RD->id, After, Before);
             return SNs;
         }
 
         Query Q(RD);
 
-        error("GVD: Initial Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>", After, Q.oldestTime(), Before, Q.latestTime());
+        debug(D_REPLICATION, "[%s] Initial Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>",
+              RD->rrdset->rrdhost->hostname, After, Q.oldestTime(), Before, Q.latestTime());
+
         After = std::max(After, Q.oldestTime());
         Before = std::min(Before, Q.latestTime());
-        error("GVD: Fixed Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>", After, Q.oldestTime(), Before, Q.latestTime());
+
+        debug(D_REPLICATION, "[%s] Fixed Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>",
+              RD->rrdset->rrdhost->hostname, After, Q.oldestTime(), Before, Q.latestTime());
 
         if (After > Before) {
-            error("GVD: Ignoring invalid Query range <%ld, %ld>", After, Before);
+            debug(D_REPLICATION, "[%s] Ignoring invalid Query range <%ld, %ld>",
+                  RD->rrdset->rrdhost->hostname, After, Before);
             return SNs;
         }
 
