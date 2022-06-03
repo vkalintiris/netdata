@@ -498,11 +498,11 @@ static bool send_initial_response(struct receiver_state *rpt) {
         return 1;
     }
 
-    /*
-     * TODO: Bump the streaming version
-     */
     error("STREAM[%s] sent initial response", rpt->host->hostname);
-    return recv_gaps_response(rpt);
+    if (rpt->gap_filling_version == 1)
+        return recv_gaps_response(rpt);
+    else
+        return 0;
 }
 
 static int rrdpush_receive(struct receiver_state *rpt)

@@ -343,10 +343,6 @@ static bool recv_initial_response(struct sender_state *s, RRDHOST *host, int tim
 
     error("STREAM[%s] received initial response", host->hostname);
 
-    /*
-     * TODO/FIXME: Run only for gaps version
-    */
-
     return send_gaps_reponse(s, host, timeout);
 }
 
@@ -441,6 +437,7 @@ if(!s->rrdpush_compression)
                  "&mc_version=%d"
                  "&tags=%s"
                  "&ver=%d"
+                 "&gap_filling_version=1"
                  "&NETDATA_INSTANCE_CLOUD_TYPE=%s"
                  "&NETDATA_INSTANCE_CLOUD_INSTANCE_TYPE=%s"
                  "&NETDATA_INSTANCE_CLOUD_INSTANCE_REGION=%s"
@@ -582,7 +579,7 @@ if(!s->rrdpush_compression)
         debug(D_STREAM, "Stream is uncompressed! One of the agents (%s <-> %s) does not support compression OR compression is disabled.", s->connected_to, s->host->hostname);
         infoerr("Stream is uncompressed! One of the agents (%s <-> %s) does not support compression OR compression is disabled.", s->connected_to, s->host->hostname);
         s->version = STREAM_VERSION_CLABELS;
-    }        
+    }
 #endif  //ENABLE_COMPRESSION
 
 
