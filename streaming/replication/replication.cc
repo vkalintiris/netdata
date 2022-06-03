@@ -217,6 +217,9 @@ public:
             buffer_sprintf(RH->sender->build, "DROPGAP \"%ld\" \"%ld\"\n", Gap.first, Gap.second);
             sender_commit(RH->sender);
 
+            error("[%s] Sent DROPGAP command for time range <%ld, %ld>",
+                  RH->hostname, Gap.first, Gap.second);
+
             /*
              * Nothing else to do... Just remove the gap
              */
