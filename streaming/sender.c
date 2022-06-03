@@ -267,7 +267,8 @@ static bool recv_gaps_data(struct sender_state *s, RRDHOST *host, int timeout) {
             return 1;
         }
 
-        error("GVD: received: %ld, total: %ld, target: %d", received, total + received, HTTP_HEADER_SIZE);
+        error("STREAM[%s] received: %ld, total: %ld, target: %d",
+              host->hostname, received, total + received, HTTP_HEADER_SIZE);
         total += received;
     }
 
@@ -288,7 +289,7 @@ static bool send_gaps_reponse(struct sender_state *s, RRDHOST *host, int timeout
         return 1;
     }
 
-    error("GVD: sent gaps response");
+    error("STREAM[%s] sent gaps response", host->hostname);
 
     return recv_gaps_data(s, host, timeout);
 }
@@ -340,7 +341,7 @@ static bool recv_initial_response(struct sender_state *s, RRDHOST *host, int tim
     }
     s->version = version;
 
-    error("GVD: received initial response");
+    error("STREAM[%s] received initial response", host->hostname);
 
     /*
      * TODO/FIXME: Run only for gaps version
