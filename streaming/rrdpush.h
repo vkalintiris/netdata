@@ -128,6 +128,7 @@ struct receiver_state {
     struct rrdhost_system_info *system_info;
     int update_every;
     uint32_t stream_version;
+    uint32_t gap_filling_version;
     time_t last_msg_t;
     char read_buffer[/* PLUGINSD_LINE_MAX = */ 16 * 1024];
     int read_len;
