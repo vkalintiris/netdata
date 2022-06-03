@@ -568,6 +568,7 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
     int32_t utc_offset = 0;
     int update_every = default_rrd_update_every;
     uint32_t stream_version = UINT_MAX;
+    uint32_t gap_filling_version = 0;
     char buf[GUID_LEN + 1];
 
     struct rrdhost_system_info *system_info = callocz(1, sizeof(struct rrdhost_system_info));
@@ -610,6 +611,8 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
             tags = value;
         else if(!strcmp(name, "ver"))
             stream_version = MIN((uint32_t) strtoul(value, NULL, 0), STREAMING_PROTOCOL_CURRENT_VERSION);
+        else if(!strcmp(name, "gap_filling_version"))
+            gap_filling_version = (uint32_t) strtoul(value, NULL, 0);
         else {
             // An old Netdata child does not have a compatible streaming protocol, map to something sane.
             if (!strcmp(name, "NETDATA_SYSTEM_OS_NAME"))
@@ -813,6 +816,7 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
     rpt->update_every      = update_every;
     rpt->system_info       = system_info;
     rpt->stream_version    = stream_version;
+    rpt->gap_filling_version = gap_filling_version;
 #ifdef ENABLE_HTTPS
     rpt->ssl.conn          = w->ssl.conn;
     rpt->ssl.flags         = w->ssl.flags;
