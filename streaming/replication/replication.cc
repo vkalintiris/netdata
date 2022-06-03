@@ -27,16 +27,16 @@ public:
     }
 
     void startReplicationThread() {
-        error("GVD[%s]: Starting replication thread", RH->hostname);
+        error("[%s] Starting replication thread", RH->hostname);
         ReplicationThread = std::thread(&Host::senderReplicateGaps, this);
     }
 
     void stopReplicationThread() {
-        error("GVD[%s]: Cancelling replication thread", RH->hostname);
+        error("[%s] Cancelling replication thread", RH->hostname);
         netdata_thread_cancel(ReplicationThread.native_handle());
-        error("GVD[%s]: Joining replication thread", RH->hostname);
+        error("[%s] Joining replication thread", RH->hostname);
         ReplicationThread.join();
-        error("GVD[%s]: Stopped replication thread", RH->hostname);
+        error("[%s] Stopped replication thread", RH->hostname);
     }
 
     /* adds a new gap */
@@ -54,7 +54,7 @@ public:
         }
 
         if (CurrTime <= LastEntry) {
-            error("GVD[%s]: Skipping invalid time range on connect: <%ld, %ld>", RH->hostname, LastEntry, CurrTime);
+            error("[%s] Skipping invalid replication time range on connect: <%ld, %ld>", RH->hostname, LastEntry, CurrTime);
             return;
         }
 
@@ -69,7 +69,7 @@ public:
     /* drops a received gap */
     void receiverDropGap(const TimeRange &TR) {
         std::lock_guard<Mutex> L(ReceiverMutex);
-        error("GVD: dropping gap <%ld, %ld>", TR.first, TR.second);
+        error("[%s] dropping replication gap <%ld, %ld>", RH->hostname, TR.first, TR.second);
         ReceiverGaps.erase(std::remove(ReceiverGaps.begin(), ReceiverGaps.end(), TR), ReceiverGaps.end());
     }
 
@@ -87,10 +87,10 @@ public:
                     NumGaps = SenderGaps.size();
                 }
 
-                error("GVD[%s]: replication thread has not received any gaps yet", RH->hostname);
+                error("[%s] replication thread has not received any gaps yet", RH->hostname);
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-            error("GVD[%s]: replication thread will process %zu gaps", RH->hostname, NumGaps);
+            error("[%s] replication thread will process %zu gaps", RH->hostname, NumGaps);
 
             /*
              * Find the next gap we want to process.
@@ -100,12 +100,12 @@ public:
             {
                 std::lock_guard<Mutex> L(SenderMutex);
                 if (SenderGaps.size() == 0) {
-                    error("GVD[%s]: replication thread has no more gaps", RH->hostname);
+                    error("[%s] replication thread has no more gaps", RH->hostname);
                     continue;
                 }
                 Gap = SenderGaps.back();
             }
-            error("GVD[%s]: replication thread will fill gap <%ld, %ld>", RH->hostname, Gap.first, Gap.second);
+            error("[%s] replication thread will fill gap <%ld, %ld>", RH->hostname, Gap.first, Gap.second);
 
             /*
              * Create a vector that will contain the list of dimensions that
@@ -152,7 +152,7 @@ public:
                     if (!NumReceiverGaps)
                         break;
 
-                    error("GVD[%s] Replication thread sleeping because we are receiving gaps", RH->hostname);
+                    error("[%s] Replication thread sleeping because we are receiving gaps", RH->hostname);
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
 
@@ -163,7 +163,7 @@ public:
                 rrdhost_rdlock(RH);
                 RRDSET *RS = rrdset_find(RH, GD.getChart().c_str());
                 if (!RS) {
-                    error("GVD[%s]: Could not find chart %s for dim %s to fill <%ld, %ld>",
+                    error("[%s] Could not find chart %s for dim %s to fill <%ld, %ld>",
                           RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
                     rrdhost_unlock(RH);
                     continue;
@@ -182,14 +182,14 @@ public:
 
                 RRDDIM *RD = rrddim_find(RS, GD.getDimension().c_str());
                 if (!RS) {
-                    error("GVD[%s]: Could not find dim %s.%s to fill <%ld, %ld>",
+                    error("[%s] Could not find dim %s.%s to fill <%ld, %ld>",
                           RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
                     rrdset_unlock(RS);
                     rrdhost_unlock(RH);
                     continue;
                 }
 
-                error("GVD[%s]: Filling %s.%s -- <%ld, %ld>",
+                debug(D_REPLICATION, "[%s] replication thread is filling %s.%s -- <%ld, %ld>",
                       RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
 
                 GD.setStorageNumbers(Query::getSNs(RD, Gap.first, Gap.second));
@@ -202,7 +202,7 @@ public:
                  */
 
                 while (!GD.push(RH->sender)) {
-                    error("GVD[%s]: Sender buffer is full (Dim=%s.%s, Gap=<%ld, %ld>)",
+                    error("[%s] Sender buffer is full (Dim=%s.%s, Gap=<%ld, %ld>)",
                           RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
@@ -268,7 +268,7 @@ void replication_new_host(RRDHOST *RH) {
      * Log info
      */
     std::stringstream SS;
-    SS << "GVD[" << RH->hostname << "] created with gaps: " << TRs;
+    SS << "[" << RH->hostname << "] created replication host with gaps: " << TRs;
     error("%s", SS.str().c_str());
 
     /*
@@ -299,7 +299,7 @@ void replication_delete_host(RRDHOST *RH) {
      * Log info
      */
     std::stringstream SS;
-    SS << "GVD[" << RH->hostname << "] deleted with gaps: " << TRs;
+    SS << "[" << RH->hostname << "] deleted replication host with gaps: " << TRs;
     error("%s", SS.str().c_str());
 
     /*
@@ -314,7 +314,6 @@ void replication_thread_start(RRDHOST *RH) {
     if (!H)
         return;
 
-    error("GVD[%s] starting replication thread", RH->hostname);
     H->startReplicationThread();
 }
 
@@ -323,7 +322,6 @@ void replication_thread_stop(RRDHOST *RH) {
     if (!H)
         return;
 
-    error("GVD[%s] stopping replication thread", RH->hostname);
     H->stopReplicationThread();
 }
 
@@ -340,7 +338,7 @@ void replication_receiver_connect(RRDHOST *RH, char *Buf, size_t Len) {
      * Log info
      */
     std::stringstream SS;
-    SS << "GVD[" << RH->hostname << "] receiver connected with gaps: " << TRs;
+    SS << "[" << RH->hostname << "] replication receiver connected with gaps: " << TRs;
     error("%s", SS.str().c_str());
 }
 
@@ -355,7 +353,7 @@ void replication_sender_connect(RRDHOST *RH, const char *Buf, size_t Len) {
      * Log info
      */
     std::stringstream SS;
-    SS << "GVD[" << RH->hostname << "] sender connected with gaps: " << TRs;
+    SS << "[" << RH->hostname << "] replication sender connected with gaps: " << TRs;
     error("%s", SS.str().c_str());
 
     /* Assign the recv'd gaps to the host. The parent sends the gaps

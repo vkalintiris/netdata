@@ -22,7 +22,8 @@ static void modify_dim_past_data(RRDDIM_PAST_DATA *dim_past_data, usec_t start_t
     dim_past_data->start_time = new_start * USEC_PER_SEC;
     dim_past_data->end_time = new_end * USEC_PER_SEC;
 
-    error(
+    debug(
+        D_REPLICATION,
         "Divided page %p - [%llu, %llu, %lu, %lu, %u, %lu]",
         dim_past_data->page,
         dim_past_data->start_time,
@@ -55,7 +56,7 @@ int rrdeng_store_past_metrics_page_init(RRDDIM_PAST_DATA *dim_past_data) {
     // create a dbengine page
     void *page = rrdeng_create_page(ctx, &page_index->id, &dim_past_data->descr);
     fatal_assert(page);
-    error("A dbengine page is created to store past data for dimension \"%s\".\"%s\".", rd->rrdset->id, rd->id);
+    debug(D_REPLICATION, "A dbengine page is created to store past data for dimension \"%s\".\"%s\".", rd->rrdset->id, rd->id);
     return 0;
 }
 
@@ -84,11 +85,11 @@ void rrdeng_store_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data) {
     // simply increase the length since zeros are already there
     rrdeng_page_descr_mutex_unlock(ctx, descr);
 
-    error("REP: Page correlation ID and page info updates....");
+    debug(D_REPLICATION, "REP: Page correlation ID and page info updates....");
     // prepare the pg descr to insert and commit the dbengine page
     dim_past_data->page_correlation_id = rrd_atomic_fetch_add(&pg_cache->committed_page_index.latest_corr_id, 1);
     pg_cache_atomic_set_pg_info(descr, descr->end_time, descr->page_length);
-    error("Past \"%s\".\"%s\" metrics page is ready for commit in memory.", rd->rrdset->id, rd->id);
+    debug(D_REPLICATION, "Past \"%s\".\"%s\" metrics page is ready for commit in memory.", rd->rrdset->id, rd->id);
 }
 
 void rrdeng_flush_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data) {
@@ -105,7 +106,7 @@ void rrdeng_flush_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data) {
     page_index = dim_past_data->rd->state->page_index;
     rd = dim_past_data->rd;
 
-    error("Inserting page in dbengine....");
+    debug(D_REPLICATION, "Inserting page in dbengine....");
     unsigned long new_metric_API_producers, old_metric_API_max_producers, ret_metric_API_max_producers;
     new_metric_API_producers = rrd_atomic_add_fetch(&ctx->stats.metric_API_producers, 1);
     while (unlikely(new_metric_API_producers > (old_metric_API_max_producers = ctx->metric_API_max_producers))) {
@@ -121,7 +122,7 @@ void rrdeng_flush_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data) {
     // Try to update the time start and end of the metric.
     pg_cache_add_new_metric_time(page_index, descr);
 
-    error("Commiting page in dbengine....");
+    debug(D_REPLICATION, "Commiting page in dbengine....");
     if (likely(descr->page_length)) {
         int page_is_empty;
 
@@ -140,9 +141,9 @@ void rrdeng_flush_past_metrics_page(RRDDIM_PAST_DATA *dim_past_data) {
         rrdeng_destroy_pg_cache_descr(ctx, descr->pg_cache_descr);
         freez(descr);
     }
-    error("Page Commited -  Dimension \"%s\".\"%s\" metrics page commited in memory.", rd->rrdset->id, rd->id);
+    debug(D_REPLICATION, "Page Commited -  Dimension \"%s\".\"%s\" metrics page commited in memory.", rd->rrdset->id, rd->id);
     // TBR: Only for debug
-    error("REP: OBSERVE dimension (%s.%s) in time_interval[%ld, %ld] #samples(%lu)....END", rd->rrdset->id, rd->id, (time_t)(descr->start_time/USEC_PER_SEC), (time_t)(descr->end_time/USEC_PER_SEC), (descr->page_length/sizeof(storage_number)));
+    debug(D_REPLICATION, "REP: OBSERVE dimension (%s.%s) in time_interval[%ld, %ld] #samples(%lu)....END", rd->rrdset->id, rd->id, (time_t)(descr->start_time/USEC_PER_SEC), (time_t)(descr->end_time/USEC_PER_SEC), (descr->page_length/sizeof(storage_number)));
 }
 
 void rrdeng_store_past_metrics_page_finalize(RRDDIM_PAST_DATA *dim_past_data){
@@ -156,7 +157,7 @@ void rrdeng_store_past_metrics_page_finalize(RRDDIM_PAST_DATA *dim_past_data){
     uv_rwlock_wrlock(&page_index->lock);
     --page_index->writers;
     uv_rwlock_wrunlock(&page_index->lock);
-    error("Finalize operation -  Dimension \"%s\".\"%s\" metrics page completed.", rd->rrdset->id, rd->id);
+    debug(D_REPLICATION, "Finalize operation -  Dimension \"%s\".\"%s\" metrics page completed.", rd->rrdset->id, rd->id);
 }
 
 // It saves the GAP past metrics in the active page in real-time
@@ -232,13 +233,11 @@ int rrdeng_store_past_metrics_realtime(RRDDIM *rd, RRDDIM_PAST_DATA *dim_past_da
         page_start_offset = 0;
     }
 
-    error("Just before memcpy");
     void *dest = (void *)(page + page_start_offset);
     void *src = (void *)(page_gap + gap_start_offset);
     size_t size = ((entries_gap - gap_start_offset) * sizeof(storage_number));
-    error("page[%lu]=%p, page_gap[%lu]=%p, size: %lu", page_start_offset, dest, gap_start_offset, src, size);
+    debug(D_REPLICATION, "page[%lu]=%p, page_gap[%lu]=%p, size: %lu", page_start_offset, dest, gap_start_offset, src, size);
     memcpy(dest, src, size);
-    error("Successfully updated the active page for %s.%s", rd->rrdset->id, rd->id);
 
     if(return_value)
         modify_dim_past_data(dim_past_data, start * USEC_PER_SEC, (page_start - 1) * USEC_PER_SEC);
