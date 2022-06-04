@@ -34,7 +34,7 @@ public:
         StorageNumbers = SNs;
     }
 
-    void print() const;
+    void print(RRDHOST *RH) const;
 
     bool push(struct sender_state *sender) const;
 
