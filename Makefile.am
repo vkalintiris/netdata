@@ -576,8 +576,6 @@ STREAMING_PLUGIN_FILES = \
     streaming/replication/TimeRange.cc \
     streaming/replication/TimeRange.h \
     streaming/replication/Utils.h \
-    streaming/replication/collectops.c \
-    streaming/replication/collectops.h \
     streaming/replication/gaps.pb.cc \
     streaming/replication/gaps.pb.h \
     streaming/replication/replication.cc \
