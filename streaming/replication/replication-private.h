@@ -2,8 +2,6 @@
 #define REPLICATION_PRIVATE_H
 
 #include "replication.h"
-#include "collectops.h"
-
 #include "gaps.pb.h"
 
 #if GOOGLE_PROTOBUF_VERSION < 3001000
