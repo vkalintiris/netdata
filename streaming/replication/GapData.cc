@@ -5,15 +5,16 @@
 
 using namespace replication;
 
-void GapData::print() const {
+void GapData::print(RRDHOST *RH) const {
     std::stringstream SS;
 
+    SS << "[" << RH->hostname << "] ";
     SS << "GapData (Chart=" << Chart << ", Dimension=" << Dimension << ", Entries=" << StorageNumbers.size() << ")\n";
     for (const auto &P : StorageNumbers) {
         auto tm = *std::localtime(&P.first);
         SS << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S.%z%Z") << " SN: " << P.second << " CN: " << unpack_storage_number(P.second) << std::endl;
     }
-    debug(D_REPLICATION, "%s", SS.str().c_str());
+    error("%s", SS.str().c_str());
 }
 
 bool GapData::push(struct sender_state *Sender) const {
@@ -109,6 +110,7 @@ bool GapData::flushToDBEngine(RRDHOST *RH) const {
         storage_number SN = P.second;
 
         time_t Idx = Timestamp - StorageNumbers[0].first;
+
         if (Idx < 0 || Idx >= MaxEntriesPerPage) {
             error("[%s] Gap data index for %s.%s is not in [0, %ld] range (Idx=%ld)",
                   RH->hostname, Chart.c_str(), Dimension.c_str(), MaxEntriesPerPage - 1, Idx);
