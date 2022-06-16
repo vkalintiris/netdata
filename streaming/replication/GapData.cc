@@ -90,6 +90,37 @@ GapData GapData::fromBase64(const std::string &EncodedData) {
     return fromProto(PGD);
 }
 
+std::vector<TimeRange> GapData::getTimeRanges() const {
+    std::vector<TimeRange> TRs;
+
+    if (StorageNumbers.size() == 0)
+        return TRs;
+
+    TimeRange TR(StorageNumbers[0].first, StorageNumbers[0].first);
+    time_t RangeStep = 0;
+
+    for (size_t Idx = 1; Idx != StorageNumbers.size(); Idx++) {
+        time_t ThisStep = StorageNumbers[Idx].first - TR.second;
+
+        if (RangeStep == 0)
+            RangeStep = ThisStep;
+
+        if (RangeStep == ThisStep) {
+            TR.second = StorageNumbers[Idx].first;
+            continue;
+        }
+
+        TRs.push_back(TR);
+        TR = { StorageNumbers[Idx].first, StorageNumbers[Idx].first };
+        RangeStep = 0;
+    }
+
+    if (TRs.size() == 0 || TRs.back() != TR)
+        TRs.push_back(TR);
+
+    return TRs;
+}
+
 #ifdef ENABLE_DBENGINE
 bool GapData::flushToDBEngine(RRDHOST *RH) const {
     if (StorageNumbers.size() == 0) {
@@ -98,40 +129,14 @@ bool GapData::flushToDBEngine(RRDHOST *RH) const {
         return false;
     }
 
-    /*
-     * Prepare the page's data that we want to write
-     */
-
     constexpr time_t MaxEntriesPerPage = RRDENG_BLOCK_SIZE / sizeof(storage_number);
     storage_number Page[MaxEntriesPerPage] = { 0 };
-
-    for (const auto &P : StorageNumbers) {
-        time_t Timestamp = P.first;
-        storage_number SN = P.second;
-
-        time_t Idx = Timestamp - StorageNumbers[0].first;
-
-        if (Idx < 0 || Idx >= MaxEntriesPerPage) {
-            error("[%s] Gap data index for %s.%s is not in [0, %ld] range (Idx=%ld)",
-                  RH->hostname, Chart.c_str(), Dimension.c_str(), MaxEntriesPerPage - 1, Idx);
-            return false;
-        }
-
-        Page[Idx] = SN;
-    }
-
-    /*
-     * Prepare dim past data structure
-     */
 
     RRDDIM_PAST_DATA DPD;
     memset(&DPD, 0, sizeof(DPD));
 
     DPD.host = RH;
     DPD.page = Page;
-    DPD.start_time = StorageNumbers[0].first;
-    DPD.end_time = StorageNumbers.back().first;
-    DPD.page_length = (DPD.end_time - DPD.start_time + 1) * sizeof(storage_number);
 
     rrdhost_rdlock(RH);
     DPD.st = rrdset_find(RH, Chart.c_str());
@@ -156,25 +161,33 @@ bool GapData::flushToDBEngine(RRDHOST *RH) const {
         return false;
     }
 
-    /*
-     * Write past data to dbengine
-     */
+    std::vector<TimeRange> TRs = getTimeRanges();
+    for (const auto &TR : TRs) {
+        size_t PageIdx = 0;
+        for (const auto &P : StorageNumbers) {
+            if ((P.first < TR.first) || (P.first > TR.second))
+                continue;
 
-    DPD.start_time *= USEC_PER_SEC;
-    DPD.end_time *= USEC_PER_SEC;
-
-    if (rrdeng_store_past_metrics_realtime(DPD.rd, &DPD)) {
-        if (rrdeng_store_past_metrics_page_init(&DPD)) {
-            fatal("Cannot initialize db engine page: Flushing collected past data skipped!");
-            rrdset_unlock(DPD.st);
-            rrdhost_unlock(RH);
-            return false;
+            Page[PageIdx++] = P.second;
         }
 
-        rrdeng_store_past_metrics_page(&DPD);
-        rrdeng_flush_past_metrics_page(&DPD);
-        rrdeng_store_past_metrics_page_finalize(&DPD);
-        debug(D_REPLICATION, "[%s] Flushed gap data for %s.%s", RH->hostname, Chart.c_str(), Dimension.c_str());
+        DPD.start_time = TR.first * USEC_PER_SEC;
+        DPD.end_time = TR.second * USEC_PER_SEC;
+        DPD.page_length = PageIdx * sizeof(storage_number);
+
+        if (rrdeng_store_past_metrics_realtime(DPD.rd, &DPD)) {
+            if (rrdeng_store_past_metrics_page_init(&DPD)) {
+                fatal("Cannot initialize db engine page: Flushing collected past data skipped!");
+                rrdset_unlock(DPD.st);
+                rrdhost_unlock(RH);
+                return false;
+            }
+
+            rrdeng_store_past_metrics_page(&DPD);
+            rrdeng_flush_past_metrics_page(&DPD);
+            rrdeng_store_past_metrics_page_finalize(&DPD);
+            debug(D_REPLICATION, "[%s] Flushed gap data for %s.%s", RH->hostname, Chart.c_str(), Dimension.c_str());
+        }
     }
 
     rrdset_unlock(DPD.st);

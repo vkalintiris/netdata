@@ -58,7 +58,7 @@ public:
             return;
         }
 
-        TimeRange TR(LastEntry, CurrTime);
+        TimeRange TR(LastEntry, CurrTime + 60);
         std::vector<TimeRange> NewTRs = splitTimeRange(TR, Cfg.MaxEntriesPerGapData);
         for (const TimeRange &NewTR : NewTRs)
             ReceiverGaps.push_back(NewTR);
