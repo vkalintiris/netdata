@@ -46,24 +46,18 @@ public:
         std::vector<std::pair<time_t, storage_number>> SNs;
 
         if (After > Before) {
-            debug(D_REPLICATION, "[%s] Tried to query %s.%s with <%ld, %ld>",
+            error("[%s] Tried to query %s.%s with <%ld, %ld>",
                   RD->rrdset->rrdhost->hostname, RD->rrdset->id, RD->id, After, Before);
             return SNs;
         }
 
         Query Q(RD);
 
-        debug(D_REPLICATION, "[%s] Initial Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>",
-              RD->rrdset->rrdhost->hostname, After, Q.oldestTime(), Before, Q.latestTime());
-
         After = std::max(After, Q.oldestTime());
         Before = std::min(Before, Q.latestTime());
 
-        debug(D_REPLICATION, "[%s] Fixed Query<After=%ld vs. Oldest=%ld, Before=%ld vs. Latest=%ld>",
-              RD->rrdset->rrdhost->hostname, After, Q.oldestTime(), Before, Q.latestTime());
-
         if (After > Before) {
-            debug(D_REPLICATION, "[%s] Ignoring invalid Query range <%ld, %ld>",
+            error("[%s] Ignoring invalid Query range <%ld, %ld>",
                   RD->rrdset->rrdhost->hostname, After, Before);
             return SNs;
         }
@@ -71,8 +65,12 @@ public:
         SNs.reserve(Before - After + 1);
 
         Q.init(After, Before);
-        while (!Q.isFinished())
-            SNs.push_back(Q.nextMetric());
+        while (!Q.isFinished()) {
+            auto P = Q.nextMetric();
+            if (P.first < After || P.first > Before)
+                continue;
+            SNs.push_back(P);
+        }
 
         return SNs;
     }
