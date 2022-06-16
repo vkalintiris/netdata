@@ -46,6 +46,8 @@ private:
     pb::GapData toProto() const;
     static GapData fromProto(const pb::GapData &PGD);
 
+    std::vector<TimeRange> getTimeRanges() const;
+
 private:
     std::string Chart;
     std::string Dimension;

@@ -21,7 +21,7 @@ void Config::readReplicationConfig(void) {
      * Backfill this many seconds on first connection of a child.
      */
     time_t SecondsToReplicateOnFirstConnection =
-        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 3600 * 24 * 4);
+        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 3600);
 
 #if 0
     SecondsToReplicateOnFirstConnection = clamp<time_t>(SecondsToReplicateOnFirstConnection, 0, 2 * 24 * 3600);
@@ -51,7 +51,7 @@ void Config::readReplicationConfig(void) {
      * Max number of queries that we should perform per second
      */
     size_t MaxQueriesPerSecond =
-        config_get_number(ConfigSectionReplication, "max queries per second", 128);
+        config_get_number(ConfigSectionReplication, "max queries per second", 1024);
 
 #if 0
     MaxQueriesPerSecond = clamp<size_t>(MaxQueriesPerSecond, 5, 500);
