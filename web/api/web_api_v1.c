@@ -1289,8 +1289,25 @@ int web_client_api_request_v1_ml_info(RRDHOST *host, struct web_client *w, char 
     freez(s);
     return HTTP_RESP_OK;
 }
+#endif
 
-#endif // defined(ENABLE_ML)
+int web_client_api_request_v1_replication(RRDHOST *host, struct web_client *w, char *url) {
+    (void) url;
+
+    if (!netdata_ready)
+        return HTTP_RESP_BACKEND_FETCH_FAILED;
+
+    const char *s = replication_logs(host);
+
+    BUFFER *wb = w->response.data;
+    buffer_flush(wb);
+    wb->contenttype = CT_APPLICATION_JSON;
+    buffer_strcat(wb, s);
+    buffer_no_cacheable(wb);
+
+    freez((char *) s);
+    return HTTP_RESP_OK;
+}
 
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
     (void)url;
@@ -1415,6 +1432,9 @@ static struct api_command {
         { "manage/health",       0, WEB_CLIENT_ACL_MGMT,      web_client_api_request_v1_mgmt_health         },
         { "aclk",                0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_aclk_state          },
         { "metric_correlations", 0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_metric_correlations },
+
+        { "replication",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_replication      },
+
         // terminator
         { NULL,              0, WEB_CLIENT_ACL_NONE,      NULL                                      },
 };
