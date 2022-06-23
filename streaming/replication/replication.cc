@@ -1,47 +1,44 @@
 #include "replication-private.h"
+#include "Logger.h"
 
 using namespace replication;
 
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH) {}
+    Host(RRDHOST *RH) : RH(RH), L(RH->hostname) {}
 
     void setReceiverGaps(std::vector<TimeRange> &TRs) {
-        std::lock_guard<Mutex> L(ReceiverMutex);
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
         ReceiverGaps = TRs;
     }
 
     std::vector<TimeRange> getReceiverGaps() {
-        std::lock_guard<Mutex> L(ReceiverMutex);
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
         return ReceiverGaps;
     }
 
     void setSenderGaps(std::vector<TimeRange> &TRs) {
-        std::lock_guard<Mutex> L(SenderMutex);
+        std::lock_guard<Mutex> Lock(SenderMutex);
         SenderGaps = TRs;
     }
 
     std::vector<TimeRange> getSenderGaps() {
-        std::lock_guard<Mutex> L(SenderMutex);
+        std::lock_guard<Mutex> Lock(SenderMutex);
         return SenderGaps;
     }
 
     void startReplicationThread() {
-        error("[%s] Starting replication thread", RH->hostname);
         ReplicationThread = std::thread(&Host::senderReplicateGaps, this);
     }
 
     void stopReplicationThread() {
-        error("[%s] Cancelling replication thread", RH->hostname);
         netdata_thread_cancel(ReplicationThread.native_handle());
-        error("[%s] Joining replication thread", RH->hostname);
         ReplicationThread.join();
-        error("[%s] Stopped replication thread", RH->hostname);
     }
 
     /* adds a new gap */
     void receiverConnect() {
-        std::lock_guard<Mutex> L(ReceiverMutex);
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
 
         time_t LastEntry = rrdhost_last_entry_t(RH);
         time_t CurrTime = now_realtime_sec();
@@ -68,8 +65,7 @@ public:
 
     /* drops a received gap */
     void receiverDropGap(const TimeRange &TR) {
-        std::lock_guard<Mutex> L(ReceiverMutex);
-        error("[%s] dropping replication gap <%ld, %ld>", RH->hostname, TR.first, TR.second);
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
         ReceiverGaps.erase(std::remove(ReceiverGaps.begin(), ReceiverGaps.end(), TR), ReceiverGaps.end());
     }
 
@@ -83,14 +79,12 @@ public:
             size_t NumGaps = 0;
             while (NumGaps == 0) {
                 {
-                    std::lock_guard<Mutex> L(SenderMutex);
+                    std::lock_guard<Mutex> Lock(SenderMutex);
                     NumGaps = SenderGaps.size();
                 }
 
-                error("[%s] replication thread has not received any gaps yet", RH->hostname);
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-            error("[%s] replication thread will process %zu gaps", RH->hostname, NumGaps);
 
             /*
              * Find the next gap we want to process.
@@ -98,14 +92,11 @@ public:
 
             TimeRange Gap;
             {
-                std::lock_guard<Mutex> L(SenderMutex);
-                if (SenderGaps.size() == 0) {
-                    error("[%s] replication thread has no more gaps", RH->hostname);
+                std::lock_guard<Mutex> Lock(SenderMutex);
+                if (SenderGaps.size() == 0)
                     continue;
-                }
                 Gap = SenderGaps.back();
             }
-            error("[%s] replication thread will fill gap <%ld, %ld>", RH->hostname, Gap.first, Gap.second);
 
             /*
              * Create a vector that will contain the list of dimensions that
@@ -145,7 +136,7 @@ public:
                 while (!netdata_exit) {
                     size_t NumReceiverGaps = 0;
                     {
-                        std::lock_guard<Mutex> L(ReceiverMutex);
+                        std::lock_guard<Mutex> Lock(ReceiverMutex);
                         NumReceiverGaps = ReceiverGaps.size();
                     }
 
@@ -189,9 +180,6 @@ public:
                     continue;
                 }
 
-                debug(D_REPLICATION, "[%s] replication thread is filling %s.%s -- <%ld, %ld>",
-                      RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
-
                 GD.setStorageNumbers(Query::getSNs(RD, Gap.first, Gap.second));
 
                 rrdset_unlock(RS);
@@ -206,6 +194,8 @@ public:
                           RH->hostname, GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
+
+                L.senderFilledGap(GD);
             }
 
             /*
@@ -224,14 +214,24 @@ public:
              * Nothing else to do... Just remove the gap
              */
             {
-                std::lock_guard<Mutex> L(SenderMutex);
+                std::lock_guard<Mutex> Lock(SenderMutex);
                 SenderGaps.erase(std::remove(SenderGaps.begin(), SenderGaps.end(), Gap), SenderGaps.end());
             }
+            L.senderDroppedGap(Gap);
         }
+    }
+
+    const char *getLogs() {
+        return strdupz(L.serialize().c_str());
+    }
+
+    Logger &getLogger() {
+        return L;
     }
 
 private:
     RRDHOST *RH;
+    Logger L;
 
     Mutex ReceiverMutex;
     std::vector<TimeRange> ReceiverGaps;
@@ -268,18 +268,17 @@ void replication_new_host(RRDHOST *RH) {
     std::vector<TimeRange> TRs = deserializeTimeRanges(Buf, Len);
 
     /*
-     * Log info
-     */
-    std::stringstream SS;
-    SS << "[" << RH->hostname << "] created replication host with gaps: " << TRs;
-    error("%s", SS.str().c_str());
-
-    /*
      * Create host
     */
     Host *H = new Host(RH);
     H->setReceiverGaps(TRs);
     RH->repl_handle = static_cast<replication_handle_t>(H);
+
+    /*
+     * Log info
+     */
+    auto &L = H->getLogger();
+    L.createdHost(TRs);
 }
 
 void replication_delete_host(RRDHOST *RH) {
@@ -301,9 +300,8 @@ void replication_delete_host(RRDHOST *RH) {
     /*
      * Log info
      */
-    std::stringstream SS;
-    SS << "[" << RH->hostname << "] deleted replication host with gaps: " << TRs;
-    error("%s", SS.str().c_str());
+    auto &L = H->getLogger();
+    L.deletedHost(TRs);
 
     /*
      * Delete host
@@ -318,6 +316,12 @@ void replication_thread_start(RRDHOST *RH) {
         return;
 
     H->startReplicationThread();
+
+    /*
+     * Log info
+     */
+    auto &L = H->getLogger();
+    L.startedReplicationThread();
 }
 
 void replication_thread_stop(RRDHOST *RH) {
@@ -326,6 +330,12 @@ void replication_thread_stop(RRDHOST *RH) {
         return;
 
     H->stopReplicationThread();
+
+    /*
+     * Log info
+     */
+    auto &L = H->getLogger();
+    L.stoppedReplicationThread();
 }
 
 void replication_receiver_connect(RRDHOST *RH, char *Buf, size_t Len) {
@@ -340,9 +350,8 @@ void replication_receiver_connect(RRDHOST *RH, char *Buf, size_t Len) {
     /*
      * Log info
      */
-    std::stringstream SS;
-    SS << "[" << RH->hostname << "] replication receiver connected with gaps: " << TRs;
-    error("%s", SS.str().c_str());
+    auto &L = H->getLogger();
+    L.receiverSentGaps(TRs);
 }
 
 void replication_sender_connect(RRDHOST *RH, const char *Buf, size_t Len) {
@@ -352,22 +361,30 @@ void replication_sender_connect(RRDHOST *RH, const char *Buf, size_t Len) {
 
     std::vector<TimeRange> TRs = deserializeTimeRanges(Buf, Len);
 
-    /*
-     * Log info
-     */
-    std::stringstream SS;
-    SS << "[" << RH->hostname << "] replication sender connected with gaps: " << TRs;
-    error("%s", SS.str().c_str());
-
     /* Assign the recv'd gaps to the host. The parent sends the gaps
      * in increasing timestamp order; reverse the vector because
      * we always pop from the back */
     std::reverse(TRs.begin(), TRs.end());
     H->setSenderGaps(TRs);
+
+    /*
+     * Log info
+     */
+    auto &L = H->getLogger();
+    L.senderReceivedGaps(TRs);
 }
 
 bool replication_receiver_fill_gap(RRDHOST *RH, const char *Buf) {
     GapData GD = GapData::fromBase64(Buf);
+
+    Host *H = static_cast<Host *>(RH->repl_handle);
+
+    /*
+     * Log info
+     */
+    Logger &L = H->getLogger();
+    L.receiverFilledGap(GD);
+
     return GD.flushToDBEngine(RH);
 }
 
@@ -376,5 +393,23 @@ void replication_receiver_drop_gap(RRDHOST *RH, time_t After, time_t Before) {
     if (!H)
         return;
 
-    H->receiverDropGap({ After, Before });
+    TimeRange TR(After, Before);
+    H->receiverDropGap(TR);
+
+    /*
+     * Log info
+     */
+    auto &L = H->getLogger();
+    L.receiverDroppedGap(TR);
+}
+
+const char *replication_logs(RRDHOST *RH) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H) {
+        std::stringstream SS;
+        SS << "Replication is not enabled for host " << RH->hostname;
+        return strdupz(SS.str().c_str());
+    }
+
+    return H->getLogs();
 }
