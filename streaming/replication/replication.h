@@ -24,6 +24,8 @@ void replication_sender_connect(RRDHOST *RH, const char *Buf, size_t Len);
 bool replication_receiver_fill_gap(RRDHOST *RH, const char *Buf);
 void replication_receiver_drop_gap(RRDHOST *RH, time_t After, time_t Before);
 
+const char *replication_logs(RRDHOST *RH);
+
 #ifdef __cplusplus
 };
 #endif
