@@ -98,8 +98,12 @@ private:
     }
 
     std::pair<time_t, storage_number> nextMetric() {
-        time_t CurrT;
-        storage_number SN = Ops->next_metric(&Handle, &CurrT);
+        time_t CurrT, EndT;
+        SN_FLAGS Flags;
+
+        calculated_number CN = Ops->next_metric(&Handle, &CurrT, &EndT, &Flags);
+        storage_number SN = pack_storage_number(CN, Flags);
+
         return { CurrT, SN };
     }
 
