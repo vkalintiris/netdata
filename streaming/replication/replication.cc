@@ -122,6 +122,13 @@ public:
             rrdhost_unlock(RH);
 
             /*
+             * Sleep enough time to let the streaming thread push
+             * chart defs & 1st values of dims.
+             */
+            time_t MaxUE = maxUpdateEvery();
+            std::this_thread::sleep_for(std::chrono::seconds(2 * MaxUE));
+
+            /*
              * Start sending the gap data for each individual dimension
              */
 
@@ -219,6 +226,25 @@ public:
             }
             L.senderDroppedGap(Gap);
         }
+    }
+
+    time_t maxUpdateEvery() const {
+        rrdhost_rdlock(RH);
+        time_t MaxUE = RH->rrd_update_every;
+        RRDSET *RS;
+        rrdset_foreach_read(RS, RH) {
+            rrdset_rdlock(RS);
+            MaxUE = std::max<time_t>(RS->update_every, MaxUE);
+
+            RRDDIM *RD;
+            rrddim_foreach_read(RD, RS) {
+                MaxUE = std::max<time_t>(RS->update_every, MaxUE);
+            }
+            rrdset_unlock(RS);
+        }
+        rrdhost_unlock(RH);
+
+        return MaxUE;
     }
 
     const char *getLogs() {
