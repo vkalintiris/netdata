@@ -102,6 +102,9 @@ public:
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
         const auto &SNs = GD.getStorageNumbers();
+        if (SNs.size() == 0)
+            return;
+
         TimeRange TR(SNs.front().first, SNs.back().first);
 
         {
@@ -138,6 +141,9 @@ public:
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
         const auto &SNs = GD.getStorageNumbers();
+        if (SNs.size() == 0)
+            return;
+
         TimeRange TR(SNs.front().first, SNs.back().first);
 
         {
