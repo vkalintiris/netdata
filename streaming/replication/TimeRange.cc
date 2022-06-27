@@ -60,6 +60,25 @@ std::vector<TimeRange> replication::deserializeTimeRanges(const char *Buf, size_
 
 std::vector<TimeRange> replication::coalesceTimeRanges(std::vector<TimeRange> &TRs) {
     std::sort(TRs.rbegin(), TRs.rend());
+
+    for (size_t Idx = 0; Idx != TRs.size(); Idx++) {
+        const TimeRange &TR = TRs[Idx];
+        const size_t Len = 1024;
+
+        auto AfterTM = *std::localtime(&TR.first);
+        char AfterBuf[Len];
+        strftime(AfterBuf, Len, "%H:%M:%S", &AfterTM);
+
+        auto BeforeTM = *std::localtime(&TR.second);
+        char BeforeBuf[Len];
+        strftime(BeforeBuf, Len, "%H:%M:%S", &BeforeTM);
+
+        time_t Duration = TR.second - TR.first +1;
+
+        error("GVD: TR[%zu/%zu] = [%s, %s] (Duration=%ld)",
+              Idx + 1, TRs.size(), AfterBuf, BeforeBuf, Duration);
+    }
+
     {
         while (TRs.size() > Cfg.MaxNumGapsToReplicate)
             TRs.pop_back();
@@ -86,6 +105,24 @@ std::vector<TimeRange> replication::coalesceTimeRanges(std::vector<TimeRange> &T
      *       we would end up with more data transferred but fewer new DB
      *       engine pages created.
      */
+
+    for (size_t Idx = 0; Idx != RetTRs.size(); Idx++) {
+        const TimeRange &TR = RetTRs[Idx];
+        const size_t Len = 1024;
+
+        auto AfterTM = *std::localtime(&TR.first);
+        char AfterBuf[Len];
+        strftime(AfterBuf, Len, "%H:%M:%S", &AfterTM);
+
+        auto BeforeTM = *std::localtime(&TR.second);
+        char BeforeBuf[Len];
+        strftime(BeforeBuf, Len, "%H:%M:%S", &BeforeTM);
+
+        time_t Duration = TR.second - TR.first +1;
+
+        error("GVD: RetTR[%zu/%zu] = [%s, %s] (Duration=%ld)",
+              Idx + 1, RetTRs.size(), AfterBuf, BeforeBuf, Duration);
+    }
 
     return RetTRs;
 }
