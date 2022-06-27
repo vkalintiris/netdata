@@ -852,9 +852,11 @@ void rrdhost_free(RRDHOST *host) {
 
     rrd_check_wrlock();     // make sure the RRDs are write locked
 
+#if 0
     replication_save_host_entries_range(&host->host_uuid,
                                         rrdhost_first_entry_t(host),
                                         rrdhost_last_entry_t(host));
+#endif
 
     rrdhost_wrlock(host);
     ml_delete_host(host);
