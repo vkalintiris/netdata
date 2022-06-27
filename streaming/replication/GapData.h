@@ -34,6 +34,13 @@ public:
         StorageNumbers = SNs;
     }
 
+    std::pair<size_t, TimeRange> getTimeRangeSpan() const {
+        if (StorageNumbers.size() == 0)
+            return { 0, TimeRange(0, 0) };
+
+        return { StorageNumbers.size(), TimeRange(StorageNumbers.front().first, StorageNumbers.back().first) };
+    }
+
     void print(RRDHOST *RH) const;
 
     bool push(struct sender_state *sender) const;

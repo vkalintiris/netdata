@@ -101,11 +101,11 @@ public:
         std::stringstream SS;
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
-        const auto &SNs = GD.getStorageNumbers();
-        if (SNs.size() == 0)
+        const auto &SpanInfo = GD.getTimeRangeSpan();
+        if (SpanInfo.first == 0)
             return;
 
-        TimeRange TR(SNs.front().first, SNs.back().first);
+        TimeRange TR = SpanInfo.second;
 
         {
             std::lock_guard<std::mutex> L(Mutex);
@@ -140,11 +140,11 @@ public:
         std::stringstream SS;
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
-        const auto &SNs = GD.getStorageNumbers();
-        if (SNs.size() == 0)
+        const auto &SpanInfo = GD.getTimeRangeSpan();
+        if (SpanInfo.first == 0)
             return;
 
-        TimeRange TR(SNs.front().first, SNs.back().first);
+        TimeRange TR = SpanInfo.second;
 
         {
             std::lock_guard<std::mutex> L(Mutex);
