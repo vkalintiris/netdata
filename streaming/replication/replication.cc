@@ -28,12 +28,18 @@ public:
     }
 
     void startReplicationThread() {
+        time_t LastEntry = rrdhost_last_entry_t(RH);
+        error("GVD[startReplicationThread]: %s last entry %ld", RH->hostname, LastEntry);
+
         ReplicationThread = std::thread(&Host::senderReplicateGaps, this);
     }
 
     void stopReplicationThread() {
         netdata_thread_cancel(ReplicationThread.native_handle());
         ReplicationThread.join();
+
+        time_t LastEntry = rrdhost_last_entry_t(RH);
+        error("GVD[stopReplicationThread]: %s last entry %ld", RH->hostname, LastEntry);
     }
 
     /* adds a new gap */
@@ -41,6 +47,8 @@ public:
         std::lock_guard<Mutex> Lock(ReceiverMutex);
 
         time_t LastEntry = rrdhost_last_entry_t(RH);
+        error("GVD[receiverConnect]: %s last entry %ld", RH->hostname, LastEntry);
+
         time_t CurrTime = now_realtime_sec();
 
         if (LastEntry == 0) {
