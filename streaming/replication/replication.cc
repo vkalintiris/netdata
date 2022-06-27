@@ -28,9 +28,6 @@ public:
     }
 
     void startReplicationThread() {
-        time_t LastEntry = rrdhost_last_entry_t(RH);
-        error("GVD[startReplicationThread]: %s last entry %ld", RH->hostname, LastEntry);
-
         ReplicationThread = std::thread(&Host::senderReplicateGaps, this);
     }
 
@@ -38,32 +35,36 @@ public:
         netdata_thread_cancel(ReplicationThread.native_handle());
         ReplicationThread.join();
 
-        time_t LastEntry = rrdhost_last_entry_t(RH);
-        error("GVD[stopReplicationThread]: %s last entry %ld", RH->hostname, LastEntry);
+        time_t FirstEntryT = rrdhost_first_entry_t(RH);
+        time_t LastEntryT = rrdhost_last_entry_t(RH);
+        replication_save_host_entries_range(&RH->host_uuid, FirstEntryT, LastEntryT);
+
+        error("GVD[stopReplicationThread]: %s entries [%ld, %ld]",
+              RH->hostname, FirstEntryT, LastEntryT);
     }
 
     /* adds a new gap */
     void receiverConnect() {
         std::lock_guard<Mutex> Lock(ReceiverMutex);
 
-        time_t LastEntry = rrdhost_last_entry_t(RH);
-        error("GVD[receiverConnect]: %s last entry %ld", RH->hostname, LastEntry);
+        time_t CurrT = now_realtime_sec();
 
-        time_t CurrTime = now_realtime_sec();
+        time_t FirstEntryT = 0, LastEntryT = 0;
+        replication_load_host_entries_range(&RH->host_uuid, &FirstEntryT, &LastEntryT);
 
-        if (LastEntry == 0) {
-            time_t SavedAfter = 0, SavedBefore = 0;
-            replication_load_host_entries_range(&RH->host_uuid, &SavedAfter, &SavedBefore);
-            LastEntry = (SavedBefore != 0) ? (SavedBefore + 1) :
-                                             (CurrTime - Cfg.SecondsToReplicateOnFirstConnection + 1);
-        }
+        if (LastEntryT == 0)
+            LastEntryT = CurrT - Cfg.SecondsToReplicateOnFirstConnection + 1;
+        else
+            LastEntryT -= maxUpdateEvery();
 
-        if (CurrTime <= LastEntry) {
-            error("[%s] Skipping invalid replication time range on connect: <%ld, %ld>", RH->hostname, LastEntry, CurrTime);
+        error("GVD[receiverConnect]: %s: [%ld, %ld]", RH->hostname, LastEntryT, CurrT);
+
+        if (LastEntryT >= CurrT) {
+            error("[%s] Skipping invalid replication time range on connect: <%ld, %ld>", RH->hostname, LastEntryT, CurrT);
             return;
         }
 
-        TimeRange TR(LastEntry, CurrTime + 60);
+        TimeRange TR(LastEntryT, CurrT + 60);
         std::vector<TimeRange> NewTRs = splitTimeRange(TR, Cfg.MaxEntriesPerGapData);
         for (const TimeRange &NewTR : NewTRs)
             ReceiverGaps.push_back(NewTR);
@@ -134,6 +135,7 @@ public:
              * chart defs & 1st values of dims.
              */
             time_t MaxUE = maxUpdateEvery();
+            error("[%s]: sleeping for max update_every=%ld", RH->hostname, MaxUE);
             std::this_thread::sleep_for(std::chrono::seconds(2 * MaxUE));
 
             /*
@@ -246,7 +248,7 @@ public:
 
             RRDDIM *RD;
             rrddim_foreach_read(RD, RS) {
-                MaxUE = std::max<time_t>(RS->update_every, MaxUE);
+                MaxUE = std::max<time_t>(RD->update_every, MaxUE);
             }
             rrdset_unlock(RS);
         }
