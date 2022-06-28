@@ -363,6 +363,15 @@ ELSE()
 ENDIF()
 
 # -----------------------------------------------------------------------------
+# Detect replication feature
+file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_REPLICATION REGEX "^#define ENABLE_REPLICATION 1$")
+IF(DEFINE_ENABLE_REPLICATION MATCHES ".+")
+    set(ENABLE_REPLICATION True)
+ELSE()
+    set(ENABLE_REPLICATION False)
+ENDIF()
+
+# -----------------------------------------------------------------------------
 # netdata files
 
 set(LIBNETDATA_FILES
@@ -768,24 +777,33 @@ set(API_PLUGIN_FILES
         )
 
 set(STREAMING_PLUGIN_FILES
+        streaming/rrdpush.c
+        streaming/rrdpush.h
+        streaming/compression.c
+        streaming/receiver.c
+        streaming/sender.c
+)
+
+set(REPLICATION_FILES
+        streaming/replication/replication.h
+        streaming/replication/replication-dummy.c
+)
+
+if(ENABLE_REPLICATION)
+list(APPEND REPLICATION_FILES
         streaming/replication/Base64.cc
         streaming/replication/Base64.h
         streaming/replication/Config.cc
         streaming/replication/Config.h
         streaming/replication/GapData.cc
         streaming/replication/GapData.h
+        streaming/replication/Logger.h
         streaming/replication/TimeRange.cc
         streaming/replication/TimeRange.h
         streaming/replication/Utils.h
         streaming/replication/replication.cc
-        streaming/replication/replication.h
-        streaming/replication/replication-private.h
-        streaming/rrdpush.c
-        streaming/rrdpush.h
-        streaming/compression.c
-        streaming/receiver.c
-        streaming/sender.c
-        )
+)
+endif()
 
 set(CLAIM_PLUGIN_FILES
         claim/claim.c
