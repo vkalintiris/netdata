@@ -1290,6 +1290,7 @@ int web_client_api_request_v1_ml_info(RRDHOST *host, struct web_client *w, char 
 }
 #endif
 
+#ifdef ENABLE_REPLICATION
 int web_client_api_request_v1_replication(RRDHOST *host, struct web_client *w, char *url) {
     (void) url;
 
@@ -1307,6 +1308,7 @@ int web_client_api_request_v1_replication(RRDHOST *host, struct web_client *w, c
     freez((char *) s);
     return HTTP_RESP_OK;
 }
+#endif
 
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
     (void)url;
@@ -1432,7 +1434,9 @@ static struct api_command {
         { "aclk",                0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_aclk_state          },
         { "metric_correlations", 0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_metric_correlations },
 
+#if defined(ENABLE_REPLICATION)
         { "replication",            0, WEB_CLIENT_ACL_DASHBOARD, web_client_api_request_v1_replication      },
+#endif
 
         // terminator
         { NULL,              0, WEB_CLIENT_ACL_NONE,      NULL                                      },
