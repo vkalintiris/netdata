@@ -558,35 +558,51 @@ API_PLUGIN_FILES = \
     web/api/web_api_v1.h \
     $(NULL)
 
-# TODO/FIXME: check when/if we have to wrap this in under a condition or an
-# 			  autoconf feature flag
+STREAMING_PLUGIN_FILES = \
+    streaming/rrdpush.c \
+    streaming/compression.c \
+    streaming/sender.c \
+    streaming/receiver.c \
+    streaming/rrdpush.h \
+    streaming/replication/replication.h \
+    streaming/replication/replication-dummy.c \
+    $(NULL)
+
+REPLICATION_FILES = \
+    streaming/replication/replication.h \
+    streaming/replication/replication-dummy.c \
+    $(NULL)
+
+if ENABLE_REPLICATION
+
 streaming/replication/gaps.pb.cc \
 streaming/replication/gaps.pb.h: streaming/replication/gaps.proto
 	$(PROTOC) --proto_path=$(srcdir) --cpp_out=$(builddir) $^
 
 dist_noinst_DATA += streaming/replication/gaps.proto
 
-STREAMING_PLUGIN_FILES = \
+REPLICATION_FILES += \
     streaming/replication/Base64.cc \
     streaming/replication/Base64.h \
     streaming/replication/Config.cc \
     streaming/replication/Config.h \
     streaming/replication/GapData.cc \
     streaming/replication/GapData.h \
+    streaming/replication/Logger.h \
     streaming/replication/TimeRange.cc \
     streaming/replication/TimeRange.h \
     streaming/replication/Utils.h \
     streaming/replication/gaps.pb.cc \
     streaming/replication/gaps.pb.h \
     streaming/replication/replication.cc \
-    streaming/replication/replication.h \
     streaming/replication/replication-private.h \
-    streaming/rrdpush.c \
-    streaming/compression.c \
-    streaming/sender.c \
-    streaming/receiver.c \
-    streaming/rrdpush.h \
     $(NULL)
+
+STREAMING_PLUGIN_FILES += \
+    $(REPLICATION_FILES) \
+    $(NULL)
+
+endif # ENABLE_REPLICATION
 
 REGISTRY_PLUGIN_FILES = \
     registry/registry.c \
