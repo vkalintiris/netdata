@@ -791,6 +791,8 @@ set(REPLICATION_FILES
 
 if(ENABLE_REPLICATION)
 list(APPEND REPLICATION_FILES
+        streaming/replication/gaps.pb.cc
+        streaming/replication/gaps.pb.h
         streaming/replication/Base64.cc
         streaming/replication/Base64.h
         streaming/replication/Config.cc
@@ -1002,6 +1004,7 @@ set(NETDATA_FILES
         ${REGISTRY_PLUGIN_FILES}
         ${STATSD_PLUGIN_FILES}
         ${STREAMING_PLUGIN_FILES}
+        ${REPLICATION_FILES}
         ${WEB_PLUGIN_FILES}
         ${CLAIM_PLUGIN_FILES}
         ${SPAWN_PLUGIN_FILES}
