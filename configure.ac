@@ -1217,6 +1217,9 @@ fi
 AM_CONDITIONAL([ENABLE_REPLICATION], [test "${build_replication}" = "yes"])
 if test "${build_replication}" = "yes"; then
     AC_DEFINE([ENABLE_REPLICATION], [1], [replication usability])
+
+    OPTIONAL_PROTOBUF_CFLAGS="${PROTOBUF_CFLAGS}"
+    OPTIONAL_PROTOBUF_LIBS="${PROTOBUF_LIBS}"
 fi
 
 # -----------------------------------------------------------------------------
