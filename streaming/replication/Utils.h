@@ -101,7 +101,7 @@ private:
         time_t CurrT, EndT;
         SN_FLAGS Flags;
 
-        calculated_number CN = Ops->next_metric(&Handle, &CurrT, &EndT, &Flags);
+        NETDATA_DOUBLE CN = Ops->next_metric(&Handle, &CurrT, &EndT, &Flags);
         storage_number SN = pack_storage_number(CN, Flags);
 
         return { CurrT, SN };
