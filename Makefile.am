@@ -581,6 +581,21 @@ streaming/replication/gaps.pb.h: streaming/replication/gaps.proto
 
 dist_noinst_DATA += streaming/replication/gaps.proto
 
+BUILT_SOURCES += \
+    streaming/replication/gaps.pb.cc \
+    streaming/replication/gaps.pb.h \
+    $(NULL)
+
+nodist_netdata_SOURCES += \
+    streaming/replication/gaps.pb.cc \
+    streaming/replication/gaps.pb.h \
+    $(NULL)
+
+CLEANFILES += \
+    streaming/replication/gaps.pb.cc \
+    streaming/replication/gaps.pb.h \
+    $(NULL)
+
 REPLICATION_FILES += \
     streaming/replication/Base64.cc \
     streaming/replication/Base64.h \
@@ -592,8 +607,6 @@ REPLICATION_FILES += \
     streaming/replication/TimeRange.cc \
     streaming/replication/TimeRange.h \
     streaming/replication/Utils.h \
-    streaming/replication/gaps.pb.cc \
-    streaming/replication/gaps.pb.h \
     streaming/replication/replication.cc \
     streaming/replication/replication-private.h \
     $(NULL)
