@@ -54,7 +54,7 @@ public:
         Query Q(RD);
 
         After = std::max(After, Q.oldestTime());
-        Before = std::min(Before, Q.latestTime());
+        Before = std::min(Before + 1, Q.latestTime());
 
         if (After > Before) {
             error("[%s] Ignoring invalid Query range <%ld, %ld>",
