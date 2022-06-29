@@ -2,19 +2,15 @@
 
 using namespace replication;
 
-static pb::TimeRange timeRangeToProto(const TimeRange &TR) {
-    pb::TimeRange PBTR;
-
-    PBTR.set_after(TR.first);
-    PBTR.set_before(TR.second);
-    return PBTR;
-}
-
 static pb::TimeRanges timeRangesToProto(std::vector<TimeRange> TRs) {
     pb::TimeRanges PBTRs;
 
-    for (const TimeRange &TR : TRs)
-        PBTRs.mutable_trs()->Add(timeRangeToProto(TR));
+    for (const TimeRange &TR : TRs) {
+        pb::TimeRange *PBTR = PBTRs.mutable_trs()->Add();
+
+        PBTR->set_after(TR.first);
+        PBTR->set_before(TR.second);
+    }
 
     return PBTRs;
 }
