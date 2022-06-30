@@ -203,7 +203,7 @@ void rrdpush_clean_encoded(stream_encoded_t *se)
         freez(se->kernel_version);
 }
 
-static inline long int parse_stream_version_for_errors(char *http)
+static inline long int parse_stream_version_for_errors(const char *http)
 {
     if (!memcmp(http, START_STREAMING_ERROR_SAME_LOCALHOST, sizeof(START_STREAMING_ERROR_SAME_LOCALHOST)))
         return -2;
@@ -215,7 +215,7 @@ static inline long int parse_stream_version_for_errors(char *http)
         return -1;
 }
 
-static inline long int parse_stream_version(RRDHOST *host, char *http)
+static inline long int parse_stream_version(RRDHOST *host, const char *http)
 {
     long int stream_version = -1;
     int answer = -1;
