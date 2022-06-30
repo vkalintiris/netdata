@@ -569,7 +569,7 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
     int32_t utc_offset = 0;
     int update_every = default_rrd_update_every;
     uint32_t stream_version = UINT_MAX;
-    uint32_t gap_filling_version = 0;
+    uint32_t replication_version = STREAMING_FEATURE_REPLICATION_DISABLED;
     char buf[GUID_LEN + 1];
 
     struct rrdhost_system_info *system_info = callocz(1, sizeof(struct rrdhost_system_info));
@@ -612,9 +612,17 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
             tags = value;
         else if(!strcmp(name, "ver"))
             stream_version = MIN((uint32_t) strtoul(value, NULL, 0), STREAMING_PROTOCOL_CURRENT_VERSION);
-        else if(!strcmp(name, "gap_filling_version"))
-            gap_filling_version = (uint32_t) strtoul(value, NULL, 0);
-        else {
+        else if(!strcmp(name, "repver")) {
+            replication_version = (uint32_t) strtoul(value, NULL, 0);
+            switch (replication_version) {
+            case STREAMING_FEATURE_REPLICATION_V1:
+            case STREAMING_FEATURE_REPLICATION_DISABLED:
+                break;
+            default:
+                error("sender requested unknown replication version %u", replication_version);
+                replication_version = STREAMING_FEATURE_REPLICATION_DISABLED;
+            }
+        } else {
             // An old Netdata child does not have a compatible streaming protocol, map to something sane.
             if (!strcmp(name, "NETDATA_SYSTEM_OS_NAME"))
                 name = "NETDATA_HOST_OS_NAME";
@@ -817,7 +825,7 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *url) {
     rpt->update_every      = update_every;
     rpt->system_info       = system_info;
     rpt->stream_version    = stream_version;
-    rpt->gap_filling_version = gap_filling_version;
+    rpt->replication_version = replication_version;
 #ifdef ENABLE_HTTPS
     rpt->ssl.conn          = w->ssl.conn;
     rpt->ssl.flags         = w->ssl.flags;

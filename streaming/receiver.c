@@ -473,6 +473,9 @@ static bool send_initial_response(struct receiver_state *rpt) {
 
     char initial_response[HTTP_HEADER_SIZE];
     memset(initial_response, 0, HTTP_HEADER_SIZE);
+
+    bool should_recv_gaps = false;
+
     if (rpt->stream_version > 1) {
         if(rpt->stream_version >= STREAM_VERSION_COMPRESSION){
 #ifdef ENABLE_COMPRESSION
@@ -485,7 +488,15 @@ static bool send_initial_response(struct receiver_state *rpt) {
 #endif
         }
         info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
-        sprintf(initial_response, "%s%u", START_STREAMING_PROMPT_VN, rpt->stream_version);
+        switch (rpt->replication_version) {
+            case STREAMING_FEATURE_REPLICATION_V1:
+                sprintf(initial_response, "%s%u%s", START_STREAMING_PROMPT_VN, rpt->stream_version, REPLICATION_V1_STR);
+                should_recv_gaps = true;
+                break;
+            default:
+                sprintf(initial_response, "%s%u", START_STREAMING_PROMPT_VN, rpt->stream_version);
+                break;
+        }
     } else if (rpt->stream_version == 1) {
         info("STREAM %s [receive from [%s]:%s]: Netdata is using the stream version %u.", rpt->host->hostname, rpt->client_ip, rpt->client_port, rpt->stream_version);
         sprintf(initial_response, "%s", START_STREAMING_PROMPT_V2);
@@ -507,12 +518,18 @@ static bool send_initial_response(struct receiver_state *rpt) {
         close(rpt->fd);
         return 1;
     }
-
     error("STREAM[%s] sent initial response", rpt->host->hostname);
-    if (rpt->gap_filling_version == 1)
-        return recv_gaps_response(rpt);
-    else
-        return 0;
+
+    if (should_recv_gaps) {
+        switch (rpt->replication_version) {
+            case STREAMING_FEATURE_REPLICATION_V1:
+                return recv_gaps_response(rpt);
+            default:
+                return 0;
+        }
+    }
+
+    return 0;
 }
 
 static int rrdpush_receive(struct receiver_state *rpt)

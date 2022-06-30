@@ -247,6 +247,14 @@ static inline long int parse_stream_version(RRDHOST *host, const char *http)
     return stream_version;
 }
 
+static inline int parse_replication_version(const char *http)
+{
+    if (strstr(http, REPLICATION_V1_STR) == NULL)
+        return STREAMING_FEATURE_REPLICATION_DISABLED;
+
+    return STREAMING_FEATURE_REPLICATION_V1;
+}
+
 static bool recv_gaps_data(struct sender_state *s, RRDHOST *host, int timeout) {
     char ProtoBuf[HTTP_HEADER_SIZE];
     memset(ProtoBuf, 0, HTTP_HEADER_SIZE);
@@ -341,9 +349,21 @@ static bool recv_initial_response(struct sender_state *s, RRDHOST *host, int tim
     }
     s->version = version;
 
-    error("STREAM[%s] received initial response", host->hostname);
+    int replication_version = parse_replication_version(http);
+    switch (replication_version) {
+    case STREAMING_FEATURE_REPLICATION_V1:
+        info("STREAM %s [send to %s]: remote server supports replication version %d", host->hostname, s->connected_to, replication_version);
+        return send_gaps_reponse(s, host, timeout);
+    case STREAMING_FEATURE_REPLICATION_DISABLED:
+        error("STREAM %s [send to %s]: remote server has disabled replication", host->hostname, s->connected_to);
+        break;
+    default:
+        error("STREAM %s [send to %s]: unknown remote server replication version %d", host->hostname, s->connected_to, replication_version);
+        break;
+    }
 
-    return send_gaps_reponse(s, host, timeout);
+    error("STREAM[%s] received initial response", host->hostname);
+    return 0;
 }
 
 static int rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_port, int timeout,
@@ -437,7 +457,7 @@ if(!s->rrdpush_compression)
                  "&mc_version=%d"
                  "&tags=%s"
                  "&ver=%d"
-                 "&gap_filling_version=1"
+                 "&repver=%d"
                  "&NETDATA_INSTANCE_CLOUD_TYPE=%s"
                  "&NETDATA_INSTANCE_CLOUD_INSTANCE_TYPE=%s"
                  "&NETDATA_INSTANCE_CLOUD_INSTANCE_REGION=%s"
@@ -484,6 +504,7 @@ if(!s->rrdpush_compression)
                  , host->system_info->mc_version
                  , (host->tags) ? host->tags : ""
                  , s->version
+                 , STREAMING_FEATURE_REPLICATION_V1
                  , (host->system_info->cloud_provider_type) ? host->system_info->cloud_provider_type : ""
                  , (host->system_info->cloud_instance_type) ? host->system_info->cloud_instance_type : ""
                  , (host->system_info->cloud_instance_region) ? host->system_info->cloud_instance_region : ""
