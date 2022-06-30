@@ -30,6 +30,11 @@
 #define START_STREAMING_ERROR_ALREADY_STREAMING "This GUID is already streaming to this server"
 #define START_STREAMING_ERROR_NOT_PERMITTED "You are not permitted to access this. Check the logs for more info."
 
+#define STREAMING_FEATURE_REPLICATION_DISABLED  10
+#define STREAMING_FEATURE_REPLICATION_V1        20
+
+#define REPLICATION_V1_STR "&replication=20"
+
 #define HTTP_HEADER_SIZE 8192
 
 typedef enum {
@@ -128,7 +133,7 @@ struct receiver_state {
     struct rrdhost_system_info *system_info;
     int update_every;
     uint32_t stream_version;
-    uint32_t gap_filling_version;
+    uint32_t replication_version;
     time_t last_msg_t;
     char read_buffer[/* PLUGINSD_LINE_MAX = */ 16 * 1024];
     int read_len;
