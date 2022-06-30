@@ -5,15 +5,14 @@
 
 using namespace replication;
 
+
 void GapData::print(RRDHOST *RH) const {
     std::stringstream SS;
 
     SS << "[" << RH->hostname << "] ";
     SS << "GapData (Chart=" << Chart << ", Dimension=" << Dimension << ", Entries=" << StorageNumbers.size() << ")\n";
-    for (const auto &P : StorageNumbers) {
-        auto tm = *std::localtime(&P.first);
-        SS << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S.%z%Z") << " SN: " << P.second << " CN: " << unpack_storage_number(P.second) << std::endl;
-    }
+    for (const auto &P : StorageNumbers)
+        SS << "Timestamp: " << P.first << " SN: " << P.second << " CN: " << unpack_storage_number(P.second) << std::endl;
     error("%s", SS.str().c_str());
 }
 
