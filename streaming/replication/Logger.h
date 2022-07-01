@@ -39,6 +39,9 @@ public:
     Logger(const char *Hostname) : Hostname(Hostname) {}
 
     void createdHost(std::vector<TimeRange> &TRs) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
 
         J["new-host"]["name"] = Hostname;
@@ -55,6 +58,9 @@ public:
     }
 
     void deletedHost(std::vector<TimeRange> &TRs) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
 
         J["delete-host"]["name"] = Hostname;
@@ -71,18 +77,27 @@ public:
     }
 
     void startedReplicationThread() {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
         J["started-replication-thread"] = Hostname;
         log(J);
     }
 
     void stoppedReplicationThread() {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
         J["stopped-replication-thread"] = Hostname;
         log(J);
     }
 
     void receiverSentGaps(std::vector<TimeRange> &TRs) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
 
         J["receiver-sent-gaps"]["host"] = Hostname;
@@ -98,6 +113,9 @@ public:
     }
 
     void receiverFilledGap(const GapData &GD) {
+        if (!Cfg.EnableLogging)
+            return;
+
         std::stringstream SS;
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
@@ -114,6 +132,9 @@ public:
     }
 
     void receiverDroppedGap(const TimeRange &TR) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
         J["receiver-dropped-gap"] = { { "host", Hostname } };
         formatTR(J["receiver-dropped-gap"], TR, "%d/%m/%Y - %H:%M:%S");
@@ -121,6 +142,9 @@ public:
     }
 
     void senderReceivedGaps(std::vector<TimeRange> &TRs) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
 
         J["sender-received-gaps"]["host"] = Hostname;
@@ -137,6 +161,9 @@ public:
     }
 
     void senderFilledGap(const GapData &GD) {
+        if (!Cfg.EnableLogging)
+            return;
+
         std::stringstream SS;
         SS << Hostname << "." << GD.getChart() << "." << GD.getDimension();
 
@@ -153,6 +180,9 @@ public:
     }
 
     void senderDroppedGap(const TimeRange &TR) {
+        if (!Cfg.EnableLogging)
+            return;
+
         nlohmann::json J;
         J["sender-dropped-gap"] = { { "host", Hostname } };
         formatTR(J["sender-dropped-gap"], TR, "%d/%m/%Y - %H:%M:%S");
