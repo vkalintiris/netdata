@@ -128,6 +128,12 @@ bool GapData::flushToDBEngine(RRDHOST *RH) const {
         return false;
     }
 
+    if (RH->rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE) {
+        error("[%s] host memory mode is not dbengine (dropping gap data for %s.%s.",
+              RH->hostname, Chart.c_str(), Dimension.c_str());
+        return false;
+    }
+
     constexpr time_t MaxEntriesPerPage = RRDENG_BLOCK_SIZE / sizeof(storage_number);
     storage_number Page[MaxEntriesPerPage] = { 0 };
 
