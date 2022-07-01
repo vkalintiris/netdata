@@ -18,7 +18,7 @@ void GapData::print(RRDHOST *RH) const {
 
 bool GapData::push(struct sender_state *Sender) const {
     /*
-     * FIXME: Parent's dbengine functions will cause a crash if we send
+     * Parent's dbengine functions will cause a crash if we send
      * a GapData with 0 entries.
      */
     if (StorageNumbers.size() == 0)
