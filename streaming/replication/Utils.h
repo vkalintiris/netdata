@@ -46,7 +46,7 @@ public:
         std::vector<std::pair<time_t, storage_number>> SNs;
 
         if (After > Before) {
-            error("[%s] Tried to query %s.%s with <%ld, %ld>",
+            error("[%s] Tried to query %s.%s with <After=%ld GT Before=%ld>",
                   RD->rrdset->rrdhost->hostname, RD->rrdset->id, RD->id, After, Before);
             return SNs;
         }
@@ -57,8 +57,6 @@ public:
         Before = std::min(Before + 1, Q.latestTime());
 
         if (After > Before) {
-            error("[%s] Ignoring invalid Query range <%ld, %ld>",
-                  RD->rrdset->rrdhost->hostname, After, Before);
             return SNs;
         }
 

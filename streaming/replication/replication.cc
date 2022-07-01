@@ -57,8 +57,6 @@ public:
         else
             LastEntryT -= maxUpdateEvery();
 
-        error("GVD[receiverConnect]: %s: [%ld, %ld]", RH->hostname, LastEntryT, CurrT);
-
         if (LastEntryT >= CurrT) {
             error("[%s] Skipping invalid replication time range on connect: <%ld, %ld>", RH->hostname, LastEntryT, CurrT);
             return;
