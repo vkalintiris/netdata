@@ -46,9 +46,15 @@ void Config::readReplicationConfig(void) {
         config_get_number(ConfigSectionReplication, "max queries per second", 1024);
     MaxQueriesPerSecond = clamp<size_t>(MaxQueriesPerSecond, 64, 2048);
 
+    /*
+     * Enable logging through api/v1/replication
+     */
+    bool EnableLogging = config_get_boolean(ConfigSectionReplication, "log replication operations", false);
+
     Cfg.EnableReplication = EnableReplication;
     Cfg.SecondsToReplicateOnFirstConnection = SecondsToReplicateOnFirstConnection;
     Cfg.MaxEntriesPerGapData = MaxEntriesPerGapData;
     Cfg.MaxNumGapsToReplicate = MaxNumGapsToReplicate;
     Cfg.MaxQueriesPerSecond = MaxQueriesPerSecond;
+    Cfg.EnableLogging = EnableLogging;
 }

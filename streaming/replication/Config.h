@@ -17,6 +17,8 @@ public:
 
     size_t MaxQueriesPerSecond;
 
+    bool EnableLogging;
+
     void readReplicationConfig();
 };
 
