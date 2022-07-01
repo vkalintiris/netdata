@@ -15,47 +15,36 @@ void Config::readReplicationConfig(void) {
     /*
      * Enable/Disable replication
      */
-    bool EnableReplication = config_get_boolean(ConfigSectionReplication, "enabled", true);
+    bool EnableReplication = config_get_boolean(ConfigSectionReplication, "enabled", false);
 
     /*
      * Backfill this many seconds on first connection of a child.
      */
     time_t SecondsToReplicateOnFirstConnection =
-        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 4 * 3600);
-
-#if 0
-    SecondsToReplicateOnFirstConnection = clamp<time_t>(SecondsToReplicateOnFirstConnection, 0, 2 * 24 * 3600);
-#endif
+        config_get_number(ConfigSectionReplication, "seconds to replicate on first connection", 3600);
+    SecondsToReplicateOnFirstConnection = clamp<time_t>(SecondsToReplicateOnFirstConnection, 0, 4 * 3600);
 
     /*
      * Send at most this amount of <timestamp, storage_number>s for a single dim.
      */
+    const size_t EntriesPerPage = RRDENG_BLOCK_SIZE / sizeof(storage_number);
     size_t MaxEntriesPerGapData  =
-        config_get_number(ConfigSectionReplication, "max entries for each dimension gap data", 1024);
-
-#if 0
-    MaxEntriesPerGapData = clamp<size_t>(MaxEntriesPerGapData, 60, 1000);
-#endif
+        config_get_number(ConfigSectionReplication, "max entries for each dimension gap data", EntriesPerPage);
+    MaxEntriesPerGapData = clamp<size_t>(MaxEntriesPerGapData, 128, EntriesPerPage);
 
     /*
      * Max number of gaps that we want parents to track for a child.
      */
     size_t MaxNumGapsToReplicate =
         config_get_number(ConfigSectionReplication, "max num gaps to replicate", 512);
-
-#if 0
-    MaxNumGapsToReplicate = clamp<size_t>(MaxNumGapsToReplicate, 1, 100);
-#endif
+    MaxNumGapsToReplicate = clamp<size_t>(MaxNumGapsToReplicate, 1, 512);
 
     /*
      * Max number of queries that we should perform per second
      */
     size_t MaxQueriesPerSecond =
         config_get_number(ConfigSectionReplication, "max queries per second", 1024);
-
-#if 0
-    MaxQueriesPerSecond = clamp<size_t>(MaxQueriesPerSecond, 5, 500);
-#endif
+    MaxQueriesPerSecond = clamp<size_t>(MaxQueriesPerSecond, 64, 2048);
 
     Cfg.EnableReplication = EnableReplication;
     Cfg.SecondsToReplicateOnFirstConnection = SecondsToReplicateOnFirstConnection;
