@@ -164,19 +164,6 @@ void Dimension::updateAnomalyBitCounter(RRDSET *RS, unsigned Elapsed, bool IsAno
     }
 }
 
-std::pair<bool, double> Dimension::detect(size_t WindowLength, bool Reset) {
-    bool AB = AnomalyBit;
-
-    if (Reset)
-        NumSetBits = BBC.numSetBits();
-
-    NumSetBits += AB;
-    BBC.insert(AB);
-
-    double AnomalyRate = static_cast<double>(NumSetBits) / WindowLength;
-    return { AB, AnomalyRate };
-}
-
 Dimension::~Dimension() {
     rrddim_free(AnomalyRateRD->rrdset, AnomalyRateRD);
 }
