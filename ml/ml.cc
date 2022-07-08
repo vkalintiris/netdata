@@ -79,7 +79,7 @@ void ml_new_dimension(RRDDIM *RD) {
     if (simple_pattern_matches(Cfg.SP_ChartsToSkip, rrdset_name(RS)))
         return;
 
-    Dimension *D = new Dimension(RD);
+    Dimension *D = new Dimension(RD, H->getAnomalyRateRS());
     RD->ml_dimension = static_cast<ml_dimension_t>(D);
     H->addDimension(D);
 }
