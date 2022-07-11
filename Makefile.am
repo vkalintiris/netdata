@@ -237,6 +237,8 @@ ML_FILES = \
 if ENABLE_ML
 
 ML_FILES += \
+    ml/ADCharts.h \
+    ml/ADCharts.cc \
     ml/Config.h \
     ml/Config.cc \
     ml/Dimension.cc \
