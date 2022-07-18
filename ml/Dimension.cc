@@ -190,6 +190,11 @@ void Dimension::updateAnomalyBitCounter(RRDSET *RS, unsigned Elapsed, bool IsAno
     }
 }
 
+std::deque<KMeans> Dimension::getModels() {
+    std::unique_lock<std::mutex> Lock(Mutex);
+    return Models;
+}
+
 Dimension::~Dimension() {
     rrddim_free(AnomalyRateRD->rrdset, AnomalyRateRD);
 }

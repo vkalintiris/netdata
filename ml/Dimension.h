@@ -83,6 +83,8 @@ public:
 
     std::pair<bool, double> detect(size_t WindowLength, bool Reset);
 
+    std::deque<KMeans> getModels();
+
     ~Dimension();
 
 private:
