@@ -20,7 +20,7 @@ static inline std::string getMLDimensionID(RRDDIM *RD) {
     RRDSET *RS = RD->rrdset;
 
     std::stringstream SS;
-    SS << RS->context << "|" << RS->id << "|" << RD->name;
+    SS << rrdset_context(RS) << "|" << rrdset_id(RS) << "|" << rrddim_name(RD);
     return SS.str();
 }
 
