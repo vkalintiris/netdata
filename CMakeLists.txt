@@ -709,14 +709,14 @@ include_directories(AFTER .)
 # -----------------------------------------------------------------------------
 # kinesis exporting connector
 
-IF(KINESIS_LIBRARIES AND AWS_CORE_LIBRARIES AND HAVE_AWS_EVENT_STREAM AND HAVE_AWS_COMMON AND HAVE_AWS_CHECKSUMS AND
+if(KINESIS_LIBRARIES AND AWS_CORE_LIBRARIES AND HAVE_AWS_EVENT_STREAM AND HAVE_AWS_COMMON AND HAVE_AWS_CHECKSUMS AND
    CRYPTO_LIBRARIES AND SSL_LIBRARIES AND CURL_LIBRARIES)
-    SET(ENABLE_EXPORTING_KINESIS True)
-ELSE()
-    SET(ENABLE_EXPORTING_KINESIS False)
-ENDIF()
+    set(ENABLE_EXPORTING_KINESIS True)
+else()
+    set(ENABLE_EXPORTING_KINESIS False)
+endif()
 
-IF(ENABLE_EXPORTING_KINESIS)
+if(ENABLE_EXPORTING_KINESIS)
     message(STATUS "kinesis exporting: enabled")
     list(APPEND NETDATA_FILES ${KINESIS_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${KINESIS_LIBRARIES} ${AWS_CORE_LIBRARIES}
@@ -724,39 +724,39 @@ IF(ENABLE_EXPORTING_KINESIS)
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${KINESIS_INCLUDE_DIRS} ${AWS_CORE_INCLUDE_DIRS}
                                             ${CRYPTO_INCLUDE_DIRS} ${SSL_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
     list(APPEND NETDATA_COMMON_CFLAGS ${CRYPTO_CFLAGS_OTHER} ${SSL_CFLAGS_OTHER} ${CURL_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "kinesis exporting: disabled (requires AWS SDK for C++)")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # Pub/Sub exporting connector
 
-IF(GRPC_LIBRARIES AND PUBSUB_LIBRARIES)
+if(GRPC_LIBRARIES AND PUBSUB_LIBRARIES)
     SET(ENABLE_EXPORTING_PUBSUB True)
-ELSE()
+else()
     SET(ENABLE_EXPORTING_PUBSUB False)
-ENDIF()
+endif()
 
-IF(ENABLE_EXPORTING_PUBSUB)
+if(ENABLE_EXPORTING_PUBSUB)
     message(STATUS "pubsub exporting connector: enabled")
     list(APPEND NETDATA_FILES ${PUBSUB_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${GRPC_LIBRARIES} ${PUBSUB_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${GRPC_INCLUDE_DIRS} ${PUBSUB_INCLUDE_DIRS})
     list(APPEND NETDATA_COMMON_CFLAGS ${GRPC_CFLAGS_OTHER} ${PUBSUB_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "pubsub exporting connector: disabled (requires grpc and googleapis)")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # prometheus remote write exporting connector
 
-IF(PROTOBUF_LIBRARIES AND SNAPPY_LIBRARIES)
+if(PROTOBUF_LIBRARIES AND SNAPPY_LIBRARIES)
     SET(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE True)
-ELSE()
+else()
     SET(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE False)
-ENDIF()
+endif()
 
-IF(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
+if(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
     message(STATUS "prometheus remote write exporting: enabled")
 
     find_package(Protobuf REQUIRED)
@@ -797,23 +797,23 @@ IF(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
     list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES} ${SNAPPY_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS} ${SNAPPY_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR})
     list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER} ${SNAPPY_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "prometheus remote write exporting: disabled (requires protobuf and snappy libraries)")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # mongodb exporting connector
 
-IF(MONGOC_LIBRARIES)
+if(MONGOC_LIBRARIES)
     message(STATUS "mongodb exporting: enabled")
 
     list(APPEND NETDATA_FILES ${MONGODB_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${MONGOC_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${MONGOC_INCLUDE_DIRS})
     list(APPEND NETDATA_COMMON_CFLAGS ${MONGOC_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "mongodb exporting: disabled (requires mongoc library)")
-ENDIF()
+endif()
 
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} m ${CMAKE_THREAD_LIBS_INIT})
 
@@ -884,25 +884,22 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include)
 
-# generate config.h so that CMake becomes independent of automake
-
-## netdata version
 set(GIT_EXECUTABLE "git")
 execute_process(COMMAND ${GIT_EXECUTABLE} describe
                 WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
                 OUTPUT_VARIABLE NETDATA_VERSION
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-IF("${NETDATA_VERSION}" STREQUAL "")
+if("${NETDATA_VERSION}" STREQUAL "")
     file(STRINGS "packaging/version" NETDATA_VERSION LIMIT_COUNT 1)
-ENDIF()
+endif()
 
 check_include_file(time.h HAVE_TIME_H)
 check_include_file(unistd.h HAVE_UNISTD_H)
-if (HAVE_TIME_H)
+if(HAVE_TIME_H)
     include(CheckStructHasMember)
     check_struct_has_member("struct timespec" tv_sec "time.h" HAVE_STRUCT_TIMESPEC)
-endif ()
+endif()
 
 check_include_file(sys/statfs.h HAVE_SYS_STATFS_H)
 check_include_file(sys/statvfs.h HAVE_SYS_STATVFS_H)
@@ -911,7 +908,7 @@ check_include_file(stdint.h HAVE_STDINT_H)
 
 include(CheckSymbolExists)
 check_include_file(sys/mkdev.h HAVE_SYS_MKDEV_H)
-if (HAVE_SYS_MKDEV_H)
+if(HAVE_SYS_MKDEV_H)
     check_symbol_exists(major "sys/mkdev.h" MAJOR_IN_MKDEV)
 endif()
 check_include_file(sys/sysmacros.h HAVE_SYS_SYSMACROS_H)
@@ -919,7 +916,7 @@ if (HAVE_SYS_SYSMACROS_H)
     check_symbol_exists(major "sys/sysmacros.h" MAJOR_IN_SYSMACROS)
 endif()
 
-if (CRYPTO_FOUND)
+if(CRYPTO_FOUND)
     include(CheckLibraryExists)
     set(HAVE_CRYPTO True)
     FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
@@ -936,26 +933,26 @@ check_c_source_compiles("
   int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
   " STRERROR_R_CHAR_P)
 
-IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
     SET(LIKELY_MACRO "__builtin_expect(!!(x), 1)")
     SET(UNLIKELY_MACRO "__builtin_expect(!!(x), 0)")
-ELSE()
+else()
     SET(LIKELY_MACRO "(x)")
     SET(UNLIKELY_MACRO "(x)")
-ENDIF()
+endif()
 
-IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
     SET(ALWAYS_UNUSED_MACRO "__attribute__((unused))")
     SET(MAYBE_UNUSED_MACRO "__attribute__((unused))")
-ELSE()
+else()
     SET(ALWAYS_UNUSED_MACRO "")
     SET(MAYBE_UNUSED_MACRO "")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # netdata
 
-IF(LINUX)
+if(LINUX)
     list(APPEND NETDATA_FILES daemon/static_threads_linux.c)
     list(APPEND NETDATA_COMMON_LIBRARIES rt)
 
@@ -972,7 +969,7 @@ IF(LINUX)
     SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
     SET(ENABLE_PLUGIN_SLABINFO True)
 
-ELSEIF(FREEBSD)
+elseif(FREEBSD)
     list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
 
     add_executable(netdata ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
@@ -983,7 +980,7 @@ ELSEIF(FREEBSD)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
 
-ELSEIF(MACOS)
+elseif(MACOS)
     list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
 
     add_executable(netdata ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
@@ -994,37 +991,36 @@ ELSEIF(MACOS)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
 
-ENDIF()
+endif()
 
-IF(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
+if(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
     set_property(TARGET netdata PROPERTY CXX_STANDARD 11)
     set_property(TARGET netdata PROPERTY CMAKE_CXX_STANDARD_REQUIRED ON)
-ENDIF()
+endif()
 
-IF(IPMI_LIBRARIES)
+if(IPMI_LIBRARIES)
     SET(ENABLE_PLUGIN_FREEIPMI True)
-ELSE()
+else()
     SET(ENABLE_PLUGIN_FREEIPMI False)
-ENDIF()
+endif()
 
-IF(LINUX AND MNL_LIBRARIES AND NFACCT_LIBRARIES)
+if(LINUX AND MNL_LIBRARIES AND NFACCT_LIBRARIES)
     SET(ENABLE_PLUGIN_NFACCT True)
-ELSE()
+else()
     SET(ENABLE_PLUGIN_NFACCT False)
-ENDIF()
+endif()
 
-IF(XENSTAT_LIBRARIES)
+if(XENSTAT_LIBRARIES)
     SET(ENABLE_PLUGIN_XENSTAT True)
-ELSE()
+else()
     SET(ENABLE_PLUGIN_XENSTAT False)
-ENDIF()
+endif()
 
-IF(CUPS_LIBRARIES)
+if(CUPS_LIBRARIES)
     SET(ENABLE_PLUGIN_CUPS True)
-ELSE()
+else()
     SET(ENABLE_PLUGIN_CUPS False)
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # netdatacli
@@ -1038,30 +1034,28 @@ target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
 # -----------------------------------------------------------------------------
 # freeipmi.plugin
 
-IF(ENABLE_PLUGIN_FREEIPMI)
+if(ENABLE_PLUGIN_FREEIPMI)
     message(STATUS "freeipmi.plugin: enabled")
     add_executable(freeipmi.plugin ${FREEIPMI_PLUGIN_FILES})
     target_link_libraries (freeipmi.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${IPMI_LIBRARIES})
     target_include_directories(freeipmi.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${IPMI_INCLUDE_DIRS})
     target_compile_options(freeipmi.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${IPMI_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "freeipmi.plugin: disabled (depends on libipmimonitoring)")
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # nfacct.plugin
 
-IF(ENABLE_PLUGIN_NFACCT)
+if(ENABLE_PLUGIN_NFACCT)
     message(STATUS "nfacct.plugin: enabled")
     add_executable(nfacct.plugin ${NFACCT_PLUGIN_FILES})
     target_link_libraries (nfacct.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${MNL_LIBRARIES} ${NFACCT_LIBRARIES})
     target_include_directories(nfacct.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${MNL_INCLUDE_DIRS} ${NFACCT_INCLUDE_DIRS})
     target_compile_options(nfacct.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "nfacct.plugin: disabled (requires libmnl and libnetfilter_acct)")
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # xenstat.plugin
@@ -1072,64 +1066,61 @@ IF(ENABLE_PLUGIN_XENSTAT)
     target_link_libraries (xenstat.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${XENSTAT_LIBRARIES})
     target_include_directories(xenstat.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${XENSTAT_INCLUDE_DIRS})
     target_compile_options(xenstat.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${XENSTAT_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "xenstat.plugin: disabled (requires libxenstat)")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # ebpf_process.plugin
 
-IF(ENABLE_PLUGIN_EBPF)
+if(ENABLE_PLUGIN_EBPF)
     message(STATUS "ebpf.plugin: enabled")
     add_executable(ebpf.plugin ${EBPF_PROCESS_PLUGIN_FILES})
     target_link_libraries (ebpf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(ebpf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
-ELSE()
+else()
     message(STATUS "ebpf.plugin: disabled")
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # slabinfo.plugin
 
-IF(ENABLE_PLUGIN_SLABINFO)
+if(ENABLE_PLUGIN_SLABINFO)
     message(STATUS "slabinfo.plugin: enabled")
     add_executable(slabinfo.plugin ${SLABINFO_PLUGIN_FILES})
     target_link_libraries (slabinfo.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(slabinfo.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(slabinfo.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
-ELSE()
+else()
     message(STATUS "slabinfo.plugin: disabled")
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # cups.plugin
 
-IF(ENABLE_PLUGIN_CUPS)
+if(ENABLE_PLUGIN_CUPS)
     message(STATUS "cups.plugin: enabled")
     add_executable(cups.plugin ${CUPS_PLUGIN_FILES})
     target_link_libraries (cups.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CUPS_LIBRARIES})
     target_include_directories(cups.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CUPS_INCLUDE_DIRS})
     target_compile_options(cups.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CUPS_CFLAGS_OTHER})
-ELSE()
+else()
     message(STATUS "cups.plugin: disabled")
-ENDIF()
-
+endif()
 
 # -----------------------------------------------------------------------------
 # cgroup-network
 
-IF(ENABLE_PLUGIN_CGROUP_NETWORK)
+if(ENABLE_PLUGIN_CGROUP_NETWORK)
     message(STATUS "cgroup-network: enabled")
     add_executable(cgroup-network ${CGROUP_NETWORK_FILES})
     target_link_libraries (cgroup-network libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(cgroup-network PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(cgroup-network PUBLIC ${NETDATA_COMMON_CFLAGS})
-ELSE()
+else()
     message(STATUS "cgroup-network: disabled (requires Linux)")
-ENDIF()
+endif()
 
 # -----------------------------------------------------------------------------
 # Unit tests
