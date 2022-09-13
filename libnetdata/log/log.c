@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <daemon/main.h>
 #include "../libnetdata.h"
 
 int web_server_is_multithreaded = 1;

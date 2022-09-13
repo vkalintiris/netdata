@@ -1,0 +1,1 @@
+pkg_check_modules(PUBSUB google_cloud_cpp_pubsub_protos)

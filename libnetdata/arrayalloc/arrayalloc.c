@@ -1,6 +1,4 @@
-#include "../libnetdata.h"
 #include "arrayalloc.h"
-#include "daemon/common.h"
 
 // max file size
 #define ARAL_MAX_PAGE_SIZE_MMAP (1*1024*1024*1024)

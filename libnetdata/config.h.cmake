@@ -49,8 +49,17 @@
 #define ENABLE_ACLK
 #define ENABLE_DBENGINE
 #define ENABLE_COMPRESSION // pkg_check_modules(LIBLZ4 REQUIRED liblz4)
-#cmakedefine ENABLE_APPS_PLUGIN
 
+#cmakedefine ENABLE_APPS_PLUGIN
 
 #define __always_unused @ALWAYS_UNUSED_MACRO@
 #define __maybe_unused @MAYBE_UNUSED_MACRO@
+
+/* netdata dirs */
+#define CACHE_DIR       "@NETDATA_CACHE_DIR@"
+#define CONFIG_DIR      "@NETDATA_CONFIG_DIR@"
+#define LIBCONFIG_DIR   "@NETDATA_LIBCONFIG_DIR@"
+#define LOG_DIR         "@NETDATA_LOG_DIR@"
+#define PLUGINS_DIR     "@NETDATA_PLUGINS_DIR@"
+#define WEB_DIR         "@NETDATA_WEB_DIR@"
+#define VARLIB_DIR      "@NETDATA_VARLIB_DIR@"

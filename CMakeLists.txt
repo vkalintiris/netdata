@@ -3,7 +3,7 @@
 # This file is only used for development (netdata in Clion)
 # It can build netdata, but you are on your own...
 
-cmake_minimum_required(VERSION 3.1.0)
+cmake_minimum_required(VERSION 3.24)
 project(netdata C CXX)
 
 find_package(Threads REQUIRED)
@@ -19,7 +19,7 @@ find_package(PkgConfig REQUIRED)
 # -----------------------------------------------------------------------------
 # Set compilation options according to build type
 
-IF("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+if("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
     message(STATUS "building for: debugging")
 
     ## unfortunately these produce errors
@@ -33,36 +33,36 @@ IF("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
     set(CXX_FLAGS_DEBUG "-O0")
     set(CMAKE_C_STANDARD 99)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -ggdb -Wall -Wextra -DNETDATA_INTERNAL_CHECKS=1 -DNETDATA_VERIFY_LOCKS=1 ${CXX_FORMAT_SIGNEDNESS} ${CXX_FORMAT_SECURITY} ${CXX_STACK_PROTECTOR} ${CXX_FLAGS_DEBUG}")
-ELSE()
+else()
     message(STATUS "building for: release")
     cmake_policy(SET CMP0069 "NEW")
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported OUTPUT error)
-    IF(${ipo_supported})
+    if(${ipo_supported})
         message(STATUS "link time optimization: supported")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-    ELSE()
+    else()
         message(STATUS "link time optimization: not supported")
-    ENDIF()
-ENDIF()
+    endif()
+endif()
 
 
 # -----------------------------------------------------------------------------
 # O/S Detection
 
 # these are defined in common.h too
-SET(LINUX   False)
-SET(FREEBSD False)
-SET(MACOS   False)
+set(LINUX   False)
+set(FREEBSD False)
+set(MACOS   False)
 
 # Detect the operating system
-IF(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    SET(MACOS True)
-ELSEIF(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(MACOS True)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
     SET(FREEBSD True)
-ELSE()
+else()
     SET(LINUX True)
-ENDIF()
+endif()
 
 # show the operating system on the console
 message(STATUS "system name: ${CMAKE_SYSTEM_NAME}")
@@ -70,262 +70,70 @@ message(STATUS "system name: ${CMAKE_SYSTEM_NAME}")
 set(NETDATA_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${NETDATA_INCLUDE_DIR})
 
-# -----------------------------------------------------------------------------
-# Detect libuuid
+include(cmake/aws.cmake)
+include(cmake/jsonc.cmake)
+include(cmake/libcrypto.cmake)
+include(cmake/libcups.cmake)
+include(cmake/libcurl.cmake)
+include(cmake/liblz4.cmake)
+include(cmake/libmongoc.cmake)
+include(cmake/libssl.cmake)
+include(cmake/libuv.cmake)
+include(cmake/openssl.cmake)
+include(cmake/protobuf.cmake)
+include(cmake/pubsub.cmake)
+include(cmake/snappy.cmake)
+include(cmake/uuid.cmake)
+include(cmake/zlib.cmake)
+include(cmake/grpc.cmake)
 
-pkg_check_modules(UUID REQUIRED uuid)
+if(LINUX)
+    include(cmake/libcap.cmake)
+    include(cmake/libipmimonitoring.cmake)
+    include(cmake/libmnl.cmake)
+    include(cmake/libnetfilter_acct.cmake)
+    include(cmake/libxenstat.cmake)
+    include(cmake/libelf.cmake)
+endif()
+
+if(MACOS)
+    include(cmake/iokit.cmake)
+    include(cmake/foundation.cmake)
+endif()
+
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${UUID_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${UUID_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${UUID_INCLUDE_DIRS})
 
-# -----------------------------------------------------------------------------
-# Detect libz
-
-pkg_check_modules(ZLIB REQUIRED zlib)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${ZLIB_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${ZLIB_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
 
-# -----------------------------------------------------------------------------
-# libuv multi-platform support library with a focus on asynchronous I/O
-
-pkg_check_modules(LIBUV REQUIRED libuv)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${LIBUV_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${LIBUV_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${LIBUV_INCLUDE_DIRS})
 
-# -----------------------------------------------------------------------------
-# lz4 Extremely Fast Compression algorithm
-
-pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${LIBLZ4_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${LIBLZ4_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${LIBLZ4_INCLUDE_DIRS})
 
-# -----------------------------------------------------------------------------
-# Judy General purpose dynamic array
-
-set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} judy)
-
-# -----------------------------------------------------------------------------
-# OpenSSL Cryptography and SSL/TLS Toolkit
-
-pkg_check_modules(OPENSSL REQUIRED openssl)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${OPENSSL_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${OPENSSL_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIRS})
 
-# -----------------------------------------------------------------------------
-# JSON-C used to health
-
-pkg_check_modules(JSON REQUIRED json-c)
 set(NETDATA_COMMON_CFLAGS ${NETDATA_COMMON_CFLAGS} ${JSONC_CFLAGS_OTHER})
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} ${JSON_LIBRARIES})
 set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${JSON_INCLUDE_DIRS})
 
-
-# -----------------------------------------------------------------------------
-# Detect libcap
-
-IF(LINUX)
-    pkg_check_modules(CAP QUIET libcap)
-    # later we use:
-    # ${CAP_LIBRARIES}
-    # ${CAP_CFLAGS_OTHER}
-    # ${CAP_INCLUDE_DIRS}
-ENDIF(LINUX)
-
-
-# -----------------------------------------------------------------------------
-# Detect libipmimonitoring
-
-IF(LINUX)
-    pkg_check_modules(IPMI libipmimonitoring)
-    # later we use:
-    # ${IPMI_LIBRARIES}
-    # ${IPMI_CFLAGS_OTHER}
-    # ${IPMI_INCLUDE_DIRS}
-ENDIF(LINUX)
-
-
-# -----------------------------------------------------------------------------
-# Detect libmnl
-IF(LINUX)
-    pkg_check_modules(MNL libmnl)
-    # later we use:
-    # ${MNL_LIBRARIES}
-    # ${MNL_CFLAGS_OTHER}
-    # ${MNL_INCLUDE_DIRS}
-ENDIF(LINUX)
-
-
-# -----------------------------------------------------------------------------
-# Detect libmnl
-
-pkg_check_modules(NFACCT libnetfilter_acct)
-# later we use:
-# ${NFACCT_LIBRARIES}
-# ${NFACCT_CFLAGS_OTHER}
-# ${NFACCT_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect libxenstat
-
-pkg_check_modules(XENSTAT libxenstat)
-# later we use:
-# ${XENSTAT_LIBRARIES}
-# ${XENSTAT_CFLAGS_OTHER}
-# ${XENSTAT_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect MacOS IOKit/Foundation framework
-
-IF(MACOS)
-    find_library(IOKIT IOKit)
-    find_library(FOUNDATION Foundation)
-    # later we use:
-    # ${FOUNDATION}
-    # ${IOKIT}
-ENDIF(MACOS)
-
-
-# -----------------------------------------------------------------------------
-# Detect libcrypto
-
-pkg_check_modules(CRYPTO libcrypto)
-# later we use:
-# ${CRYPTO_LIBRARIES}
-# ${CRYPTO_CFLAGS_OTHER}
-# ${CRYPTO_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect libssl
-
-pkg_check_modules(SSL libssl)
-# later we use:
-# ${SSL_LIBRARIES}
-# ${SSL_CFLAGS_OTHER}
-# ${SSL_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect libcurl
-
-pkg_check_modules(CURL libcurl)
-# later we use:
-# ${CURL_LIBRARIES}
-# ${CURL_CFLAGS_OTHER}
-# ${CURL_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libcups
-
-pkg_check_modules(CURL libcups)
-# later we use:
-# ${CUPS_LIBRARIES}
-# ${CUPS_CFLAGS_OTHER}
-# ${CUPS_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libaws-c-common
-
-find_library(HAVE_AWS_CHECKSUMS aws-checksums)
-# later we use:
-# ${HAVE_AWS_CHECKSUMS}
-
-# -----------------------------------------------------------------------------
-# Detect libaws-c-common
-
-find_library(HAVE_AWS_COMMON aws-c-common)
-# later we use:
-# ${HAVE_AWS_COMMON}
-
-# -----------------------------------------------------------------------------
-# Detect libaws-c-common
-
-find_library(HAVE_AWS_EVENT_STREAM aws-c-event-stream)
-# later we use:
-# ${HAVE_AWS_EVENT_STREAM}
-
-# -----------------------------------------------------------------------------
-# Detect libaws-cpp-sdk-core
-
-pkg_check_modules(AWS_CORE aws-cpp-sdk-core)
-# later we use:
-# ${AWS_CORE_LIBRARIES}
-# ${AWS_CORE_CFLAGS_OTHER}
-# ${AWS_CORE_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libaws-cpp-sdk-kinesis
-
-pkg_check_modules(KINESIS aws-cpp-sdk-kinesis)
-# later we use:
-# ${KINESIS_LIBRARIES}
-# ${KINESIS_CFLAGS_OTHER}
-# ${KINESIS_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libgrpc
-
-pkg_check_modules(GRPC grpc)
-# later we use:
-# ${GRPC_LIBRARIES}
-# ${GRPC_CFLAGS_OTHER}
-# ${GRPC_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libgoogleapis_cpp_pubsub_protos
-
-pkg_check_modules(PUBSUB google_cloud_cpp_pubsub_protos)
-# later we use:
-# ${PUBSUB_LIBRARIES}
-# ${PUBSUB_CFLAGS_OTHER}
-# ${PUBSUB_INCLUDE_DIRS}
-
-# -----------------------------------------------------------------------------
-# Detect libprotobuf
-
-pkg_check_modules(PROTOBUF protobuf>=3)
-# later we use:
-# ${PROTOBUF_LIBRARIES}
-# ${PROTOBUF_CFLAGS_OTHER}
-# ${PROTOBUF_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect libsnappy
-
-pkg_check_modules(SNAPPY snappy)
-# later we use:
-# ${SNAPPY_LIBRARIES}
-# ${SNAPPY_CFLAGS_OTHER}
-# ${SNAPPY_INCLUDE_DIRS}
-
-
-# -----------------------------------------------------------------------------
-# Detect libmongoc
-
-pkg_check_modules(MONGOC libmongoc-1.0)
-# later we use:
-# ${MONGOC_LIBRARIES}
-# ${MONGOC_CFLAGS_OTHER}
-# ${MONGOC_INCLUDE_DIRS}
-
-
 # -----------------------------------------------------------------------------
 # Detect libbpf
-IF(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
+if(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
     message(STATUS "libbpf library found")
-    pkg_check_modules(ELF REQUIRED libelf)
     # later we use:
     # ${ELF_LIBRARIES}
     # ${ELF_CFLAGS_OTHER}
     # ${ELF_INCLUDE_DIRS}
-    IF(ELF_LIBRARIES)
+    if(ELF_LIBRARIES)
         list(APPEND NETDATA_COMMON_CFLAGS ${ELF_CFLAGS_OTHER})
         list(INSERT NETDATA_COMMON_LIBRARIES 0
             ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a
@@ -334,722 +142,544 @@ IF(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
         include_directories(BEFORE ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include/uapi)
         set(ENABLE_PLUGIN_EBPF True)
         set(HAVE_LIBBPF True)
-    ELSE(ELF_LIBRARIES)
+    else(ELF_LIBRARIES)
         set(ENABLE_PLUGIN_EBPF False)
         message(STATUS "ebpf plugin: disabled (requires libelf)")
-    ENDIF(ELF_LIBRARIES)
-ENDIF()
+    endif(ELF_LIBRARIES)
+endif()
 
 # -----------------------------------------------------------------------------
 # Detect ml dependencies
-IF (FALSE)
+if(FALSE)
     file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_ML REGEX "^#define ENABLE_ML 1$")
-    IF(DEFINE_ENABLE_ML MATCHES ".+" AND
+    if(DEFINE_ENABLE_ML MATCHES ".+" AND
        EXISTS "${CMAKE_SOURCE_DIR}/ml/kmeans/dlib/dlib/all/source.cpp" AND
        EXISTS "${CMAKE_SOURCE_DIR}/ml/json/single_include/nlohmann/json.hpp")
         set(ENABLE_ML True)
         list(APPEND NETDATA_COMMON_CFLAGS "-DDLIB_NO_GUI_SUPPORT")
         list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/kmeans/dlib")
-    ELSE()
+    else()
         set(ENABLE_ML False)
-    ENDIF()
-ELSE()
+    endif()
+else()
     set(ENABLE_ML False)
-ENDIF()
-
-set(LIBJUDY_SOURCES
-        libnetdata/libjudy/src/Judy.h
-        libnetdata/libjudy/src/JudyCommon/JudyMalloc.c
-        libnetdata/libjudy/src/JudyCommon/JudyPrivate.h
-        libnetdata/libjudy/src/JudyCommon/JudyPrivate1L.h
-        libnetdata/libjudy/src/JudyCommon/JudyPrivateBranch.h
-        libnetdata/libjudy/src/JudyL/JudyL.h
-        libnetdata/libjudy/src/JudyL/JudyLByCount.c
-        libnetdata/libjudy/src/JudyL/JudyLCascade.c
-        libnetdata/libjudy/src/JudyL/JudyLCount.c
-        libnetdata/libjudy/src/JudyL/JudyLCreateBranch.c
-        libnetdata/libjudy/src/JudyL/JudyLDecascade.c
-        libnetdata/libjudy/src/JudyL/JudyLDel.c
-        libnetdata/libjudy/src/JudyL/JudyLFirst.c
-        libnetdata/libjudy/src/JudyL/JudyLFreeArray.c
-        libnetdata/libjudy/src/JudyL/j__udyLGet.c
-        libnetdata/libjudy/src/JudyL/JudyLGet.c
-        libnetdata/libjudy/src/JudyL/JudyLInsArray.c
-        libnetdata/libjudy/src/JudyL/JudyLIns.c
-        libnetdata/libjudy/src/JudyL/JudyLInsertBranch.c
-        libnetdata/libjudy/src/JudyL/JudyLMallocIF.c
-        libnetdata/libjudy/src/JudyL/JudyLMemActive.c
-        libnetdata/libjudy/src/JudyL/JudyLMemUsed.c
-        libnetdata/libjudy/src/JudyL/JudyLNext.c
-        libnetdata/libjudy/src/JudyL/JudyLNextEmpty.c
-        libnetdata/libjudy/src/JudyL/JudyLPrev.c
-        libnetdata/libjudy/src/JudyL/JudyLPrevEmpty.c
-        JudyLTables.c
-        libnetdata/libjudy/src/JudyHS/JudyHS.c)
-
-ADD_LIBRARY(judy STATIC
-             ${LIBJUDY_SOURCES})
-
-ADD_EXECUTABLE(judyltablesgen
-    libnetdata/libjudy/src/JudyL/JudyLTablesGen.c)
-
-target_include_directories(judyltablesgen PUBLIC
-    libnetdata/libjudy/src
-    libnetdata/libjudy/src/JudyCommon)
-
-target_compile_options(judyltablesgen PUBLIC
-    -Wno-format
-    -Wno-format-security)
-
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/libnetdata/libjudy/src)
-
-target_compile_definitions(judyltablesgen PUBLIC
-    JU_64BIT
-    JUDYL)
-
-add_custom_command(
-  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/JudyLTables.c
-  COMMAND judyltablesgen
-  DEPENDS judyltablesgen
-  )
-
-target_include_directories(judy PUBLIC
-    libnetdata/libjudy/src
-    libnetdata/libjudy/src/JudyCommon)
-
-target_compile_definitions(judy PUBLIC
-    JU_64BIT
-    JUDYL)
-
-target_compile_options(judy PUBLIC
-    -Wno-sign-compare
-    -Wno-implicit-fallthrough)
-
-set(LIBJUDY_PREV_FILES
-        libnetdata/libjudy/src/JudyL/JudyLPrev.c
-        libnetdata/libjudy/src/JudyL/JudyLPrevEmpty.c)
-
-set(LIBJUDY_NEXT_FILES
-        libnetdata/libjudy/src/JudyL/JudyLNext.c
-        libnetdata/libjudy/src/JudyL/JudyLNextEmpty.c)
-
-set_source_files_properties(${LIBJUDY_PREV_FILES} PROPERTIES COMPILE_OPTIONS "-DJUDYPREV")
-set_source_files_properties(${LIBJUDY_NEXT_FILES} PROPERTIES COMPILE_OPTIONS "-DJUDYNEXT")
-set_source_files_properties(libnetdata/libjudy/src/JudyL/j__udyLGet.c PROPERTIES COMPILE_OPTIONS "-DJUDYGETINLINE")
-set_source_files_properties(libnetdata/libjudy/src/JudyL/JudyLByCount.c PROPERTIES COMPILE_OPTIONS "-DNOSMARTJBB -DNOSMARTJBU -DNOSMARTJLB")
-set_source_files_properties(JudyLTables.c PROPERTIES COMPILE_OPTIONS "-I${CMAKE_SOURCE_DIR}/libnetdata/libjudy/src/JudyL")
+endif()
 
 # -----------------------------------------------------------------------------
 # netdata files
 
-set(LIBNETDATA_FILES
-        libnetdata/adaptive_resortable_list/adaptive_resortable_list.c
-        libnetdata/adaptive_resortable_list/adaptive_resortable_list.h
-        libnetdata/config/appconfig.c
-        libnetdata/config/appconfig.h
-        libnetdata/arrayalloc/arrayalloc.c
-        libnetdata/arrayalloc/arrayalloc.h
-        libnetdata/avl/avl.c
-        libnetdata/avl/avl.h
-        libnetdata/buffer/buffer.c
-        libnetdata/buffer/buffer.h
-        libnetdata/clocks/clocks.c
-        libnetdata/clocks/clocks.h
-        libnetdata/completion/completion.c
-        libnetdata/completion/completion.h
-        libnetdata/dictionary/dictionary.c
-        libnetdata/dictionary/dictionary.h
-        libnetdata/eval/eval.c
-        libnetdata/eval/eval.h
-        libnetdata/inlined.h
-        libnetdata/libnetdata.c
-        libnetdata/libnetdata.h
-        libnetdata/required_dummies.h
-        libnetdata/locks/locks.c
-        libnetdata/locks/locks.h
-        libnetdata/log/log.c
-        libnetdata/log/log.h
-        libnetdata/os.c
-        libnetdata/os.h
-        libnetdata/onewayalloc/onewayalloc.c
-        libnetdata/onewayalloc/onewayalloc.h
-        libnetdata/popen/popen.c
-        libnetdata/popen/popen.h
-        libnetdata/procfile/procfile.c
-        libnetdata/procfile/procfile.h
-        libnetdata/simple_pattern/simple_pattern.c
-        libnetdata/simple_pattern/simple_pattern.h
-        libnetdata/socket/socket.c
-        libnetdata/socket/socket.h
-        libnetdata/statistical/statistical.c
-        libnetdata/statistical/statistical.h
-        libnetdata/storage_number/storage_number.c
-        libnetdata/storage_number/storage_number.h
-        libnetdata/threads/threads.c
-        libnetdata/threads/threads.h
-        libnetdata/url/url.c
-        libnetdata/url/url.h
-        libnetdata/json/json.c
-        libnetdata/json/json.h
-        libnetdata/json/jsmn.c
-        libnetdata/json/jsmn.h
-        libnetdata/health/health.c
-        libnetdata/health/health.h
-        libnetdata/string/utf8.h
-        libnetdata/socket/security.c
-        libnetdata/socket/security.h
-        libnetdata/worker_utilization/worker_utilization.c
-        libnetdata/worker_utilization/worker_utilization.h
-        libnetdata/circular_buffer/circular_buffer.c
-        libnetdata/circular_buffer/circular_buffer.h)
+set(NETDATA_USER "netdata" CACHE STRING "use this user to drop privileges")
+set(NETDATA_CACHE_DIR "${CMAKE_INSTALL_PREFIX}/var/cache/netdata" CACHE PATH "cache dir")
+set(NETDATA_CONFIG_DIR "${CMAKE_INSTALL_PREFIX}/etc/netdata" CACHE PATH "config dir")
+set(NETDATA_LIBCONFIG_DIR "${CMAKE_INSTALL_PREFIX}/usr/lib/netdata/conf.d" CACHE PATH "libconfig dir")
+set(NETDATA_LOG_DIR "${CMAKE_INSTALL_PREFIX}/var/log/netdata" CACHE PATH "log dir")
+set(NETDATA_PLUGINS_DIR "${CMAKE_INSTALL_PREFIX}/usr/libexec/netdata/plugins.d" CACHE PATH "plugins dir")
+set(NETDATA_WEB_DIR "${CMAKE_INSTALL_PREFIX}/usr/share/netdata/web" CACHE PATH "web dir")
+set(NETDATA_VARLIB_DIR "${CMAKE_INSTALL_PREFIX}/var/lib/netdata" CACHE PATH "varlib dir")
 
-IF(ENABLE_PLUGIN_EBPF)
-    list(APPEND LIBNETDATA_FILES
-        libnetdata/ebpf/ebpf.c
-        libnetdata/ebpf/ebpf.h)
-ENDIF()
+add_subdirectory(libnetdata)
 
-add_library(libnetdata OBJECT ${LIBNETDATA_FILES})
-target_include_directories(libnetdata PUBLIC ${NETDATA_INCLUDE_DIR})
-
-set(APPS_PLUGIN_FILES
-        collectors/apps.plugin/apps_plugin.c)
+set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} judy)
 
 set(CHECKS_PLUGIN_FILES
-        collectors/checks.plugin/plugin_checks.c
-        )
+    collectors/checks.plugin/plugin_checks.c)
 
 set(FREEBSD_PLUGIN_FILES
-        collectors/freebsd.plugin/plugin_freebsd.c
-        collectors/freebsd.plugin/plugin_freebsd.h
-        collectors/freebsd.plugin/freebsd_sysctl.c
-        collectors/freebsd.plugin/freebsd_getmntinfo.c
-        collectors/freebsd.plugin/freebsd_getifaddrs.c
-        collectors/freebsd.plugin/freebsd_devstat.c
-        collectors/freebsd.plugin/freebsd_kstat_zfs.c
-        collectors/freebsd.plugin/freebsd_ipfw.c
-        collectors/proc.plugin/zfs_common.c
-        collectors/proc.plugin/zfs_common.h
-        )
+    collectors/freebsd.plugin/plugin_freebsd.c
+    collectors/freebsd.plugin/plugin_freebsd.h
+    collectors/freebsd.plugin/freebsd_sysctl.c
+    collectors/freebsd.plugin/freebsd_getmntinfo.c
+    collectors/freebsd.plugin/freebsd_getifaddrs.c
+    collectors/freebsd.plugin/freebsd_devstat.c
+    collectors/freebsd.plugin/freebsd_kstat_zfs.c
+    collectors/freebsd.plugin/freebsd_ipfw.c
+    collectors/proc.plugin/zfs_common.c
+    collectors/proc.plugin/zfs_common.h
+)
 
 set(HEALTH_PLUGIN_FILES
-        health/health.c
-        health/health.h
-        health/health_config.c
-        health/health_json.c
-        health/health_log.c)
+    health/health.c
+    health/health.h
+    health/health_config.c
+    health/health_json.c
+    health/health_log.c)
 
 set(IDLEJITTER_PLUGIN_FILES
-        collectors/idlejitter.plugin/plugin_idlejitter.c
-        )
+    collectors/idlejitter.plugin/plugin_idlejitter.c)
 
 set(CGROUPS_PLUGIN_FILES
-        collectors/cgroups.plugin/sys_fs_cgroup.c
-        collectors/cgroups.plugin/sys_fs_cgroup.h
-        )
+    collectors/cgroups.plugin/sys_fs_cgroup.c
+    collectors/cgroups.plugin/sys_fs_cgroup.h)
 
 set(CGROUP_NETWORK_FILES
-        collectors/cgroups.plugin/cgroup-network.c
-        )
+    collectors/cgroups.plugin/cgroup-network.c)
 
 set(DISKSPACE_PLUGIN_FILES
-        collectors/diskspace.plugin/plugin_diskspace.c
-        )
+    collectors/diskspace.plugin/plugin_diskspace.c)
 
 set(TIMEX_PLUGIN_FILES
-        collectors/timex.plugin/plugin_timex.c
-        )
+    collectors/timex.plugin/plugin_timex.c)
 
 set(FREEIPMI_PLUGIN_FILES
-        collectors/freeipmi.plugin/freeipmi_plugin.c
-        )
+    collectors/freeipmi.plugin/freeipmi_plugin.c)
 
 set(NFACCT_PLUGIN_FILES
-        collectors/nfacct.plugin/plugin_nfacct.c
-        )
+    collectors/nfacct.plugin/plugin_nfacct.c)
 
 set(XENSTAT_PLUGIN_FILES
-        collectors/xenstat.plugin/xenstat_plugin.c
-        )
+    collectors/xenstat.plugin/xenstat_plugin.c)
 
 set(PERF_PLUGIN_FILES
-        collectors/perf.plugin/perf_plugin.c
-        )
+    collectors/perf.plugin/perf_plugin.c)
 
 set(SLABINFO_PLUGIN_FILES
-        collectors/slabinfo.plugin/slabinfo.c
-        )
+    collectors/slabinfo.plugin/slabinfo.c)
 
 set(CUPS_PLUGIN_FILES
-        collectors/cups.plugin/cups_plugin.c
-        )
+    collectors/cups.plugin/cups_plugin.c)
 
 set(EBPF_PROCESS_PLUGIN_FILES
-        collectors/ebpf.plugin/ebpf.c
-        collectors/ebpf.plugin/ebpf.h
-        collectors/ebpf.plugin/ebpf_cachestat.c
-        collectors/ebpf.plugin/ebpf_cachestat.h
-        collectors/ebpf.plugin/ebpf_dcstat.c
-        collectors/ebpf.plugin/ebpf_dcstat.h
-        collectors/ebpf.plugin/ebpf_disk.c
-        collectors/ebpf.plugin/ebpf_disk.h
-        collectors/ebpf.plugin/ebpf_fd.c
-        collectors/ebpf.plugin/ebpf_fd.h
-        collectors/ebpf.plugin/ebpf_hardirq.c
-        collectors/ebpf.plugin/ebpf_hardirq.h
-        collectors/ebpf.plugin/ebpf_mdflush.c
-        collectors/ebpf.plugin/ebpf_mdflush.h
-        collectors/ebpf.plugin/ebpf_mount.c
-        collectors/ebpf.plugin/ebpf_mount.h
-        collectors/ebpf.plugin/ebpf_filesystem.c
-        collectors/ebpf.plugin/ebpf_filesystem.h
-        collectors/ebpf.plugin/ebpf_oomkill.c
-        collectors/ebpf.plugin/ebpf_oomkill.h
-        collectors/ebpf.plugin/ebpf_process.c
-        collectors/ebpf.plugin/ebpf_process.h
-        collectors/ebpf.plugin/ebpf_shm.c
-        collectors/ebpf.plugin/ebpf_shm.h
-        collectors/ebpf.plugin/ebpf_socket.c
-        collectors/ebpf.plugin/ebpf_socket.h
-        collectors/ebpf.plugin/ebpf_softirq.c
-        collectors/ebpf.plugin/ebpf_softirq.h
-        collectors/ebpf.plugin/ebpf_sync.c
-        collectors/ebpf.plugin/ebpf_sync.h
-        collectors/ebpf.plugin/ebpf_swap.c
-        collectors/ebpf.plugin/ebpf_swap.h
-        collectors/ebpf.plugin/ebpf_vfs.c
-        collectors/ebpf.plugin/ebpf_vfs.h
-        collectors/ebpf.plugin/ebpf_apps.c
-        collectors/ebpf.plugin/ebpf_apps.h
-        collectors/ebpf.plugin/ebpf_cgroup.c
-        collectors/ebpf.plugin/ebpf_cgroup.h
-        )
+    collectors/ebpf.plugin/ebpf.c
+    collectors/ebpf.plugin/ebpf.h
+    collectors/ebpf.plugin/ebpf_cachestat.c
+    collectors/ebpf.plugin/ebpf_cachestat.h
+    collectors/ebpf.plugin/ebpf_dcstat.c
+    collectors/ebpf.plugin/ebpf_dcstat.h
+    collectors/ebpf.plugin/ebpf_disk.c
+    collectors/ebpf.plugin/ebpf_disk.h
+    collectors/ebpf.plugin/ebpf_fd.c
+    collectors/ebpf.plugin/ebpf_fd.h
+    collectors/ebpf.plugin/ebpf_hardirq.c
+    collectors/ebpf.plugin/ebpf_hardirq.h
+    collectors/ebpf.plugin/ebpf_mdflush.c
+    collectors/ebpf.plugin/ebpf_mdflush.h
+    collectors/ebpf.plugin/ebpf_mount.c
+    collectors/ebpf.plugin/ebpf_mount.h
+    collectors/ebpf.plugin/ebpf_filesystem.c
+    collectors/ebpf.plugin/ebpf_filesystem.h
+    collectors/ebpf.plugin/ebpf_oomkill.c
+    collectors/ebpf.plugin/ebpf_oomkill.h
+    collectors/ebpf.plugin/ebpf_process.c
+    collectors/ebpf.plugin/ebpf_process.h
+    collectors/ebpf.plugin/ebpf_shm.c
+    collectors/ebpf.plugin/ebpf_shm.h
+    collectors/ebpf.plugin/ebpf_socket.c
+    collectors/ebpf.plugin/ebpf_socket.h
+    collectors/ebpf.plugin/ebpf_softirq.c
+    collectors/ebpf.plugin/ebpf_softirq.h
+    collectors/ebpf.plugin/ebpf_sync.c
+    collectors/ebpf.plugin/ebpf_sync.h
+    collectors/ebpf.plugin/ebpf_swap.c
+    collectors/ebpf.plugin/ebpf_swap.h
+    collectors/ebpf.plugin/ebpf_vfs.c
+    collectors/ebpf.plugin/ebpf_vfs.h
+    collectors/ebpf.plugin/ebpf_apps.c
+    collectors/ebpf.plugin/ebpf_apps.h
+    collectors/ebpf.plugin/ebpf_cgroup.c
+    collectors/ebpf.plugin/ebpf_cgroup.h)
 
 set(PROC_PLUGIN_FILES
-        collectors/proc.plugin/ipc.c
-        collectors/proc.plugin/plugin_proc.c
-        collectors/proc.plugin/plugin_proc.h
-        collectors/proc.plugin/proc_diskstats.c
-        collectors/proc.plugin/proc_mdstat.c
-        collectors/proc.plugin/proc_interrupts.c
-        collectors/proc.plugin/proc_softirqs.c
-        collectors/proc.plugin/proc_loadavg.c
-        collectors/proc.plugin/proc_meminfo.c
-        collectors/proc.plugin/proc_pagetypeinfo.c
-        collectors/proc.plugin/proc_net_dev.c
-        collectors/proc.plugin/proc_net_wireless.c
-        collectors/proc.plugin/proc_net_ip_vs_stats.c
-        collectors/proc.plugin/proc_net_netstat.c
-        collectors/proc.plugin/proc_net_rpc_nfs.c
-        collectors/proc.plugin/proc_net_rpc_nfsd.c
-        collectors/proc.plugin/proc_net_snmp.c
-        collectors/proc.plugin/proc_net_snmp6.c
-        collectors/proc.plugin/proc_net_sctp_snmp.c
-        collectors/proc.plugin/proc_net_sockstat.c
-        collectors/proc.plugin/proc_net_sockstat6.c
-        collectors/proc.plugin/proc_net_softnet_stat.c
-        collectors/proc.plugin/proc_net_stat_conntrack.c
-        collectors/proc.plugin/proc_net_stat_synproxy.c
-        collectors/proc.plugin/proc_self_mountinfo.c
-        collectors/proc.plugin/proc_self_mountinfo.h
-        collectors/proc.plugin/zfs_common.c
-        collectors/proc.plugin/zfs_common.h
-        collectors/proc.plugin/proc_spl_kstat_zfs.c
-        collectors/proc.plugin/proc_stat.c
-        collectors/proc.plugin/proc_sys_kernel_random_entropy_avail.c
-        collectors/proc.plugin/proc_vmstat.c
-        collectors/proc.plugin/proc_uptime.c
-        collectors/proc.plugin/proc_pressure.c
-        collectors/proc.plugin/proc_pressure.h
-        collectors/proc.plugin/sys_kernel_mm_ksm.c
-        collectors/proc.plugin/sys_block_zram.c
-        collectors/proc.plugin/sys_devices_system_edac_mc.c
-        collectors/proc.plugin/sys_devices_system_node.c
-        collectors/proc.plugin/sys_class_infiniband.c
-        collectors/proc.plugin/sys_fs_btrfs.c
-        collectors/proc.plugin/sys_class_power_supply.c
-        )
+    collectors/proc.plugin/ipc.c
+    collectors/proc.plugin/plugin_proc.c
+    collectors/proc.plugin/plugin_proc.h
+    collectors/proc.plugin/proc_diskstats.c
+    collectors/proc.plugin/proc_mdstat.c
+    collectors/proc.plugin/proc_interrupts.c
+    collectors/proc.plugin/proc_softirqs.c
+    collectors/proc.plugin/proc_loadavg.c
+    collectors/proc.plugin/proc_meminfo.c
+    collectors/proc.plugin/proc_pagetypeinfo.c
+    collectors/proc.plugin/proc_net_dev.c
+    collectors/proc.plugin/proc_net_wireless.c
+    collectors/proc.plugin/proc_net_ip_vs_stats.c
+    collectors/proc.plugin/proc_net_netstat.c
+    collectors/proc.plugin/proc_net_rpc_nfs.c
+    collectors/proc.plugin/proc_net_rpc_nfsd.c
+    collectors/proc.plugin/proc_net_snmp.c
+    collectors/proc.plugin/proc_net_snmp6.c
+    collectors/proc.plugin/proc_net_sctp_snmp.c
+    collectors/proc.plugin/proc_net_sockstat.c
+    collectors/proc.plugin/proc_net_sockstat6.c
+    collectors/proc.plugin/proc_net_softnet_stat.c
+    collectors/proc.plugin/proc_net_stat_conntrack.c
+    collectors/proc.plugin/proc_net_stat_synproxy.c
+    collectors/proc.plugin/proc_self_mountinfo.c
+    collectors/proc.plugin/proc_self_mountinfo.h
+    collectors/proc.plugin/zfs_common.c
+    collectors/proc.plugin/zfs_common.h
+    collectors/proc.plugin/proc_spl_kstat_zfs.c
+    collectors/proc.plugin/proc_stat.c
+    collectors/proc.plugin/proc_sys_kernel_random_entropy_avail.c
+    collectors/proc.plugin/proc_vmstat.c
+    collectors/proc.plugin/proc_uptime.c
+    collectors/proc.plugin/proc_pressure.c
+    collectors/proc.plugin/proc_pressure.h
+    collectors/proc.plugin/sys_kernel_mm_ksm.c
+    collectors/proc.plugin/sys_block_zram.c
+    collectors/proc.plugin/sys_devices_system_edac_mc.c
+    collectors/proc.plugin/sys_devices_system_node.c
+    collectors/proc.plugin/sys_class_infiniband.c
+    collectors/proc.plugin/sys_fs_btrfs.c
+    collectors/proc.plugin/sys_class_power_supply.c)
 
 set(TC_PLUGIN_FILES
-        collectors/tc.plugin/plugin_tc.c
-        )
+    collectors/tc.plugin/plugin_tc.c)
 
 set(MACOS_PLUGIN_FILES
-        collectors/macos.plugin/plugin_macos.c
-        collectors/macos.plugin/plugin_macos.h
-        collectors/macos.plugin/macos_sysctl.c
-        collectors/macos.plugin/macos_mach_smi.c
-        collectors/macos.plugin/macos_fw.c
-        )
+    collectors/macos.plugin/plugin_macos.c
+    collectors/macos.plugin/plugin_macos.h
+    collectors/macos.plugin/macos_sysctl.c
+    collectors/macos.plugin/macos_mach_smi.c
+    collectors/macos.plugin/macos_fw.c)
 
 set(PLUGINSD_PLUGIN_FILES
-        collectors/plugins.d/plugins_d.c
-        collectors/plugins.d/plugins_d.h
-        collectors/plugins.d/pluginsd_parser.c
-        collectors/plugins.d/pluginsd_parser.h
-        )
+    collectors/plugins.d/plugins_d.c
+    collectors/plugins.d/plugins_d.h
+    collectors/plugins.d/pluginsd_parser.c
+    collectors/plugins.d/pluginsd_parser.h)
 
 set(PARSER_PLUGIN_FILES
-        parser/parser.c
-        parser/parser.h
-        )
+    parser/parser.c
+    parser/parser.h)
 
 set(REGISTRY_PLUGIN_FILES
-        registry/registry.c
-        registry/registry.h
-        registry/registry_db.c
-        registry/registry_init.c
-        registry/registry_internals.c
-        registry/registry_internals.h
-        registry/registry_log.c
-        registry/registry_machine.c
-        registry/registry_machine.h
-        registry/registry_person.c
-        registry/registry_person.h
-        registry/registry_url.c
-        registry/registry_url.h
-        )
+    registry/registry.c
+    registry/registry.h
+    registry/registry_db.c
+    registry/registry_init.c
+    registry/registry_internals.c
+    registry/registry_internals.h
+    registry/registry_log.c
+    registry/registry_machine.c
+    registry/registry_machine.h
+    registry/registry_person.c
+    registry/registry_person.h
+    registry/registry_url.c
+    registry/registry_url.h)
 
 set(STATSD_PLUGIN_FILES
-        collectors/statsd.plugin/statsd.c
-        )
+    collectors/statsd.plugin/statsd.c)
 
 set(RRD_PLUGIN_FILES
-        database/rrdcalc.c
-        database/rrdcalc.h
-        database/rrdcalctemplate.c
-        database/rrdcalctemplate.h
-        database/rrdcontext.c
-        database/rrdcontext.h
-        database/rrddim.c
-        database/rrddimvar.c
-        database/rrddimvar.h
-        database/rrdfamily.c
-        database/rrdhost.c
-        database/rrdlabels.c
-        database/rrd.c
-        database/rrd.h
-        database/rrdset.c
-        database/rrdsetvar.c
-        database/rrdsetvar.h
-        database/rrdvar.c
-        database/rrdvar.h
-        database/storage_engine.c
-        database/storage_engine.h
-        database/ram/rrddim_mem.c
-        database/ram/rrddim_mem.h
-        database/sqlite/sqlite_functions.c
-        database/sqlite/sqlite_functions.h
-		database/sqlite/sqlite_context.c
-        database/sqlite/sqlite_context.h
-        database/sqlite/sqlite_db_migration.c
-        database/sqlite/sqlite_db_migration.h
-        database/sqlite/sqlite_aclk.c
-        database/sqlite/sqlite_aclk.h
-        database/sqlite/sqlite_health.c
-        database/sqlite/sqlite_health.h
-        database/sqlite/sqlite_aclk_node.c
-        database/sqlite/sqlite_aclk_node.h
-        database/sqlite/sqlite_aclk_chart.c
-        database/sqlite/sqlite_aclk_chart.h
-        database/sqlite/sqlite_aclk_alert.c
-        database/sqlite/sqlite_aclk_alert.h
-        database/sqlite/sqlite3.c
-        database/sqlite/sqlite3.h
-        database/engine/rrdengine.c
-        database/engine/rrdengine.h
-        database/engine/rrddiskprotocol.h
-        database/engine/datafile.c
-        database/engine/datafile.h
-        database/engine/journalfile.c
-        database/engine/journalfile.h
-        database/engine/rrdenginelib.c
-        database/engine/rrdenginelib.h
-        database/engine/rrdengineapi.c
-        database/engine/rrdengineapi.h
-        database/engine/pagecache.c
-        database/engine/pagecache.h
-        database/engine/rrdenglocking.c
-        database/engine/rrdenglocking.h
-        database/engine/metadata_log/metadatalog.h
-        database/engine/metadata_log/metadatalogapi.c
-        database/engine/metadata_log/metadatalogapi.h
-        database/engine/metadata_log/logfile.h
-        database/engine/metadata_log/logfile.c
-        database/engine/metadata_log/metadatalogprotocol.h
-        database/engine/metadata_log/metalogpluginsd.c
-        database/engine/metadata_log/metalogpluginsd.h
-        database/engine/metadata_log/compaction.c
-        database/engine/metadata_log/compaction.h
-        database/KolmogorovSmirnovDist.c
-        database/KolmogorovSmirnovDist.h
-        )
+    database/rrdcalc.c
+    database/rrdcalc.h
+    database/rrdcalctemplate.c
+    database/rrdcalctemplate.h
+    database/rrdcontext.c
+    database/rrdcontext.h
+    database/rrddim.c
+    database/rrddimvar.c
+    database/rrddimvar.h
+    database/rrdfamily.c
+    database/rrdhost.c
+    database/rrdlabels.c
+    database/rrd.c
+    database/rrd.h
+    database/rrdset.c
+    database/rrdsetvar.c
+    database/rrdsetvar.h
+    database/rrdvar.c
+    database/rrdvar.h
+    database/storage_engine.c
+    database/storage_engine.h
+    database/ram/rrddim_mem.c
+    database/ram/rrddim_mem.h
+    database/sqlite/sqlite_functions.c
+    database/sqlite/sqlite_functions.h
+    database/sqlite/sqlite_context.c
+    database/sqlite/sqlite_context.h
+    database/sqlite/sqlite_db_migration.c
+    database/sqlite/sqlite_db_migration.h
+    database/sqlite/sqlite_aclk.c
+    database/sqlite/sqlite_aclk.h
+    database/sqlite/sqlite_health.c
+    database/sqlite/sqlite_health.h
+    database/sqlite/sqlite_aclk_node.c
+    database/sqlite/sqlite_aclk_node.h
+    database/sqlite/sqlite_aclk_chart.c
+    database/sqlite/sqlite_aclk_chart.h
+    database/sqlite/sqlite_aclk_alert.c
+    database/sqlite/sqlite_aclk_alert.h
+    database/sqlite/sqlite3.c
+    database/sqlite/sqlite3.h
+    database/engine/rrdengine.c
+    database/engine/rrdengine.h
+    database/engine/rrddiskprotocol.h
+    database/engine/datafile.c
+    database/engine/datafile.h
+    database/engine/journalfile.c
+    database/engine/journalfile.h
+    database/engine/rrdenginelib.c
+    database/engine/rrdenginelib.h
+    database/engine/rrdengineapi.c
+    database/engine/rrdengineapi.h
+    database/engine/pagecache.c
+    database/engine/pagecache.h
+    database/engine/rrdenglocking.c
+    database/engine/rrdenglocking.h
+    database/engine/metadata_log/metadatalog.h
+    database/engine/metadata_log/metadatalogapi.c
+    database/engine/metadata_log/metadatalogapi.h
+    database/engine/metadata_log/logfile.h
+    database/engine/metadata_log/logfile.c
+    database/engine/metadata_log/metadatalogprotocol.h
+    database/engine/metadata_log/metalogpluginsd.c
+    database/engine/metadata_log/metalogpluginsd.h
+    database/engine/metadata_log/compaction.c
+    database/engine/metadata_log/compaction.h
+    database/KolmogorovSmirnovDist.c
+    database/KolmogorovSmirnovDist.h)
 
 set(WEB_PLUGIN_FILES
-        web/server/web_client.c
-        web/server/web_client.h
-        web/server/web_server.c
-        web/server/web_server.h
-        web/server/static/static-threaded.c
-        web/server/static/static-threaded.h
-        web/server/web_client_cache.c
-        web/server/web_client_cache.h
-        )
+    web/server/web_client.c
+    web/server/web_client.h
+    web/server/web_server.c
+    web/server/web_server.h
+    web/server/static/static-threaded.c
+    web/server/static/static-threaded.h
+    web/server/web_client_cache.c
+    web/server/web_client_cache.h)
 
 set(API_PLUGIN_FILES
-        web/api/web_api_v1.c
-        web/api/web_api_v1.h
-        web/api/badges/web_buffer_svg.c
-        web/api/badges/web_buffer_svg.h
-        web/api/exporters/allmetrics.c
-        web/api/exporters/allmetrics.h
-        web/api/exporters/shell/allmetrics_shell.c
-        web/api/exporters/shell/allmetrics_shell.h
-        web/api/queries/rrdr.c
-        web/api/queries/rrdr.h
-        web/api/queries/query.c
-        web/api/queries/query.h
-        web/api/queries/average/average.c
-        web/api/queries/average/average.h
-        web/api/queries/countif/countif.c
-        web/api/queries/countif/countif.h
-        web/api/queries/incremental_sum/incremental_sum.c
-        web/api/queries/incremental_sum/incremental_sum.h
-        web/api/queries/max/max.c
-        web/api/queries/max/max.h
-        web/api/queries/min/min.c
-        web/api/queries/min/min.h
-        web/api/queries/sum/sum.c
-        web/api/queries/sum/sum.h
-        web/api/queries/median/median.c
-        web/api/queries/median/median.h
-        web/api/queries/percentile/percentile.c
-        web/api/queries/percentile/percentile.h
-        web/api/queries/stddev/stddev.c
-        web/api/queries/stddev/stddev.h
-        web/api/queries/ses/ses.c
-        web/api/queries/ses/ses.h
-        web/api/queries/des/des.c
-        web/api/queries/des/des.h
-        web/api/queries/trimmed_mean/trimmed_mean.c
-        web/api/queries/trimmed_mean/trimmed_mean.h
-        web/api/queries/weights.c
-        web/api/queries/weights.h
-        web/api/formatters/rrd2json.c
-        web/api/formatters/rrd2json.h
-        web/api/formatters/csv/csv.c
-        web/api/formatters/csv/csv.h
-        web/api/formatters/json/json.c
-        web/api/formatters/json/json.h
-        web/api/formatters/ssv/ssv.c
-        web/api/formatters/ssv/ssv.h
-        web/api/formatters/value/value.c
-        web/api/formatters/value/value.h
-        web/api/formatters/json_wrapper.c
-        web/api/formatters/json_wrapper.h
-        web/api/formatters/charts2json.c
-        web/api/formatters/charts2json.h
-        web/api/formatters/rrdset2json.c
-        web/api/formatters/rrdset2json.h
-        web/api/health/health_cmdapi.c
-        )
+    web/api/web_api_v1.c
+    web/api/web_api_v1.h
+    web/api/badges/web_buffer_svg.c
+    web/api/badges/web_buffer_svg.h
+    web/api/exporters/allmetrics.c
+    web/api/exporters/allmetrics.h
+    web/api/exporters/shell/allmetrics_shell.c
+    web/api/exporters/shell/allmetrics_shell.h
+    web/api/queries/rrdr.c
+    web/api/queries/rrdr.h
+    web/api/queries/query.c
+    web/api/queries/query.h
+    web/api/queries/average/average.c
+    web/api/queries/average/average.h
+    web/api/queries/countif/countif.c
+    web/api/queries/countif/countif.h
+    web/api/queries/incremental_sum/incremental_sum.c
+    web/api/queries/incremental_sum/incremental_sum.h
+    web/api/queries/max/max.c
+    web/api/queries/max/max.h
+    web/api/queries/min/min.c
+    web/api/queries/min/min.h
+    web/api/queries/sum/sum.c
+    web/api/queries/sum/sum.h
+    web/api/queries/median/median.c
+    web/api/queries/median/median.h
+    web/api/queries/percentile/percentile.c
+    web/api/queries/percentile/percentile.h
+    web/api/queries/stddev/stddev.c
+    web/api/queries/stddev/stddev.h
+    web/api/queries/ses/ses.c
+    web/api/queries/ses/ses.h
+    web/api/queries/des/des.c
+    web/api/queries/des/des.h
+    web/api/queries/trimmed_mean/trimmed_mean.c
+    web/api/queries/trimmed_mean/trimmed_mean.h
+    web/api/queries/weights.c
+    web/api/queries/weights.h
+    web/api/formatters/rrd2json.c
+    web/api/formatters/rrd2json.h
+    web/api/formatters/csv/csv.c
+    web/api/formatters/csv/csv.h
+    web/api/formatters/json/json.c
+    web/api/formatters/json/json.h
+    web/api/formatters/ssv/ssv.c
+    web/api/formatters/ssv/ssv.h
+    web/api/formatters/value/value.c
+    web/api/formatters/value/value.h
+    web/api/formatters/json_wrapper.c
+    web/api/formatters/json_wrapper.h
+    web/api/formatters/charts2json.c
+    web/api/formatters/charts2json.h
+    web/api/formatters/rrdset2json.c
+    web/api/formatters/rrdset2json.h
+    web/api/health/health_cmdapi.c)
 
 set(STREAMING_PLUGIN_FILES
-        streaming/rrdpush.c
-        streaming/rrdpush.h
-        streaming/compression.c
-        streaming/receiver.c
-        streaming/sender.c
-        )
+    streaming/rrdpush.c
+    streaming/rrdpush.h
+    streaming/compression.c
+    streaming/receiver.c
+    streaming/sender.c)
 
 set(CLAIM_PLUGIN_FILES
-        claim/claim.c
-        claim/claim.h
-        )
+    claim/claim.c
+    claim/claim.h)
 
 set(ACLK_ALWAYS_BUILD
-        aclk/aclk_rrdhost_state.h
-        aclk/aclk_proxy.c
-        aclk/aclk_proxy.h
-        aclk/aclk.c
-        aclk/aclk.h
-        )
+    aclk/aclk_rrdhost_state.h
+    aclk/aclk_proxy.c
+    aclk/aclk_proxy.h
+    aclk/aclk.c
+    aclk/aclk.h)
 
 set(ACLK_FILES
-        aclk/aclk_util.c
-        aclk/aclk_util.h
-        aclk/aclk_stats.c
-        aclk/aclk_stats.h
-        aclk/aclk_query.c
-        aclk/aclk_query.h
-        aclk/aclk_query_queue.c
-        aclk/aclk_query_queue.h
-        aclk/aclk_otp.c
-        aclk/aclk_otp.h
-        aclk/aclk_tx_msgs.c
-        aclk/aclk_tx_msgs.h
-        aclk/aclk_rx_msgs.c
-        aclk/aclk_rx_msgs.h
-        aclk/https_client.c
-        aclk/https_client.h
-        aclk/aclk_charts_api.c
-        aclk/aclk_charts_api.h
-        aclk/aclk_alarm_api.c
-        aclk/aclk_alarm_api.h
-        aclk/aclk_contexts_api.c
-        aclk/aclk_contexts_api.h
-        mqtt_websockets/src/mqtt_wss_client.c
-        mqtt_websockets/src/include/mqtt_wss_client.h
-        mqtt_websockets/src/mqtt_wss_log.c
-        mqtt_websockets/src/include/mqtt_wss_log.h
-        mqtt_websockets/src/ws_client.c
-        mqtt_websockets/src/include/ws_client.h
-        mqtt_websockets/src/mqtt_ng.c
-        mqtt_websockets/src/include/mqtt_ng.h
-        mqtt_websockets/src/common_public.c
-        mqtt_websockets/src/include/common_public.h
-        mqtt_websockets/src/include/common_internal.h
-        mqtt_websockets/c-rbuf/src/ringbuffer.c
-        mqtt_websockets/c-rbuf/include/ringbuffer.h
-        mqtt_websockets/c-rbuf/src/ringbuffer_internal.h
-        mqtt_websockets/MQTT-C/src/mqtt.c
-        mqtt_websockets/MQTT-C/include/mqtt.h
-        aclk/schema-wrappers/connection.cc
-        aclk/schema-wrappers/connection.h
-        aclk/schema-wrappers/node_connection.cc
-        aclk/schema-wrappers/node_connection.h
-        aclk/schema-wrappers/node_creation.cc
-        aclk/schema-wrappers/node_creation.h
-        aclk/schema-wrappers/chart_stream.cc
-        aclk/schema-wrappers/chart_stream.h
-        aclk/schema-wrappers/chart_config.cc
-        aclk/schema-wrappers/chart_config.h
-        aclk/schema-wrappers/alarm_stream.cc
-        aclk/schema-wrappers/alarm_stream.h
-        aclk/schema-wrappers/alarm_config.cc
-        aclk/schema-wrappers/alarm_config.h
-        aclk/schema-wrappers/node_info.cc
-        aclk/schema-wrappers/node_info.h
-        aclk/schema-wrappers/capability.cc
-        aclk/schema-wrappers/capability.h
-        aclk/schema-wrappers/proto_2_json.cc
-        aclk/schema-wrappers/proto_2_json.h
-        aclk/schema-wrappers/context_stream.cc
-        aclk/schema-wrappers/context_stream.h
-        aclk/schema-wrappers/context.cc
-        aclk/schema-wrappers/context.h
-        aclk/schema-wrappers/schema_wrappers.h
-        aclk/schema-wrappers/schema_wrapper_utils.cc
-        aclk/schema-wrappers/schema_wrapper_utils.h
-        )
+    aclk/aclk_util.c
+    aclk/aclk_util.h
+    aclk/aclk_stats.c
+    aclk/aclk_stats.h
+    aclk/aclk_query.c
+    aclk/aclk_query.h
+    aclk/aclk_query_queue.c
+    aclk/aclk_query_queue.h
+    aclk/aclk_otp.c
+    aclk/aclk_otp.h
+    aclk/aclk_tx_msgs.c
+    aclk/aclk_tx_msgs.h
+    aclk/aclk_rx_msgs.c
+    aclk/aclk_rx_msgs.h
+    aclk/https_client.c
+    aclk/https_client.h
+    aclk/aclk_charts_api.c
+    aclk/aclk_charts_api.h
+    aclk/aclk_alarm_api.c
+    aclk/aclk_alarm_api.h
+    aclk/aclk_contexts_api.c
+    aclk/aclk_contexts_api.h
+    mqtt_websockets/src/mqtt_wss_client.c
+    mqtt_websockets/src/include/mqtt_wss_client.h
+    mqtt_websockets/src/mqtt_wss_log.c
+    mqtt_websockets/src/include/mqtt_wss_log.h
+    mqtt_websockets/src/ws_client.c
+    mqtt_websockets/src/include/ws_client.h
+    mqtt_websockets/src/mqtt_ng.c
+    mqtt_websockets/src/include/mqtt_ng.h
+    mqtt_websockets/src/common_public.c
+    mqtt_websockets/src/include/common_public.h
+    mqtt_websockets/src/include/common_internal.h
+    mqtt_websockets/c-rbuf/src/ringbuffer.c
+    mqtt_websockets/c-rbuf/include/ringbuffer.h
+    mqtt_websockets/c-rbuf/src/ringbuffer_internal.h
+    mqtt_websockets/MQTT-C/src/mqtt.c
+    mqtt_websockets/MQTT-C/include/mqtt.h
+    aclk/schema-wrappers/connection.cc
+    aclk/schema-wrappers/connection.h
+    aclk/schema-wrappers/node_connection.cc
+    aclk/schema-wrappers/node_connection.h
+    aclk/schema-wrappers/node_creation.cc
+    aclk/schema-wrappers/node_creation.h
+    aclk/schema-wrappers/chart_stream.cc
+    aclk/schema-wrappers/chart_stream.h
+    aclk/schema-wrappers/chart_config.cc
+    aclk/schema-wrappers/chart_config.h
+    aclk/schema-wrappers/alarm_stream.cc
+    aclk/schema-wrappers/alarm_stream.h
+    aclk/schema-wrappers/alarm_config.cc
+    aclk/schema-wrappers/alarm_config.h
+    aclk/schema-wrappers/node_info.cc
+    aclk/schema-wrappers/node_info.h
+    aclk/schema-wrappers/capability.cc
+    aclk/schema-wrappers/capability.h
+    aclk/schema-wrappers/proto_2_json.cc
+    aclk/schema-wrappers/proto_2_json.h
+    aclk/schema-wrappers/context_stream.cc
+    aclk/schema-wrappers/context_stream.h
+    aclk/schema-wrappers/context.cc
+    aclk/schema-wrappers/context.h
+    aclk/schema-wrappers/schema_wrappers.h
+    aclk/schema-wrappers/schema_wrapper_utils.cc
+    aclk/schema-wrappers/schema_wrapper_utils.h)
 
 set(SPAWN_PLUGIN_FILES
-        spawn/spawn.c
-        spawn/spawn_server.c
-        spawn/spawn_client.c
-        spawn/spawn.h
-        )
+    spawn/spawn.c
+    spawn/spawn_server.c
+    spawn/spawn_client.c
+    spawn/spawn.h)
 
 set(EXPORTING_ENGINE_FILES
-        exporting/exporting_engine.c
-        exporting/exporting_engine.h
-        exporting/graphite/graphite.c
-        exporting/graphite/graphite.h
-        exporting/json/json.c
-        exporting/json/json.h
-        exporting/opentsdb/opentsdb.c
-        exporting/opentsdb/opentsdb.h
-        exporting/prometheus/prometheus.c
-        exporting/prometheus/prometheus.h
-        exporting/read_config.c
-        exporting/clean_connectors.c
-        exporting/init_connectors.c
-        exporting/process_data.c
-        exporting/check_filters.c
-        exporting/send_data.c
-        exporting/send_internal_metrics.c
-        )
+    exporting/exporting_engine.c
+    exporting/exporting_engine.h
+    exporting/graphite/graphite.c
+    exporting/graphite/graphite.h
+    exporting/json/json.c
+    exporting/json/json.h
+    exporting/opentsdb/opentsdb.c
+    exporting/opentsdb/opentsdb.h
+    exporting/prometheus/prometheus.c
+    exporting/prometheus/prometheus.h
+    exporting/read_config.c
+    exporting/clean_connectors.c
+    exporting/init_connectors.c
+    exporting/process_data.c
+    exporting/check_filters.c
+    exporting/send_data.c
+    exporting/send_internal_metrics.c)
 
 set(PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES
-        exporting/prometheus/remote_write/remote_write.c
-        exporting/prometheus/remote_write/remote_write.h
-        exporting/prometheus/remote_write/remote_write_request.cc
-        exporting/prometheus/remote_write/remote_write_request.h
-        )
+    exporting/prometheus/remote_write/remote_write.c
+    exporting/prometheus/remote_write/remote_write.h
+    exporting/prometheus/remote_write/remote_write_request.cc
+    exporting/prometheus/remote_write/remote_write_request.h)
 
 set(KINESIS_EXPORTING_FILES
-        exporting/aws_kinesis/aws_kinesis.c
-        exporting/aws_kinesis/aws_kinesis.h
-        exporting/aws_kinesis/aws_kinesis_put_record.cc
-        exporting/aws_kinesis/aws_kinesis_put_record.h
-        )
+    exporting/aws_kinesis/aws_kinesis.c
+    exporting/aws_kinesis/aws_kinesis.h
+    exporting/aws_kinesis/aws_kinesis_put_record.cc
+    exporting/aws_kinesis/aws_kinesis_put_record.h)
 
 set(PUBSUB_EXPORTING_FILES
-        exporting/pubsub/pubsub.c
-        exporting/pubsub/pubsub.h
-        exporting/pubsub/pubsub_publish.cc
-        exporting/pubsub/pubsub_publish.h
-        )
+    exporting/pubsub/pubsub.c
+    exporting/pubsub/pubsub.h
+    exporting/pubsub/pubsub_publish.cc
+    exporting/pubsub/pubsub_publish.h)
 
 set(MONGODB_EXPORTING_FILES
-        exporting/mongodb/mongodb.c
-        exporting/mongodb/mongodb.h
-        )
+    exporting/mongodb/mongodb.c
+    exporting/mongodb/mongodb.h)
 
 set(DAEMON_FILES
-        daemon/buildinfo.c
-        daemon/buildinfo.h
-        daemon/common.c
-        daemon/common.h
-        daemon/daemon.c
-        daemon/daemon.h
-        daemon/global_statistics.c
-        daemon/global_statistics.h
-        daemon/analytics.c
-        daemon/analytics.h
-        daemon/main.c
-        daemon/main.h
-        daemon/signals.c
-        daemon/signals.h
-        daemon/service.c
-        daemon/static_threads.c
-        daemon/static_threads.h
-        daemon/commands.c
-        daemon/commands.h
-        daemon/unit_test.c
-        daemon/unit_test.h
-        )
+    daemon/buildinfo.c
+    daemon/buildinfo.h
+    daemon/common.c
+    daemon/common.h
+    daemon/daemon.c
+    daemon/daemon.h
+    daemon/global_statistics.c
+    daemon/global_statistics.h
+    daemon/analytics.c
+    daemon/analytics.h
+    daemon/main.c
+    daemon/main.h
+    daemon/signals.c
+    daemon/signals.h
+    daemon/service.c
+    daemon/static_threads.c
+    daemon/static_threads.h
+    daemon/commands.c
+    daemon/commands.h
+    daemon/unit_test.c
+    daemon/unit_test.h)
 
 set(ML_FILES
     ml/ml.h
-    ml/ml-dummy.c
-)
+    ml/ml-dummy.c)
 
-IF(ENABLE_ML)
+if(ENABLE_ML)
     list(APPEND ML_FILES
-            ml/BitBufferCounter.h
-            ml/BitBufferCounter.cc
-            ml/BitRateWindow.h
-            ml/BitRateWindow.cc
-            ml/Config.h
-            ml/Config.cc
-            ml/Database.h
-            ml/Database.cc
-            ml/Dimension.cc
-            ml/Dimension.h
-            ml/Host.h
-            ml/Host.cc
-            ml/Query.h
-            ml/kmeans/KMeans.h
-            ml/kmeans/KMeans.cc
-            ml/kmeans/SamplesBuffer.h
-            ml/kmeans/SamplesBuffer.cc
-            ml/kmeans/dlib/dlib/all/source.cpp
-            ml/json/single_include/nlohmann/json.hpp
-            ml/ml.cc
-            ml/ml-private.h
-    )
-ENDIF()
+         ml/BitBufferCounter.h
+         ml/BitBufferCounter.cc
+         ml/BitRateWindow.h
+         ml/BitRateWindow.cc
+         ml/Config.h
+         ml/Config.cc
+         ml/Database.h
+         ml/Database.cc
+         ml/Dimension.cc
+         ml/Dimension.h
+         ml/Host.h
+         ml/Host.cc
+         ml/Query.h
+         ml/kmeans/KMeans.h
+         ml/kmeans/KMeans.cc
+         ml/kmeans/SamplesBuffer.h
+         ml/kmeans/SamplesBuffer.cc
+         ml/kmeans/dlib/dlib/all/source.cpp
+         ml/json/single_include/nlohmann/json.hpp
+         ml/ml.cc
+         ml/ml-private.h)
+endif()
 
 set(NETDATA_FILES
         collectors/all.h
@@ -1078,16 +708,6 @@ set(NETDATACLI_FILES
         )
 
 include_directories(AFTER .)
-
-add_definitions(
-        -DCACHE_DIR="/var/cache/netdata"
-        -DCONFIG_DIR="/etc/netdata"
-        -DLIBCONFIG_DIR="/usr/lib/netdata/conf.d"
-        -DLOG_DIR="/var/log/netdata"
-        -DPLUGINS_DIR="/usr/libexec/netdata/plugins.d"
-        -DWEB_DIR="/usr/share/netdata/web"
-        -DVARLIB_DIR="/var/lib/netdata"
-)
 
 # -----------------------------------------------------------------------------
 # kinesis exporting connector
@@ -1280,14 +900,6 @@ IF("${NETDATA_VERSION}" STREQUAL "")
     file(STRINGS "packaging/version" NETDATA_VERSION LIMIT_COUNT 1)
 ENDIF()
 
-set(NETDATA_USER "netdata" CACHE STRING "use this user to drop privileges")
-
-if(MAC_OS)
-    set(ENABLE_APPS_PLUGIN False)
-else()
-    set(ENABLE_APPS_PLUGIN True)
-endif()
-
 check_include_file(time.h HAVE_TIME_H)
 check_include_file(unistd.h HAVE_UNISTD_H)
 if (HAVE_TIME_H)
@@ -1367,7 +979,6 @@ IF(LINUX)
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 
     SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
-    SET(ENABLE_PLUGIN_APPS True)
     SET(ENABLE_PLUGIN_PERF True)
     SET(ENABLE_PLUGIN_SLABINFO True)
 
@@ -1379,7 +990,6 @@ ELSEIF(FREEBSD)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_APPS True)
     SET(ENABLE_PLUGIN_PERF False)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
@@ -1392,7 +1002,6 @@ ELSEIF(MACOS)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_APPS False)
     SET(ENABLE_PLUGIN_PERF False)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
@@ -1438,18 +1047,7 @@ target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
 
 
-# -----------------------------------------------------------------------------
-# apps.plugin
-
-IF(ENABLE_PLUGIN_APPS)
-    message(STATUS "apps.plugin: enabled")
-    add_executable(apps.plugin ${APPS_PLUGIN_FILES})
-    target_link_libraries (apps.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CAP_LIBRARIES})
-    target_include_directories(apps.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CAP_INCLUDE_DIRS})
-    target_compile_options(apps.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CAP_CFLAGS_OTHER})
-ELSE()
-    message(STATUS "apps.plugin: disabled")
-ENDIF()
+add_subdirectory(collectors)
 
 
 # -----------------------------------------------------------------------------
@@ -1762,4 +1360,4 @@ endif()
 endif()
 endif()
 
-
+install(TARGETS netdata DESTINATION bin)
