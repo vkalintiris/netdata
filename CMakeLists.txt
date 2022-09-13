@@ -229,9 +229,6 @@ set(NFACCT_PLUGIN_FILES
 set(XENSTAT_PLUGIN_FILES
     collectors/xenstat.plugin/xenstat_plugin.c)
 
-set(PERF_PLUGIN_FILES
-    collectors/perf.plugin/perf_plugin.c)
-
 set(SLABINFO_PLUGIN_FILES
     collectors/slabinfo.plugin/slabinfo.c)
 
@@ -955,12 +952,6 @@ ELSE()
     SET(MAYBE_UNUSED_MACRO "")
 ENDIF()
 
-configure_file(
-    ${PROJECT_SOURCE_DIR}/libnetdata/config.h.cmake
-    ${NETDATA_INCLUDE_DIR}/config.h
-)
-list(APPEND LIBNETDATA_FILES ${NETDATA_INCLUDE_DIR}/config.h)
-
 # -----------------------------------------------------------------------------
 # netdata
 
@@ -979,7 +970,6 @@ IF(LINUX)
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 
     SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
-    SET(ENABLE_PLUGIN_PERF True)
     SET(ENABLE_PLUGIN_SLABINFO True)
 
 ELSEIF(FREEBSD)
@@ -990,7 +980,6 @@ ELSEIF(FREEBSD)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_PERF False)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
 
@@ -1002,7 +991,6 @@ ELSEIF(MACOS)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_PERF False)
     SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
 
@@ -1047,9 +1035,6 @@ target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
 
 
-add_subdirectory(collectors)
-
-
 # -----------------------------------------------------------------------------
 # freeipmi.plugin
 
@@ -1090,21 +1075,6 @@ IF(ENABLE_PLUGIN_XENSTAT)
 ELSE()
     message(STATUS "xenstat.plugin: disabled (requires libxenstat)")
 ENDIF()
-
-
-# -----------------------------------------------------------------------------
-# perf.plugin
-
-IF(ENABLE_PLUGIN_PERF)
-    message(STATUS "perf.plugin: enabled")
-    add_executable(perf.plugin ${PERF_PLUGIN_FILES})
-    target_link_libraries (perf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
-    target_include_directories(perf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(perf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
-ELSE()
-    message(STATUS "perf.plugin: disabled")
-ENDIF()
-
 
 # -----------------------------------------------------------------------------
 # ebpf_process.plugin
@@ -1360,4 +1330,10 @@ endif()
 endif()
 endif()
 
+configure_file(
+    libnetdata/config.h.cmake
+    ${NETDATA_INCLUDE_DIR}/config.h
+)
+
+add_subdirectory(collectors)
 install(TARGETS netdata DESTINATION bin)

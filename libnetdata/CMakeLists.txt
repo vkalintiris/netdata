@@ -1,10 +1,5 @@
 add_subdirectory(libjudy)
 
-configure_file(
-    config.h.cmake
-    ${NETDATA_INCLUDE_DIR}/config.h
-)
-
 set(LIBNETDATA_FILES
         adaptive_resortable_list/adaptive_resortable_list.c
         adaptive_resortable_list/adaptive_resortable_list.h
@@ -65,7 +60,6 @@ set(LIBNETDATA_FILES
         worker_utilization/worker_utilization.h
         circular_buffer/circular_buffer.c
         circular_buffer/circular_buffer.h
-        ${NETDATA_INCLUDE_DIR}/config.h
     )
 
 IF(ENABLE_PLUGIN_EBPF)
