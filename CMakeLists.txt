@@ -67,6 +67,9 @@ ENDIF()
 # show the operating system on the console
 message(STATUS "system name: ${CMAKE_SYSTEM_NAME}")
 
+set(NETDATA_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
+set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${NETDATA_INCLUDE_DIR})
+
 # -----------------------------------------------------------------------------
 # Detect libuuid
 
@@ -339,13 +342,17 @@ ENDIF()
 
 # -----------------------------------------------------------------------------
 # Detect ml dependencies
-file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_ML REGEX "^#define ENABLE_ML 1$")
-IF(DEFINE_ENABLE_ML MATCHES ".+" AND
-   EXISTS "${CMAKE_SOURCE_DIR}/ml/kmeans/dlib/dlib/all/source.cpp" AND
-   EXISTS "${CMAKE_SOURCE_DIR}/ml/json/single_include/nlohmann/json.hpp")
-    set(ENABLE_ML True)
-    list(APPEND NETDATA_COMMON_CFLAGS "-DDLIB_NO_GUI_SUPPORT")
-    list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/kmeans/dlib")
+IF (FALSE)
+    file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_ML REGEX "^#define ENABLE_ML 1$")
+    IF(DEFINE_ENABLE_ML MATCHES ".+" AND
+       EXISTS "${CMAKE_SOURCE_DIR}/ml/kmeans/dlib/dlib/all/source.cpp" AND
+       EXISTS "${CMAKE_SOURCE_DIR}/ml/json/single_include/nlohmann/json.hpp")
+        set(ENABLE_ML True)
+        list(APPEND NETDATA_COMMON_CFLAGS "-DDLIB_NO_GUI_SUPPORT")
+        list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/kmeans/dlib")
+    ELSE()
+        set(ENABLE_ML False)
+    ENDIF()
 ELSE()
     set(ENABLE_ML False)
 ENDIF()
@@ -503,6 +510,7 @@ IF(ENABLE_PLUGIN_EBPF)
 ENDIF()
 
 add_library(libnetdata OBJECT ${LIBNETDATA_FILES})
+target_include_directories(libnetdata PUBLIC ${NETDATA_INCLUDE_DIR})
 
 set(APPS_PLUGIN_FILES
         collectors/apps.plugin/apps_plugin.c)
@@ -1072,7 +1080,6 @@ set(NETDATACLI_FILES
 include_directories(AFTER .)
 
 add_definitions(
-        -DHAVE_CONFIG_H
         -DCACHE_DIR="/var/cache/netdata"
         -DCONFIG_DIR="/etc/netdata"
         -DLIBCONFIG_DIR="/usr/lib/netdata/conf.d"
@@ -1260,6 +1267,88 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include)
 
+# generate config.h so that CMake becomes independent of automake
+
+## netdata version
+set(GIT_EXECUTABLE "git")
+execute_process(COMMAND ${GIT_EXECUTABLE} describe
+                WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+                OUTPUT_VARIABLE NETDATA_VERSION
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+IF("${NETDATA_VERSION}" STREQUAL "")
+    file(STRINGS "packaging/version" NETDATA_VERSION LIMIT_COUNT 1)
+ENDIF()
+
+set(NETDATA_USER "netdata" CACHE STRING "use this user to drop privileges")
+
+if(MAC_OS)
+    set(ENABLE_APPS_PLUGIN False)
+else()
+    set(ENABLE_APPS_PLUGIN True)
+endif()
+
+check_include_file(time.h HAVE_TIME_H)
+check_include_file(unistd.h HAVE_UNISTD_H)
+if (HAVE_TIME_H)
+    include(CheckStructHasMember)
+    check_struct_has_member("struct timespec" tv_sec "time.h" HAVE_STRUCT_TIMESPEC)
+endif ()
+
+check_include_file(sys/statfs.h HAVE_SYS_STATFS_H)
+check_include_file(sys/statvfs.h HAVE_SYS_STATVFS_H)
+check_include_file(inttypes.h HAVE_INTTYPES_H)
+check_include_file(stdint.h HAVE_STDINT_H)
+
+include(CheckSymbolExists)
+check_include_file(sys/mkdev.h HAVE_SYS_MKDEV_H)
+if (HAVE_SYS_MKDEV_H)
+    check_symbol_exists(major "sys/mkdev.h" MAJOR_IN_MKDEV)
+endif()
+check_include_file(sys/sysmacros.h HAVE_SYS_SYSMACROS_H)
+if (HAVE_SYS_SYSMACROS_H)
+    check_symbol_exists(major "sys/sysmacros.h" MAJOR_IN_SYSMACROS)
+endif()
+
+if (CRYPTO_FOUND)
+    include(CheckLibraryExists)
+    set(HAVE_CRYPTO True)
+    FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
+    check_library_exists(crypto X509_VERIFY_PARAM_set1_host ${CRYPTO_LIBRARY_LOCATION} HAVE_X509_VERIFY_PARAM_set1_host)
+    if (HAVE_X509_VERIFY_PARAM_set1_host)
+        set(HAVE_X509_VERIFY_PARAM_set1_host True)
+    endif()
+endif()
+
+include(CheckCSourceCompiles)
+check_c_source_compiles("
+  #define _GNU_SOURCE
+  #include <string.h>
+  int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
+  " STRERROR_R_CHAR_P)
+
+IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+    SET(LIKELY_MACRO "__builtin_expect(!!(x), 1)")
+    SET(UNLIKELY_MACRO "__builtin_expect(!!(x), 0)")
+ELSE()
+    SET(LIKELY_MACRO "(x)")
+    SET(UNLIKELY_MACRO "(x)")
+ENDIF()
+
+IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+    SET(ALWAYS_UNUSED_MACRO "__attribute__((unused))")
+    SET(MAYBE_UNUSED_MACRO "__attribute__((unused))")
+ELSE()
+    SET(ALWAYS_UNUSED_MACRO "")
+    SET(MAYBE_UNUSED_MACRO "")
+ENDIF()
+
+configure_file(
+    ${PROJECT_SOURCE_DIR}/libnetdata/config.h.cmake
+    ${NETDATA_INCLUDE_DIR}/config.h
+)
+list(APPEND LIBNETDATA_FILES ${NETDATA_INCLUDE_DIR}/config.h)
+
 # -----------------------------------------------------------------------------
 # netdata
 
@@ -1267,7 +1356,7 @@ IF(LINUX)
     list(APPEND NETDATA_FILES daemon/static_threads_linux.c)
     list(APPEND NETDATA_COMMON_LIBRARIES rt)
 
-    add_executable(netdata config.h ${NETDATA_FILES}
+    add_executable(netdata ${NETDATA_FILES}
             ${CGROUPS_PLUGIN_FILES}
             ${DISKSPACE_PLUGIN_FILES}
             ${PROC_PLUGIN_FILES}
@@ -1285,7 +1374,7 @@ IF(LINUX)
 ELSEIF(FREEBSD)
     list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
 
-    add_executable(netdata config.h ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
+    add_executable(netdata ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1298,7 +1387,7 @@ ELSEIF(FREEBSD)
 ELSEIF(MACOS)
     list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
 
-    add_executable(netdata config.h ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
+    add_executable(netdata ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1343,7 +1432,7 @@ ENDIF()
 # -----------------------------------------------------------------------------
 # netdatacli
 
-add_executable(netdatacli config.h ${NETDATACLI_FILES})
+add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
 target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1354,7 +1443,7 @@ target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
 
 IF(ENABLE_PLUGIN_APPS)
     message(STATUS "apps.plugin: enabled")
-    add_executable(apps.plugin config.h ${APPS_PLUGIN_FILES})
+    add_executable(apps.plugin ${APPS_PLUGIN_FILES})
     target_link_libraries (apps.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CAP_LIBRARIES})
     target_include_directories(apps.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CAP_INCLUDE_DIRS})
     target_compile_options(apps.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CAP_CFLAGS_OTHER})
@@ -1368,7 +1457,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_FREEIPMI)
     message(STATUS "freeipmi.plugin: enabled")
-    add_executable(freeipmi.plugin config.h ${FREEIPMI_PLUGIN_FILES})
+    add_executable(freeipmi.plugin ${FREEIPMI_PLUGIN_FILES})
     target_link_libraries (freeipmi.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${IPMI_LIBRARIES})
     target_include_directories(freeipmi.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${IPMI_INCLUDE_DIRS})
     target_compile_options(freeipmi.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${IPMI_CFLAGS_OTHER})
@@ -1382,7 +1471,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_NFACCT)
     message(STATUS "nfacct.plugin: enabled")
-    add_executable(nfacct.plugin config.h ${NFACCT_PLUGIN_FILES})
+    add_executable(nfacct.plugin ${NFACCT_PLUGIN_FILES})
     target_link_libraries (nfacct.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${MNL_LIBRARIES} ${NFACCT_LIBRARIES})
     target_include_directories(nfacct.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${MNL_INCLUDE_DIRS} ${NFACCT_INCLUDE_DIRS})
     target_compile_options(nfacct.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
@@ -1396,7 +1485,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_XENSTAT)
     message(STATUS "xenstat.plugin: enabled")
-    add_executable(xenstat.plugin config.h ${XENSTAT_PLUGIN_FILES})
+    add_executable(xenstat.plugin ${XENSTAT_PLUGIN_FILES})
     target_link_libraries (xenstat.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${XENSTAT_LIBRARIES})
     target_include_directories(xenstat.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${XENSTAT_INCLUDE_DIRS})
     target_compile_options(xenstat.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${XENSTAT_CFLAGS_OTHER})
@@ -1410,7 +1499,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_PERF)
     message(STATUS "perf.plugin: enabled")
-    add_executable(perf.plugin config.h ${PERF_PLUGIN_FILES})
+    add_executable(perf.plugin ${PERF_PLUGIN_FILES})
     target_link_libraries (perf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(perf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(perf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1424,7 +1513,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_EBPF)
     message(STATUS "ebpf.plugin: enabled")
-    add_executable(ebpf.plugin config.h ${EBPF_PROCESS_PLUGIN_FILES})
+    add_executable(ebpf.plugin ${EBPF_PROCESS_PLUGIN_FILES})
     target_link_libraries (ebpf.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(ebpf.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1438,7 +1527,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_SLABINFO)
     message(STATUS "slabinfo.plugin: enabled")
-    add_executable(slabinfo.plugin config.h ${SLABINFO_PLUGIN_FILES})
+    add_executable(slabinfo.plugin ${SLABINFO_PLUGIN_FILES})
     target_link_libraries (slabinfo.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(slabinfo.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(slabinfo.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1452,7 +1541,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_CUPS)
     message(STATUS "cups.plugin: enabled")
-    add_executable(cups.plugin config.h ${CUPS_PLUGIN_FILES})
+    add_executable(cups.plugin ${CUPS_PLUGIN_FILES})
     target_link_libraries (cups.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CUPS_LIBRARIES})
     target_include_directories(cups.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CUPS_INCLUDE_DIRS})
     target_compile_options(cups.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CUPS_CFLAGS_OTHER})
@@ -1466,7 +1555,7 @@ ENDIF()
 
 IF(ENABLE_PLUGIN_CGROUP_NETWORK)
     message(STATUS "cgroup-network: enabled")
-    add_executable(cgroup-network config.h ${CGROUP_NETWORK_FILES})
+    add_executable(cgroup-network ${CGROUP_NETWORK_FILES})
     target_link_libraries (cgroup-network libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(cgroup-network PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(cgroup-network PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1674,77 +1763,3 @@ endif()
 endif()
 
 
-# generate config.h so that CMake becomes independent of automake
-
-## netdata version
-set(GIT_EXECUTABLE "git")
-execute_process(COMMAND ${GIT_EXECUTABLE} describe OUTPUT_VARIABLE NETDATA_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-IF("${NETDATA_VERSION}" STREQUAL "")
-    file(STRINGS "packaging/version" NETDATA_VERSION LIMIT_COUNT 1)
-ENDIF()
-
-set(NETDATA_USER "netdata" CACHE STRING "use this user to drop privileges")
-
-if(MAC_OS)
-    set(ENABLE_APPS_PLUGIN False)
-else()
-    set(ENABLE_APPS_PLUGIN True)
-endif()
-
-check_include_file(time.h HAVE_TIME_H)
-check_include_file(unistd.h HAVE_UNISTD_H)
-if (HAVE_TIME_H)
-    include(CheckStructHasMember)
-    check_struct_has_member("struct timespec" tv_sec "time.h" HAVE_STRUCT_TIMESPEC)
-endif ()
-
-check_include_file(sys/statfs.h HAVE_SYS_STATFS_H)
-check_include_file(sys/statvfs.h HAVE_SYS_STATVFS_H)
-check_include_file(inttypes.h HAVE_INTTYPES_H)
-check_include_file(stdint.h HAVE_STDINT_H)
-
-include(CheckSymbolExists)
-check_include_file(sys/mkdev.h HAVE_SYS_MKDEV_H)
-if (HAVE_SYS_MKDEV_H)
-    check_symbol_exists(major "sys/mkdev.h" MAJOR_IN_MKDEV)
-endif()
-check_include_file(sys/sysmacros.h HAVE_SYS_SYSMACROS_H)
-if (HAVE_SYS_SYSMACROS_H)
-    check_symbol_exists(major "sys/sysmacros.h" MAJOR_IN_SYSMACROS)
-endif()
-
-if (CRYPTO_FOUND)
-    include(CheckLibraryExists)
-    set(HAVE_CRYPTO True)
-    FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
-    check_library_exists(crypto X509_VERIFY_PARAM_set1_host ${CRYPTO_LIBRARY_LOCATION} HAVE_X509_VERIFY_PARAM_set1_host)
-    if (HAVE_X509_VERIFY_PARAM_set1_host)
-        set(HAVE_X509_VERIFY_PARAM_set1_host True)
-    endif()
-endif()
-
-include(CheckCSourceCompiles)
-check_c_source_compiles("
-  #define _GNU_SOURCE
-  #include <string.h>
-  int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
-  " STRERROR_R_CHAR_P)
-
-IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
-    SET(LIKELY_MACRO "__builtin_expect(!!(x), 1)")
-    SET(UNLIKELY_MACRO "__builtin_expect(!!(x), 0)")
-ELSE()
-    SET(LIKELY_MACRO "(x)")
-    SET(UNLIKELY_MACRO "(x)")
-ENDIF()
-
-IF(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
-    SET(ALWAYS_UNUSED_MACRO "__attribute__((unused))")
-    SET(MAYBE_UNUSED_MACRO "__attribute__((unused))")
-ELSE()
-    SET(ALWAYS_UNUSED_MACRO "")
-    SET(MAYBE_UNUSED_MACRO "")
-ENDIF()
-
-configure_file(config.cmake.h.in config.h)

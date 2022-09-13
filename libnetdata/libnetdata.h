@@ -9,6 +9,8 @@ extern "C" {
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
+#else
+#include "config.h"
 #endif
 
 #define OS_LINUX   1
