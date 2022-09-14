@@ -6,6 +6,8 @@
 cmake_minimum_required(VERSION 3.24)
 project(netdata C CXX)
 
+set(CMAKE_CXX_STANDARD 11)
+
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
@@ -130,6 +132,7 @@ set(NETDATA_COMMON_INCLUDE_DIRS ${UUID_INCLUDE_DIRS}
 
 # -----------------------------------------------------------------------------
 # Detect libbpf
+set(ENABLE_PLUGIN_EBPF False)
 if(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
     message(STATUS "libbpf library found")
     # later we use:
@@ -146,7 +149,6 @@ if(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
         set(ENABLE_PLUGIN_EBPF True)
         set(HAVE_LIBBPF True)
     else(ELF_LIBRARIES)
-        set(ENABLE_PLUGIN_EBPF False)
         message(STATUS "ebpf plugin: disabled (requires libelf)")
     endif(ELF_LIBRARIES)
 endif()
@@ -576,30 +578,16 @@ endif()
 # -----------------------------------------------------------------------------
 # netdata
 
+add_executable(netdata ${NETDATA_FILES})
+
+target_compile_options(netdata PRIVATE ${NETDATA_COMMON_CFLAGS})
+target_include_directories(netdata PRIVATE ${NETDATA_COMMON_INCLUDE_DIRS})
+target_link_libraries(netdata PRIVATE libnetdata ${NETDATA_COMMON_LIBRARIES})
+
 if(LINUX)
-    list(APPEND NETDATA_COMMON_LIBRARIES rt)
-
-    add_executable(netdata ${NETDATA_FILES})
-    target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
-    target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-elseif(FREEBSD)
-    add_executable(netdata ${NETDATA_FILES})
-    target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
-    target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-    SET(ENABLE_PLUGIN_EBPF False)
+    target_link_libraries(netdata PRIVATE rt)
 elseif(MACOS)
-    add_executable(netdata ${NETDATA_FILES})
-    target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
-    target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-    SET(ENABLE_PLUGIN_EBPF False)
-endif()
-
-if(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
-    set_property(TARGET netdata PROPERTY CXX_STANDARD 11)
-    set_property(TARGET netdata PROPERTY CMAKE_CXX_STANDARD_REQUIRED ON)
+    target_link_libraries(netdata PRIVATE ${IOKIT} ${FOUNDATION})
 endif()
 
 # -----------------------------------------------------------------------------
