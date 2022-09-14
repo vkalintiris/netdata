@@ -314,73 +314,6 @@ set(RRD_PLUGIN_FILES
     database/KolmogorovSmirnovDist.c
     database/KolmogorovSmirnovDist.h)
 
-set(WEB_PLUGIN_FILES
-    web/server/web_client.c
-    web/server/web_client.h
-    web/server/web_server.c
-    web/server/web_server.h
-    web/server/static/static-threaded.c
-    web/server/static/static-threaded.h
-    web/server/web_client_cache.c
-    web/server/web_client_cache.h)
-
-set(API_PLUGIN_FILES
-    web/api/web_api_v1.c
-    web/api/web_api_v1.h
-    web/api/badges/web_buffer_svg.c
-    web/api/badges/web_buffer_svg.h
-    web/api/exporters/allmetrics.c
-    web/api/exporters/allmetrics.h
-    web/api/exporters/shell/allmetrics_shell.c
-    web/api/exporters/shell/allmetrics_shell.h
-    web/api/queries/rrdr.c
-    web/api/queries/rrdr.h
-    web/api/queries/query.c
-    web/api/queries/query.h
-    web/api/queries/average/average.c
-    web/api/queries/average/average.h
-    web/api/queries/countif/countif.c
-    web/api/queries/countif/countif.h
-    web/api/queries/incremental_sum/incremental_sum.c
-    web/api/queries/incremental_sum/incremental_sum.h
-    web/api/queries/max/max.c
-    web/api/queries/max/max.h
-    web/api/queries/min/min.c
-    web/api/queries/min/min.h
-    web/api/queries/sum/sum.c
-    web/api/queries/sum/sum.h
-    web/api/queries/median/median.c
-    web/api/queries/median/median.h
-    web/api/queries/percentile/percentile.c
-    web/api/queries/percentile/percentile.h
-    web/api/queries/stddev/stddev.c
-    web/api/queries/stddev/stddev.h
-    web/api/queries/ses/ses.c
-    web/api/queries/ses/ses.h
-    web/api/queries/des/des.c
-    web/api/queries/des/des.h
-    web/api/queries/trimmed_mean/trimmed_mean.c
-    web/api/queries/trimmed_mean/trimmed_mean.h
-    web/api/queries/weights.c
-    web/api/queries/weights.h
-    web/api/formatters/rrd2json.c
-    web/api/formatters/rrd2json.h
-    web/api/formatters/csv/csv.c
-    web/api/formatters/csv/csv.h
-    web/api/formatters/json/json.c
-    web/api/formatters/json/json.h
-    web/api/formatters/ssv/ssv.c
-    web/api/formatters/ssv/ssv.h
-    web/api/formatters/value/value.c
-    web/api/formatters/value/value.h
-    web/api/formatters/json_wrapper.c
-    web/api/formatters/json_wrapper.h
-    web/api/formatters/charts2json.c
-    web/api/formatters/charts2json.h
-    web/api/formatters/rrdset2json.c
-    web/api/formatters/rrdset2json.h
-    web/api/health/health_cmdapi.c)
-
 set(STREAMING_PLUGIN_FILES
     streaming/rrdpush.c
     streaming/rrdpush.h
@@ -538,8 +471,8 @@ set(NETDATA_FILES
         ${EXPORTING_ENGINE_FILES}
         ${ML_FILES}
         ${RRD_PLUGIN_FILES}
-        ${STREAMING_PLUGIN_FILES}
-        ${WEB_PLUGIN_FILES})
+        ${STREAMING_PLUGIN_FILES})
+
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -1052,5 +985,6 @@ add_subdirectory(health)
 add_subdirectory(parser)
 add_subdirectory(registry)
 add_subdirectory(spawn)
+add_subdirectory(web)
 
 install(TARGETS netdata DESTINATION bin)
