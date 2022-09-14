@@ -217,9 +217,6 @@ set(CGROUPS_PLUGIN_FILES
     collectors/cgroups.plugin/sys_fs_cgroup.c
     collectors/cgroups.plugin/sys_fs_cgroup.h)
 
-set(CGROUP_NETWORK_FILES
-    collectors/cgroups.plugin/cgroup-network.c)
-
 set(DISKSPACE_PLUGIN_FILES
     collectors/diskspace.plugin/plugin_diskspace.c)
 
@@ -957,8 +954,6 @@ if(LINUX)
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-
-    SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
 elseif(FREEBSD)
     list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
 
@@ -966,7 +961,6 @@ elseif(FREEBSD)
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-    SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
     SET(ENABLE_PLUGIN_EBPF False)
 elseif(MACOS)
     list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
@@ -975,7 +969,6 @@ elseif(MACOS)
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
-    SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
     SET(ENABLE_PLUGIN_EBPF False)
 endif()
 
@@ -1022,19 +1015,6 @@ if(ENABLE_PLUGIN_EBPF)
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 else()
     message(STATUS "ebpf.plugin: disabled")
-endif()
-
-# -----------------------------------------------------------------------------
-# cgroup-network
-
-if(ENABLE_PLUGIN_CGROUP_NETWORK)
-    message(STATUS "cgroup-network: enabled")
-    add_executable(cgroup-network ${CGROUP_NETWORK_FILES})
-    target_link_libraries (cgroup-network libnetdata ${NETDATA_COMMON_LIBRARIES})
-    target_include_directories(cgroup-network PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(cgroup-network PUBLIC ${NETDATA_COMMON_CFLAGS})
-else()
-    message(STATUS "cgroup-network: disabled (requires Linux)")
 endif()
 
 # -----------------------------------------------------------------------------
