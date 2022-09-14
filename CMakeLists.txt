@@ -548,29 +548,6 @@ set(MONGODB_EXPORTING_FILES
     exporting/mongodb/mongodb.c
     exporting/mongodb/mongodb.h)
 
-set(DAEMON_FILES
-    daemon/buildinfo.c
-    daemon/buildinfo.h
-    daemon/common.c
-    daemon/common.h
-    daemon/daemon.c
-    daemon/daemon.h
-    daemon/global_statistics.c
-    daemon/global_statistics.h
-    daemon/analytics.c
-    daemon/analytics.h
-    daemon/main.c
-    daemon/main.h
-    daemon/signals.c
-    daemon/signals.h
-    daemon/service.c
-    daemon/static_threads.c
-    daemon/static_threads.h
-    daemon/commands.c
-    daemon/commands.h
-    daemon/unit_test.c
-    daemon/unit_test.h)
-
 set(ML_FILES
     ml/ml.h
     ml/ml-dummy.c)
@@ -602,7 +579,6 @@ endif()
 
 set(NETDATA_FILES
         collectors/all.h
-        ${DAEMON_FILES}
         ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
         ${HEALTH_PLUGIN_FILES}
@@ -870,7 +846,6 @@ endif()
 # netdata
 
 if(LINUX)
-    list(APPEND NETDATA_FILES daemon/static_threads_linux.c)
     list(APPEND NETDATA_COMMON_LIBRARIES rt)
 
     add_executable(netdata ${NETDATA_FILES})
@@ -878,16 +853,12 @@ if(LINUX)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 elseif(FREEBSD)
-    list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
-
     add_executable(netdata ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_EBPF False)
 elseif(MACOS)
-    list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
-
     add_executable(netdata ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
@@ -1128,4 +1099,6 @@ configure_file(
 )
 
 add_subdirectory(collectors)
+add_subdirectory(daemon)
+
 install(TARGETS netdata DESTINATION bin)
