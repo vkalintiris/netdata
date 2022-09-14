@@ -254,50 +254,6 @@ set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf_cgroup.c
     collectors/ebpf.plugin/ebpf_cgroup.h)
 
-set(PROC_PLUGIN_FILES
-    collectors/proc.plugin/ipc.c
-    collectors/proc.plugin/plugin_proc.c
-    collectors/proc.plugin/plugin_proc.h
-    collectors/proc.plugin/proc_diskstats.c
-    collectors/proc.plugin/proc_mdstat.c
-    collectors/proc.plugin/proc_interrupts.c
-    collectors/proc.plugin/proc_softirqs.c
-    collectors/proc.plugin/proc_loadavg.c
-    collectors/proc.plugin/proc_meminfo.c
-    collectors/proc.plugin/proc_pagetypeinfo.c
-    collectors/proc.plugin/proc_net_dev.c
-    collectors/proc.plugin/proc_net_wireless.c
-    collectors/proc.plugin/proc_net_ip_vs_stats.c
-    collectors/proc.plugin/proc_net_netstat.c
-    collectors/proc.plugin/proc_net_rpc_nfs.c
-    collectors/proc.plugin/proc_net_rpc_nfsd.c
-    collectors/proc.plugin/proc_net_snmp.c
-    collectors/proc.plugin/proc_net_snmp6.c
-    collectors/proc.plugin/proc_net_sctp_snmp.c
-    collectors/proc.plugin/proc_net_sockstat.c
-    collectors/proc.plugin/proc_net_sockstat6.c
-    collectors/proc.plugin/proc_net_softnet_stat.c
-    collectors/proc.plugin/proc_net_stat_conntrack.c
-    collectors/proc.plugin/proc_net_stat_synproxy.c
-    collectors/proc.plugin/proc_self_mountinfo.c
-    collectors/proc.plugin/proc_self_mountinfo.h
-    collectors/proc.plugin/zfs_common.c
-    collectors/proc.plugin/zfs_common.h
-    collectors/proc.plugin/proc_spl_kstat_zfs.c
-    collectors/proc.plugin/proc_stat.c
-    collectors/proc.plugin/proc_sys_kernel_random_entropy_avail.c
-    collectors/proc.plugin/proc_vmstat.c
-    collectors/proc.plugin/proc_uptime.c
-    collectors/proc.plugin/proc_pressure.c
-    collectors/proc.plugin/proc_pressure.h
-    collectors/proc.plugin/sys_kernel_mm_ksm.c
-    collectors/proc.plugin/sys_block_zram.c
-    collectors/proc.plugin/sys_devices_system_edac_mc.c
-    collectors/proc.plugin/sys_devices_system_node.c
-    collectors/proc.plugin/sys_class_infiniband.c
-    collectors/proc.plugin/sys_fs_btrfs.c
-    collectors/proc.plugin/sys_class_power_supply.c)
-
 set(MACOS_PLUGIN_FILES
     collectors/macos.plugin/plugin_macos.c
     collectors/macos.plugin/plugin_macos.h
@@ -931,7 +887,6 @@ if(LINUX)
 
     add_executable(netdata ${NETDATA_FILES}
             ${CGROUPS_PLUGIN_FILES}
-            ${PROC_PLUGIN_FILES}
             )
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
