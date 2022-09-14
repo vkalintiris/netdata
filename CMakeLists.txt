@@ -347,15 +347,13 @@ set(MONGODB_EXPORTING_FILES
     exporting/mongodb/mongodb.c
     exporting/mongodb/mongodb.h)
 
+set(NETDATACLI_FILES daemon/commands.h
+                     cli/cli.c
+                     cli/cli.h)
+add_executable(netdatacli ${NETDATACLI_FILES})
+
 set(NETDATA_FILES collectors/all.h
                   ${EXPORTING_ENGINE_FILES})
-
-set(NETDATACLI_FILES
-        daemon/commands.h
-        cli/cli.c
-        cli/cli.h
-        )
-
 add_executable(netdata ${NETDATA_FILES})
 
 # -----------------------------------------------------------------------------
@@ -565,7 +563,6 @@ endif()
 # -----------------------------------------------------------------------------
 # netdatacli
 
-add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
 target_include_directories(netdatacli PRIVATE ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PRIVATE ${NETDATA_COMMON_CFLAGS})
