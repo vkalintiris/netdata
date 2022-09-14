@@ -217,9 +217,6 @@ set(CGROUPS_PLUGIN_FILES
 set(DISKSPACE_PLUGIN_FILES
     collectors/diskspace.plugin/plugin_diskspace.c)
 
-set(TIMEX_PLUGIN_FILES
-    collectors/timex.plugin/plugin_timex.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -860,7 +857,6 @@ list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES})
 list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
 list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER})
 list(APPEND NETDATA_FILES ${ACLK_ALWAYS_BUILD})
-list(APPEND NETDATA_FILES ${TIMEX_PLUGIN_FILES})
 list(APPEND NETDATA_FILES ${ACLK_FILES} ${ACLK_PROTO_BUILT_SRCS} ${ACLK_PROTO_BUILT_HDRS})
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/aclk/aclk-schemas)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
