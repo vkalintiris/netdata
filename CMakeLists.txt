@@ -184,9 +184,6 @@ add_subdirectory(libnetdata)
 
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} judy)
 
-set(CHECKS_PLUGIN_FILES
-    collectors/checks.plugin/plugin_checks.c)
-
 set(FREEBSD_PLUGIN_FILES
     collectors/freebsd.plugin/plugin_freebsd.c
     collectors/freebsd.plugin/plugin_freebsd.h
@@ -206,9 +203,6 @@ set(HEALTH_PLUGIN_FILES
     health/health_config.c
     health/health_json.c
     health/health_log.c)
-
-set(IDLEJITTER_PLUGIN_FILES
-    collectors/idlejitter.plugin/plugin_idlejitter.c)
 
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
@@ -611,9 +605,7 @@ set(NETDATA_FILES
         ${DAEMON_FILES}
         ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
-        ${CHECKS_PLUGIN_FILES}
         ${HEALTH_PLUGIN_FILES}
-        ${IDLEJITTER_PLUGIN_FILES}
         ${ML_FILES}
         ${PLUGINSD_PLUGIN_FILES}
         ${RRD_PLUGIN_FILES}
