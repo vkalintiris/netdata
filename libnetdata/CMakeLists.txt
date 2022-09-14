@@ -70,3 +70,8 @@ ENDIF()
 
 add_library(libnetdata OBJECT ${LIBNETDATA_FILES})
 target_include_directories(libnetdata PUBLIC ${NETDATA_INCLUDE_DIR})
+
+# Our build relies on adding the top-level src dir to the header search
+# path. Instead of adding the dir to every single cc/cxx command, we propagate
+# path through upstream deps of libnetdata.
+target_include_directories(libnetdata INTERFACE ${CMAKE_SOURCE_DIR})

@@ -707,8 +707,6 @@ set(NETDATACLI_FILES
         cli/cli.h
         )
 
-include_directories(AFTER .)
-
 # -----------------------------------------------------------------------------
 # kinesis exporting connector
 
