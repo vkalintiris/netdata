@@ -220,9 +220,6 @@ set(DISKSPACE_PLUGIN_FILES
 set(TIMEX_PLUGIN_FILES
     collectors/timex.plugin/plugin_timex.c)
 
-set(NFACCT_PLUGIN_FILES
-    collectors/nfacct.plugin/plugin_nfacct.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -974,12 +971,6 @@ if(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROME
     set_property(TARGET netdata PROPERTY CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
-if(LINUX AND MNL_LIBRARIES AND NFACCT_LIBRARIES)
-    SET(ENABLE_PLUGIN_NFACCT True)
-else()
-    SET(ENABLE_PLUGIN_NFACCT False)
-endif()
-
 # -----------------------------------------------------------------------------
 # netdatacli
 
@@ -987,19 +978,6 @@ add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
 target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
-
-# -----------------------------------------------------------------------------
-# nfacct.plugin
-
-if(ENABLE_PLUGIN_NFACCT)
-    message(STATUS "nfacct.plugin: enabled")
-    add_executable(nfacct.plugin ${NFACCT_PLUGIN_FILES})
-    target_link_libraries (nfacct.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${MNL_LIBRARIES} ${NFACCT_LIBRARIES})
-    target_include_directories(nfacct.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${MNL_INCLUDE_DIRS} ${NFACCT_INCLUDE_DIRS})
-    target_compile_options(nfacct.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
-else()
-    message(STATUS "nfacct.plugin: disabled (requires libmnl and libnetfilter_acct)")
-endif()
 
 # -----------------------------------------------------------------------------
 # ebpf_process.plugin
