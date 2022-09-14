@@ -5,7 +5,6 @@ if (FREEBSD OR MAC_OS)
     return()
 endif()
 
-set(ENABLE_PERF_PLUGIN True)
 message(STATUS "perf.plugin: enabled")
 
 set(PERF_PLUGIN_FILES perf_plugin.c)

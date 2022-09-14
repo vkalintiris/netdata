@@ -15,6 +15,12 @@ find_package(PkgConfig REQUIRED)
 # set this to see the compilation commands
 # set(CMAKE_VERBOSE_MAKEFILE 1)
 
+find_program(CCACHE_FOUND ccache)
+if(CCACHE_FOUND)
+    message(STATUS "Enabling ccache for C/C++")
+    set(CMAKE_C_COMPILER_LAUNCHER ccache)
+    set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
+endif()
 
 # -----------------------------------------------------------------------------
 # Set compilation options according to build type
@@ -228,9 +234,6 @@ set(NFACCT_PLUGIN_FILES
 
 set(XENSTAT_PLUGIN_FILES
     collectors/xenstat.plugin/xenstat_plugin.c)
-
-set(SLABINFO_PLUGIN_FILES
-    collectors/slabinfo.plugin/slabinfo.c)
 
 set(CUPS_PLUGIN_FILES
     collectors/cups.plugin/cups_plugin.c)
@@ -967,8 +970,6 @@ if(LINUX)
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 
     SET(ENABLE_PLUGIN_CGROUP_NETWORK True)
-    SET(ENABLE_PLUGIN_SLABINFO True)
-
 elseif(FREEBSD)
     list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c)
 
@@ -977,9 +978,7 @@ elseif(FREEBSD)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
-
 elseif(MACOS)
     list(APPEND NETDATA_FILES daemon/static_threads_macos.c)
 
@@ -988,9 +987,7 @@ elseif(MACOS)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_CGROUP_NETWORK False)
-    SET(ENABLE_PLUGIN_SLABINFO False)
     SET(ENABLE_PLUGIN_EBPF False)
-
 endif()
 
 if(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
@@ -1081,19 +1078,6 @@ if(ENABLE_PLUGIN_EBPF)
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 else()
     message(STATUS "ebpf.plugin: disabled")
-endif()
-
-# -----------------------------------------------------------------------------
-# slabinfo.plugin
-
-if(ENABLE_PLUGIN_SLABINFO)
-    message(STATUS "slabinfo.plugin: enabled")
-    add_executable(slabinfo.plugin ${SLABINFO_PLUGIN_FILES})
-    target_link_libraries (slabinfo.plugin libnetdata ${NETDATA_COMMON_LIBRARIES})
-    target_include_directories(slabinfo.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-    target_compile_options(slabinfo.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
-else()
-    message(STATUS "slabinfo.plugin: disabled")
 endif()
 
 # -----------------------------------------------------------------------------

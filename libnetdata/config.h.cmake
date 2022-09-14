@@ -52,6 +52,7 @@
 
 #cmakedefine ENABLE_APPS_PLUGIN
 #cmakedefine ENABLE_PERF_PLUGIN
+#cmakedefine ENABLE_SLABINFO
 
 #define __always_unused @ALWAYS_UNUSED_MACRO@
 #define __maybe_unused @MAYBE_UNUSED_MACRO@

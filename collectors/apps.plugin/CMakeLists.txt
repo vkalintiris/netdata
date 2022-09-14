@@ -6,8 +6,8 @@ if (MAC_OS)
 endif()
 
 message(STATUS "apps.plugin: enabled")
-set(APPS_PLUGIN_FILES apps_plugin.c)
 
+set(APPS_PLUGIN_FILES apps_plugin.c)
 add_executable(apps.plugin ${APPS_PLUGIN_FILES})
 
 target_compile_options(apps.plugin PRIVATE ${NETDATA_COMMON_CFLAGS} ${CAP_CFLAGS_OTHER})
