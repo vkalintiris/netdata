@@ -184,19 +184,6 @@ add_subdirectory(libnetdata)
 
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} judy)
 
-set(FREEBSD_PLUGIN_FILES
-    collectors/freebsd.plugin/plugin_freebsd.c
-    collectors/freebsd.plugin/plugin_freebsd.h
-    collectors/freebsd.plugin/freebsd_sysctl.c
-    collectors/freebsd.plugin/freebsd_getmntinfo.c
-    collectors/freebsd.plugin/freebsd_getifaddrs.c
-    collectors/freebsd.plugin/freebsd_devstat.c
-    collectors/freebsd.plugin/freebsd_kstat_zfs.c
-    collectors/freebsd.plugin/freebsd_ipfw.c
-    collectors/proc.plugin/zfs_common.c
-    collectors/proc.plugin/zfs_common.h
-)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -652,7 +639,7 @@ if(LINUX)
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
 elseif(FREEBSD)
-    add_executable(netdata ${NETDATA_FILES} ${FREEBSD_PLUGIN_FILES})
+    add_executable(netdata ${NETDATA_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
