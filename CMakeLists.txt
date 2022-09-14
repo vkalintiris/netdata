@@ -462,12 +462,6 @@ set(ACLK_FILES
     aclk/schema-wrappers/schema_wrapper_utils.cc
     aclk/schema-wrappers/schema_wrapper_utils.h)
 
-set(SPAWN_PLUGIN_FILES
-    spawn/spawn.c
-    spawn/spawn_server.c
-    spawn/spawn_client.c
-    spawn/spawn.h)
-
 set(EXPORTING_ENGINE_FILES
     exporting/exporting_engine.c
     exporting/exporting_engine.h
@@ -545,8 +539,7 @@ set(NETDATA_FILES
         ${ML_FILES}
         ${RRD_PLUGIN_FILES}
         ${STREAMING_PLUGIN_FILES}
-        ${WEB_PLUGIN_FILES}
-        ${SPAWN_PLUGIN_FILES})
+        ${WEB_PLUGIN_FILES})
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -1058,5 +1051,6 @@ add_subdirectory(daemon)
 add_subdirectory(health)
 add_subdirectory(parser)
 add_subdirectory(registry)
+add_subdirectory(spawn)
 
 install(TARGETS netdata DESTINATION bin)
