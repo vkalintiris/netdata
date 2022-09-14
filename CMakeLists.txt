@@ -356,6 +356,8 @@ set(NETDATACLI_FILES
         cli/cli.h
         )
 
+add_executable(netdata ${NETDATA_FILES})
+
 # -----------------------------------------------------------------------------
 # kinesis exporting connector
 
@@ -368,7 +370,7 @@ endif()
 
 if(ENABLE_EXPORTING_KINESIS)
     message(STATUS "kinesis exporting: enabled")
-    list(APPEND NETDATA_FILES ${KINESIS_EXPORTING_FILES})
+    target_sources(netdata PRIVATE ${KINESIS_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${KINESIS_LIBRARIES} ${AWS_CORE_LIBRARIES}
                                          ${CRYPTO_LIBRARIES} ${SSL_LIBRARIES} ${CURL_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${KINESIS_INCLUDE_DIRS} ${AWS_CORE_INCLUDE_DIRS}
@@ -389,7 +391,8 @@ endif()
 
 if(ENABLE_EXPORTING_PUBSUB)
     message(STATUS "pubsub exporting connector: enabled")
-    list(APPEND NETDATA_FILES ${PUBSUB_EXPORTING_FILES})
+
+    target_sources(netdata PRIVATE ${PUBSUB_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${GRPC_LIBRARIES} ${PUBSUB_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${GRPC_INCLUDE_DIRS} ${PUBSUB_INCLUDE_DIRS})
     list(APPEND NETDATA_COMMON_CFLAGS ${GRPC_CFLAGS_OTHER} ${PUBSUB_CFLAGS_OTHER})
@@ -443,7 +446,8 @@ if(ENABLE_EXPORTING_PROMETHEUS_REMOTE_WRITE)
 
     protobuf_remote_write_generate_cpp(PROTO_SRCS PROTO_HDRS exporting/prometheus/remote_write/remote_write.proto)
 
-    list(APPEND NETDATA_FILES ${PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES} ${PROTO_SRCS} ${PROTO_HDRS})
+
+    target_sources(netdata PRIVATE ${PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES} ${PROTO_SRCS} ${PROTO_HDRS})
     list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES} ${SNAPPY_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS} ${SNAPPY_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR})
     list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER} ${SNAPPY_CFLAGS_OTHER})
@@ -457,7 +461,7 @@ endif()
 if(MONGOC_LIBRARIES)
     message(STATUS "mongodb exporting: enabled")
 
-    list(APPEND NETDATA_FILES ${MONGODB_EXPORTING_FILES})
+    target_sources(netdata PRIVATE ${MONGODB_EXPORTING_FILES})
     list(APPEND NETDATA_COMMON_LIBRARIES ${MONGOC_LIBRARIES})
     list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${MONGOC_INCLUDE_DIRS})
     list(APPEND NETDATA_COMMON_CFLAGS ${MONGOC_CFLAGS_OTHER})
@@ -526,8 +530,10 @@ PROTOBUF_ACLK_GENERATE_CPP(ACLK_PROTO_BUILT_SRCS ACLK_PROTO_BUILT_HDRS ${ACLK_PR
 list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES})
 list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
 list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER})
-list(APPEND NETDATA_FILES ${ACLK_ALWAYS_BUILD})
-list(APPEND NETDATA_FILES ${ACLK_FILES} ${ACLK_PROTO_BUILT_SRCS} ${ACLK_PROTO_BUILT_HDRS})
+
+target_sources(netdata PRIVATE ${ACLK_ALWAYS_BUILD})
+target_sources(netdata PRIVATE  ${ACLK_FILES} ${ACLK_PROTO_BUILT_SRCS} ${ACLK_PROTO_BUILT_HDRS})
+
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/aclk/aclk-schemas)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include)
@@ -545,8 +551,6 @@ endif()
 
 # -----------------------------------------------------------------------------
 # netdata
-
-add_executable(netdata ${NETDATA_FILES})
 
 target_compile_options(netdata PRIVATE ${NETDATA_COMMON_CFLAGS})
 target_include_directories(netdata PRIVATE ${NETDATA_COMMON_INCLUDE_DIRS})
