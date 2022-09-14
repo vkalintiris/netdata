@@ -301,9 +301,6 @@ set(PROC_PLUGIN_FILES
     collectors/proc.plugin/sys_fs_btrfs.c
     collectors/proc.plugin/sys_class_power_supply.c)
 
-set(TC_PLUGIN_FILES
-    collectors/tc.plugin/plugin_tc.c)
-
 set(MACOS_PLUGIN_FILES
     collectors/macos.plugin/plugin_macos.c
     collectors/macos.plugin/plugin_macos.h
@@ -939,7 +936,6 @@ if(LINUX)
             ${CGROUPS_PLUGIN_FILES}
             ${DISKSPACE_PLUGIN_FILES}
             ${PROC_PLUGIN_FILES}
-            ${TC_PLUGIN_FILES}
             )
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})

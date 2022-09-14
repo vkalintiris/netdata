@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-if (NOT LINUX)
+if(NOT LINUX)
     message(STATUS "timex.plugin: disabled")
     return()
 endif()
