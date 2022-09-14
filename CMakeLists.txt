@@ -210,10 +210,6 @@ set(HEALTH_PLUGIN_FILES
 set(IDLEJITTER_PLUGIN_FILES
     collectors/idlejitter.plugin/plugin_idlejitter.c)
 
-set(CGROUPS_PLUGIN_FILES
-    collectors/cgroups.plugin/sys_fs_cgroup.c
-    collectors/cgroups.plugin/sys_fs_cgroup.h)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -885,9 +881,7 @@ if(LINUX)
     list(APPEND NETDATA_FILES daemon/static_threads_linux.c)
     list(APPEND NETDATA_COMMON_LIBRARIES rt)
 
-    add_executable(netdata ${NETDATA_FILES}
-            ${CGROUPS_PLUGIN_FILES}
-            )
+    add_executable(netdata ${NETDATA_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
@@ -1111,13 +1105,15 @@ endif()
 #    add_test(NAME test_valid_urls COMMAND valid_urls_testdriver)
 
     set(CGROUPS_TEST_FILES
+        collectors/cgroups.plugin/sys_fs_cgroup.c
+        collectors/cgroups.plugin/sys_fs_cgroup.h
         collectors/cgroups.plugin/tests/test_cgroups_plugin.c
         collectors/cgroups.plugin/tests/test_cgroups_plugin.h
         collectors/cgroups.plugin/tests/test_doubles.c
         database/rrdlabels.c
         database/rrd.h
     )
-    add_executable(cgroups_testdriver ${CGROUPS_TEST_FILES} ${CGROUPS_PLUGIN_FILES})
+    add_executable(cgroups_testdriver ${CGROUPS_TEST_FILES})
     target_link_libraries(cgroups_testdriver libnetdata ${NETDATA_COMMON_LIBRARIES} ${CMOCKA_LIBRARIES})
     add_test(NAME test_cgroups COMMAND cgroups_testdriver)
 

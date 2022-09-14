@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 if (NOT LINUX)
+    message(STATUS "cgroup.plugin: disabled")
     message(STATUS "cgroup-network: disabled")
     return()
 endif()
 
+message(STATUS "cgroup.plugin: enabled")
 message(STATUS "cgroup-network: enabled")
 
 set(CGROUP_NETWORK_FILES cgroup-network.c)
@@ -16,3 +18,6 @@ target_link_libraries(cgroup-network libnetdata ${NETDATA_COMMON_LIBRARIES})
 
 install(TARGETS cgroup-network DESTINATION ${NETDATA_PLUGINS_DIR})
 install(PROGRAMS cgroup-network-helper.sh DESTINATION ${NETDATA_PLUGINS_DIR})
+
+set(CGROUPS_PLUGIN_FILES sys_fs_cgroup.c sys_fs_cgroup.h)
+target_sources(netdata PRIVATE ${CGROUPS_PLUGIN_FILES})
