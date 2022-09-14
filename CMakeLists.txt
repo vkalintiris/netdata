@@ -152,23 +152,6 @@ if(LINUX AND EXISTS "${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a")
 endif()
 
 # -----------------------------------------------------------------------------
-# Detect ml dependencies
-if(FALSE)
-    file(STRINGS "${CMAKE_SOURCE_DIR}/config.h" DEFINE_ENABLE_ML REGEX "^#define ENABLE_ML 1$")
-    if(DEFINE_ENABLE_ML MATCHES ".+" AND
-       EXISTS "${CMAKE_SOURCE_DIR}/ml/kmeans/dlib/dlib/all/source.cpp" AND
-       EXISTS "${CMAKE_SOURCE_DIR}/ml/json/single_include/nlohmann/json.hpp")
-        set(ENABLE_ML True)
-        list(APPEND NETDATA_COMMON_CFLAGS "-DDLIB_NO_GUI_SUPPORT")
-        list(APPEND NETDATA_COMMON_INCLUDE_DIRS "ml/kmeans/dlib")
-    else()
-        set(ENABLE_ML False)
-    endif()
-else()
-    set(ENABLE_ML False)
-endif()
-
-# -----------------------------------------------------------------------------
 # netdata files
 
 set(NETDATA_USER "netdata" CACHE STRING "use this user to drop privileges")
@@ -346,39 +329,8 @@ set(MONGODB_EXPORTING_FILES
     exporting/mongodb/mongodb.c
     exporting/mongodb/mongodb.h)
 
-set(ML_FILES
-    ml/ml.h
-    ml/ml-dummy.c)
-
-if(ENABLE_ML)
-    list(APPEND ML_FILES
-         ml/BitBufferCounter.h
-         ml/BitBufferCounter.cc
-         ml/BitRateWindow.h
-         ml/BitRateWindow.cc
-         ml/Config.h
-         ml/Config.cc
-         ml/Database.h
-         ml/Database.cc
-         ml/Dimension.cc
-         ml/Dimension.h
-         ml/Host.h
-         ml/Host.cc
-         ml/Query.h
-         ml/kmeans/KMeans.h
-         ml/kmeans/KMeans.cc
-         ml/kmeans/SamplesBuffer.h
-         ml/kmeans/SamplesBuffer.cc
-         ml/kmeans/dlib/dlib/all/source.cpp
-         ml/json/single_include/nlohmann/json.hpp
-         ml/ml.cc
-         ml/ml-private.h)
-endif()
-
-set(NETDATA_FILES
-        collectors/all.h
-        ${EXPORTING_ENGINE_FILES}
-        ${ML_FILES})
+set(NETDATA_FILES collectors/all.h
+                  ${EXPORTING_ENGINE_FILES})
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -879,6 +831,8 @@ endif()
 endif()
 endif()
 
+set(ENABLE_ML True)
+
 configure_file(
     libnetdata/config.h.cmake
     ${NETDATA_INCLUDE_DIR}/config.h
@@ -889,6 +843,7 @@ add_subdirectory(collectors)
 add_subdirectory(daemon)
 add_subdirectory(database)
 add_subdirectory(health)
+add_subdirectory(ml)
 add_subdirectory(parser)
 add_subdirectory(registry)
 add_subdirectory(spawn)
