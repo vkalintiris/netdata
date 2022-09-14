@@ -1,3 +1,5 @@
+add_subdirectory(plugins.d)
+
 add_subdirectory(apps.plugin)
 add_subdirectory(checks.plugin)
 add_subdirectory(cups.plugin)

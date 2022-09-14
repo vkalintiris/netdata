@@ -197,13 +197,6 @@ set(FREEBSD_PLUGIN_FILES
     collectors/proc.plugin/zfs_common.h
 )
 
-set(HEALTH_PLUGIN_FILES
-    health/health.c
-    health/health.h
-    health/health_config.c
-    health/health_json.c
-    health/health_log.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -250,16 +243,6 @@ set(MACOS_PLUGIN_FILES
     collectors/macos.plugin/macos_sysctl.c
     collectors/macos.plugin/macos_mach_smi.c
     collectors/macos.plugin/macos_fw.c)
-
-set(PLUGINSD_PLUGIN_FILES
-    collectors/plugins.d/plugins_d.c
-    collectors/plugins.d/plugins_d.h
-    collectors/plugins.d/pluginsd_parser.c
-    collectors/plugins.d/pluginsd_parser.h)
-
-set(PARSER_PLUGIN_FILES
-    parser/parser.c
-    parser/parser.h)
 
 set(REGISTRY_PLUGIN_FILES
     registry/registry.c
@@ -581,18 +564,14 @@ set(NETDATA_FILES
         collectors/all.h
         ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
-        ${HEALTH_PLUGIN_FILES}
         ${ML_FILES}
-        ${PLUGINSD_PLUGIN_FILES}
         ${RRD_PLUGIN_FILES}
         ${REGISTRY_PLUGIN_FILES}
         ${STATSD_PLUGIN_FILES}
         ${STREAMING_PLUGIN_FILES}
         ${WEB_PLUGIN_FILES}
         ${CLAIM_PLUGIN_FILES}
-        ${SPAWN_PLUGIN_FILES}
-        ${PARSER_PLUGIN_FILES}
-)
+        ${SPAWN_PLUGIN_FILES})
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -1100,5 +1079,7 @@ configure_file(
 
 add_subdirectory(collectors)
 add_subdirectory(daemon)
+add_subdirectory(health)
+add_subdirectory(parser)
 
 install(TARGETS netdata DESTINATION bin)
