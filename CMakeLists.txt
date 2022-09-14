@@ -207,13 +207,6 @@ set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf_cgroup.c
     collectors/ebpf.plugin/ebpf_cgroup.h)
 
-set(MACOS_PLUGIN_FILES
-    collectors/macos.plugin/plugin_macos.c
-    collectors/macos.plugin/plugin_macos.h
-    collectors/macos.plugin/macos_sysctl.c
-    collectors/macos.plugin/macos_mach_smi.c
-    collectors/macos.plugin/macos_fw.c)
-
 set(ACLK_ALWAYS_BUILD
     aclk/aclk_rrdhost_state.h
     aclk/aclk_proxy.c
@@ -597,7 +590,7 @@ elseif(FREEBSD)
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
     SET(ENABLE_PLUGIN_EBPF False)
 elseif(MACOS)
-    add_executable(netdata ${NETDATA_FILES} ${MACOS_PLUGIN_FILES})
+    add_executable(netdata ${NETDATA_FILES})
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES} ${IOKIT} ${FOUNDATION})
     target_include_directories(netdata PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
     target_compile_options(netdata PUBLIC ${NETDATA_COMMON_CFLAGS})
