@@ -1,1 +1,1 @@
-pkg_check_modules(XENSTAT libxenstat)
+pkg_check_modules(XENSTAT xenstat xenlight)

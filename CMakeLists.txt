@@ -229,9 +229,6 @@ set(TIMEX_PLUGIN_FILES
 set(NFACCT_PLUGIN_FILES
     collectors/nfacct.plugin/plugin_nfacct.c)
 
-set(XENSTAT_PLUGIN_FILES
-    collectors/xenstat.plugin/xenstat_plugin.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -993,12 +990,6 @@ else()
     SET(ENABLE_PLUGIN_NFACCT False)
 endif()
 
-if(XENSTAT_LIBRARIES)
-    SET(ENABLE_PLUGIN_XENSTAT True)
-else()
-    SET(ENABLE_PLUGIN_XENSTAT False)
-endif()
-
 # -----------------------------------------------------------------------------
 # netdatacli
 
@@ -1018,19 +1009,6 @@ if(ENABLE_PLUGIN_NFACCT)
     target_compile_options(nfacct.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
 else()
     message(STATUS "nfacct.plugin: disabled (requires libmnl and libnetfilter_acct)")
-endif()
-
-# -----------------------------------------------------------------------------
-# xenstat.plugin
-
-IF(ENABLE_PLUGIN_XENSTAT)
-    message(STATUS "xenstat.plugin: enabled")
-    add_executable(xenstat.plugin ${XENSTAT_PLUGIN_FILES})
-    target_link_libraries (xenstat.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${XENSTAT_LIBRARIES})
-    target_include_directories(xenstat.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${XENSTAT_INCLUDE_DIRS})
-    target_compile_options(xenstat.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${XENSTAT_CFLAGS_OTHER})
-else()
-    message(STATUS "xenstat.plugin: disabled (requires libxenstat)")
 endif()
 
 # -----------------------------------------------------------------------------
