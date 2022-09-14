@@ -232,9 +232,6 @@ set(NFACCT_PLUGIN_FILES
 set(XENSTAT_PLUGIN_FILES
     collectors/xenstat.plugin/xenstat_plugin.c)
 
-set(CUPS_PLUGIN_FILES
-    collectors/cups.plugin/cups_plugin.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -1002,12 +999,6 @@ else()
     SET(ENABLE_PLUGIN_XENSTAT False)
 endif()
 
-if(CUPS_LIBRARIES)
-    SET(ENABLE_PLUGIN_CUPS True)
-else()
-    SET(ENABLE_PLUGIN_CUPS False)
-endif()
-
 # -----------------------------------------------------------------------------
 # netdatacli
 
@@ -1053,19 +1044,6 @@ if(ENABLE_PLUGIN_EBPF)
     target_compile_options(ebpf.plugin PUBLIC ${NETDATA_COMMON_CFLAGS})
 else()
     message(STATUS "ebpf.plugin: disabled")
-endif()
-
-# -----------------------------------------------------------------------------
-# cups.plugin
-
-if(ENABLE_PLUGIN_CUPS)
-    message(STATUS "cups.plugin: enabled")
-    add_executable(cups.plugin ${CUPS_PLUGIN_FILES})
-    target_link_libraries (cups.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${CUPS_LIBRARIES})
-    target_include_directories(cups.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${CUPS_INCLUDE_DIRS})
-    target_compile_options(cups.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${CUPS_CFLAGS_OTHER})
-else()
-    message(STATUS "cups.plugin: disabled")
 endif()
 
 # -----------------------------------------------------------------------------
