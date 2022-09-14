@@ -226,9 +226,6 @@ set(DISKSPACE_PLUGIN_FILES
 set(TIMEX_PLUGIN_FILES
     collectors/timex.plugin/plugin_timex.c)
 
-set(FREEIPMI_PLUGIN_FILES
-    collectors/freeipmi.plugin/freeipmi_plugin.c)
-
 set(NFACCT_PLUGIN_FILES
     collectors/nfacct.plugin/plugin_nfacct.c)
 
@@ -993,12 +990,6 @@ if(ENABLE_EXPORTING_KINESIS OR ENABLE_EXPORTING_PUBSUB OR ENABLE_EXPORTING_PROME
     set_property(TARGET netdata PROPERTY CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
-if(IPMI_LIBRARIES)
-    SET(ENABLE_PLUGIN_FREEIPMI True)
-else()
-    SET(ENABLE_PLUGIN_FREEIPMI False)
-endif()
-
 if(LINUX AND MNL_LIBRARIES AND NFACCT_LIBRARIES)
     SET(ENABLE_PLUGIN_NFACCT True)
 else()
@@ -1024,20 +1015,6 @@ add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
 target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
 target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
-
-
-# -----------------------------------------------------------------------------
-# freeipmi.plugin
-
-if(ENABLE_PLUGIN_FREEIPMI)
-    message(STATUS "freeipmi.plugin: enabled")
-    add_executable(freeipmi.plugin ${FREEIPMI_PLUGIN_FILES})
-    target_link_libraries (freeipmi.plugin libnetdata ${NETDATA_COMMON_LIBRARIES} ${IPMI_LIBRARIES})
-    target_include_directories(freeipmi.plugin PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS} ${IPMI_INCLUDE_DIRS})
-    target_compile_options(freeipmi.plugin PUBLIC ${NETDATA_COMMON_CFLAGS} ${IPMI_CFLAGS_OTHER})
-else()
-    message(STATUS "freeipmi.plugin: disabled (depends on libipmimonitoring)")
-endif()
 
 # -----------------------------------------------------------------------------
 # nfacct.plugin
