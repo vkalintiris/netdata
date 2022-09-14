@@ -314,13 +314,6 @@ set(RRD_PLUGIN_FILES
     database/KolmogorovSmirnovDist.c
     database/KolmogorovSmirnovDist.h)
 
-set(STREAMING_PLUGIN_FILES
-    streaming/rrdpush.c
-    streaming/rrdpush.h
-    streaming/compression.c
-    streaming/receiver.c
-    streaming/sender.c)
-
 set(ACLK_ALWAYS_BUILD
     aclk/aclk_rrdhost_state.h
     aclk/aclk_proxy.c
@@ -469,9 +462,7 @@ set(NETDATA_FILES
         collectors/all.h
         ${EXPORTING_ENGINE_FILES}
         ${ML_FILES}
-        ${RRD_PLUGIN_FILES}
-        ${STREAMING_PLUGIN_FILES})
-
+        ${RRD_PLUGIN_FILES})
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -984,6 +975,7 @@ add_subdirectory(health)
 add_subdirectory(parser)
 add_subdirectory(registry)
 add_subdirectory(spawn)
+add_subdirectory(streaming)
 add_subdirectory(web)
 
 install(TARGETS netdata DESTINATION bin)
