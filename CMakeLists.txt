@@ -214,9 +214,6 @@ set(CGROUPS_PLUGIN_FILES
     collectors/cgroups.plugin/sys_fs_cgroup.c
     collectors/cgroups.plugin/sys_fs_cgroup.h)
 
-set(DISKSPACE_PLUGIN_FILES
-    collectors/diskspace.plugin/plugin_diskspace.c)
-
 set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf.c
     collectors/ebpf.plugin/ebpf.h
@@ -934,7 +931,6 @@ if(LINUX)
 
     add_executable(netdata ${NETDATA_FILES}
             ${CGROUPS_PLUGIN_FILES}
-            ${DISKSPACE_PLUGIN_FILES}
             ${PROC_PLUGIN_FILES}
             )
     target_link_libraries (netdata libnetdata ${NETDATA_COMMON_LIBRARIES})

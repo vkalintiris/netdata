@@ -1,6 +1,7 @@
 add_subdirectory(apps.plugin)
 add_subdirectory(cups.plugin)
 add_subdirectory(cgroups.plugin)
+add_subdirectory(diskspace.plugin)
 add_subdirectory(freeipmi.plugin)
 add_subdirectory(nfacct.plugin)
 add_subdirectory(perf.plugin)
