@@ -467,7 +467,6 @@ endif()
 
 set(NETDATA_FILES
         collectors/all.h
-        ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
         ${ML_FILES}
         ${RRD_PLUGIN_FILES}
