@@ -1,69 +1,15 @@
-
 # SPDX-License-Identifier: GPL-3.0-or-later
-# This file is only used for development (netdata in Clion)
-# It can build netdata, but you are on your own...
 
 cmake_minimum_required(VERSION 3.24)
 project(netdata C CXX)
 
-set(CMAKE_CXX_STANDARD 11)
-
-find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-
-# default is "Debug"
-#set(CMAKE_BUILD_TYPE "Release")
-
-# set this to see the compilation commands
-# set(CMAKE_VERBOSE_MAKEFILE 1)
-
-find_program(CCACHE_FOUND ccache)
-if(CCACHE_FOUND)
-    message(STATUS "Enabling ccache for C/C++")
-    set(CMAKE_C_COMPILER_LAUNCHER ccache)
-    set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
-endif()
-
-# -----------------------------------------------------------------------------
-# Set compilation options according to build type
-
-if("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
-    message(STATUS "building for: debugging")
-
-    ## unfortunately these produce errors
-    #include(CheckCXXCompilerFlag)
-    #CHECK_CXX_COMPILER_FLAG("-Wformat-signedness" CXX_FORMAT_SIGNEDNESS)
-    #CHECK_CXX_COMPILER_FLAG("-Werror=format-security" CXX_FORMAT_SECURITY)
-    #CHECK_CXX_COMPILER_FLAG("-fstack-protector-all" CXX_STACK_PROTECTOR)
-    set(CXX_FORMAT_SIGNEDNESS "-Wformat-signedness")
-    set(CXX_FORMAT_SECURITY "-Werror=format-security")
-    set(CXX_STACK_PROTECTOR "-fstack-protector-all")
-    set(CXX_FLAGS_DEBUG "-O0")
-    set(CMAKE_C_STANDARD 99)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -ggdb -Wall -Wextra -DNETDATA_INTERNAL_CHECKS=1 -DNETDATA_VERIFY_LOCKS=1 ${CXX_FORMAT_SIGNEDNESS} ${CXX_FORMAT_SECURITY} ${CXX_STACK_PROTECTOR} ${CXX_FLAGS_DEBUG}")
-else()
-    message(STATUS "building for: release")
-    cmake_policy(SET CMP0069 "NEW")
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT ipo_supported OUTPUT error)
-    if(${ipo_supported})
-        message(STATUS "link time optimization: supported")
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-    else()
-        message(STATUS "link time optimization: not supported")
-    endif()
-endif()
-
-
 # -----------------------------------------------------------------------------
 # O/S Detection
 
-# these are defined in common.h too
 set(LINUX   False)
 set(FREEBSD False)
 set(MACOS   False)
 
-# Detect the operating system
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(MACOS True)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
@@ -72,11 +18,42 @@ else()
     SET(LINUX True)
 endif()
 
-# show the operating system on the console
 message(STATUS "system name: ${CMAKE_SYSTEM_NAME}")
 
-set(NETDATA_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
-set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${NETDATA_INCLUDE_DIR})
+# -----------------------------------------------------------------------------
+# Toolchain
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 11)
+
+find_program(CCACHE_FOUND ccache)
+if(CCACHE_FOUND)
+    message(STATUS "Enabling ccache for C/C++")
+    set(CMAKE_C_COMPILER_LAUNCHER ccache)
+    set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
+endif()
+
+if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+    SET(LIKELY_MACRO "__builtin_expect(!!(x), 1)")
+    SET(UNLIKELY_MACRO "__builtin_expect(!!(x), 0)")
+else()
+    SET(LIKELY_MACRO "(x)")
+    SET(UNLIKELY_MACRO "(x)")
+endif()
+
+if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
+    SET(ALWAYS_UNUSED_MACRO "__attribute__((unused))")
+    SET(MAYBE_UNUSED_MACRO "__attribute__((unused))")
+else()
+    SET(ALWAYS_UNUSED_MACRO "")
+    SET(MAYBE_UNUSED_MACRO "")
+endif()
+
+# -----------------------------------------------------------------------------
+# Find required/optional packages
+
+find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
 
 include(cmake/aws.cmake)
 include(cmake/jsonc.cmake)
@@ -130,6 +107,54 @@ set(NETDATA_COMMON_INCLUDE_DIRS ${UUID_INCLUDE_DIRS}
                                 ${OPENSSL_INCLUDE_DIRS}
                                 ${JSON_INCLUDE_DIRS})
 
+set(NETDATA_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
+set(NETDATA_COMMON_INCLUDE_DIRS ${NETDATA_COMMON_INCLUDE_DIRS} ${NETDATA_INCLUDE_DIR})
+
+# -----------------------------------------------------------------------------
+# Detect platform headers & types
+
+include(CheckIncludeFile)
+include(CheckCSourceCompiles)
+include(CheckLibraryExists)
+include(CheckStructHasMember)
+include(CheckSymbolExists)
+
+check_include_file(time.h           HAVE_TIME_H)
+check_include_file(unistd.h         HAVE_UNISTD_H)
+check_include_file(sys/statfs.h     HAVE_SYS_STATFS_H)
+check_include_file(sys/statvfs.h    HAVE_SYS_STATVFS_H)
+check_include_file(inttypes.h       HAVE_INTTYPES_H)
+check_include_file(stdint.h         HAVE_STDINT_H)
+check_include_file(sys/mkdev.h      HAVE_SYS_MKDEV_H)
+check_include_file(sys/sysmacros.h  HAVE_SYS_SYSMACROS_H)
+
+if(HAVE_TIME_H)
+    check_struct_has_member("struct timespec" tv_sec "time.h" HAVE_STRUCT_TIMESPEC)
+endif()
+
+if(HAVE_SYS_MKDEV_H)
+    check_symbol_exists(major "sys/mkdev.h" MAJOR_IN_MKDEV)
+endif()
+
+if (HAVE_SYS_SYSMACROS_H)
+    check_symbol_exists(major "sys/sysmacros.h" MAJOR_IN_SYSMACROS)
+endif()
+
+check_c_source_compiles("
+  #define _GNU_SOURCE
+  #include <string.h>
+  int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
+  " STRERROR_R_CHAR_P)
+
+if(CRYPTO_FOUND)
+    set(HAVE_CRYPTO True)
+    FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
+    check_library_exists(crypto X509_VERIFY_PARAM_set1_host ${CRYPTO_LIBRARY_LOCATION} HAVE_X509_VERIFY_PARAM_set1_host)
+    if (HAVE_X509_VERIFY_PARAM_set1_host)
+        set(HAVE_X509_VERIFY_PARAM_set1_host True)
+    endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # Detect libbpf
 set(ENABLE_PLUGIN_EBPF False)
@@ -164,8 +189,6 @@ set(NETDATA_LOG_DIR "${CMAKE_INSTALL_PREFIX}/var/log/netdata" CACHE PATH "log di
 set(NETDATA_PLUGINS_DIR "${CMAKE_INSTALL_PREFIX}/usr/libexec/netdata/plugins.d" CACHE PATH "plugins dir")
 set(NETDATA_WEB_DIR "${CMAKE_INSTALL_PREFIX}/usr/share/netdata/web" CACHE PATH "web dir")
 set(NETDATA_VARLIB_DIR "${CMAKE_INSTALL_PREFIX}/var/lib/netdata" CACHE PATH "varlib dir")
-
-add_subdirectory(libnetdata)
 
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} judy)
 
@@ -520,61 +543,6 @@ if("${NETDATA_VERSION}" STREQUAL "")
     file(STRINGS "packaging/version" NETDATA_VERSION LIMIT_COUNT 1)
 endif()
 
-check_include_file(time.h HAVE_TIME_H)
-check_include_file(unistd.h HAVE_UNISTD_H)
-if(HAVE_TIME_H)
-    include(CheckStructHasMember)
-    check_struct_has_member("struct timespec" tv_sec "time.h" HAVE_STRUCT_TIMESPEC)
-endif()
-
-check_include_file(sys/statfs.h HAVE_SYS_STATFS_H)
-check_include_file(sys/statvfs.h HAVE_SYS_STATVFS_H)
-check_include_file(inttypes.h HAVE_INTTYPES_H)
-check_include_file(stdint.h HAVE_STDINT_H)
-
-include(CheckSymbolExists)
-check_include_file(sys/mkdev.h HAVE_SYS_MKDEV_H)
-if(HAVE_SYS_MKDEV_H)
-    check_symbol_exists(major "sys/mkdev.h" MAJOR_IN_MKDEV)
-endif()
-check_include_file(sys/sysmacros.h HAVE_SYS_SYSMACROS_H)
-if (HAVE_SYS_SYSMACROS_H)
-    check_symbol_exists(major "sys/sysmacros.h" MAJOR_IN_SYSMACROS)
-endif()
-
-if(CRYPTO_FOUND)
-    include(CheckLibraryExists)
-    set(HAVE_CRYPTO True)
-    FIND_LIBRARY(CRYPTO_LIBRARY_LOCATION NAMES crypto)
-    check_library_exists(crypto X509_VERIFY_PARAM_set1_host ${CRYPTO_LIBRARY_LOCATION} HAVE_X509_VERIFY_PARAM_set1_host)
-    if (HAVE_X509_VERIFY_PARAM_set1_host)
-        set(HAVE_X509_VERIFY_PARAM_set1_host True)
-    endif()
-endif()
-
-include(CheckCSourceCompiles)
-check_c_source_compiles("
-  #define _GNU_SOURCE
-  #include <string.h>
-  int main() { char x = *strerror_r(0, &x, sizeof(x)); return 0; }
-  " STRERROR_R_CHAR_P)
-
-if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
-    SET(LIKELY_MACRO "__builtin_expect(!!(x), 1)")
-    SET(UNLIKELY_MACRO "__builtin_expect(!!(x), 0)")
-else()
-    SET(LIKELY_MACRO "(x)")
-    SET(UNLIKELY_MACRO "(x)")
-endif()
-
-if(${CMAKE_C_COMPILER_ID} STREQUAL "GNU")
-    SET(ALWAYS_UNUSED_MACRO "__attribute__((unused))")
-    SET(MAYBE_UNUSED_MACRO "__attribute__((unused))")
-else()
-    SET(ALWAYS_UNUSED_MACRO "")
-    SET(MAYBE_UNUSED_MACRO "")
-endif()
-
 # -----------------------------------------------------------------------------
 # netdata
 
@@ -595,8 +563,8 @@ endif()
 
 add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries (netdatacli libnetdata ${NETDATA_COMMON_LIBRARIES})
-target_include_directories(netdatacli PUBLIC ${NETDATA_COMMON_INCLUDE_DIRS})
-target_compile_options(netdatacli PUBLIC ${NETDATA_COMMON_CFLAGS})
+target_include_directories(netdatacli PRIVATE ${NETDATA_COMMON_INCLUDE_DIRS})
+target_compile_options(netdatacli PRIVATE ${NETDATA_COMMON_CFLAGS})
 
 # -----------------------------------------------------------------------------
 # ebpf_process.plugin
@@ -814,11 +782,7 @@ endif()
 
 set(ENABLE_ML True)
 
-configure_file(
-    libnetdata/config.h.cmake
-    ${NETDATA_INCLUDE_DIR}/config.h
-)
-
+add_subdirectory(libnetdata)
 add_subdirectory(claim)
 add_subdirectory(collectors)
 add_subdirectory(daemon)
@@ -830,5 +794,10 @@ add_subdirectory(registry)
 add_subdirectory(spawn)
 add_subdirectory(streaming)
 add_subdirectory(web)
+
+configure_file(
+    libnetdata/config.h.cmake
+    ${NETDATA_INCLUDE_DIR}/config.h
+)
 
 install(TARGETS netdata DESTINATION bin)

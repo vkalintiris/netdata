@@ -62,14 +62,14 @@ set(LIBNETDATA_FILES
         circular_buffer/circular_buffer.h
     )
 
-IF(ENABLE_PLUGIN_EBPF)
+if(ENABLE_PLUGIN_EBPF)
     list(APPEND LIBNETDATA_FILES
         libnetdata/ebpf/ebpf.c
         libnetdata/ebpf/ebpf.h)
-ENDIF()
+endif()
 
 add_library(libnetdata OBJECT ${LIBNETDATA_FILES})
-target_include_directories(libnetdata PUBLIC ${NETDATA_INCLUDE_DIR})
+target_include_directories(libnetdata PRIVATE ${NETDATA_INCLUDE_DIR})
 
 # Our build relies on adding the top-level src dir to the header search
 # path. Instead of adding the dir to every single cc/cxx command, we propagate
