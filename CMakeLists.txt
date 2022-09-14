@@ -244,76 +244,6 @@ set(MACOS_PLUGIN_FILES
     collectors/macos.plugin/macos_mach_smi.c
     collectors/macos.plugin/macos_fw.c)
 
-set(RRD_PLUGIN_FILES
-    database/rrdcalc.c
-    database/rrdcalc.h
-    database/rrdcalctemplate.c
-    database/rrdcalctemplate.h
-    database/rrdcontext.c
-    database/rrdcontext.h
-    database/rrddim.c
-    database/rrddimvar.c
-    database/rrddimvar.h
-    database/rrdfamily.c
-    database/rrdhost.c
-    database/rrdlabels.c
-    database/rrd.c
-    database/rrd.h
-    database/rrdset.c
-    database/rrdsetvar.c
-    database/rrdsetvar.h
-    database/rrdvar.c
-    database/rrdvar.h
-    database/storage_engine.c
-    database/storage_engine.h
-    database/ram/rrddim_mem.c
-    database/ram/rrddim_mem.h
-    database/sqlite/sqlite_functions.c
-    database/sqlite/sqlite_functions.h
-    database/sqlite/sqlite_context.c
-    database/sqlite/sqlite_context.h
-    database/sqlite/sqlite_db_migration.c
-    database/sqlite/sqlite_db_migration.h
-    database/sqlite/sqlite_aclk.c
-    database/sqlite/sqlite_aclk.h
-    database/sqlite/sqlite_health.c
-    database/sqlite/sqlite_health.h
-    database/sqlite/sqlite_aclk_node.c
-    database/sqlite/sqlite_aclk_node.h
-    database/sqlite/sqlite_aclk_chart.c
-    database/sqlite/sqlite_aclk_chart.h
-    database/sqlite/sqlite_aclk_alert.c
-    database/sqlite/sqlite_aclk_alert.h
-    database/sqlite/sqlite3.c
-    database/sqlite/sqlite3.h
-    database/engine/rrdengine.c
-    database/engine/rrdengine.h
-    database/engine/rrddiskprotocol.h
-    database/engine/datafile.c
-    database/engine/datafile.h
-    database/engine/journalfile.c
-    database/engine/journalfile.h
-    database/engine/rrdenginelib.c
-    database/engine/rrdenginelib.h
-    database/engine/rrdengineapi.c
-    database/engine/rrdengineapi.h
-    database/engine/pagecache.c
-    database/engine/pagecache.h
-    database/engine/rrdenglocking.c
-    database/engine/rrdenglocking.h
-    database/engine/metadata_log/metadatalog.h
-    database/engine/metadata_log/metadatalogapi.c
-    database/engine/metadata_log/metadatalogapi.h
-    database/engine/metadata_log/logfile.h
-    database/engine/metadata_log/logfile.c
-    database/engine/metadata_log/metadatalogprotocol.h
-    database/engine/metadata_log/metalogpluginsd.c
-    database/engine/metadata_log/metalogpluginsd.h
-    database/engine/metadata_log/compaction.c
-    database/engine/metadata_log/compaction.h
-    database/KolmogorovSmirnovDist.c
-    database/KolmogorovSmirnovDist.h)
-
 set(ACLK_ALWAYS_BUILD
     aclk/aclk_rrdhost_state.h
     aclk/aclk_proxy.c
@@ -461,8 +391,7 @@ endif()
 set(NETDATA_FILES
         collectors/all.h
         ${EXPORTING_ENGINE_FILES}
-        ${ML_FILES}
-        ${RRD_PLUGIN_FILES})
+        ${ML_FILES})
 
 set(NETDATACLI_FILES
         daemon/commands.h
@@ -971,6 +900,7 @@ configure_file(
 add_subdirectory(claim)
 add_subdirectory(collectors)
 add_subdirectory(daemon)
+add_subdirectory(database)
 add_subdirectory(health)
 add_subdirectory(parser)
 add_subdirectory(registry)
