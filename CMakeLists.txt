@@ -244,24 +244,6 @@ set(MACOS_PLUGIN_FILES
     collectors/macos.plugin/macos_mach_smi.c
     collectors/macos.plugin/macos_fw.c)
 
-set(REGISTRY_PLUGIN_FILES
-    registry/registry.c
-    registry/registry.h
-    registry/registry_db.c
-    registry/registry_init.c
-    registry/registry_internals.c
-    registry/registry_internals.h
-    registry/registry_log.c
-    registry/registry_machine.c
-    registry/registry_machine.h
-    registry/registry_person.c
-    registry/registry_person.h
-    registry/registry_url.c
-    registry/registry_url.h)
-
-set(STATSD_PLUGIN_FILES
-    collectors/statsd.plugin/statsd.c)
-
 set(RRD_PLUGIN_FILES
     database/rrdcalc.c
     database/rrdcalc.h
@@ -405,10 +387,6 @@ set(STREAMING_PLUGIN_FILES
     streaming/compression.c
     streaming/receiver.c
     streaming/sender.c)
-
-set(CLAIM_PLUGIN_FILES
-    claim/claim.c
-    claim/claim.h)
 
 set(ACLK_ALWAYS_BUILD
     aclk/aclk_rrdhost_state.h
@@ -566,11 +544,8 @@ set(NETDATA_FILES
         ${EXPORTING_ENGINE_FILES}
         ${ML_FILES}
         ${RRD_PLUGIN_FILES}
-        ${REGISTRY_PLUGIN_FILES}
-        ${STATSD_PLUGIN_FILES}
         ${STREAMING_PLUGIN_FILES}
         ${WEB_PLUGIN_FILES}
-        ${CLAIM_PLUGIN_FILES}
         ${SPAWN_PLUGIN_FILES})
 
 set(NETDATACLI_FILES
@@ -1077,9 +1052,11 @@ configure_file(
     ${NETDATA_INCLUDE_DIR}/config.h
 )
 
+add_subdirectory(claim)
 add_subdirectory(collectors)
 add_subdirectory(daemon)
 add_subdirectory(health)
 add_subdirectory(parser)
+add_subdirectory(registry)
 
 install(TARGETS netdata DESTINATION bin)
