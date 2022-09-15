@@ -65,7 +65,7 @@ include(cmake/libmongoc.cmake)
 include(cmake/libssl.cmake)
 include(cmake/libuv.cmake)
 include(cmake/openssl.cmake)
-include(cmake/protobuf.cmake)
+# include(cmake/protobuf.cmake)
 include(cmake/pubsub.cmake)
 include(cmake/snappy.cmake)
 include(cmake/uuid.cmake)
@@ -232,80 +232,6 @@ set(EBPF_PROCESS_PLUGIN_FILES
     collectors/ebpf.plugin/ebpf_cgroup.c
     collectors/ebpf.plugin/ebpf_cgroup.h)
 
-set(ACLK_ALWAYS_BUILD
-    aclk/aclk_rrdhost_state.h
-    aclk/aclk_proxy.c
-    aclk/aclk_proxy.h
-    aclk/aclk.c
-    aclk/aclk.h)
-
-set(ACLK_FILES
-    aclk/aclk_util.c
-    aclk/aclk_util.h
-    aclk/aclk_stats.c
-    aclk/aclk_stats.h
-    aclk/aclk_query.c
-    aclk/aclk_query.h
-    aclk/aclk_query_queue.c
-    aclk/aclk_query_queue.h
-    aclk/aclk_otp.c
-    aclk/aclk_otp.h
-    aclk/aclk_tx_msgs.c
-    aclk/aclk_tx_msgs.h
-    aclk/aclk_rx_msgs.c
-    aclk/aclk_rx_msgs.h
-    aclk/https_client.c
-    aclk/https_client.h
-    aclk/aclk_charts_api.c
-    aclk/aclk_charts_api.h
-    aclk/aclk_alarm_api.c
-    aclk/aclk_alarm_api.h
-    aclk/aclk_contexts_api.c
-    aclk/aclk_contexts_api.h
-    mqtt_websockets/src/mqtt_wss_client.c
-    mqtt_websockets/src/include/mqtt_wss_client.h
-    mqtt_websockets/src/mqtt_wss_log.c
-    mqtt_websockets/src/include/mqtt_wss_log.h
-    mqtt_websockets/src/ws_client.c
-    mqtt_websockets/src/include/ws_client.h
-    mqtt_websockets/src/mqtt_ng.c
-    mqtt_websockets/src/include/mqtt_ng.h
-    mqtt_websockets/src/common_public.c
-    mqtt_websockets/src/include/common_public.h
-    mqtt_websockets/src/include/common_internal.h
-    mqtt_websockets/c-rbuf/src/ringbuffer.c
-    mqtt_websockets/c-rbuf/include/ringbuffer.h
-    mqtt_websockets/c-rbuf/src/ringbuffer_internal.h
-    mqtt_websockets/MQTT-C/src/mqtt.c
-    mqtt_websockets/MQTT-C/include/mqtt.h
-    aclk/schema-wrappers/connection.cc
-    aclk/schema-wrappers/connection.h
-    aclk/schema-wrappers/node_connection.cc
-    aclk/schema-wrappers/node_connection.h
-    aclk/schema-wrappers/node_creation.cc
-    aclk/schema-wrappers/node_creation.h
-    aclk/schema-wrappers/chart_stream.cc
-    aclk/schema-wrappers/chart_stream.h
-    aclk/schema-wrappers/chart_config.cc
-    aclk/schema-wrappers/chart_config.h
-    aclk/schema-wrappers/alarm_stream.cc
-    aclk/schema-wrappers/alarm_stream.h
-    aclk/schema-wrappers/alarm_config.cc
-    aclk/schema-wrappers/alarm_config.h
-    aclk/schema-wrappers/node_info.cc
-    aclk/schema-wrappers/node_info.h
-    aclk/schema-wrappers/capability.cc
-    aclk/schema-wrappers/capability.h
-    aclk/schema-wrappers/proto_2_json.cc
-    aclk/schema-wrappers/proto_2_json.h
-    aclk/schema-wrappers/context_stream.cc
-    aclk/schema-wrappers/context_stream.h
-    aclk/schema-wrappers/context.cc
-    aclk/schema-wrappers/context.h
-    aclk/schema-wrappers/schema_wrappers.h
-    aclk/schema-wrappers/schema_wrapper_utils.cc
-    aclk/schema-wrappers/schema_wrapper_utils.h)
-
 set(EXPORTING_ENGINE_FILES
     exporting/exporting_engine.c
     exporting/exporting_engine.h
@@ -355,6 +281,8 @@ add_executable(netdatacli ${NETDATACLI_FILES})
 set(NETDATA_FILES collectors/all.h
                   ${EXPORTING_ENGINE_FILES})
 add_executable(netdata ${NETDATA_FILES})
+
+include(aclk/CMakeLists.txt)
 
 # -----------------------------------------------------------------------------
 # kinesis exporting connector
@@ -470,72 +398,6 @@ endif()
 set(NETDATA_COMMON_LIBRARIES ${NETDATA_COMMON_LIBRARIES} m ${CMAKE_THREAD_LIBS_INIT})
 
 find_package(Protobuf REQUIRED)
-
-function(PROTOBUF_ACLK_GENERATE_CPP SRCS HDRS)
-  if(NOT ARGN)
-    message(SEND_ERROR "Error: PROTOBUF_ACLK_GENERATE_CPP() called without any proto files")
-    return()
-  endif()
-
-  set(${SRCS})
-  set(${HDRS})
-  foreach(FIL ${ARGN})
-    get_filename_component(ABS_FIL ${FIL} ABSOLUTE)
-    get_filename_component(DIR ${ABS_FIL} DIRECTORY)
-    get_filename_component(FIL_WE ${FIL} NAME_WE)
-    set(GENERATED_PB_CC "${DIR}/${FIL_WE}.pb.cc")
-    set(GENERATED_PB_H "${DIR}/${FIL_WE}.pb.h")
-# cmake > 3.20 required :(
-#    cmake_path(SET GENERATED_PB_CC "${DIR}")
-#    cmake_path(SET GENERATED_PB_H "${DIR}")
-#    cmake_path(APPEND GENERATED_PB_CC "${FIL_WE}.pb.cc")
-#    cmake_path(APPEND GENERATED_PB_H "${FIL_WE}.pb.h")
-
-    list(APPEND ${SRCS} ${GENERATED_PB_CC})
-    list(APPEND ${HDRS} ${GENERATED_PB_H})
-    add_custom_command(
-      OUTPUT ${GENERATED_PB_CC}
-             ${GENERATED_PB_H}
-      COMMAND  ${PROTOBUF_PROTOC_EXECUTABLE}
-      ARGS -I=${CMAKE_SOURCE_DIR}/aclk/aclk-schemas --cpp_out=${CMAKE_SOURCE_DIR}/aclk/aclk-schemas ${ABS_FIL}
-      DEPENDS ${ABS_FIL} ${PROTOBUF_PROTOC_EXECUTABLE}
-      COMMENT "Running C++ protocol buffer compiler on ${FIL}"
-      VERBATIM )
-  endforeach()
-  set_source_files_properties(${${SRCS}} ${${HDRS}} PROPERTIES GENERATED TRUE)
-  set(${SRCS} ${${SRCS}} PARENT_SCOPE)
-  set(${HDRS} ${${HDRS}} PARENT_SCOPE)
-endfunction()
-
-set(ACLK_PROTO_DEFS
-        aclk/aclk-schemas/proto/aclk/v1/lib.proto
-        aclk/aclk-schemas/proto/agent/v1/disconnect.proto
-        aclk/aclk-schemas/proto/agent/v1/connection.proto
-        aclk/aclk-schemas/proto/alarm/v1/config.proto
-        aclk/aclk-schemas/proto/alarm/v1/stream.proto
-        aclk/aclk-schemas/proto/chart/v1/config.proto
-        aclk/aclk-schemas/proto/chart/v1/dimension.proto
-        aclk/aclk-schemas/proto/chart/v1/instance.proto
-        aclk/aclk-schemas/proto/chart/v1/stream.proto
-        aclk/aclk-schemas/proto/nodeinstance/connection/v1/connection.proto
-        aclk/aclk-schemas/proto/nodeinstance/create/v1/creation.proto
-        aclk/aclk-schemas/proto/nodeinstance/info/v1/info.proto
-        aclk/aclk-schemas/proto/context/v1/context.proto
-        aclk/aclk-schemas/proto/context/v1/stream.proto
-        )
-PROTOBUF_ACLK_GENERATE_CPP(ACLK_PROTO_BUILT_SRCS ACLK_PROTO_BUILT_HDRS ${ACLK_PROTO_DEFS})
-
-list(APPEND NETDATA_COMMON_LIBRARIES ${PROTOBUF_LIBRARIES})
-list(APPEND NETDATA_COMMON_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
-list(APPEND NETDATA_COMMON_CFLAGS ${PROTOBUF_CFLAGS_OTHER})
-
-target_sources(netdata PRIVATE ${ACLK_ALWAYS_BUILD})
-target_sources(netdata PRIVATE  ${ACLK_FILES} ${ACLK_PROTO_BUILT_SRCS} ${ACLK_PROTO_BUILT_HDRS})
-
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/aclk/aclk-schemas)
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/MQTT-C/include)
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include)
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include)
 
 set(GIT_EXECUTABLE "git")
 execute_process(COMMAND ${GIT_EXECUTABLE} describe
