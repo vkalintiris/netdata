@@ -126,8 +126,8 @@ void *profile_main(void *ptr)
 {
     netdata_thread_cleanup_push(profile_main_cleanup, ptr);
 
-    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 100);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 5);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 1);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 1);
 
     std::vector<Chart *> Charts = createCharts(NumCharts, NumDimsPerChart);
 

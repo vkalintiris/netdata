@@ -165,7 +165,6 @@ public:
                 /*
                  * Find the dim we are interested in and query it.
                  */
-                rrdhost_rdlock(RH);
                 RRDSET *RS = rrdset_find(RH, GD.getChart().c_str());
                 if (!RS) {
                     error("[%s] Could not find chart %s for dim %s to fill <%ld, %ld>",
@@ -174,14 +173,10 @@ public:
                     continue;
                 }
 
-                rrdset_rdlock(RS);
-
                 if (!rrdset_push_chart_definition_now(RS)) {
                     /* We shouldn't check this chart upstream. Unlock the
                      * chart/host and continue with the next entry in the
                      * GapData vector */
-                    rrdset_unlock(RS);
-                    rrdhost_unlock(RH);
                     continue;
                 }
 
@@ -189,8 +184,6 @@ public:
                 if (!RS) {
                     error("[%s] Could not find dim %s.%s to fill <%ld, %ld>",
                           rrdhost_hostname(RH), GD.getChart().c_str(), GD.getDimension().c_str(), Gap.first, Gap.second);
-                    rrdset_unlock(RS);
-                    rrdhost_unlock(RH);
                     continue;
                 }
 
@@ -198,9 +191,6 @@ public:
                 std::pair<std::vector<time_t>, std::vector<storage_number>> P =
                     Query::getSNs(RD, Gap.first, Gap.second);
                 GD.setPayload(std::move(P.first), std::move(P.second));
-
-                rrdset_unlock(RS);
-                rrdhost_unlock(RH);
 
                 /*
                  * Try to send the data upstream
@@ -237,7 +227,6 @@ public:
     }
 
     time_t maxUpdateEvery() const {
-        rrdhost_rdlock(RH);
         time_t MaxUE = RH->rrd_update_every;
 
         void *VRS;
