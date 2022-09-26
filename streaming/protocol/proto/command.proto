@@ -7,6 +7,11 @@ message TimeRange {
     int32 Before = 2;
 }
 
+message Gap {
+    string Chart = 1;
+    TimeRange TR = 2;
+};
+
 message RequestFillGaps {
     repeated TimeRange TimeRanges = 1;
 }
@@ -32,4 +37,9 @@ message HandshakeInfo {
     VersionValue Version = 1;
 
     bool EnableReplication = 2;
+}
+
+message HostGaps {
+    int32 PageSize = 1;
+    repeated Gap ChartGaps = 2;
 }

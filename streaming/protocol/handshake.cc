@@ -59,6 +59,7 @@ bool recv_handshake_info(connection_handle_t *conn, handshake_info_t *info) {
     return true;
 }
 
+#if 0 /* per host */
 bool recv_replication_gaps(connection_handle_t *conn) {
     binary_message_t msg;
     bool ok = binary_message_recv(conn, &msg);
@@ -72,7 +73,23 @@ bool recv_replication_gaps(connection_handle_t *conn) {
 
     return true;
 }
+#else
+bool recv_replication_gaps(connection_handle_t *conn) {
+    binary_message_t msg;
+    bool ok = binary_message_recv(conn, &msg);
+    if (!ok)
+        return false;
 
+    if (msg.len) {
+        replication_set_sender_gaps(conn->host, msg.buf, msg.len);
+        freez(msg.buf);
+    }
+
+    return true;
+}
+#endif
+
+#if 0 /* per host */
 bool send_replication_gaps(connection_handle_t *conn) {
     binary_message_t msg;
 
@@ -81,6 +98,16 @@ bool send_replication_gaps(connection_handle_t *conn) {
     freez(msg.buf);
     return ok;
 }
+#else
+bool send_replication_gaps(connection_handle_t *conn) {
+    binary_message_t msg;
+
+    replication_get_receiver_gaps(conn->host, &msg.buf, &msg.len);
+    bool ok = binary_message_send(conn, &msg);
+    freez(msg.buf);
+    return ok;
+}
+#endif
 
 bool sender_handshake_start(struct sender_state *ss) {
     bool ok = true;
@@ -135,6 +162,8 @@ bool receiver_handshake_start(struct receiver_state *rs) {
     ok = send_handshake_info(&conn, &local_info);
     if (!ok)
         return false;
+
+    replication_host_child_connected(conn.host);
 
     bool enable_replication = local_info.enable_replication &&
                               remote_info.enable_replication;

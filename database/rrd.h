@@ -31,6 +31,7 @@ typedef void *ml_host_t;
 typedef void *ml_dimension_t;
 
 typedef void *replication_handle_t;
+typedef void *replication_chart_t;
 
 // forward declarations
 struct rrddim_tier;
@@ -596,6 +597,10 @@ struct rrdset {
 
     total_number collected_total;                   // used internally to calculate percentages
     total_number last_collected_total;              // used internally to calculate percentages
+
+
+    time_t gap_start;                               // last dbengine_entry
+    time_t gap_end;
 
     size_t rrdlabels_last_saved_version;
 

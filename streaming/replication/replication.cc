@@ -3,14 +3,39 @@
 
 using namespace replication;
 
+struct ChartGap {
+    std::string Name;
+    TimeRange Gap;
+};
+
 class Host {
 public:
-    Host(RRDHOST *RH) : RH(RH), L(rrdhost_hostname(RH)) {}
+    Host(RRDHOST *RH) : RH(RH), L(rrdhost_hostname(RH)), ReceiverPageSize(0) {}
 
-    void setReceiverGaps(std::vector<TimeRange> &TRs) {
-        std::lock_guard<Mutex> Lock(ReceiverMutex);
-        ReceiverGaps = TRs;
+    void setReceiverPageSize(size_t PageSize) {
+        std::lock_guard<Mutex> Lock(SenderMutex);
+        ReceiverPageSize = PageSize;
     }
+
+    void setReceiverGaps(std::vector<TimeRange> TRs) {
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
+        ReceiverGaps = std::move(TRs);
+    }
+
+    void appendReceiverChartGaps(std::vector<ChartGap> CGs) {
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
+
+        ReceiverChartGaps.reserve(ReceiverChartGaps.size() + CGs.size());
+        for (size_t Idx = 0; Idx != CGs.size(); Idx++) {
+            ReceiverChartGaps.push_back(std::move(CGs[Idx]));
+        }
+    }
+
+    std::vector<ChartGap> getReceiverChartGaps() {
+        std::lock_guard<Mutex> Lock(ReceiverMutex);
+        return ReceiverChartGaps;
+    }
+
 
     std::vector<TimeRange> getReceiverGaps() {
         std::lock_guard<Mutex> Lock(ReceiverMutex);
@@ -255,15 +280,25 @@ public:
         return L;
     }
 
+    void setSenderChartGaps(std::vector<ChartGap> CGs) {
+        for (size_t Idx = 0; Idx != CGs.size(); Idx++)
+            error("%s: <%ld, %ld>", CGs[Idx].Name.c_str(), CGs[Idx].Gap.first, CGs[Idx].Gap.second);
+
+        SenderChartGaps = std::move(CGs);
+    }
+
 private:
     RRDHOST *RH;
     Logger L;
 
     Mutex ReceiverMutex;
     std::vector<TimeRange> ReceiverGaps;
+    std::vector<ChartGap> ReceiverChartGaps;
+    size_t ReceiverPageSize;
 
     Mutex SenderMutex;
     std::vector<TimeRange> SenderGaps;
+    std::vector<ChartGap> SenderChartGaps;
 
     std::thread ReplicationThread;
 };
@@ -298,7 +333,7 @@ void replication_host_gaps_from_sqlite_blob(RRDHOST *RH, const char *Buf, size_t
         return;
 
     std::vector<TimeRange> TRs = deserializeTimeRangesFromArray(Buf, Len);
-    H->setReceiverGaps(TRs);
+    H->setReceiverGaps(std::move(TRs));
 
     /*
      * Log info
@@ -360,6 +395,7 @@ void replication_thread_stop(RRDHOST *RH) {
     L.stoppedReplicationThread();
 }
 
+#if 0
 void replication_set_sender_gaps(RRDHOST *RH, const char *Buf, size_t Len) {
     Host *H = static_cast<Host *>(RH->repl_handle);
     if (!H)
@@ -379,26 +415,59 @@ void replication_set_sender_gaps(RRDHOST *RH, const char *Buf, size_t Len) {
     auto &L = H->getLogger();
     L.senderReceivedGaps(TRs);
 }
+#else
+void replication_set_sender_gaps(RRDHOST *RH, const char *Buf, size_t Len) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    protocol::HostGaps HG;
+    HG.ParseFromArray(Buf, Len);
+
+    H->setReceiverPageSize(HG.pagesize());
+
+    std::vector<ChartGap> CGs;
+    CGs.reserve(HG.chartgaps_size());
+
+    for (int32_t Idx = 0; Idx != HG.chartgaps_size(); Idx++) {
+        ChartGap CG;
+
+        CG.Name = HG.chartgaps(Idx).chart();
+        CG.Gap.first = HG.chartgaps(Idx).tr().after();
+        CG.Gap.second = HG.chartgaps(Idx).tr().before();
+
+        CGs.push_back(std::move(CG));
+    }
+
+    H->setSenderChartGaps(std::move(CGs));
+}
+#endif
 
 void replication_get_receiver_gaps(RRDHOST *RH, char **Buf, uint32_t *Len) {
     Host *H = static_cast<Host *>(RH->repl_handle);
     if (!H)
         return;
 
-    H->receiverConnect();
-    std::vector<TimeRange> TRs = H->getReceiverGaps();
+    protocol::HostGaps HG;
 
-    std::string protoBuf = serializeTimeRangesToString(TRs);
+    HG.set_pagesize(RRDENG_BLOCK_SIZE);
 
-    *Buf = static_cast<char*>(callocz(sizeof(char), protoBuf.size()));
-    memcpy(*Buf, protoBuf.data(), protoBuf.size());
-    *Len = protoBuf.size();
+    std::vector<ChartGap> CGs = H->getReceiverChartGaps();
+    for (size_t Idx = 0; Idx != CGs.size(); Idx++) {
+        protocol::Gap *G = HG.add_chartgaps();
 
-    /*
-     * Log info
-     */
-    auto &L = H->getLogger();
-    L.receiverSentGaps(TRs);
+        G->set_chart(CGs[Idx].Name);
+        G->mutable_tr()->set_after(CGs[Idx].Gap.first);
+        G->mutable_tr()->set_before(CGs[Idx].Gap.second);
+    }
+
+    HG.PrintDebugString();
+
+    std::string ProtoBuf = HG.SerializeAsString();
+
+    *Buf = static_cast<char*>(callocz(sizeof(char), ProtoBuf.size()));
+    memcpy(*Buf, ProtoBuf.data(), ProtoBuf.size());
+    *Len = ProtoBuf.size();
 }
 
 bool replication_receiver_fill_gap(RRDHOST *RH, const char *Buf) {
@@ -462,3 +531,50 @@ const char *replication_logs(RRDHOST *RH) {
 
     return H->getLogs();
 }
+
+
+void replication_host_child_disconnected(RRDHOST *RH) {
+    Host *H = static_cast<Host *>(RH->repl_handle);
+    if (!H)
+        return;
+
+    void *RSP;
+    std::vector<ChartGap> NewCGs;
+
+    rrdset_foreach_read(RSP, RH) {
+        RRDSET *RS = static_cast<RRDSET *>(RSP);
+        RS->gap_start = rrdset_last_entry_t(RS);
+
+        error("GVD: host child %s disconnected", rrdhost_hostname(RH));
+        error("GVD: chart %s.%s last dbengine entry %ld second",
+              rrdhost_hostname(RH), rrdset_id(RS), RS->gap_start);
+
+        ChartGap CG;
+        CG.Name = rrdset_id(RS);
+        CG.Gap.first = RS->gap_start;
+        CG.Gap.second = 0;
+
+        NewCGs.push_back(std::move(CG));
+    }
+    rrdset_foreach_done(RSP);
+
+    H->appendReceiverChartGaps(NewCGs);
+}
+
+void replication_host_child_connected(RRDHOST *RH) {
+    void *RSP;
+    rrdset_foreach_read(RSP, RH) {
+        RRDSET *RS = static_cast<RRDSET *>(RSP);
+
+        error("GVD: have chart %s.%s (replication_last_dbengine_entry: %ld)",
+              rrdhost_hostname(RH), rrdset_id(RS), RS->gap_start);
+    }
+    rrdset_foreach_done(RSP);
+}
+
+
+
+
+
+
+

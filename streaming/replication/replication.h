@@ -28,8 +28,17 @@ bool replication_receiver_fill_gap(RRDHOST *RH, const char *Buf);
 void replication_receiver_drop_gap(RRDHOST *RH, time_t After, time_t Before);
 size_t replication_receiver_number_of_pending_gaps(RRDHOST *RH);
 
-
 const char *replication_logs(RRDHOST *RH);
+
+
+
+
+void replication_host_child_connected(RRDHOST *RH);
+void replication_host_child_disconnected(RRDHOST *RH);
+
+
+
+
 
 #ifdef __cplusplus
 };

@@ -700,6 +700,7 @@ static int rrdpush_receive(struct receiver_state *rpt)
     error("STREAM %s [receive from [%s]:%s]: disconnected (completed %zu updates).", rpt->hostname, rpt->client_ip,
           rpt->client_port, count);
 
+    replication_host_child_disconnected(rpt->host);
     rrdcontext_host_child_disconnected(rpt->host);
 
 #ifdef ENABLE_ACLK
