@@ -600,7 +600,8 @@ struct rrdset {
 
 
     time_t gap_start;                               // last dbengine_entry
-    time_t gap_end;
+    time_t first_storage_engine_timestamp_streamed;
+    time_t first_storage_engine_timestamp_received;
 
     size_t rrdlabels_last_saved_version;
 

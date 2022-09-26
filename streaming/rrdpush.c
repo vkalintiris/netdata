@@ -400,6 +400,12 @@ void rrdset_done_push(RRDSET *st) {
             error("STREAM %s [send]: cannot write to internal pipe", rrdhost_hostname(host));
 
         sender_commit(host->sender);
+
+        if (!st->first_storage_engine_timestamp_streamed) {
+            st->first_storage_engine_timestamp_streamed = st->last_updated.tv_sec - st->update_every;
+            printf("%s first storage engine timestamp streamed %ld (update_every: %d)\n",
+                   rrdset_id(st), st->first_storage_engine_timestamp_streamed, st->update_every);
+        }
     }
     else
         sender_cancel(host->sender);
