@@ -1582,8 +1582,8 @@ static void rrd2rrdr_log_request_response_metadata(RRDR *r
 #endif // NETDATA_INTERNAL_CHECKS
 
 // Returns 1 if an absolute period was requested or 0 if it was a relative period
-int rrdr_relative_window_to_absolute(long long *after, long long *before) {
-    time_t now = now_realtime_sec() - 1;
+int rrdr_relative_window_to_absolute(long long *after, long long *before, time_t shift_back) {
+    time_t now = now_realtime_sec() - shift_back;
 
     int absolute_period_requested = -1;
     long long after_requested, before_requested;
@@ -1784,7 +1784,8 @@ RRDR *rrd2rrdr(
     }
 
     // convert our before_wanted and after_wanted to absolute
-    rrdr_relative_window_to_absolute(&after_wanted, &before_wanted);
+    time_t shift_back = (options & RRDR_OPTION_IMMUTABLE_NOW) ? 0 : 1;
+    rrdr_relative_window_to_absolute(&after_wanted, &before_wanted, shift_back);
     query_debug_log(":relative2absolute after %lld, before %lld", after_wanted, before_wanted);
 
     if(natural_points && (options & RRDR_OPTION_SELECTED_TIER) && tier > 0 && storage_tiers > 1) {

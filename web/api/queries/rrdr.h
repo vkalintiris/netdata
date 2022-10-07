@@ -41,6 +41,7 @@ typedef enum rrdr_options {
     RRDR_OPTION_RETURN_RAW     = 0x00100000, // Return raw data for aggregating across multiple nodes
     RRDR_OPTION_RETURN_JWAR    = 0x00200000, // Return anomaly rates in jsonwrap
     RRDR_OPTION_SELECTED_TIER  = 0x00400000, // Use the selected tier for the query
+    RRDR_OPTION_IMMUTABLE_NOW  = 0x00800000, // do not modify `now` when updating after/before
 
     // internal ones - not to be exposed to the API
     RRDR_OPTION_INTERNAL_AR    = 0x10000000, // internal use only, to let the formatters we want to render the anomaly rate
@@ -141,7 +142,7 @@ RRDR *rrd2rrdr(
     RRDR_GROUPING group_method, long resampling_time_requested, RRDR_OPTIONS options, const char *dimensions,
     struct context_param *context_param_list, const char *group_options, int timeout, int tier);
 
-int rrdr_relative_window_to_absolute(long long *after, long long *before);
+int rrdr_relative_window_to_absolute(long long *after, long long *before, time_t shift_back);
 
 #ifdef __cplusplus
 }

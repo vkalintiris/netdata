@@ -1975,7 +1975,9 @@ int rrdcontext_to_json(RRDHOST *host, BUFFER *wb, time_t after, time_t before, R
     if(after != 0 && before != 0) {
         long long after_wanted = after;
         long long before_wanted = before;
-        rrdr_relative_window_to_absolute(&after_wanted, &before_wanted);
+        time_t shift_back = 1;
+
+        rrdr_relative_window_to_absolute(&after_wanted, &before_wanted, shift_back);
         after = after_wanted;
         before = before_wanted;
     }
@@ -2015,7 +2017,9 @@ int rrdcontexts_to_json(RRDHOST *host, BUFFER *wb, time_t after, time_t before, 
     if(after != 0 && before != 0) {
         long long after_wanted = after;
         long long before_wanted = before;
-        rrdr_relative_window_to_absolute(&after_wanted, &before_wanted);
+        time_t shift_back = 1;
+
+        rrdr_relative_window_to_absolute(&after_wanted, &before_wanted, shift_back);
         after = after_wanted;
         before = before_wanted;
     }

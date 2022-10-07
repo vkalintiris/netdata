@@ -925,7 +925,9 @@ int web_api_v1_weights(RRDHOST *host, BUFFER *wb, WEIGHTS_METHOD method, WEIGHTS
     usec_t timeout_usec = timeout * USEC_PER_MS;
     usec_t started_usec = now_realtime_usec();
 
-    if(!rrdr_relative_window_to_absolute(&after, &before))
+    time_t shift_back = 1;
+
+    if(!rrdr_relative_window_to_absolute(&after, &before, shift_back))
         buffer_no_cacheable(wb);
 
     if (before <= after) {
@@ -941,7 +943,7 @@ int web_api_v1_weights(RRDHOST *host, BUFFER *wb, WEIGHTS_METHOD method, WEIGHTS
         if(baseline_before <= API_RELATIVE_TIME_MAX)
             baseline_before += after;
 
-        rrdr_relative_window_to_absolute(&baseline_after, &baseline_before);
+        rrdr_relative_window_to_absolute(&baseline_after, &baseline_before, shift_back);
 
         if (baseline_before <= baseline_after) {
             resp = HTTP_RESP_BAD_REQUEST;
