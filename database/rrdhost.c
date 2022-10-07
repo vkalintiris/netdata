@@ -323,6 +323,9 @@ RRDHOST *rrdhost_create(const char *hostname,
                         char *rrdpush_destination,
                         char *rrdpush_api_key,
                         char *rrdpush_send_charts_matching,
+                        bool rrdpush_enable_replication,
+                        time_t rrdpush_seconds_to_replicate,
+                        time_t rrdpush_replication_step,
                         struct rrdhost_system_info *system_info,
                         int is_localhost,
                         bool archived
@@ -361,6 +364,10 @@ int is_legacy = 1;
         rrdhost_initialize_rrdpush_sender(
             host, rrdpush_enabled, rrdpush_destination, rrdpush_api_key, rrdpush_send_charts_matching);
     }
+
+    host->rrdpush_enable_replication = rrdpush_enable_replication;
+    host->rrdpush_seconds_to_replicate = rrdpush_seconds_to_replicate;
+    host->rrdpush_replication_step = rrdpush_replication_step;
 
     netdata_rwlock_init(&host->rrdhost_rwlock);
     netdata_mutex_init(&host->aclk_state_lock);
@@ -574,6 +581,9 @@ void rrdhost_update(RRDHOST *host
                     , char *rrdpush_destination
                     , char *rrdpush_api_key
                     , char *rrdpush_send_charts_matching
+                    , bool rrdpush_enable_replication
+                    , time_t rrdpush_seconds_to_replicate
+                    , time_t rrdpush_replication_step
                     , struct rrdhost_system_info *system_info
 )
 {
@@ -643,6 +653,10 @@ void rrdhost_update(RRDHOST *host
                                    rrdpush_api_key,
                                    rrdpush_send_charts_matching);
 
+        host->rrdpush_enable_replication = rrdpush_enable_replication;
+        host->rrdpush_seconds_to_replicate = rrdpush_seconds_to_replicate;
+        host->rrdpush_replication_step = rrdpush_replication_step;
+
         rrdhost_initialize_health(host, host == localhost);
 
         rrd_hosts_available++;
@@ -673,6 +687,9 @@ RRDHOST *rrdhost_find_or_create(
         , char *rrdpush_destination
         , char *rrdpush_api_key
         , char *rrdpush_send_charts_matching
+        , bool rrdpush_enable_replication
+        , time_t rrdpush_seconds_to_replicate
+        , time_t rrdpush_replication_step
         , struct rrdhost_system_info *system_info
         , bool archived
 ) {
@@ -707,6 +724,9 @@ RRDHOST *rrdhost_find_or_create(
                 , rrdpush_destination
                 , rrdpush_api_key
                 , rrdpush_send_charts_matching
+                , rrdpush_enable_replication
+                , rrdpush_seconds_to_replicate
+                , rrdpush_replication_step
                 , system_info
                 , 0
                 , archived
@@ -732,6 +752,9 @@ RRDHOST *rrdhost_find_or_create(
            , rrdpush_destination
            , rrdpush_api_key
            , rrdpush_send_charts_matching
+           , rrdpush_enable_replication
+           , rrdpush_seconds_to_replicate
+           , rrdpush_replication_step
            , system_info);
     }
     if (host) {
@@ -943,6 +966,9 @@ unittest:
         , default_rrdpush_destination
         , default_rrdpush_api_key
         , default_rrdpush_send_charts_matching
+        , default_rrdpush_enable_replication
+        , default_rrdpush_seconds_to_replicate
+        , default_rrdpush_replication_step
         , system_info
         , 1
         , 0

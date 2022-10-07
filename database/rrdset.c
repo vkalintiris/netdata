@@ -16,7 +16,7 @@ void __rrdset_check_rdlock(RRDSET *st, const char *file, const char *function, c
 }
 
 void __rrdset_check_wrlock(RRDSET *st, const char *file, const char *function, const unsigned long line) {
-    debug(D_RRD_CALLS, "Checking write lock on chart '%s'", rrdset_id(st));
+    // debug(D_RRD_CALLS, "Checking write lock on chart '%s'", rrdset_id(st));
 
     int ret = netdata_rwlock_tryrdlock(&st->rrdset_rwlock);
     if(ret == 0)
@@ -312,18 +312,7 @@ static bool rrdset_conflict_callback(const DICTIONARY_ITEM *item __maybe_unused,
     }
 
     if (unlikely(st->update_every != ctr->update_every)) {
-        st->update_every = ctr->update_every;
-
-        // switch update every to the storage engine
-        RRDDIM *rd;
-        rrddim_foreach_read(rd, st) {
-            for (int tier = 0; tier < storage_tiers; tier++) {
-                if (rd->tiers[tier] && rd->tiers[tier]->db_collection_handle)
-                    rd->tiers[tier]->collect_ops.change_collection_frequency(rd->tiers[tier]->db_collection_handle, st->update_every);
-            }
-        }
-        rrddim_foreach_done(rd);
-
+        rrdset_set_update_every(st, ctr->update_every);
         ctr->react_action |= RRDSET_REACT_UPDATED;
     }
 
@@ -955,17 +944,11 @@ void rrdset_timed_next(RRDSET *st, struct timeval now, usec_t duration_since_las
     }
 
     #ifdef NETDATA_INTERNAL_CHECKS
-<<<<<<< HEAD
     debug(D_RRD_CALLS, "rrdset_timed_next() for chart %s with duration since last update %llu usec", rrdset_name(st), duration_since_last_update);
     rrdset_debug(st, "NEXT: %llu microseconds", duration_since_last_update);
-=======
-    debug(D_RRD_CALLS, "rrdset_timed_next() for chart %s with microseconds %llu", rrdset_name(st), microseconds);
-    rrdset_debug(st, "NEXT: %llu microseconds", microseconds);
->>>>>>> d4be6035b (Timed rrddim/rrdset functions.)
 
     if(discarded && discarded != duration_since_last_update)
         info("host '%s', chart '%s': discarded data collection time of %llu usec, replaced with %llu usec, reason: '%s'", rrdhost_hostname(st->rrdhost), rrdset_id(st), discarded, duration_since_last_update, discard_reason?discard_reason:"UNDEFINED");
-
     #endif
 
     st->usec_since_last_update = duration_since_last_update;
@@ -1125,7 +1108,7 @@ void rrddim_store_metric(RRDDIM *rd, usec_t point_end_time_ut, NETDATA_DOUBLE n,
         if(!t->last_collected_ut) {
             // we have not collected this tier before
             // let's fill any gap that may exist
-            rrdr_fill_tier_gap_from_smaller_tiers(rd, tier, now);
+            rrdr_fill_tier_gap_from_smaller_tiers(rd, tier, point_end_time_ut / USEC_PER_SEC);
         }
 
         t->last_collected_ut = point_end_time_ut;
@@ -1924,6 +1907,26 @@ after_second_database_work:
     netdata_thread_enable_cancelability();
 }
 
+time_t rrdset_set_update_every(RRDSET *st, time_t update_every) {
+    time_t prev_update_every = st->update_every;
+    st->update_every = update_every;
+
+    // switch update every to the storage engine
+    RRDDIM *rd;
+    rrddim_foreach_read(rd, st) {
+        for (int tier = 0; tier < storage_tiers; tier++) {
+            if (rd->tiers[tier] && rd->tiers[tier]->db_collection_handle)
+                rd->tiers[tier]->collect_ops.change_collection_frequency(rd->tiers[tier]->db_collection_handle, st->update_every);
+        }
+
+        assert(rd->update_every == prev_update_every &&
+               "chart's update every differs from the update every of its dimensions");
+        rd->update_every = st->update_every;
+    }
+    rrddim_foreach_done(rd);
+
+    return prev_update_every;
+}
 
 // ----------------------------------------------------------------------------
 // compatibility layer for RRDSET files v019

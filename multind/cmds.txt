@@ -1,0 +1,3 @@
+file /home/vk/opt/replay/netdata/usr/sbin/netdata
+b ChartQuery::fill(web_buffer*, rrdset*)
+run -D -c /home/vk/repos/nd/replay/multind/nd0.conf

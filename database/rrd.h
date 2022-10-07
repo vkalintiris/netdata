@@ -507,6 +507,8 @@ typedef enum rrdset_flags {
 
     RRDSET_FLAG_ANOMALY_RATE_CHART      = (1 << 21), // the rrdset is for storing anomaly rates for all dimensions
     RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION = (1 << 22),
+
+    RRDSET_FLAG_STREAM_COLLECTED_METRICS = (1 << 23),
 } RRDSET_FLAGS;
 
 #define rrdset_flag_check(st, flag) (__atomic_load_n(&((st)->flags), __ATOMIC_SEQ_CST) & (flag))
@@ -922,6 +924,10 @@ struct rrdhost {
     struct rrdpush_destinations *destination;       // the current destination from the above list
     SIMPLE_PATTERN *rrdpush_send_charts_matching;   // pattern to match the charts to be sent
 
+    bool rrdpush_enable_replication;                // enable replication
+    time_t rrdpush_seconds_to_replicate;            // max time we want to replicate from the child
+    time_t rrdpush_replication_step;                // seconds per replication step
+
     // the following are state information for the threading
     // streaming metrics from this netdata to an upstream netdata
     struct sender_state *sender;
@@ -1085,6 +1091,9 @@ RRDHOST *rrdhost_find_or_create(
         , char *rrdpush_destination
         , char *rrdpush_api_key
         , char *rrdpush_send_charts_matching
+        , bool rrdpush_enable_replication
+        , time_t rrdpush_seconds_to_replicate
+        , time_t rrdpush_replication_step
         , struct rrdhost_system_info *system_info
         , bool is_archived
 );
@@ -1108,6 +1117,9 @@ void rrdhost_update(RRDHOST *host
     , char *rrdpush_destination
     , char *rrdpush_api_key
     , char *rrdpush_send_charts_matching
+    , bool rrdpush_enable_replication
+    , time_t rrdpush_seconds_to_replicate
+    , time_t rrdpush_replication_step
     , struct rrdhost_system_info *system_info
 );
 
@@ -1177,6 +1189,8 @@ int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected_host, time_t now
 
 void rrdset_update_heterogeneous_flag(RRDSET *st);
 
+time_t rrdset_set_update_every(RRDSET *st, time_t update_every);
+
 RRDSET *rrdset_find(RRDHOST *host, const char *id);
 #define rrdset_find_localhost(id) rrdset_find(localhost, id)
 /* This will not return charts that are archived */
@@ -1217,8 +1231,6 @@ void rrdset_timed_next(RRDSET *st, struct timeval now, usec_t microseconds);
 
 void rrdset_timed_done(RRDSET *st, struct timeval now);
 void rrdset_done(RRDSET *st);
-
-void rrdset_timed_done(RRDSET *st, struct timeval now);
 
 void rrdset_is_obsolete(RRDSET *st);
 void rrdset_isnot_obsolete(RRDSET *st);
@@ -1299,8 +1311,9 @@ RRDHOST *rrdhost_create(
     const char *hostname, const char *registry_hostname, const char *guid, const char *os, const char *timezone,
     const char *abbrev_timezone, int32_t utc_offset,const char *tags, const char *program_name, const char *program_version,
     int update_every, long entries, RRD_MEMORY_MODE memory_mode, unsigned int health_enabled, unsigned int rrdpush_enabled,
-    char *rrdpush_destination, char *rrdpush_api_key, char *rrdpush_send_charts_matching, struct rrdhost_system_info *system_info,
-    int is_localhost, bool is_archived);
+    char *rrdpush_destination, char *rrdpush_api_key, char *rrdpush_send_charts_matching,
+    bool rrdpush_enable_replication, time_t rrdpush_seconds_to_replicate, time_t rrdpush_replication_step,
+    struct rrdhost_system_info *system_info, int is_localhost, bool is_archived);
 
 #endif /* NETDATA_RRD_INTERNALS */
 
