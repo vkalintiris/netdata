@@ -955,8 +955,13 @@ void rrdset_timed_next(RRDSET *st, struct timeval now, usec_t duration_since_las
     }
 
     #ifdef NETDATA_INTERNAL_CHECKS
+<<<<<<< HEAD
     debug(D_RRD_CALLS, "rrdset_timed_next() for chart %s with duration since last update %llu usec", rrdset_name(st), duration_since_last_update);
     rrdset_debug(st, "NEXT: %llu microseconds", duration_since_last_update);
+=======
+    debug(D_RRD_CALLS, "rrdset_timed_next() for chart %s with microseconds %llu", rrdset_name(st), microseconds);
+    rrdset_debug(st, "NEXT: %llu microseconds", microseconds);
+>>>>>>> d4be6035b (Timed rrddim/rrdset functions.)
 
     if(discarded && discarded != duration_since_last_update)
         info("host '%s', chart '%s': discarded data collection time of %llu usec, replaced with %llu usec, reason: '%s'", rrdhost_hostname(st->rrdhost), rrdset_id(st), discarded, duration_since_last_update, discard_reason?discard_reason:"UNDEFINED");
