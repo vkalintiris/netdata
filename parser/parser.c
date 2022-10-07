@@ -29,7 +29,7 @@ inline int find_first_keyword(const char *str, char *keyword, int max_size, int 
  * 
  */
 
-PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER_INPUT_TYPE flags)
+PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER_INPUT_TYPE flags, const char *tee_path)
 {
     PARSER *parser;
 
@@ -47,6 +47,13 @@ PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER
     parser->bytesleft = 0;
     parser->readfrom = NULL;
 #endif
+
+    if (tee_path) {
+        parser->tee_fp = fopen(tee_path, "w");
+        if (!parser->tee_fp) {
+            fatal("Could not open/create log path %s for parser", tee_path);
+        }
+    }
 
     if (unlikely(!(flags & PARSER_NO_PARSE_INIT))) {
         parser_add_keyword(parser, PLUGINSD_KEYWORD_FLUSH,          pluginsd_flush);
@@ -184,6 +191,11 @@ void parser_destroy(PARSER *parser)
         tmp_parser_data =  tmp_parser_data_next;
     }
 
+    if (parser->tee_fp) {
+        fflush(parser->tee_fp);
+        fclose(parser->tee_fp);
+    }
+
     freez(parser->plugins_action);
     freez(parser);
 }
@@ -270,6 +282,8 @@ inline int parser_action(PARSER *parser, char *input)
 
     if (unlikely(!input))
         input = parser->buffer;
+
+    fprintf(parser->tee_fp, "%s", input);
 
     if(unlikely(parser->flags & PARSER_DEFER_UNTIL_KEYWORD)) {
         bool has_keyword = find_first_keyword(input, command, PLUGINSD_LINE_MAX, pluginsd_space);

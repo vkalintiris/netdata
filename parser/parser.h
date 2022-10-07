@@ -87,11 +87,13 @@ typedef struct parser {
         usec_t smaller_timeout;
     } inflight;
 
+    const char *tee_path;
+    FILE *tee_fp;
 } PARSER;
 
 int find_first_keyword(const char *str, char *keyword, int max_size, int (*custom_isspace)(char));
 
-PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER_INPUT_TYPE flags);
+PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER_INPUT_TYPE flags, const char *tee_path);
 int parser_add_keyword(PARSER *working_parser, char *keyword, keyword_function func);
 int parser_next(PARSER *working_parser);
 int parser_action(PARSER *working_parser, char *input);

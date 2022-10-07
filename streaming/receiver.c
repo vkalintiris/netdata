@@ -411,7 +411,7 @@ size_t streaming_parser(struct receiver_state *rpt, struct plugind *cd, FILE *fp
         .trust_durations = 1
     };
 
-    PARSER *parser = parser_init(rpt->host, &user, fp_in, fp_out, PARSER_INPUT_SPLIT);
+    PARSER *parser = parser_init(rpt->host, &user, fp_in, fp_out, PARSER_INPUT_SPLIT, "/tmp/receiver-parser.log");
 
     rrd_collector_started();
 
@@ -448,6 +448,8 @@ size_t streaming_parser(struct receiver_state *rpt, struct plugind *cd, FILE *fp
                 goto done;
             }
         }
+
+        fprintf(parser->tee_fp, "%s", parser->buffer);
 
         rpt->last_msg_t = now_realtime_sec();
     }
