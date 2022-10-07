@@ -19,7 +19,7 @@ public:
 
     void update(size_t Iteration) {
         UNUSED(Iteration);
-        collected_number CN = ++NumUpdates; // % 5 ? Index + 1 : Index;
+        collected_number CN = ++NumUpdates + Index; // % 5 ? Index + 1 : Index;
         rrddim_set_by_pointer(RD->rrdset, RD, CN);
         if (strcmp(rrdhost_hostname(RD->rrdset->rrdhost), "nd0") == 0)
             error("[GVD] Added new value %lld", CN);
@@ -145,8 +145,8 @@ void *profile_main(void *ptr)
     netdata_thread_cleanup_push(profile_main_cleanup, ptr);
 
     size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 1);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 1);
-    time_t UpdateEvery = 5;
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 2);
+    time_t UpdateEvery = 1;
 
     std::vector<std::shared_ptr<Chart>> Charts = createCharts(NumCharts, NumDimsPerChart, UpdateEvery);
 
