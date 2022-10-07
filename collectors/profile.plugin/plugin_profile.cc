@@ -17,12 +17,15 @@ public:
     Dimension(RRDDIM *RD, size_t Index) :
         RD(RD), Index(Index), NumUpdates(0) {}
 
-    void update(size_t Iteration) {
+    void update(const struct timeval &TV, size_t Iteration) {
         UNUSED(Iteration);
-        collected_number CN = ++NumUpdates; // % 5 ? Index + 1 : Index;
-        rrddim_set_by_pointer(RD->rrdset, RD, CN);
+
+        collected_number CN = Index + NumUpdates++; // % 5 ? Index + 1 : Index;
+        rrddim_timed_set_by_pointer(RD->rrdset, RD, TV, CN);
+#if 0
         if (strcmp(rrdhost_hostname(RD->rrdset->rrdhost), "nd0") == 0)
             error("[GVD] Added new value %lld", CN);
+#endif
     }
 
 private:
@@ -75,19 +78,18 @@ public:
         Dimensions.push_back(std::make_shared<Dimension>(RD, Index));
     }
 
-    void update(size_t Iteration) {
-        UNUSED(Iteration);
-
+    void update(const struct timeval &TV, size_t Iteration) {
         if (Initialized) {
-            rrdset_next(RS);
+            usec_t DurationSinceLastUpdate = RS->update_every * USEC_PER_SEC;
+            rrdset_timed_next(RS, TV, DurationSinceLastUpdate);
         }
 
         Initialized = true;
 
         for (std::shared_ptr<Dimension> &D : Dimensions)
-            D->update(Iteration);
+            D->update(TV, Iteration);
 
-        rrdset_done(RS);
+        rrdset_timed_done(RS, TV);
     }
 
 private:
@@ -120,9 +122,11 @@ static std::vector<std::shared_ptr<Chart>> createCharts(size_t NumCharts, unsign
     return Charts;
 }
 
-static void updateCharts(std::vector<std::shared_ptr<Chart>> &Charts, size_t Iteration) {
+static void updateCharts(std::vector<std::shared_ptr<Chart>> &Charts,
+                         const struct timeval &TV, size_t Iteration)
+{
     for (std::shared_ptr<Chart> &C : Charts)
-        C->update(Iteration);
+        C->update(TV, Iteration);
 }
 
 static void profile_main_cleanup(void *ptr)
@@ -139,95 +143,48 @@ static void profile_main_cleanup(void *ptr)
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
-#if 1
 void *profile_main(void *ptr)
 {
     netdata_thread_cleanup_push(profile_main_cleanup, ptr);
 
-    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 1);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 1);
-    time_t UpdateEvery = 5;
-
-    std::vector<std::shared_ptr<Chart>> Charts = createCharts(NumCharts, NumDimsPerChart, UpdateEvery);
-
-    heartbeat_t HB;
-    heartbeat_init(&HB);
-
-    size_t Iteration = 0;
-
-    while (!netdata_exit) {
-        heartbeat_next(&HB, UpdateEvery * USEC_PER_SEC);
-        updateCharts(Charts, ++Iteration);
-    }
-
-    netdata_thread_cleanup_pop(1);
-    return NULL;
-}
-#else
-void *profile_main(void *ptr)
-{
-    netdata_thread_cleanup_push(profile_main_cleanup, ptr);
-
-    logfp = fopen("/tmp/profplug.txt", "w");
-    if (!logfp)
-        fatal("Could not open log file");
-    setvbuf(logfp, NULL, _IONBF, 0);
-
-    heartbeat_t HB;
-    heartbeat_init(&HB);
-
+    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 300);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 10);
     time_t UpdateEvery = 1;
-    size_t Iteration = 0;
 
-    RRDSET *RS = nullptr;
-    RRDDIM *RD = nullptr;
+    if (strcmp(rrdhost_hostname(localhost), "nd100")) {
+        std::vector<std::shared_ptr<Chart>> Charts = createCharts(NumCharts, NumDimsPerChart, UpdateEvery);
+    
+        heartbeat_t HB;
+        heartbeat_init(&HB);
 
-    // 2:00:00 PM
-    struct timeval Now;
-    now_realtime_timeval(&Now);
-    Now.tv_sec -= 360000;
-    Now.tv_usec = 0;
+        size_t Iteration = 0;
 
-    // heartbeat_next(&HB, USEC_PER_SEC);
+        #if 0
+        struct timeval NowTV;
+        now_realtime_timeval(&NowTV);
+        NowTV.tv_usec = 0;
+    
+        struct timeval CurrTV = NowTV;
+        CurrTV.tv_sec -= 100;
 
-    while (!netdata_exit) {
-        Now.tv_sec++;
-        error("heartbeat: %ld", Now.tv_sec);
+        while (!netdata_exit) {
+            if (CurrTV.tv_sec >= NowTV.tv_sec)
+                heartbeat_next(&HB, UpdateEvery * USEC_PER_SEC);
 
-        if (++Iteration == (360000 - 1))
-            break;
-
-        collected_number CN = Iteration;
-
-        if (!RS) {
-            RS = rrdset_create(
-                    localhost,
-                    "prof_type",
-                    "prof_type.prof_chart", // id
-                    NULL, // name
-                    "prof_family",
-                    NULL, // ctx
-                    "my chart", // title
-                    "prof_units",
-                    "prof_plugin",
-                    "prof_module",
-                    41000,
-                    static_cast<int>(UpdateEvery),
-                    RRDSET_TYPE_LINE
-            );
-
-            RD = rrddim_add(RS, "my_dim", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-        } else {
-            usec_t DurationSinceLastUpdate = RS->update_every * USEC_PER_SEC;
-            rrdset_timed_next(RS, Now, DurationSinceLastUpdate);
+            CurrTV.tv_sec++;
+            updateCharts(Charts, CurrTV, ++Iteration);
         }
+        #else
+        while (!netdata_exit) {
+            heartbeat_next(&HB, UpdateEvery * USEC_PER_SEC);
 
-        rrddim_timed_set_by_pointer(RD->rrdset, RD, Now, CN);
-
-        rrdset_timed_done(RS, Now);
+            struct timeval NowTV;
+            now_realtime_timeval(&NowTV);
+            updateCharts(Charts, NowTV, ++Iteration);
+        }
+        #endif
     }
 
     netdata_thread_cleanup_pop(1);
     return NULL;
 }
-#endif
