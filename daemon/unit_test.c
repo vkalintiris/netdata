@@ -38,63 +38,6 @@ static int check_number_printing(void) {
     return 0;
 }
 
-static int check_rrdcalc_comparisons(void) {
-    RRDCALC_STATUS a, b;
-
-    // make sure calloc() sets the status to UNINITIALIZED
-    memset(&a, 0, sizeof(RRDCALC_STATUS));
-    if(a != RRDCALC_STATUS_UNINITIALIZED) {
-        fprintf(stderr, "%s is not zero.\n", rrdcalc_status2string(RRDCALC_STATUS_UNINITIALIZED));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_REMOVED;
-    b = RRDCALC_STATUS_UNDEFINED;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_UNDEFINED;
-    b = RRDCALC_STATUS_UNINITIALIZED;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_UNINITIALIZED;
-    b = RRDCALC_STATUS_CLEAR;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_CLEAR;
-    b = RRDCALC_STATUS_RAISED;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_RAISED;
-    b = RRDCALC_STATUS_WARNING;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    a = RRDCALC_STATUS_WARNING;
-    b = RRDCALC_STATUS_CRITICAL;
-    if(!(a < b)) {
-        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
-        return 1;
-    }
-
-    fprintf(stderr, "RRDCALC_STATUSes are sortable.\n");
-
-    return 0;
-}
-
 int check_storage_number(NETDATA_DOUBLE n, int debug) {
     char buffer[100];
     uint32_t flags = SN_DEFAULT_FLAGS;
@@ -1345,9 +1288,6 @@ int run_all_mockup_tests(void)
         return 1;
 
     if(check_number_printing())
-        return 1;
-
-    if(check_rrdcalc_comparisons())
         return 1;
 
     if(!test_variable_renames())
