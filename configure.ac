@@ -1727,7 +1727,6 @@ AC_CONFIG_FILES([
     health/Makefile
     health/notifications/Makefile
     libnetdata/Makefile
-    libnetdata/tests/Makefile
     libnetdata/adaptive_resortable_list/Makefile
     libnetdata/arrayalloc/Makefile
     libnetdata/avl/Makefile
