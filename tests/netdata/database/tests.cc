@@ -2,6 +2,67 @@
 #include "daemon/common.h"
 #include "ml/json/single_include/nlohmann/json.hpp"
 
+static void test_storage_number_loss(NETDATA_DOUBLE ND) {
+    // Check precision loss of packing/unpacking
+    {
+        SN_FLAGS Flags = SN_DEFAULT_FLAGS;
+        storage_number SN = pack_storage_number(ND, Flags);
+        EXPECT_TRUE(does_storage_number_exist(SN));
+
+        NETDATA_DOUBLE UnpackedND = unpack_storage_number(SN);
+
+        NETDATA_DOUBLE AbsDiff = UnpackedND - ND;
+        NETDATA_DOUBLE PctDiff = AbsDiff * 100.0 / ND;
+
+        if (PctDiff < 0)
+            PctDiff = - PctDiff;
+
+        EXPECT_LT(PctDiff, ACCURACY_LOSS_ACCEPTED_PERCENT);
+    }
+
+    // check precision loss of custom formatting
+    {
+        char Buf[100];
+        size_t Len = print_netdata_double(Buf, ND);
+        EXPECT_EQ(strlen(Buf), Len);
+
+
+        NETDATA_DOUBLE ParsedND = str2ndd(Buf, NULL);
+        NETDATA_DOUBLE ParsedDiff = ND - ParsedND;
+        NETDATA_DOUBLE PctParsedDiff = ParsedDiff * 100.0 / ND;
+
+        if(PctParsedDiff < 0)
+            PctParsedDiff = - PctParsedDiff;
+
+        EXPECT_LT(PctParsedDiff, ACCURACY_LOSS_ACCEPTED_PERCENT);
+    }
+}
+
+TEST(storage_number, precision_loss) {
+    NETDATA_DOUBLE PosMinSN = unpack_storage_number(STORAGE_NUMBER_POSITIVE_MIN_RAW);
+    NETDATA_DOUBLE NegMaxSN = unpack_storage_number(STORAGE_NUMBER_NEGATIVE_MAX_RAW);
+
+    for (int g = -1; g <= 1 ; g++) {
+        if(!g)
+            continue;
+
+        NETDATA_DOUBLE a = 0;
+        for (int j = 0; j < 9 ;j++) {
+            a += 0.0000001;
+
+            NETDATA_DOUBLE c = a * g;
+            for (int i = 0; i < 21 ;i++, c *= 10) {
+                if (c > 0 && c < PosMinSN)
+                    continue;
+                if (c < 0 && c > NegMaxSN)
+                    continue;
+
+                test_storage_number_loss(c);
+            }
+        }
+    }
+}
+
 TEST(database, rrdcalc_comparisons) {
     RRDCALC_STATUS a, b;
 
@@ -175,4 +236,17 @@ TEST(bitmap, tests) {
     }
 
     bitmap_delete(BM);
+}
+
+NETDATA_DOUBLE storage_number_min(NETDATA_DOUBLE n) {
+    NETDATA_DOUBLE r = 1, last;
+
+    do {
+        last = n;
+        n /= 2.0;
+        storage_number t = pack_storage_number(n, SN_DEFAULT_FLAGS);
+        r = unpack_storage_number(t);
+    } while(r != 0.0 && r != last);
+
+    return last;
 }

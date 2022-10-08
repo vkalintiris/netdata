@@ -990,7 +990,6 @@ int main(int argc, char **argv) {
                                 return 1;
                             }
                             default_rrdpush_enabled = 0;
-                            if(unit_test_storage()) return 1;
 #ifdef ENABLE_DBENGINE
                             if(test_dbengine()) return 1;
 #endif
