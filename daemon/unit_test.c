@@ -236,24 +236,7 @@ void benchmark_storage_number(int loop, int multiplier) {
 
 }
 
-static int check_storage_number_exists() {
-    uint32_t flags = SN_DEFAULT_FLAGS;
-    NETDATA_DOUBLE n = 0.0;
-
-    storage_number s = pack_storage_number(n, flags);
-    NETDATA_DOUBLE d = unpack_storage_number(s);
-
-    if(n != d) {
-        fprintf(stderr, "Wrong number returned. Expected " NETDATA_DOUBLE_FORMAT ", returned " NETDATA_DOUBLE_FORMAT "!\n", n, d);
-        return 1;
-    }
-
-    return 0;
-}
-
 int unit_test_storage() {
-    if(check_storage_number_exists()) return 0;
-
     NETDATA_DOUBLE storage_number_positive_min = unpack_storage_number(STORAGE_NUMBER_POSITIVE_MIN_RAW);
     NETDATA_DOUBLE storage_number_negative_max = unpack_storage_number(STORAGE_NUMBER_NEGATIVE_MAX_RAW);
 

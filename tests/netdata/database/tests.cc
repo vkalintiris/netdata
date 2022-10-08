@@ -32,3 +32,9 @@ TEST(database, rrdcalc_comparisons) {
     b = RRDCALC_STATUS_CRITICAL;
     EXPECT_LT(a, b);
 }
+
+TEST(storage_number, storage_number_exists) {
+    storage_number sn = pack_storage_number(0.0, SN_DEFAULT_FLAGS);
+
+    EXPECT_EQ(0.0, unpack_storage_number(sn));
+}
