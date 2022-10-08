@@ -915,6 +915,7 @@ if ENABLE_TESTS
 
 TESTS_FILES += \
     tests/netdata/database/tests.cc \
+    tests/netdata/database/rrdlabels.cc \
     $(NULL)
 
 endif

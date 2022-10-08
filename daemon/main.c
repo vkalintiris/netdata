@@ -990,8 +990,6 @@ int main(int argc, char **argv) {
                             if(string_unittest(10000)) return 1;
                             if (dictionary_unittest(10000))
                                 return 1;
-                            if (rrdlabels_unittest())
-                                return 1;
                             if (ctx_unittest())
                                 return 1;
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
@@ -1032,9 +1030,6 @@ int main(int argc, char **argv) {
                         }
                         else if(strcmp(optarg, "stringtest") == 0) {
                             return string_unittest(10000);
-                        }
-                        else if(strcmp(optarg, "rrdlabelstest") == 0) {
-                            return rrdlabels_unittest();
                         }
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);
