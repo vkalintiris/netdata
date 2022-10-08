@@ -5,12 +5,12 @@
 
 int unit_test_storage(void);
 int unit_test(long delay, long shift);
-int run_all_mockup_tests(void);
 int unit_test_str2ld(void);
 int unit_test_buffer(void);
 int unit_test_static_threads(void);
 int test_sqlite(void);
 int unit_test_bitmap256(void);
+
 #ifdef ENABLE_DBENGINE
 int test_dbengine(void);
 void generate_dbengine_dataset(unsigned history_seconds);
