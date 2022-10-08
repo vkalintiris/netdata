@@ -4,7 +4,6 @@
 #define NETDATA_UNIT_TEST_H 1
 
 int unit_test(long delay, long shift);
-int unit_test_buffer(void);
 int unit_test_static_threads(void);
 
 #ifdef ENABLE_DBENGINE
