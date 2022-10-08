@@ -238,15 +238,28 @@ TEST(bitmap, tests) {
     bitmap_delete(BM);
 }
 
-NETDATA_DOUBLE storage_number_min(NETDATA_DOUBLE n) {
-    NETDATA_DOUBLE r = 1, last;
+TEST(str2ld, precision_loss) {
+    std::vector<std::string> Values = {
+            "1.2345678", "-35.6", "0.00123", "23842384234234.2", ".1",
+            "1.2e-10", "hello", "1wrong", "nan", "inf"
+    };
 
-    do {
-        last = n;
-        n /= 2.0;
-        storage_number t = pack_storage_number(n, SN_DEFAULT_FLAGS);
-        r = unpack_storage_number(t);
-    } while(r != 0.0 && r != last);
+    for (const std::string &S : Values) {
+        char *EndPtrMine = nullptr;
+        NETDATA_DOUBLE MineND = str2ndd(S.data(), &EndPtrMine);
 
-    return last;
+        char *EndPtrSys = nullptr;
+        NETDATA_DOUBLE SysND = strtondd(S.data(), &EndPtrSys);
+
+        EXPECT_EQ(EndPtrMine, EndPtrSys);
+
+        EXPECT_EQ(isnan(MineND), isnan(SysND));
+        EXPECT_EQ(isinf(MineND), isinf(SysND));
+
+        if (isnan(MineND) || isinf(MineND))
+            continue;
+
+        NETDATA_DOUBLE Diff= ABS(MineND - SysND);
+        EXPECT_LT(Diff, 0.000001);
+    }
 }

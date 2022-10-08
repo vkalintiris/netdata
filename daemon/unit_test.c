@@ -2,50 +2,6 @@
 
 #include "common.h"
 
-int unit_test_str2ld() {
-    char *values[] = {
-            "1.2345678", "-35.6", "0.00123", "23842384234234.2", ".1", "1.2e-10",
-            "hello", "1wrong", "nan", "inf", NULL
-    };
-
-    int i;
-    for(i = 0; values[i] ; i++) {
-        char *e_mine = "hello", *e_sys = "world";
-        NETDATA_DOUBLE mine = str2ndd(values[i], &e_mine);
-        NETDATA_DOUBLE sys = strtondd(values[i], &e_sys);
-
-        if(isnan(mine)) {
-            if(!isnan(sys)) {
-                fprintf(stderr, "Value '%s' is parsed as %" NETDATA_DOUBLE_MODIFIER
-                    ", but system believes it is %" NETDATA_DOUBLE_MODIFIER ".\n", values[i], mine, sys);
-                return -1;
-            }
-        }
-        else if(isinf(mine)) {
-            if(!isinf(sys)) {
-                fprintf(stderr, "Value '%s' is parsed as %" NETDATA_DOUBLE_MODIFIER
-                    ", but system believes it is %" NETDATA_DOUBLE_MODIFIER ".\n", values[i], mine, sys);
-                return -1;
-            }
-        }
-        else if(mine != sys && ABS(mine-sys) > 0.000001) {
-            fprintf(stderr, "Value '%s' is parsed as %" NETDATA_DOUBLE_MODIFIER
-                ", but system believes it is %" NETDATA_DOUBLE_MODIFIER ", delta %" NETDATA_DOUBLE_MODIFIER ".\n", values[i], mine, sys, sys-mine);
-            return -1;
-        }
-
-        if(e_mine != e_sys) {
-            fprintf(stderr, "Value '%s' is parsed correctly, but endptr is not right\n", values[i]);
-            return -1;
-        }
-
-        fprintf(stderr, "str2ndd() parsed value '%s' exactly the same way with strtold(), returned %" NETDATA_DOUBLE_MODIFIER
-            " vs %" NETDATA_DOUBLE_MODIFIER "\n", values[i], mine, sys);
-    }
-
-    return 0;
-}
-
 int unit_test_buffer() {
     BUFFER *wb = buffer_create(1);
     char string[2048 + 1];
