@@ -1145,7 +1145,6 @@ endif
 if ENABLE_UNITTESTS
     check_PROGRAMS = \
         libnetdata/tests/str2ld_testdriver \
-        libnetdata/storage_number/tests/storage_number_testdriver \
         exporting/tests/exporting_engine_testdriver \
         web/api/tests/web_api_testdriver \
         web/api/tests/valid_urls_testdriver \
@@ -1210,12 +1209,6 @@ if ENABLE_UNITTESTS
         $(LIBNETDATA_FILES) \
         $(NULL)
     libnetdata_tests_str2ld_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
-
-    libnetdata_storage_number_tests_storage_number_testdriver_SOURCES = \
-        libnetdata/storage_number/tests/test_storage_number.c \
-        $(LIBNETDATA_FILES) \
-        $(NULL)
-    libnetdata_storage_number_tests_storage_number_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
 
     EXPORTING_ENGINE_TEST_FILES = \
         exporting/tests/test_exporting_engine.c \
