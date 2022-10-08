@@ -136,6 +136,8 @@ LIBNETDATA_FILES = \
     libnetdata/arrayalloc/arrayalloc.h \
     libnetdata/avl/avl.c \
     libnetdata/avl/avl.h \
+    libnetdata/bitmap/bitmap.cc \
+    libnetdata/bitmap/bitmap.h \
     libnetdata/buffer/buffer.c \
     libnetdata/buffer/buffer.h \
     libnetdata/circular_buffer/circular_buffer.c \
@@ -912,7 +914,10 @@ TESTS_FILES = \
 if ENABLE_TESTS
 
 TESTS_FILES += \
+    tests/netdata/libnetdata/string/string.cc \
     tests/netdata/database/tests.cc \
+    tests/netdata/database/rrdlabels.cc \
+    tests/netdata/web/api/queries/weights.cc \
     $(NULL)
 
 endif
@@ -1142,8 +1147,6 @@ endif
 
 if ENABLE_UNITTESTS
     check_PROGRAMS = \
-        libnetdata/tests/str2ld_testdriver \
-        libnetdata/storage_number/tests/storage_number_testdriver \
         exporting/tests/exporting_engine_testdriver \
         web/api/tests/web_api_testdriver \
         web/api/tests/valid_urls_testdriver \
@@ -1202,18 +1205,6 @@ if ENABLE_UNITTESTS
         $(LIBNETDATA_FILES) \
         $(NULL)
     web_api_tests_web_api_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
-
-    libnetdata_tests_str2ld_testdriver_SOURCES = \
-        libnetdata/tests/test_str2ld.c \
-        $(LIBNETDATA_FILES) \
-        $(NULL)
-    libnetdata_tests_str2ld_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
-
-    libnetdata_storage_number_tests_storage_number_testdriver_SOURCES = \
-        libnetdata/storage_number/tests/test_storage_number.c \
-        $(LIBNETDATA_FILES) \
-        $(NULL)
-    libnetdata_storage_number_tests_storage_number_testdriver_LDADD = $(NETDATA_COMMON_LIBS) $(TEST_LIBS)
 
     EXPORTING_ENGINE_TEST_FILES = \
         exporting/tests/test_exporting_engine.c \
