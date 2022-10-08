@@ -1019,9 +1019,6 @@ int main(int argc, char **argv) {
                         }
 #endif
 #ifdef ENABLE_DBENGINE
-                        else if(strcmp(optarg, "mctest") == 0) {
-                            return mc_unittest();
-                        }
                         else if(strcmp(optarg, "ctxtest") == 0) {
                             return ctx_unittest();
                         }
