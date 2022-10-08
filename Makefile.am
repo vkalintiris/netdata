@@ -136,6 +136,8 @@ LIBNETDATA_FILES = \
     libnetdata/arrayalloc/arrayalloc.h \
     libnetdata/avl/avl.c \
     libnetdata/avl/avl.h \
+    libnetdata/bitmap/bitmap.cc \
+    libnetdata/bitmap/bitmap.h \
     libnetdata/buffer/buffer.c \
     libnetdata/buffer/buffer.h \
     libnetdata/circular_buffer/circular_buffer.c \
