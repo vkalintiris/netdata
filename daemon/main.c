@@ -1015,6 +1015,19 @@ int main(int argc, char **argv) {
 #endif
 #ifdef ENABLE_TESTS
                         else if(strcmp(optarg, "tests") == 0) {
+                            post_conf_load(&user);
+                            get_netdata_configured_variables();
+                            default_rrd_update_every = 1;
+                            default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
+                            default_health_enabled = 0;
+                            storage_tiers = 1;
+                            registry_init();
+                            if(rrd_init("unittest", NULL)) {
+                                fprintf(stderr, "rrd_init failed for unittest\n");
+                                return 1;
+                            }
+                            default_rrdpush_enabled = 0;
+
                             return netdata_tests(argc, argv);
                         }
 #endif

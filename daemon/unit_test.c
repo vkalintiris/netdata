@@ -1143,52 +1143,6 @@ int run_test(struct test *test)
     return errors;
 }
 
-static int test_variable_renames(void) {
-    fprintf(stderr, "%s() running...\n", __FUNCTION__ );
-
-    fprintf(stderr, "Creating chart\n");
-    RRDSET *st = rrdset_create_localhost("chart", "ID", NULL, "family", "context", "Unit Testing", "a value", "unittest", NULL, 1, 1, RRDSET_TYPE_LINE);
-    fprintf(stderr, "Created chart with id '%s', name '%s'\n", rrdset_id(st), rrdset_name(st));
-
-    fprintf(stderr, "Creating dimension DIM1\n");
-    RRDDIM *rd1 = rrddim_add(st, "DIM1", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-    fprintf(stderr, "Created dimension with id '%s', name '%s'\n", rrddim_id(rd1), rrddim_name(rd1));
-
-    fprintf(stderr, "Creating dimension DIM2\n");
-    RRDDIM *rd2 = rrddim_add(st, "DIM2", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-    fprintf(stderr, "Created dimension with id '%s', name '%s'\n", rrddim_id(rd2), rrddim_name(rd2));
-
-    fprintf(stderr, "Renaming chart to CHARTNAME1\n");
-    rrdset_reset_name(st, "CHARTNAME1");
-    fprintf(stderr, "Renamed chart with id '%s' to name '%s'\n", rrdset_id(st), rrdset_name(st));
-
-    fprintf(stderr, "Renaming chart to CHARTNAME2\n");
-    rrdset_reset_name(st, "CHARTNAME2");
-    fprintf(stderr, "Renamed chart with id '%s' to name '%s'\n", rrdset_id(st), rrdset_name(st));
-
-    fprintf(stderr, "Renaming dimension DIM1 to DIM1NAME1\n");
-    rrddim_reset_name(st, rd1, "DIM1NAME1");
-    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rrddim_id(rd1), rrddim_name(rd1));
-
-    fprintf(stderr, "Renaming dimension DIM1 to DIM1NAME2\n");
-    rrddim_reset_name(st, rd1, "DIM1NAME2");
-    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rrddim_id(rd1), rrddim_name(rd1));
-
-    fprintf(stderr, "Renaming dimension DIM2 to DIM2NAME1\n");
-    rrddim_reset_name(st, rd2, "DIM2NAME1");
-    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rrddim_id(rd2), rrddim_name(rd2));
-
-    fprintf(stderr, "Renaming dimension DIM2 to DIM2NAME2\n");
-    rrddim_reset_name(st, rd2, "DIM2NAME2");
-    fprintf(stderr, "Renamed dimension with id '%s' to name '%s'\n", rrddim_id(rd2), rrddim_name(rd2));
-
-    BUFFER *buf = buffer_create(1);
-    health_api_v1_chart_variables2json(st, buf);
-    fprintf(stderr, "%s", buffer_tostring(buf));
-    buffer_free(buf);
-    return 1;
-}
-
 int check_strdupz_path_subpath() {
 
     struct strdupz_path_subpath_checks {
@@ -1232,9 +1186,6 @@ int run_all_mockup_tests(void)
 {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
     if(check_strdupz_path_subpath())
-        return 1;
-
-    if(!test_variable_renames())
         return 1;
 
     if(run_test(&test1))

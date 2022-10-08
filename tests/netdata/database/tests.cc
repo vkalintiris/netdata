@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "daemon/common.h"
+#include "ml/json/single_include/nlohmann/json.hpp"
 
 TEST(database, rrdcalc_comparisons) {
     RRDCALC_STATUS a, b;
@@ -60,4 +61,39 @@ TEST(netdata_double, number_printing) {
         print_netdata_double(Buf, P.first);
         ASSERT_STREQ(Buf, P.second);
     }
+}
+
+TEST(database, renaming) {
+   RRDSET *RS = rrdset_create_localhost("chart", "ID", NULL, "family", "context",
+                                        "Unit Testing", "a value", "unittest",
+                                        NULL, 1, 1, RRDSET_TYPE_LINE);
+
+   RRDDIM *RD1 = rrddim_add(RS, "DIM1", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+   RRDDIM *RD2 = rrddim_add(RS, "DIM2", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+
+   rrdset_reset_name(RS, "CHARTNAME1");
+   EXPECT_STREQ("chart.CHARTNAME1", rrdset_name(RS));
+   rrdset_reset_name(RS, "CHARTNAME2");
+   EXPECT_STREQ("chart.CHARTNAME2", rrdset_name(RS));
+
+   rrddim_reset_name(RS, RD1, "DIM1NAME1");
+   EXPECT_STREQ("DIM1NAME1", rrddim_name(RD1));
+   rrddim_reset_name(RS, RD1, "DIM1NAME2");
+   EXPECT_STREQ("DIM1NAME2", rrddim_name(RD1));
+
+   rrddim_reset_name(RS, RD2, "DIM2NAME1");
+   EXPECT_STREQ("DIM2NAME1", rrddim_name(RD2));
+   rrddim_reset_name(RS, RD2, "DIM2NAME2");
+   EXPECT_STREQ("DIM2NAME2", rrddim_name(RD2));
+
+   BUFFER *Buf = buffer_create(1);
+   health_api_v1_chart_variables2json(RS, Buf);
+   nlohmann::json J = nlohmann::json::parse(buffer_tostring(Buf));
+   buffer_free(Buf);
+
+   std::string Chart = J["chart"];
+   EXPECT_EQ(Chart, "chart.ID");
+
+   std::string ChartName = J["chart_name"];
+   EXPECT_EQ(ChartName, "chart.CHARTNAME2");
 }
