@@ -454,60 +454,6 @@ int unit_test(long delay, long shift)
     return ret;
 }
 
-int test_sqlite(void) {
-    fprintf(stderr, "%s() running...\n", __FUNCTION__ );
-    sqlite3  *db_meta;
-    fprintf(stderr, "Testing SQLIte\n");
-
-    int rc = sqlite3_open(":memory:", &db_meta);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,"Failed to test SQLite: DB init failed\n");
-        return 1;
-    }
-
-    rc = sqlite3_exec_monitored(db_meta, "CREATE TABLE IF NOT EXISTS mine (id1, id2);", 0, 0, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,"Failed to test SQLite: Create table failed\n");
-        return 1;
-    }
-
-    rc = sqlite3_exec_monitored(db_meta, "DELETE FROM MINE LIMIT 1;", 0, 0, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,"Failed to test SQLite: Delete with LIMIT failed\n");
-        return 1;
-    }
-
-    rc = sqlite3_exec_monitored(db_meta, "UPDATE MINE SET id1=1 LIMIT 1;", 0, 0, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,"Failed to test SQLite: Update with LIMIT failed\n");
-        return 1;
-    }
-
-    BUFFER *sql = buffer_create(ACLK_SYNC_QUERY_SIZE);
-    char *uuid_str = "0000_000";
-
-    buffer_sprintf(sql, TABLE_ACLK_ALERT, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
-
-    buffer_sprintf(sql, INDEX_ACLK_ALERT, uuid_str, uuid_str);
-    rc = sqlite3_exec_monitored(db_meta, buffer_tostring(sql), 0, 0, NULL);
-    if (rc != SQLITE_OK)
-        goto error;
-    buffer_flush(sql);
-
-    buffer_free(sql);
-    fprintf(stderr,"SQLite is OK\n");
-    return 0;
-error:
-    fprintf(stderr,"SQLite statement failed: %s\n", buffer_tostring(sql));
-    buffer_free(sql);
-    fprintf(stderr,"SQLite tests failed\n");
-    return 1;
-}
-
 int unit_test_bitmap256(void) {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
 

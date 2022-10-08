@@ -996,7 +996,6 @@ int main(int argc, char **argv) {
 #ifdef ENABLE_DBENGINE
                             if(test_dbengine()) return 1;
 #endif
-                            if(test_sqlite()) return 1;
                             if(string_unittest(10000)) return 1;
                             if (dictionary_unittest(10000))
                                 return 1;
