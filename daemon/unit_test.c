@@ -2,42 +2,6 @@
 
 #include "common.h"
 
-static int check_number_printing(void) {
-    struct {
-        NETDATA_DOUBLE n;
-        const char *correct;
-    } values[] = {
-            { .n = 0, .correct = "0" },
-            { .n = 0.0000001,   .correct = "0.0000001" },
-            { .n = 0.00000009,  .correct = "0.0000001" },
-            { .n = 0.000000001, .correct = "0" },
-            { .n = 99.99999999999999999, .correct = "100" },
-            { .n = -99.99999999999999999, .correct = "-100" },
-            { .n = 123.4567890123456789, .correct = "123.456789" },
-            { .n = 9999.9999999, .correct = "9999.9999999" },
-            { .n = -9999.9999999, .correct = "-9999.9999999" },
-            { .n = 0, .correct = NULL },
-    };
-
-    char netdata[50], system[50];
-    int i, failed = 0;
-    for(i = 0; values[i].correct ; i++) {
-        print_netdata_double(netdata, values[i].n);
-        snprintfz(system, 49, "%0.12" NETDATA_DOUBLE_MODIFIER, (NETDATA_DOUBLE)values[i].n);
-
-        int ok = 1;
-        if(strcmp(netdata, values[i].correct) != 0) {
-            ok = 0;
-            failed++;
-        }
-
-        fprintf(stderr, "'%s' (system) printed as '%s' (netdata): %s\n", system, netdata, ok?"OK":"FAILED");
-    }
-
-    if(failed) return 1;
-    return 0;
-}
-
 int check_storage_number(NETDATA_DOUBLE n, int debug) {
     char buffer[100];
     uint32_t flags = SN_DEFAULT_FLAGS;
@@ -1268,9 +1232,6 @@ int run_all_mockup_tests(void)
 {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
     if(check_strdupz_path_subpath())
-        return 1;
-
-    if(check_number_printing())
         return 1;
 
     if(!test_variable_renames())

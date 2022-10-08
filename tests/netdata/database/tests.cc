@@ -38,3 +38,26 @@ TEST(storage_number, storage_number_exists) {
 
     EXPECT_EQ(0.0, unpack_storage_number(sn));
 }
+
+
+TEST(netdata_double, number_printing) {
+    using DoubleStringPair = std::pair<NETDATA_DOUBLE, const char *>;
+
+    std::vector<DoubleStringPair> V = {
+        { 0, "0" },
+        { 0.0000001, "0.0000001" },
+        { 0.00000009, "0.0000001" },
+        { 0.000000001, "0" },
+        { 99.99999999999999999, "100" },
+        { -99.99999999999999999, "-100" },
+        { 123.4567890123456789, "123.456789" },
+        { 9999.9999999, "9999.9999999" },
+        { -9999.9999999, "-9999.9999999" },
+    };
+
+    char Buf[50];
+    for (const auto &P : V) {
+        print_netdata_double(Buf, P.first);
+        ASSERT_STREQ(Buf, P.second);
+    }
+}
