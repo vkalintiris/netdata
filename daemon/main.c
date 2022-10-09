@@ -987,7 +987,6 @@ int main(int argc, char **argv) {
 #ifdef ENABLE_DBENGINE
                             if(test_dbengine()) return 1;
 #endif
-                            if(string_unittest(10000)) return 1;
                             if (dictionary_unittest(10000))
                                 return 1;
                             if (ctx_unittest())
@@ -1024,9 +1023,6 @@ int main(int argc, char **argv) {
                         }
                         else if(strcmp(optarg, "dicttest") == 0) {
                             return dictionary_unittest(10000);
-                        }
-                        else if(strcmp(optarg, "stringtest") == 0) {
-                            return string_unittest(10000);
                         }
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);

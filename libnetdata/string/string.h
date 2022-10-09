@@ -36,6 +36,4 @@ struct string_statistics {
 
 void string_get_statistics(struct string_statistics *string_stats);
 
-int string_unittest(size_t entries);
-
 #endif
