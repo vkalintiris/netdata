@@ -914,6 +914,7 @@ TESTS_FILES = \
 if ENABLE_TESTS
 
 TESTS_FILES += \
+    tests/netdata/libnetdata/string/string.cc \
     tests/netdata/database/tests.cc \
     tests/netdata/database/rrdlabels.cc \
     tests/netdata/web/api/queries/weights.cc \

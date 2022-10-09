@@ -55,15 +55,15 @@ static struct string_hashtable {
 #define string_stats_atomic_increment(var) __atomic_add_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
 #define string_stats_atomic_decrement(var) __atomic_sub_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
 
-void string_statistics(size_t *inserts, size_t *deletes, size_t *searches, size_t *entries, size_t *references, size_t *memory, size_t *duplications, size_t *releases) {
-    *inserts = string_base.inserts;
-    *deletes = string_base.deletes;
-    *searches = string_base.searches;
-    *entries = (size_t)string_base.entries;
-    *references = (size_t)string_base.active_references;
-    *memory = (size_t)string_base.memory;
-    *duplications = string_base.duplications;
-    *releases = string_base.releases;
+void string_get_statistics(struct string_statistics *stats) {
+    stats->inserts = string_base.inserts;
+    stats->deletes = string_base.deletes;
+    stats->searches = string_base.searches;
+    stats->entries = (size_t) string_base.entries;
+    stats->references = (size_t) string_base.active_references;
+    stats->memory = (size_t) string_base.memory;
+    stats->duplications = string_base.duplications;
+    stats->releases = string_base.releases;
 }
 
 #define string_entry_acquire(se) __atomic_add_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
@@ -538,8 +538,8 @@ int string_unittest(size_t entries) {
                ospins = string_base.spins;
 #endif
 
-        size_t oinserts, odeletes, osearches, oentries, oreferences, omemory, oduplications, oreleases;
-        string_statistics(&oinserts, &odeletes, &osearches, &oentries, &oreferences, &omemory, &oduplications, &oreleases);
+        struct string_statistics string_stats_before;
+        string_get_statistics(&string_stats_before);
 
         time_t seconds_to_run = 5;
         int threads_to_create = 2;
@@ -565,11 +565,18 @@ int string_unittest(size_t entries) {
             netdata_thread_join(threads[i], &retval);
         }
 
-        size_t inserts, deletes, searches, sentries, references, memory, duplications, releases;
-        string_statistics(&inserts, &deletes, &searches, &sentries, &references, &memory, &duplications, &releases);
+        struct string_statistics string_stats_after;
+        string_get_statistics(&string_stats_after);
 
         fprintf(stderr, "inserts %zu, deletes %zu, searches %zu, entries %zu, references %zu, memory %zu, duplications %zu, releases %zu\n",
-                inserts - oinserts, deletes - odeletes, searches - osearches, sentries - oentries, references - oreferences, memory - omemory, duplications - oduplications, releases - oreleases);
+                string_stats_after.inserts - string_stats_before.inserts,
+                string_stats_after.deletes - string_stats_before.deletes,
+                string_stats_after.searches - string_stats_before.searches,
+                string_stats_after.entries - string_stats_before.entries,
+                string_stats_after.references - string_stats_before.references,
+                string_stats_after.memory - string_stats_before.memory,
+                string_stats_after.duplications - string_stats_before.duplications,
+                string_stats_after.releases - string_stats_before.releases);
 
 #ifdef NETDATA_INTERNAL_CHECKS
         size_t found_deleted_on_search = string_base.found_deleted_on_search,
