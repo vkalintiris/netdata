@@ -848,6 +848,19 @@ void execute_commands(struct sender_state *s) {
     char *start = s->read_buffer, *end = &s->read_buffer[s->read_len], *newline;
     *end = 0;
     while( start < end && (newline = strchr(start, '\n')) ) {
+        netdata_mutex_lock(&s->mutex);
+        size_t outstanding = cbuffer_next_unsafe(s->host->sender->buffer, NULL);
+        size_t available = cbuffer_available_size_unsafe(s->host->sender->buffer);
+        netdata_mutex_unlock(&s->mutex);
+
+        NETDATA_DOUBLE buffer_utilization = (s->host->sender->buffer->max_size - available) * 100.0 / s->host->sender->buffer->max_size;
+
+        if (buffer_utilization > 75.00) {
+            error("Buffer utilization: %lf (outstanding: %zu, available: %zu, max_size: %zu",
+                  buffer_utilization, outstanding, available, s->host->sender->buffer->max_size);
+            break;
+        }
+
         *newline = '\0';
 
         log_access("STREAM: %d from '%s' for host '%s': %s",

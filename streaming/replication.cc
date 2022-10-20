@@ -284,6 +284,7 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
             rrdset_flag_set(st, RRDSET_FLAG_STREAM_COLLECTED_METRICS);
     }
 
+#if 0
     {
         BUFFER *tmp_wb = buffer_create(64 * 1024);
         buffer_sprintf(tmp_wb, "%s", buffer_tostring(wb));
@@ -292,10 +293,15 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
         fprintf(stderr, "------------------------------------\n");
         fflush(stderr);
     }
+#endif
+
     sender_commit(host->sender, wb);
+
+#if 0
     struct timeval Now;
     now_realtime_timeval(&Now);
     error("Committed replay_rrdset_* commands at %ld sec & %u usec", Now.tv_sec, Now.tv_usec);
+#endif
 }
 
 static bool send_replay_chart_cmd(FILE *outfp, const char *chart,

@@ -22,8 +22,10 @@ public:
 
         collected_number CN = Index + NumUpdates++; // % 5 ? Index + 1 : Index;
         rrddim_timed_set_by_pointer(RD->rrdset, RD, TV, CN);
+#if 0
         if (strcmp(rrdhost_hostname(RD->rrdset->rrdhost), "nd0") == 0)
             error("[GVD] Added new value %lld", CN);
+#endif
     }
 
 private:
@@ -145,8 +147,8 @@ void *profile_main(void *ptr)
 {
     netdata_thread_cleanup_push(profile_main_cleanup, ptr);
 
-    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 5000);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 5);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 1000);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 4);
     time_t UpdateEvery = 1;
 
     if (strcmp(rrdhost_hostname(localhost), "nd100")) {
