@@ -236,6 +236,7 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
     // only happens when the parent received nonsensical timestamps from
     // us, in which case we want to skip replication and start streaming.
     if (start_streaming && after == 0 && before == 0) {
+        fatal("[A] Wat?");
         rrdset_flag_set(st, RRDSET_FLAG_STREAM_COLLECTED_METRICS);
         return;
     }
@@ -256,6 +257,7 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
 
     // should never happen, but nevertheless enable streaming
     if (query_after > query_before) {
+        fatal("[B] Wat?");
         rrdset_flag_set(st, RRDSET_FLAG_STREAM_COLLECTED_METRICS);
         return;
     }
@@ -277,8 +279,10 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
         buffer_sprintf(wb, "REPLAY_RRDSET_END %ld %ld %ld %ld\n",
                        first_entry_local, last_entry_local, after, before);
 
-        if (start_streaming)
+        if (start_streaming) {
             buffer_sprintf(wb, "REPLAY_RRDSET_FINISHED %ld\n", (time_t) st->update_every);
+            rrdset_flag_set(st, RRDSET_FLAG_STREAM_COLLECTED_METRICS);
+        }
     }
 
     {
@@ -290,6 +294,9 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
         fflush(stderr);
     }
     sender_commit(host->sender, wb);
+    struct timeval Now;
+    now_realtime_timeval(&Now);
+    error("Committed replay_rrdset_* commands at %ld sec & %u usec", Now.tv_sec, Now.tv_usec);
 }
 
 static bool send_replay_chart_cmd(FILE *outfp, const char *chart,
@@ -313,30 +320,42 @@ bool replicate_chart_request(FILE *outfp, RRDHOST *host, RRDSET *st,
 {
     // if replication is disabled, send an empty replication request
     // asking no data
-    if (!host->rrdpush_enable_replication)
+    if (!host->rrdpush_enable_replication) {
+        fatal("[1] Wat?");
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
+    }
 
     // Child has no stored data
-    if (!last_entry_child)
+    if (!last_entry_child) {
+        fatal("[2] Wat?");
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
+    }
 
     // Nothing to get if the chart has not dimensions
-    if (!rrdset_number_of_dimensions(st))
+    if (!rrdset_number_of_dimensions(st)) {
+        fatal("[3] Wat?");
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
+    }
 
     // if the child's first/last entries are nonsensical, resume streaming
     // without asking for any data
-    if (first_entry_child <= 0)
+    if (first_entry_child <= 0) {
+        fatal("[4] Wat?");
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
-    if (first_entry_child > last_entry_child)
+    }
+    if (first_entry_child > last_entry_child) {
+        fatal("[5] Wat?");
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
+    }
 
     time_t last_entry_local = rrdset_last_entry_t(st);
 
     // should never happen but it if does, start streaming without asking
     // for any data
-    if (last_entry_local >= last_entry_child)
+    if (last_entry_local >= last_entry_child) {
+        fatal("[6] Wat? (lel: %ld, lec: %ld)", last_entry_local, last_entry_child);
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
+    }
 
     // ask for the next timestamp
     time_t first_entry_wanted = last_entry_local + 1;
