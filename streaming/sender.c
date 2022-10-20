@@ -890,17 +890,22 @@ void execute_commands(struct sender_state *s) {
         } else if (words[0] && strcmp(words[0], PLUGINSD_KEYWORD_REPLAY_CHART) == 0) {
             if (!words[1] || !words[2] || !words[3]) {
                 error("STREAM %s [send to %s] %s command is incomplete"
-                      " (start_streaming=%s, after=%s, before=%s)",
+                      " (chart=%s, start_streaming=%s, after=%s, before=%s)",
                       rrdhost_hostname(s->host), s->connected_to,
                       words[0],
                       words[1] ? words[1] : "(unset)",
                       words[2] ? words[2] : "(unset)",
-                      words[3] ? words[3] : "(unset)");
+                      words[3] ? words[3] : "(unset)",
+                      words[4] ? words[4] : "(unset)");
             } else {
                 const char *chart_id = words[1];
                 bool start_streaming = !strcmp(words[2], "true");
                 time_t after = strtoll(words[3], NULL, 0);
                 time_t before = strtoll(words[4], NULL, 0);
+
+                #if 0
+                error("GVD: %s %s %s %s %s", words[0], words[1], words[2], words[3], words[4]);
+                #endif
 
                 rrdhost_rdlock(s->host);
                 RRDSET *rs = rrdset_find(s->host, chart_id);

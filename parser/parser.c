@@ -69,7 +69,6 @@ PARSER *parser_init(RRDHOST *host, void *user, void *input, void *output, PARSER
         parser_add_keyword(parser, PLUGINSD_KEYWORD_REPLAY_RRDSET_HEADER,   pluginsd_replay_rrdset_header);
         parser_add_keyword(parser, PLUGINSD_KEYWORD_REPLAY_RRDSET_DONE,     pluginsd_replay_rrdset_done);
         parser_add_keyword(parser, PLUGINSD_KEYWORD_REPLAY_RRDSET_END,      pluginsd_replay_rrdset_end);
-        parser_add_keyword(parser, PLUGINSD_KEYWORD_REPLAY_RRDSET_FINISHED, pluginsd_replay_rrdset_finished);
     }
 
     return parser;

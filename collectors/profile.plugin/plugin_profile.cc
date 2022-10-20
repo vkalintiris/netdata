@@ -145,8 +145,8 @@ void *profile_main(void *ptr)
 {
     netdata_thread_cleanup_push(profile_main_cleanup, ptr);
 
-    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 1);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 1);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_GLOBAL, "profplug charts", 5000);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_GLOBAL, "profplug dimensions", 5);
     time_t UpdateEvery = 1;
 
     if (strcmp(rrdhost_hostname(localhost), "nd100")) {
@@ -155,22 +155,32 @@ void *profile_main(void *ptr)
         heartbeat_t HB;
         heartbeat_init(&HB);
 
+        size_t Iteration = 0;
+
+        #if 0
         struct timeval NowTV;
         now_realtime_timeval(&NowTV);
         NowTV.tv_usec = 0;
     
         struct timeval CurrTV = NowTV;
-        CurrTV.tv_sec -= 2 * 3600;
-
-        size_t Iteration = 0;
+        CurrTV.tv_sec -= 100;
 
         while (!netdata_exit) {
             if (CurrTV.tv_sec >= NowTV.tv_sec)
                 heartbeat_next(&HB, UpdateEvery * USEC_PER_SEC);
 
-            updateCharts(Charts, CurrTV, ++Iteration);
             CurrTV.tv_sec++;
+            updateCharts(Charts, CurrTV, ++Iteration);
         }
+        #else
+        while (!netdata_exit) {
+            heartbeat_next(&HB, UpdateEvery * USEC_PER_SEC);
+
+            struct timeval NowTV;
+            now_realtime_timeval(&NowTV);
+            updateCharts(Charts, NowTV, ++Iteration);
+        }
+        #endif
     }
 
     netdata_thread_cleanup_pop(1);

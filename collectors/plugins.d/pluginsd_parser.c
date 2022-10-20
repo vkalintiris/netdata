@@ -990,8 +990,13 @@ PARSER_RC pluginsd_replay_rrdset_done(char **words, void *user, PLUGINSD_ACTION 
         rrddim_store_metric(rd, end_time_usec, value, flags);
         rd->collections_counter++;
 
-        fprintf(stderr, "Adding %s <%ld, %ld> = %lf %u\n",
-                rrddim_id(rd), start_time, end_time, value, flags);
+        #if 0
+        struct timeval NowTV;
+        now_realtime_timeval(&NowTV);
+
+        fprintf(stderr, "[%ld sec, %u usec] Adding %s <%ld, %ld> = %lf %u\n",
+                NowTV.tv_sec, NowTV.tv_usec, rrddim_id(rd), start_time, end_time, value, flags);
+        #endif
     }
 
     return PARSER_RC_OK;
@@ -1001,11 +1006,13 @@ PARSER_RC pluginsd_replay_rrdset_end(char **words, void *user, PLUGINSD_ACTION *
 {
     UNUSED(plugins_action);
 
-    time_t first_entry_child = str2l(words[1]);
-    time_t last_entry_child = str2l(words[2]);
+    time_t update_every_child = str2l(words[1]);
+    time_t first_entry_child = str2l(words[2]);
+    time_t last_entry_child = str2l(words[3]);
 
-    time_t first_entry_requested = str2l(words[3]);
-    time_t last_entry_requested = str2l(words[4]);
+    bool start_streaming = (strcmp(words[4], "true") == 0);
+    time_t first_entry_requested = str2l(words[5]);
+    time_t last_entry_requested = str2l(words[6]);
 
     PARSER_USER_OBJECT *user_object = user;
     REPLICATION_OBJECT *repl_object = &user_object->repl_object;
@@ -1015,37 +1022,23 @@ PARSER_RC pluginsd_replay_rrdset_end(char **words, void *user, PLUGINSD_ACTION *
 
     RRDSET *st = repl_object->st;
     assert(st && "non-null chart expected");
+
+    if (start_streaming) {
+        if (st->update_every != update_every_child)
+            rrdset_set_update_every(st, update_every_child);
+
+        st->last_updated.tv_sec = rrdset_last_entry_t(st);
+        st->last_updated.tv_usec = 0;
+        st->last_collected_time = st->last_updated;
+        st->counter_done++;
+        return PARSER_RC_OK;
+    }
 
     FILE *outfp = user_object->parser->output;
 
     bool ok = replicate_chart_request(outfp, host, st, first_entry_child, last_entry_child,
                                       first_entry_requested, last_entry_requested);
     return ok ? PARSER_RC_OK : PARSER_RC_ERROR;
-}
-
-PARSER_RC pluginsd_replay_rrdset_finished(char **words, void *user, PLUGINSD_ACTION *plugins_action)
-{
-    UNUSED(plugins_action);
-
-    time_t update_every = str2l(words[1]);
-
-    PARSER_USER_OBJECT *user_object = user;
-    REPLICATION_OBJECT *repl_object = &user_object->repl_object;
-
-    RRDHOST *host = user_object->host;
-    assert(host && "non-null host expected");
-
-    RRDSET *st = repl_object->st;
-    assert(st && "non-null chart expected");
-
-    if (update_every != st->update_every)
-        rrdset_set_update_every(st, update_every);
-
-    st->last_updated.tv_sec = rrdset_last_entry_t(st);
-    st->last_updated.tv_usec = 0;
-    st->last_collected_time = st->last_updated;
-    st->counter_done++;
-    return PARSER_RC_OK;
 }
 
 static void pluginsd_process_thread_cleanup(void *ptr) {

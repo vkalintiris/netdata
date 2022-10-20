@@ -276,13 +276,12 @@ void replicate_chart_response(RRDHOST *host, RRDSET *st,
 
         // end with first/last entries we have, and the first start time and
         // last end time of the data we sent
-        buffer_sprintf(wb, "REPLAY_RRDSET_END %ld %ld %ld %ld\n",
-                       first_entry_local, last_entry_local, after, before);
+        buffer_sprintf(wb, "REPLAY_RRDSET_END %ld %ld %ld %s %ld %ld\n",
+                       (time_t) st->update_every, first_entry_local, last_entry_local,
+                       start_streaming ? "true" : "false", after, before);
 
-        if (start_streaming) {
-            buffer_sprintf(wb, "REPLAY_RRDSET_FINISHED %ld\n", (time_t) st->update_every);
+        if (start_streaming)
             rrdset_flag_set(st, RRDSET_FLAG_STREAM_COLLECTED_METRICS);
-        }
     }
 
     {
@@ -352,7 +351,7 @@ bool replicate_chart_request(FILE *outfp, RRDHOST *host, RRDSET *st,
 
     // should never happen but it if does, start streaming without asking
     // for any data
-    if (last_entry_local >= last_entry_child) {
+    if (last_entry_local > last_entry_child) {
         fatal("[6] Wat? (lel: %ld, lec: %ld)", last_entry_local, last_entry_child);
         return send_replay_chart_cmd(outfp, rrdset_id(st), true, 0, 0);
     }

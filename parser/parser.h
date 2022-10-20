@@ -122,6 +122,5 @@ PARSER_RC pluginsd_replay_rrdset_begin(char **words, void *user, PLUGINSD_ACTION
 PARSER_RC pluginsd_replay_rrdset_header(char **words, void *user, PLUGINSD_ACTION  *plugins_action);
 PARSER_RC pluginsd_replay_rrdset_done(char **words, void *user, PLUGINSD_ACTION  *plugins_action);
 PARSER_RC pluginsd_replay_rrdset_end(char **words, void *user, PLUGINSD_ACTION  *plugins_action);
-PARSER_RC pluginsd_replay_rrdset_finished(char **words, void *user, PLUGINSD_ACTION  *plugins_action);
 
 #endif
