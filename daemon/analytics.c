@@ -932,6 +932,7 @@ void send_statistics(const char *action, const char *action_result, const char *
 {
     static char *as_script;
 
+    netdata_anonymous_statistics_enabled = 0;
     if (netdata_anonymous_statistics_enabled == -1) {
         char *optout_file = mallocz(
             sizeof(char) *

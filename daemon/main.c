@@ -399,13 +399,10 @@ static void security_init(){
 #endif
 
 static void log_init(void) {
+    stdout_filename = config_get(CONFIG_SECTION_LOGS, "debug",  "/dev/stdout");
+    stderr_filename = config_get(CONFIG_SECTION_LOGS, "error",  "/dev/stdout");
+
     char filename[FILENAME_MAX + 1];
-    snprintfz(filename, FILENAME_MAX, "%s/debug.log", netdata_configured_log_dir);
-    stdout_filename    = config_get(CONFIG_SECTION_LOGS, "debug",  filename);
-
-    snprintfz(filename, FILENAME_MAX, "%s/error.log", netdata_configured_log_dir);
-    stderr_filename    = config_get(CONFIG_SECTION_LOGS, "error",  filename);
-
     snprintfz(filename, FILENAME_MAX, "%s/access.log", netdata_configured_log_dir);
     stdaccess_filename = config_get(CONFIG_SECTION_LOGS, "access", filename);
 
@@ -1476,7 +1473,9 @@ int main(int argc, char **argv) {
     // initialize internal registry
     registry_init();
     // fork the spawn server
+#if 0
     spawn_init();
+#endif
     /*
      * Libuv uv_spawn() uses SIGCHLD internally:
      * https://github.com/libuv/libuv/blob/cc51217a317e96510fbb284721d5e6bc2af31e33/src/unix/process.c#L485
@@ -1547,7 +1546,9 @@ int main(int argc, char **argv) {
     // ------------------------------------------------------------------------
     // Initialize netdata agent command serving from cli and signals
 
+#if 0
     commands_init();
+#endif
 
     info("netdata initialization completed. Enjoy real-time performance monitoring!");
     netdata_ready = 1;
@@ -1558,6 +1559,7 @@ int main(int argc, char **argv) {
     if (incomplete_shutdown_detected)
         send_statistics("INCOMPLETE_SHUTDOWN", "-", "-");
 
+#if 0
     //check if ANALYTICS needs to start
     if (netdata_anonymous_statistics_enabled == 1) {
         for (i = 0; static_threads[i].name != NULL; i++) {
@@ -1570,6 +1572,7 @@ int main(int argc, char **argv) {
             }
         }
     }
+#endif
 
     // ------------------------------------------------------------------------
     // Report ACLK build failure

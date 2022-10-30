@@ -18,7 +18,7 @@
 #endif
 
 
-unsigned int default_health_enabled = 1;
+unsigned int default_health_enabled = 0;
 char *silencers_filename;
 
 // the queue of executed alarm notifications that haven't been waited for yet
