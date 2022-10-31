@@ -1124,7 +1124,7 @@ fi
 
 PKG_CHECK_MODULES([GMOCK], [gmock], [have_gmock=yes], [have_gmock=no])
 
-if test "${have_gmock}" = "yes" -a "${have_gmock}" = "yes"; then
+if test "${have_gmock}" = "yes"; then
     OPTIONAL_GMOCK_CFLAGS="${GMOCK_CFLAGS} ${GMOCK_CFLAGS}"
     OPTIONAL_GMOCK_LIBS="${GMOCK_LIBS} ${GMOCK_LIBS}"
     have_gmock="yes"
@@ -1137,6 +1137,10 @@ if test "${enable_tests}" = "yes" -a "${have_gtest}" = "yes"; then
     build_tests="yes"
 else
     build_tests="no"
+fi
+
+if test "${enable_tests}" = "yes" -a "${build_tests}" = "no"; then
+    AC_MSG_ERROR([Can not build tests because google test framework is missing])
 fi
 
 AM_CONDITIONAL([ENABLE_TESTS], [test "${build_tests}" = "yes"])
