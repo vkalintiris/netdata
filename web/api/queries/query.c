@@ -910,9 +910,6 @@ typedef struct query_engine_ops {
     size_t tier;
     struct query_metric_tier *tier_ptr;
     struct storage_engine_query_handle handle;
-    STORAGE_POINT (*next_metric)(struct storage_engine_query_handle *handle);
-    int (*is_finished)(struct storage_engine_query_handle *handle);
-    void (*finalize)(struct storage_engine_query_handle *handle);
 
     // aggregating points over time
     void (*grouping_add)(struct rrdresult *r, NETDATA_DOUBLE value);
@@ -945,10 +942,9 @@ static void query_planer_activate_plan(QUERY_ENGINE_OPS *ops, size_t plan_id, ti
 
     ops->tier = ops->plan.data[plan_id].tier;
     ops->tier_ptr = &ops->qm->tiers[ops->tier];
-    ops->tier_ptr->eng->api.query_ops.init(ops->tier_ptr->db_metric_handle, &ops->handle, after, before);
-    ops->next_metric = ops->tier_ptr->eng->api.query_ops.next_metric;
-    ops->is_finished = ops->tier_ptr->eng->api.query_ops.is_finished;
-    ops->finalize = ops->tier_ptr->eng->api.query_ops.finalize;
+
+    se_query_init(ops->tier_ptr->mode, ops->tier_ptr->db_metric_handle, &ops->handle, after, before);
+
     ops->current_plan = plan_id;
     ops->current_plan_expire_time = ops->plan.data[plan_id].before;
 }
@@ -980,11 +976,7 @@ static void query_planer_next_plan(QUERY_ENGINE_OPS *ops, time_t now, time_t las
         return;
     }
 
-    if(ops->finalize) {
-        ops->finalize(&ops->handle);
-        ops->finalize = NULL;
-        ops->is_finished = NULL;
-    }
+    se_query_finalize(ops->tier_ptr->mode, &ops->handle);
 
     // internal_error(true, "QUERY: switched plan to %zu (all is %zu), previous expiration was %ld, this starts at %ld, now is %ld, last_point_end_time %ld", ops->current_plan, ops->plan.entries, ops->plan.data[ops->current_plan-1].before, ops->plan.data[ops->current_plan].after, now, last_point_end_time);
 
@@ -1207,7 +1199,7 @@ static inline void rrd2rrdr_do_dimension(RRDR *r, size_t dim_id_in_rrdr) {
                 last1_point = new_point;
             }
 
-            if(unlikely(ops.is_finished(&ops.handle))) {
+            if(unlikely(se_query_is_finished(ops.tier_ptr->mode, &ops.handle))) {
                 if(count_same_end_time != 0) {
                     last2_point = last1_point;
                     last1_point = new_point;
@@ -1223,7 +1215,7 @@ static inline void rrd2rrdr_do_dimension(RRDR *r, size_t dim_id_in_rrdr) {
 
             // fetch the new point
             {
-                STORAGE_POINT sp = ops.next_metric(&ops.handle);
+                STORAGE_POINT sp = se_query_next_metric(ops.tier_ptr->mode, &ops.handle);
 
                 ops.db_points_read_per_tier[ops.tier]++;
                 ops.db_total_points_read++;
@@ -1437,7 +1429,7 @@ static inline void rrd2rrdr_do_dimension(RRDR *r, size_t dim_id_in_rrdr) {
         if(iterations)
             now_end_time   -= ops.view_update_every;
     }
-    ops.finalize(&ops.handle);
+    se_query_finalize(ops.tier_ptr->mode, &ops.handle);
 
     r->internal.result_points_generated += points_added;
     r->internal.db_points_read += ops.db_total_points_read;
@@ -1468,7 +1460,7 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now) 
     struct rrddim_tier *t = rd->tiers[tier];
     if(unlikely(!t)) return;
 
-    time_t latest_time_t = t->query_ops->latest_time(t->db_metric_handle);
+    time_t latest_time_t = se_metric_latest_time(t->mode, t->db_metric_handle);
     time_t granularity = (time_t)t->tier_grouping * (time_t)rd->update_every;
     time_t time_diff   = now - latest_time_t;
 
@@ -1484,21 +1476,21 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now) 
 
     // for each lower tier
     for(int tr = (int)tier - 1; tr >= 0 ;tr--){
-        time_t smaller_tier_first_time = rd->tiers[tr]->query_ops->oldest_time(rd->tiers[tr]->db_metric_handle);
-        time_t smaller_tier_last_time = rd->tiers[tr]->query_ops->latest_time(rd->tiers[tr]->db_metric_handle);
+        time_t smaller_tier_first_time = se_metric_oldest_time(rd->tiers[tr]->mode, rd->tiers[tr]->db_metric_handle);
+        time_t smaller_tier_last_time = se_metric_latest_time(rd->tiers[tr]->mode, rd->tiers[tr]->db_metric_handle);
         if(smaller_tier_last_time <= latest_time_t) continue;  // it is as bad as we are
 
         long after_wanted = (latest_time_t < smaller_tier_first_time) ? smaller_tier_first_time : latest_time_t;
         long before_wanted = smaller_tier_last_time;
 
         struct rrddim_tier *tmp = rd->tiers[tr];
-        tmp->query_ops->init(tmp->db_metric_handle, &handle, after_wanted, before_wanted);
+        se_query_init(tmp->mode, tmp->db_metric_handle, &handle, after_wanted, before_wanted);
 
         size_t points = 0;
 
-        while(!tmp->query_ops->is_finished(&handle)) {
+        while(!se_query_is_finished(tmp->mode, &handle)) {
 
-            STORAGE_POINT sp = tmp->query_ops->next_metric(&handle);
+            STORAGE_POINT sp = se_query_next_metric(tmp->mode, &handle);
 
             if(sp.end_time > latest_time_t) {
                 latest_time_t = sp.end_time;
@@ -1508,7 +1500,7 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now) 
         }
 
         all_points_read += points;
-        tmp->query_ops->finalize(&handle);
+        se_query_finalize(tmp->mode, &handle);
 
         //internal_error(true, "DBENGINE: backfilled chart '%s', dimension '%s', tier %d, from %ld to %ld, with %zu points from tier %d",
         //               rd->rrdset->name, rd->name, tier, after_wanted, before_wanted, points, tr);

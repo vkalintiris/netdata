@@ -388,7 +388,6 @@ int is_legacy = 1;
             // initialize legacy dbengine instance as needed
 
             host->db[0].mode = RRD_MEMORY_MODE_DBENGINE;
-            host->db[0].eng = storage_engine_get(host->db[0].mode);
             host->db[0].tier_grouping = get_tier_grouping(0);
 
             ret = rrdeng_init(
@@ -404,7 +403,6 @@ int is_legacy = 1;
                 // to allow them collect its metrics too
                 for(size_t tier = 1; tier < storage_tiers ; tier++) {
                     host->db[tier].mode = RRD_MEMORY_MODE_DBENGINE;
-                    host->db[tier].eng = storage_engine_get(host->db[tier].mode);
                     host->db[tier].instance = (STORAGE_INSTANCE *) multidb_ctx[tier];
                     host->db[tier].tier_grouping = get_tier_grouping(tier);
                 }
@@ -413,7 +411,6 @@ int is_legacy = 1;
         else {
             for(size_t tier = 0; tier < storage_tiers ; tier++) {
                 host->db[tier].mode = RRD_MEMORY_MODE_DBENGINE;
-                host->db[tier].eng = storage_engine_get(host->db[tier].mode);
                 host->db[tier].instance = (STORAGE_INSTANCE *)multidb_ctx[tier];
                 host->db[tier].tier_grouping = get_tier_grouping(tier);
             }
@@ -435,7 +432,6 @@ int is_legacy = 1;
     }
     else {
         host->db[0].mode = host->rrd_memory_mode;
-        host->db[0].eng = storage_engine_get(host->db[0].mode);
         host->db[0].instance = NULL;
         host->db[0].tier_grouping = get_tier_grouping(0);
 
@@ -443,7 +439,6 @@ int is_legacy = 1;
         // the first tier is reserved for the non-dbengine modes
         for(size_t tier = 1; tier < storage_tiers ; tier++) {
             host->db[tier].mode = RRD_MEMORY_MODE_DBENGINE;
-            host->db[tier].eng = storage_engine_get(host->db[tier].mode);
             host->db[tier].instance = (STORAGE_INSTANCE *) multidb_ctx[tier];
             host->db[tier].tier_grouping = get_tier_grouping(tier);
         }

@@ -90,12 +90,10 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     {
         size_t initialized = 0;
         for(size_t tier = 0; tier < storage_tiers ; tier++) {
-            STORAGE_ENGINE *eng = host->db[tier].eng;
             rd->tiers[tier] = callocz(1, sizeof(struct rrddim_tier));
+            rd->tiers[tier]->mode = host->db[tier].mode;;
             rd->tiers[tier]->tier_grouping = host->db[tier].tier_grouping;
-            rd->tiers[tier]->collect_ops = &eng->api.collect_ops;
-            rd->tiers[tier]->query_ops = &eng->api.query_ops;
-            rd->tiers[tier]->db_metric_handle = eng->api.metric_get_or_create(rd, host->db[tier].instance, rd->rrdset->storage_metrics_groups[tier]);
+            rd->tiers[tier]->db_metric_handle = se_metric_get_or_create(host->db[tier].mode, rd, host->db[tier].instance, rd->rrdset->storage_metrics_groups[tier]);
             storage_point_unset(rd->tiers[tier]->virtual_point);
             initialized++;
 
@@ -114,7 +112,7 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
         size_t initialized = 0;
         for (size_t tier = 0; tier < storage_tiers; tier++) {
             if (rd->tiers[tier]) {
-                rd->tiers[tier]->db_collection_handle = rd->tiers[tier]->collect_ops->init(rd->tiers[tier]->db_metric_handle, st->rrdhost->db[tier].tier_grouping * st->update_every);
+                rd->tiers[tier]->db_collection_handle = se_store_metric_init(rd->tiers[tier]->mode, rd->tiers[tier]->db_metric_handle, st->rrdhost->db[tier].tier_grouping * st->update_every);
                 initialized++;
             }
         }
@@ -187,7 +185,7 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
             if(rd->tiers[tier]) {
                 tiers_available++;
 
-                if(rd->tiers[tier]->collect_ops->finalize(rd->tiers[tier]->db_collection_handle))
+                if(se_collect_finalize(rd->tiers[tier]->mode, rd->tiers[tier]->db_collection_handle))
                     tiers_said_yes++;
 
                 rd->tiers[tier]->db_collection_handle = NULL;
@@ -214,8 +212,8 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     for(size_t tier = 0; tier < storage_tiers ;tier++) {
         if(!rd->tiers[tier]) continue;
 
-        STORAGE_ENGINE* eng = host->db[tier].eng;
-        eng->api.metric_release(rd->tiers[tier]->db_metric_handle);
+        RRD_MEMORY_MODE mode = host->db[tier].mode;
+        se_metric_release(mode, rd->tiers[tier]->db_metric_handle);
 
         freez(rd->tiers[tier]);
         rd->tiers[tier] = NULL;
@@ -247,11 +245,14 @@ static bool rrddim_conflict_callback(const DICTIONARY_ITEM *item __maybe_unused,
     rc += rrddim_set_divisor(st, rd, ctr->divisor);
 
     if(rrddim_flag_check(rd, RRDDIM_FLAG_ARCHIVED)) {
-
         for(size_t tier = 0; tier < storage_tiers ;tier++) {
-            if (rd->tiers[tier])
-                rd->tiers[tier]->db_collection_handle =
-                    rd->tiers[tier]->collect_ops->init(rd->tiers[tier]->db_metric_handle, st->rrdhost->db[tier].tier_grouping * st->update_every);
+            if (!rd->tiers[tier])
+                continue;
+
+            rd->tiers[tier]->db_collection_handle =
+                se_store_metric_init(rd->tiers[tier]->mode,
+                                     rd->tiers[tier]->db_metric_handle,
+                                     st->rrdhost->db[tier].tier_grouping * st->update_every);
         }
 
         rrddim_flag_clear(rd, RRDDIM_FLAG_ARCHIVED);
@@ -395,12 +396,12 @@ inline int rrddim_set_divisor(RRDSET *st, RRDDIM *rd, collected_number divisor) 
 
 // get the timestamp of the last entry in the round-robin database
 time_t rrddim_last_entry_t(RRDDIM *rd) {
-    time_t latest = rd->tiers[0]->query_ops->latest_time(rd->tiers[0]->db_metric_handle);
+    time_t latest = se_metric_latest_time(rd->tiers[0]->mode, rd->tiers[0]->db_metric_handle);
 
     for(size_t tier = 1; tier < storage_tiers ;tier++) {
         if(unlikely(!rd->tiers[tier])) continue;
 
-        time_t t = rd->tiers[tier]->query_ops->latest_time(rd->tiers[tier]->db_metric_handle);
+        time_t t = se_metric_latest_time(rd->tiers[tier]->mode, rd->tiers[tier]->db_metric_handle);
         if(t > latest)
             latest = t;
     }
@@ -414,7 +415,7 @@ time_t rrddim_first_entry_t(RRDDIM *rd) {
     for(size_t tier = 0; tier < storage_tiers ;tier++) {
         if(unlikely(!rd->tiers[tier])) continue;
 
-        time_t t = rd->tiers[tier]->query_ops->oldest_time(rd->tiers[tier]->db_metric_handle);
+        time_t t = se_metric_oldest_time(rd->tiers[tier]->mode, rd->tiers[tier]->db_metric_handle);
         if(t != 0 && (oldest == 0 || t < oldest))
             oldest = t;
     }

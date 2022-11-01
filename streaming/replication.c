@@ -5,8 +5,6 @@
 static time_t replicate_chart_timeframe(BUFFER *wb, RRDSET *st, time_t after, time_t before, bool enable_streaming) {
     size_t dimensions = rrdset_number_of_dimensions(st);
 
-    struct storage_engine_query_ops *ops = &st->rrdhost->db[0].eng->api.query_ops;
-
     struct {
         DICTIONARY *dict;
         const DICTIONARY_ITEM *rda;
@@ -37,7 +35,8 @@ static time_t replicate_chart_timeframe(BUFFER *wb, RRDSET *st, time_t after, ti
             data[rd_dfe.counter].rda = dictionary_acquired_item_dup(rd_dfe.dict, rd_dfe.item);
             data[rd_dfe.counter].rd = rd;
 
-            ops->init(rd->tiers[0]->db_metric_handle, &data[rd_dfe.counter].handle, after, before);
+            se_query_init(rd->tiers[0]->mode, rd->tiers[0]->db_metric_handle,
+                          &data[rd_dfe.counter].handle, after, before);
         }
         rrddim_foreach_done(rd);
     }
@@ -48,8 +47,9 @@ static time_t replicate_chart_timeframe(BUFFER *wb, RRDSET *st, time_t after, ti
         for (size_t i = 0; i < dimensions && data[i].rd; i++) {
             // fetch the first valid point for the dimension
             int max_skip = 100;
-            while(data[i].sp.end_time < now && !ops->is_finished(&data[i].handle) && max_skip-- > 0)
-                data[i].sp = ops->next_metric(&data[i].handle);
+            while (data[i].sp.end_time < now &&
+                   !se_query_is_finished(data[i].rd->tiers[0]->mode, &data[i].handle) && max_skip-- > 0)
+                data[i].sp = se_query_next_metric(data[i].rd->tiers[0]->mode, &data[i].handle);
 
             if(max_skip <= 0)
                 error("REPLAY: host '%s', chart '%s', dimension '%s': db does not advance the query beyond time %llu",
@@ -123,7 +123,7 @@ static time_t replicate_chart_timeframe(BUFFER *wb, RRDSET *st, time_t after, ti
     // release all the dictionary items acquired
     // finalize the queries
     for(size_t i = 0; i < dimensions && data[i].rda ;i++) {
-        ops->finalize(&data[i].handle);
+        se_query_finalize(data[i].rd->tiers[0]->mode, &data[i].handle);
         dictionary_acquired_item_release(data[i].dict, data[i].rda);
     }
 
