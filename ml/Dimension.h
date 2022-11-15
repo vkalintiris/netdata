@@ -31,7 +31,6 @@ public:
         LastTrainedAt(Seconds(0)),
         Trained(false),
         ConstantModel(false),
-        AnomalyScore(0.0),
         AnomalyBit(0)
     { }
 
@@ -81,7 +80,6 @@ public:
     std::atomic<bool> Trained;
     std::atomic<bool> ConstantModel;
 
-    CalculatedNumber AnomalyScore;
     std::atomic<bool> AnomalyBit;
 
     std::vector<CalculatedNumber> CNs;
