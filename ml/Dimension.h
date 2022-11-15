@@ -32,7 +32,9 @@ public:
         Trained(false),
         ConstantModel(false),
         AnomalyBit(0)
-    { }
+    {
+        Models.reserve(Cfg.NumModelsToUse);
+    }
 
     RRDDIM *getRD() const {
         return RD;
@@ -68,7 +70,7 @@ public:
 
     std::pair<bool, double> detect(size_t WindowLength, bool Reset);
 
-    std::array<KMeans, 1> getModels();
+    std::vector<KMeans> getModels();
 
 private:
     std::pair<CalculatedNumber *, size_t> getCalculatedNumbers();
@@ -83,7 +85,7 @@ public:
     std::atomic<bool> AnomalyBit;
 
     std::vector<CalculatedNumber> CNs;
-    std::array<KMeans, 1> Models;
+    std::vector<KMeans> Models;
     std::mutex Mutex;
 };
 

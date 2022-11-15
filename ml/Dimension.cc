@@ -93,7 +93,13 @@ MLResult Dimension::trainModel() {
 
     {
         std::lock_guard<std::mutex> Lock(Mutex);
-        Models[0] = KM;
+
+        if (Models.size() < Cfg.NumModelsToUse) {
+            Models.push_back(std::move(KM));
+        } else {
+            std::rotate(std::begin(Models), std::begin(Models) + 1, std::end(Models));
+            Models[Models.size() - 1] = std::move(KM);
+        }
     }
 
     Trained = true;
@@ -150,6 +156,7 @@ bool Dimension::predict(CalculatedNumber Value, bool Exists) {
         return false;
     }
 
+    size_t Sum = 0;
     for (const auto &KM : Models) {
         double AnomalyScore = KM.anomalyScore(Sample);
         if (AnomalyScore == std::numeric_limits<CalculatedNumber>::quiet_NaN()) {
@@ -161,13 +168,15 @@ bool Dimension::predict(CalculatedNumber Value, bool Exists) {
             AnomalyBit = false;
             return false;
         }
+
+        Sum += 1;
     }
 
-    AnomalyBit = true;
-    return true;
+    AnomalyBit = Sum;
+    return Sum;
 }
 
-std::array<KMeans, 1> Dimension::getModels() {
+std::vector<KMeans> Dimension::getModels() {
     std::unique_lock<std::mutex> Lock(Mutex);
     return Models;
 }

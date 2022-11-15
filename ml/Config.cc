@@ -53,7 +53,7 @@ void Config::readMLConfig(void) {
     MaxTrainSamples = clamp<unsigned>(MaxTrainSamples, 1 * 3600, 24 * 3600);
     MinTrainSamples = clamp<unsigned>(MinTrainSamples, 1 * 900, 6 * 3600);
     TrainEvery = clamp<unsigned>(TrainEvery, 1 * 3600, 6 * 3600);
-    NumModelsToUse = clamp<unsigned>(TrainEvery, 1, 7 * 24);
+    NumModelsToUse = clamp<unsigned>(NumModelsToUse, 1, 7 * 24);
 
     DiffN = clamp(DiffN, 0u, 1u);
     SmoothN = clamp(SmoothN, 0u, 5u);
