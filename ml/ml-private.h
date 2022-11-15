@@ -13,7 +13,7 @@
 
 namespace ml {
 
-using SteadyClock = std::chrono::steady_clock;
+using SteadyClock = std::chrono::system_clock;
 using TimePoint = std::chrono::time_point<SteadyClock>;
 
 template<typename T>
