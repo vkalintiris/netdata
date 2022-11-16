@@ -272,6 +272,9 @@ int is_legacy = 1;
 
     int is_in_multihost = (memory_mode == RRD_MEMORY_MODE_DBENGINE && !is_legacy);
     RRDHOST *host = callocz(1, sizeof(RRDHOST));
+    
+    // host->oid = odb_add(odb);
+    odb_create_host(odb, hostname, guid);
 
     strncpyz(host->machine_guid, guid, GUID_LEN + 1);
 

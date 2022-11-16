@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+    "nd",
+    "adapter",
+    "odb",
+    "events",
+    "iserver",
+    "iclient",
+]

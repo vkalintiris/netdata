@@ -40,6 +40,7 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     rd->id = string_strdupz(ctr->id);
     rd->name = (ctr->name && *ctr->name)?rrd_string_strdupz(ctr->name):string_dup(rd->id);
+    
 
     rd->algorithm = ctr->algorithm;
     rd->multiplier = ctr->multiplier;

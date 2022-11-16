@@ -4,6 +4,8 @@
 #include "rrd.h"
 #include "storage_engine.h"
 
+odb_t *odb = NULL;
+
 // ----------------------------------------------------------------------------
 // globals
 

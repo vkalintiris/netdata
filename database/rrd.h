@@ -64,11 +64,14 @@ struct pg_cache_page_index;
 #include "aclk/aclk_rrdhost_state.h"
 #include "sqlite/sqlite_health.h"
 #include "rrdcontext.h"
+#include "rs/rs.h"
 
 extern bool unittest_running;
 extern bool dbengine_enabled;
 extern size_t storage_tiers;
 extern size_t storage_tiers_grouping_iterations[RRD_STORAGE_TIERS];
+
+extern odb_t *odb;
 
 typedef enum {
     RRD_BACKFILL_NONE,
@@ -277,6 +280,8 @@ struct rrddim {
 
     STRING *id;                                     // the id of this dimension (for internal identification)
     STRING *name;                                   // the name of this dimension (as presented to user)
+    
+    oid_t oid;
 
     RRD_ALGORITHM algorithm:8;                      // the algorithm that is applied to add new collected values
     RRDDIM_OPTIONS options:8;                       // permanent configuration options
@@ -574,6 +579,8 @@ struct rrdset {
         STRING *id;                                 // the id of {type}.{id}
         STRING *name;                               // the name of {type}.{name}
     } parts;
+    
+    oid_t oid;
 
     STRING *id;                                     // the unique ID of the rrdset as {type}.{id}
     STRING *name;                                   // the unique name of the rrdset as {type}.{name}
@@ -924,6 +931,8 @@ struct rrdhost_system_info {
 
 struct rrdhost {
     char machine_guid[GUID_LEN + 1];                // the unique ID of this host
+    
+    oid_t oid;
 
     // ------------------------------------------------------------------------
     // host information

@@ -86,6 +86,8 @@ void netdata_cleanup_and_exit(int ret) {
 #endif
     info("EXIT: all done - netdata is now exiting - bye bye...");
     (void) unlink(agent_incomplete_shutdown_file);
+    
+    odb_destroy(odb);
     exit(ret);
 }
 
@@ -882,6 +884,8 @@ int main(int argc, char **argv) {
     size_t default_stacksize;
     char *user = NULL;
 
+    odb = odb_new();
+    odb_start(odb);
     static_threads = static_threads_get();
 
     netdata_ready=0;

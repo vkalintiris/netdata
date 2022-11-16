@@ -471,6 +471,8 @@ RRD_PLUGIN_FILES = \
     database/sqlite/sqlite3.h \
     database/KolmogorovSmirnovDist.c \
     database/KolmogorovSmirnovDist.h \
+    database/rs/rs.c \
+    database/rs/rs.h \
     $(NULL)
 
 database/sqlite/sqlite3.$(OBJEXT) : CFLAGS += -Wno-cast-function-type
@@ -994,8 +996,12 @@ if LINUX
     NETDATA_COMMON_LIBS += -lrt
 endif
 
+$(abs_top_srcdir)/rnd/target/release/librnd.a:
+	cargo build --manifest-path $(abs_top_srcdir)/rnd/Cargo.toml --release
+
 netdata_LDADD = \
     $(NETDATA_COMMON_LIBS) \
+	$(abs_top_srcdir)/rnd/target/release/librnd.a \
     $(NULL)
 
 if ENABLE_ACLK
