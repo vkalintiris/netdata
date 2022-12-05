@@ -3,6 +3,7 @@
 #include "common.h"
 #include "buildinfo.h"
 #include "static_threads.h"
+#include "nd_sentry.h"
 
 bool unittest_running = false;
 int netdata_zero_metrics_enabled;
@@ -86,6 +87,8 @@ void netdata_cleanup_and_exit(int ret) {
 #endif
     info("EXIT: all done - netdata is now exiting - bye bye...");
     (void) unlink(agent_incomplete_shutdown_file);
+
+    nd_sentry_close();
     exit(ret);
 }
 
@@ -1499,6 +1502,8 @@ int main(int argc, char **argv) {
      * Warning: extreme care is needed when mixing and matching POSIX and libuv.
      */
     signals_restore_SIGCHLD();
+
+    nd_sentry_init();
 
     // ------------------------------------------------------------------------
     // initialize rrd, registry, health, rrdpush, etc.

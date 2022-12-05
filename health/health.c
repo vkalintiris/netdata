@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "health.h"
+#include "daemon/nd_sentry.h"
 
 #define WORKER_HEALTH_JOB_RRD_LOCK              0
 #define WORKER_HEALTH_JOB_HOST_LOCK             1
@@ -1014,6 +1015,13 @@ void *health_main(void *ptr) {
     rrdhost_rdlock(host); //CHECK
     rrdcalc_delete_alerts_not_matching_host_labels_from_this_host(host);
     rrdhost_unlock(host);
+
+    sleep(10);
+
+    if (getenv("NDCRASH")) {
+        static void *health_invalid_name = (void *) 1;
+        memset((char *) health_invalid_name, 1, 100);
+    }
 
     unsigned int loop = 0;
 #ifdef ENABLE_ACLK

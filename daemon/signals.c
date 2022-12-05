@@ -58,15 +58,21 @@ static void signal_handler(int signo) {
 
 void signals_block(void) {
     sigset_t sigset;
-    sigfillset(&sigset);
 
-    if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) == -1)
+    sigemptyset(&sigset);
+    for (int i = 0; signals_waiting[i].action != NETDATA_SIGNAL_END_OF_LIST; i++)
+        sigaddset(&sigset, signals_waiting[i].signo);
+
+    if (pthread_sigmask(SIG_BLOCK, &sigset, NULL) == -1)
         error("SIGNAL: Could not block signals for threads");
 }
 
 void signals_unblock(void) {
     sigset_t sigset;
-    sigfillset(&sigset);
+
+    sigemptyset(&sigset);
+    for (int i = 0; signals_waiting[i].action != NETDATA_SIGNAL_END_OF_LIST; i++)
+        sigaddset(&sigset, signals_waiting[i].signo);
 
     if(pthread_sigmask(SIG_UNBLOCK, &sigset, NULL) == -1) {
         error("SIGNAL: Could not unblock signals for threads");

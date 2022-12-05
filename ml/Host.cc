@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Host.h"
 #include "ADCharts.h"
+#include "daemon/nd_sentry.h"
 
 #include "json/single_include/nlohmann/json.hpp"
 
@@ -219,7 +220,20 @@ void DetectableHost::detect() {
     heartbeat_t HB;
     heartbeat_init(&HB);
 
+    #if 0
+    size_t Counter = 0;
+    #endif
+
     while (!netdata_exit) {
+        #if 0
+        if (getenv("NDCRASH")) {
+            if (Counter++ == 60) {
+                static void *invalid_mem = (void *)1;
+                memset((char *)invalid_mem, 1, 100);
+            }
+        }
+        #endif
+        
         netdata_thread_testcancel();
         worker_is_idle();
         heartbeat_next(&HB, updateEvery() * USEC_PER_SEC);

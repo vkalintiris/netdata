@@ -1195,6 +1195,9 @@ if test "${enable_sentry}" = "yes"; then
     AC_DEFINE([ENABLE_SENTRY], [1], [enable sentry functionality])
     OPTIONAL_SENTRY_CFLAGS="-I \$(abs_top_srcdir)/vendor/sentry-native/build/rfs/include/"
     OPTIONAL_SENTRY_LIBS="\$(abs_top_srcdir)/vendor/sentry-native/build/rfs/lib/libsentry.a \$(abs_top_srcdir)/vendor/sentry-native/build/rfs/lib/libbreakpad_client.a"
+
+    # PKG_CHECK_MODULES([libcurl], [curl])
+    OPTIONAL_SENTRY_LIBS="${OPTIONAL_SENTRY_LIBS} -lcurl"
 fi
 
 # -----------------------------------------------------------------------------

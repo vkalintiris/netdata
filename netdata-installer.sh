@@ -682,7 +682,6 @@ build_sentry() {
   [ -n "${GITHUB_ACTIONS}" ] && echo "::endgroup::"
 }
 
-echo "PWD when building sentry: ${PWD}"
 build_sentry
 
 # -----------------------------------------------------------------------------
@@ -1096,6 +1095,20 @@ progress "Install netdata"
 
 if ! run $make install; then
   fatal "Failed to install Netdata." I000C
+fi
+
+# -----------------------------------------------------------------------------
+if [ -n "${NETDATA_ENABLE_SENTRY}" ]; then
+  SENTRY_RELEASE_VERSION="1.2.10"
+  sentry-cli releases new "${SENTRY_RELEASE_VERSION}"
+
+  sentry-cli debug-files upload \
+    --force-foreground \
+    --wait \
+    --include-sources \
+    "${NETDATA_PREFIX}/usr/sbin/netdata"
+
+  sentry-cli releases finalize "${SENTRY_RELEASE_VERSION}"
 fi
 
 # -----------------------------------------------------------------------------

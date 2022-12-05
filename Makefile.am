@@ -898,6 +898,8 @@ DAEMON_FILES = \
     daemon/analytics.h \
     daemon/main.c \
     daemon/main.h \
+    daemon/nd_sentry.c \
+    daemon/nd_sentry.h \
     daemon/signals.c \
     daemon/signals.h \
     daemon/service.c \
