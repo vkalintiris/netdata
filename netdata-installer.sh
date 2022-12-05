@@ -337,6 +337,10 @@ while [ -n "${1}" ]; do
       NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--disable-ml)}" | sed 's/$/ --disable-ml/g')"
       NETDATA_ENABLE_ML=0
       ;;
+    "--enable-sentry")
+      NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--enable-sentry)}" | sed 's/$/ --enable-sentry/g')"
+      NETDATA_ENABLE_SENTRY=1
+      ;;
     "--enable-ml-tests") NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--enable-ml-tests)}" | sed 's/$/ --enable-ml-tests/g')" ;;
     "--disable-ml-tests") NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--disable-ml-tests)}" | sed 's/$/ --disable-ml-tests/g')" ;;
     "--disable-lto") NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--disable-lto)}" | sed 's/$/ --disable-lto/g')" ;;
@@ -653,6 +657,33 @@ bundle_protobuf() {
 }
 
 bundle_protobuf
+
+# -----------------------------------------------------------------------------
+
+build_sentry() {
+  if [ -z "${NETDATA_ENABLE_SENTRY}" ]; then
+    echo "Skipping sentry"
+    return 0
+  fi
+
+  [ -n "${GITHUB_ACTIONS}" ] && echo "::group::Bundling sentry."
+
+  cd "vendor/sentry-native" > /dev/null || return 1
+  cmake -B build \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=On \
+    -DSENTRY_BUILD_SHARED_LIBS=Off \
+    -DSENTRY_BUILD_TESTS=Off \
+    -DSENTRY_BUILD_EXAMPLES=Off
+  cmake --build build --parallel
+  cmake --install build --prefix "build/rfs" --config RelWithDebInfo
+  cd - > /dev/null || return 1
+
+  [ -n "${GITHUB_ACTIONS}" ] && echo "::endgroup::"
+}
+
+echo "PWD when building sentry: ${PWD}"
+build_sentry
 
 # -----------------------------------------------------------------------------
 build_jsonc() {

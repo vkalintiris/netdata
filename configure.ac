@@ -213,6 +213,12 @@ AC_ARG_ENABLE(
     [enable_ml_tests="yes"],
     [enable_ml_tests="no"]
 )
+AC_ARG_ENABLE(
+    [sentry],
+    [AS_HELP_STRING([--enable-sentry], [Enable sentry-native SDK @<:@no@:>@])],
+    [enable_sentry="yes"],
+    [enable_sentry="no"]
+)
 
 # -----------------------------------------------------------------------------
 # Enforce building with C99, bail early if we can't.
@@ -1184,6 +1190,14 @@ if test "${build_ml_tests}" = "yes"; then
 fi
 
 # -----------------------------------------------------------------------------
+# sentry-native
+if test "${enable_sentry}" = "yes"; then
+    AC_DEFINE([ENABLE_SENTRY], [1], [enable sentry functionality])
+    OPTIONAL_SENTRY_CFLAGS="-I \$(abs_top_srcdir)/vendor/sentry-native/build/rfs/include/"
+    OPTIONAL_SENTRY_LIBS="\$(abs_top_srcdir)/vendor/sentry-native/build/rfs/lib/libsentry.a \$(abs_top_srcdir)/vendor/sentry-native/build/rfs/lib/libbreakpad_client.a"
+fi
+
+# -----------------------------------------------------------------------------
 # ebpf.plugin
 
 if test "${build_target}" = "linux" -a "${enable_ebpf}" != "no"; then
@@ -1601,7 +1615,7 @@ CFLAGS="${originalCFLAGS} ${OPTIONAL_LTO_CFLAGS} ${OPTIONAL_PROTOBUF_CFLAGS} ${O
     ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS} ${OPTIONAL_CUPS_CFLAGS} ${OPTIONAL_XENSTAT_FLAGS} \
     ${OPTIONAL_KINESIS_CFLAGS} ${OPTIONAL_PUBSUB_CFLAGS} ${OPTIONAL_PROMETHEUS_REMOTE_WRITE_CFLAGS} \
     ${OPTIONAL_MONGOC_CFLAGS} ${LWS_CFLAGS} ${OPTIONAL_JSONC_STATIC_CFLAGS} ${OPTIONAL_BPF_CFLAGS} ${JUDY_CFLAGS} \
-    ${OPTIONAL_ACLK_CFLAGS} ${OPTIONAL_ML_CFLAGS} ${OPTIONAL_ML_TESTS_CFLAGS} ${OPTIONAL_OS_DEP_CFLAGS}"
+    ${OPTIONAL_ACLK_CFLAGS} ${OPTIONAL_ML_CFLAGS} ${OPTIONAL_ML_TESTS_CFLAGS} ${OPTIONAL_OS_DEP_CFLAGS} ${OPTIONAL_SENTRY_CFLAGS}"
 
 CXXFLAGS="${CFLAGS} ${CXX11FLAG}"
 
@@ -1657,6 +1671,8 @@ AC_SUBST([OPTIONAL_ML_CFLAGS])
 AC_SUBST([OPTIONAL_ML_LIBS])
 AC_SUBST([OPTIONAL_ML_TESTS_CFLAGS])
 AC_SUBST([OPTIONAL_ML_TESTS_LIBS])
+AC_SUBST([OPTIONAL_SENTRY_CFLAGS])
+AC_SUBST([OPTIONAL_SENTRY_LIBS])
 
 # -----------------------------------------------------------------------------
 # Check if cmocka is available - needed for unit testing
