@@ -13,3 +13,7 @@
 	path = ml/json
 	url = https://github.com/nlohmann/json.git
 	shallow = true
+[submodule "vendor/sentry-native"]
+	path = vendor/sentry-native
+	url = https://github.com/getsentry/sentry-native.git
+	branch = refs/tags/0.5.2
