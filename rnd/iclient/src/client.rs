@@ -20,6 +20,10 @@ pub struct Client {
     tx_msg: mpsc::Sender<Message>,
 }
 
+fn print_type_of<T>(_: &T) {
+    println!("{}", std::any::type_name::<T>())
+}
+
 impl Client {
     pub fn new() -> Result<Client> {
         let (tx_msg, mut rx_msg) = mpsc::channel(16);
@@ -29,6 +33,11 @@ impl Client {
             Err(err) => return Err(Error::runtime(err)),
         };
         let rt_handle = rt.handle().clone();
+
+        let mut cl =
+            rt.block_on(async move { GreeterClient::connect("http://[::1]:50051").await.unwrap() });
+
+        print_type_of(&cl);
 
         std::thread::spawn(move || {
             rt.block_on(async move {
@@ -59,11 +68,9 @@ pub mod hello_world {
 }
 
 pub async fn say_hello(m: Message) {
-    let mut client = GreeterClient::connect("http://[::1]:50051").await.unwrap();
+    // let request = tonic::Request::new(HelloRequest { name: m.msg });
 
-    let request = tonic::Request::new(HelloRequest { name: m.msg });
+    // let response = client.say_hello(request).await.unwrap();
 
-    let response = client.say_hello(request).await.unwrap();
-
-    println!("RESPONSE={:?}", response);
+    println!("RESPONSE={:?}", m);
 }
