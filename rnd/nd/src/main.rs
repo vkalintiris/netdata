@@ -1,13 +1,21 @@
-// #![allow(unused_imports, dead_code)]
+#![allow(unused_imports, dead_code)]
 
-use iclient::say_hello;
+use iclient::{Client, Message};
 use odb::ODB;
+use std::{thread, time};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let mut odb = ODB::new();
     let mut _oid = odb.add("what?");
 
-    say_hello().await?;
-    Ok(())
+    let c = match Client::new() {
+        Ok(c) => c,
+        Err(e) => panic!("err: {:?}", e),
+    };
+
+    c.spawn_task(Message {
+        msg: String::from("Vasileios"),
+    });
+
+    thread::sleep(time::Duration::from_secs(1))
 }

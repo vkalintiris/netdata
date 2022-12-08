@@ -1,20 +1,8 @@
-use hello_world::greeter_client::GreeterClient;
-use hello_world::HelloRequest;
+#![allow(unused_imports, dead_code)]
 
-pub mod hello_world {
-    tonic::include_proto!("helloworld");
-}
+pub use error::{Error, ErrorKind};
 
-pub async fn say_hello() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = GreeterClient::connect("http://[::1]:50051").await?;
+pub use client::{Client, Message};
 
-    let request = tonic::Request::new(HelloRequest {
-        name: "Tonic".into(),
-    });
-
-    let response = client.say_hello(request).await?;
-
-    println!("RESPONSE={:?}", response);
-
-    Ok(())
-}
+mod client;
+mod error;
