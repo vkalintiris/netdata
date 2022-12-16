@@ -1,6 +1,5 @@
 load('//bazel/build_settings:defs.bzl', 'expand_build_settings_template')
 
-# TODO: check if we need more substitutions
 SUBSTITUTIONS = {
     '//bazel/build_settings:configdir': '@configdir_POST@',
     '//bazel/build_settings:libconfigdir': '@libconfigdir_POST@',
