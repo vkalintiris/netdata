@@ -666,6 +666,17 @@ declare -A pkg_cmake=(
   ['default']="cmake"
 )
 
+declare -A pkg_judy=(
+  ['debian']="libjudy-dev"
+  ['ubuntu']="libjudy-dev"
+  ['suse']="judy-devel"
+  ['gentoo']="dev-libs/judy"
+  ['arch']="judy"
+  ['freebsd']="Judy"
+  ['fedora']="Judy-devel"
+  ['default']="NOTREQUIRED"
+)
+
 declare -A pkg_json_c_dev=(
   ['alpine']="json-c-dev"
   ['arch']="json-c"
@@ -1210,6 +1221,7 @@ packages() {
   suitable_package autoconf-archive
   require_cmd autogen || suitable_package autogen
   require_cmd automake || suitable_package automake
+  required_cmd libtoolize || suitable_package libtool
   require_cmd pkg-config || suitable_package pkg-config
   require_cmd cmake || suitable_package cmake
 
@@ -1265,6 +1277,7 @@ packages() {
     suitable_package libuuid-dev
     suitable_package libmnl-dev
     suitable_package json-c-dev
+    suitable_package judy
   fi
 
   # -------------------------------------------------------------------------
@@ -1493,6 +1506,8 @@ validate_tree_centos() {
     echo >&2 " > Updating libarchive ..."
     run ${sudo} yum ${opts} install libarchive
 
+    echo >&2 " > Installing Judy-devel directly ..."
+    run ${sudo} yum ${opts} install http://mirror.centos.org/centos/8/PowerTools/x86_64/os/Packages/Judy-devel-1.0.5-18.module_el8.3.0+757+d382997d.x86_64.rpm
   elif [[ "${version}" =~ ^7(\..*)?$ ]]; then
     echo >&2 " > Checking for EPEL ..."
     if ! rpm -qa | grep epel-release > /dev/null; then

@@ -28,6 +28,7 @@ declare -a package_tree=(
   libuv-devel
   liblz4-devel
   libopenssl-devel
+  judy-devel
   libelf-devel
   git
   tar

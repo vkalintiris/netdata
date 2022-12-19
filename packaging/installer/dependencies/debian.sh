@@ -30,6 +30,7 @@ package_tree="
   libuv1-dev
   liblz4-dev
   libssl-dev
+  libjudy-dev
   libelf-dev
   python
   python3
