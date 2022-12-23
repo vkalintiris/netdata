@@ -30,5 +30,5 @@ proto_library(
 cc_proto_library(
     name = "aclk_cc_protos",
     deps = [":aclk_protos"],
-)
-
+    visibility = ["//visibility:public"],
+) 
