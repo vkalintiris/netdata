@@ -368,7 +368,7 @@ static void rrdpush_send_chart_metrics(BUFFER *wb, RRDSET *st, struct sender_sta
             buffer_fast_strcat(wb, "SET \"", 5);
             buffer_fast_strcat(wb, rrddim_id(rd), string_strlen(rd->id));
             buffer_fast_strcat(wb, "\" = ", 4);
-            buffer_print_ll(wb, rd->collected_value);
+            buffer_strcat(wb, rd->collected_value_str);
             buffer_fast_strcat(wb, "\n", 1);
         }
         else {

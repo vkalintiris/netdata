@@ -1934,3 +1934,22 @@ bool run_command_and_copy_output_to_stdout(const char *command, int max_line_len
     netdata_pclose(NULL, fp, pid);
     return true;
 }
+
+size_t nd_itoa(long long value, char *buf) {
+    if (value < 0)
+        *buf++ = '-';
+
+    unsigned long long uvalue = value < 0 ? -value : value;
+
+    char *start = buf;
+
+    do {
+        *buf++ = (char) ('0' + (uvalue % 10));
+    } while (uvalue /= 10);
+    *buf = '\0';
+
+    char *end = buf - 1;
+
+    strreverse(start, end);
+    return 0;
+}

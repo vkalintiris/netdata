@@ -48,6 +48,8 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     rd->update_every = st->update_every;
 
+    strcpy(rd->collected_value_str, "0");
+
     rd->rrdset = st;
 
     if(rrdset_flag_check(st, RRDSET_FLAG_STORE_FIRST))

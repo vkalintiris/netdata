@@ -324,6 +324,8 @@ struct rrddim {
     collected_number collected_value;               // the current value, as collected - resets to 0 after being used
     collected_number last_collected_value;          // the last value that was collected, after being processed
 
+    char collected_value_str[24];
+
 #ifdef NETDATA_LOG_COLLECTION_ERRORS
     usec_t rrddim_store_metric_last_ut;             // the timestamp we last called rrddim_store_metric()
     size_t rrddim_store_metric_count;               // the rrddim_store_metric() counter

@@ -416,6 +416,8 @@ static inline char *get_word(char **words, size_t num_words, size_t index) {
     return words[index];
 }
 
+size_t nd_itoa(long long value, char *buf);
+
 bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length);
 
 void netdata_cleanup_and_exit(int ret) NORETURN;

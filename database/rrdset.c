@@ -1657,6 +1657,9 @@ after_first_database_work:
         rd = rda->rd;
         if(unlikely(!rd)) continue;
 
+        if (rd->collected_value != rd->last_collected_value)
+            nd_itoa(rd->collected_value, rd->collected_value_str);
+
         if(unlikely(!rd->updated)) {
             rd->calculated_value = 0;
             continue;
