@@ -184,7 +184,7 @@ typedef struct {
     bool exit;
 } nml_queue_t;
 
-void nml_queue_init(nml_queue_t *q);
+nml_queue_t *nml_queue_init(void);
 void nml_queue_destroy(nml_queue_t *q);
 
 void nml_queue_push(nml_queue_t *q, const nml_training_request_t req);
@@ -242,7 +242,7 @@ typedef struct {
     std::atomic<bool> threads_cancelled;
     std::atomic<bool> threads_joined;
 
-    nml_queue_t training_queue;
+    nml_queue_t *training_queue;
 
     netdata_mutex_t mutex;
 
@@ -298,5 +298,7 @@ public:
 };
 
 extern Config Cfg;
+
+void *nml_main(void *arg);
 
 #endif /* NETDATA_NML_H */

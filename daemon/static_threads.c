@@ -185,6 +185,16 @@ const struct netdata_static_thread static_threads_common[] = {
             .start_routine = profile_main,
     },
 
+    {
+            .name = "NML",
+            .config_section = NULL,
+            .config_name = NULL,
+            .enabled = 1,
+            .thread = NULL,
+            .init_routine = NULL,
+            .start_routine = ml_main,
+    },
+
     // terminator
     {
         .name = NULL,

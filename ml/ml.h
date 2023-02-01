@@ -29,10 +29,6 @@ void ml_chart_delete(RRDSET *rs);
 void ml_dimension_new(RRDDIM *rd);
 void ml_dimension_delete(RRDDIM *rd);
 
-void ml_start_anomaly_detection_threads(RRDHOST *rh);
-void ml_stop_anomaly_detection_threads(RRDHOST *rh);
-void ml_cancel_anomaly_detection_threads(RRDHOST *rh);
-
 char *ml_get_host_info(RRDHOST *rh);
 char *ml_get_host_runtime_info(RRDHOST *rh);
 char *ml_get_host_models(RRDHOST *rh);
@@ -44,7 +40,13 @@ bool ml_is_anomalous(RRDDIM *rd, time_t curr_time, double value, bool exists);
 
 bool ml_streaming_enabled();
 
+void *ml_main(void *ptr);
+
 void nml_test();
+
+void ml_start_anomaly_detection_threads(RRDHOST *rh);
+void ml_cancel_anomaly_detection_threads(RRDHOST *rh);
+void ml_stop_anomaly_detection_threads(RRDHOST *rh);
 
 #ifdef __cplusplus
 };

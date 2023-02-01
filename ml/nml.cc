@@ -201,15 +201,19 @@ static calculated_number_t nml_kmeans_anomaly_score(const nml_kmeans_t *kmeans, 
  * Queue
 */
 
-void nml_queue_init(nml_queue_t *q) {
+nml_queue_t *nml_queue_init() {
+    nml_queue_t *q = new nml_queue_t();
+
     netdata_mutex_init(&q->mutex);
     pthread_cond_init(&q->cond_var, NULL);
     __atomic_store_n(&q->exit, false, __ATOMIC_SEQ_CST);
+    return q;
 }
 
 void nml_queue_destroy(nml_queue_t *q) {
     netdata_mutex_destroy(&q->mutex);
     pthread_cond_destroy(&q->cond_var);
+    delete q;
 }
 
 void nml_queue_push(nml_queue_t *q, const nml_training_request_t req) {
@@ -453,7 +457,7 @@ static void nml_dimension_schedule_for_training(nml_dimension_t *dim, time_t cur
             string_dup(dim->rd->rrdset->id), string_dup(dim->rd->id),
             curr_time, rrddim_first_entry_s(dim->rd), rrddim_last_entry_s(dim->rd),
         };
-        nml_queue_push(&host->training_queue, req);
+        nml_queue_push(host->training_queue, req);
     }
 }
 
@@ -730,7 +734,7 @@ nml_host_t *nml_host_new(RRDHOST *rh) {
     host->threads_cancelled = false;
     host->threads_joined = false;
 
-    nml_queue_init(&host->training_queue);
+    host->training_queue = nml_queue_init();
 
     netdata_mutex_init(&host->mutex);
 
@@ -739,7 +743,7 @@ nml_host_t *nml_host_new(RRDHOST *rh) {
 
 void nml_host_delete(nml_host_t *host) {
     netdata_mutex_destroy(&host->mutex);
-    nml_queue_destroy(&host->training_queue);
+    nml_queue_destroy(host->training_queue);
     delete host;
 }
 
@@ -949,6 +953,14 @@ static enum nml_training_result nml_acquired_dimension_train(nml_acquired_dimens
 #define WORKER_JOB_TRAINING_TRAIN 1
 #define WORKER_JOB_TRAINING_STATS 2
 
+void nml_host_get_detection_info_as_json(nml_host_t *host, nlohmann::json &j) {
+    j["version"] = 1;
+    j["anomalous-dimensions"] = host->mls.num_anomalous_dimensions;
+    j["normal-dimensions"] = host->mls.num_normal_dimensions;
+    j["total-dimensions"] = host->mls.num_anomalous_dimensions + host->mls.num_normal_dimensions;
+    j["trained-dimensions"] = host->mls.num_training_status_trained + host->mls.num_training_status_pending_with_model;
+}
+
 void nml_host_train(nml_host_t *host) {
     worker_register("MLTRAIN");
     worker_register_job_name(WORKER_JOB_TRAINING_FIND, "find");
@@ -958,10 +970,10 @@ void nml_host_train(nml_host_t *host) {
     service_register(SERVICE_THREAD_TYPE_NETDATA, NULL, (force_quit_t )ml_cancel_anomaly_detection_threads, host->rh, true);
 
     while (service_running(SERVICE_ML_TRAINING)) {
-        nml_training_request_t training_req = nml_queue_pop(&host->training_queue);
-        size_t Size = nml_queue_size(&host->training_queue) + 1;
+        nml_training_request_t training_req = nml_queue_pop(host->training_queue);
+        size_t queue_size = nml_queue_size(host->training_queue) + 1;
 
-        usec_t allotted_ut = (Cfg.train_every * host->rh->rrd_update_every * USEC_PER_SEC) / Size;
+        usec_t allotted_ut = (Cfg.train_every * host->rh->rrd_update_every * USEC_PER_SEC) / queue_size;
         if (allotted_ut > USEC_PER_SEC)
             allotted_ut = USEC_PER_SEC;
 
@@ -996,7 +1008,7 @@ void nml_host_train(nml_host_t *host) {
                 host->ts.training_ru = TRU;
             }
 
-            host->ts.queue_size += Size;
+            host->ts.queue_size += queue_size;
             host->ts.num_popped_items += 1;
 
             host->ts.allotted_ut += allotted_ut;
@@ -1050,14 +1062,6 @@ static void nml_host_detect(nml_host_t *host) {
     }
 }
 
-void nml_host_get_detection_info_as_json(nml_host_t *host, nlohmann::json &j) {
-    j["version"] = 1;
-    j["anomalous-dimensions"] = host->mls.num_anomalous_dimensions;
-    j["normal-dimensions"] = host->mls.num_normal_dimensions;
-    j["total-dimensions"] = host->mls.num_anomalous_dimensions + host->mls.num_normal_dimensions;
-    j["trained-dimensions"] = host->mls.num_training_status_trained + host->mls.num_training_status_pending_with_model;
-}
-
 static void *train_main(void *arg) {
     size_t max_elements_needed_for_training = Cfg.max_train_samples * (Cfg.lag_n + 1);
     tls_data.training_cns = new calculated_number_t[max_elements_needed_for_training]();
@@ -1075,6 +1079,8 @@ static void *detect_main(void *arg) {
 }
 
 void nml_host_start_anomaly_detection_threads(nml_host_t *host) {
+    return;
+
     if (host->threads_running) {
         error("Anomaly detections threads for host %s are already-up and running.", rrdhost_hostname(host->rh));
         return;
@@ -1094,6 +1100,8 @@ void nml_host_start_anomaly_detection_threads(nml_host_t *host) {
 }
 
 void nml_host_stop_anomaly_detection_threads(nml_host_t *host, bool join) {
+    return;
+
     if (!host->threads_running) {
         error("Anomaly detections threads for host %s have already been stopped.", rrdhost_hostname(host->rh));
         return;
@@ -1103,7 +1111,7 @@ void nml_host_stop_anomaly_detection_threads(nml_host_t *host, bool join) {
         host->threads_cancelled = true;
 
         // Signal the training queue to stop popping-items
-        nml_queue_signal(&host->training_queue);
+        nml_queue_signal(host->training_queue);
         netdata_thread_cancel(host->training_thread);
         netdata_thread_cancel(host->detection_thread);
     }
@@ -1126,4 +1134,57 @@ void nml_host_stop_anomaly_detection_threads(nml_host_t *host, bool join) {
         //netdata_thread_join(TrainingThread, NULL);
         //netdata_thread_join(DetectionThread, NULL);
     }
+}
+
+static void nml_main_cleanup(void *ptr) {
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *) ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
+
+    info("cleaning up...");
+
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
+
+typedef struct {
+    size_t num_threads;
+    netdata_thread_t *threads;
+    nml_queue_t *training_queue;
+} nml_thread_data_t;
+
+void *nml_training_worker(void *ptr) {
+    nml_thread_data_t *thread_data = (nml_thread_data_t *) ptr;
+
+    while (true) {
+        size_t wq_size = nml_queue_size(thread_data->training_queue);
+        error("work queue contains %zu items", wq_size);
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+    }
+
+    return NULL;
+}
+
+void *nml_main(void *ptr) {
+    nml_thread_data_t thread_data;
+
+    thread_data.num_threads = 10;
+    thread_data.threads = (netdata_thread_t *) callocz(thread_data.num_threads, sizeof(netdata_thread_t));
+    thread_data.training_queue = nml_queue_init();
+
+    netdata_thread_cleanup_push(nml_main_cleanup, ptr);
+
+    for (size_t idx = 0; idx != thread_data.num_threads; idx++) {
+        char tag[NETDATA_THREAD_TAG_MAX + 1];
+        snprintfz(tag, NETDATA_THREAD_TAG_MAX, "TRAIN[%zu]", idx);
+        netdata_thread_create(&thread_data.threads[idx], tag, NETDATA_THREAD_OPTION_DEFAULT, nml_training_worker, &thread_data);
+    }
+
+    error("GVD - Started %zu threads...", thread_data.num_threads);
+
+    for (size_t idx = 0; idx != thread_data.num_threads; idx++)
+        netdata_thread_join(thread_data.threads[idx], NULL);
+
+    error("GVD - Joined %zu threads...", thread_data.num_threads);
+
+    netdata_thread_cleanup_pop(1);
+    return NULL;
 }

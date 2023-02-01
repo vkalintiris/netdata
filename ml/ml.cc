@@ -134,27 +134,6 @@ char *ml_get_host_models(RRDHOST *rh) {
     return NULL;
 }
 
-void ml_start_anomaly_detection_threads(RRDHOST *rh) {
-    if (rh && rh->ml_host) {
-        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
-        nml_host_start_anomaly_detection_threads(host);
-    }
-}
-
-void ml_stop_anomaly_detection_threads(RRDHOST *rh) {
-    if (rh && rh->ml_host) {
-        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
-        nml_host_stop_anomaly_detection_threads(host, /* join */ true);
-    }
-}
-
-void ml_cancel_anomaly_detection_threads(RRDHOST *rh) {
-    if (rh && rh->ml_host) {
-        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
-        nml_host_stop_anomaly_detection_threads(host, /* join */ false);
-    }
-}
-
 void ml_chart_update_begin(RRDSET *rs) {
     nml_chart_t *chart = reinterpret_cast<nml_chart_t *>(rs->ml_chart);
     if (!chart)
@@ -185,4 +164,29 @@ bool ml_is_anomalous(RRDDIM *rd, time_t curr_time, double value, bool exists) {
 
 bool ml_streaming_enabled() {
     return Cfg.stream_anomaly_detection_charts;
+}
+
+void ml_start_anomaly_detection_threads(RRDHOST *rh) {
+    if (rh && rh->ml_host) {
+        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
+        nml_host_start_anomaly_detection_threads(host);
+    }
+}
+
+void ml_stop_anomaly_detection_threads(RRDHOST *rh) {
+    if (rh && rh->ml_host) {
+        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
+        nml_host_stop_anomaly_detection_threads(host, /* join */ true);
+    }
+}
+
+void ml_cancel_anomaly_detection_threads(RRDHOST *rh) {
+    if (rh && rh->ml_host) {
+        nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
+        nml_host_stop_anomaly_detection_threads(host, /* join */ false);
+    }
+}
+
+void *ml_main(void *ptr) {
+    return nml_main(ptr);
 }
