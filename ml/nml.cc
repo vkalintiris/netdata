@@ -1062,6 +1062,7 @@ static void nml_host_detect(nml_host_t *host) {
     }
 }
 
+#if 0
 static void *train_main(void *arg) {
     size_t max_elements_needed_for_training = Cfg.max_train_samples * (Cfg.lag_n + 1);
     tls_data.training_cns = new calculated_number_t[max_elements_needed_for_training]();
@@ -1071,6 +1072,7 @@ static void *train_main(void *arg) {
     nml_host_train(host);
     return NULL;
 }
+#endif
 
 static void *detect_main(void *arg) {
     nml_host_t *host = reinterpret_cast<nml_host_t *>(arg);
@@ -1092,8 +1094,8 @@ void nml_host_start_anomaly_detection_threads(nml_host_t *host) {
 
     char tag[NETDATA_THREAD_TAG_MAX + 1];
 
-    snprintfz(tag, NETDATA_THREAD_TAG_MAX, "MLTR[%s]", rrdhost_hostname(host->rh));
-    netdata_thread_create(&host->training_thread, tag, NETDATA_THREAD_OPTION_DEFAULT, train_main, static_cast<void *>(host));
+    // snprintfz(tag, NETDATA_THREAD_TAG_MAX, "MLTR[%s]", rrdhost_hostname(host->rh));
+    // netdata_thread_create(&host->training_thread, tag, NETDATA_THREAD_OPTION_DEFAULT, train_main, static_cast<void *>(host));
 
     snprintfz(tag, NETDATA_THREAD_TAG_MAX, "MLDT[%s]", rrdhost_hostname(host->rh));
     netdata_thread_create(&host->detection_thread, tag, NETDATA_THREAD_OPTION_DEFAULT, detect_main, static_cast<void *>(host));
@@ -1112,7 +1114,7 @@ void nml_host_stop_anomaly_detection_threads(nml_host_t *host, bool join) {
 
         // Signal the training queue to stop popping-items
         nml_queue_signal(host->training_queue);
-        netdata_thread_cancel(host->training_thread);
+        // netdata_thread_cancel(host->training_thread);
         netdata_thread_cancel(host->detection_thread);
     }
 
@@ -1136,6 +1138,11 @@ void nml_host_stop_anomaly_detection_threads(nml_host_t *host, bool join) {
     }
 }
 
+typedef struct {
+    netdata_thread_t threads[10];
+    nml_queue_t *training_queue;
+} nml_thread_data_t;
+
 static void nml_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *) ptr;
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
@@ -1144,12 +1151,6 @@ static void nml_main_cleanup(void *ptr) {
 
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
-
-typedef struct {
-    size_t num_threads;
-    netdata_thread_t *threads;
-    nml_queue_t *training_queue;
-} nml_thread_data_t;
 
 void *nml_training_worker(void *ptr) {
     nml_thread_data_t *thread_data = (nml_thread_data_t *) ptr;
@@ -1163,27 +1164,33 @@ void *nml_training_worker(void *ptr) {
     return NULL;
 }
 
-void *nml_main(void *ptr) {
-    nml_thread_data_t thread_data;
+/*
+ * TODO:
+ *         1 - one global work queue
+ *         2 - fixed number of training threads
+ *         3 - each training thread blocks on a training request
+ *             a) lookup dimension
+ *             b) train model
+ *         4 - clean shutdown
+*/
 
-    thread_data.num_threads = 10;
-    thread_data.threads = (netdata_thread_t *) callocz(thread_data.num_threads, sizeof(netdata_thread_t));
+void *nml_main(void *ptr) {
+    netdata_thread_cleanup_push(nml_main_cleanup, &ptr);
+
+    nml_thread_data_t thread_data;
     thread_data.training_queue = nml_queue_init();
 
-    netdata_thread_cleanup_push(nml_main_cleanup, ptr);
-
-    for (size_t idx = 0; idx != thread_data.num_threads; idx++) {
+    for (size_t idx = 0; idx != 10; idx++) {
         char tag[NETDATA_THREAD_TAG_MAX + 1];
         snprintfz(tag, NETDATA_THREAD_TAG_MAX, "TRAIN[%zu]", idx);
-        netdata_thread_create(&thread_data.threads[idx], tag, NETDATA_THREAD_OPTION_DEFAULT, nml_training_worker, &thread_data);
+        netdata_thread_create(&thread_data.threads[idx], tag, NETDATA_THREAD_OPTION_JOINABLE, nml_training_worker, &thread_data);
     }
+    error("GVD - Started 10 threads...");
 
-    error("GVD - Started %zu threads...", thread_data.num_threads);
-
-    for (size_t idx = 0; idx != thread_data.num_threads; idx++)
+    for (size_t idx = 0; idx != 10; idx++)
         netdata_thread_join(thread_data.threads[idx], NULL);
 
-    error("GVD - Joined %zu threads...", thread_data.num_threads);
+    error("GVD - Joined 10 threads...");
 
     netdata_thread_cleanup_pop(1);
     return NULL;
