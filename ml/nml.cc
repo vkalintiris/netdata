@@ -129,6 +129,7 @@ static void nml_features_lag(nml_features_t *features) {
     size_t n = features->src_n - features->diff_n - features->smooth_n + 1 - features->lag_n;
     features->preprocessed_features.resize(n);
 
+#if 0
     unsigned target_num_samples = Cfg.max_train_samples * Cfg.random_sampling_ratio;
     double sampling_ratio = std::min(static_cast<double>(target_num_samples) / n, 1.0);
 
@@ -151,6 +152,15 @@ static void nml_features_lag(nml_features_t *features) {
     }
 
     features->preprocessed_features.resize(sample_idx);
+#else
+    for (size_t idx = 0; idx != n; idx++) {
+        DSample &DS = features->preprocessed_features[idx];
+        DS.set_size(features->lag_n);
+
+        for (size_t feature_idx = 0; feature_idx != (features->lag_n + 1); feature_idx++)
+            DS(feature_idx) = features->src[idx + feature_idx];
+    }
+#endif
 }
 
 static void nml_features_preprocess(nml_features_t *features) {
