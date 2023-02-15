@@ -259,8 +259,7 @@ void nml_host_get_config_as_json(nml_host_t *host, nlohmann::json &j);
 void nml_host_get_models_as_json(nml_host_t *host, nlohmann::json &j);
 void nml_host_get_detection_info_as_json(nml_host_t *host, nlohmann::json &j);
 
-class Config {
-public:
+typedef struct {
     bool enable_anomaly_detection;
 
     unsigned max_train_samples;
@@ -293,10 +292,10 @@ public:
     SIMPLE_PATTERN *sp_charts_to_skip;
 
     std::vector<uint32_t> random_nums;
+} nml_config_t;
 
-    void readMLConfig();
-};
+void nml_config_load(nml_config_t *cfg);
 
-extern Config Cfg;
+extern nml_config_t Cfg;
 
 #endif /* NETDATA_NML_H */

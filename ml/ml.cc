@@ -26,7 +26,7 @@ bool ml_enabled(RRDHOST *rh) {
 
 void ml_init(void) {
     // Read config values
-    Cfg.readMLConfig();
+    nml_config_load(&Cfg);
 
     if (!Cfg.enable_anomaly_detection)
         return;
@@ -97,29 +97,29 @@ void ml_dimension_delete(RRDDIM *rd) {
 }
 
 char *ml_get_host_info(RRDHOST *rh) {
-    nlohmann::json ConfigJson;
+    nlohmann::json config_json;
 
     if (rh && rh->ml_host) {
         nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
-        nml_host_get_config_as_json(host, ConfigJson);
+        nml_host_get_config_as_json(host, config_json);
     } else {
-        ConfigJson["enabled"] = false;
+        config_json["enabled"] = false;
     }
 
-    return strdupz(ConfigJson.dump(2, '\t').c_str());
+    return strdupz(config_json.dump(2, '\t').c_str());
 }
 
 char *ml_get_host_runtime_info(RRDHOST *rh) {
-    nlohmann::json ConfigJson;
+    nlohmann::json config_json;
 
     if (rh && rh->ml_host) {
         nml_host_t *host = reinterpret_cast<nml_host_t *>(rh->ml_host);
-        nml_host_get_detection_info_as_json(host, ConfigJson);
+        nml_host_get_detection_info_as_json(host, config_json);
     } else {
         return NULL;
     }
 
-    return strdup(ConfigJson.dump(1, '\t').c_str());
+    return strdup(config_json.dump(1, '\t').c_str());
 }
 
 char *ml_get_host_models(RRDHOST *rh) {
@@ -152,14 +152,15 @@ void ml_chart_update_end(RRDSET *rs) {
 }
 
 bool ml_is_anomalous(RRDDIM *rd, time_t curr_time, double value, bool exists) {
-    nml_dimension_t *D = reinterpret_cast<nml_dimension_t *>(rd->ml_dimension);
-    if (!D)
+    nml_dimension_t *dim = reinterpret_cast<nml_dimension_t *>(rd->ml_dimension);
+    if (!dim)
         return false;
 
     nml_chart_t *chart = reinterpret_cast<nml_chart_t *>(rd->rrdset->ml_chart);
 
-    bool is_anomalous = nml_dimension_predict(D, curr_time, value, exists);
-    nml_chart_update_dimension(chart, D, is_anomalous);
+    bool is_anomalous = nml_dimension_predict(dim, curr_time, value, exists);
+    nml_chart_update_dimension(chart, dim, is_anomalous);
+
     return is_anomalous;
 }
 

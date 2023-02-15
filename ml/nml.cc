@@ -100,28 +100,23 @@ static void nml_features_diff(nml_features_t *features) {
         features->src[idx] = 0.0;
 }
 
-// run the buffer through an averaging window of `smooth_n` length
+// a function that computes the window average of an array inplace
 static void nml_features_smooth(nml_features_t *features) {
-    const calculated_number_t factor = 1.0 / features->smooth_n;
-
     calculated_number_t sum = 0.0;
 
-    for (size_t idx = 0; idx != features->smooth_n; idx++)
+    size_t idx = 0;
+    for (; idx != features->smooth_n - 1; idx++)
         sum += features->src[idx];
 
-    features->src[0] = sum * factor;
-
-    for (size_t idx = features->smooth_n; idx != (features->src_n - features->diff_n); idx++) {
-        calculated_number_t prev_cn = features->src[idx - 1];
-
+    for (; idx != (features->src_n - features->diff_n); idx++) {
+        sum += features->src[idx];
+        calculated_number_t prev_cn = features->src[idx - (features->smooth_n - 1)];
+        features->src[idx - (features->smooth_n - 1)] = sum / features->smooth_n;
         sum -= prev_cn;
-        sum += features->src[idx];
-
-        features->src[idx - features->smooth_n + 1] = sum * factor;
     }
 
-    for (size_t idx = features->src_n - features->diff_n - features->smooth_n + 1; idx != features->src_n - features->diff_n; idx++)
-        features->src[idx] = 0.0;
+    for (idx = 0; idx != features->smooth_n; idx++)
+        features->src[(features->src_n - 1) - idx] = 0.0;
 }
 
 // create lag'd vectors out of the preprocessed buffer
@@ -158,7 +153,7 @@ static void nml_features_lag(nml_features_t *features) {
         DS.set_size(features->lag_n);
 
         for (size_t feature_idx = 0; feature_idx != (features->lag_n + 1); feature_idx++)
-            DS(feature_idx) = features->src[idx + feature_idx];
+            DS(feature_idx) = std::abs(features->src[idx + feature_idx]);
     }
 #endif
 }
@@ -574,6 +569,7 @@ bool nml_dimension_predict(nml_dimension_t *dim, time_t curr_time, calculated_nu
 
         sum += 1;
     }
+
     netdata_mutex_unlock(&dim->mutex);
 
     global_statistics_ml_models_consulted(models_consulted);

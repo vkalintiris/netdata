@@ -6,7 +6,7 @@
  * Global configuration instance to be shared between training and
  * prediction threads.
  */
-Config Cfg;
+nml_config_t Cfg;
 
 template <typename T>
 static T clamp(const T& Value, const T& Min, const T& Max) {
@@ -16,7 +16,7 @@ static T clamp(const T& Value, const T& Min, const T& Max) {
 /*
  * Initialize global configuration variable.
  */
-void Config::readMLConfig(void) {
+void nml_config_load(nml_config_t *cfg) {
     const char *config_section_ml = CONFIG_SECTION_ML;
 
     bool enable_anomaly_detection = config_get_boolean(config_section_ml, "enabled", true);
@@ -79,33 +79,34 @@ void Config::readMLConfig(void) {
      * Assign to config instance
      */
 
-    Cfg.enable_anomaly_detection = enable_anomaly_detection;
+    cfg->enable_anomaly_detection = enable_anomaly_detection;
 
-    Cfg.max_train_samples = max_train_samples;
-    Cfg.min_train_samples = min_train_samples;
-    Cfg.train_every = train_every;
-    Cfg.num_models_to_use = num_models_to_use;
+    cfg->max_train_samples = max_train_samples;
+    cfg->min_train_samples = min_train_samples;
+    cfg->train_every = train_every;
 
-    Cfg.diff_n = diff_n;
-    Cfg.smooth_n = smooth_n;
-    Cfg.lag_n = lag_n;
+    cfg->num_models_to_use = num_models_to_use;
 
-    Cfg.random_sampling_ratio = random_sampling_ratio;
-    Cfg.max_kmeans_iters = max_kmeans_iters;
+    cfg->diff_n = diff_n;
+    cfg->smooth_n = smooth_n;
+    cfg->lag_n = lag_n;
 
-    Cfg.dimension_anomaly_score_threshold = dimension_anomaly_rate_threshold;
+    cfg->random_sampling_ratio = random_sampling_ratio;
+    cfg->max_kmeans_iters = max_kmeans_iters;
 
-    Cfg.host_anomaly_rate_threshold = host_anomaly_rate_threshold;
-    Cfg.anomaly_detection_grouping_method = web_client_api_request_v1_data_group(anomaly_detection_grouping_method.c_str(), RRDR_GROUPING_AVERAGE);
-    Cfg.anomaly_detection_query_duration = anomaly_detection_query_duration;
+    cfg->dimension_anomaly_score_threshold = dimension_anomaly_rate_threshold;
 
-    Cfg.hosts_to_skip = config_get(config_section_ml, "hosts to skip from training", "!*");
-    Cfg.sp_host_to_skip = simple_pattern_create(Cfg.hosts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
+    cfg->host_anomaly_rate_threshold = host_anomaly_rate_threshold;
+    cfg->anomaly_detection_grouping_method = web_client_api_request_v1_data_group(anomaly_detection_grouping_method.c_str(), RRDR_GROUPING_AVERAGE);
+    cfg->anomaly_detection_query_duration = anomaly_detection_query_duration;
+
+    cfg->hosts_to_skip = config_get(config_section_ml, "hosts to skip from training", "!*");
+    cfg->sp_host_to_skip = simple_pattern_create(cfg->hosts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     // Always exclude anomaly_detection charts from training.
-    Cfg.charts_to_skip = "anomaly_detection.* ";
-    Cfg.charts_to_skip += config_get(config_section_ml, "charts to skip from training", "netdata.*");
-    Cfg.sp_charts_to_skip = simple_pattern_create(Cfg.charts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
+    cfg->charts_to_skip = "anomaly_detection.* ";
+    cfg->charts_to_skip += config_get(config_section_ml, "charts to skip from training", "netdata.*");
+    cfg->sp_charts_to_skip = simple_pattern_create(cfg->charts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
-    Cfg.stream_anomaly_detection_charts = config_get_boolean(config_section_ml, "stream anomaly detection charts", true);
+    cfg->stream_anomaly_detection_charts = config_get_boolean(config_section_ml, "stream anomaly detection charts", true);
 }

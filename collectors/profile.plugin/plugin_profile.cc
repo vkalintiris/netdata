@@ -24,10 +24,11 @@ public:
     Generator(size_t N) : Offset(0) {
         std::random_device RandDev;
         std::mt19937 Gen(RandDev());
+        std::uniform_int_distribution<int> D(-16, 16);
 
         V.reserve(N);
         for (size_t Idx = 0; Idx != N; Idx++)
-            V.push_back(Gen());
+            V.push_back(D(Gen));
     }
 
     double getRandValue() {
@@ -160,10 +161,10 @@ extern "C" void *profile_main(void *ptr) {
 
     std::vector<Profiler> Profilers;
 
-    size_t NumThreads = 0;
+    size_t NumThreads = 1;
     for (size_t Idx = 0; Idx != NumThreads; Idx++) {
-        size_t NumCharts = 2;
-        size_t NumDimsPerChart = 2;
+        size_t NumCharts = 1;
+        size_t NumDimsPerChart = 1;
         time_t SecondsToBackfill = 0;
 
         Profiler P(1e8 + Idx * 1e6, NumCharts, NumDimsPerChart, SecondsToBackfill);
