@@ -81,15 +81,9 @@ void nml_config_load(nml_config_t *cfg) {
 
     cfg->enable_anomaly_detection = enable_anomaly_detection;
 
- #if 0
     cfg->max_train_samples = max_train_samples;
     cfg->min_train_samples = min_train_samples;
     cfg->train_every = train_every;
- #else
-    cfg->max_train_samples = 60;
-    cfg->min_train_samples = 30;
-    cfg->train_every = 30;
-  #endif
 
     cfg->num_models_to_use = num_models_to_use;
 
@@ -100,22 +94,18 @@ void nml_config_load(nml_config_t *cfg) {
     cfg->random_sampling_ratio = random_sampling_ratio;
     cfg->max_kmeans_iters = max_kmeans_iters;
 
-    Cfg->host_anomaly_rate_threshold = host_anomaly_rate_threshold;
-    Cfg->anomaly_detection_grouping_method =
+    cfg->host_anomaly_rate_threshold = host_anomaly_rate_threshold;
+    cfg->anomaly_detection_grouping_method =
         time_grouping_parse(anomaly_detection_grouping_method.c_str(), RRDR_GROUPING_AVERAGE);
-    Cfg->anomaly_detection_query_duration = anomaly_detection_query_duration;
+    cfg->anomaly_detection_query_duration = anomaly_detection_query_duration;
     cfg->dimension_anomaly_score_threshold = dimension_anomaly_rate_threshold;
 
     cfg->hosts_to_skip = config_get(config_section_ml, "hosts to skip from training", "!*");
     cfg->sp_host_to_skip = simple_pattern_create(cfg->hosts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     // Always exclude anomaly_detection charts from training.
-#if 1
     cfg->charts_to_skip = "anomaly_detection.* ";
     cfg->charts_to_skip += config_get(config_section_ml, "charts to skip from training", "netdata.*");
- #else
-    cfg->charts_to_skip = "!profile.* *";
- #endif
     cfg->sp_charts_to_skip = simple_pattern_create(cfg->charts_to_skip.c_str(), NULL, SIMPLE_PATTERN_EXACT);
 
     cfg->stream_anomaly_detection_charts = config_get_boolean(config_section_ml, "stream anomaly detection charts", true);

@@ -325,7 +325,7 @@ typedef struct {
     double dimension_anomaly_score_threshold;
 
     double host_anomaly_rate_threshold;
-    RRDR_GROUPING anomaly_detection_grouping_method;
+    RRDR_TIME_GROUPING anomaly_detection_grouping_method;
     time_t anomaly_detection_query_duration;
 
     bool stream_anomaly_detection_charts;

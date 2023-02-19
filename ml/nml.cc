@@ -779,7 +779,7 @@ void nml_host_get_config_as_json(nml_host_t *host, nlohmann::json &j) {
     j["dimension-anomaly-score-threshold"] = Cfg.dimension_anomaly_score_threshold;
 
     j["host-anomaly-rate-threshold"] = Cfg.host_anomaly_rate_threshold;
-    j["anomaly-detection-grouping-method"] = group_method2string(Cfg.anomaly_detection_grouping_method);
+    j["anomaly-detection-grouping-method"] = time_grouping_method2string(Cfg.anomaly_detection_grouping_method);
     j["anomaly-detection-query-duration"] = Cfg.anomaly_detection_query_duration;
 
     j["hosts-to-skip"] = Cfg.hosts_to_skip;
@@ -1124,7 +1124,7 @@ void *nml_detect_main(void *arg) {
 
     while (service_running((SERVICE_TYPE)(SERVICE_ML_PREDICTION | SERVICE_COLLECTORS))) {
         worker_is_idle();
-        heartbeat_next(&hb, localhost->rrd_update_every);
+        heartbeat_next(&hb, USEC_PER_SEC);
 
         rrd_rdlock();
 

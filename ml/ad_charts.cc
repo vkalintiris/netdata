@@ -268,7 +268,8 @@ void nml_update_host_and_detection_rate_charts(nml_host_t *host, collected_numbe
         RRDR_OPTIONS Options = static_cast<RRDR_OPTIONS>(0x00000000);
 
         RRDR *R = rrd2rrdr_legacy(
-                OWA, host->anomaly_rate_rs,
+                OWA,
+                host->anomaly_rate_rs,
                 1 /* points wanted */,
                 After,
                 Before,
