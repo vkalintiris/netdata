@@ -33,16 +33,12 @@ void nml_update_dimensions_chart(nml_host_t *host, const nml_machine_learning_st
 
             host->machine_learning_status_enabled_rd =
                 rrddim_add(host->machine_learning_status_rs, "enabled", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-            host->machine_learning_status_disabled_ue_rd =
-                rrddim_add(host->machine_learning_status_rs, "disabled-ue", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
             host->machine_learning_status_disabled_sp_rd =
                 rrddim_add(host->machine_learning_status_rs, "disabled-sp", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
 
         rrddim_set_by_pointer(host->machine_learning_status_rs,
                               host->machine_learning_status_enabled_rd, mls.num_machine_learning_status_enabled);
-        rrddim_set_by_pointer(host->machine_learning_status_rs,
-                              host->machine_learning_status_disabled_ue_rd, mls.num_machine_learning_status_disabled_ue);
         rrddim_set_by_pointer(host->machine_learning_status_rs,
                               host->machine_learning_status_disabled_sp_rd, mls.num_machine_learning_status_disabled_sp);
 

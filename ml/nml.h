@@ -47,7 +47,6 @@ typedef struct {
 
 typedef struct machine_learning_stats_t {
     size_t num_machine_learning_status_enabled;
-    size_t num_machine_learning_status_disabled_ue;
     size_t num_machine_learning_status_disabled_sp;
 
     size_t num_metric_type_constant;
@@ -90,9 +89,6 @@ enum nml_metric_type {
 enum nml_machine_learning_status {
     // Enable training/prediction
     MACHINE_LEARNING_STATUS_ENABLED,
-
-    // Disable due to update every being different from the host's
-    MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_UPDATE_EVERY,
 
     // Disable because configuration pattern matches the chart's id
     MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART,
@@ -254,7 +250,6 @@ typedef struct {
 
     RRDSET *machine_learning_status_rs;
     RRDDIM *machine_learning_status_enabled_rd;
-    RRDDIM *machine_learning_status_disabled_ue_rd;
     RRDDIM *machine_learning_status_disabled_sp_rd;
 
     RRDSET *metric_type_rs;

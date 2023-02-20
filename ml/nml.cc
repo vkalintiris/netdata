@@ -25,8 +25,6 @@ static const char *nml_machine_learning_status_to_string(enum nml_machine_learni
     switch (mls) {
         case MACHINE_LEARNING_STATUS_ENABLED:
             return "enabled";
-        case MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_UPDATE_EVERY:
-            return "disabled-ue";
         case MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART:
             return "disabled-sp";
         default:
@@ -602,8 +600,6 @@ nml_dimension_t *nml_dimension_new(RRDDIM *rd) {
 
     if (simple_pattern_matches(Cfg.sp_charts_to_skip, rrdset_name(rd->rrdset)))
         dim->mls = MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART;
-    else if (rd->update_every != rd->rrdset->rrdhost->rrd_update_every)
-        dim->mls = MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_UPDATE_EVERY;
     else
         dim->mls = MACHINE_LEARNING_STATUS_ENABLED;
 
@@ -686,9 +682,6 @@ void nml_chart_update_end(nml_chart_t *chart) {
 
 void nml_chart_update_dimension(nml_chart_t *chart, nml_dimension_t *dim, bool is_anomalous) {
     switch (dim->mls) {
-        case MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_UPDATE_EVERY:
-            chart->mls.num_machine_learning_status_disabled_ue++;
-            return;
         case MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART:
             chart->mls.num_machine_learning_status_disabled_sp++;
             return;
@@ -837,7 +830,6 @@ static void nml_host_detect_once(nml_host_t *host) {
             nml_machine_learning_stats_t chart_mls = chart->mls;
 
             host->mls.num_machine_learning_status_enabled += chart_mls.num_machine_learning_status_enabled;
-            host->mls.num_machine_learning_status_disabled_ue += chart_mls.num_machine_learning_status_disabled_ue;
             host->mls.num_machine_learning_status_disabled_sp += chart_mls.num_machine_learning_status_disabled_sp;
 
             host->mls.num_metric_type_constant += chart_mls.num_metric_type_constant;
