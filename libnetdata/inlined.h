@@ -257,6 +257,7 @@ static inline NETDATA_DOUBLE str2ndd_parse_double_decimal_digits_internal(const 
     return n;
 }
 
+#if 0
 static inline NETDATA_DOUBLE str2ndd(const char *src, char **endptr) {
     const char *s = src;
 
@@ -345,6 +346,9 @@ static inline NETDATA_DOUBLE str2ndd(const char *src, char **endptr) {
 
     return sign * result;
 }
+#else
+NETDATA_DOUBLE str2ndd(const char *src, char **endptr);
+#endif
 
 static inline unsigned long long str2ull_encoded(const char *s) {
     if(*s == IEEE754_UINT64_B64_PREFIX[0])
@@ -363,6 +367,7 @@ static inline long long str2ll_encoded(const char *s) {
         return (long long) str2ull_encoded(s);
 }
 
+#if 0
 static inline NETDATA_DOUBLE str2ndd_encoded(const char *src, char **endptr) {
     if (*src == IEEE754_DOUBLE_B64_PREFIX[0]) {
         // double parsing from base64
@@ -393,6 +398,9 @@ static inline NETDATA_DOUBLE str2ndd_encoded(const char *src, char **endptr) {
 
     return str2ndd(src, endptr) * sign;
 }
+#else
+NETDATA_DOUBLE str2ndd_encoded(const char *src, char **endptr);
+#endif
 
 static inline char *strncpyz(char *dst, const char *src, size_t n) {
     char *p = dst;

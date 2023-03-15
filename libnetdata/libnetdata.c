@@ -2174,3 +2174,144 @@ void timing_action(TIMING_ACTION action, TIMING_STEP step) {
         }
     }
 }
+
+static netdata_mutex_t ndd_mutex = NETDATA_MUTEX_INITIALIZER;
+static FILE *fp = NULL;
+
+NETDATA_DOUBLE str2ndd(const char *src, char **endptr) {
+    const char *s = src;
+
+    NETDATA_DOUBLE sign = 1.0;
+    NETDATA_DOUBLE result;
+    int integral_digits = 0;
+
+    NETDATA_DOUBLE fractional = 0.0;
+    int fractional_digits = 0;
+
+    NETDATA_DOUBLE exponent = 0.0;
+    int exponent_digits = 0;
+
+    switch(*s) {
+        case '-':
+            s++;
+            sign = -1.0;
+            break;
+
+        case '+':
+            s++;
+            break;
+
+        case 'n':
+            if(s[1] == 'a' && s[2] == 'n') {
+                if(endptr) *endptr = (char *)&s[3];
+                return NAN;
+            }
+            if(s[1] == 'u' && s[2] == 'l' && s[3] == 'l') {
+                if(endptr) *endptr = (char *)&s[3];
+                return NAN;
+            }
+            break;
+
+        case 'i':
+            if(s[1] == 'n' && s[2] == 'f') {
+                if(endptr) *endptr = (char *)&s[3];
+                return INFINITY;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    result = str2ndd_parse_double_decimal_digits_internal(s, &integral_digits);
+    s += integral_digits;
+
+    if(unlikely(*s == '.')) {
+        s++;
+        fractional = str2ndd_parse_double_decimal_digits_internal(s, &fractional_digits);
+        s += fractional_digits;
+    }
+
+    if (unlikely(*s == 'e' || *s == 'E')) {
+        const char *e_ptr = s;
+        s++;
+
+        int exponent_sign = 1;
+        if (*s == '-') {
+            exponent_sign = -1;
+            s++;
+        }
+        else if(*s == '+')
+            s++;
+
+        exponent = str2ndd_parse_double_decimal_digits_internal(s, &exponent_digits);
+        if(unlikely(!exponent_digits)) {
+            exponent = 0;
+            s = e_ptr;
+        }
+        else {
+            s += exponent_digits;
+            exponent *= exponent_sign;
+        }
+    }
+
+    if(unlikely(endptr))
+        *endptr = (char *)s;
+
+    if (unlikely(exponent_digits))
+        result *= powndd(10.0, exponent);
+
+    if (unlikely(fractional_digits))
+        result += fractional / powndd(10.0, fractional_digits) * (exponent_digits ? powndd(10.0, exponent) : 1.0);
+
+    return sign * result;
+}
+
+static void dump_ndd_str(const char *s) {
+    netdata_mutex_lock(&ndd_mutex);
+    fprintf(fp, "%s\n", s);
+    fflush(fp);
+    netdata_mutex_unlock(&ndd_mutex);
+}
+
+NETDATA_DOUBLE str2ndd_encoded(const char *src, char **endptr) {
+    netdata_mutex_lock(&ndd_mutex);
+    if (!fp) {
+        fp = fopen("/Users/vk/log.txt", "w");
+        if (!fp) {
+            fatal("Could not open log file");
+        }
+    }
+    netdata_mutex_unlock(&ndd_mutex);
+
+    if (*src == IEEE754_DOUBLE_B64_PREFIX[0]) {
+        // double parsing from base64
+        uint64_t n = str2uint64_base64(src + sizeof(IEEE754_DOUBLE_B64_PREFIX) - 1, endptr);
+        NETDATA_DOUBLE *ptr = (NETDATA_DOUBLE *) (&n);
+        return *ptr;
+    }
+
+    if (*src == IEEE754_DOUBLE_HEX_PREFIX[0]) {
+        // double parsing from hex
+        uint64_t n = str2uint64_hex(src + sizeof(IEEE754_DOUBLE_HEX_PREFIX) - 1, endptr);
+        NETDATA_DOUBLE *ptr = (NETDATA_DOUBLE *) (&n);
+        return *ptr;
+    }
+
+    double sign = 1.0;
+
+    if(*src == '-') {
+        sign = -1.0;
+        src++;
+    }
+
+    if(unlikely(*src == IEEE754_UINT64_B64_PREFIX[0]))
+        return (NETDATA_DOUBLE) str2uint64_base64(src + sizeof(IEEE754_UINT64_B64_PREFIX) - 1, endptr) * sign;
+
+    if(unlikely(*src == HEX_PREFIX[0] && src[1] == HEX_PREFIX[1]))
+        return (NETDATA_DOUBLE) str2uint64_hex(src + sizeof(HEX_PREFIX) - 1, endptr) * sign;
+
+    NETDATA_DOUBLE ret = str2ndd(src, endptr) * sign;
+    dump_ndd_str(src);
+    return ret;
+}

@@ -746,6 +746,9 @@ static inline void dictionary_index_wrlock_unlock(DICTIONARY *dict) {
 // items garbage collector
 
 static void garbage_collect_pending_deletes(DICTIONARY *dict) {
+    if (!dict || dict->hooks)
+        return;
+    
     usec_t last_master_deletion_us = dict->hooks?__atomic_load_n(&dict->hooks->last_master_deletion_us, __ATOMIC_RELAXED):0;
     usec_t last_gc_run_us = __atomic_load_n(&dict->last_gc_run_us, __ATOMIC_RELAXED);
 
