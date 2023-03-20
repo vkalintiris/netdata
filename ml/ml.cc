@@ -172,26 +172,26 @@ ml_features_preprocess(ml_features_t *features)
 */
 
 static void
-ml_kmeans_init(ml_kmeans_t *kmeans, size_t num_clusters, size_t max_iterations)
+ml_kmeans_init(ml_kmeans_t *kmeans)
 {
-    kmeans->num_clusters = num_clusters;
-    kmeans->max_iterations = max_iterations;
-
-    kmeans->cluster_centers.reserve(kmeans->num_clusters);
+    kmeans->cluster_centers.reserve(2);
     kmeans->min_dist = std::numeric_limits<calculated_number_t>::max();
     kmeans->max_dist = std::numeric_limits<calculated_number_t>::min();
 }
 
 static void
-ml_kmeans_train(ml_kmeans_t *kmeans, const ml_features_t *features)
+ml_kmeans_train(ml_kmeans_t *kmeans, const ml_features_t *features, time_t after, time_t before)
 {
+    kmeans->after = (uint32_t) after;
+    kmeans->before = (uint32_t) before;
+
     kmeans->min_dist = std::numeric_limits<calculated_number_t>::max();
     kmeans->max_dist  = std::numeric_limits<calculated_number_t>::min();
 
     kmeans->cluster_centers.clear();
 
-    dlib::pick_initial_centers(kmeans->num_clusters, kmeans->cluster_centers, features->preprocessed_features);
-    dlib::find_clusters_using_kmeans(features->preprocessed_features, kmeans->cluster_centers, kmeans->max_iterations);
+    dlib::pick_initial_centers(2, kmeans->cluster_centers, features->preprocessed_features);
+    dlib::find_clusters_using_kmeans(features->preprocessed_features, kmeans->cluster_centers, Cfg.max_kmeans_iters);
 
     for (const auto &preprocessed_feature : features->preprocessed_features) {
         calculated_number_t mean_dist = 0.0;
@@ -200,7 +200,7 @@ ml_kmeans_train(ml_kmeans_t *kmeans, const ml_features_t *features)
             mean_dist += dlib::length(cluster_center - preprocessed_feature);
         }
 
-        mean_dist /= kmeans->num_clusters;
+        mean_dist /= 2;
 
         if (mean_dist < kmeans->min_dist)
             kmeans->min_dist = mean_dist;
@@ -217,7 +217,7 @@ ml_kmeans_anomaly_score(const ml_kmeans_t *kmeans, const DSample &DS)
     for (const auto &CC: kmeans->cluster_centers)
         mean_dist += dlib::length(CC - DS);
 
-    mean_dist /= kmeans->num_clusters;
+    mean_dist /= 2;
 
     if (kmeans->max_dist == kmeans->min_dist)
         return 0.0;
@@ -449,8 +449,8 @@ ml_dimension_train_model(ml_training_thread_t *training_thread, ml_dimension_t *
         };
         ml_features_preprocess(&features);
 
-        ml_kmeans_init(&dim->kmeans, 2, 1000);
-        ml_kmeans_train(&dim->kmeans, &features);
+        ml_kmeans_init(&dim->kmeans);
+        ml_kmeans_train(&dim->kmeans, &features, training_response.query_after_t, training_response.query_before_t);
     }
 
     // update kmeans models
@@ -1046,7 +1046,7 @@ void ml_dimension_new(RRDDIM *rd)
 
     dim->last_training_time = 0;
 
-    ml_kmeans_init(&dim->kmeans, 2, 1000);
+    ml_kmeans_init(&dim->kmeans);
 
     if (simple_pattern_matches(Cfg.sp_charts_to_skip, rrdset_name(rd->rrdset)))
         dim->mls = MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART;
