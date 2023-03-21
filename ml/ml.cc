@@ -412,7 +412,7 @@ const char *db_models_create_table =
     "    dim_id BLOB, dim_str TEXT, after INT, before INT,"
     "    c00 REAL, c01 REAL, c02 REAL, c03 REAL, c04 REAL, c05 REAL,"
     "    c10 REAL, c11 REAL, c12 REAL, c13 REAL, c14 REAL, c15 REAL,"
-    "    PRIMARY KEY(dim_id, before)"
+    "    PRIMARY KEY(dim_id, after)"
     ");";
 
 const char *db_models_add_model =
@@ -424,6 +424,10 @@ const char *db_models_add_model =
     "    @dim_id, @dim_str, @after, @before,"
     "    @c00, @c01, @c02, @c03, @c04, @c05,"
     "    @c10, @c11, @c12, @c13, @c14, @c15);";
+
+const char *db_models_load =
+    "SELECT * FROM models "
+    "WHERE dim_str == @dim_str AND after <= @after ORDER BY before DESC;";
 
 const char *db_models_delete =
     "DELETE FROM models "
@@ -555,6 +559,13 @@ static int
 ml_dimension_update_models(ml_dimension_t *dim)
 {
     int rc;
+
+    // TODO: load models
+    if (!dim->km_contexts.empty()) {
+        rc = ml_dimension_load_models(dim);
+        if (rc)
+            return rc;
+    }
 
     rc = ml_dimension_add_model(dim);
     if (rc)
