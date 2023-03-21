@@ -7,6 +7,7 @@
 #include <random>
 
 #include "ad_charts.h"
+#include "database/sqlite/sqlite3.h"
 
 #define WORKER_TRAIN_QUEUE_POP         0
 #define WORKER_TRAIN_ACQUIRE_DIMENSION 1
@@ -15,6 +16,9 @@
 #define WORKER_TRAIN_UPDATE_MODELS     4
 #define WORKER_TRAIN_RELEASE_DIMENSION 5
 #define WORKER_TRAIN_UPDATE_HOST       6
+#define WORKER_TRAIN_LOAD_MODELS       7
+
+static sqlite3 *db = NULL;
 
 /*
  * Functions to convert enums to strings
@@ -403,6 +407,162 @@ ml_dimension_calculated_numbers(ml_training_thread_t *training_thread, ml_dimens
     return { training_thread->training_cns, training_response };
 }
 
+const char *db_models_create_table =
+    "CREATE TABLE IF NOT EXISTS models("
+    "    dim_id BLOB, dim_str TEXT, after INT, before INT,"
+    "    c00 REAL, c01 REAL, c02 REAL, c03 REAL, c04 REAL, c05 REAL,"
+    "    c10 REAL, c11 REAL, c12 REAL, c13 REAL, c14 REAL, c15 REAL,"
+    "    PRIMARY KEY(dim_id, before)"
+    ");";
+
+const char *db_models_add_model =
+    "INSERT INTO models("
+    "    dim_id, dim_str, after, before,"
+    "    c00, c01, c02, c03, c04, c05,"
+    "    c10, c11, c12, c13, c14, c15)"
+    "VALUES("
+    "    @dim_id, @dim_str, @after, @before,"
+    "    @c00, @c01, @c02, @c03, @c04, @c05,"
+    "    @c10, @c11, @c12, @c13, @c14, @c15);";
+
+const char *db_models_delete =
+    "DELETE FROM models "
+    "WHERE dim_id = @dim_id AND before < @before;";
+
+static int
+ml_dimension_add_model(ml_dimension_t *dim)
+{
+    static __thread sqlite3_stmt *res = NULL;
+    int param = 0;
+    int rc = 0;
+
+    if (unlikely(!db)) {
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db, db_models_add_model, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to store model, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    rc = sqlite3_bind_blob(res, ++param, &dim->rd->metric_uuid, sizeof(dim->rd->metric_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    char id[1024];
+    snprintfz(id, 1024 - 1, "%s.%s", rrdset_id(dim->rd->rrdset), rrddim_id(dim->rd));
+    rc = sqlite3_bind_text(res, ++param, id, -1, SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.after);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.before);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    if (dim->kmeans.cluster_centers.size() != 2)
+        fatal("Expected 2 cluster centers, got %zu", dim->kmeans.cluster_centers.size());
+
+    for (const DSample &ds : dim->kmeans.cluster_centers) {
+        if (ds.size() != 6)
+            fatal("Expected dsample with 6 dimensions, got %ld", ds.size());
+
+        for (long idx = 0; idx != ds.size(); idx++) {
+            calculated_number_t cn = ds(idx);
+            int rc = sqlite3_bind_double(res, ++param, cn);
+            if (unlikely(rc != SQLITE_OK))
+                goto bind_fail;
+        }
+    }
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to store model, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement when storing model, rc = %d", rc);
+
+    error("Added model for dimension '%s'", id);
+    return 0;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to store model, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement to store model, rc = %d", rc);
+    return 1;
+}
+
+static int
+ml_dimension_delete_models(ml_dimension_t *dim)
+{
+    static __thread sqlite3_stmt *res = NULL;
+    int rc = 0;
+    int param = 0;
+
+    if (unlikely(!db)) {
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db, db_models_delete, &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to delete models, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    rc = sqlite3_bind_blob(res, ++param, &dim->rd->metric_uuid, sizeof(dim->rd->metric_uuid), SQLITE_STATIC);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.before - 5 * 60);
+    if (unlikely(rc != SQLITE_OK))
+        goto bind_fail;
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to delete models, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement when deleting models, rc = %d", rc);
+
+    char id[1024];
+    snprintfz(id, 1024 - 1, "%s.%s", rrdset_id(dim->rd->rrdset), rrddim_id(dim->rd));
+    error("Deleted models for dimension '%s'", id);
+
+    return 0;
+
+bind_fail:
+    error_report("Failed to bind parameter %d to delete models, rc = %d", param, rc);
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement to delete models, rc = %d", rc);
+    return 1;
+}
+
+static int
+ml_dimension_update_models(ml_dimension_t *dim)
+{
+    int rc;
+
+    rc = ml_dimension_add_model(dim);
+    if (rc)
+        return rc;
+
+    return ml_dimension_delete_models(dim);
+}
+
 static enum ml_training_result
 ml_dimension_train_model(ml_training_thread_t *training_thread, ml_dimension_t *dim, const ml_training_request_t &training_request)
 {
@@ -453,6 +613,17 @@ ml_dimension_train_model(ml_training_thread_t *training_thread, ml_dimension_t *
         ml_kmeans_train(&dim->kmeans, &features, training_response.query_after_t, training_response.query_before_t);
     }
 
+    worker_is_busy(WORKER_TRAIN_LOAD_MODELS);
+    {
+        netdata_mutex_lock(&dim->mutex);
+
+        int rc = ml_dimension_update_models(dim);
+        if (rc) {
+            error("Failed to update models for %s [%u, %u]", rrddim_id(dim->rd), dim->kmeans.after, dim->kmeans.before);
+        }
+
+        netdata_mutex_unlock(&dim->mutex);
+    }
     // update kmeans models
     worker_is_busy(WORKER_TRAIN_UPDATE_MODELS);
     {
@@ -1098,6 +1269,7 @@ static void *ml_train_main(void *arg) {
     worker_register_job_name(WORKER_TRAIN_QUERY, "query");
     worker_register_job_name(WORKER_TRAIN_KMEANS, "kmeans");
     worker_register_job_name(WORKER_TRAIN_UPDATE_MODELS, "update models");
+    worker_register_job_name(WORKER_TRAIN_LOAD_MODELS, "load models");
     worker_register_job_name(WORKER_TRAIN_RELEASE_DIMENSION, "release");
     worker_register_job_name(WORKER_TRAIN_UPDATE_HOST, "update host");
 
@@ -1200,6 +1372,24 @@ void ml_init()
     for (size_t Idx = 0; Idx != Cfg.max_train_samples; Idx++)
         Cfg.random_nums.push_back(Gen());
 
+    // open sqlite db
+    const char *path = "/Users/vk/Desktop/ml.db";
+    int rc = sqlite3_open(path, &db);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to initialize database at %s, due to \"%s\"", path, sqlite3_errstr(rc));
+        sqlite3_close(db);
+        db = NULL;
+    }
+
+    if (db) {
+        char *err = NULL;
+        int rc = sqlite3_exec(db, db_models_create_table, NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            error_report("Failed to create models table (%s, %s)", sqlite3_errstr(rc), err ? err : "");
+            sqlite3_close(db);
+            db = NULL;
+        }
+    }
 
     // start detection & training threads
     Cfg.detection_stop = false;
@@ -1266,4 +1456,8 @@ void ml_fini()
         ml_queue_destroy(training_thread->training_queue);
         netdata_mutex_destroy(&training_thread->nd_mutex);
     }
+
+    int rc = sqlite3_close_v2(db);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Error %d while closing the SQLite database, %s", rc, sqlite3_errstr(rc));
 }
