@@ -157,6 +157,45 @@ int health_silencers_json_read_callback(JSON_ENTRY *e)
 }
 
 /**
+ * Silencers init
+ *
+ * Function used to initialize the silencer structure.
+ */
+static void health_silencers_init(void) {
+    FILE *fd = fopen(silencers_filename, "r");
+    if (fd) {
+        fseek(fd, 0 , SEEK_END);
+        off_t length = (off_t) ftell(fd);
+        fseek(fd, 0 , SEEK_SET);
+
+        if (length > 0 && length < HEALTH_SILENCERS_MAX_FILE_LEN) {
+            char *str = mallocz((length+1)* sizeof(char));
+            if(str) {
+                size_t copied;
+                copied = fread(str, sizeof(char), length, fd);
+                if (copied == (length* sizeof(char))) {
+                    str[length] = 0x00;
+                    json_parse(str, NULL, health_silencers_json_read_callback);
+                    info("Parsed health silencers file %s", silencers_filename);
+                } else {
+                    error("Cannot read the data from health silencers file %s", silencers_filename);
+                }
+                freez(str);
+            }
+        } else {
+            error(
+                "Health silencers file %s has the size %" PRId64 " that is out of range[ 1 , %d ]. Aborting read.",
+                silencers_filename,
+                (int64_t)length,
+                HEALTH_SILENCERS_MAX_FILE_LEN);
+        }
+        fclose(fd);
+    } else {
+        info("Cannot open the file %s, so Netdata will work with the default health configuration.",silencers_filename);
+    }
+}
+
+/**
  * Initialize Global Silencers
  *
  * Initialize the silencer  for the whole netdata system.
@@ -164,10 +203,16 @@ int health_silencers_json_read_callback(JSON_ENTRY *e)
  * @return It returns 0 on success and -1 otherwise
  */
 int health_initialize_global_silencers() {
+    char filename[FILENAME_MAX + 1];
+    snprintfz(filename, FILENAME_MAX, "%s/health.silencers.json", netdata_configured_varlib_dir);
+    silencers_filename = config_get(CONFIG_SECTION_HEALTH, "silencers file", filename);
+
     silencers =  mallocz(sizeof(SILENCERS));
     silencers->all_alarms=0;
     silencers->stype=STYPE_NONE;
     silencers->silencers=NULL;
+
+    health_silencers_init();
 
     return 0;
 }

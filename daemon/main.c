@@ -1278,12 +1278,6 @@ int get_system_info(struct rrdhost_system_info *system_info) {
     return 0;
 }
 
-void set_silencers_filename() {
-    char filename[FILENAME_MAX + 1];
-    snprintfz(filename, FILENAME_MAX, "%s/health.silencers.json", netdata_configured_varlib_dir);
-    silencers_filename = config_get(CONFIG_SECTION_HEALTH, "silencers file", filename);
-}
-
 /* Any config setting that can be accessed without a default value i.e. configget(...,...,NULL) *MUST*
    be set in this procedure to be called in all the relevant code paths.
 */
@@ -1914,11 +1908,7 @@ int main(int argc, char **argv) {
         security_init();
 #endif
 
-        // --------------------------------------------------------------------
-        // This is the safest place to start the SILENCERS structure
-
-        set_silencers_filename();
-        health_initialize_global_silencers();
+        health_init();
 
         // --------------------------------------------------------------------
         // Initialize ML configuration

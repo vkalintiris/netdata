@@ -189,8 +189,6 @@ LIBNETDATA_FILES = \
     libnetdata/json/json.h \
     libnetdata/json/jsmn.c \
     libnetdata/json/jsmn.h \
-    libnetdata/health/health.c \
-    libnetdata/health/health.h \
     libnetdata/string/utf8.h \
     libnetdata/worker_utilization/worker_utilization.c \
     libnetdata/worker_utilization/worker_utilization.h \
@@ -224,6 +222,8 @@ FREEBSD_PLUGIN_FILES = \
 HEALTH_PLUGIN_FILES = \
     health/health.c \
     health/health.h \
+    health/silencers.c \
+    health/silencers.h \
     health/health_config.c \
     health/health_json.c \
     health/health_log.c \

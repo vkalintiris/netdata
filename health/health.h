@@ -4,6 +4,7 @@
 #define NETDATA_HEALTH_H 1
 
 #include "daemon/common.h"
+#include "silencers.h"
 
 extern unsigned int default_health_enabled;
 

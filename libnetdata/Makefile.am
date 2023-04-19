@@ -16,7 +16,6 @@ SUBDIRS = \
     eval \
     json \
     july \
-    health \
     locks \
     log \
     onewayalloc \
