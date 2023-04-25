@@ -181,6 +181,8 @@ bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd) {
         rd->tiers[tier].db_collection_handle = NULL;
     }
 
+    metaqueue_ml_update_models(rd);
+
     // return true if the dimension has retention in the db
     return (!tiers_said_no_retention || tiers_available > tiers_said_no_retention);
 }
@@ -194,8 +196,6 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
                    rrddim_name(rd), rrdset_name(st), rrdhost_hostname(host));
 
     rrdcontext_removed_rrddim(rd);
-
-    ml_dimension_delete(rd);
 
     debug(D_RRD_CALLS, "rrddim_free() %s.%s", rrdset_name(st), rrddim_name(rd));
 

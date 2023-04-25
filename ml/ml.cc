@@ -16,7 +16,6 @@
 #define WORKER_TRAIN_UPDATE_MODELS     4
 #define WORKER_TRAIN_RELEASE_DIMENSION 5
 #define WORKER_TRAIN_UPDATE_HOST       6
-#define WORKER_TRAIN_LOAD_MODELS       7
 
 static sqlite3 *db = NULL;
 
@@ -434,7 +433,7 @@ const char *db_models_delete =
     "WHERE dim_id = @dim_id AND before < @before;";
 
 static int
-ml_dimension_add_model(ml_dimension_t *dim)
+ml_dimension_add_model(uuid_t *metric_uuid, const char *id, const ml_kmeans_t *km)
 {
     static __thread sqlite3_stmt *res = NULL;
     int param = 0;
@@ -453,36 +452,34 @@ ml_dimension_add_model(ml_dimension_t *dim)
         }
     }
 
-    rc = sqlite3_bind_blob(res, ++param, &dim->rd->metric_uuid, sizeof(dim->rd->metric_uuid), SQLITE_STATIC);
+    rc = sqlite3_bind_blob(res, ++param, metric_uuid, sizeof(*metric_uuid), SQLITE_STATIC);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    char id[1024];
-    snprintfz(id, 1024 - 1, "%s.%s", rrdset_id(dim->rd->rrdset), rrddim_id(dim->rd));
     rc = sqlite3_bind_text(res, ++param, id, -1, SQLITE_STATIC);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.after);
+    rc = sqlite3_bind_int(res, ++param, (int) km->after);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.before);
+    rc = sqlite3_bind_int(res, ++param, (int) km->before);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_double(res, ++param, dim->kmeans.min_dist);
+    rc = sqlite3_bind_double(res, ++param, km->min_dist);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_double(res, ++param, dim->kmeans.max_dist);
+    rc = sqlite3_bind_double(res, ++param, km->max_dist);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    if (dim->kmeans.cluster_centers.size() != 2)
-        fatal("Expected 2 cluster centers, got %zu", dim->kmeans.cluster_centers.size());
+    if (km->cluster_centers.size() != 2)
+        fatal("Expected 2 cluster centers, got %zu", km->cluster_centers.size());
 
-    for (const DSample &ds : dim->kmeans.cluster_centers) {
+    for (const DSample &ds : km->cluster_centers) {
         if (ds.size() != 6)
             fatal("Expected dsample with 6 dimensions, got %ld", ds.size());
 
@@ -513,7 +510,7 @@ bind_fail:
 }
 
 static int
-ml_dimension_delete_models(ml_dimension_t *dim)
+ml_dimension_delete_models(const uuid_t *metric_uuid, time_t before)
 {
     static __thread sqlite3_stmt *res = NULL;
     int rc = 0;
@@ -532,11 +529,11 @@ ml_dimension_delete_models(ml_dimension_t *dim)
         }
     }
 
-    rc = sqlite3_bind_blob(res, ++param, &dim->rd->metric_uuid, sizeof(dim->rd->metric_uuid), SQLITE_STATIC);
+    rc = sqlite3_bind_blob(res, ++param, metric_uuid, sizeof(*metric_uuid), SQLITE_STATIC);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
-    rc = sqlite3_bind_int(res, ++param, (int) dim->kmeans.before - (Cfg.num_models_to_use * Cfg.train_every));
+    rc = sqlite3_bind_int(res, ++param, (int) before);
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
 
@@ -558,8 +555,18 @@ bind_fail:
     return 1;
 }
 
-static int
-ml_dimension_load_models(ml_dimension_t *dim) {
+int ml_dimension_load_models(RRDDIM *rd) {
+    ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+    if (!dim)
+        return 0;
+
+    netdata_mutex_lock(&dim->mutex);
+    bool is_empty = dim->km_contexts.empty();
+    netdata_mutex_unlock(&dim->mutex);
+
+    if (!is_empty)
+        return 0;
+
     std::vector<ml_kmeans_t> V;
 
     static __thread sqlite3_stmt *res = NULL;
@@ -586,6 +593,8 @@ ml_dimension_load_models(ml_dimension_t *dim) {
     rc = sqlite3_bind_int(res, ++param, now_realtime_usec() - (Cfg.num_models_to_use * Cfg.max_train_samples));
     if (unlikely(rc != SQLITE_OK))
         goto bind_fail;
+
+    netdata_mutex_lock(&dim->mutex);
 
     dim->km_contexts.reserve(Cfg.num_models_to_use);
     while ((rc = sqlite3_step_monitored(res)) == SQLITE_ROW) {
@@ -618,6 +627,8 @@ ml_dimension_load_models(ml_dimension_t *dim) {
         dim->km_contexts.push_back(km);
     }
 
+    netdata_mutex_unlock(&dim->mutex);
+
     if (unlikely(rc != SQLITE_DONE))
         error_report("Failed to load models, rc = %d", rc);
 
@@ -635,22 +646,27 @@ bind_fail:
     return 1;
 }
 
-static int
-ml_dimension_update_models(ml_dimension_t *dim)
-{
-    int rc;
+int ml_dimension_update_models(RRDDIM *rd) {
+    ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+    if (!dim)
+        return 0;
 
-    if (dim->km_contexts.empty()) {
-        rc = ml_dimension_load_models(dim);
+    char id[1024];
+    snprintfz(id, 1024 - 1, "%s.%s", rrdset_id(dim->rd->rrdset), rrddim_id(dim->rd));
+
+    netdata_mutex_lock(&dim->mutex);
+    std::vector<ml_kmeans_t> V = dim->km_contexts;
+    time_t before = dim->kmeans.before - (Cfg.num_models_to_use * Cfg.train_every);
+    netdata_mutex_unlock(&dim->mutex);
+
+    for (const ml_kmeans_t &km: V) {
+        int rc = ml_dimension_add_model(&rd->metric_uuid, id, &km);
         if (rc)
             return rc;
     }
 
-    rc = ml_dimension_add_model(dim);
-    if (rc)
-        return rc;
-
-    return ml_dimension_delete_models(dim);
+    ml_dimension_delete_models(&dim->rd->metric_uuid, before);
+    return 0;
 }
 
 static enum ml_training_result
@@ -704,21 +720,9 @@ ml_dimension_train_model(ml_training_thread_t *training_thread, ml_dimension_t *
     }
 
     // update models
+    worker_is_busy(WORKER_TRAIN_UPDATE_MODELS);
     {
         netdata_mutex_lock(&dim->mutex);
-
-        // temporarily disable sqlite operations because they interfere with
-        // training scheduling on busy parents
-        #if 0
-        worker_is_busy(WORKER_TRAIN_LOAD_MODELS);
-
-        int rc = ml_dimension_update_models(dim);
-        if (rc) {
-            error("Failed to update models for %s [%u, %u]", rrddim_id(dim->rd), dim->kmeans.after, dim->kmeans.before);
-        }
-        #endif
-
-        worker_is_busy(WORKER_TRAIN_UPDATE_MODELS);
 
         if (dim->km_contexts.size() < Cfg.num_models_to_use) {
             dim->km_contexts.push_back(std::move(dim->kmeans));
@@ -1352,6 +1356,8 @@ void ml_dimension_new(RRDDIM *rd)
     dim->km_contexts.reserve(Cfg.num_models_to_use);
 
     rd->ml_dimension = (rrd_ml_dimension_t *) dim;
+
+    metaqueue_ml_load_models(rd);
 }
 
 void ml_dimension_delete(RRDDIM *rd)
@@ -1392,7 +1398,6 @@ static void *ml_train_main(void *arg) {
     worker_register_job_name(WORKER_TRAIN_QUERY, "query");
     worker_register_job_name(WORKER_TRAIN_KMEANS, "kmeans");
     worker_register_job_name(WORKER_TRAIN_UPDATE_MODELS, "update models");
-    worker_register_job_name(WORKER_TRAIN_LOAD_MODELS, "load models");
     worker_register_job_name(WORKER_TRAIN_RELEASE_DIMENSION, "release");
     worker_register_job_name(WORKER_TRAIN_UPDATE_HOST, "update host");
 

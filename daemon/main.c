@@ -345,7 +345,6 @@ void netdata_cleanup_and_exit(int ret) {
     delta_shutdown_time("disable ML detection and training threads");
 
     ml_stop_threads();
-    ml_fini();
 
     delta_shutdown_time("disable maintenance, new queries, new web requests, new streaming connections and aclk");
 
@@ -468,6 +467,7 @@ void netdata_cleanup_and_exit(int ret) {
     delta_shutdown_time("closed SQL main db");
 
     sql_close_database();
+    ml_fini();
 
     // unlink the pid
     if(pidfile[0]) {
