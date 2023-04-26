@@ -555,6 +555,62 @@ bind_fail:
     return 1;
 }
 
+static int ml_begin_transaction() {
+    static __thread sqlite3_stmt *res = NULL;
+    int rc = 0;
+
+    if (unlikely(!db)) {
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db, "BEGIN TRANSACTION;", &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to begin transaction, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to begin transaction, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement when begining transaction, rc = %d", rc);
+
+    return 0;
+}
+
+static int ml_end_transaction() {
+    static __thread sqlite3_stmt *res = NULL;
+    int rc = 0;
+
+    if (unlikely(!db)) {
+        error_report("Database has not been initialized");
+        return 1;
+    }
+
+    if (unlikely(!res)) {
+        rc = prepare_statement(db, "END TRANSACTION;", &res);
+        if (unlikely(rc != SQLITE_OK)) {
+            error_report("Failed to prepare statement to end transaction, rc = %d", rc);
+            return 1;
+        }
+    }
+
+    rc = execute_insert(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed to begin transaction, rc = %d", rc);
+
+    rc = sqlite3_reset(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to reset statement when ending transaction, rc = %d", rc);
+
+    return 0;
+}
+
 int ml_dimension_load_models(RRDDIM *rd) {
     ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
     if (!dim)
@@ -659,13 +715,26 @@ int ml_dimension_update_models(RRDDIM *rd) {
     time_t before = dim->kmeans.before - (Cfg.num_models_to_use * Cfg.train_every);
     netdata_mutex_unlock(&dim->mutex);
 
+    int rc = ml_begin_transaction();
+    if (rc) {
+        error("Failed to begin transaction for updating models.");
+        return rc;
+    }
+
     for (const ml_kmeans_t &km: V) {
-        int rc = ml_dimension_add_model(&rd->metric_uuid, id, &km);
+        rc = ml_dimension_add_model(&rd->metric_uuid, id, &km);
         if (rc)
             return rc;
     }
 
     ml_dimension_delete_models(&dim->rd->metric_uuid, before);
+
+    rc = ml_end_transaction();
+    if (rc) {
+        error("Failed to end transaction for updating models.");
+        return rc;
+    }
+
     return 0;
 }
 
