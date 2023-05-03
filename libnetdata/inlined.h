@@ -572,4 +572,86 @@ static inline char *trim_all(char *buffer) {
     return buffer;
 }
 
+extern uint64_t num_atomic_ops;
+
+static inline size_t atomic_fetch_add_uint64(uint64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_add(ptr, val, memorder);
+}
+
+static inline size_t atomic_fetch_sub_uint64(uint64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_sub(ptr, val, memorder);
+}
+
+static inline size_t atomic_fetch_add_int64(int64_t *ptr, int64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_add(ptr, val, memorder);
+}
+
+static inline size_t atomic_fetch_sub_int64(int64_t *ptr, int64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_sub(ptr, val, memorder);
+}
+
+static inline size_t atomic_add_fetch_uint64(uint64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_add(ptr, val, memorder);
+}
+
+static inline size_t atomic_add_fetch_int32(int32_t *ptr, int32_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_add(ptr, val, memorder);
+}
+
+static inline size_t atomic_sub_fetch_uint64(uint64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_sub(ptr, val, memorder);
+}
+
+static inline size_t atomic_sub_fetch_int32(int32_t *ptr, int32_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_sub(ptr, val, memorder);
+}
+
+static inline size_t atomic_add_fetch_int64(int64_t *ptr, int64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_add(ptr, val, memorder);
+}
+
+static inline size_t atomic_sub_fetch_int64(int64_t *ptr, int64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_fetch_sub(ptr, val, memorder);
+}
+
+static inline size_t atomic_load_n_uint64(uint64_t *ptr, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_load_n(ptr, memorder);
+}
+
+static inline size_t atomic_load_n_int64(int64_t *ptr, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_load_n(ptr, memorder);
+}
+
+static inline size_t atomic_load_n_int32(int32_t *ptr, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    return __atomic_load_n(ptr, memorder);
+}
+
+static inline void atomic_store_n_uint64(uint64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(ptr, val, memorder);
+}
+
+static inline void atomic_store_n_int64(int64_t *ptr, uint64_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(ptr, val, memorder);
+}
+
+static inline void atomic_store_n_int32(int32_t *ptr, uint32_t val, int memorder) {
+    __atomic_fetch_add(&num_atomic_ops, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(ptr, val, memorder);
+}
+
 #endif //NETDATA_INLINED_H

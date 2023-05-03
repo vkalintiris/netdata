@@ -94,19 +94,19 @@ struct aral {
     } adders;
 
     struct {
-        size_t allocators;              // the number of threads currently trying to allocate memory
+        uint64_t allocators;              // the number of threads currently trying to allocate memory
     } atomic;
 
     struct aral_statistics *stats;
 };
 
 size_t aral_structures_from_stats(struct aral_statistics *stats) {
-    return __atomic_load_n(&stats->structures.allocated_bytes, __ATOMIC_RELAXED);
+    return atomic_load_n_uint64(&stats->structures.allocated_bytes, __ATOMIC_RELAXED);
 }
 
 size_t aral_overhead_from_stats(struct aral_statistics *stats) {
-    return __atomic_load_n(&stats->malloc.allocated_bytes, __ATOMIC_RELAXED) -
-           __atomic_load_n(&stats->malloc.used_bytes, __ATOMIC_RELAXED);
+    return atomic_load_n_uint64(&stats->malloc.allocated_bytes, __ATOMIC_RELAXED) -
+           atomic_load_n_uint64(&stats->malloc.used_bytes, __ATOMIC_RELAXED);
 }
 
 size_t aral_overhead(ARAL *ar) {
@@ -281,8 +281,8 @@ static ARAL_PAGE *aral_create_page___no_lock_needed(ARAL *ar, size_t size TRACE_
     if(unlikely(page->free_elements_to_move_first < 1))
         page->free_elements_to_move_first = 1;
 
-    __atomic_add_fetch(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&ar->stats->structures.allocated_bytes, sizeof(ARAL_PAGE), __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&ar->stats->structures.allocated_bytes, sizeof(ARAL_PAGE), __ATOMIC_RELAXED);
 
     if(unlikely(ar->config.mmap.enabled)) {
         ar->aral_lock.file_number++;
@@ -293,8 +293,8 @@ static ARAL_PAGE *aral_create_page___no_lock_needed(ARAL *ar, size_t size TRACE_
         if (unlikely(!page->data))
             fatal("ARAL: '%s' cannot allocate aral buffer of size %zu on filename '%s'",
                   ar->config.name, page->size, page->filename);
-        __atomic_add_fetch(&ar->stats->mmap.allocations, 1, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&ar->stats->mmap.allocated_bytes, page->size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->mmap.allocations, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->mmap.allocated_bytes, page->size, __ATOMIC_RELAXED);
     }
     else {
 #ifdef NETDATA_TRACE_ALLOCATIONS
@@ -302,8 +302,8 @@ static ARAL_PAGE *aral_create_page___no_lock_needed(ARAL *ar, size_t size TRACE_
 #else
         page->data = mallocz(page->size);
 #endif
-        __atomic_add_fetch(&ar->stats->malloc.allocations, 1, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&ar->stats->malloc.allocated_bytes, page->size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->malloc.allocations, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->malloc.allocated_bytes, page->size, __ATOMIC_RELAXED);
     }
 
     // link the free space to its page
@@ -328,8 +328,8 @@ void aral_del_page___no_lock_needed(ARAL *ar, ARAL_PAGE *page TRACE_ALLOCATIONS_
 
         freez((void *)page->filename);
 
-        __atomic_sub_fetch(&ar->stats->mmap.allocations, 1, __ATOMIC_RELAXED);
-        __atomic_sub_fetch(&ar->stats->mmap.allocated_bytes, page->size, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->mmap.allocations, 1, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->mmap.allocated_bytes, page->size, __ATOMIC_RELAXED);
     }
     else {
 #ifdef NETDATA_TRACE_ALLOCATIONS
@@ -337,14 +337,14 @@ void aral_del_page___no_lock_needed(ARAL *ar, ARAL_PAGE *page TRACE_ALLOCATIONS_
 #else
         freez(page->data);
 #endif
-        __atomic_sub_fetch(&ar->stats->malloc.allocations, 1, __ATOMIC_RELAXED);
-        __atomic_sub_fetch(&ar->stats->malloc.allocated_bytes, page->size, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->malloc.allocations, 1, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->malloc.allocated_bytes, page->size, __ATOMIC_RELAXED);
     }
 
     freez(page);
 
-    __atomic_sub_fetch(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
-    __atomic_sub_fetch(&ar->stats->structures.allocated_bytes, sizeof(ARAL_PAGE), __ATOMIC_RELAXED);
+    atomic_fetch_sub_uint64(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_uint64(&ar->stats->structures.allocated_bytes, sizeof(ARAL_PAGE), __ATOMIC_RELAXED);
 }
 
 static inline void aral_insert_not_linked_page_with_free_items_to_proper_position___aral_lock_needed(ARAL *ar, ARAL_PAGE *page) {
@@ -372,7 +372,7 @@ static inline void aral_insert_not_linked_page_with_free_items_to_proper_positio
 }
 
 static inline ARAL_PAGE *aral_acquire_a_free_slot(ARAL *ar TRACE_ALLOCATIONS_FUNCTION_DEFINITION_PARAMS) {
-    __atomic_add_fetch(&ar->atomic.allocators, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&ar->atomic.allocators, 1, __ATOMIC_RELAXED);
     aral_lock(ar);
 
     ARAL_PAGE *page = ar->aral_lock.pages;
@@ -384,7 +384,7 @@ static inline ARAL_PAGE *aral_acquire_a_free_slot(ARAL *ar TRACE_ALLOCATIONS_FUN
         aral_unlock(ar);
 
         if(aral_adders_trylock(ar)) {
-            if(ar->adders.allocating_elements < __atomic_load_n(&ar->atomic.allocators, __ATOMIC_RELAXED)) {
+            if(ar->adders.allocating_elements < atomic_load_n_uint64(&ar->atomic.allocators, __ATOMIC_RELAXED)) {
 
                 size_t size = aral_next_allocation_size___adders_lock_needed(ar);
                 ar->adders.allocating_elements += size / ar->config.element_size;
@@ -412,7 +412,7 @@ static inline ARAL_PAGE *aral_acquire_a_free_slot(ARAL *ar TRACE_ALLOCATIONS_FUN
         page = ar->aral_lock.pages;
     }
 
-    __atomic_sub_fetch(&ar->atomic.allocators, 1, __ATOMIC_RELAXED);
+    atomic_fetch_sub_uint64(&ar->atomic.allocators, 1, __ATOMIC_RELAXED);
 
     // we have a page
     // and aral locked
@@ -510,9 +510,9 @@ void *aral_mallocz_internal(ARAL *ar TRACE_ALLOCATIONS_FUNCTION_DEFINITION_PARAM
     *page_ptr = page;
 
     if(unlikely(ar->config.mmap.enabled))
-        __atomic_add_fetch(&ar->stats->mmap.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->mmap.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
     else
-        __atomic_add_fetch(&ar->stats->malloc.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&ar->stats->malloc.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
 
     return (void *)found_fr;
 }
@@ -628,9 +628,9 @@ void aral_freez_internal(ARAL *ar, void *ptr TRACE_ALLOCATIONS_FUNCTION_DEFINITI
     ARAL_PAGE *page = aral_ptr_to_page___must_NOT_have_aral_lock(ar, ptr);
 
     if(unlikely(ar->config.mmap.enabled))
-        __atomic_sub_fetch(&ar->stats->mmap.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->mmap.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
     else
-        __atomic_sub_fetch(&ar->stats->malloc.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(&ar->stats->malloc.used_bytes, ar->config.element_size, __ATOMIC_RELAXED);
 
     // make this element available
     ARAL_FREE *fr = (ARAL_FREE *)ptr;
@@ -805,8 +805,8 @@ ARAL *aral_create(const char *name, size_t element_size, size_t initial_page_ele
                    , ar->config.max_allocation_size,  ar->config.requested_max_page_size
     );
 
-    __atomic_add_fetch(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&ar->stats->structures.allocated_bytes, sizeof(ARAL), __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&ar->stats->structures.allocations, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&ar->stats->structures.allocated_bytes, sizeof(ARAL), __ATOMIC_RELAXED);
     return ar;
 }
 
@@ -901,11 +901,11 @@ void aral_by_size_release(ARAL *ar) {
 
 struct aral_unittest_config {
     bool single_threaded;
-    bool stop;
+    int64_t stop;
     ARAL *ar;
     size_t elements;
     size_t threads;
-    int errors;
+    int64_t errors;
 };
 
 static void *aral_test_thread(void *ptr) {
@@ -949,10 +949,10 @@ static void *aral_test_thread(void *ptr) {
 
         if (auc->single_threaded && ar->aral_lock.pages && ar->aral_lock.pages->aral_lock.used_elements) {
             fprintf(stderr, "\n\nARAL leftovers detected (1)\n\n");
-            __atomic_add_fetch(&auc->errors, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_int64(&auc->errors, 1, __ATOMIC_RELAXED);
         }
 
-        if(!auc->single_threaded && __atomic_load_n(&auc->stop, __ATOMIC_RELAXED))
+        if(!auc->single_threaded && atomic_load_n_int64(&auc->stop, __ATOMIC_RELAXED))
             break;
 
         for (size_t i = 0; i < elements; i++) {
@@ -989,10 +989,10 @@ static void *aral_test_thread(void *ptr) {
 
         if (auc->single_threaded && ar->aral_lock.pages && ar->aral_lock.pages->aral_lock.used_elements) {
             fprintf(stderr, "\n\nARAL leftovers detected (2)\n\n");
-            __atomic_add_fetch(&auc->errors, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_int64(&auc->errors, 1, __ATOMIC_RELAXED);
         }
 
-    } while(!auc->single_threaded && !__atomic_load_n(&auc->stop, __ATOMIC_RELAXED));
+    } while(!auc->single_threaded && !atomic_load_n_int64(&auc->stop, __ATOMIC_RELAXED));
 
     freez(pointers);
 
@@ -1037,7 +1037,7 @@ int aral_stress_test(size_t threads, size_t elements, size_t seconds) {
         free_done = f;
     }
 
-    __atomic_store_n(&auc.stop, true, __ATOMIC_RELAXED);
+    atomic_store_n_int64(&auc.stop, true, __ATOMIC_RELAXED);
 
 //    fprintf(stderr, "Cancelling the threads...\n");
 //    for(size_t i = 0; i < threads ; i++) {
@@ -1053,7 +1053,7 @@ int aral_stress_test(size_t threads, size_t elements, size_t seconds) {
 
     if (auc.ar->aral_lock.pages && auc.ar->aral_lock.pages->aral_lock.used_elements) {
         fprintf(stderr, "\n\nARAL leftovers detected (3)\n\n");
-        __atomic_add_fetch(&auc.errors, 1, __ATOMIC_RELAXED);
+        atomic_store_n_int64(&auc.errors, 1, __ATOMIC_RELAXED);
     }
 
     info("ARAL: did %zu malloc, %zu free, "

@@ -26,7 +26,7 @@ static size_t dbengine_total_memory = 0;
 size_t rrddim_db_memory_size = 0;
 
 static struct global_statistics {
-    uint16_t connected_clients;
+    uint64_t connected_clients;
 
     uint64_t web_requests;
     uint64_t web_usec;
@@ -66,7 +66,6 @@ static struct global_statistics {
     uint64_t backfill_db_points_read;
 
     uint64_t db_points_stored_per_tier[RRD_STORAGE_TIERS];
-
 } global_statistics = {
         .connected_clients = 0,
         .web_requests = 0,
@@ -84,62 +83,57 @@ static struct global_statistics {
 
 void global_statistics_rrdset_done_chart_collection_completed(size_t *points_read_per_tier_array) {
     for(size_t tier = 0; tier < storage_tiers ;tier++) {
-        __atomic_fetch_add(&global_statistics.db_points_stored_per_tier[tier], points_read_per_tier_array[tier], __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&global_statistics.db_points_stored_per_tier[tier], points_read_per_tier_array[tier], __ATOMIC_RELAXED);
         points_read_per_tier_array[tier] = 0;
     }
 }
 
 void global_statistics_ml_query_completed(size_t points_read) {
-    __atomic_fetch_add(&global_statistics.ml_queries_made, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.ml_db_points_read, points_read, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.ml_queries_made, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.ml_db_points_read, points_read, __ATOMIC_RELAXED);
 }
 
 void global_statistics_ml_models_consulted(size_t models_consulted) {
-    __atomic_fetch_add(&global_statistics.ml_models_consulted, models_consulted, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.ml_models_consulted, models_consulted, __ATOMIC_RELAXED);
 }
 
 void global_statistics_exporters_query_completed(size_t points_read) {
-    __atomic_fetch_add(&global_statistics.exporters_queries_made, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.exporters_db_points_read, points_read, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.exporters_queries_made, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.exporters_db_points_read, points_read, __ATOMIC_RELAXED);
 }
 
 void global_statistics_backfill_query_completed(size_t points_read) {
-    __atomic_fetch_add(&global_statistics.backfill_queries_made, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.backfill_db_points_read, points_read, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.backfill_queries_made, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.backfill_db_points_read, points_read, __ATOMIC_RELAXED);
 }
 
 void global_statistics_rrdr_query_completed(size_t queries, uint64_t db_points_read, uint64_t result_points_generated, QUERY_SOURCE query_source) {
     switch(query_source) {
         case QUERY_SOURCE_API_DATA:
-            __atomic_fetch_add(&global_statistics.api_data_queries_made, queries, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_data_db_points_read, db_points_read, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_data_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_data_queries_made, queries, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_data_db_points_read, db_points_read, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_data_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
             break;
-
         case QUERY_SOURCE_ML:
-            __atomic_fetch_add(&global_statistics.ml_queries_made, queries, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.ml_db_points_read, db_points_read, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.ml_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.ml_queries_made, queries, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.ml_db_points_read, db_points_read, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.ml_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
             break;
-
         case QUERY_SOURCE_API_WEIGHTS:
-            __atomic_fetch_add(&global_statistics.api_weights_queries_made, queries, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_weights_db_points_read, db_points_read, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_weights_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_weights_queries_made, queries, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_weights_db_points_read, db_points_read, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_weights_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
             break;
-
         case QUERY_SOURCE_API_BADGE:
-            __atomic_fetch_add(&global_statistics.api_badges_queries_made, queries, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_badges_db_points_read, db_points_read, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.api_badges_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_badges_queries_made, queries, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_badges_db_points_read, db_points_read, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.api_badges_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
             break;
-
         case QUERY_SOURCE_HEALTH:
-            __atomic_fetch_add(&global_statistics.health_queries_made, queries, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.health_db_points_read, db_points_read, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&global_statistics.health_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.health_queries_made, queries, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.health_db_points_read, db_points_read, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&global_statistics.health_result_points_generated, result_points_generated, __ATOMIC_RELAXED);
             break;
-
         default:
         case QUERY_SOURCE_UNITTEST:
         case QUERY_SOURCE_UNKNOWN:
@@ -153,65 +147,66 @@ void global_statistics_web_request_completed(uint64_t dt,
                                              uint64_t content_size,
                                              uint64_t compressed_content_size) {
     uint64_t old_web_usec_max = global_statistics.web_usec_max;
-    while(dt > old_web_usec_max)
+    while(dt > old_web_usec_max) {
         __atomic_compare_exchange(&global_statistics.web_usec_max, &old_web_usec_max, &dt, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    }
 
-    __atomic_fetch_add(&global_statistics.web_requests, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.web_usec, dt, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.bytes_received, bytes_received, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.bytes_sent, bytes_sent, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.content_size, content_size, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&global_statistics.compressed_content_size, compressed_content_size, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.web_requests, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.web_usec, dt, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.bytes_received, bytes_received, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.bytes_sent, bytes_sent, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.content_size, content_size, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.compressed_content_size, compressed_content_size, __ATOMIC_RELAXED);
 }
 
 uint64_t global_statistics_web_client_connected(void) {
-    __atomic_fetch_add(&global_statistics.connected_clients, 1, __ATOMIC_RELAXED);
-    return __atomic_fetch_add(&global_statistics.web_client_count, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.connected_clients, 1, __ATOMIC_RELAXED);
+    return atomic_fetch_add_uint64(&global_statistics.web_client_count, 1, __ATOMIC_RELAXED);
 }
 
 void global_statistics_web_client_disconnected(void) {
-    __atomic_fetch_sub(&global_statistics.connected_clients, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&global_statistics.connected_clients, 1, __ATOMIC_RELAXED);
 }
 
 static inline void global_statistics_copy(struct global_statistics *gs, uint8_t options) {
-    gs->connected_clients            = __atomic_load_n(&global_statistics.connected_clients, __ATOMIC_RELAXED);
-    gs->web_requests                 = __atomic_load_n(&global_statistics.web_requests, __ATOMIC_RELAXED);
-    gs->web_usec                     = __atomic_load_n(&global_statistics.web_usec, __ATOMIC_RELAXED);
-    gs->web_usec_max                 = __atomic_load_n(&global_statistics.web_usec_max, __ATOMIC_RELAXED);
-    gs->bytes_received               = __atomic_load_n(&global_statistics.bytes_received, __ATOMIC_RELAXED);
-    gs->bytes_sent                   = __atomic_load_n(&global_statistics.bytes_sent, __ATOMIC_RELAXED);
-    gs->content_size                 = __atomic_load_n(&global_statistics.content_size, __ATOMIC_RELAXED);
-    gs->compressed_content_size      = __atomic_load_n(&global_statistics.compressed_content_size, __ATOMIC_RELAXED);
-    gs->web_client_count             = __atomic_load_n(&global_statistics.web_client_count, __ATOMIC_RELAXED);
+    gs->connected_clients            = atomic_load_n_uint64(&global_statistics.connected_clients, __ATOMIC_RELAXED);
+    gs->web_requests                 = atomic_load_n_uint64(&global_statistics.web_requests, __ATOMIC_RELAXED);
+    gs->web_usec                     = atomic_load_n_uint64(&global_statistics.web_usec, __ATOMIC_RELAXED);
+    gs->web_usec_max                 = atomic_load_n_uint64(&global_statistics.web_usec_max, __ATOMIC_RELAXED);
+    gs->bytes_received               = atomic_load_n_uint64(&global_statistics.bytes_received, __ATOMIC_RELAXED);
+    gs->bytes_sent                   = atomic_load_n_uint64(&global_statistics.bytes_sent, __ATOMIC_RELAXED);
+    gs->content_size                 = atomic_load_n_uint64(&global_statistics.content_size, __ATOMIC_RELAXED);
+    gs->compressed_content_size      = atomic_load_n_uint64(&global_statistics.compressed_content_size, __ATOMIC_RELAXED);
+    gs->web_client_count             = atomic_load_n_uint64(&global_statistics.web_client_count, __ATOMIC_RELAXED);
 
-    gs->api_data_queries_made            = __atomic_load_n(&global_statistics.api_data_queries_made, __ATOMIC_RELAXED);
-    gs->api_data_db_points_read          = __atomic_load_n(&global_statistics.api_data_db_points_read, __ATOMIC_RELAXED);
-    gs->api_data_result_points_generated = __atomic_load_n(&global_statistics.api_data_result_points_generated, __ATOMIC_RELAXED);
+    gs->api_data_queries_made            = atomic_load_n_uint64(&global_statistics.api_data_queries_made, __ATOMIC_RELAXED);
+    gs->api_data_db_points_read          = atomic_load_n_uint64(&global_statistics.api_data_db_points_read, __ATOMIC_RELAXED);
+    gs->api_data_result_points_generated = atomic_load_n_uint64(&global_statistics.api_data_result_points_generated, __ATOMIC_RELAXED);
 
-    gs->api_weights_queries_made            = __atomic_load_n(&global_statistics.api_weights_queries_made, __ATOMIC_RELAXED);
-    gs->api_weights_db_points_read          = __atomic_load_n(&global_statistics.api_weights_db_points_read, __ATOMIC_RELAXED);
-    gs->api_weights_result_points_generated = __atomic_load_n(&global_statistics.api_weights_result_points_generated, __ATOMIC_RELAXED);
+    gs->api_weights_queries_made            = atomic_load_n_uint64(&global_statistics.api_weights_queries_made, __ATOMIC_RELAXED);
+    gs->api_weights_db_points_read          = atomic_load_n_uint64(&global_statistics.api_weights_db_points_read, __ATOMIC_RELAXED);
+    gs->api_weights_result_points_generated = atomic_load_n_uint64(&global_statistics.api_weights_result_points_generated, __ATOMIC_RELAXED);
 
-    gs->api_badges_queries_made            = __atomic_load_n(&global_statistics.api_badges_queries_made, __ATOMIC_RELAXED);
-    gs->api_badges_db_points_read          = __atomic_load_n(&global_statistics.api_badges_db_points_read, __ATOMIC_RELAXED);
-    gs->api_badges_result_points_generated = __atomic_load_n(&global_statistics.api_badges_result_points_generated, __ATOMIC_RELAXED);
+    gs->api_badges_queries_made            = atomic_load_n_uint64(&global_statistics.api_badges_queries_made, __ATOMIC_RELAXED);
+    gs->api_badges_db_points_read          = atomic_load_n_uint64(&global_statistics.api_badges_db_points_read, __ATOMIC_RELAXED);
+    gs->api_badges_result_points_generated = atomic_load_n_uint64(&global_statistics.api_badges_result_points_generated, __ATOMIC_RELAXED);
 
-    gs->health_queries_made            = __atomic_load_n(&global_statistics.health_queries_made, __ATOMIC_RELAXED);
-    gs->health_db_points_read          = __atomic_load_n(&global_statistics.health_db_points_read, __ATOMIC_RELAXED);
-    gs->health_result_points_generated = __atomic_load_n(&global_statistics.health_result_points_generated, __ATOMIC_RELAXED);
+    gs->health_queries_made            = atomic_load_n_uint64(&global_statistics.health_queries_made, __ATOMIC_RELAXED);
+    gs->health_db_points_read          = atomic_load_n_uint64(&global_statistics.health_db_points_read, __ATOMIC_RELAXED);
+    gs->health_result_points_generated = atomic_load_n_uint64(&global_statistics.health_result_points_generated, __ATOMIC_RELAXED);
 
-    gs->ml_queries_made              = __atomic_load_n(&global_statistics.ml_queries_made, __ATOMIC_RELAXED);
-    gs->ml_db_points_read            = __atomic_load_n(&global_statistics.ml_db_points_read, __ATOMIC_RELAXED);
-    gs->ml_result_points_generated   = __atomic_load_n(&global_statistics.ml_result_points_generated, __ATOMIC_RELAXED);
-    gs->ml_models_consulted          = __atomic_load_n(&global_statistics.ml_models_consulted, __ATOMIC_RELAXED);
+    gs->ml_queries_made              = atomic_load_n_uint64(&global_statistics.ml_queries_made, __ATOMIC_RELAXED);
+    gs->ml_db_points_read            = atomic_load_n_uint64(&global_statistics.ml_db_points_read, __ATOMIC_RELAXED);
+    gs->ml_result_points_generated   = atomic_load_n_uint64(&global_statistics.ml_result_points_generated, __ATOMIC_RELAXED);
+    gs->ml_models_consulted          = atomic_load_n_uint64(&global_statistics.ml_models_consulted, __ATOMIC_RELAXED);
 
-    gs->exporters_queries_made       = __atomic_load_n(&global_statistics.exporters_queries_made, __ATOMIC_RELAXED);
-    gs->exporters_db_points_read     = __atomic_load_n(&global_statistics.exporters_db_points_read, __ATOMIC_RELAXED);
-    gs->backfill_queries_made       = __atomic_load_n(&global_statistics.backfill_queries_made, __ATOMIC_RELAXED);
-    gs->backfill_db_points_read     = __atomic_load_n(&global_statistics.backfill_db_points_read, __ATOMIC_RELAXED);
+    gs->exporters_queries_made       = atomic_load_n_uint64(&global_statistics.exporters_queries_made, __ATOMIC_RELAXED);
+    gs->exporters_db_points_read     = atomic_load_n_uint64(&global_statistics.exporters_db_points_read, __ATOMIC_RELAXED);
+    gs->backfill_queries_made       = atomic_load_n_uint64(&global_statistics.backfill_queries_made, __ATOMIC_RELAXED);
+    gs->backfill_db_points_read     = atomic_load_n_uint64(&global_statistics.backfill_db_points_read, __ATOMIC_RELAXED);
 
     for(size_t tier = 0; tier < storage_tiers ;tier++)
-        gs->db_points_stored_per_tier[tier] = __atomic_load_n(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
+        gs->db_points_stored_per_tier[tier] = atomic_load_n_uint64(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
 
     if(options & GLOBAL_STATS_RESET_WEB_USEC_MAX) {
         uint64_t n = 0;
@@ -273,6 +268,34 @@ static void global_statistics_charts(void) {
         rrddim_set_by_pointer(st_cpu, rd_cpu_user,   me.ru_utime.tv_sec * 1000000ULL + me.ru_utime.tv_usec);
         rrddim_set_by_pointer(st_cpu, rd_cpu_system, me.ru_stime.tv_sec * 1000000ULL + me.ru_stime.tv_usec);
         rrdset_done(st_cpu);
+    }
+
+    {
+        static RRDSET *st_atomic_ops = NULL;
+        static RRDDIM *rd_atomic_ops   = NULL;
+
+        if (unlikely(!st_atomic_ops)) {
+            st_atomic_ops = rrdset_create_localhost(
+                    "netdata"
+                    , "atomic_ops"
+                    , NULL
+                    , "netdata"
+                    , NULL
+                    , "Netdata atomic ops"
+                    , "ops/s"
+                    , "netdata"
+                    , "stats"
+                    , 130050
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_atomic_ops = rrddim_add(st_atomic_ops, "ops",   NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        size_t atomic_ops = __atomic_load_n(&num_atomic_ops, __ATOMIC_RELAXED);
+        rrddim_set_by_pointer(st_atomic_ops, rd_atomic_ops, atomic_ops);
+        rrdset_done(st_atomic_ops);
     }
 
     // ----------------------------------------------------------------
@@ -852,35 +875,35 @@ struct sqlite3_statistics {
 } sqlite3_statistics = { };
 
 void global_statistics_sqlite3_query_completed(bool success, bool busy, bool locked) {
-    __atomic_fetch_add(&sqlite3_statistics.sqlite3_queries_made, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_queries_made, 1, __ATOMIC_RELAXED);
 
     if(success) {
-        __atomic_fetch_add(&sqlite3_statistics.sqlite3_queries_ok, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_queries_ok, 1, __ATOMIC_RELAXED);
     }
     else {
-        __atomic_fetch_add(&sqlite3_statistics.sqlite3_queries_failed, 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_queries_failed, 1, __ATOMIC_RELAXED);
 
         if(busy)
-            __atomic_fetch_add(&sqlite3_statistics.sqlite3_queries_failed_busy, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_queries_failed_busy, 1, __ATOMIC_RELAXED);
 
         if(locked)
-            __atomic_fetch_add(&sqlite3_statistics.sqlite3_queries_failed_locked, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_queries_failed_locked, 1, __ATOMIC_RELAXED);
     }
 }
 
 void global_statistics_sqlite3_row_completed(void) {
-    __atomic_fetch_add(&sqlite3_statistics.sqlite3_rows, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_uint64(&sqlite3_statistics.sqlite3_rows, 1, __ATOMIC_RELAXED);
 }
 
 static inline void sqlite3_statistics_copy(struct sqlite3_statistics *gs) {
     static usec_t last_run = 0;
 
-    gs->sqlite3_queries_made          = __atomic_load_n(&sqlite3_statistics.sqlite3_queries_made, __ATOMIC_RELAXED);
-    gs->sqlite3_queries_ok            = __atomic_load_n(&sqlite3_statistics.sqlite3_queries_ok, __ATOMIC_RELAXED);
-    gs->sqlite3_queries_failed        = __atomic_load_n(&sqlite3_statistics.sqlite3_queries_failed, __ATOMIC_RELAXED);
-    gs->sqlite3_queries_failed_busy   = __atomic_load_n(&sqlite3_statistics.sqlite3_queries_failed_busy, __ATOMIC_RELAXED);
-    gs->sqlite3_queries_failed_locked = __atomic_load_n(&sqlite3_statistics.sqlite3_queries_failed_locked, __ATOMIC_RELAXED);
-    gs->sqlite3_rows                  = __atomic_load_n(&sqlite3_statistics.sqlite3_rows, __ATOMIC_RELAXED);
+    gs->sqlite3_queries_made          = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_queries_made, __ATOMIC_RELAXED);
+    gs->sqlite3_queries_ok            = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_queries_ok, __ATOMIC_RELAXED);
+    gs->sqlite3_queries_failed        = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_queries_failed, __ATOMIC_RELAXED);
+    gs->sqlite3_queries_failed_busy   = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_queries_failed_busy, __ATOMIC_RELAXED);
+    gs->sqlite3_queries_failed_locked = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_queries_failed_locked, __ATOMIC_RELAXED);
+    gs->sqlite3_rows                  = atomic_load_n_uint64(&sqlite3_statistics.sqlite3_rows, __ATOMIC_RELAXED);
 
     usec_t timeout = default_rrd_update_every * USEC_PER_SEC + default_rrd_update_every * USEC_PER_SEC / 3;
     usec_t now = now_monotonic_usec();
@@ -2872,7 +2895,7 @@ struct dictionary_categories {
     { .stats = NULL, NULL, NULL, 0 },
 };
 
-#define load_dictionary_stats_entry(x) total += (size_t)(stats.x = __atomic_load_n(&c->stats->x, __ATOMIC_RELAXED))
+#define load_dictionary_stats_entry(x) total += (size_t)(stats.x = atomic_load_n_int64(&c->stats->x, __ATOMIC_RELAXED))
 
 static void update_dictionary_category_charts(struct dictionary_categories *c) {
     struct dictionary_stats stats;
@@ -3183,7 +3206,7 @@ static int do_memory_trace_item(void *item, void *data) {
     if(!p->rd_bytes)
         p->rd_bytes = rrddim_add(tmp->st_memory, p->function, NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
-    collected_number bytes = (collected_number)__atomic_load_n(&p->bytes, __ATOMIC_RELAXED);
+    collected_number bytes = (collected_number) atomic_load_n_uint64(&p->bytes, __ATOMIC_RELAXED);
     rrddim_set_by_pointer(tmp->st_memory, p->rd_bytes, bytes);
 
     // ------------------------------------------------------------------------
@@ -3191,7 +3214,7 @@ static int do_memory_trace_item(void *item, void *data) {
     if(!p->rd_allocations)
         p->rd_allocations = rrddim_add(tmp->st_allocations, p->function, NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
-    collected_number allocs = (collected_number)__atomic_load_n(&p->allocations, __ATOMIC_RELAXED);
+    collected_number allocs = (collected_number) atomic_load_n_uint64(&p->allocations, __ATOMIC_RELAXED);
     rrddim_set_by_pointer(tmp->st_allocations, p->rd_allocations, allocs);
 
     // ------------------------------------------------------------------------
@@ -3208,11 +3231,11 @@ static int do_memory_trace_item(void *item, void *data) {
         p->rd_ops = rrddim_add(tmp->st_ops, p->function, NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
 
     collected_number ops = 0;
-    ops += (collected_number)__atomic_load_n(&p->malloc_calls, __ATOMIC_RELAXED);
-    ops += (collected_number)__atomic_load_n(&p->calloc_calls, __ATOMIC_RELAXED);
-    ops += (collected_number)__atomic_load_n(&p->realloc_calls, __ATOMIC_RELAXED);
-    ops += (collected_number)__atomic_load_n(&p->strdup_calls, __ATOMIC_RELAXED);
-    ops += (collected_number)__atomic_load_n(&p->free_calls, __ATOMIC_RELAXED);
+    ops += (collected_number) atomic_load_n_uint64(&p->malloc_calls, __ATOMIC_RELAXED);
+    ops += (collected_number) atomic_load_n_uint64(&p->calloc_calls, __ATOMIC_RELAXED);
+    ops += (collected_number) atomic_load_n_uint64(&p->realloc_calls, __ATOMIC_RELAXED);
+    ops += (collected_number) atomic_load_n_uint64(&p->strdup_calls, __ATOMIC_RELAXED);
+    ops += (collected_number) atomic_load_n_uint64(&p->free_calls, __ATOMIC_RELAXED);
     rrddim_set_by_pointer(tmp->st_ops, p->rd_ops, ops);
 
     // ------------------------------------------------------------------------

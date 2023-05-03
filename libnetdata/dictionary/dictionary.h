@@ -60,49 +60,49 @@ struct dictionary_stats {
     const char *name;               // the name of the category
 
     struct {
-        size_t active;              // the number of active dictionaries
-        size_t deleted;             // the number of dictionaries queued for destruction
+        int64_t active;              // the number of active dictionaries
+        int64_t deleted;             // the number of dictionaries queued for destruction
     } dictionaries;
 
     struct {
-        long entries;               // active items in the dictionary
-        long pending_deletion;      // pending deletion items in the dictionary
-        long referenced;            // referenced items in the dictionary
+        int64_t entries;               // active items in the dictionary
+        int64_t pending_deletion;      // pending deletion items in the dictionary
+        int64_t referenced;            // referenced items in the dictionary
     } items;
 
     struct {
-        size_t creations;           // dictionary creations
-        size_t destructions;        // dictionary destructions
-        size_t flushes;             // dictionary flushes
-        size_t traversals;          // dictionary foreach
-        size_t walkthroughs;        // dictionary walkthrough
-        size_t garbage_collections; // dictionary garbage collections
-        size_t searches;            // item searches
-        size_t inserts;             // item inserts
-        size_t resets;              // item resets
-        size_t deletes;             // item deletes
+        int64_t creations;           // dictionary creations
+        int64_t destructions;        // dictionary destructions
+        int64_t flushes;             // dictionary flushes
+        int64_t traversals;          // dictionary foreach
+        int64_t walkthroughs;        // dictionary walkthrough
+        int64_t garbage_collections; // dictionary garbage collections
+        int64_t searches;            // item searches
+        int64_t inserts;             // item inserts
+        int64_t resets;              // item resets
+        int64_t deletes;             // item deletes
     } ops;
 
     struct {
-        size_t inserts;             // number of times the insert callback is called
-        size_t conflicts;           // number of times the conflict callback is called
-        size_t reacts;              // number of times the react callback is called
-        size_t deletes;             // number of times the delete callback is called
+        int64_t inserts;             // number of times the insert callback is called
+        int64_t conflicts;           // number of times the conflict callback is called
+        int64_t reacts;              // number of times the react callback is called
+        int64_t deletes;             // number of times the delete callback is called
     } callbacks;
 
     // memory
     struct {
-        long index;               // bytes of keys indexed (indication of the index size)
-        long values;                // bytes of caller structures
-        long dict;                  // bytes of the structures dictionary needs
+        int64_t index;               // bytes of keys indexed (indication of the index size)
+        int64_t values;              // bytes of caller structures
+        int64_t dict;                // bytes of the structures dictionary needs
     } memory;
 
     // spin locks
     struct {
-        size_t use_spins;           // number of times a reference to item had to spin to acquire it or ignore it
-        size_t search_spins;        // number of times a successful search result had to be thrown away
-        size_t insert_spins;        // number of times an insertion to the hash table had to be repeated
-        size_t delete_spins;        // number of times a deletion had to spin to get a decision
+        int64_t use_spins;           // number of times a reference to item had to spin to acquire it or ignore it
+        int64_t search_spins;        // number of times a successful search result had to be thrown away
+        int64_t insert_spins;        // number of times an insertion to the hash table had to be repeated
+        int64_t delete_spins;        // number of times a deletion had to spin to get a decision
     } spin_locks;
 };
 

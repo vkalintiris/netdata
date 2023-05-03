@@ -67,7 +67,7 @@ typedef struct web_buffer {
     BUFFER_OPTIONS options; // options related to the content
     time_t date;            // the timestamp this content has been generated
     time_t expires;         // the timestamp this content expires
-    size_t *statistics;
+    uint64_t *statistics;
 
     struct {
         char key_quote[BUFFER_QUOTE_MAX_SIZE + 1];

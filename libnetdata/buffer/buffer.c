@@ -258,7 +258,7 @@ BUFFER *buffer_create(size_t size, size_t *statistics)
     buffer_overflow_check(b);
 
     if(b->statistics)
-        __atomic_add_fetch(b->statistics, b->size + sizeof(BUFFER) + sizeof(BUFFER_OVERFLOW_EOF) + 2, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(b->statistics, b->size + sizeof(BUFFER) + sizeof(BUFFER_OVERFLOW_EOF) + 2, __ATOMIC_RELAXED);
 
     return(b);
 }
@@ -271,7 +271,7 @@ void buffer_free(BUFFER *b) {
     debug(D_WEB_BUFFER, "Freeing web buffer of size %zu.", b->size);
 
     if(b->statistics)
-        __atomic_sub_fetch(b->statistics, b->size + sizeof(BUFFER) + sizeof(BUFFER_OVERFLOW_EOF) + 2, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(b->statistics, b->size + sizeof(BUFFER) + sizeof(BUFFER_OVERFLOW_EOF) + 2, __ATOMIC_RELAXED);
 
     freez(b->buffer);
     freez(b);
@@ -296,7 +296,7 @@ void buffer_increase(BUFFER *b, size_t free_size_required) {
     b->size += wanted;
 
     if(b->statistics)
-        __atomic_add_fetch(b->statistics, wanted, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(b->statistics, wanted, __ATOMIC_RELAXED);
 
     buffer_overflow_init(b);
     buffer_overflow_check(b);

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+
 #include "libnetdata.h"
+
+uint64_t num_atomic_ops = 0;
 
 #ifdef __APPLE__
 #define INHERIT_NONE 0

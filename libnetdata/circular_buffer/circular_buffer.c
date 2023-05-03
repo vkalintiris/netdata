@@ -10,7 +10,7 @@ struct circular_buffer *cbuffer_new(size_t initial, size_t max, size_t *statisti
     buf->statistics = statistics;
 
     if(buf->statistics)
-        __atomic_add_fetch(buf->statistics, sizeof(struct circular_buffer) + buf->size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(buf->statistics, sizeof(struct circular_buffer) + buf->size, __ATOMIC_RELAXED);
 
     return buf;
 }
@@ -20,7 +20,7 @@ void cbuffer_free(struct circular_buffer *buf) {
         return;
 
     if(buf->statistics)
-        __atomic_sub_fetch(buf->statistics, sizeof(struct circular_buffer) + buf->size, __ATOMIC_RELAXED);
+        atomic_fetch_sub_uint64(buf->statistics, sizeof(struct circular_buffer) + buf->size, __ATOMIC_RELAXED);
 
     freez(buf->data);
     freez(buf);
@@ -58,7 +58,7 @@ static int cbuffer_realloc_unsafe(struct circular_buffer *buf) {
     buf->size = new_size;
 
     if(buf->statistics)
-        __atomic_add_fetch(buf->statistics, new_size - old_size, __ATOMIC_RELAXED);
+        atomic_fetch_add_uint64(buf->statistics, new_size - old_size, __ATOMIC_RELAXED);
 
     return 0;
 }

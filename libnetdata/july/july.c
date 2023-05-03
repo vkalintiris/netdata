@@ -37,10 +37,10 @@ static struct {
     } protected;
 
     struct {
-        size_t bytes;
-        size_t allocated;
-        size_t bytes_moved;
-        size_t reallocs;
+        uint64_t bytes;
+        uint64_t allocated;
+        uint64_t bytes_moved;
+        uint64_t reallocs;
     } atomics;
 } julyl_globals = {
         .protected = {
@@ -73,8 +73,8 @@ void julyl_cleanup1(void) {
     if(item) {
         size_t bytes = item->bytes;
         freez(item);
-        __atomic_sub_fetch(&julyl_globals.atomics.bytes, bytes, __ATOMIC_RELAXED);
-        __atomic_sub_fetch(&julyl_globals.atomics.allocated, 1, __ATOMIC_RELAXED);
+        atomic_sub_fetch_uint64(&julyl_globals.atomics.bytes, bytes, __ATOMIC_RELAXED);
+        atomic_sub_fetch_uint64(&julyl_globals.atomics.allocated, 1, __ATOMIC_RELAXED);
     }
 }
 
@@ -96,8 +96,8 @@ struct JulyL *julyl_get(void) {
         j = mallocz(bytes);
         j->bytes = bytes;
         j->entries = JULYL_MIN_ENTRIES;
-        __atomic_add_fetch(&julyl_globals.atomics.bytes, bytes, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&julyl_globals.atomics.allocated, 1, __ATOMIC_RELAXED);
+        atomic_add_fetch_uint64(&julyl_globals.atomics.bytes, bytes, __ATOMIC_RELAXED);
+        atomic_add_fetch_uint64(&julyl_globals.atomics.allocated, 1, __ATOMIC_RELAXED);
     }
 
     j->used = 0;
@@ -110,8 +110,8 @@ struct JulyL *julyl_get(void) {
 static void julyl_release(struct JulyL *j) {
     if(unlikely(!j)) return;
 
-    __atomic_add_fetch(&julyl_globals.atomics.bytes_moved, j->bytes_moved, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&julyl_globals.atomics.reallocs, j->reallocs, __ATOMIC_RELAXED);
+    atomic_add_fetch_uint64(&julyl_globals.atomics.bytes_moved, j->bytes_moved, __ATOMIC_RELAXED);
+    atomic_add_fetch_uint64(&julyl_globals.atomics.reallocs, j->reallocs, __ATOMIC_RELAXED);
 
     netdata_spinlock_lock(&julyl_globals.protected.spinlock);
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(julyl_globals.protected.available_items, j, cache.prev, cache.next);
@@ -120,11 +120,11 @@ static void julyl_release(struct JulyL *j) {
 }
 
 size_t julyl_cache_size(void) {
-    return __atomic_load_n(&julyl_globals.atomics.bytes, __ATOMIC_RELAXED);
+    return atomic_load_n_uint64(&julyl_globals.atomics.bytes, __ATOMIC_RELAXED);
 }
 
 size_t julyl_bytes_moved(void) {
-    return __atomic_load_n(&julyl_globals.atomics.bytes_moved, __ATOMIC_RELAXED);
+    return atomic_load_n_uint64(&julyl_globals.atomics.bytes_moved, __ATOMIC_RELAXED);
 }
 
 // ----------------------------------------------------------------------------
@@ -186,7 +186,7 @@ PPvoid_t JulyLIns(PPvoid_t PPArray, Word_t Index, PJError_t PJError __maybe_unus
         if (unlikely(July->used == July->entries)) {
             // we have to expand the array
             size_t bytes = sizeof(struct JulyL) + July->entries * 2 * sizeof(struct JulyL_item);
-            __atomic_add_fetch(&julyl_globals.atomics.bytes, bytes - July->bytes, __ATOMIC_RELAXED);
+            atomic_add_fetch_uint64(&julyl_globals.atomics.bytes, bytes - July->bytes, __ATOMIC_RELAXED);
             July = reallocz(July, bytes);
             July->bytes = bytes;
             July->entries *= 2;

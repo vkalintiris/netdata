@@ -23,7 +23,7 @@ static struct string_hashtable {
     netdata_rwlock_t rwlock;    // the R/W lock to protect the Judy array
 
     long int entries;           // the number of entries in the index
-    long int active_references; // the number of active references alive
+    uint64_t active_references; // the number of active references alive
     long int memory;            // the memory used, without the JudyHS index
 
     size_t inserts;             // the number of successful inserts to the index
@@ -34,11 +34,11 @@ static struct string_hashtable {
 
 #ifdef NETDATA_INTERNAL_CHECKS
     // internal statistics
-    size_t found_deleted_on_search;
-    size_t found_available_on_search;
-    size_t found_deleted_on_insert;
-    size_t found_available_on_insert;
-    size_t spins;
+    uint64_t found_deleted_on_search;
+    uint64_t found_available_on_search;
+    uint64_t found_deleted_on_insert;
+    uint64_t found_available_on_insert;
+    uint64_t spins;
 #endif
 
 } string_base = {
@@ -47,13 +47,13 @@ static struct string_hashtable {
 };
 
 #ifdef NETDATA_INTERNAL_CHECKS
-#define string_internal_stats_add(var, val) __atomic_add_fetch(&string_base.var, val, __ATOMIC_RELAXED)
+#define string_internal_stats_add(var, val) atomic_add_fetch_uint64(&string_base.var, val, __ATOMIC_RELAXED)
 #else
 #define string_internal_stats_add(var, val) do {;} while(0)
 #endif
 
-#define string_stats_atomic_increment(var) __atomic_add_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
-#define string_stats_atomic_decrement(var) __atomic_sub_fetch(&string_base.var, 1, __ATOMIC_RELAXED)
+#define string_stats_atomic_increment(var) atomic_add_fetch_uint64(&string_base.var, 1, __ATOMIC_RELAXED)
+#define string_stats_atomic_decrement(var) atomic_sub_fetch_uint64(&string_base.var, 1, __ATOMIC_RELAXED)
 
 void string_statistics(size_t *inserts, size_t *deletes, size_t *searches, size_t *entries, size_t *references, size_t *memory, size_t *duplications, size_t *releases) {
     if(inserts)
@@ -81,13 +81,13 @@ void string_statistics(size_t *inserts, size_t *deletes, size_t *searches, size_
         *releases = string_base.releases;
 }
 
-#define string_entry_acquire(se) __atomic_add_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
-#define string_entry_release(se) __atomic_sub_fetch(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
+#define string_entry_acquire(se) atomic_add_fetch_int32(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
+#define string_entry_release(se) atomic_sub_fetch_int32(&((se)->refcount), 1, __ATOMIC_SEQ_CST);
 
 static inline bool string_entry_check_and_acquire(STRING *se) {
     REFCOUNT expected, desired, count = 0;
 
-    expected = __atomic_load_n(&se->refcount, __ATOMIC_SEQ_CST);
+    expected = atomic_load_n_int32(&se->refcount, __ATOMIC_SEQ_CST);
 
     do {
         count++;
@@ -117,7 +117,7 @@ STRING *string_dup(STRING *string) {
     if(unlikely(!string)) return NULL;
 
 #ifdef NETDATA_INTERNAL_CHECKS
-    if(unlikely(__atomic_load_n(&string->refcount, __ATOMIC_SEQ_CST) <= 0))
+    if(unlikely(atomic_load_n_int32(&string->refcount, __ATOMIC_SEQ_CST) <= 0))
         fatal("STRING: tried to %s() a string that is freed (it has %d references).", __FUNCTION__, string->refcount);
 #endif
 
@@ -230,7 +230,7 @@ static inline void string_index_delete(STRING *string) {
     netdata_rwlock_wrlock(&string_base.rwlock);
 
 #ifdef NETDATA_INTERNAL_CHECKS
-    if(unlikely(__atomic_load_n(&string->refcount, __ATOMIC_SEQ_CST) != 0))
+    if(unlikely(atomic_load_n_int32(&string->refcount, __ATOMIC_SEQ_CST) != 0))
         fatal("STRING: tried to delete a string at %s() that is already freed (it has %d references).", __FUNCTION__, string->refcount);
 #endif
 
@@ -363,15 +363,15 @@ STRING *string_2way_merge(STRING *a, STRING *b) {
 // STRING unit test
 
 struct thread_unittest {
-    int join;
-    int dups;
+    int32_t join;
+    int32_t dups;
 };
 
 static void *string_thread(void *arg) {
     struct thread_unittest *tu = arg;
 
     for(; 1 ;) {
-        if(__atomic_load_n(&tu->join, __ATOMIC_RELAXED))
+        if(atomic_load_n_int32(&tu->join, __ATOMIC_RELAXED))
             break;
 
         STRING *s = string_strdupz("string thread checking 1234567890");

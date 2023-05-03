@@ -14,10 +14,10 @@ typedef struct owa_page {
     struct owa_page *last;     // the last page on the list - we currently allocate on this
 } OWA_PAGE;
 
-static size_t onewayalloc_total_memory = 0;
+static uint64_t onewayalloc_total_memory = 0;
 
 size_t onewayalloc_allocated_memory(void) {
-    return __atomic_load_n(&onewayalloc_total_memory, __ATOMIC_RELAXED);
+    return atomic_load_n_uint64(&onewayalloc_total_memory, __ATOMIC_RELAXED);
 }
 
 // allocations need to be aligned to CPU register width
@@ -66,7 +66,7 @@ static OWA_PAGE *onewayalloc_create_internal(OWA_PAGE *head, size_t size_hint) {
     // OWA_PAGE *page = (OWA_PAGE *)netdata_mmap(NULL, size, MAP_ANONYMOUS|MAP_PRIVATE, 0);
     // if(unlikely(!page)) fatal("Cannot allocate onewayalloc buffer of size %zu", size);
     OWA_PAGE *page = (OWA_PAGE *)mallocz(size);
-    __atomic_add_fetch(&onewayalloc_total_memory, size, __ATOMIC_RELAXED);
+    atomic_add_fetch_uint64(&onewayalloc_total_memory, size, __ATOMIC_RELAXED);
 
     page->size = size;
     page->offset = natural_alignment(sizeof(OWA_PAGE));
@@ -211,5 +211,5 @@ void onewayalloc_destroy(ONEWAYALLOC *owa) {
         freez(p);
     }
 
-    __atomic_sub_fetch(&onewayalloc_total_memory, total_size, __ATOMIC_RELAXED);
+    atomic_sub_fetch_uint64(&onewayalloc_total_memory, total_size, __ATOMIC_RELAXED);
 }

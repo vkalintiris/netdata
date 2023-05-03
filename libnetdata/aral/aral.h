@@ -10,20 +10,20 @@ typedef struct aral ARAL;
 
 struct aral_statistics {
     struct {
-        size_t allocations;
-        size_t allocated_bytes;
+        uint64_t allocations;
+        uint64_t allocated_bytes;
     } structures;
 
     struct {
-        size_t allocations;
-        size_t allocated_bytes;
-        size_t used_bytes;
+        uint64_t allocations;
+        uint64_t allocated_bytes;
+        uint64_t used_bytes;
     } malloc;
 
     struct {
-        size_t allocations;
-        size_t allocated_bytes;
-        size_t used_bytes;
+        uint64_t allocations;
+        uint64_t allocated_bytes;
+        uint64_t used_bytes;
     } mmap;
 };
 
