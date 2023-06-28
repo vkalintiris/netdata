@@ -352,14 +352,12 @@ struct rrddim {
     STRING *name;                                   // the name of this dimension (as presented to user)
 
     RRD_ALGORITHM algorithm;                        // the algorithm that is applied to add new collected values
-    RRDDIM_OPTIONS options;                         // permanent configuration options
     RRD_MEMORY_MODE rrd_memory_mode;                // the memory mode for this dimension
     RRDDIM_FLAGS flags;                             // run time changing status flags
 
     int32_t multiplier;                             // the multiplier of the collected values
     int32_t divisor;                                // the divider of the collected values
 
-    uint32_t collections_counter;                   // the number of times we added values to this rrddim
 
     // ------------------------------------------------------------------------
     // operational state members
@@ -375,18 +373,20 @@ struct rrddim {
     // ------------------------------------------------------------------------
     // data collection members
 
-    struct timeval last_collected_time;             // when was this dimension last updated
-                                                    // this is actual date time we updated the last_collected_value
-                                                    // THIS IS DIFFERENT FROM THE SAME MEMBER OF RRDSET
 
-    collected_number collected_value_max;           // the absolute maximum of the collected value
 
     NETDATA_DOUBLE calculated_value;                // the current calculated value, after applying the algorithm - resets to zero after being used
     NETDATA_DOUBLE last_calculated_value;           // the last calculated value processed
     NETDATA_DOUBLE last_stored_value;               // the last value as stored in the database (after interpolation)
 
+    RRDDIM_OPTIONS options;                         // permanent configuration options
     collected_number collected_value;               // the current value, as collected - resets to 0 after being used
+    collected_number collected_value_max;           // the absolute maximum of the collected value
+    struct timeval last_collected_time;             // when was this dimension last updated
+                                                    // this is actual date time we updated the last_collected_value
+                                                    // THIS IS DIFFERENT FROM THE SAME MEMBER OF RRDSET
     collected_number last_collected_value;          // the last value that was collected, after being processed
+    uint32_t collections_counter;                   // the number of times we added values to this rrddim
 
 #ifdef NETDATA_LOG_COLLECTION_ERRORS
     usec_t rrddim_store_metric_last_ut;             // the timestamp we last called rrddim_store_metric()

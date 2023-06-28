@@ -112,10 +112,12 @@ public:
         #define WORKER_JOB_CREATE_CHARTS 0
         #define WORKER_JOB_UPDATE_CHARTS 1
         #define WORKER_JOB_METRIC_SECONDS_TO_BACKFILL 2
+        #define WORKER_JOB_METRIC_A 3
 
         worker_register_job_name(WORKER_JOB_CREATE_CHARTS, "create charts");
         worker_register_job_name(WORKER_JOB_UPDATE_CHARTS, "update charts");
         worker_register_job_custom_metric(WORKER_JOB_METRIC_SECONDS_TO_BACKFILL, "seconds to backfill", "seconds", WORKER_METRIC_ABSOLUTE);
+        worker_register_job_custom_metric(WORKER_JOB_METRIC_A, "points filled", "count", WORKER_METRIC_ABSOLUTE);
 
         heartbeat_t HB;
         heartbeat_init(&HB);
@@ -133,14 +135,26 @@ public:
             CollectionTV.tv_usec = 0;
         }
 
+        size_t FilledSeconds = 0;
+
+        struct timeval PrevTV, NowTV;
+        now_realtime_timeval(&NowTV);
+        PrevTV = NowTV;
+
         while (service_running(SERVICE_COLLECTORS)) {
             worker_is_busy(WORKER_JOB_UPDATE_CHARTS);
 
             update(CollectionTV);
             CollectionTV.tv_sec += UpdateEvery;
 
-            struct timeval NowTV;
             now_realtime_timeval(&NowTV);
+
+            ++FilledSeconds;
+            if (NowTV.tv_sec > PrevTV.tv_sec) {
+                PrevTV = NowTV;
+                worker_set_metric(WORKER_JOB_METRIC_A, FilledSeconds * NumCharts * NumDimsPerChart);
+                FilledSeconds = 0;
+            }
 
             size_t RemainingSeconds = (CollectionTV.tv_sec >= NowTV.tv_sec) ? 0 : (NowTV.tv_sec - CollectionTV.tv_sec);
             worker_set_metric(WORKER_JOB_METRIC_SECONDS_TO_BACKFILL, RemainingSeconds);
@@ -187,10 +201,10 @@ extern "C" void *profile_main(void *ptr) {
         UpdateEvery = localhost->rrd_update_every;
 
     // pick low-default values, in case this plugin is ever enabled accidentaly.
-    size_t NumThreads = config_get_number(CONFIG_SECTION_PROFILE, "number of threads", 2);
-    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 2);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 2);
-    size_t SecondsToBackfill = config_get_number(CONFIG_SECTION_PROFILE, "seconds to backfill", 10 * 60);
+    size_t NumThreads = config_get_number(CONFIG_SECTION_PROFILE, "number of threads", 16);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 400);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 5);
+    size_t SecondsToBackfill = config_get_number(CONFIG_SECTION_PROFILE, "seconds to backfill", 7 * 24 * 3600);
 
     std::vector<Profiler> Profilers;
 
