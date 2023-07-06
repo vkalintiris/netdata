@@ -16,7 +16,7 @@ void sql_health_alarm_log_update(RRDHOST *host, ALARM_ENTRY *ae) {
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("HEALTH [%s]: Database has not been initialized", rrdhost_hostname(host));
         return;
     }
@@ -97,7 +97,7 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
     uint64_t health_log_id = 0;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("HEALTH [%s]: Database has not been initialized", rrdhost_hostname(host));
         return;
     }
@@ -361,7 +361,7 @@ void sql_health_alarm_log_count(RRDHOST *host) {
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return;
     }
@@ -400,7 +400,7 @@ void sql_health_alarm_log_cleanup_not_claimed(RRDHOST *host) {
     char command[MAX_HEALTH_SQL_SIZE + 1];
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return;
     }
@@ -461,7 +461,7 @@ void sql_health_alarm_log_cleanup_claimed(RRDHOST *host) {
     char command[MAX_HEALTH_SQL_SIZE + 1];
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return;
     }
@@ -777,7 +777,7 @@ void sql_health_alarm_log_load(RRDHOST *host) {
     host->health.health_log_entries_written = 0;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("HEALTH [%s]: Database has not been initialized", rrdhost_hostname(host));
         return;
     }
@@ -1000,7 +1000,7 @@ int sql_store_alert_config_hash(uuid_t *hash_id, struct alert_config *cfg)
     int rc, param = 0;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id != STORAGE_ENGINE_DBENGINE)
             return 0;
         error_report("Database has not been initialized");
         return 1;
