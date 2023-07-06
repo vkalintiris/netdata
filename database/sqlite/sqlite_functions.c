@@ -620,7 +620,7 @@ int update_node_id(uuid_t *host_id, uuid_t *node_id)
     int rc = 2;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return 1;
     }
@@ -671,7 +671,7 @@ int get_host_id(uuid_t *node_id, uuid_t *host_id)
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return 1;
     }
@@ -709,7 +709,7 @@ int get_node_id(uuid_t *host_id, uuid_t *node_id)
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return 1;
     }
@@ -746,7 +746,7 @@ void invalidate_node_instances(uuid_t *host_id, uuid_t *claim_id)
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return;
     }
@@ -792,7 +792,7 @@ struct node_instance_list *get_node_list(void)
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return NULL;
     }
@@ -858,7 +858,7 @@ void sql_load_node_id(RRDHOST *host)
     int rc;
 
     if (unlikely(!db_meta)) {
-        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+        if (default_storage_engine_id == STORAGE_ENGINE_DBENGINE)
             error_report("Database has not been initialized");
         return;
     }
