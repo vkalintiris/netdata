@@ -397,7 +397,7 @@ void health_reload(void) {
     sql_refresh_hashes();
 
     RRDHOST *host;
-    dfe_start_reentrant(rrdhost_root_index, host){
+    dfe_start_reentrant(rrdb.rrdhost_root_index, host){
         health_reload_host(host);
     }
     dfe_done(host);
@@ -1058,7 +1058,7 @@ void *health_main(void *ptr) {
         }
 
         worker_is_busy(WORKER_HEALTH_JOB_RRD_LOCK);
-        dfe_start_reentrant(rrdhost_root_index, host) {
+        dfe_start_reentrant(rrdb.rrdhost_root_index, host) {
 
             if(unlikely(!service_running(SERVICE_HEALTH)))
                 break;
