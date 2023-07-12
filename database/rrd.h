@@ -1007,8 +1007,6 @@ void rrddim_index_destroy(RRDSET *st);
 
 // ----------------------------------------------------------------------------
 
-extern time_t rrdhost_free_orphan_time_s;
-
 int rrd_init(char *hostname, struct rrdhost_system_info *system_info, bool unittest);
 
 RRDHOST *rrdhost_find_by_hostname(const char *hostname);
@@ -1286,6 +1284,8 @@ struct rrdb {
     int libuv_worker_threads;
 
     bool ieee754_doubles;
+
+    time_t rrdhost_free_orphan_time_s;
 };
 
 extern struct rrdb rrdb;
