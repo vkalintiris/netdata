@@ -428,7 +428,7 @@ void registry_statistics(void) {
                 , "registry"
                 , "stats"
                 , 131000
-                , localhost->rrd_update_every
+                , rrdb.localhost->rrd_update_every
                 , RRDSET_TYPE_LINE
         );
 
@@ -452,7 +452,7 @@ void registry_statistics(void) {
                 , "registry"
                 , "stats"
                 , 131100
-                , localhost->rrd_update_every
+                , rrdb.localhost->rrd_update_every
                 , RRDSET_TYPE_LINE
         );
 
@@ -482,7 +482,7 @@ void registry_statistics(void) {
                 , "registry"
                 , "stats"
                 , 131300
-                , localhost->rrd_update_every
+                , rrdb.localhost->rrd_update_every
                 , RRDSET_TYPE_STACKED
         );
 

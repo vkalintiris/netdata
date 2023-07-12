@@ -576,7 +576,7 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
                               buffer_tostring(crit_alarms),
                               ae->classification?ae_classification(ae):"Unknown",
                               edit_command,
-                              host != localhost ? host->machine_guid:"");
+                              host != rrdb.localhost ? host->machine_guid:"");
 
     const char *command_to_run = buffer_tostring(wb);
     if (ok) {
@@ -1092,7 +1092,7 @@ void *health_main(void *ptr) {
             }
 
             // wait until cleanup of obsolete charts on children is complete
-            if (host != localhost) {
+            if (host != rrdb.localhost) {
                 if (unlikely(host->trigger_chart_obsoletion_check == 1)) {
                     log_health("[%s]: Waiting for chart obsoletion check.", rrdhost_hostname(host));
                     continue;
@@ -1586,7 +1586,7 @@ void *health_main(void *ptr) {
 }
 
 void health_add_host_labels(void) {
-    DICTIONARY *labels = localhost->rrdlabels;
+    DICTIONARY *labels = rrdb.localhost->rrdlabels;
 
     // The source should be CONF, but when it is set, these labels are exported by default ('send configured labels' in exporting.conf).
     // Their export seems to break exporting to Graphite, see https://github.com/netdata/netdata/issues/14084.

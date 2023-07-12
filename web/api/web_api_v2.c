@@ -99,7 +99,7 @@ static bool verify_agent_uuids(const char *machine_guid, const char *node_id, co
     if(!machine_guid || !node_id || !claim_id)
         return false;
 
-    if(strcmp(machine_guid, localhost->machine_guid) != 0)
+    if(strcmp(machine_guid, rrdb.localhost->machine_guid) != 0)
         return false;
 
     char *agent_claim_id = get_agent_claimid();
@@ -107,11 +107,11 @@ static bool verify_agent_uuids(const char *machine_guid, const char *node_id, co
         return false;
     freez(agent_claim_id);
 
-    if(!localhost->node_id)
+    if(!rrdb.localhost->node_id)
         return false;
 
     char buf[UUID_STR_LEN];
-    uuid_unparse_lower(*localhost->node_id, buf);
+    uuid_unparse_lower(*rrdb.localhost->node_id, buf);
 
     if(strcmp(node_id, buf) != 0)
         return false;
@@ -197,7 +197,7 @@ int api_v2_bearer_token(RRDHOST *host __maybe_unused, struct web_client *w __may
     BUFFER *wb = w->response.data;
     buffer_flush(wb);
     buffer_json_initialize(wb, "\"", "\"", 0, true, false);
-    buffer_json_member_add_string(wb, "mg", localhost->machine_guid);
+    buffer_json_member_add_string(wb, "mg", rrdb.localhost->machine_guid);
     buffer_json_member_add_boolean(wb, "bearer_protection", netdata_is_protected_by_bearer);
     buffer_json_member_add_uuid(wb, "token", &uuid);
     buffer_json_finalize(wb);
