@@ -984,6 +984,8 @@ struct rrdb {
     int default_rrdeng_extent_cache_mb;
 
     int db_engine_journal_check;
+
+    int default_rrdeng_disk_quota_mb;
 };
 
 extern struct rrdb rrdb;
