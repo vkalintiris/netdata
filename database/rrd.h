@@ -991,6 +991,8 @@ struct rrdb {
     int default_multidb_disk_quota_mb;
 
     struct rrdengine_instance *multidb_ctx[RRD_STORAGE_TIERS];
+
+    size_t page_type_size[256];
 };
 
 extern struct rrdb rrdb;
