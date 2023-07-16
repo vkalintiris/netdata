@@ -159,7 +159,7 @@ void *proc_main(void *ptr)
         worker_register_job_name(i, proc_modules[i].dim);
     }
 
-    usec_t step = rrdb.localhost->rrd_update_every * USEC_PER_SEC;
+    usec_t step = rrdb.localhost->update_every * USEC_PER_SEC;
     heartbeat_t hb;
     heartbeat_init(&hb);
 
@@ -183,7 +183,7 @@ void *proc_main(void *ptr)
             netdata_log_debug(D_PROCNETDEV_LOOP, "PROC calling %s.", pm->name);
 
             worker_is_busy(i);
-            pm->enabled = !pm->func(rrdb.localhost->rrd_update_every, hb_dt);
+            pm->enabled = !pm->func(rrdb.localhost->update_every, hb_dt);
         }
     }
 
