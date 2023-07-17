@@ -1055,6 +1055,7 @@ ENDIF()
 
 set(NETDATA_FILES
         collectors/all.h
+        collectors/utils.h
         ${DAEMON_FILES}
         ${API_PLUGIN_FILES}
         ${EXPORTING_ENGINE_FILES}
