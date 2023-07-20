@@ -63,6 +63,7 @@ void analytics_log_data(void)
     netdata_log_debug(D_ANALYTICS, "NETDATA_CONFIG_IS_PRIVATE_REGISTRY : [%s]", analytics_data.netdata_config_is_private_registry);
     netdata_log_debug(D_ANALYTICS, "NETDATA_CONFIG_USE_PRIVATE_REGISTRY: [%s]", analytics_data.netdata_config_use_private_registry);
     netdata_log_debug(D_ANALYTICS, "NETDATA_CONFIG_OOM_SCORE           : [%s]", analytics_data.netdata_config_oom_score);
+    netdata_log_debug(D_ANALYTICS, "NETDATA_CONFIG_DB_STORAGE_TIERS    : [%s]", analytics_data.netdata_config_db_storage_tiers);
 }
 
 /*
@@ -109,6 +110,7 @@ void analytics_free_data(void)
     freez(analytics_data.netdata_config_use_private_registry);
     freez(analytics_data.netdata_config_oom_score);
     freez(analytics_data.netdata_prebuilt_distro);
+    freez(analytics_data.netdata_config_db_storage_tiers);
 }
 
 /*
@@ -489,6 +491,12 @@ void analytics_misc(void)
     if (config_get_boolean(CONFIG_SECTION_REGISTRY, "enabled", CONFIG_BOOLEAN_NO) &&
         web_server_mode != WEB_SERVER_MODE_NONE)
         analytics_set_data(&analytics_data.netdata_config_is_private_registry, "true");
+
+    {
+        char b[21];
+        snprintfz(b, 20, "%zu", rrdb.storage_tiers);
+        analytics_set_data(&analytics_data.netdata_config_db_storage_tiers, b);
+    }
 }
 
 void analytics_aclk(void)
@@ -899,6 +907,7 @@ void set_global_environment()
     analytics_set_data(&analytics_data.netdata_config_use_private_registry, "null");
     analytics_set_data(&analytics_data.netdata_config_oom_score, "null");
     analytics_set_data(&analytics_data.netdata_prebuilt_distro, "null");
+    analytics_set_data(&analytics_data.netdata_config_db_storage_tiers, "null");
 
     analytics_data.prometheus_hits = 0;
     analytics_data.shell_hits = 0;
@@ -981,7 +990,7 @@ void send_statistics(const char *action, const char *action_result, const char *
 
     sprintf(
         command_to_run,
-        "%s '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' ",
+        "%s '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' ",
         as_script,
         action,
         action_result,
@@ -1024,7 +1033,8 @@ void send_statistics(const char *action, const char *action_result, const char *
         analytics_data.netdata_config_is_private_registry,
         analytics_data.netdata_config_use_private_registry,
         analytics_data.netdata_config_oom_score,
-        analytics_data.netdata_prebuilt_distro);
+        analytics_data.netdata_prebuilt_distro,
+        analytics_data.netdata_config_db_storage_tiers);
 
     netdata_log_info("%s '%s' '%s' '%s'", as_script, action, action_result, action_data);
 

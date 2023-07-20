@@ -60,6 +60,7 @@ struct analytics_data {
     char *netdata_config_use_private_registry;
     char *netdata_config_oom_score;
     char *netdata_prebuilt_distro;
+    char *netdata_config_db_storage_tiers;
 
     size_t data_length;
 
@@ -70,6 +71,7 @@ struct analytics_data {
 
     size_t charts_count;
     size_t metrics_count;
+    size_t storage_tiers;
 
     bool exporting_enabled;
 };
