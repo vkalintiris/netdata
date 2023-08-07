@@ -528,3 +528,5 @@ set(DEBUGFS_PLUGIN_FILES collectors/debugfs.plugin/debugfs_plugin.c
                          collectors/debugfs.plugin/debugfs_extfrag.c
                          collectors/debugfs.plugin/debugfs_zswap.c
                          collectors/debugfs.plugin/sys_devices_virtual_powercap.c)
+
+set(APPS_PLUGIN_FILES collectors/apps.plugin/apps_plugin.c)

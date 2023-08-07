@@ -21,6 +21,7 @@ option(ENABLE_EBPF "enable ebpf" True)
 option(ENABLE_ML "enable machine learning" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
+option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
 
 include(source-files.cmake)
 
@@ -182,11 +183,22 @@ if(ENABLE_ACLK)
 
 endif()
 
+#
+# plugins
+#
+
 if(ENABLE_PLUGIN_DEBUGFS)
     add_executable(debugfs.plugin ${CONFIG_H} ${DEBUGFS_PLUGIN_FILES})
     target_link_libraries(debugfs.plugin libnetdata ${CAP_LIBRARIES})
     target_include_directories(debugfs.plugin PUBLIC ${CAP_INCLUDE_DIRS})
     target_compile_options(debugfs.plugin PUBLIC ${CAP_CFLAGS_OTHER})
+endif()
+
+if(ENABLE_PLUGIN_APPS)
+    add_executable(apps.plugin ${CONFIG_H} ${APPS_PLUGIN_FILES})
+    target_link_libraries(apps.plugin libnetdata ${CAP_LIBRARIES})
+    target_include_directories(apps.plugin PUBLIC ${CAP_INCLUDE_DIRS})
+    target_compile_options(apps.plugin PUBLIC ${CAP_CFLAGS_OTHER})
 endif()
 
 #
@@ -248,7 +260,11 @@ configure_file(config.cmake.h.in config.h)
 #
 
 install(TARGETS netdata DESTINATION usr/sbin)
+
 install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS apps.plugin DESTINATION usr/libexec/netdata/plugins.d)
+install(FILES collectors/apps.plugin/apps_groups.conf DESTINATION usr/lib/netdata/conf.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)
