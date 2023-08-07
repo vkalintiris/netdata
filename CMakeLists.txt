@@ -17,7 +17,6 @@ set(CONFIG_H_DIR ${CMAKE_BINARY_DIR})
 set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
 option(ENABLE_ACLK "enable aclk" True)
-option(ENABLE_EBPF "enable ebpf" True)
 option(ENABLE_ML "enable machine learning" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
@@ -29,6 +28,7 @@ option(ENABLE_PLUGIN_PERF "enable perf.plugin" True)
 option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" True)
 option(ENABLE_PLUGIN_CUPS "enable cups.plugin" True)
 option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network plugin" True)
+option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" True)
 
 include(source-files.cmake)
 
@@ -98,6 +98,21 @@ if(NOT CUPS_LIBRARIES)
         endif()
 endif()
 
+if(ENABLE_PLUGIN_EBPF)
+        set(HAVE_EBPF On)
+
+        target_link_libraries(libnetdata PUBLIC ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a)
+        target_include_directories(libnetdata BEFORE PUBLIC
+                                   ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include
+                                   ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include/uapi)
+
+        pkg_check_modules(ELF REQUIRED libelf)
+
+        target_include_directories(libnetdata BEFORE PUBLIC ${ELF_INCLUDE_DIRS})
+        target_compile_options(libnetdata PUBLIC ${ELF_CFLAGS_OTHER})
+        target_link_libraries(libnetdata PUBLIC ${ELF_LIBRARIES})
+endif()
+
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${JSONC_LIBRARIES})
@@ -125,21 +140,6 @@ target_link_libraries(libnetdata PUBLIC ${CRYPTO_LIBRARIES})
 target_include_directories(libnetdata BEFORE PUBLIC ${OPENSSL_INCLUDE_DIRS})
 target_compile_options(libnetdata PUBLIC ${OPENSSL_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${OPENSSL_LIBRARIES})
-
-if(ENABLE_EBPF)
-        set(HAVE_EBPF On)
-
-        pkg_check_modules(ELF REQUIRED libelf)
-
-        target_include_directories(libnetdata BEFORE PUBLIC ${ELF_INCLUDE_DIRS})
-        target_compile_options(libnetdata PUBLIC ${ELF_CFLAGS_OTHER} )
-        target_link_libraries(libnetdata PUBLIC ${ELF_LIBRARIES})
-
-        target_link_libraries(libnetdata PUBLIC ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a)
-        target_include_directories(libnetdata BEFORE PUBLIC
-                                   ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include
-                                   ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include/uapi)
-endif()
 
 target_link_libraries(libnetdata PUBLIC judy)
 
@@ -271,6 +271,11 @@ if(ENABLE_PLUGIN_CGROUP_NETWORK)
     target_link_libraries(cgroup-network libnetdata)
 endif()
 
+if(ENABLE_PLUGIN_EBPF)
+    add_executable(ebpf.plugin ${CONFIG_H} ${EBPF_PLUGIN_FILES})
+    target_link_libraries (ebpf.plugin libnetdata)
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -360,6 +365,8 @@ install(TARGETS cgroup-network DESTINATION usr/libexec/netdata/plugins.d)
 install(PROGRAMS collectors/cgroups.plugin/cgroup-name.sh
                  collectors/cgroups.plugin/cgroup-network-helper.sh
         DESTINATION usr/lib/netdata/conf.d)
+
+install(TARGETS ebpf.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)

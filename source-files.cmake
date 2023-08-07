@@ -100,7 +100,7 @@ set(LIBNETDATA_FILES libnetdata/adaptive_resortable_list/adaptive_resortable_lis
                      libnetdata/dyn_conf/dyn_conf.c
                      libnetdata/dyn_conf/dyn_conf.h)
 
-if(ENABLE_EBPF)
+if(ENABLE_PLUGIN_EBPF)
     list(APPEND LIBNETDATA_FILES libnetdata/ebpf/ebpf.c
                                  libnetdata/ebpf/ebpf.h)
 endif()
@@ -544,3 +544,46 @@ set(SLABINFO_PLUGIN_FILES collectors/slabinfo.plugin/slabinfo.c)
 set(CUPS_PLUGIN_FILES collectors/cups.plugin/cups_plugin.c)
 
 set(CGROUP_NETWORK_FILES collectors/cgroups.plugin/cgroup-network.c)
+
+set(EBPF_PLUGIN_FILES collectors/ebpf.plugin/ebpf.c
+                      collectors/ebpf.plugin/ebpf.h
+                      collectors/ebpf.plugin/ebpf_cachestat.c
+                      collectors/ebpf.plugin/ebpf_cachestat.h
+                      collectors/ebpf.plugin/ebpf_dcstat.c
+                      collectors/ebpf.plugin/ebpf_dcstat.h
+                      collectors/ebpf.plugin/ebpf_disk.c
+                      collectors/ebpf.plugin/ebpf_disk.h
+                      collectors/ebpf.plugin/ebpf_fd.c
+                      collectors/ebpf.plugin/ebpf_fd.h
+                      collectors/ebpf.plugin/ebpf_hardirq.c
+                      collectors/ebpf.plugin/ebpf_hardirq.h
+                      collectors/ebpf.plugin/ebpf_mdflush.c
+                      collectors/ebpf.plugin/ebpf_mdflush.h
+                      collectors/ebpf.plugin/ebpf_mount.c
+                      collectors/ebpf.plugin/ebpf_mount.h
+                      collectors/ebpf.plugin/ebpf_filesystem.c
+                      collectors/ebpf.plugin/ebpf_filesystem.h
+                      collectors/ebpf.plugin/ebpf_oomkill.c
+                      collectors/ebpf.plugin/ebpf_oomkill.h
+                      collectors/ebpf.plugin/ebpf_process.c
+                      collectors/ebpf.plugin/ebpf_process.h
+                      collectors/ebpf.plugin/ebpf_shm.c
+                      collectors/ebpf.plugin/ebpf_shm.h
+                      collectors/ebpf.plugin/ebpf_socket.c
+                      collectors/ebpf.plugin/ebpf_socket.h
+                      collectors/ebpf.plugin/ebpf_softirq.c
+                      collectors/ebpf.plugin/ebpf_softirq.h
+                      collectors/ebpf.plugin/ebpf_sync.c
+                      collectors/ebpf.plugin/ebpf_sync.h
+                      collectors/ebpf.plugin/ebpf_swap.c
+                      collectors/ebpf.plugin/ebpf_swap.h
+                      collectors/ebpf.plugin/ebpf_vfs.c
+                      collectors/ebpf.plugin/ebpf_vfs.h
+                      collectors/ebpf.plugin/ebpf_apps.c
+                      collectors/ebpf.plugin/ebpf_apps.h
+                      collectors/ebpf.plugin/ebpf_cgroup.c
+                      collectors/ebpf.plugin/ebpf_cgroup.h
+                      collectors/ebpf.plugin/ebpf_unittest.c
+                      collectors/ebpf.plugin/ebpf_unittest.h
+                      collectors/ebpf.plugin/ebpf_functions.c
+                      collectors/ebpf.plugin/ebpf_functions.h)
