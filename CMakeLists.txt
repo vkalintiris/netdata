@@ -18,6 +18,7 @@ set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
 option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
+option(ENABLE_EXPORTING_MONGODB "enable exporting mongodb" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -75,6 +76,12 @@ pkg_check_modules(CRYPTO libcrypto)
 pkg_check_modules(UUID REQUIRED uuid)
 pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 pkg_check_modules(ZLIB REQUIRED zlib)
+
+#
+# exporters
+#
+
+pkg_check_modules(MONGOC REQUIRED libmongoc-1.0)
 
 # needed for plugins
 pkg_check_modules(CAP QUIET libcap)
@@ -283,28 +290,32 @@ endif()
 add_executable(netdata
         ${NETDATA_FILES}
         ${GENERATED_CONFIG_H}
-        $<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>
+        "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
+        "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGODB_EXPORTING_FILES}>"
 )
 
 target_compile_definitions(netdata PRIVATE
-        $<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_CFLAGS_OTHER}>
-        $<$<BOOL:${ENABLE_ML}>:DLIB_NO_GUI_SUPPORT>
+        "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_CFLAGS_OTHER}>"
+        "$<$<BOOL:${ENABLE_ML}>:DLIB_NO_GUI_SUPPORT>"
+        "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_CFLAGS_OTHER}>"
 )
 
 target_include_directories(netdata PRIVATE
-        $<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_INCLUDE_DIRS}>
-        $<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/aclk/aclk-schemas>
-        $<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include>
-        $<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include>
-        $<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>
+        "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/aclk/aclk-schemas>"
+        "$<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include>"
+        "$<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/mqtt_websockets/c-rbuf/include>"
+        "$<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>"
+        "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
 )
 
 target_link_libraries(netdata PRIVATE
         rt
         m
         libnetdata
-        $<$<BOOL:${ENABLE_ACLK}>:mqttwebsockets>
-        $<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_LIBRARIES}>
+        "$<$<BOOL:${ENABLE_ACLK}>:mqttwebsockets>"
+        "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_LIBRARIES}>"
+        "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
 )
 
 #

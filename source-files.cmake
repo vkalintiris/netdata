@@ -587,3 +587,6 @@ set(EBPF_PLUGIN_FILES collectors/ebpf.plugin/ebpf.c
                       collectors/ebpf.plugin/ebpf_unittest.h
                       collectors/ebpf.plugin/ebpf_functions.c
                       collectors/ebpf.plugin/ebpf_functions.h)
+
+set(MONGODB_EXPORTING_FILES exporting/mongodb/mongodb.c
+                            exporting/mongodb/mongodb.h)
