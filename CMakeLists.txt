@@ -28,6 +28,7 @@ option(ENABLE_PLUGIN_XENSTAT "enable xenstat.plugin" True)
 option(ENABLE_PLUGIN_PERF "enable perf.plugin" True)
 option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" True)
 option(ENABLE_PLUGIN_CUPS "enable cups.plugin" True)
+option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network plugin" True)
 
 include(source-files.cmake)
 
@@ -265,6 +266,11 @@ if(ENABLE_PLUGIN_CUPS)
     target_compile_options(cups.plugin PRIVATE ${CUPS_CFLAGS_OTHER})
 endif()
 
+if(ENABLE_PLUGIN_CGROUP_NETWORK)
+    add_executable(cgroup-network ${CONFIG_H} ${CGROUP_NETWORK_FILES})
+    target_link_libraries(cgroup-network libnetdata)
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -349,6 +355,11 @@ install(TARGETS perf.plugin DESTINATION usr/libexec/netdata/plugins.d)
 install(TARGETS slabinfo.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(TARGETS cups.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS cgroup-network DESTINATION usr/libexec/netdata/plugins.d)
+install(PROGRAMS collectors/cgroups.plugin/cgroup-name.sh
+                 collectors/cgroups.plugin/cgroup-network-helper.sh
+        DESTINATION usr/lib/netdata/conf.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)
