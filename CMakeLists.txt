@@ -410,8 +410,8 @@ include(web/gui/v2/dashboard_v2.cmake)
 include(web/gui/gui.cmake)
 
 function(cat IN_FILE OUT_FILE)
-  file(READ ${IN_FILE} CONTENTS)
-  file(APPEND ${OUT_FILE} "${CONTENTS}")
+        file(READ ${IN_FILE} CONTENTS)
+        file(APPEND ${OUT_FILE} "${CONTENTS}")
 endfunction()
 
 file(WRITE ${CMAKE_BINARY_DIR}/web/gui/dashboard.js.in "")
