@@ -522,3 +522,9 @@ set(ACLK_FILES aclk/aclk_util.c
                aclk/schema-wrappers/agent_cmds.h
                aclk/helpers/mqtt_wss_pal.h
                aclk/helpers/ringbuffer_pal.h)
+
+set(DEBUGFS_PLUGIN_FILES collectors/debugfs.plugin/debugfs_plugin.c
+                         collectors/debugfs.plugin/debugfs_plugin.h
+                         collectors/debugfs.plugin/debugfs_extfrag.c
+                         collectors/debugfs.plugin/debugfs_zswap.c
+                         collectors/debugfs.plugin/sys_devices_virtual_powercap.c)

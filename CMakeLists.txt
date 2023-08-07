@@ -20,6 +20,8 @@ option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_EBPF "enable ebpf" True)
 option(ENABLE_ML "enable machine learning" True)
 
+option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
+
 include(source-files.cmake)
 
 #
@@ -65,6 +67,7 @@ pkg_check_modules(CRYPTO libcrypto)
 pkg_check_modules(UUID REQUIRED uuid)
 pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 pkg_check_modules(ZLIB REQUIRED zlib)
+pkg_check_modules(CAP QUIET libcap)
 
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
@@ -179,6 +182,13 @@ if(ENABLE_ACLK)
 
 endif()
 
+if(ENABLE_PLUGIN_DEBUGFS)
+    add_executable(debugfs.plugin ${CONFIG_H} ${DEBUGFS_PLUGIN_FILES})
+    target_link_libraries(debugfs.plugin libnetdata ${CAP_LIBRARIES})
+    target_include_directories(debugfs.plugin PUBLIC ${CAP_INCLUDE_DIRS})
+    target_compile_options(debugfs.plugin PUBLIC ${CAP_CFLAGS_OTHER})
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -238,6 +248,7 @@ configure_file(config.cmake.h.in config.h)
 #
 
 install(TARGETS netdata DESTINATION usr/sbin)
+install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)
