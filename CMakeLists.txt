@@ -24,6 +24,7 @@ option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
 option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" True)
 option(ENABLE_PLUGIN_NFACCT "enable nfacct.plugin" True)
+option(ENABLE_PLUGIN_XENSTAT "enable xenstat.plugin" True)
 
 include(source-files.cmake)
 
@@ -76,6 +77,10 @@ pkg_check_modules(CAP QUIET libcap)
 pkg_check_modules(IPMI REQUIRED libipmimonitoring)
 pkg_check_modules(NFACCT REQUIRED libnetfilter_acct)
 pkg_check_modules(MNL REQUIRED libmnl)
+
+pkg_check_modules(XENSTAT REQUIRED xenstat)
+# pkg_check_modules(YAJL REQUIRED yajl)
+pkg_check_modules(XENLIGHT REQUIRED xenlight)
 
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
@@ -222,6 +227,13 @@ if(ENABLE_PLUGIN_NFACCT)
     target_compile_options(nfacct.plugin PRIVATE ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
 endif()
 
+if(ENABLE_PLUGIN_XENSTAT)
+    add_executable(xenstat.plugin ${CONFIG_H} ${XENSTAT_PLUGIN_FILES})
+    target_link_libraries (xenstat.plugin libnetdata ${XENLIGHT_LIBRARIES} ${XENSTAT_LIBRARIES})
+    target_include_directories(xenstat.plugin PRIVATE ${XENLIGHT_INCLUDE_DIRS} ${XENSTAT_INCLUDE_DIRS})
+    target_compile_options(xenstat.plugin PRIVATE ${XENLIGHT_CFLAGS_OTHER} ${XENSTAT_CFLAGS_OTHER})
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -298,6 +310,8 @@ install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
 install(TARGETS freeipmi.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(TARGETS nfacct.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS xenstat.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)
