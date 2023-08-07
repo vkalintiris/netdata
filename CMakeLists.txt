@@ -25,6 +25,9 @@ option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
 option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" True)
 option(ENABLE_PLUGIN_NFACCT "enable nfacct.plugin" True)
 option(ENABLE_PLUGIN_XENSTAT "enable xenstat.plugin" True)
+option(ENABLE_PLUGIN_PERF "enable perf.plugin" True)
+option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" True)
+option(ENABLE_PLUGIN_CUPS "enable cups.plugin" True)
 
 include(source-files.cmake)
 
@@ -81,6 +84,18 @@ pkg_check_modules(MNL REQUIRED libmnl)
 pkg_check_modules(XENSTAT REQUIRED xenstat)
 # pkg_check_modules(YAJL REQUIRED yajl)
 pkg_check_modules(XENLIGHT REQUIRED xenlight)
+
+pkg_check_modules(CUPS libcups)
+if(NOT CUPS_LIBRARIES)
+        pkg_check_modules(CUPS cups)
+        if(NOT CUPS_LIBRARIES)
+                find_program(CUPS_CONFIG cups-config)
+                if(CUPS_CONFIG)
+                        execute_process(COMMAND ${CUPS_CONFIG} --cflags OUTPUT_VARIABLE CUPS_CFLAGS_OTHER OUTPUT_STRIP_TRAILING_WHITESPACE)
+                        execute_process(COMMAND ${CUPS_CONFIG} --libs OUTPUT_VARIABLE CUPS_LIBRARIES OUTPUT_STRIP_TRAILING_WHITESPACE)
+                endif()
+        endif()
+endif()
 
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
@@ -234,6 +249,22 @@ if(ENABLE_PLUGIN_XENSTAT)
     target_compile_options(xenstat.plugin PRIVATE ${XENLIGHT_CFLAGS_OTHER} ${XENSTAT_CFLAGS_OTHER})
 endif()
 
+if(ENABLE_PLUGIN_PERF)
+    add_executable(perf.plugin ${CONFIG_H} ${PERF_PLUGIN_FILES})
+    target_link_libraries(perf.plugin libnetdata)
+endif()
+
+if(ENABLE_PLUGIN_SLABINFO)
+    add_executable(slabinfo.plugin ${CONFIG_H} ${SLABINFO_PLUGIN_FILES})
+    target_link_libraries(slabinfo.plugin libnetdata)
+endif()
+
+if(ENABLE_PLUGIN_CUPS)
+    add_executable(cups.plugin ${CONFIG_H} ${CUPS_PLUGIN_FILES})
+    target_link_libraries (cups.plugin libnetdata ${CUPS_LIBRARIES})
+    target_compile_options(cups.plugin PRIVATE ${CUPS_CFLAGS_OTHER})
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -312,6 +343,12 @@ install(TARGETS freeipmi.plugin DESTINATION usr/libexec/netdata/plugins.d)
 install(TARGETS nfacct.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(TARGETS xenstat.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS perf.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS slabinfo.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS cups.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)

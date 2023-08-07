@@ -536,3 +536,9 @@ set(FREEIPMI_PLUGIN_FILES collectors/freeipmi.plugin/freeipmi_plugin.c)
 set(NFACCT_PLUGIN_FILES collectors/nfacct.plugin/plugin_nfacct.c)
 
 set(XENSTAT_PLUGIN_FILES collectors/xenstat.plugin/xenstat_plugin.c)
+
+set(PERF_PLUGIN_FILES collectors/perf.plugin/perf_plugin.c)
+
+set(SLABINFO_PLUGIN_FILES collectors/slabinfo.plugin/slabinfo.c)
+
+set(CUPS_PLUGIN_FILES collectors/cups.plugin/cups_plugin.c)
