@@ -23,6 +23,7 @@ option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
 option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" True)
+option(ENABLE_PLUGIN_NFACCT "enable nfacct.plugin" True)
 
 include(source-files.cmake)
 
@@ -73,6 +74,8 @@ pkg_check_modules(ZLIB REQUIRED zlib)
 # needed for plugins
 pkg_check_modules(CAP QUIET libcap)
 pkg_check_modules(IPMI REQUIRED libipmimonitoring)
+pkg_check_modules(NFACCT REQUIRED libnetfilter_acct)
+pkg_check_modules(MNL REQUIRED libmnl)
 
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
@@ -212,6 +215,13 @@ if(ENABLE_PLUGIN_FREEIPMI)
     target_compile_options(freeipmi.plugin PRIVATE ${IPMI_CFLAGS_OTHER})
 endif()
 
+if(ENABLE_PLUGIN_NFACCT)
+    add_executable(nfacct.plugin ${CONFIG_H} ${NFACCT_PLUGIN_FILES})
+    target_link_libraries (nfacct.plugin libnetdata ${MNL_LIBRARIES} ${NFACCT_LIBRARIES})
+    target_include_directories(nfacct.plugin PRIVATE ${MNL_INCLUDE_DIRS} ${NFACCT_INCLUDE_DIRS})
+    target_compile_options(nfacct.plugin PRIVATE ${MNL_CFLAGS_OTHER} ${NFACCT_CFLAGS_OTHER})
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -286,6 +296,8 @@ install(FILES collectors/apps.plugin/apps_groups.conf DESTINATION usr/lib/netdat
 install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(TARGETS freeipmi.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS nfacct.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)

@@ -532,3 +532,5 @@ set(DEBUGFS_PLUGIN_FILES collectors/debugfs.plugin/debugfs_plugin.c
 set(APPS_PLUGIN_FILES collectors/apps.plugin/apps_plugin.c)
 
 set(FREEIPMI_PLUGIN_FILES collectors/freeipmi.plugin/freeipmi_plugin.c)
+
+set(NFACCT_PLUGIN_FILES collectors/nfacct.plugin/plugin_nfacct.c)
