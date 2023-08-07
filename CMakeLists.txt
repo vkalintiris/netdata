@@ -22,6 +22,7 @@ option(ENABLE_ML "enable machine learning" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
+option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" True)
 
 include(source-files.cmake)
 
@@ -68,7 +69,10 @@ pkg_check_modules(CRYPTO libcrypto)
 pkg_check_modules(UUID REQUIRED uuid)
 pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 pkg_check_modules(ZLIB REQUIRED zlib)
+
+# needed for plugins
 pkg_check_modules(CAP QUIET libcap)
+pkg_check_modules(IPMI REQUIRED libipmimonitoring)
 
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
@@ -201,6 +205,13 @@ if(ENABLE_PLUGIN_APPS)
     target_compile_options(apps.plugin PRIVATE ${CAP_CFLAGS_OTHER})
 endif()
 
+if(ENABLE_PLUGIN_FREEIPMI)
+    add_executable(freeipmi.plugin ${CONFIG_H} ${FREEIPMI_PLUGIN_FILES})
+    target_link_libraries (freeipmi.plugin libnetdata ${IPMI_LIBRARIES})
+    target_include_directories(freeipmi.plugin PRIVATE ${IPMI_INCLUDE_DIRS})
+    target_compile_options(freeipmi.plugin PRIVATE ${IPMI_CFLAGS_OTHER})
+endif()
+
 #
 # build netdata (only Linux ATM)
 #
@@ -269,10 +280,12 @@ configure_file(config.cmake.h.in config.h)
 install(TARGETS netdata DESTINATION usr/sbin)
 install(TARGETS netdatacli DESTINATION usr/sbin)
 
-install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
-
 install(TARGETS apps.plugin DESTINATION usr/libexec/netdata/plugins.d)
 install(FILES collectors/apps.plugin/apps_groups.conf DESTINATION usr/lib/netdata/conf.d)
+
+install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
+
+install(TARGETS freeipmi.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
 install(DIRECTORY DESTINATION var/cache/netdata)
 install(DIRECTORY DESTINATION var/log/netdata)
