@@ -184,21 +184,21 @@ if(ENABLE_ACLK)
 endif()
 
 #
-# plugins
+# build plugins
 #
 
 if(ENABLE_PLUGIN_DEBUGFS)
     add_executable(debugfs.plugin ${CONFIG_H} ${DEBUGFS_PLUGIN_FILES})
     target_link_libraries(debugfs.plugin libnetdata ${CAP_LIBRARIES})
-    target_include_directories(debugfs.plugin PUBLIC ${CAP_INCLUDE_DIRS})
-    target_compile_options(debugfs.plugin PUBLIC ${CAP_CFLAGS_OTHER})
+    target_include_directories(debugfs.plugin PRIVATE ${CAP_INCLUDE_DIRS})
+    target_compile_options(debugfs.plugin PRIVATE ${CAP_CFLAGS_OTHER})
 endif()
 
 if(ENABLE_PLUGIN_APPS)
     add_executable(apps.plugin ${CONFIG_H} ${APPS_PLUGIN_FILES})
     target_link_libraries(apps.plugin libnetdata ${CAP_LIBRARIES})
-    target_include_directories(apps.plugin PUBLIC ${CAP_INCLUDE_DIRS})
-    target_compile_options(apps.plugin PUBLIC ${CAP_CFLAGS_OTHER})
+    target_include_directories(apps.plugin PRIVATE ${CAP_INCLUDE_DIRS})
+    target_compile_options(apps.plugin PRIVATE ${CAP_CFLAGS_OTHER})
 endif()
 
 #
@@ -233,6 +233,13 @@ target_link_libraries(netdata PRIVATE
 )
 
 #
+# build netdatacli
+#
+
+add_executable(netdatacli ${CONFIG_H} ${NETDATACLI_FILES})
+target_link_libraries(netdatacli libnetdata)
+
+#
 # Generate config file
 #
 
@@ -260,6 +267,7 @@ configure_file(config.cmake.h.in config.h)
 #
 
 install(TARGETS netdata DESTINATION usr/sbin)
+install(TARGETS netdatacli DESTINATION usr/sbin)
 
 install(TARGETS debugfs.plugin DESTINATION usr/libexec/netdata/plugins.d)
 
