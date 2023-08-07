@@ -969,6 +969,7 @@ if [ -d ./.git ] ; then
 fi
 
 # -----------------------------------------------------------------------------
+
 echo >&2
 
 [ -n "${GITHUB_ACTIONS}" ] && echo "::group::Configuring Netdata."
