@@ -1035,8 +1035,17 @@ set(varlibdir_POST "${CMAKE_INSTALL_PREFIX}/var/lib/netdata")
 set(netdata_user_POST "${NETDATA_USER}")
 
 # netdata-claim.sh
-set(enable_cloud_POST $<IF:${ENABLE_CLOUD},"yes","no">)
-set(enable_aclk_POST  $<IF:${ENABLE_ACLK},"yes","no">)
+if(ENABLE_CLOUD)
+        set(enable_cloud_POST "yes")
+else()
+        set(enable_cloud_POST "no")
+endif()
+
+if(ENABLE_ACLK)
+        set(enable_aclk_POST "yes")
+else()
+        set(enable_aclk_POST "no")
+endif()
 
 configure_file(claim/netdata-claim.sh.in claim/netdata-claim.sh @ONLY)
 install(PROGRAMS ${CMAKE_BINARY_DIR}/claim/netdata-claim.sh DESTINATION usr/sbin)
