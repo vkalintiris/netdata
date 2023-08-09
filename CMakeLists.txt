@@ -1205,6 +1205,13 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 # you'll get some-application_0.9.2_amd64.deb (note the underscores too)
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS TRUE)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "openssl, netdata-plugin-ebpf [amd64], netdata-plugin-apps, netdata-plugin-pythond, netdata-plugin-go, netdata-plugin-debugfs, netdata-plugin-nfacct, netdata-plugin-chartsd, netdata-plugin-slabinfo, netdata-plugin-perf")
+set(CPACK_DEBIAN_PACKAGE_PREDEPENDS "adduser, dpkg (>= 1.17.14), libcap2-bin (>= 1:2.0), lsb-base (>= 3.1-23.2)")
+set(CPACK_DEBIAN_PACKAGE_CONFLICTS "netdata-core, netdata-plugins-bash, netdata-plugins-python, netdata-web")
+set(CPACK_DEBIAN_PACKAGE_SUGGESTS "netdata-plugin-cups, netdata-plugin-freeipmi")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "netdata-plugin-systemd-journal")
 # that is if you want every group to have its own package,
 # although the same will happen if this is not set (so it defaults to ONE_PER_GROUP)
 # and CPACK_DEB_COMPONENT_INSTALL is set to YES
