@@ -19,6 +19,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED On)
 set(CMAKE_BUILD_TYPE "Debug")
 set(CMAKE_EXPORT_COMPILE_COMMANDS On)
 
+include(cmake/bundle_jsonc.cmake)
+
 set(CONFIG_H_DIR ${CMAKE_BINARY_DIR})
 set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
