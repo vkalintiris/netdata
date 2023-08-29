@@ -747,8 +747,6 @@ target_include_directories(libnetdata BEFORE PUBLIC ${CONFIG_H_DIR} ${CMAKE_SOUR
 
 # ebpf
 if(ENABLE_PLUGIN_EBPF)
-        set(HAVE_EBPF On)
-
         target_link_libraries(libnetdata PUBLIC ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a)
         target_include_directories(libnetdata BEFORE PUBLIC
                                    ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include
