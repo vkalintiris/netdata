@@ -19,8 +19,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED On)
 set(CMAKE_BUILD_TYPE "Debug")
 set(CMAKE_EXPORT_COMPILE_COMMANDS On)
 
-include(cmake/bundle_jsonc.cmake)
-
 set(CONFIG_H_DIR ${CMAKE_BINARY_DIR})
 set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
@@ -39,6 +37,8 @@ option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" True)
 option(ENABLE_PLUGIN_CUPS "enable cups.plugin" True)
 option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network plugin" True)
 option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" True)
+
+option(ENABLE_BUNDLED_JSONC "enable bundled json-c" False)
 
 #
 # source files
@@ -615,10 +615,19 @@ if(ENABLE_PLUGIN_EBPF)
         target_link_libraries(libnetdata PUBLIC ${ELF_LIBRARIES})
 endif()
 
+if(ENABLE_BUNDLED_JSONC)
+add_library(jsonc STATIC IMPORTED)
+set_property(TARGET jsonc PROPERTY
+             IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/libjson-c.a")
+
+target_include_directories(libnetdata AFTER PUBLIC "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/json-c")
+target_link_libraries(libnetdata PUBLIC jsonc)
+else()
 pkg_check_modules(JSONC REQUIRED json-c)
 target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${JSONC_LIBRARIES})
+endif()
 
 pkg_check_modules(ZLIB REQUIRED zlib)
 target_include_directories(libnetdata BEFORE PUBLIC ${ZLIB_INCLUDE_DIRS})
