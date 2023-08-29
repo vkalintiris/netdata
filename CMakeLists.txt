@@ -40,6 +40,7 @@ option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" True)
 
 option(ENABLE_BUNDLED_JSONC "enable bundled json-c" False)
 option(ENABLE_BUNDLED_YAML "enable bundled yaml" False)
+option(ENABLE_BUNDLED_PROTOBUF "enable bundled protobuf" False)
 
 #
 # source files
@@ -712,7 +713,13 @@ if(ENABLE_ACLK)
         #
         # proto definitions
         #
-        find_package(Protobuf REQUIRED)
+        if(ENABLE_BUNDLED_PROTOBUF)
+                set(PROTOBUF_PROTOC_EXECUTABLE "${CMAKE_SOURCE_DIR}/externaldeps/protobuf/src/protoc")
+                set(PROTOBUF_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/externaldeps/protobuf/src")
+                set(PROTOBUF_LIBRARIES "${CMAKE_SOURCE_DIR}/externaldeps/protobuf/src/.libs/libprotobuf.a")
+        else()
+                find_package(Protobuf REQUIRED)
+        endif()
 
         function(protobuf_aclk_generate_cpp SRCS HDRS)
           if(NOT ARGN)
