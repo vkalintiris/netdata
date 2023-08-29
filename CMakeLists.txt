@@ -43,6 +43,21 @@ option(ENABLE_BUNDLED_YAML "enable bundled yaml" False)
 option(ENABLE_BUNDLED_PROTOBUF "enable bundled protobuf" False)
 
 #
+# detect OS
+#
+set(LINUX   False)
+set(FREEBSD False)
+set(MACOS   False)
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+        set(MACOS True)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+        set(FREEBSD True)
+else()
+        set(LINUX True)
+endif()
+
+#
 # source files
 #
 
