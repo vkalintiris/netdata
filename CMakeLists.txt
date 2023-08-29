@@ -26,6 +26,7 @@ option(ENABLE_CLOUD "enable cloud" True)
 option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_EXPORTING_MONGODB "enable exporting mongodb" True)
+option(ENABLE_H2O "enable h2o" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -169,6 +170,86 @@ if(ENABLE_PLUGIN_EBPF)
                                  libnetdata/ebpf/ebpf.h)
 endif()
 
+set(LIBH2O_FILES web/server/h2o/libh2o/deps/cloexec/cloexec.c
+                 web/server/h2o/libh2o/deps/libgkc/gkc.c
+                 web/server/h2o/libh2o/deps/libyrmcds/close.c
+                 web/server/h2o/libh2o/deps/libyrmcds/connect.c
+                 web/server/h2o/libh2o/deps/libyrmcds/recv.c
+                 web/server/h2o/libh2o/deps/libyrmcds/send.c
+                 web/server/h2o/libh2o/deps/libyrmcds/send_text.c
+                 web/server/h2o/libh2o/deps/libyrmcds/socket.c
+                 web/server/h2o/libh2o/deps/libyrmcds/strerror.c
+                 web/server/h2o/libh2o/deps/libyrmcds/text_mode.c
+                 web/server/h2o/libh2o/deps/picohttpparser/picohttpparser.c
+                 web/server/h2o/libh2o/lib/common/cache.c
+                 web/server/h2o/libh2o/lib/common/file.c
+                 web/server/h2o/libh2o/lib/common/filecache.c
+                 web/server/h2o/libh2o/lib/common/hostinfo.c
+                 web/server/h2o/libh2o/lib/common/http1client.c
+                 web/server/h2o/libh2o/lib/common/memcached.c
+                 web/server/h2o/libh2o/lib/common/memory.c
+                 web/server/h2o/libh2o/lib/common/multithread.c
+                 web/server/h2o/libh2o/lib/common/serverutil.c
+                 web/server/h2o/libh2o/lib/common/socket.c
+                 web/server/h2o/libh2o/lib/common/socketpool.c
+                 web/server/h2o/libh2o/lib/common/string.c
+                 web/server/h2o/libh2o/lib/common/time.c
+                 web/server/h2o/libh2o/lib/common/timeout.c
+                 web/server/h2o/libh2o/lib/common/url.c
+                 web/server/h2o/libh2o/lib/core/config.c
+                 web/server/h2o/libh2o/lib/core/configurator.c
+                 web/server/h2o/libh2o/lib/core/context.c
+                 web/server/h2o/libh2o/lib/core/headers.c
+                 web/server/h2o/libh2o/lib/core/logconf.c
+                 web/server/h2o/libh2o/lib/core/proxy.c
+                 web/server/h2o/libh2o/lib/core/request.c
+                 web/server/h2o/libh2o/lib/core/token.c
+                 web/server/h2o/libh2o/lib/core/util.c
+                 web/server/h2o/libh2o/lib/handler/access_log.c
+                 web/server/h2o/libh2o/lib/handler/chunked.c
+                 web/server/h2o/libh2o/lib/handler/compress.c
+                 web/server/h2o/libh2o/lib/handler/compress/gzip.c
+                 web/server/h2o/libh2o/lib/handler/errordoc.c
+                 web/server/h2o/libh2o/lib/handler/expires.c
+                 web/server/h2o/libh2o/lib/handler/fastcgi.c
+                 web/server/h2o/libh2o/lib/handler/file.c
+                 web/server/h2o/libh2o/lib/handler/headers.c
+                 web/server/h2o/libh2o/lib/handler/mimemap.c
+                 web/server/h2o/libh2o/lib/handler/proxy.c
+                 web/server/h2o/libh2o/lib/handler/redirect.c
+                 web/server/h2o/libh2o/lib/handler/reproxy.c
+                 web/server/h2o/libh2o/lib/handler/throttle_resp.c
+                 web/server/h2o/libh2o/lib/handler/status.c
+                 web/server/h2o/libh2o/lib/handler/headers_util.c
+                 web/server/h2o/libh2o/lib/handler/status/events.c
+                 web/server/h2o/libh2o/lib/handler/status/requests.c
+                 web/server/h2o/libh2o/lib/handler/http2_debug_state.c
+                 web/server/h2o/libh2o/lib/handler/status/durations.c
+                 web/server/h2o/libh2o/lib/handler/configurator/access_log.c
+                 web/server/h2o/libh2o/lib/handler/configurator/compress.c
+                 web/server/h2o/libh2o/lib/handler/configurator/errordoc.c
+                 web/server/h2o/libh2o/lib/handler/configurator/expires.c
+                 web/server/h2o/libh2o/lib/handler/configurator/fastcgi.c
+                 web/server/h2o/libh2o/lib/handler/configurator/file.c
+                 web/server/h2o/libh2o/lib/handler/configurator/headers.c
+                 web/server/h2o/libh2o/lib/handler/configurator/proxy.c
+                 web/server/h2o/libh2o/lib/handler/configurator/redirect.c
+                 web/server/h2o/libh2o/lib/handler/configurator/reproxy.c
+                 web/server/h2o/libh2o/lib/handler/configurator/throttle_resp.c
+                 web/server/h2o/libh2o/lib/handler/configurator/status.c
+                 web/server/h2o/libh2o/lib/handler/configurator/http2_debug_state.c
+                 web/server/h2o/libh2o/lib/handler/configurator/headers_util.c
+                 web/server/h2o/libh2o/lib/http1.c
+                 web/server/h2o/libh2o/lib/tunnel.c
+                 web/server/h2o/libh2o/lib/http2/cache_digests.c
+                 web/server/h2o/libh2o/lib/http2/casper.c
+                 web/server/h2o/libh2o/lib/http2/connection.c
+                 web/server/h2o/libh2o/lib/http2/frame.c
+                 web/server/h2o/libh2o/lib/http2/hpack.c
+                 web/server/h2o/libh2o/lib/http2/scheduler.c
+                 web/server/h2o/libh2o/lib/http2/stream.c
+                 web/server/h2o/libh2o/lib/http2/http2_debug_state.c)
+
 set(DAEMON_FILES daemon/buildinfo.c
                  daemon/buildinfo.h
                  daemon/common.c
@@ -194,6 +275,15 @@ set(DAEMON_FILES daemon/buildinfo.c
                  daemon/pipename.h
                  daemon/unit_test.c
                  daemon/unit_test.h)
+
+set(H2O_FILES web/server/h2o/http_server.c
+              web/server/h2o/http_server.h
+              web/server/h2o/h2o_utils.c
+              web/server/h2o/h2o_utils.h)
+
+if(ENABLE_H2O)
+    list(APPEND DAEMON_FILES ${H2O_FILES})
+endif()
 
 set(API_PLUGIN_FILES web/api/web_api.c
                      web/api/web_api.h
@@ -590,6 +680,34 @@ set(MONGODB_EXPORTING_FILES exporting/mongodb/mongodb.c
                             exporting/mongodb/mongodb.h)
 
 #
+# build h2o
+#
+
+add_library(h2o ${LIBH2O_FILES})
+
+target_include_directories(h2o AFTER PUBLIC
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/include"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/cloexec"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/brotli/enc"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/golombset"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libgkc"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libyrmcds"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/klib"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/neverbleed"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picohttpparser"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picotest"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yaml/include"
+                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yoml")
+
+target_compile_options(h2o PRIVATE -Wno-old-style-declaration
+                                   -Wno-deprecated-declarations
+                                   -Wno-unused-parameter
+                                   -Wno-sign-compare
+                                   -Wno-missing-field-initializers)
+
+target_compile_options(h2o PUBLIC -DH2O_USE_LIBUV=0)
+
+#
 # build libjudy
 #
 add_library(judy ${LIBJUDY_SOURCES})
@@ -706,6 +824,9 @@ pkg_check_modules(OPENSSL REQUIRED openssl)
 target_include_directories(libnetdata BEFORE PUBLIC ${OPENSSL_INCLUDE_DIRS})
 target_compile_options(libnetdata PUBLIC ${OPENSSL_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${OPENSSL_LIBRARIES})
+
+# h2o
+target_link_libraries(libnetdata PUBLIC "$<$<BOOL:${ENABLE_H2O}>:h2o>")
 
 #
 # build protos
@@ -1001,6 +1122,7 @@ endif()
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
+        "$<$<BOOL:${ENABLE_H2O}>:${H2O_FILES}>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGODB_EXPORTING_FILES}>"
 )
 

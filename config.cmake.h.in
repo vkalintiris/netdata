@@ -39,6 +39,7 @@
 // Hard-coded, I want to surface systems that might not have this.
 #define ENABLE_JSONC 1
 
+#cmakedefine ENABLE_H2O
 #cmakedefine ENABLE_ML
 #cmakedefine ENABLE_ACLK
 #cmakedefine ENABLE_HTTPS
