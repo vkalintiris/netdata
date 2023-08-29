@@ -27,6 +27,7 @@ option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_EXPORTING_MONGODB "enable exporting mongodb" True)
 option(ENABLE_H2O "enable h2o" True)
+option(ENABLE_DBENGINE "enable dbengine" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -445,27 +446,30 @@ set(RRD_PLUGIN_FILES database/contexts/api_v1.c
                      database/sqlite/sqlite_aclk_alert.h
                      database/sqlite/sqlite3.c
                      database/sqlite/sqlite3.h
-                     database/engine/rrdengine.c
-                     database/engine/rrdengine.h
-                     database/engine/rrddiskprotocol.h
-                     database/engine/datafile.c
-                     database/engine/datafile.h
-                     database/engine/journalfile.c
-                     database/engine/journalfile.h
-                     database/engine/rrdenginelib.c
-                     database/engine/rrdenginelib.h
-                     database/engine/rrdengineapi.c
-                     database/engine/rrdengineapi.h
-                     database/engine/pagecache.c
-                     database/engine/pagecache.h
-                     database/engine/cache.c
-                     database/engine/cache.h
-                     database/engine/metric.c
-                     database/engine/metric.h
-                     database/engine/pdc.c
-                     database/engine/pdc.h
                      database/KolmogorovSmirnovDist.c
                      database/KolmogorovSmirnovDist.h)
+
+if(ENABLE_DBENGINE)
+    list(APPEND RRD_PLUGIN_FILES database/engine/rrdengine.c
+                                 database/engine/rrdengine.h
+                                 database/engine/rrddiskprotocol.h
+                                 database/engine/datafile.c
+                                 database/engine/datafile.h
+                                 database/engine/journalfile.c
+                                 database/engine/journalfile.h
+                                 database/engine/rrdenginelib.c
+                                 database/engine/rrdenginelib.h
+                                 database/engine/rrdengineapi.c
+                                 database/engine/rrdengineapi.h
+                                 database/engine/pagecache.c
+                                 database/engine/pagecache.h
+                                 database/engine/cache.c
+                                 database/engine/cache.h
+                                 database/engine/metric.c
+                                 database/engine/metric.h
+                                 database/engine/pdc.c
+                                 database/engine/pdc.h)
+endif()
 
 set(REGISTRY_PLUGIN_FILES registry/registry.c
                           registry/registry.h
