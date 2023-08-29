@@ -529,6 +529,23 @@ set(CGROUPS_PLUGIN_FILES collectors/cgroups.plugin/sys_fs_cgroup.c
 
 set(DISKSPACE_PLUGIN_FILES collectors/diskspace.plugin/plugin_diskspace.c)
 
+set(MACOS_PLUGIN_FILES collectors/macos.plugin/plugin_macos.c
+                       collectors/macos.plugin/plugin_macos.h
+                       collectors/macos.plugin/macos_sysctl.c
+                       collectors/macos.plugin/macos_mach_smi.c
+                       collectors/macos.plugin/macos_fw.c)
+
+set(FREEBSD_PLUGIN_FILES collectors/freebsd.plugin/plugin_freebsd.c
+                         collectors/freebsd.plugin/plugin_freebsd.h
+                         collectors/freebsd.plugin/freebsd_sysctl.c
+                         collectors/freebsd.plugin/freebsd_getmntinfo.c
+                         collectors/freebsd.plugin/freebsd_getifaddrs.c
+                         collectors/freebsd.plugin/freebsd_devstat.c
+                         collectors/freebsd.plugin/freebsd_kstat_zfs.c
+                         collectors/freebsd.plugin/freebsd_ipfw.c
+                         collectors/proc.plugin/zfs_common.c
+                         collectors/proc.plugin/zfs_common.h)
+
 set(PROC_PLUGIN_FILES collectors/proc.plugin/ipc.c
                       collectors/proc.plugin/plugin_proc.c
                       collectors/proc.plugin/plugin_proc.h
@@ -594,12 +611,19 @@ set(NETDATA_FILES collectors/all.h
                   ${TIMEX_PLUGIN_FILES}
                   ${PROFILE_PLUGIN_FILES})
 
-# FIXME: linux only
-list(APPEND NETDATA_FILES daemon/static_threads_linux.c
-                          ${CGROUPS_PLUGIN_FILES}
-                          ${DISKSPACE_PLUGIN_FILES}
-                          ${PROC_PLUGIN_FILES}
-                          ${TC_PLUGIN_FILES})
+if(LINUX)
+        list(APPEND NETDATA_FILES daemon/static_threads_linux.c
+                                  ${CGROUPS_PLUGIN_FILES}
+                                  ${DISKSPACE_PLUGIN_FILES}
+                                  ${PROC_PLUGIN_FILES}
+                                  ${TC_PLUGIN_FILES})
+elseif(MACOS)
+        list(APPEND NETDATA_FILES daemon/static_threads_macos.c
+                                  ${MACOS_PLUGIN_FILES})
+elseif(FREEBSD)
+        list(APPEND NETDATA_FILES daemon/static_threads_freebsd.c
+                                  ${FREEBSD_PLUGIN_FILES})
+endif()
 
 set(MQTT_WEBSOCKETS_FILES mqtt_websockets/src/mqtt_wss_client.c
                           mqtt_websockets/src/include/mqtt_wss_client.h
