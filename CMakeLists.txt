@@ -1235,7 +1235,6 @@ endif()
 configure_file(claim/netdata-claim.sh.in claim/netdata-claim.sh @ONLY)
 install(PROGRAMS ${CMAKE_BINARY_DIR}/claim/netdata-claim.sh DESTINATION usr/sbin)
 
-
 #
 # service files
 #
@@ -1285,6 +1284,11 @@ install(FILES system/.install-type DESTINATION etc/netdata)
 install(FILES system/netdata-updater.conf DESTINATION etc/netdata)
 
 install(PROGRAMS system/edit-config DESTINATION etc/netdata)
+
+install(PROGRAMS daemon/system-info.sh
+                 daemon/anonymous-statistics.sh
+                 daemon/get-kubernetes-labels.sh
+        DESTINATION usr/libexec/netdata/plugins.d)
 
 #
 # health files
