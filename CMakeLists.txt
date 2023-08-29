@@ -39,6 +39,7 @@ option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network plugin" True)
 option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" True)
 
 option(ENABLE_BUNDLED_JSONC "enable bundled json-c" False)
+option(ENABLE_BUNDLED_YAML "enable bundled yaml" False)
 
 #
 # source files
@@ -601,6 +602,7 @@ add_library(libnetdata ${LIBNETDATA_FILES})
 
 target_include_directories(libnetdata BEFORE PUBLIC ${CONFIG_H_DIR} ${CMAKE_SOURCE_DIR})
 
+# ebpf
 if(ENABLE_PLUGIN_EBPF)
         set(HAVE_EBPF On)
 
@@ -615,51 +617,74 @@ if(ENABLE_PLUGIN_EBPF)
         target_link_libraries(libnetdata PUBLIC ${ELF_LIBRARIES})
 endif()
 
-if(ENABLE_BUNDLED_JSONC)
-add_library(jsonc STATIC IMPORTED)
-set_property(TARGET jsonc PROPERTY
-             IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/libjson-c.a")
+# judy
+target_link_libraries(libnetdata PUBLIC judy)
 
-target_include_directories(libnetdata AFTER PUBLIC "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/json-c")
-target_link_libraries(libnetdata PUBLIC jsonc)
+# json-c
+if(ENABLE_BUNDLED_JSONC)
+        add_library(jsonc STATIC IMPORTED)
+        set_property(TARGET jsonc PROPERTY
+                     IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/libjson-c.a")
+
+        target_include_directories(libnetdata AFTER PUBLIC "${CMAKE_SOURCE_DIR}/externaldeps/jsonc/json-c")
+        target_link_libraries(libnetdata PUBLIC jsonc)
 else()
-pkg_check_modules(JSONC REQUIRED json-c)
-target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
-target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
-target_link_libraries(libnetdata PUBLIC ${JSONC_LIBRARIES})
+        pkg_check_modules(JSONC REQUIRED json-c)
+        target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
+        target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
+        target_link_libraries(libnetdata PUBLIC ${JSONC_LIBRARIES})
 endif()
 
+# yaml
+if(ENABLE_BUNDLED_YAML)
+        add_library(yaml STATIC IMPORTED)
+        set_property(TARGET yaml PROPERTY
+                     IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/externaldeps/libyaml/libyaml.a")
+
+        target_include_directories(libnetdata AFTER PUBLIC "${CMAKE_SOURCE_DIR}/externaldeps/libyaml")
+        target_link_libraries(libnetdata PUBLIC yaml)
+else()
+        pkg_check_modules(YAML REQUIRED yaml-0.1)
+        target_include_directories(libnetdata BEFORE PUBLIC ${YAML_INCLUDE_DIRS})
+        target_compile_definitions(libnetdata PUBLIC ${YAML_CFLAGS_OTHER})
+        target_link_libraries(libnetdata PUBLIC ${YAML_LIBRARIES})
+endif()
+
+# zlib
 pkg_check_modules(ZLIB REQUIRED zlib)
 target_include_directories(libnetdata BEFORE PUBLIC ${ZLIB_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${ZLIB_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${ZLIB_LIBRARIES})
 
+# lz4
 pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 target_include_directories(libnetdata BEFORE PUBLIC ${LIBLZ4_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${LIBLZ4_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${LIBLZ4_LIBRARIES})
 
+# uuid
 pkg_check_modules(UUID REQUIRED uuid)
 target_include_directories(libnetdata BEFORE PUBLIC ${UUID_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${UUID_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${UUID_LIBRARIES})
 
+# uv
 pkg_check_modules(LIBUV REQUIRED libuv)
 target_include_directories(libnetdata BEFORE PUBLIC ${LIBUV_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${LIBUV_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${LIBUV_LIBRARIES})
 
+# crypto
 pkg_check_modules(CRYPTO libcrypto)
 target_include_directories(libnetdata BEFORE PUBLIC ${CRYPTO_INCLUDE_DIRS})
 target_compile_options(libnetdata PUBLIC ${CRYPTO_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${CRYPTO_LIBRARIES})
 
+# openssl
 pkg_check_modules(OPENSSL REQUIRED openssl)
 target_include_directories(libnetdata BEFORE PUBLIC ${OPENSSL_INCLUDE_DIRS})
 target_compile_options(libnetdata PUBLIC ${OPENSSL_CFLAGS_OTHER})
 target_link_libraries(libnetdata PUBLIC ${OPENSSL_LIBRARIES})
-
-target_link_libraries(libnetdata PUBLIC judy)
 
 #
 # build protos
