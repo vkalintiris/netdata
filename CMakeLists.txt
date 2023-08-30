@@ -53,6 +53,9 @@ set(MACOS   False)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
         set(MACOS True)
+
+        find_library(IOKIT IOKit)
+        find_library(FOUNDATION Foundation)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
         set(FREEBSD True)
 else()
@@ -846,8 +849,11 @@ else()
         pkg_check_modules(JSONC REQUIRED json-c)
         target_include_directories(libnetdata BEFORE PUBLIC ${JSONC_INCLUDE_DIRS})
         target_compile_definitions(libnetdata PUBLIC ${JSONC_CFLAGS_OTHER})
-        target_link_libraries(libnetdata PUBLIC ${JSONC_LIBRARIES})
+        target_link_libraries(libnetdata PUBLIC ${JSONC_LDFLAGS})
 endif()
+
+# message(FATAL_ERROR "jsonc libraries: ${JSONC_LIBRARIES}")
+# message(FATAL_ERROR "jsonc ldflags: ${JSONC_LDFLAGS}")
 
 # yaml
 if(ENABLE_BUNDLED_YAML)
@@ -861,7 +867,7 @@ else()
         pkg_check_modules(YAML REQUIRED yaml-0.1)
         target_include_directories(libnetdata BEFORE PUBLIC ${YAML_INCLUDE_DIRS})
         target_compile_definitions(libnetdata PUBLIC ${YAML_CFLAGS_OTHER})
-        target_link_libraries(libnetdata PUBLIC ${YAML_LIBRARIES})
+        target_link_libraries(libnetdata PUBLIC ${YAML_LDFLAGS})
 endif()
 
 # zlib
@@ -1217,12 +1223,13 @@ target_include_directories(netdata PRIVATE
 )
 
 target_link_libraries(netdata PRIVATE
-        rt
         m
         libnetdata
+        "$<$<BOOL:${LINUX}>:rt>"
         "$<$<BOOL:${ENABLE_ACLK}>:mqttwebsockets>"
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
+        "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
 )
 
 #
