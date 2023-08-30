@@ -60,6 +60,49 @@ else()
 endif()
 
 #
+# check include files
+#
+
+include(CheckIncludeFile)
+
+check_include_file("netinet/in.h" HAVE_NETINET_IN_H)
+check_include_file("resolv.h" HAVE_RESOLV_H)
+check_include_file("netdb.h" HAVE_NETDB_H)
+check_include_file("sys/prctl.h" HAVE_SYS_PRCTL_H)
+check_include_file("sys/stat.h" HAVE_SYS_STAT_H)
+check_include_file("sys/vfs.h" HAVE_SYS_VFS_H)
+check_include_file("sys/statfs.h" HAVE_SYS_STATFS_H)
+check_include_file("linux/magic.h" HAVE_LINUX_MAGIC_H)
+check_include_file("sys/mount.h" HAVE_SYS_MOUNT_H)
+check_include_file("sys/statvfs.h" HAVE_SYS_STATVFS_H)
+check_include_file("inttypes.h" HAVE_INTTYPES_H)
+check_include_file("stdint.h" HAVE_STDINT_H)
+check_include_file("sys/capability.h" HAVE_SYS_CAPABILITY_H)
+
+#
+# check symbols
+#
+
+include(CheckSymbolExists)
+check_symbol_exists(major sys/sysmacros.h MAJOR_IN_SYSMACROS)
+check_symbol_exists(major sys/mkdev.h MAJOR_IN_MKDEV)
+check_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
+check_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
+check_symbol_exists(strerror_r string.h HAVE_STRERROR_R)
+
+#
+# check source compilation
+#
+include(CheckCSourceCompiles)
+check_c_source_compiles("
+#define _GNU_SOURCE
+#include <string.h>
+int main() {
+        char x = *strerror_r(0, &x, sizeof(x)); return 0;
+}
+" STRERROR_R_CHAR_P)
+
+#
 # source files
 #
 
@@ -711,33 +754,35 @@ set(MONGODB_EXPORTING_FILES exporting/mongodb/mongodb.c
 # build h2o
 #
 
-add_library(h2o ${LIBH2O_FILES})
+if(ENABLE_H2O)
+        add_library(h2o ${LIBH2O_FILES})
 
-target_include_directories(h2o AFTER PUBLIC
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/include"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/cloexec"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/brotli/enc"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/golombset"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libgkc"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libyrmcds"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/klib"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/neverbleed"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picohttpparser"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picotest"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yaml/include"
-                           "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yoml")
+        target_include_directories(h2o AFTER PUBLIC
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/include"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/cloexec"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/brotli/enc"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/golombset"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libgkc"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/libyrmcds"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/klib"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/neverbleed"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picohttpparser"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/picotest"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yaml/include"
+                                   "${CMAKE_SOURCE_DIR}/web/server/h2o/libh2o/deps/yoml")
 
-target_compile_options(h2o PRIVATE -Wno-old-style-declaration
-                                   -Wno-deprecated-declarations
-                                   -Wno-unused-parameter
-                                   -Wno-sign-compare
-                                   -Wno-missing-field-initializers)
+        target_compile_options(h2o PRIVATE -Wno-old-style-declaration
+                                           -Wno-deprecated-declarations
+                                           -Wno-unused-parameter
+                                           -Wno-sign-compare
+                                           -Wno-missing-field-initializers)
 
-target_compile_options(h2o PUBLIC -DH2O_USE_LIBUV=0)
+        target_compile_options(h2o PUBLIC -DH2O_USE_LIBUV=0)
 
-target_include_directories(h2o BEFORE PRIVATE ${OPENSSL_INCLUDE_DIRS})
-target_compile_options(h2o PRIVATE ${OPENSSL_CFLAGS_OTHER})
-target_link_libraries(h2o PRIVATE ${OPENSSL_LIBRARIES})
+        target_include_directories(h2o BEFORE PRIVATE ${OPENSSL_INCLUDE_DIRS})
+        target_compile_options(h2o PRIVATE ${OPENSSL_CFLAGS_OTHER})
+        target_link_libraries(h2o PRIVATE ${OPENSSL_LIBRARIES})
+endif()
 
 #
 # build libjudy
