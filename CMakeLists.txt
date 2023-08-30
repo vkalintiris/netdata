@@ -880,25 +880,25 @@ target_link_libraries(libnetdata PUBLIC ${ZLIB_LIBRARIES})
 pkg_check_modules(LIBLZ4 REQUIRED liblz4)
 target_include_directories(libnetdata BEFORE PUBLIC ${LIBLZ4_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${LIBLZ4_CFLAGS_OTHER})
-target_link_libraries(libnetdata PUBLIC ${LIBLZ4_LIBRARIES})
+target_link_libraries(libnetdata PUBLIC ${LIBLZ4_LDFLAGS})
 
 # uuid
 pkg_check_modules(UUID REQUIRED uuid)
 target_include_directories(libnetdata BEFORE PUBLIC ${UUID_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${UUID_CFLAGS_OTHER})
-target_link_libraries(libnetdata PUBLIC ${UUID_LIBRARIES})
+target_link_libraries(libnetdata PUBLIC ${UUID_LDFLAGS})
 
 # uv
 pkg_check_modules(LIBUV REQUIRED libuv)
 target_include_directories(libnetdata BEFORE PUBLIC ${LIBUV_INCLUDE_DIRS})
 target_compile_definitions(libnetdata PUBLIC ${LIBUV_CFLAGS_OTHER})
-target_link_libraries(libnetdata PUBLIC ${LIBUV_LIBRARIES})
+target_link_libraries(libnetdata PUBLIC ${LIBUV_LDFLAGS})
 
 # crypto
 pkg_check_modules(CRYPTO libcrypto)
 target_include_directories(libnetdata BEFORE PUBLIC ${CRYPTO_INCLUDE_DIRS})
 target_compile_options(libnetdata PUBLIC ${CRYPTO_CFLAGS_OTHER})
-target_link_libraries(libnetdata PUBLIC ${CRYPTO_LIBRARIES})
+target_link_libraries(libnetdata PUBLIC ${CRYPTO_LDFLAGS})
 
 # openssl
 pkg_check_modules(OPENSSL REQUIRED openssl)
