@@ -735,6 +735,10 @@ target_compile_options(h2o PRIVATE -Wno-old-style-declaration
 
 target_compile_options(h2o PUBLIC -DH2O_USE_LIBUV=0)
 
+target_include_directories(h2o BEFORE PRIVATE ${OPENSSL_INCLUDE_DIRS})
+target_compile_options(h2o PRIVATE ${OPENSSL_CFLAGS_OTHER})
+target_link_libraries(h2o PRIVATE ${OPENSSL_LIBRARIES})
+
 #
 # build libjudy
 #
