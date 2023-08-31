@@ -22,13 +22,14 @@ size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};
 size_t tier_page_size[RRD_STORAGE_TIERS] = {4096, 2048, 384, 384, 384};
 #endif
 
-#if PAGE_TYPE_MAX != 1
-#error PAGE_TYPE_MAX is not 1 - you need to add allocations here
+#if PAGE_TYPE_MAX != 2
+#error PAGE_TYPE_MAX is not 2 - you need to add allocations here
 #endif
 
 size_t page_type_size[256] = {
         [PAGE_METRICS] = sizeof(storage_number),
-        [PAGE_TIER] = sizeof(storage_number_tier1_t)
+        [PAGE_TIER] = sizeof(storage_number_tier1_t),
+        [PAGE_GORILLA_METRICS] = sizeof(storage_number)
 };
 
 __attribute__((constructor)) void initialize_multidb_ctx(void) {
@@ -759,7 +760,7 @@ static bool rrdeng_load_page_next(struct storage_engine_query_handle *rrddim_han
         // we have a page to release
         pgc_page_release(main_cache, handle->page);
         handle->page = NULL;
-        pgdc_clear(&handle->pgdc);
+        pgdc_reset(&handle->pgdc, NULL, UINT32_MAX);
     }
 
     if (unlikely(handle->now_s > rrddim_handle->end_time_s))
@@ -868,7 +869,7 @@ void rrdeng_load_metric_finalize(struct storage_engine_query_handle *rrddim_hand
 
     if (handle->page) {
         pgc_page_release(main_cache, handle->page);
-        pgdc_clear(&handle->pgdc);
+        pgdc_reset(&handle->pgdc, NULL, UINT32_MAX);
     }
 
     if(!pdc_release_and_destroy_if_unreferenced(handle->pdc, false, false))

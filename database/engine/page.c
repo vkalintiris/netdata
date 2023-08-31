@@ -17,7 +17,11 @@ struct pgd {
     uint32_t slots;         // the total number of slots available in the page
 
     uint32_t size;          // the size of data in bytes
-    uint8_t *data;         // the data of the page
+
+    union {
+        gpw_t *gpw;
+        uint8_t *data;
+    };
 };
 
 // ----------------------------------------------------------------------------
@@ -31,7 +35,7 @@ struct {
 static ARAL *pgd_aral_data_lookup(size_t size)
 {
     for (size_t tier = 0; tier < storage_tiers; tier++)
-        if (size == tier_page_size[tier] + sizeof(PGD))
+        if (size == tier_page_size[tier])
             return pgd_alloc_globals.aral_data[tier];
 
     return NULL;
@@ -103,17 +107,31 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
 
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
     pg->type = type;
-    pg->size = size;
     pg->used = 0;
     pg->slots = slots;
     pg->options = PAGE_OPTION_ALL_VALUES_EMPTY;
-    pg->data = pgd_data_aral_alloc(size);
+
+    switch (type) {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            pg->size = size;
+            pg->data = pgd_data_aral_alloc(size);
+            break;
+        case PAGE_GORILLA_METRICS:
+            pg->size = 0;
+            pg->gpw = gpw_new();
+            break;
+        default:
+            fatal("Unknown page type: %uc", type);
+    }
 
     return pg;
 }
 
 PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
 {
+    fatal("GVD: not implemented yet");
+
     if (!size)
         return PGD_EMPTY;
 
@@ -186,22 +204,38 @@ uint32_t pgd_memory_footprint(PGD *pg)
     if (pg == PGD_EMPTY)
         return 0;
         
-    return sizeof(PGD) + pg->size;
+    switch (pg->type) {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            return sizeof(PGD) + pg->size;
+        case PAGE_GORILLA_METRICS:
+            fatal("pgd_memory_footprint() not implemented for gorilla pages");
+            break;
+        default:
+            fatal("Unknown page type: %uc", pg->type);
+    }
 }
 
 uint32_t pgd_disk_footprint(PGD *pg)
 {
-    uint32_t used_size = 0;
+    if (!pgd_slots_used(pg))
+        return 0;
 
-    if(pg && pg != PGD_EMPTY && pg->used) {
-        used_size = pg->used * page_type_size[pg->type];
+    // TODO: understand this
+    pg->options |= PAGE_OPTION_READ_ONLY;
 
-        internal_fatal(used_size > pg->size, "Wrong disk footprint page size");
-
-        pg->options |= PAGE_OPTION_READ_ONLY;
+    switch (pg->type) {
+        case PAGE_METRICS:
+        case PAGE_TIER: {
+            uint32_t used_size = pg->used * page_type_size[pg->type];
+            internal_fatal(used_size > pg->size, "Wrong disk footprint page size");
+            return used_size;
+        }
+        case PAGE_GORILLA_METRICS:
+            fatal("pgd_disk_footprint() not implemented for gorilla pages");
+        default:
+            fatal("Unknown page type: %uc", pg->type);
     }
-
-    return used_size;
 }
 
 void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
@@ -209,10 +243,20 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
     internal_fatal(pgd_disk_footprint(pg) != dst_size, "Wrong disk footprint size requested (need %u, available %u)",
                    pgd_disk_footprint(pg), dst_size);
 
-    memcpy(dst, pg->data, dst_size);
+    // TODO: understand this
     pg->options |= PAGE_OPTION_ON_DISK;
-}
 
+    switch (pg->type) {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            memcpy(dst, pg->data, dst_size);
+            break;
+        case PAGE_GORILLA_METRICS:
+            fatal("pgd_copy_to_extent() not implemented for gorilla pages");
+        default:
+            fatal("Unknown page type: %uc", pg->type);
+    }
+}
 
 // ----------------------------------------------------------------------------
 // data collection
@@ -245,9 +289,9 @@ void pgd_append_point(PGD *pg,
 
             if ((pg->options & PAGE_OPTION_ALL_VALUES_EMPTY) && does_storage_number_exist(t))
                 pg->options &= ~PAGE_OPTION_ALL_VALUES_EMPTY;
-        }
-        break;
 
+            break;
+        }
         case PAGE_TIER: {
             storage_number_tier1_t *tier12_metric_data = (storage_number_tier1_t *)pg->data;
             storage_number_tier1_t t;
@@ -260,9 +304,12 @@ void pgd_append_point(PGD *pg,
 
             if ((pg->options & PAGE_OPTION_ALL_VALUES_EMPTY) && fpclassify(n) != FP_NAN)
                 pg->options &= ~PAGE_OPTION_ALL_VALUES_EMPTY;
-        }
-        break;
 
+            break;
+        }
+        case PAGE_GORILLA_METRICS: {
+            fatal("pgd_append_point() not implemented for gorilla pages");
+        }
         default:
             fatal("DBENGINE: unknown page type id %d", pg->type);
             break;
@@ -274,11 +321,24 @@ void pgd_append_point(PGD *pg,
 
 static void pgdc_seek(PGDC *pgdc)
 {
-    UNUSED(pgdc);
+    uint8_t type = pgdc->pgd->type;
+
+    switch (type) {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            break;
+        case PAGE_GORILLA_METRICS:
+            fatal("pgdc_seek() not implemented for gorilla pages");
+        default:
+            fatal("DBENGINE: unknown page type id %d", type);
+            break;
+    }
 }
 
 void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position)
 {
+    // pgd might be null and position equal to UINT32_MAX
+
     pgdc->pgd = pgd;
     pgdc->position = position;
 
@@ -317,6 +377,9 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
             sp->max = n.max_value;
             sp->sum = n.sum_value;
             return true;
+        }
+        case PAGE_GORILLA_METRICS: {
+            fatal("pgdc_get_next_point() not implemented for gorilla pages");
         }
         // we don't know this page type
         default: {

@@ -42,8 +42,6 @@ void pgd_append_point(PGD *pg,
                       uint32_t expected_slot);
 
 void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position);
-#define pgdc_clear(pgdc) pgdc_reset(pgdc, NULL, UINT32_MAX)
-
 bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *sp);
 
 #endif // DBENGINE_PAGE_H
