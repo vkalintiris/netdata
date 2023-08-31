@@ -1579,7 +1579,7 @@ static void dbengine_initialize_structures(void) {
     rrdeng_query_handle_init();
     page_descriptors_init();
     extent_buffer_init();
-    pgd_init();
+    pgd_init_arals();
     extent_io_descriptor_init();
 }
 
