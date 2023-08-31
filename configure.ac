@@ -1384,17 +1384,16 @@ AM_CONDITIONAL([ENABLE_PLUGIN_PERF], [test "${enable_plugin_perf}" = "yes"])
 # -----------------------------------------------------------------------------
 # gtest/gmock
 
-AC_MSG_CHECKING([if gtest and gmock can be found])
+AC_MSG_CHECKING([if gtest can be found])
 
 PKG_CHECK_MODULES([GTEST], [gtest], [have_gtest=yes], [have_gtest=no])
-PKG_CHECK_MODULES([GMOCK], [gmock], [have_gmock=yes], [have_gmock=no])
 
-if test "${have_gtest}" = "yes" -a "${have_gmock}" = "yes"; then
-    OPTIONAL_GTEST_CFLAGS="${GTEST_CFLAGS} ${GMOCK_CFLAGS}"
-    OPTIONAL_GTEST_LIBS="${GTEST_LIBS} ${GMOCK_LIBS}"
-    have_gtest="yes"
-else
-    have_gtest="no"
+if test "${have_gtest}" = "yes"; then
+    OPTIONAL_GTEST_CFLAGS="${GTEST_CFLAGS}"
+    OPTIONAL_GTEST_LIBS="${GTEST_LIBS}"
+
+    AC_DEFINE([HAVE_GTEST], [1], [gtest availability])
+    AM_CONDITIONAL([ENABLE_GTEST], [true])
 fi
 
 # -----------------------------------------------------------------------------
