@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "rrdengine.h"
 
 /* Default global database instance */
@@ -14,7 +15,7 @@ struct rrdengine_instance multidb_ctx_storage_tier4;
 #error RRD_STORAGE_TIERS is not 5 - you need to add allocations here
 #endif
 struct rrdengine_instance *multidb_ctx[RRD_STORAGE_TIERS];
-uint8_t tier_page_type[RRD_STORAGE_TIERS] = {PAGE_METRICS, PAGE_TIER, PAGE_TIER, PAGE_TIER, PAGE_TIER};
+uint8_t tier_page_type[RRD_STORAGE_TIERS] = {PAGE_GORILLA_METRICS, PAGE_TIER, PAGE_TIER, PAGE_TIER, PAGE_TIER};
 
 #if defined(ENV32BIT)
 size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};
@@ -22,13 +23,14 @@ size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};
 size_t tier_page_size[RRD_STORAGE_TIERS] = {4096, 2048, 384, 384, 384};
 #endif
 
-#if PAGE_TYPE_MAX != 1
-#error PAGE_TYPE_MAX is not 1 - you need to add allocations here
+#if PAGE_TYPE_MAX != 2
+#error PAGE_TYPE_MAX is not 2 - you need to add allocations here
 #endif
 
 size_t page_type_size[256] = {
         [PAGE_METRICS] = sizeof(storage_number),
-        [PAGE_TIER] = sizeof(storage_number_tier1_t)
+        [PAGE_TIER] = sizeof(storage_number_tier1_t),
+        [PAGE_GORILLA_METRICS] = sizeof(storage_number)
 };
 
 __attribute__((constructor)) void initialize_multidb_ctx(void) {
@@ -412,33 +414,49 @@ static size_t aligned_allocation_entries(size_t max_slots, size_t target_slot, t
 static PGD *rrdeng_alloc_new_page_data(struct rrdeng_collect_handle *handle, size_t *data_size, usec_t point_in_time_ut) {
     struct rrdengine_instance *ctx = mrg_metric_ctx(handle->metric);
 
-    size_t max_size = tier_page_size[ctx->config.tier];
-    size_t max_slots = max_size / CTX_POINT_SIZE_BYTES(ctx);
+    PGD *d = NULL;
+    
+    switch (ctx->config.page_type) {
+        case PAGE_METRICS:
+        case PAGE_TIER: {
+            size_t max_size = tier_page_size[ctx->config.tier];
+            size_t max_slots = max_size / CTX_POINT_SIZE_BYTES(ctx);
 
-    size_t slots = aligned_allocation_entries(
-            max_slots,
-            indexing_partition((Word_t) handle->alignment, max_slots),
-            (time_t) (point_in_time_ut / USEC_PER_SEC)
-    );
+            size_t slots = aligned_allocation_entries(
+                    max_slots,
+                    indexing_partition((Word_t) handle->alignment, max_slots),
+                    (time_t) (point_in_time_ut / USEC_PER_SEC)
+            );
 
-    if(slots < max_slots / 3)
-        slots = max_slots / 3;
+            if(slots < max_slots / 3)
+                slots = max_slots / 3;
 
-    if(slots < 3)
-        slots = 3;
+            if(slots < 3)
+                slots = 3;
 
-    size_t size = slots * CTX_POINT_SIZE_BYTES(ctx);
+            size_t size = slots * CTX_POINT_SIZE_BYTES(ctx);
 
-    // internal_error(true, "PAGE ALLOC %zu bytes (%zu max)", size, max_size);
+            // internal_error(true, "PAGE ALLOC %zu bytes (%zu max)", size, max_size);
 
-    internal_fatal(slots < 3 || slots > max_slots, "ooops! wrong distribution of metrics across time");
-    internal_fatal(size > tier_page_size[ctx->config.tier] || size < CTX_POINT_SIZE_BYTES(ctx) * 2, "ooops! wrong page size");
+            internal_fatal(slots < 3 || slots > max_slots, "ooops! wrong distribution of metrics across time");
+            internal_fatal(size > tier_page_size[ctx->config.tier] || size < CTX_POINT_SIZE_BYTES(ctx) * 2, "ooops! wrong page size");
 
-    *data_size = size;
-    PGD *d = pgd_create(ctx->config.page_type, slots);
+            *data_size = size;
+            d = pgd_create(ctx->config.page_type, slots);
+
+            break;
+        }
+        case PAGE_GORILLA_METRICS: {
+            size_t slots = 128;
+            *data_size = 128 * CTX_POINT_SIZE_BYTES(ctx);
+            d = pgd_create(ctx->config.page_type, slots);
+            break;
+        }
+        default:
+            fatal("Unknown page type: %uc\n", ctx->config.page_type);
+    }
 
     timing_step(TIMING_STEP_DBENGINE_PAGE_ALLOC);
-
     return d;
 }
 
@@ -466,7 +484,7 @@ static void rrdeng_store_metric_append_point(STORAGE_COLLECT_HANDLE *collection_
 
     timing_step(TIMING_STEP_DBENGINE_PACK);
 
-    if(unlikely(!handle->pgc_page)){
+    if(unlikely(!handle->pgc_page)) {
         rrdeng_store_metric_create_new_page(handle, ctx, point_in_time_ut, handle->page_data, handle->page_data_size);
         // handle->position is set to 1 already
     }
@@ -759,7 +777,7 @@ static bool rrdeng_load_page_next(struct storage_engine_query_handle *rrddim_han
         // we have a page to release
         pgc_page_release(main_cache, handle->page);
         handle->page = NULL;
-        pgdc_clear(&handle->pgdc);
+        pgdc_reset(&handle->pgdc, NULL, UINT32_MAX);
     }
 
     if (unlikely(handle->now_s > rrddim_handle->end_time_s))
@@ -868,7 +886,7 @@ void rrdeng_load_metric_finalize(struct storage_engine_query_handle *rrddim_hand
 
     if (handle->page) {
         pgc_page_release(main_cache, handle->page);
-        pgdc_clear(&handle->pgdc);
+        pgdc_reset(&handle->pgdc, NULL, UINT32_MAX);
     }
 
     if(!pdc_release_and_destroy_if_unreferenced(handle->pdc, false, false))
