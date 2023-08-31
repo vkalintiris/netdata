@@ -9,6 +9,16 @@ typedef enum __attribute__((packed)) {
     PAGE_OPTION_ON_DISK             = (1 << 2),
 } PAGE_OPTIONS;
 
+typedef struct {
+    uint8_t *data;
+    uint32_t size;
+} page_raw_t;
+
+
+typedef struct {
+    gpw_t *gpw;  
+} page_gorilla_t;
+
 struct pgd {
     uint8_t type;           // the page type
     PAGE_OPTIONS options;   // options related to the page
@@ -16,11 +26,9 @@ struct pgd {
     uint32_t used;          // the uses number of slots in the page
     uint32_t slots;         // the total number of slots available in the page
 
-    uint32_t size;          // the size of data in bytes
-
     union {
-        gpw_t *gpw;
-        uint8_t *data;
+        page_raw_t raw;
+        page_gorilla_t gorilla;
     };
 };
 
@@ -81,18 +89,19 @@ void pgd_init_arals(void)
 static void *pgd_data_aral_alloc(size_t size)
 {
     ARAL *ar = pgd_aral_data_lookup(size);
-    if(ar) return aral_mallocz(ar);
+    if (!ar)
+        return mallocz(size);
 
-    return mallocz(size);
+    return aral_mallocz(ar);
 }
 
 static void pgd_data_aral_free(void *page, size_t size __maybe_unused)
 {
     ARAL *ar = pgd_aral_data_lookup(size);
-    if(ar)
-        aral_freez(ar, page);
-    else
+    if (!ar)
         freez(page);
+
+    aral_freez(ar, page);
 }
 
 // ----------------------------------------------------------------------------
@@ -100,11 +109,6 @@ static void pgd_data_aral_free(void *page, size_t size __maybe_unused)
 
 PGD *pgd_create(uint8_t type, uint32_t slots)
 {
-    uint32_t size = slots * page_type_size[type];
-
-    internal_fatal(!size || slots == 1, "DBENGINE: invalid number of slots (%u) or page type (%u)",
-                   slots, type);
-
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
     pg->type = type;
     pg->used = 0;
@@ -113,14 +117,20 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
 
     switch (type) {
         case PAGE_METRICS:
-        case PAGE_TIER:
-            pg->size = size;
-            pg->data = pgd_data_aral_alloc(size);
+        case PAGE_TIER: {
+            uint32_t size = slots * page_type_size[type];
+
+            internal_fatal(!size || slots == 1,
+                      "DBENGINE: invalid number of slots (%u) or page type (%u)", slots, type);
+
+            pg->raw.size = size;
+            pg->raw.data = pgd_data_aral_alloc(size);
             break;
-        case PAGE_GORILLA_METRICS:
-            pg->size = 0;
-            pg->gpw = gpw_new();
+        }
+        case PAGE_GORILLA_METRICS: {
+            pg->gorilla.gpw = gpw_new();
             break;
+        }
         default:
             fatal("Unknown page type: %uc", type);
     }
@@ -130,8 +140,6 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
 
 PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
 {
-    fatal("GVD: not implemented yet");
-
     if (!size)
         return PGD_EMPTY;
 
@@ -139,14 +147,26 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
         return PGD_EMPTY;
 
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
-    pg->type = type;
-    pg->size = size;
-    pg->used = size / page_type_size[type];
-    pg->slots = pg->used;
-    pg->options = PAGE_OPTION_READ_ONLY | PAGE_OPTION_ON_DISK;
-    pg->data = pgd_data_aral_alloc(size);
 
-    memcpy(pg->data, base, size);
+    pg->type = type;
+    pg->options = PAGE_OPTION_READ_ONLY | PAGE_OPTION_ON_DISK;
+
+    switch (type)
+    {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            pg->raw.data = pgd_data_aral_alloc(size);
+            pg->raw.size = size;
+            pg->used = size / page_type_size[type];
+            pg->slots = pg->used;
+            memcpy(pg->raw.data, base, size);
+            break;
+        case PAGE_GORILLA_METRICS:
+            fatal("GVD: not implemented yet");
+        default:
+            fatal("Unknown page type: %uc", type);
+    }
+
 
     return pg;
 }
@@ -159,7 +179,18 @@ void pgd_free(PGD *pg)
     if (pg == PGD_EMPTY)
         return;
         
-    pgd_data_aral_free(pg->data, pg->size);
+    switch (pg->type)
+    {
+        case PAGE_METRICS:
+        case PAGE_TIER:
+            pgd_data_aral_free(pg->raw.data, pg->raw.size);
+            break;
+        case PAGE_GORILLA_METRICS:
+            fatal("pgd_free() not implemented for gorilla pages");
+        default:
+            fatal("Unknown page type: %uc", pg->type);
+    }
+
     aral_freez(pgd_alloc_globals.aral_pgd, pg);
 }
 
@@ -207,7 +238,7 @@ uint32_t pgd_memory_footprint(PGD *pg)
     switch (pg->type) {
         case PAGE_METRICS:
         case PAGE_TIER:
-            return sizeof(PGD) + pg->size;
+            return sizeof(PGD) + pg->raw.size;
         case PAGE_GORILLA_METRICS:
             fatal("pgd_memory_footprint() not implemented for gorilla pages");
             break;
@@ -228,7 +259,7 @@ uint32_t pgd_disk_footprint(PGD *pg)
         case PAGE_METRICS:
         case PAGE_TIER: {
             uint32_t used_size = pg->used * page_type_size[pg->type];
-            internal_fatal(used_size > pg->size, "Wrong disk footprint page size");
+            internal_fatal(used_size > pg->raw.size, "Wrong disk footprint page size");
             return used_size;
         }
         case PAGE_GORILLA_METRICS:
@@ -249,7 +280,7 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
     switch (pg->type) {
         case PAGE_METRICS:
         case PAGE_TIER:
-            memcpy(dst, pg->data, dst_size);
+            memcpy(dst, pg->raw.data, dst_size);
             break;
         case PAGE_GORILLA_METRICS:
             fatal("pgd_copy_to_extent() not implemented for gorilla pages");
@@ -272,18 +303,19 @@ void pgd_append_point(PGD *pg,
                       uint32_t expected_slot)
 {
     if (unlikely(pg->used >= pg->slots))
-        fatal("DBENGINE: attempted to write beyond page size (page type %u, slots %u, used %u, size %u)",
-              pg->type, pg->slots, pg->used, pg->size);
+        fatal("DBENGINE: attempted to write beyond page size (page type %u, slots %u, used %u)",
+              pg->type, pg->slots, pg->used /* FIXME:, pg->size */);
 
     if (unlikely(pg->used != expected_slot))
         fatal("DBENGINE: page is not aligned to expected slot (used %u, expected %u)",
               pg->used, expected_slot);
 
-    internal_fatal(pg->options & (PAGE_OPTION_READ_ONLY|PAGE_OPTION_ON_DISK), "Data collection on read-only page");
+    internal_fatal(pg->options & (PAGE_OPTION_READ_ONLY | PAGE_OPTION_ON_DISK),
+                   "Data collection on read-only page");
 
     switch (pg->type) {
         case PAGE_METRICS: {
-            storage_number *tier0_metric_data = (storage_number *)pg->data;
+            storage_number *tier0_metric_data = (storage_number *)pg->raw.data;
             storage_number t = pack_storage_number(n, flags);
             tier0_metric_data[pg->used++] = t;
 
@@ -293,7 +325,7 @@ void pgd_append_point(PGD *pg,
             break;
         }
         case PAGE_TIER: {
-            storage_number_tier1_t *tier12_metric_data = (storage_number_tier1_t *)pg->data;
+            storage_number_tier1_t *tier12_metric_data = (storage_number_tier1_t *)pg->raw.data;
             storage_number_tier1_t t;
             t.sum_value = (float) n;
             t.min_value = (float) min_value;
@@ -359,29 +391,32 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
     switch (pgdc->pgd->type)
     {
         case PAGE_METRICS: {
-            storage_number *array = (storage_number *)pgdc->pgd->data;
+            storage_number *array = (storage_number *) pgdc->pgd->raw.data;
             storage_number n = array[pgdc->position++];
+
             sp->min = sp->max = sp->sum = unpack_storage_number(n);
             sp->flags = (SN_FLAGS)(n & SN_USER_FLAGS);
             sp->count = 1;
             sp->anomaly_count = is_storage_number_anomalous(n) ? 1 : 0;
+
             return true;
         }
         case PAGE_TIER: {
-            storage_number_tier1_t *array = (storage_number_tier1_t *)pgdc->pgd->data;
+            storage_number_tier1_t *array = (storage_number_tier1_t *) pgdc->pgd->raw.data;
             storage_number_tier1_t n = array[pgdc->position++];
+
             sp->flags = n.anomaly_count ? SN_FLAG_NONE : SN_FLAG_NOT_ANOMALOUS;
             sp->count = n.count;
             sp->anomaly_count = n.anomaly_count;
             sp->min = n.min_value;
             sp->max = n.max_value;
             sp->sum = n.sum_value;
+
             return true;
         }
         case PAGE_GORILLA_METRICS: {
             fatal("pgdc_get_next_point() not implemented for gorilla pages");
         }
-        // we don't know this page type
         default: {
             static bool logged = false;
             if (!logged)
