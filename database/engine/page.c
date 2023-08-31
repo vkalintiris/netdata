@@ -3,7 +3,9 @@
 #include "page.h"
 
 typedef enum __attribute__((packed)) {
-    PAGE_OPTION_ALL_VALUES_EMPTY = (1 << 0),
+    PAGE_OPTION_ALL_VALUES_EMPTY    = (1 << 0),
+    PAGE_OPTION_READ_ONLY           = (1 << 1),
+    PAGE_OPTION_ON_DISK             = (1 << 2),
 } PAGE_OPTIONS;
 
 struct pgd {
@@ -14,13 +16,11 @@ struct pgd {
     uint32_t slots;         // the total number of slots available in the page
 
     uint32_t size;          // the size of data in bytes
-
-    usec_t page_start_time_ut; // the first timestamp on the page
-
     uint8_t data[];         // the data of the page
 };
 
 // ----------------------------------------------------------------------------
+// memory management
 
 struct {
     ARAL *aral[RRD_STORAGE_TIERS];
@@ -67,9 +67,35 @@ static inline void pgd_free_internal(void *page, size_t size __maybe_unused) {
 }
 
 // ----------------------------------------------------------------------------
+// utility functions
 
-void pgd_append_point(PGD *pg,
-                      usec_t point_in_time_ut,
+inline bool pgd_is_empty(PGD *pg) {
+    return pg == PGD_EMPTY || !pg->used || (pg->options & PAGE_OPTION_ALL_VALUES_EMPTY);
+}
+
+inline uint32_t pgd_memory_footprint(PGD *pg) {
+    if(pg && pg != PGD_EMPTY)
+        return sizeof(PGD) + pg->size;
+
+    return 0;
+}
+
+inline uint32_t pgd_type(PGD *pg) {
+    return pg->type;
+}
+
+inline uint32_t pgd_slots_used(PGD *pg) {
+    if(pg && pg != PGD_EMPTY)
+        return pg->used;
+
+    return 0;
+}
+
+// ----------------------------------------------------------------------------
+// data collection
+
+inline void pgd_append_point(PGD *pg,
+                      usec_t point_in_time_ut __maybe_unused,
                       NETDATA_DOUBLE n,
                       NETDATA_DOUBLE min_value,
                       NETDATA_DOUBLE max_value,
@@ -86,8 +112,7 @@ void pgd_append_point(PGD *pg,
         fatal("DBENGINE: page is not aligned to expected slot (used %u, expected %u)",
               pg->used, expected_slot);
 
-    if(unlikely(!pg->used))
-        pg->page_start_time_ut = point_in_time_ut;
+    internal_fatal(pg->options & (PAGE_OPTION_READ_ONLY|PAGE_OPTION_ON_DISK), "Data collection on read-only page");
 
     switch(pg->type) {
         case PAGE_METRICS: {
@@ -121,11 +146,10 @@ void pgd_append_point(PGD *pg,
     }
 }
 
-bool pgd_is_empty(PGD *pg) {
-    return pg == PGD_EMPTY || !pg->used || (pg->options & PAGE_OPTION_ALL_VALUES_EMPTY);
-}
+// ----------------------------------------------------------------------------
+// management api
 
-PGD *pgd_create(uint8_t type, uint32_t slots) {
+inline PGD *pgd_create(uint8_t type, uint32_t slots) {
     uint32_t size = slots * page_type_size[type];
 
     internal_fatal(!size || slots == 1, "DBENGINE: invalid number of slots (%u) or page type (%u)",
@@ -141,7 +165,15 @@ PGD *pgd_create(uint8_t type, uint32_t slots) {
     return pg;
 }
 
-PGD *pgd_create_and_copy(uint8_t type, void *base, uint32_t size) {
+inline void pgd_free(PGD *pg) {
+    if(pg && pg != PGD_EMPTY)
+        pgd_free_internal(pg, sizeof(PGD) + pg->size);
+}
+
+// ----------------------------------------------------------------------------
+// loading from disk
+
+inline PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size) {
     if(!size || size < page_type_size[type])
         return PGD_EMPTY;
 
@@ -150,43 +182,96 @@ PGD *pgd_create_and_copy(uint8_t type, void *base, uint32_t size) {
     pg->size = size;
     pg->used = size / page_type_size[type];
     pg->slots = pg->used;
-    pg->options = 0;
+    pg->options = PAGE_OPTION_READ_ONLY | PAGE_OPTION_ON_DISK;
 
     memcpy(pg->data, base, size);
 
     return pg;
 }
 
-void pgd_free(PGD *pg) {
-    if(pg && pg != PGD_EMPTY)
-        pgd_free_internal(pg, sizeof(PGD) + pg->size);
+// ----------------------------------------------------------------------------
+// flushing to disk
+
+inline uint32_t pgd_disk_footprint_size(PGD *pg) {
+    uint32_t used_size = 0;
+
+    if(pg && pg != PGD_EMPTY && pg->used) {
+        used_size = pg->used * page_type_size[pg->type];
+
+        internal_fatal(used_size > pg->size, "Wrong disk footprint page size");
+
+        pg->options |= PAGE_OPTION_READ_ONLY;
+    }
+
+    return used_size;
 }
 
-uint32_t pgd_length(PGD *pg) {
-    if(pg && pg != PGD_EMPTY)
-        return pg->size;
+inline void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size) {
+    internal_fatal(pgd_disk_footprint_size(pg) != dst_size, "Wrong disk footprint size requested (need %u, available %u)",
+                   pgd_disk_footprint_size(pg), dst_size);
 
-    return 0;
+    memcpy(dst, pg->data, dst_size);
+    pg->options |= PAGE_OPTION_ON_DISK;
 }
 
-uint32_t pgd_footprint(PGD *pg) {
-    if(pg && pg != PGD_EMPTY)
-        return sizeof(PGD) + pg->size;
+// ----------------------------------------------------------------------------
+// querying with cursor
 
-    return 0;
+static inline void pgdc_seek(PGDC *pgdc) {
+    ;
 }
 
-uint32_t pgd_type(PGD *pg) {
-    return pg->type;
+inline void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position) {
+    pgdc->pgd = pgd;
+    pgdc->position = position;
+
+    if(pgd && pgd != PGD_EMPTY)
+        pgdc_seek(pgdc);
 }
 
-uint32_t pgd_slots(PGD *pg) {
-    return pg->slots;
-}
+inline bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *sp) {
+    if(!pgdc->pgd || pgdc->pgd == PGD_EMPTY || pgdc->position >= pgdc->pgd->slots) {
+        storage_point_empty(*sp, sp->start_time_s, sp->end_time_s);
+        return false;
+    }
 
-void *pgd_raw_data_pointer(PGD *pg) {
-    if(pg && pg != PGD_EMPTY)
-        return pg->data;
+    internal_fatal(pgdc->position != expected_position, "Wrong expected cursor position");
 
-    return NULL;
+    switch(pgdc->pgd->type) {
+        case PAGE_METRICS: {
+            storage_number *array = (storage_number *)pgdc->pgd->data;
+            storage_number n = array[pgdc->position++];
+            sp->min = sp->max = sp->sum = unpack_storage_number(n);
+            sp->flags = (SN_FLAGS)(n & SN_USER_FLAGS);
+            sp->count = 1;
+            sp->anomaly_count = is_storage_number_anomalous(n) ? 1 : 0;
+            return true;
+        }
+            break;
+
+        case PAGE_TIER: {
+            storage_number_tier1_t *array = (storage_number_tier1_t *)pgdc->pgd->data;
+            storage_number_tier1_t n = array[pgdc->position++];
+            sp->flags = n.anomaly_count ? SN_FLAG_NONE : SN_FLAG_NOT_ANOMALOUS;
+            sp->count = n.count;
+            sp->anomaly_count = n.anomaly_count;
+            sp->min = n.min_value;
+            sp->max = n.max_value;
+            sp->sum = n.sum_value;
+            return true;
+        }
+            break;
+
+            // we don't know this page type
+        default: {
+            static bool logged = false;
+            if(!logged) {
+                netdata_log_error("DBENGINE: unknown page type %d found. Cannot decode it. Ignoring its metrics.", pgd_type(pgdc->pgd));
+                logged = true;
+            }
+            storage_point_empty(*sp, sp->start_time_s, sp->end_time_s);
+            return false;
+        }
+            break;
+    }
 }
