@@ -7,8 +7,6 @@
 #include <cstdio>
 #include <cstring>
 
-#include <forward_list>
-
 using std::size_t;
 
 template <typename T>
@@ -23,23 +21,9 @@ static constexpr size_t bit_size() noexcept
  * bit buffer
 */
 
-typedef struct {
-    size_t capacity;
-} bit_buffer_t;
-
-bit_buffer_t bit_buffer_init(size_t capacity)
-{
-    return bit_buffer_t {
-        capacity
-    };
-}
-
-bool bit_buffer_write(const bit_buffer_t *bb, uint32_t *buf, size_t pos, uint32_t v, size_t nbits)
+static void bit_buffer_write(uint32_t *buf, size_t pos, uint32_t v, size_t nbits)
 {
     assert(nbits > 0 && nbits <= bit_size<uint32_t>());
-
-    if ((pos + nbits) > bb->capacity)
-        return false;
 
     const size_t index = pos / bit_size<uint32_t>();
     const size_t offset = pos % bit_size<uint32_t>();
@@ -63,16 +47,11 @@ bool bit_buffer_write(const bit_buffer_t *bb, uint32_t *buf, size_t pos, uint32_
             buf[index + 1] = highest_bits_in_value;
         }
     }
-
-    return true;
 }
 
-bool bit_buffer_read(const bit_buffer_t *bb, const uint32_t *buf, size_t pos, uint32_t *v, size_t nbits)
+static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t nbits)
 {
     assert(nbits > 0 && nbits <= bit_size<uint32_t>());
-
-    if (pos + nbits > bb->capacity)
-        return false;
 
     const size_t index = pos / bit_size<uint32_t>();
     const size_t offset = pos % bit_size<uint32_t>();
@@ -95,57 +74,6 @@ bool bit_buffer_read(const bit_buffer_t *bb, const uint32_t *buf, size_t pos, ui
             *v |= (buf[index + 1] & (((uint32_t) 1 << nbits) - 1)) << remaining_bits;
         }
     }
-
-    return true;
-}
-
-size_t bit_buffer_capacity(const bit_buffer_t *bb)
-{
-    return bb->capacity;
-}
-
-/*
- * bit stream writer
-*/
-
-typedef struct {
-    bit_buffer_t bb;
-    size_t pos;
-} bit_stream_writer_t;
-
-bit_stream_writer_t bit_stream_writer_init(size_t capacity)
-{
-    assert(bit_size<uint32_t>() <= capacity);
-
-    return bit_stream_writer_t {
-        .bb = bit_buffer_init(capacity),
-        .pos = bit_size<uint32_t>()
-    };
-}
-
-bool bit_stream_writer_write(bit_stream_writer_t *bsw, uint32_t *buf, uint32_t value, size_t nbits)
-{
-    bool ok = bit_buffer_write(&bsw->bb, buf, bsw->pos, value, nbits);
-
-    if (ok)
-        bsw->pos += nbits;
-
-    return ok;
-}
-
-void bit_stream_writer_flush(const bit_stream_writer_t *bsw, uint32_t *buf)
-{
-    __atomic_store_n(&buf[0], bsw->pos, __ATOMIC_RELAXED);
-}
-
-size_t bit_stream_writer_capacity(const bit_stream_writer_t *bsw)
-{
-        return bsw->bb.capacity;
-}
-
-size_t bit_stream_writer_position(const bit_stream_writer_t *bsw)
-{
-        return bsw->pos;
 }
 
 /*
@@ -153,7 +81,7 @@ size_t bit_stream_writer_position(const bit_stream_writer_t *bsw)
 */
 
 typedef struct {
-    bit_buffer_t bb;
+    size_t cap;
     size_t pos;
 } bit_stream_reader_t;
 
@@ -162,29 +90,20 @@ bit_stream_reader_t bit_stream_reader_init(const uint32_t *buffer)
     size_t capacity = __atomic_load_n(&buffer[0], __ATOMIC_SEQ_CST);
 
     return bit_stream_reader_t {
-        .bb = bit_buffer_init(capacity),
+        .cap = capacity,
         .pos = bit_size<uint32_t>(),
     };
 }
 
 bool bit_stream_reader_read(bit_stream_reader_t *bsr, const uint32_t *buf, uint32_t *value, size_t nbits)
 {
-    bool ok = bit_buffer_read(&bsr->bb, buf, bsr->pos, value, nbits);
+    if (bsr->pos + nbits > bsr->cap)
+        return false;
 
-    if (ok)
-        bsr->pos += nbits;
+    bit_buffer_read(buf, bsr->pos, value, nbits);
+    bsr->pos += nbits;
 
-    return ok;
-}
-
-size_t bit_stream_reader_capacity(const bit_stream_reader_t *bsr)
-{
-    return bit_buffer_capacity(&bsr->bb);
-}
-
-size_t bit_stream_reader_position(const bit_stream_reader_t *bsr)
-{
-    return bsr->pos;
+    return true;
 }
 
 /*
@@ -195,71 +114,78 @@ typedef struct {
     uint32_t *buffer;
     uint32_t entries;
 
-    bit_stream_writer_t bsw;
-
     uint32_t prev_number;
     uint32_t prev_xor_lzc;
+
+    // in bits
+    uint32_t position;
+    uint32_t capacity;
 } gorilla_writer_t;
 
 gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 {
+    uint32_t capacity = n * bit_size<uint32_t>();
+
     return gorilla_writer_t {
         .buffer = buf,
         .entries = 0,
-        .bsw = bit_stream_writer_init((n - 1) * bit_size<uint32_t>()),
         .prev_number = 0,
         .prev_xor_lzc = 0,
+        .position = 2 * bit_size<uint32_t>(),
+        .capacity = capacity,
     };
-}
-
-static uint32_t *gorilla_writer_get_bit_buffer(const gorilla_writer_t *gw)
-{
-    return &gw->buffer[1];
 }
 
 bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
 {
-    uint32_t *bit_buffer = gorilla_writer_get_bit_buffer(gw);
-
     // this is the first number we are writing
     if (gw->entries == 0) {
-        bool ok = bit_stream_writer_write(&gw->bsw, bit_buffer, number, bit_size<uint32_t>());
+        if (gw->position + bit_size<uint32_t>() >= gw->capacity)
+            return false;
+        bit_buffer_write(gw->buffer, gw->position, number, bit_size<uint32_t>());
 
-        if (ok) {
-            gw->entries++;
-            gw->prev_number = number;
-        }
-
-        return ok;
+        gw->position += bit_size<uint32_t>();
+        gw->entries++;
+        gw->prev_number = number;
+        return true;
     }
 
     // write true/false based on whether we got the same number or not.
     if (number == gw->prev_number) {
-        bool ok = bit_stream_writer_write(&gw->bsw, bit_buffer, static_cast<uint32_t>(1), 1);
-        if (ok)
-            gw->entries++;
-        return ok;
-    } else {
-        bool ok = bit_stream_writer_write(&gw->bsw, bit_buffer,static_cast<uint32_t>(0), 1);
-        if (!ok)
+        if (gw->position + 1 >= gw->capacity)
             return false;
+        bit_buffer_write(gw->buffer, gw->position, static_cast<uint32_t>(1), 1);
+        gw->position++;
+        gw->entries++;
+        return true;
     }
+
+    if (gw->position + 1 >= gw->capacity)
+        return false;
+    bit_buffer_write(gw->buffer, gw->position,static_cast<uint32_t>(0), 1);
+    gw->position++;
 
     uint32_t xor_value = gw->prev_number ^ number;
     uint32_t xor_lzc = (bit_size<uint32_t>() == 32) ? __builtin_clz(xor_value) : __builtin_clzll(xor_value);
     uint32_t is_xor_lzc_same = (xor_lzc == gw->prev_xor_lzc) ? 1 : 0;
 
-    if (!bit_stream_writer_write(&gw->bsw, bit_buffer, is_xor_lzc_same, 1))
+    if (gw->position + 1 >= gw->capacity)
         return false;
+    bit_buffer_write(gw->buffer, gw->position, is_xor_lzc_same, 1);
+    gw->position++;
     
     if (!is_xor_lzc_same) {
-        if (!bit_stream_writer_write(&gw->bsw, bit_buffer, xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6))
+        if (gw->position + 1 >= gw->capacity)
             return false;
+        bit_buffer_write(gw->buffer, gw->position, xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
+        gw->position += (bit_size<uint32_t>() == 32) ? 5 : 6;
     }
 
     // write the bits of the XOR'd value without the LZC prefix
-    if (!bit_stream_writer_write(&gw->bsw, bit_buffer, xor_value, bit_size<uint32_t>() - xor_lzc))
+    if (gw->position + (bit_size<uint32_t>() - xor_lzc) >= gw->capacity)
         return false;
+    bit_buffer_write(gw->buffer, gw->position, xor_value, bit_size<uint32_t>() - xor_lzc);
+    gw->position += bit_size<uint32_t>() - xor_lzc;
 
     gw->entries++;
     gw->prev_number = number;
@@ -269,25 +195,8 @@ bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
 
 void gorilla_writer_flush(gorilla_writer_t *gw)
 {
-    uint32_t *bit_buffer = gorilla_writer_get_bit_buffer(gw);
-
-    bit_stream_writer_flush(&gw->bsw, bit_buffer);
     __atomic_store_n(&gw->buffer[0], gw->entries, __ATOMIC_RELAXED);
-}
-
-uint32_t *gorilla_writer_data(const gorilla_writer_t *gw)
-{
-    return gw->buffer;
-}
-
-size_t gorilla_writer_capacity(const gorilla_writer_t *gw)
-{
-    return bit_stream_writer_capacity(&gw->bsw) / bit_size<uint32_t>();
-}
-
-size_t gorilla_writer_size(const gorilla_writer_t *gw)
-{
-    return (bit_stream_writer_position(&gw->bsw) + (bit_size<uint32_t>() - 1)) / bit_size<uint32_t>();
+    __atomic_store_n(&gw->buffer[1], gw->position, __ATOMIC_RELAXED);
 }
 
 /*
@@ -388,167 +297,6 @@ const uint32_t *gorilla_reader_data(const gorilla_reader_t *gr)
 {
     return gr->buffer;
 }
-
-/*
- * GorillaPageWriter
-*/
-
-typedef struct buffer_list {
-    uint32_t *data;
-    struct buffer_list *next;
-} buffer_list_t;
-
-typedef struct {
-    gorilla_writer_t gw;
-    buffer_list_t buffers;
-} gorilla_page_writer_t;
-
-gorilla_page_writer_t gorilla_page_writer_init(uint32_t *buffer, size_t n)
-{
-    gorilla_page_writer_t gpw;
-
-    gpw.gw = gorilla_writer_init(buffer, n);
-    gpw.buffers.data = buffer;
-    gpw.buffers.next = NULL;
-
-    return gpw;
-}
-
-void gorilla_page_writer_add_buffer(gorilla_page_writer_t *gpw, uint32_t *buffer, size_t n)
-{
-    gorilla_writer_flush(&gpw->gw);
-
-    buffer_list_t *ptr = &gpw->buffers;
-    while (ptr->next) {
-        ptr = ptr->next;
-    }
-
-    ptr->next = new buffer_list_t;
-    ptr->next->data = buffer; 
-    ptr->next->next = NULL;
-
-    gpw->gw = gorilla_writer_init(buffer, n);
-}
-
-bool gorilla_page_writer_write(gorilla_page_writer_t *gpw, uint32_t value)
-{
-    return gorilla_writer_write(&gpw->gw, value);
-}
-
-class GorillaPageWriter {
-public:
-    void init() {
-        buffers.data = nullptr;
-        buffers.next = nullptr;
-    }
-
-    bool write(uint32_t value) {
-        if (gorilla_writer_write(&gw, value))
-            return true;
-
-        add_buffer();
-        return gorilla_writer_write(&gw, value);
-    }
-
-private:
-    void add_buffer() {
-        if (buffers.data == NULL) {
-            size_t n = 256;
-            uint32_t *buffer = new uint32_t[n];
-            
-            buffers.data = buffer;
-            buffers.next = NULL;
-
-            gw = gorilla_writer_init(buffer, n);
-            return;
-        }
-
-        gorilla_writer_flush(&gw);
-
-        buffer_list_t *ptr = &buffers;
-        while (ptr->next) {
-            ptr = ptr->next;
-        }
-
-        size_t n = 256;
-        uint32_t *buffer = new uint32_t[n];
-
-        ptr->next = new buffer_list_t;
-        ptr->next->data = buffer; 
-        ptr->next->next = NULL;
-
-        gw = gorilla_writer_init(buffer, n);
-    }
-
-private:
-    gorilla_writer_t gw;
-    buffer_list_t buffers;
-};
-
-/*
- * C API
-*/
-
-// gpw_t *gpw_new() {
-//     GorillaPageWriter<uint32_t> *gpw = new GorillaPageWriter<uint32_t>();
-//     gpw->init();
-//     return reinterpret_cast<gpw_t *>(gpw);
-// }
-
-// void gpw_free(gpw_t *ptr) {
-//     GorillaPageWriter<uint32_t> *gpw = reinterpret_cast<GorillaPageWriter<uint32_t> *>(ptr);
-//     delete gpw;
-// }
-
-// void gpw_add_buffer(gpw_t *ptr) {
-//     GorillaPageWriter<uint32_t> *gpw = reinterpret_cast<GorillaPageWriter<uint32_t> *>(ptr);
-//     fprintf(stderr, "\nGVD: adding new gorilla buffer\n");
-//     gpw->add_buffer();
-// }
-
-// bool gpw_add(gpw_t *ptr, uint32_t value) {
-//     GorillaPageWriter<uint32_t> *gpw = reinterpret_cast<GorillaPageWriter<uint32_t> *>(ptr);
-//     return gpw->write(value);
-// }
-
-// gorilla_writer_t *gorilla_writer_new(uint32_t *buffer, size_t n)
-// {
-//     GorillaWriter<uint32_t> *GW = new GorillaWriter<uint32_t>();
-//     GW->init(buffer, n);
-//     return reinterpret_cast<gorilla_writer_t *>(GW);
-// }
-
-// void gorilla_writer_free(gorilla_writer_t *writer) {
-//     GorillaWriter<uint32_t> *GW = reinterpret_cast<GorillaWriter<uint32_t> *>(writer);
-//     delete GW;
-// }
-
-// bool gorilla_writer_add(gorilla_writer *writer, uint32_t number) {
-//     GorillaWriter<uint32_t> *GW = reinterpret_cast<GorillaWriter<uint32_t> *>(writer);
-//     return GW->write(number);
-// }
-
-// void gorilla_writer_flush(gorilla_writer_t *writer) {
-//     GorillaWriter<uint32_t> *GW = reinterpret_cast<GorillaWriter<uint32_t> *>(writer);
-//     GW->flush();
-// }
-
-// gorilla_reader_t *gorilla_reader_alloc(const uint32_t *buffer)
-// {
-//     GorillaReader<uint32_t> *GW = new GorillaReader<uint32_t>();
-//     GW->init(buffer);
-//     return reinterpret_cast<gorilla_reader_t *>(GW);
-// }
-
-// void gorilla_reader_free(gorilla_reader_t *reader) {
-//     GorillaReader<uint32_t> *GR = reinterpret_cast<GorillaReader<uint32_t> *>(reader);
-//     delete GR;
-// }
-
-// size_t gorilla_reader_entries(gorilla_reader_t *reader) {
-//     GorillaReader<uint32_t> *GR = reinterpret_cast<GorillaReader<uint32_t> *>(reader);
-//     return GR->entries();
-// }
 
 /*
  * Internal code used for fuzzing the library
