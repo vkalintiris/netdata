@@ -2,6 +2,7 @@
 
 #include "page.h"
 #include "libnetdata/aral/aral.h"
+#include "libnetdata/gorilla/gorilla.h"
 
 typedef enum __attribute__((packed)) {
     PAGE_OPTION_ALL_VALUES_EMPTY    = (1 << 0),
