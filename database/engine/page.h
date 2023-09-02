@@ -8,6 +8,8 @@
 typedef struct pgd_cursor {
     struct pgd *pgd;
     uint32_t position;
+
+    gorilla_reader_t gr;
 } PGDC;
 
 #include "rrdengine.h"
@@ -18,7 +20,7 @@ typedef struct pgd PGD;
 
 void pgd_init_arals(void);
 
-PGD *pgd_create(uint8_t type, uint32_t slots);
+PGD *pgd_create(uint8_t type, uint32_t slots, gorilla_writer_t *gw);
 PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size);
 void pgd_free(PGD *pg);
 

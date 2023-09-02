@@ -72,29 +72,6 @@ static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t
     }
 }
 
-typedef struct {
-    uint32_t *next;
-    uint32_t entries;
-    uint32_t nbits;
-} gorilla_header_t;
-
-typedef struct {
-    gorilla_header_t header;
-    uint32_t data[];
-} gorilla_buffer_t;
-
-typedef struct {
-    gorilla_buffer_t *buffer;
-
-    uint32_t entries;
-
-    uint32_t prev_number;
-    uint32_t prev_xor_lzc;
-
-    // in bits
-    uint32_t capacity;
-} gorilla_writer_t;
-
 gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 {
     gorilla_buffer_t *buffer = reinterpret_cast<gorilla_buffer_t *>(buf);
@@ -183,23 +160,6 @@ bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
     return true;
 }
 
-typedef struct {
-    const gorilla_buffer_t *buffer;
-
-    // number of values
-    size_t length;
-    size_t entries;
-
-    // in bits
-    size_t capacity; // FIXME: this not needed on the reader's side
-    size_t position;
-
-    uint32_t prev_number;
-    uint32_t prev_xor_lzc;
-    uint32_t prev_xor;
-
-} gorilla_reader_t;
-
 gorilla_reader_t gorilla_reader_init(const uint32_t *buf)
 {
     const gorilla_buffer_t *buffer = reinterpret_cast<const gorilla_buffer_t *>(buf);
@@ -279,11 +239,6 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
     gr->prev_xor = xor_value;
 
     return true;
-}
-
-size_t gorilla_reader_entries(const gorilla_reader_t *gr)
-{
-    return gr->length;
 }
 
 /*

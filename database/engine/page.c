@@ -17,7 +17,9 @@ typedef struct {
 
 
 typedef struct {
-    gpw_t *gpw;  
+    uint32_t *head_buffer;
+    size_t num_buffers;
+    gorilla_writer_t *writer;  
 } page_gorilla_t;
 
 struct pgd {
@@ -39,6 +41,7 @@ struct pgd {
 struct {
     ARAL *aral_pgd;
     ARAL *aral_data[RRD_STORAGE_TIERS];
+    ARAL *aral_gorilla;
 } pgd_alloc_globals = {};
 
 static ARAL *pgd_aral_data_lookup(size_t size)
@@ -57,7 +60,7 @@ void pgd_init_arals(void)
         char buf[20 + 1];
         snprintfz(buf, 20, "pgd");
 
-        // TODO: add stats
+        // FIXME: add stats
         pgd_alloc_globals.aral_pgd = aral_create(
                 buf,
                 sizeof(struct pgd),
@@ -85,6 +88,22 @@ void pgd_init_arals(void)
                     NULL, NULL, false, false);
         }
     }
+
+    // gorilla aral
+    {
+        char buf[20 + 1];
+        snprintfz(buf, 20, "gorilla");
+
+        // FIXME: add stats
+        size_t gorilla_page_size = 128 * sizeof(uint32_t);
+        pgd_alloc_globals.aral_gorilla = aral_create(
+                buf,
+                gorilla_page_size,
+                64,
+                512 * gorilla_page_size,
+                NULL,
+                NULL, NULL, false, false);
+    }
 }
 
 static void *pgd_data_aral_alloc(size_t size)
@@ -108,7 +127,7 @@ static void pgd_data_aral_free(void *page, size_t size __maybe_unused)
 // ----------------------------------------------------------------------------
 // management api
 
-PGD *pgd_create(uint8_t type, uint32_t slots)
+PGD *pgd_create(uint8_t type, uint32_t slots, gorilla_writer_t *gw)
 {
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
     pg->type = type;
@@ -129,7 +148,11 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
             break;
         }
         case PAGE_GORILLA_METRICS: {
-            pg->gorilla.gpw = gpw_new();
+            pg->gorilla.head_buffer = aral_mallocz(pgd_alloc_globals.aral_gorilla);
+            pg->gorilla.num_buffers = 1;
+
+            pg->gorilla.writer = gw;
+            *pg->gorilla.writer = gorilla_writer_init(pg->gorilla.head_buffer, 128);
             break;
         }
         default:
@@ -163,11 +186,13 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
             memcpy(pg->raw.data, base, size);
             break;
         case PAGE_GORILLA_METRICS:
+            pg->gorilla.head_buffer = NULL;
+            pg->gorilla.num_buffers = 0;
+            pg->gorilla.writer = NULL;
             fatal("GVD: not implemented yet");
         default:
             fatal("Unknown page type: %uc", type);
     }
-
 
     return pg;
 }
@@ -179,7 +204,7 @@ void pgd_free(PGD *pg)
 
     if (pg == PGD_EMPTY)
         return;
-        
+
     switch (pg->type)
     {
         case PAGE_METRICS:
@@ -241,8 +266,8 @@ uint32_t pgd_memory_footprint(PGD *pg)
         case PAGE_TIER:
             return sizeof(PGD) + pg->raw.size;
         case PAGE_GORILLA_METRICS:
-            fatal("pgd_memory_footprint() not implemented for gorilla pages");
-            break;
+            // FIXME: simplify the expression
+            return sizeof(PGD) + pg->gorilla.num_buffers * (128 * sizeof(uint32_t));
         default:
             fatal("Unknown page type: %uc", pg->type);
     }
@@ -341,7 +366,19 @@ void pgd_append_point(PGD *pg,
             break;
         }
         case PAGE_GORILLA_METRICS: {
-            fatal("pgd_append_point() not implemented for gorilla pages");
+            pg->used++;
+            storage_number t = pack_storage_number(n, flags);
+
+            bool ok = gorilla_writer_write(pg->gorilla.writer, t);
+            if (!ok) {
+                uint32_t *new_buffer = aral_mallocz(pgd_alloc_globals.aral_gorilla);
+                pg->gorilla.num_buffers++;
+                gorilla_writer_add_buffer(pg->gorilla.writer, new_buffer, 128);
+                ok = gorilla_writer_write(pg->gorilla.writer, t);
+
+                internal_fatal(ok == false, "Failed to writer value in newly allocated gorilla buffer.");
+            }
+            break;
         }
         default:
             fatal("DBENGINE: unknown page type id %d", pg->type);
@@ -352,7 +389,7 @@ void pgd_append_point(PGD *pg,
 // ----------------------------------------------------------------------------
 // querying with cursor
 
-static void pgdc_seek(PGDC *pgdc)
+static void pgdc_seek(PGDC *pgdc, uint32_t position)
 {
     uint8_t type = pgdc->pgd->type;
 
@@ -360,8 +397,18 @@ static void pgdc_seek(PGDC *pgdc)
         case PAGE_METRICS:
         case PAGE_TIER:
             break;
-        case PAGE_GORILLA_METRICS:
-            fatal("pgdc_seek() not implemented for gorilla pages");
+        case PAGE_GORILLA_METRICS: {
+            pgdc->gr = gorilla_reader_init(pgdc->pgd->gorilla.head_buffer);
+
+            for (uint32_t i = 0; i != position; i++) {
+                uint32_t value;
+                bool ok = gorilla_reader_read(&pgdc->gr, &value);
+
+                if (!ok)
+                    fatal("Positioning cursor failed because gorilla buffer has less than %u values", position);
+            }
+        }
+        break;
         default:
             fatal("DBENGINE: unknown page type id %d", type);
             break;
@@ -375,8 +422,16 @@ void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position)
     pgdc->pgd = pgd;
     pgdc->position = position;
 
-    if (pgd && pgd != PGD_EMPTY)
-        pgdc_seek(pgdc);
+    if (!pgd)
+        return;
+
+    if (pgd == PGD_EMPTY)
+        return;
+
+    if (position == UINT32_MAX)
+        return;
+
+    pgdc_seek(pgdc, position);
 }
 
 bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *sp)
@@ -416,7 +471,13 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
             return true;
         }
         case PAGE_GORILLA_METRICS: {
-            fatal("pgdc_get_next_point() not implemented for gorilla pages");
+            uint32_t value;
+            bool ok = gorilla_reader_read(&pgdc->gr, &value);
+
+            if (!ok)
+                fatal("Could not get next point because gorilla buffer does not have enough values");
+
+            return true;
         }
         default: {
             static bool logged = false;

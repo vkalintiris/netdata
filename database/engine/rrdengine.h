@@ -200,6 +200,8 @@ struct rrdeng_collect_handle {
     usec_t page_start_time_ut;
     usec_t page_end_time_ut;
     usec_t update_every_ut;
+
+    gorilla_writer_t gw;
 };
 
 struct rrdeng_query_handle {
