@@ -12,4 +12,3 @@ clang++ \
     -o gorilla_fuzzer gorilla.cc
 
 ./gorilla_fuzzer -workers=12 -jobs=16
-# ./gorilla_fuzzer
