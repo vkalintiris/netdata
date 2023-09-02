@@ -315,6 +315,7 @@ class Storage {
 public:
     uint32_t *alloc_buffer(size_t words) {
         uint32_t *new_buffer = new uint32_t[words]();
+        assert(((((uintptr_t) new_buffer) % 8u) == 0) && "Unaligned buffer...");
         Buffers.push_back(new_buffer);
         return new_buffer;
     }
@@ -335,14 +336,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
 
     std::vector<uint32_t> RandomData = random_vector<uint32_t>(Data, Size);
 
-    size_t words_per_buffer = 8;
-
     Storage S;
-    uint32_t *first_buffer = S.alloc_buffer(words_per_buffer);
+    size_t words_per_buffer = 8;
 
     /*
      * write data
     */
+    uint32_t *first_buffer = S.alloc_buffer(words_per_buffer);
     gorilla_writer_t gw = gorilla_writer_init(first_buffer, words_per_buffer);
 
     for (size_t i = 0; i != RandomData.size(); i++) {
@@ -358,26 +358,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
         assert(ok && "Could not write data to new buffer!!!");
     }
 
+
+    /*
+     * read data
+    */
+    gorilla_reader_t gr = gorilla_reader_init(first_buffer);
+
+    for (size_t i = 0; i != RandomData.size(); i++) {
+        uint32_t number = 0;
+        bool ok = gorilla_reader_read(&gr, &number);
+        assert(ok && "Failed to read number from gorilla buffer");
+
+        assert((number == RandomData[i])
+                && "Read wrong number from gorilla buffer");
+    }
+
     S.free_buffers();
-
-
-    // read data
-    // {
-    //     gorilla_reader_t gr = gorilla_reader_init(first_buffer);
-
-    //     // assert((gorilla_reader_entries(&gr) == RandomData.size()) &&
-    //     //        "Bad number of entries in gorilla buffer");
-
-    //     for (size_t i = 0; i != RandomData.size(); i++) {
-    //         uint32_t number = 0;
-    //         bool ok = gorilla_reader_read(&gr, &number);
-    //         assert(ok && "Failed to read number from gorilla buffer");
-
-    //         assert((number == RandomData[i])
-    //                 && "Read wrong number from gorilla buffer");
-    //     }
-    // }
-
     return 0;
 }
 
