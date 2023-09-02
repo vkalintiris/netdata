@@ -111,7 +111,7 @@ gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
         .entries = 0,
         .prev_number = 0,
         .prev_xor_lzc = 0,
-        .position = 2 * bit_size<uint32_t>(),
+        .position = 0,
         .capacity = capacity,
     };
 }
@@ -178,7 +178,7 @@ bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
 }
 
 typedef struct {
-    const uint32_t *buffer;
+    const gorilla_buffer_t *buffer;
 
     // number of values
     size_t length;
@@ -196,15 +196,17 @@ typedef struct {
 
 gorilla_reader_t gorilla_reader_init(const uint32_t *buf)
 {
-    uint32_t length = __atomic_load_n(&buf[1], __ATOMIC_SEQ_CST);
-    uint32_t capacity = __atomic_load_n(&buf[1], __ATOMIC_SEQ_CST);
+    const gorilla_buffer_t *buffer = reinterpret_cast<const gorilla_buffer_t *>(buf);
+
+    uint32_t length = __atomic_load_n(&buffer->header.entries, __ATOMIC_SEQ_CST);
+    uint32_t capacity = __atomic_load_n(&buffer->header.nbits, __ATOMIC_SEQ_CST);
 
     return gorilla_reader_t {
-        .buffer = buf,
+        .buffer = buffer,
         .length = length,
         .entries = 0,
         .capacity = capacity,
-        .position = 2 * bit_size<uint32_t>(),
+        .position = 0,
         .prev_number = 0,
         .prev_xor_lzc = 0,
         .prev_xor = 0,
@@ -213,12 +215,14 @@ gorilla_reader_t gorilla_reader_init(const uint32_t *buf)
 
 bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 {
+    const uint32_t *data = gr->buffer->data;
+
     if (gr->entries + 1 > gr->length)
         return false;
 
     // read the first number
     if (gr->entries == 0) {
-        bit_buffer_read(&gr->buffer[0], gr->position, number, bit_size<uint32_t>());
+        bit_buffer_read(data, gr->position, number, bit_size<uint32_t>());
 
         gr->entries++;
         gr->position += bit_size<uint32_t>();
@@ -228,7 +232,7 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 
     // process same-number bit
     uint32_t is_same_number;
-    bit_buffer_read(&gr->buffer[0], gr->position, &is_same_number, 1);
+    bit_buffer_read(data, gr->position, &is_same_number, 1);
     gr->position++;
 
     if (is_same_number) {
@@ -241,17 +245,17 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
     uint32_t xor_lzc = gr->prev_xor_lzc;
 
     uint32_t same_xor_lzc;
-    bit_buffer_read(&gr->buffer[0], gr->position, &same_xor_lzc, 1);
+    bit_buffer_read(data, gr->position, &same_xor_lzc, 1);
     gr->position++;
 
     if (!same_xor_lzc) {
-        bit_buffer_read(&gr->buffer[0], gr->position, &xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
+        bit_buffer_read(data, gr->position, &xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
         gr->position += (bit_size<uint32_t>() == 32) ? 5 : 6;
     }
 
     // process the non-lzc suffix
     uint32_t xor_value = 0;
-    bit_buffer_read(&gr->buffer[0], gr->position, &xor_value, bit_size<uint32_t>() - xor_lzc);
+    bit_buffer_read(data, gr->position, &xor_value, bit_size<uint32_t>() - xor_lzc);
     gr->position += bit_size<uint32_t>() - xor_lzc;
 
     *number = (gr->prev_number ^ xor_value);
@@ -266,7 +270,7 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 
 size_t gorilla_reader_entries(const gorilla_reader_t *gr)
 {
-    return __atomic_load_n(&gr->buffer[0], __ATOMIC_SEQ_CST);
+    return gr->length;
 }
 
 /*
