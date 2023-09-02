@@ -73,7 +73,19 @@ static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t
 }
 
 typedef struct {
-    uint32_t *buffer;
+    // uint32_t *next;
+    uint32_t entries;
+    uint32_t nbits;
+} gorilla_header_t;
+
+typedef struct {
+    gorilla_header_t header;
+    uint32_t data[];
+} gorilla_buffer_t;
+
+typedef struct {
+    gorilla_buffer_t *buffer;
+
     uint32_t entries;
 
     uint32_t prev_number;
@@ -86,10 +98,16 @@ typedef struct {
 
 gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 {
+    gorilla_buffer_t *buffer = reinterpret_cast<gorilla_buffer_t *>(buf);
+
+    // __atomic_store_n(&buffer->header.next, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&buffer->header.entries, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&buffer->header.nbits, 0, __ATOMIC_RELAXED);
+
     uint32_t capacity = n * bit_size<uint32_t>();
 
     return gorilla_writer_t {
-        .buffer = buf,
+        .buffer = buffer,
         .entries = 0,
         .prev_number = 0,
         .prev_xor_lzc = 0,
@@ -100,65 +118,63 @@ gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 
 bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
 {
-    // this is the first number we are writing
-    if (gw->entries == 0) {
-        if (gw->position + bit_size<uint32_t>() >= gw->capacity)
-            return false;
-        bit_buffer_write(gw->buffer, gw->position, number, bit_size<uint32_t>());
+    gorilla_header_t *hdr = &gw->buffer->header;
+    uint32_t *data = gw->buffer->data;
 
-        gw->position += bit_size<uint32_t>();
-        gw->entries++;
+    // this is the first number we are writing
+    if (hdr->entries == 0) {
+        if (hdr->nbits + bit_size<uint32_t>() >= gw->capacity)
+            return false;
+        bit_buffer_write(data, hdr->nbits, number, bit_size<uint32_t>());
+
+        __atomic_fetch_add(&hdr->nbits, bit_size<uint32_t>(), __ATOMIC_RELAXED);
+        __atomic_fetch_add(&hdr->entries, 1, __ATOMIC_RELAXED);
         gw->prev_number = number;
         return true;
     }
 
     // write true/false based on whether we got the same number or not.
     if (number == gw->prev_number) {
-        if (gw->position + 1 >= gw->capacity)
+        if (hdr->nbits + 1 >= gw->capacity)
             return false;
-        bit_buffer_write(gw->buffer, gw->position, static_cast<uint32_t>(1), 1);
-        gw->position++;
-        gw->entries++;
+
+        bit_buffer_write(data, hdr->nbits, static_cast<uint32_t>(1), 1);
+        __atomic_fetch_add(&hdr->nbits, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&hdr->entries, 1, __ATOMIC_RELAXED);
         return true;
     }
 
-    if (gw->position + 1 >= gw->capacity)
+    if (hdr->nbits + 1 >= gw->capacity)
         return false;
-    bit_buffer_write(gw->buffer, gw->position,static_cast<uint32_t>(0), 1);
-    gw->position++;
+    bit_buffer_write(data, hdr->nbits, static_cast<uint32_t>(0), 1);
+    __atomic_fetch_add(&hdr->nbits, 1, __ATOMIC_RELAXED);
 
     uint32_t xor_value = gw->prev_number ^ number;
     uint32_t xor_lzc = (bit_size<uint32_t>() == 32) ? __builtin_clz(xor_value) : __builtin_clzll(xor_value);
     uint32_t is_xor_lzc_same = (xor_lzc == gw->prev_xor_lzc) ? 1 : 0;
 
-    if (gw->position + 1 >= gw->capacity)
+    if (hdr->nbits + 1 >= gw->capacity)
         return false;
-    bit_buffer_write(gw->buffer, gw->position, is_xor_lzc_same, 1);
-    gw->position++;
+    bit_buffer_write(data, hdr->nbits, is_xor_lzc_same, 1);
+    __atomic_fetch_add(&hdr->nbits, 1, __ATOMIC_RELAXED);
     
     if (!is_xor_lzc_same) {
-        if (gw->position + 1 >= gw->capacity)
+        if (hdr->nbits + 1 >= gw->capacity)
             return false;
-        bit_buffer_write(gw->buffer, gw->position, xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
-        gw->position += (bit_size<uint32_t>() == 32) ? 5 : 6;
+        bit_buffer_write(data, hdr->nbits, xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
+        __atomic_fetch_add(&hdr->nbits, (bit_size<uint32_t>() == 32) ? 5 : 6, __ATOMIC_RELAXED);
     }
 
     // write the bits of the XOR'd value without the LZC prefix
-    if (gw->position + (bit_size<uint32_t>() - xor_lzc) >= gw->capacity)
+    if (hdr->nbits + (bit_size<uint32_t>() - xor_lzc) >= gw->capacity)
         return false;
-    bit_buffer_write(gw->buffer, gw->position, xor_value, bit_size<uint32_t>() - xor_lzc);
-    gw->position += bit_size<uint32_t>() - xor_lzc;
+    bit_buffer_write(data, hdr->nbits, xor_value, bit_size<uint32_t>() - xor_lzc);
+    __atomic_fetch_add(&hdr->nbits, bit_size<uint32_t>() - xor_lzc, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&hdr->entries, 1, __ATOMIC_RELAXED);
 
-    gw->entries++;
     gw->prev_number = number;
     gw->prev_xor_lzc = xor_lzc;
     return true;
-}
-
-void gorilla_writer_flush(gorilla_writer_t *gw)
-{
-    __atomic_store_n(&gw->buffer[0], gw->entries, __ATOMIC_RELAXED);
-    __atomic_store_n(&gw->buffer[1], gw->position, __ATOMIC_RELAXED);
 }
 
 typedef struct {
@@ -292,8 +308,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
             gorilla_writer_t gw = gorilla_writer_init(EncodedData.data(), EncodedData.capacity());
             for (size_t i = 0; i != RandomData.size(); i++)
                 gorilla_writer_write(&gw, RandomData[i]);
-
-            gorilla_writer_flush(&gw);
         }
 
         // read data
@@ -366,7 +380,6 @@ static void BM_DecodeU32Numbers(benchmark::State& state) {
     gorilla_writer_t gw = gorilla_writer_init(EncodedData.data(), EncodedData.size());
     for (size_t i = 0; i != RandomData.size(); i++)
         gorilla_writer_write(&gw, RandomData[i]);
-    gorilla_writer_flush(&gw);
 
     for (auto _ : state) {
         gorilla_reader_t gr = gorilla_reader_init(EncodedData.data());
