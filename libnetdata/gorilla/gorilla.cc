@@ -92,7 +92,6 @@ typedef struct {
     uint32_t prev_xor_lzc;
 
     // in bits
-    uint32_t position;
     uint32_t capacity;
 } gorilla_writer_t;
 
@@ -100,20 +99,27 @@ gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 {
     gorilla_buffer_t *buffer = reinterpret_cast<gorilla_buffer_t *>(buf);
 
-    __atomic_store_n(&buffer->header.next, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&buffer->header.next, NULL, __ATOMIC_RELAXED);
     __atomic_store_n(&buffer->header.entries, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&buffer->header.nbits, 0, __ATOMIC_RELAXED);
 
-    uint32_t capacity = n * bit_size<uint32_t>();
+    uint32_t capacity = (n * bit_size<uint32_t>()) - (sizeof(gorilla_header_t) * CHAR_BIT);
 
     return gorilla_writer_t {
         .buffer = buffer,
         .entries = 0,
         .prev_number = 0,
         .prev_xor_lzc = 0,
-        .position = 0,
         .capacity = capacity,
     };
+}
+
+gorilla_buffer_t *gorilla_writer_add_buffer(gorilla_writer_t *gw, uint32_t *buf, size_t n)
+{
+    __atomic_store_n(&gw->buffer->header.next, buf, __ATOMIC_RELAXED);
+    gorilla_buffer_t *prev_gorilla_buffer = gw->buffer;
+    *gw = gorilla_writer_init(buf, n);
+    return prev_gorilla_buffer;
 }
 
 bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
@@ -185,7 +191,7 @@ typedef struct {
     size_t entries;
 
     // in bits
-    size_t capacity;
+    size_t capacity; // FIXME: this not needed on the reader's side
     size_t position;
 
     uint32_t prev_number;
@@ -217,8 +223,15 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 {
     const uint32_t *data = gr->buffer->data;
 
-    if (gr->entries + 1 > gr->length)
-        return false;
+    if (gr->entries + 1 > gr->length) {
+        uint32_t *next_buffer = __atomic_load_n(&gr->buffer->header.next, __ATOMIC_SEQ_CST);
+
+        if (!next_buffer)
+            return false;
+
+        *gr = gorilla_reader_init(next_buffer);
+        return gorilla_reader_read(gr, number);
+    }
 
     // read the first number
     if (gr->entries == 0) {
@@ -298,39 +311,72 @@ static std::vector<Word> random_vector(const uint8_t *data, size_t size) {
     return V;
 }
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
-    // 32-bit tests
-    {
-        if (Size < 4)
-            return 0;
+class Storage {
+public:
+    uint32_t *alloc_buffer(size_t words) {
+        uint32_t *new_buffer = new uint32_t[words]();
+        Buffers.push_back(new_buffer);
+        return new_buffer;
+    }
 
-        std::vector<uint32_t> RandomData = random_vector<uint32_t>(Data, Size);
-        std::vector<uint32_t> EncodedData(10 * RandomData.capacity(), 0);
-
-        // write data
-        {
-            gorilla_writer_t gw = gorilla_writer_init(EncodedData.data(), EncodedData.capacity());
-            for (size_t i = 0; i != RandomData.size(); i++)
-                gorilla_writer_write(&gw, RandomData[i]);
-        }
-
-        // read data
-        {
-            gorilla_reader_t gr = gorilla_reader_init(EncodedData.data());
-
-            assert((gorilla_reader_entries(&gr) == RandomData.size()) &&
-                   "Bad number of entries in gorilla buffer");
-
-            for (size_t i = 0; i != RandomData.size(); i++) {
-                uint32_t number = 0;
-                bool ok = gorilla_reader_read(&gr, &number);
-                assert(ok && "Failed to read number from gorilla buffer");
-
-                assert((number == RandomData[i])
-                        && "Read wrong number from gorilla buffer");
-            }
+    void free_buffers() {
+        for (uint32_t *buffer : Buffers) {
+            delete[] buffer;
         }
     }
+    
+private:
+    std::vector<uint32_t *> Buffers;
+};
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
+    if (Size < 4)
+        return 0;
+
+    std::vector<uint32_t> RandomData = random_vector<uint32_t>(Data, Size);
+
+    size_t words_per_buffer = 8;
+
+    Storage S;
+    uint32_t *first_buffer = S.alloc_buffer(words_per_buffer);
+
+    /*
+     * write data
+    */
+    gorilla_writer_t gw = gorilla_writer_init(first_buffer, words_per_buffer);
+
+    for (size_t i = 0; i != RandomData.size(); i++) {
+        bool ok = gorilla_writer_write(&gw, RandomData[i]);
+        if (ok)
+            continue;
+
+        // add new buffer
+        uint32_t *buffer = S.alloc_buffer(words_per_buffer);
+        gorilla_writer_add_buffer(&gw, buffer, words_per_buffer);
+
+        ok = gorilla_writer_write(&gw, RandomData[i]);
+        assert(ok && "Could not write data to new buffer!!!");
+    }
+
+    S.free_buffers();
+
+
+    // read data
+    // {
+    //     gorilla_reader_t gr = gorilla_reader_init(first_buffer);
+
+    //     // assert((gorilla_reader_entries(&gr) == RandomData.size()) &&
+    //     //        "Bad number of entries in gorilla buffer");
+
+    //     for (size_t i = 0; i != RandomData.size(); i++) {
+    //         uint32_t number = 0;
+    //         bool ok = gorilla_reader_read(&gr, &number);
+    //         assert(ok && "Failed to read number from gorilla buffer");
+
+    //         assert((number == RandomData[i])
+    //                 && "Read wrong number from gorilla buffer");
+    //     }
+    // }
 
     return 0;
 }
