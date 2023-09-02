@@ -17,10 +17,6 @@ static constexpr size_t bit_size() noexcept
     return (sizeof(T) * CHAR_BIT);
 }
 
-/*
- * bit buffer
-*/
-
 static void bit_buffer_write(uint32_t *buf, size_t pos, uint32_t v, size_t nbits)
 {
     assert(nbits > 0 && nbits <= bit_size<uint32_t>());
@@ -75,40 +71,6 @@ static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t
         }
     }
 }
-
-/*
- * bit stream reader
-*/
-
-typedef struct {
-    size_t cap;
-    size_t pos;
-} bit_stream_reader_t;
-
-bit_stream_reader_t bit_stream_reader_init(const uint32_t *buffer)
-{
-    size_t capacity = __atomic_load_n(&buffer[0], __ATOMIC_SEQ_CST);
-
-    return bit_stream_reader_t {
-        .cap = capacity,
-        .pos = bit_size<uint32_t>(),
-    };
-}
-
-bool bit_stream_reader_read(bit_stream_reader_t *bsr, const uint32_t *buf, uint32_t *value, size_t nbits)
-{
-    if (bsr->pos + nbits > bsr->cap)
-        return false;
-
-    bit_buffer_read(buf, bsr->pos, value, nbits);
-    bsr->pos += nbits;
-
-    return true;
-}
-
-/*
- * gorilla writer
-*/
 
 typedef struct {
     uint32_t *buffer;
@@ -199,62 +161,63 @@ void gorilla_writer_flush(gorilla_writer_t *gw)
     __atomic_store_n(&gw->buffer[1], gw->position, __ATOMIC_RELAXED);
 }
 
-/*
- * gorilla_reader_t
-*/
-
 typedef struct {
     const uint32_t *buffer;
-    bit_stream_reader_t bsr;
 
+    // number of values
+    size_t length;
+    size_t entries;
+
+    // in bits
+    size_t capacity;
     size_t position;
 
     uint32_t prev_number;
     uint32_t prev_xor_lzc;
     uint32_t prev_xor;
+
 } gorilla_reader_t;
 
 gorilla_reader_t gorilla_reader_init(const uint32_t *buf)
 {
+    uint32_t length = __atomic_load_n(&buf[1], __ATOMIC_SEQ_CST);
+    uint32_t capacity = __atomic_load_n(&buf[1], __ATOMIC_SEQ_CST);
+
     return gorilla_reader_t {
         .buffer = buf,
-        .bsr = bit_stream_reader_init(&buf[1]),
-        .position = 0,
+        .length = length,
+        .entries = 0,
+        .capacity = capacity,
+        .position = 2 * bit_size<uint32_t>(),
         .prev_number = 0,
         .prev_xor_lzc = 0,
         .prev_xor = 0,
     };
 }
 
-const uint32_t *gorilla_reader_bit_buffer(const gorilla_reader_t *gr)
-{
-    return &gr->buffer[1];
-}
-
 bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 {
-    const uint32_t *bit_buffer = gorilla_reader_bit_buffer(gr);
-    
+    if (gr->entries + 1 > gr->length)
+        return false;
+
     // read the first number
-    if (gr->position == 0) {
-        bool ok = bit_stream_reader_read(&gr->bsr, bit_buffer, number, bit_size<uint32_t>());
+    if (gr->entries == 0) {
+        bit_buffer_read(&gr->buffer[0], gr->position, number, bit_size<uint32_t>());
 
-        if (ok) {
-            gr->position++;
-            gr->prev_number = *number;
-        }
-
-        return ok;
+        gr->entries++;
+        gr->position += bit_size<uint32_t>();
+        gr->prev_number = *number;
+        return true;
     }
 
     // process same-number bit
     uint32_t is_same_number;
-    if (!bit_stream_reader_read(&gr->bsr, bit_buffer, &is_same_number, 1)) {
-        return false;
-    }
+    bit_buffer_read(&gr->buffer[0], gr->position, &is_same_number, 1);
+    gr->position++;
 
     if (is_same_number) {
         *number = gr->prev_number;
+        gr->entries++;
         return true;
     }
 
@@ -262,25 +225,22 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
     uint32_t xor_lzc = gr->prev_xor_lzc;
 
     uint32_t same_xor_lzc;
-    if (!bit_stream_reader_read(&gr->bsr, bit_buffer, &same_xor_lzc, 1)) {
-        return false;
-    }
+    bit_buffer_read(&gr->buffer[0], gr->position, &same_xor_lzc, 1);
+    gr->position++;
 
     if (!same_xor_lzc) {
-        if (!bit_stream_reader_read(&gr->bsr, bit_buffer, &xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6)) {
-            return false;        
-        }
+        bit_buffer_read(&gr->buffer[0], gr->position, &xor_lzc, (bit_size<uint32_t>() == 32) ? 5 : 6);
+        gr->position += (bit_size<uint32_t>() == 32) ? 5 : 6;
     }
 
     // process the non-lzc suffix
     uint32_t xor_value = 0;
-    if (!bit_stream_reader_read(&gr->bsr, bit_buffer, &xor_value, bit_size<uint32_t>() - xor_lzc)) {
-        return false;        
-    }
+    bit_buffer_read(&gr->buffer[0], gr->position, &xor_value, bit_size<uint32_t>() - xor_lzc);
+    gr->position += bit_size<uint32_t>() - xor_lzc;
 
     *number = (gr->prev_number ^ xor_value);
 
-    gr->position++;
+    gr->entries++;
     gr->prev_number = *number;
     gr->prev_xor_lzc = xor_lzc;
     gr->prev_xor = xor_value;
@@ -291,11 +251,6 @@ bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number)
 size_t gorilla_reader_entries(const gorilla_reader_t *gr)
 {
     return __atomic_load_n(&gr->buffer[0], __ATOMIC_SEQ_CST);
-}
-
-const uint32_t *gorilla_reader_data(const gorilla_reader_t *gr)
-{
-    return gr->buffer;
 }
 
 /*
