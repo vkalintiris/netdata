@@ -73,7 +73,7 @@ static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t
 }
 
 typedef struct {
-    // uint32_t *next;
+    uint32_t *next;
     uint32_t entries;
     uint32_t nbits;
 } gorilla_header_t;
@@ -100,7 +100,7 @@ gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
 {
     gorilla_buffer_t *buffer = reinterpret_cast<gorilla_buffer_t *>(buf);
 
-    // __atomic_store_n(&buffer->header.next, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&buffer->header.next, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&buffer->header.entries, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&buffer->header.nbits, 0, __ATOMIC_RELAXED);
 
