@@ -3,6 +3,8 @@
 #include "page.h"
 #include "libnetdata/aral/aral.h"
 #include "libnetdata/gorilla/gorilla.h"
+#include "libnetdata/locks/locks.h"
+#include "libnetdata/log/log.h"
 
 typedef enum __attribute__((packed)) {
     PAGE_OPTION_ALL_VALUES_EMPTY    = (1 << 0),
@@ -17,7 +19,6 @@ typedef struct {
 
 
 typedef struct {
-    uint32_t *head_buffer;
     size_t num_buffers;
     gorilla_writer_t *writer;  
 } page_gorilla_t;
@@ -41,7 +42,8 @@ struct pgd {
 struct {
     ARAL *aral_pgd;
     ARAL *aral_data[RRD_STORAGE_TIERS];
-    ARAL *aral_gorilla;
+    ARAL *aral_gbuffer;
+    ARAL *aral_gorilla_writer;
 } pgd_alloc_globals = {};
 
 static ARAL *pgd_aral_data_lookup(size_t size)
@@ -92,15 +94,30 @@ void pgd_init_arals(void)
     // gorilla aral
     {
         char buf[20 + 1];
-        snprintfz(buf, 20, "gorilla");
+        snprintfz(buf, 20, "gbuf");
 
         // FIXME: add stats
         size_t gorilla_page_size = 128 * sizeof(uint32_t);
-        pgd_alloc_globals.aral_gorilla = aral_create(
+        pgd_alloc_globals.aral_gbuffer = aral_create(
                 buf,
                 gorilla_page_size,
                 64,
                 512 * gorilla_page_size,
+                NULL,
+                NULL, NULL, false, false);
+    }
+
+    // gorilla aral
+    {
+        char buf[20 + 1];
+        snprintfz(buf, 20, "gorilla");
+
+        // FIXME: add stats
+        pgd_alloc_globals.aral_gorilla_writer = aral_create(
+                buf,
+                sizeof(gorilla_writer_t),
+                64,
+                512 * sizeof(gorilla_writer_t),
                 NULL,
                 NULL, NULL, false, false);
     }
@@ -127,7 +144,7 @@ static void pgd_data_aral_free(void *page, size_t size __maybe_unused)
 // ----------------------------------------------------------------------------
 // management api
 
-PGD *pgd_create(uint8_t type, uint32_t slots, gorilla_writer_t *gw)
+PGD *pgd_create(uint8_t type, uint32_t slots)
 {
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
     pg->type = type;
@@ -148,11 +165,15 @@ PGD *pgd_create(uint8_t type, uint32_t slots, gorilla_writer_t *gw)
             break;
         }
         case PAGE_GORILLA_METRICS: {
-            pg->gorilla.head_buffer = aral_mallocz(pgd_alloc_globals.aral_gorilla);
-            pg->gorilla.num_buffers = 1;
+            internal_fatal(slots == 1,
+                      "DBENGINE: invalid number of slots (%u) or page type (%u)", slots, type);
 
-            pg->gorilla.writer = gw;
-            *pg->gorilla.writer = gorilla_writer_init(pg->gorilla.head_buffer, 128);
+            pg->gorilla.writer = aral_mallocz(pgd_alloc_globals.aral_gorilla_writer);
+            *pg->gorilla.writer = gorilla_writer_init();
+
+            uint32_t *buf = aral_mallocz(pgd_alloc_globals.aral_gbuffer);
+            gorilla_writer_add_buffer(pg->gorilla.writer, buf, 128);
+            pg->gorilla.num_buffers = 1;
             break;
         }
         default:
@@ -186,10 +207,7 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
             memcpy(pg->raw.data, base, size);
             break;
         case PAGE_GORILLA_METRICS:
-            pg->gorilla.head_buffer = NULL;
-            pg->gorilla.num_buffers = 0;
-            pg->gorilla.writer = NULL;
-            fatal("GVD: not implemented yet");
+            fatal("pgd_create_from_disk_data() not implemented for gorilla pages");
         default:
             fatal("Unknown page type: %uc", type);
     }
@@ -211,8 +229,32 @@ void pgd_free(PGD *pg)
         case PAGE_TIER:
             pgd_data_aral_free(pg->raw.data, pg->raw.size);
             break;
-        case PAGE_GORILLA_METRICS:
-            fatal("pgd_free() not implemented for gorilla pages");
+        case PAGE_GORILLA_METRICS: {
+            if ((pg->options & PAGE_OPTION_ON_DISK) ||
+                (pg->options & PAGE_OPTION_READ_ONLY))
+                break;
+
+            if (!pg->gorilla.writer)
+                fatal("pgd_free not implemented for PGD's without a writer.");
+
+            internal_fatal(pg->gorilla.num_buffers == 0,
+                      "No buffers allocated to gorilla writer");
+
+            while (true) {
+                uint32_t *buf = gorilla_writer_drop_head_buffer(pg->gorilla.writer);
+                if (!buf)
+                    break;
+                pg->gorilla.num_buffers -= 1;
+                aral_freez(pgd_alloc_globals.aral_gbuffer, buf);
+            }
+
+            internal_fatal(pg->gorilla.num_buffers != 0,
+                      "Could not free all gorilla writer buffers");
+
+            aral_freez(pgd_alloc_globals.aral_gorilla_writer, pg->gorilla.writer);
+            pg->gorilla.writer = NULL;
+            break;
+        }
         default:
             fatal("Unknown page type: %uc", pg->type);
     }
@@ -288,8 +330,18 @@ uint32_t pgd_disk_footprint(PGD *pg)
             internal_fatal(used_size > pg->raw.size, "Wrong disk footprint page size");
             return used_size;
         }
-        case PAGE_GORILLA_METRICS:
-            fatal("pgd_disk_footprint() not implemented for gorilla pages");
+        case PAGE_GORILLA_METRICS: {
+            if (!pg->gorilla.writer)
+                fatal("pgd_disk_footprint() not implemented for NULL gorilla writers");
+
+            internal_fatal(pg->gorilla.num_buffers == 0,
+                      "Gorilla writer does not have any buffers");
+
+            return pg->gorilla.num_buffers * 128 * sizeof(uint32_t);
+            // uint32_t nbytes = gorilla_writer_disk_size_in_bytes(pg->gorilla.writer);
+            // netdata_log_error("GVD: pgd_disk_footprint() (pg: %p, writer: %p, size: %u bytes", pg, pg->gorilla.writer, nbytes);
+            // return nbytes;
+        }
         default:
             fatal("Unknown page type: %uc", pg->type);
     }
@@ -297,6 +349,9 @@ uint32_t pgd_disk_footprint(PGD *pg)
 
 void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
 {
+    if (pgd_disk_footprint(pg) != dst_size)
+        netdata_log_error("GVD: pgd_copy_to_extent() (pg: %p, writer: %p)", pg, pg->gorilla.writer);
+
     internal_fatal(pgd_disk_footprint(pg) != dst_size, "Wrong disk footprint size requested (need %u, available %u)",
                    pgd_disk_footprint(pg), dst_size);
 
@@ -308,8 +363,21 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
         case PAGE_TIER:
             memcpy(dst, pg->raw.data, dst_size);
             break;
-        case PAGE_GORILLA_METRICS:
-            fatal("pgd_copy_to_extent() not implemented for gorilla pages");
+        case PAGE_GORILLA_METRICS: {
+            if (!pg->gorilla.writer)
+                fatal("pgd_copy_to_extent() not implemented for NULL gorilla writers");
+
+            internal_fatal(pg->gorilla.num_buffers == 0,
+                      "Gorilla writer does not have any buffers");
+
+            bool ok = gorilla_writer_serialize(pg->gorilla.writer, dst, dst_size);
+            if (!ok) {
+                netdata_log_error("GVD: tried to serialize pg=%p, gw=%p (with dst_size=%u bytes, num_buffers=%zu)", pg, pg->gorilla.writer, dst_size, pg->gorilla.num_buffers);
+            }
+            internal_fatal((ok == false),
+                      "Destination buffer is too small to serialize the gorilla writer.");
+            break;
+        }
         default:
             fatal("Unknown page type: %uc", pg->type);
     }
@@ -369,13 +437,17 @@ void pgd_append_point(PGD *pg,
             pg->used++;
             storage_number t = pack_storage_number(n, flags);
 
+            if ((pg->options & PAGE_OPTION_ALL_VALUES_EMPTY) && does_storage_number_exist(t))
+                pg->options &= ~PAGE_OPTION_ALL_VALUES_EMPTY;
+
             bool ok = gorilla_writer_write(pg->gorilla.writer, t);
             if (!ok) {
-                uint32_t *new_buffer = aral_mallocz(pgd_alloc_globals.aral_gorilla);
-                pg->gorilla.num_buffers++;
-                gorilla_writer_add_buffer(pg->gorilla.writer, new_buffer, 128);
-                ok = gorilla_writer_write(pg->gorilla.writer, t);
+                uint32_t *new_buffer = aral_mallocz(pgd_alloc_globals.aral_gbuffer);
 
+                gorilla_writer_add_buffer(pg->gorilla.writer, new_buffer, 128);
+                pg->gorilla.num_buffers += 1;
+
+                ok = gorilla_writer_write(pg->gorilla.writer, t);
                 internal_fatal(ok == false, "Failed to writer value in newly allocated gorilla buffer.");
             }
             break;
@@ -398,8 +470,10 @@ static void pgdc_seek(PGDC *pgdc, uint32_t position)
         case PAGE_TIER:
             break;
         case PAGE_GORILLA_METRICS: {
-            pgdc->gr = gorilla_reader_init(pgdc->pgd->gorilla.head_buffer);
+            if (!pgdc->pgd->gorilla.writer)
+                fatal("Seeking from a page without an active gorilla writer is not supported (yet).");
 
+            pgdc->gr = gorilla_writer_get_reader(pgdc->pgd->gorilla.writer);
             for (uint32_t i = 0; i != position; i++) {
                 uint32_t value;
                 bool ok = gorilla_reader_read(&pgdc->gr, &value);

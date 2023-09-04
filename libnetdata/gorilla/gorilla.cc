@@ -72,37 +72,45 @@ static void bit_buffer_read(const uint32_t *buf, size_t pos, uint32_t *v, size_t
     }
 }
 
-gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n)
+gorilla_writer_t gorilla_writer_init()
 {
-    gorilla_buffer_t *buffer = reinterpret_cast<gorilla_buffer_t *>(buf);
-
-    __atomic_store_n(&buffer->header.next, NULL, __ATOMIC_RELAXED);
-    __atomic_store_n(&buffer->header.entries, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&buffer->header.nbits, 0, __ATOMIC_RELAXED);
-
-    uint32_t capacity = (n * bit_size<uint32_t>()) - (sizeof(gorilla_header_t) * CHAR_BIT);
-
     return gorilla_writer_t {
-        .buffer = buffer,
+        .head_buffer = NULL,
+        .last_buffer = NULL,
         .entries = 0,
         .prev_number = 0,
         .prev_xor_lzc = 0,
-        .capacity = capacity,
+        .capacity = 0
     };
 }
 
-gorilla_buffer_t *gorilla_writer_add_buffer(gorilla_writer_t *gw, uint32_t *buf, size_t n)
+void gorilla_writer_add_buffer(gorilla_writer_t *gw, uint32_t *buf, size_t n)
 {
-    __atomic_store_n(&gw->buffer->header.next, buf, __ATOMIC_RELAXED);
-    gorilla_buffer_t *prev_gorilla_buffer = gw->buffer;
-    *gw = gorilla_writer_init(buf, n);
-    return prev_gorilla_buffer;
+    gorilla_buffer_t *gbuf = reinterpret_cast<gorilla_buffer_t *>(buf);
+    gbuf->header.next = NULL;
+    gbuf->header.entries = 0;
+    gbuf->header.nbits = 0;
+
+    uint32_t capacity = (n * bit_size<uint32_t>()) - (sizeof(gorilla_header_t) * CHAR_BIT);
+
+    gw->entries = 0;
+    gw->prev_number = 0;
+    gw->prev_xor_lzc = 0;
+    gw->capacity = capacity;
+
+    if (!gw->head_buffer)
+        __atomic_store_n(&gw->head_buffer, gbuf, __ATOMIC_RELAXED);
+
+    if (gw->last_buffer)
+        __atomic_store_n(&gw->last_buffer->header.next, buf, __ATOMIC_RELAXED);
+
+    __atomic_store_n(&gw->last_buffer, gbuf, __ATOMIC_RELAXED);
 }
 
 bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
 {
-    gorilla_header_t *hdr = &gw->buffer->header;
-    uint32_t *data = gw->buffer->data;
+    gorilla_header_t *hdr = &gw->last_buffer->header;
+    uint32_t *data = gw->last_buffer->data;
 
     // this is the first number we are writing
     if (hdr->entries == 0) {
@@ -158,6 +166,72 @@ bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number)
     gw->prev_number = number;
     gw->prev_xor_lzc = xor_lzc;
     return true;
+}
+
+uint32_t *gorilla_writer_drop_head_buffer(gorilla_writer_t *gw) {
+    (void) gw;
+
+    if (!gw->head_buffer)
+        return NULL;
+
+    uint32_t *curr_head = reinterpret_cast<uint32_t *>(gw->head_buffer);
+    gorilla_buffer_t *next_head = reinterpret_cast<gorilla_buffer_t *>(gw->head_buffer->header.next);
+    __atomic_store_n(&gw->head_buffer, next_head, __ATOMIC_RELAXED);
+    return curr_head;
+}
+
+uint32_t gorilla_writer_disk_size_in_bytes(const gorilla_writer_t *gw)
+{
+    uint32_t bytes = 0;
+
+    gorilla_buffer_t *curr_gbuf = gw->head_buffer;
+    do {
+        gorilla_buffer_t *next_gbuf = reinterpret_cast<gorilla_buffer_t *>(curr_gbuf->header.next);
+
+        bytes += sizeof(gorilla_header_t) + ((curr_gbuf->header.nbits + (CHAR_BIT - 1)) / CHAR_BIT);
+
+        curr_gbuf = next_gbuf;
+    } while (curr_gbuf);
+
+    return bytes;
+}
+
+bool gorilla_writer_serialize(const gorilla_writer_t *gw, uint8_t *dst, uint32_t dst_size) {
+    const gorilla_buffer_t *curr_gbuf = gw->head_buffer;
+    do {
+        const gorilla_buffer_t *next_gbuf = reinterpret_cast<const gorilla_buffer_t *>(curr_gbuf->header.next);
+
+        size_t bytes = sizeof(gorilla_header_t) + ((curr_gbuf->header.nbits + (CHAR_BIT - 1)) / CHAR_BIT);
+        if (bytes > dst_size)
+            return false;   
+
+        memcpy(dst, curr_gbuf, bytes);
+        dst += bytes;
+        dst_size -= bytes;
+
+        curr_gbuf = next_gbuf;
+    } while (curr_gbuf);
+
+    return true;
+}
+
+gorilla_reader_t gorilla_writer_get_reader(const gorilla_writer_t *gw)
+{
+    const gorilla_buffer_t *buffer = __atomic_load_n(&gw->head_buffer, __ATOMIC_SEQ_CST);
+
+    uint32_t length = __atomic_load_n(&buffer->header.entries, __ATOMIC_SEQ_CST);
+    uint32_t capacity = __atomic_load_n(&buffer->header.nbits, __ATOMIC_SEQ_CST);
+
+    return gorilla_reader_t {
+        .buffer = buffer,
+        .length = length,
+        .entries = 0,
+        .capacity = capacity,
+        .position = 0,
+        .prev_number = 0,
+        .prev_xor_lzc = 0,
+        .prev_xor = 0,
+    };
 }
 
 gorilla_reader_t gorilla_reader_init(const uint32_t *buf)
@@ -297,8 +371,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
     /*
      * write data
     */
+    gorilla_writer_t gw = gorilla_writer_init();
     uint32_t *first_buffer = S.alloc_buffer(words_per_buffer);
-    gorilla_writer_t gw = gorilla_writer_init(first_buffer, words_per_buffer);
+    gorilla_writer_add_buffer(&gw, first_buffer, words_per_buffer);
 
     for (size_t i = 0; i != RandomData.size(); i++) {
         bool ok = gorilla_writer_write(&gw, RandomData[i]);

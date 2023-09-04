@@ -23,7 +23,8 @@ typedef struct {
 } gorilla_buffer_t;
 
 typedef struct {
-    gorilla_buffer_t *buffer;
+    gorilla_buffer_t *head_buffer;
+    gorilla_buffer_t *last_buffer;
 
     uint32_t entries;
 
@@ -51,12 +52,17 @@ typedef struct {
 
 } gorilla_reader_t;
 
-gorilla_writer_t gorilla_writer_init(uint32_t *buf, size_t n);
-gorilla_buffer_t *gorilla_writer_add_buffer(gorilla_writer_t *gw, uint32_t *buf, size_t n);
+gorilla_writer_t gorilla_writer_init();
+void gorilla_writer_add_buffer(gorilla_writer_t *gw, uint32_t *buf, size_t n);
 bool gorilla_writer_write(gorilla_writer_t *gw, uint32_t number);
 
-gorilla_reader_t gorilla_reader_init(const uint32_t *buf);
+gorilla_reader_t gorilla_writer_get_reader(const gorilla_writer_t *gw);
 bool gorilla_reader_read(gorilla_reader_t *gr, uint32_t *number);
+
+uint32_t *gorilla_writer_drop_head_buffer(gorilla_writer_t *gw);
+
+uint32_t gorilla_writer_disk_size_in_bytes(const gorilla_writer_t *gw);
+bool gorilla_writer_serialize(const gorilla_writer_t *gw, uint8_t *dst, uint32_t dst_size);
 
 #ifdef __cplusplus
 }

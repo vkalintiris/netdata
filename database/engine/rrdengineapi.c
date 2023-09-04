@@ -442,14 +442,14 @@ static PGD *rrdeng_alloc_new_page_data(struct rrdeng_collect_handle *handle, siz
             internal_fatal(size > tier_page_size[ctx->config.tier] || size < CTX_POINT_SIZE_BYTES(ctx) * 2, "ooops! wrong page size");
 
             *data_size = size;
-            d = pgd_create(ctx->config.page_type, slots, NULL);
+            d = pgd_create(ctx->config.page_type, slots);
 
             break;
         }
         case PAGE_GORILLA_METRICS: {
             size_t slots = 128;
             *data_size = 128 * CTX_POINT_SIZE_BYTES(ctx);
-            d = pgd_create(ctx->config.page_type, slots, &handle->gw);
+            d = pgd_create(ctx->config.page_type, slots);
             break;
         }
         default:
