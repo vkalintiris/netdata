@@ -214,6 +214,7 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
 
     pg->type = type;
     pg->states = PGD_STATE_CREATED_FROM_DISK;
+    pg->options = 0;
 
     switch (type)
     {
@@ -574,8 +575,9 @@ static void pgdc_seek(PGDC *pgdc, uint32_t position)
                     break;
                 }
             }
+
+            break;
         }
-        break;
         default:
             fatal("DBENGINE: unknown page type id %d", pg->type);
             break;
