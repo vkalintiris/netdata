@@ -105,7 +105,7 @@ void pgd_init_arals(void)
         }
     }
 
-    // gorilla aral
+    // gorilla buffers aral
     {
         char buf[20 + 1];
         snprintfz(buf, 20, "gbuffer");
@@ -121,7 +121,7 @@ void pgd_init_arals(void)
                 NULL, NULL, false, false);
     }
 
-    // gorilla aral
+    // gorilla writers aral
     {
         char buf[20 + 1];
         snprintfz(buf, 20, "gwriter");
@@ -142,17 +142,17 @@ static void *pgd_data_aral_alloc(size_t size)
     ARAL *ar = pgd_aral_data_lookup(size);
     if (!ar)
         return mallocz(size);
-
-    return aral_mallocz(ar);
+    else
+        return aral_mallocz(ar);
 }
 
-static void pgd_data_aral_free(void *page, size_t size __maybe_unused)
+static void pgd_data_aral_free(void *page, size_t size)
 {
     ARAL *ar = pgd_aral_data_lookup(size);
     if (!ar)
         freez(page);
-
-    aral_freez(ar, page);
+    else
+        aral_freez(ar, page);
 }
 
 // ----------------------------------------------------------------------------
@@ -214,19 +214,21 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
 
     pg->type = type;
     pg->states = PGD_STATE_CREATED_FROM_DISK;
-    pg->options = 0;
+    pg->options = ~PAGE_OPTION_ALL_VALUES_EMPTY;
 
     switch (type)
     {
         case PAGE_METRICS:
         case PAGE_TIER:
-            pg->raw.data = pgd_data_aral_alloc(size);
             pg->raw.size = size;
             pg->used = size / page_type_size[type];
             pg->slots = pg->used;
+
+            pg->raw.data = pgd_data_aral_alloc(size);
             memcpy(pg->raw.data, base, size);
             break;
         case PAGE_GORILLA_METRICS:
+            internal_fatal(size == 0, "Asked to create page with 0 data!!!");
             internal_fatal(size % sizeof(uint32_t), "Unaligned gorilla buffer size");
             internal_fatal(size % GORILLA_PAGE_SIZE_IN_BYTES, "Expected size to be a multiple of 512-bytes");
 

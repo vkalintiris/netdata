@@ -200,8 +200,8 @@ extern "C" void *profile_main(void *ptr) {
 
     // pick low-default values, in case this plugin is ever enabled accidentaly.
     size_t NumThreads = config_get_number(CONFIG_SECTION_PROFILE, "number of threads", 10);
-    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 25);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 5);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 50);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 10);
     size_t SecondsToBackfill = config_get_number(CONFIG_SECTION_PROFILE, "seconds to backfill", 3600 * 24);
 
     std::vector<Profiler> Profilers;
