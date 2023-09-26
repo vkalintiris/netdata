@@ -286,6 +286,7 @@ ENABLE_EBPF=1
 ENABLE_H2O=1
 ENABLE_CLOUD=1
 NETDATA_CMAKE_OPTIONS="${NETDATA_CMAKE_OPTIONS-}"
+NETDATA_ENABLE_GTESTS=0
 RELEASE_CHANNEL="nightly" # valid values are 'nightly' and 'stable'
 IS_NETDATA_STATIC_BINARY="${IS_NETDATA_STATIC_BINARY:-"no"}"
 while [ -n "${1}" ]; do
@@ -340,6 +341,14 @@ while [ -n "${1}" ]; do
       ;;
     "--disable-x86-sse")
       # XXX: No longer supported.
+      ;;
+    "--enable-gtests")
+      NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--enable-gtests)}" | sed 's/$/ --enable-gtests/g')"
+      NETDATA_ENABLE_GTESTS=1
+      ;;
+    "--disable-gtests")
+      NETDATA_CONFIGURE_OPTIONS="$(echo "${NETDATA_CONFIGURE_OPTIONS%--disable-gtests)}" | sed 's/$/ --disable-gtests/g')"
+      NETDATA_ENABLE_GTESTS=0
       ;;
     "--disable-telemetry") NETDATA_DISABLE_TELEMETRY=1 ;;
     "--disable-go") NETDATA_DISABLE_GO=1 ;;
