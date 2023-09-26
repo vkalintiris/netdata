@@ -1466,6 +1466,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
+        "/home/vk/opt/rocksdb/include"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1477,6 +1478,9 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
+        "/home/vk/opt/rocksdb/lib/librocksdb.a"
+        "-lzstd"
+        "-lbz2"
 )
 
 #
