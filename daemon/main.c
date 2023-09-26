@@ -5,6 +5,7 @@
 #include "static_threads.h"
 
 #include "database/engine/page_test.h"
+#include "database/rdb/rdb.h"
 
 #if defined(ENV32BIT)
 #warning COMPILING 32BIT NETDATA
@@ -467,6 +468,10 @@ void netdata_cleanup_and_exit(int ret) {
         }
 #endif
     }
+
+#ifdef ENABLE_ROCKSDB
+    rdb_fini();
+#endif
 
     delta_shutdown_time("close SQL context db");
 

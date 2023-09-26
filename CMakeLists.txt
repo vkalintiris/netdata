@@ -60,7 +60,7 @@ project(netdata
 find_package(PkgConfig REQUIRED)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_C_STANDARD_REQUIRED On)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
@@ -79,6 +79,10 @@ option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
+
+option(ENABLE_ROCKSDB "enable rocksdb" True)
+set(ROCKSDB_INCLUDE "/home/vk/opt/rocksdb/include")
+set(ROCKSDB_LIBRARY "/home/vk/opt/rocksdb/lib/librocksdb.a")
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -99,6 +103,7 @@ option(ENABLE_EXPORTER_MONGODB "enable mongodb exporter" True)
 option(ENABLE_BUNDLED_JSONC "enable bundled json-c" False)
 option(ENABLE_BUNDLED_YAML "enable bundled yaml" False)
 option(ENABLE_BUNDLED_PROTOBUF "enable bundled protobuf" False)
+
 
 #
 # detect OS
@@ -670,6 +675,10 @@ if(ENABLE_DBENGINE)
                                  database/engine/rrdenginelib.h
                                  database/engine/rrdengineapi.c
                                  database/engine/rrdengineapi.h
+                                 database/engine/page.c
+                                 database/engine/page.h
+                                 database/engine/page_test.cc
+                                 database/engine/page_test.h
                                  database/engine/pagecache.c
                                  database/engine/pagecache.h
                                  database/engine/cache.c
@@ -678,6 +687,11 @@ if(ENABLE_DBENGINE)
                                  database/engine/metric.h
                                  database/engine/pdc.c
                                  database/engine/pdc.h)
+endif()
+
+if(ENABLE_ROCKSDB)
+    list(APPEND RRD_PLUGIN_FILES database/rdb/rdb.cc
+                                 database/rdb/rdb.h)
 endif()
 
 set(REGISTRY_PLUGIN_FILES registry/registry.c
@@ -1478,9 +1492,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
-        "/home/vk/opt/rocksdb/lib/librocksdb.a"
-        "-lzstd"
-        "-lbz2"
+        "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_LIBRARY};zstd;bz2>"
 )
 
 #

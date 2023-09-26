@@ -83,6 +83,7 @@ typedef enum __attribute__ ((__packed__)) rrd_memory_mode {
     RRD_MEMORY_MODE_SAVE     = 3,
     RRD_MEMORY_MODE_ALLOC    = 4,
     RRD_MEMORY_MODE_DBENGINE = 5,
+    RRD_MEMORY_MODE_ROCKSDB  = 6,
 
     // this is 8-bit
 } RRD_MEMORY_MODE;
@@ -93,6 +94,7 @@ typedef enum __attribute__ ((__packed__)) rrd_memory_mode {
 #define RRD_MEMORY_MODE_SAVE_NAME "save"
 #define RRD_MEMORY_MODE_ALLOC_NAME "alloc"
 #define RRD_MEMORY_MODE_DBENGINE_NAME "dbengine"
+#define RRD_MEMORY_MODE_ROCKSDB_NAME "rocksdb"
 
 extern RRD_MEMORY_MODE default_rrd_memory_mode;
 
@@ -125,6 +127,7 @@ typedef struct storage_query_handle STORAGE_QUERY_HANDLE;
 typedef enum __attribute__ ((__packed__)) {
     STORAGE_ENGINE_BACKEND_RRDDIM = 1,
     STORAGE_ENGINE_BACKEND_DBENGINE = 2,
+    STORAGE_ENGINE_BACKEND_ROCKSDB = 3,
 } STORAGE_ENGINE_BACKEND;
 
 #define is_valid_backend(backend) ((backend) >= STORAGE_ENGINE_BACKEND_RRDDIM && (backend) <= STORAGE_ENGINE_BACKEND_DBENGINE)

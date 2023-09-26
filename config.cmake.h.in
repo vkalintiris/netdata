@@ -41,6 +41,7 @@
 #cmakedefine ENABLE_EXPORTING_MONGODB
 #cmakedefine ENABLE_H2O
 #cmakedefine ENABLE_DBENGINE
+#cmakedefine ENABLE_ROCKSDB
 #cmakedefine ENABLE_HTTPS
 #cmakedefine ENABLE_LZ4
 #cmakedefine STORAGE_WITH_MATH

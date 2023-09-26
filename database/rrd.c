@@ -19,7 +19,7 @@ int default_rrd_history_entries = RRD_DEFAULT_HISTORY_ENTRIES;
 #ifdef ENABLE_DBENGINE
 RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
 #else
-RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_SAVE;
+RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
 #endif
 int gap_when_lost_iterations_above = 1;
 
@@ -46,6 +46,9 @@ inline const char *rrd_memory_mode_name(RRD_MEMORY_MODE id) {
 
         case RRD_MEMORY_MODE_DBENGINE:
             return RRD_MEMORY_MODE_DBENGINE_NAME;
+
+        case RRD_MEMORY_MODE_ROCKSDB:
+            return RRD_MEMORY_MODE_ROCKSDB_NAME;
     }
 
     STORAGE_ENGINE* eng = storage_engine_get(id);
