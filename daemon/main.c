@@ -4,7 +4,6 @@
 #include "buildinfo.h"
 #include "static_threads.h"
 
-#include "database/engine/page_test.h"
 #include "database/rdb/rdb.h"
 
 #if defined(ENV32BIT)
@@ -1443,9 +1442,11 @@ int main(int argc, char **argv) {
                         char* stresstest_string = "stresstest=";
 #endif
 
+#ifdef ENABLE_TESTS
                         if(strcmp(optarg, "pgd-tests") == 0) {
                             return pgd_test(argc, argv);
                         }
+#endif
 
                         if(strcmp(optarg, "sqlite-meta-recover") == 0) {
                             sql_init_database(DB_CHECK_RECOVER, 0);

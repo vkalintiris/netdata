@@ -9,6 +9,10 @@ extern "C" {
 
 #include "libnetdata/libnetdata.h"
 
+#ifdef ENABLE_TESTS
+#include "page_test.h"
+#endif
+
 typedef struct pgd_cursor {
     struct pgd *pgd;
     uint32_t position;

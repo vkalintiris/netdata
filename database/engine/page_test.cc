@@ -1,8 +1,6 @@
 #include "page.h"
 #include "page_test.h"
 
-#ifdef HAVE_GTEST
-
 #include <gtest/gtest.h>
 #include <limits>
 #include <random>
@@ -391,15 +389,3 @@ int pgd_test(int argc, char *argv[])
 
     return rc;
 }
-
-#else // HAVE_GTEST
-
-int pgd_test(int argc, char *argv[])
-{
-    (void) argc;
-    (void) argv;
-    fprintf(stderr, "Can not run PGD tests because the agent was not build with support for google tests.\n");
-    return 0;
-}
-
-#endif // HAVE_GTEST

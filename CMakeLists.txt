@@ -79,8 +79,9 @@ option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
-
 option(ENABLE_ROCKSDB "enable rocksdb" True)
+
+option(ENABLE_TESTS "enable tests" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -675,8 +676,6 @@ if(ENABLE_DBENGINE)
                                  database/engine/rrdengineapi.h
                                  database/engine/page.c
                                  database/engine/page.h
-                                 database/engine/page_test.cc
-                                 database/engine/page_test.h
                                  database/engine/pagecache.c
                                  database/engine/pagecache.h
                                  database/engine/cache.c
@@ -685,6 +684,11 @@ if(ENABLE_DBENGINE)
                                  database/engine/metric.h
                                  database/engine/pdc.c
                                  database/engine/pdc.h)
+endif()
+
+if(ENABLE_TESTS)
+    list(APPEND RRD_PLUGIN_FILES database/engine/page_test.cc
+                                 database/engine/page_test.h)
 endif()
 
 if(ENABLE_ROCKSDB)
@@ -1459,6 +1463,10 @@ if(ENABLE_ROCKSDB)
         pkg_check_modules(ROCKSDB rocksdb)
 endif()
 
+if(ENABLE_TESTS)
+        pkg_check_modules(GTEST gtest)
+endif()
+
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
@@ -1468,7 +1476,9 @@ add_executable(netdata
 )
 
 target_compile_options(netdata PRIVATE
-                       "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_CFLAGS_OTHER}>")
+                       "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_CFLAGS_OTHER}>"
+                       "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_CFLAGS_OTHER}>"
+)
 
 target_compile_definitions(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_CFLAGS_OTHER}>"
@@ -1486,6 +1496,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_INCLUDE_DIRS}>"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1498,6 +1509,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
         "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_LIBRARIES}>"
 )
 
 #
@@ -1978,4 +1990,3 @@ set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)#ONE_PER_GROUP)
 set(CPACK_DEB_COMPONENT_INSTALL YES)
 
 include(CPack)
-
