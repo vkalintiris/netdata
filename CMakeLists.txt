@@ -81,8 +81,6 @@ option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
 
 option(ENABLE_ROCKSDB "enable rocksdb" True)
-set(ROCKSDB_INCLUDE "/home/vk/opt/rocksdb/include")
-set(ROCKSDB_LIBRARY "/home/vk/opt/rocksdb/lib/librocksdb.a")
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -1457,6 +1455,10 @@ endif()
 # build netdata (only Linux ATM)
 #
 
+if(ENABLE_ROCKSDB)
+        pkg_check_modules(ROCKSDB rocksdb)
+endif()
+
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
@@ -1464,6 +1466,9 @@ add_executable(netdata
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGODB_EXPORTING_FILES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES}>"
 )
+
+target_compile_options(netdata PRIVATE
+                       "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_CFLAGS_OTHER}>")
 
 target_compile_definitions(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_CFLAGS_OTHER}>"
@@ -1473,6 +1478,7 @@ target_compile_definitions(netdata PRIVATE
 )
 
 target_include_directories(netdata PRIVATE
+        "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_INCLUDEDIR}>"
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/aclk/aclk-schemas>"
         "$<$<BOOL:${ENABLE_ACLK}>:${CMAKE_SOURCE_DIR}/mqtt_websockets/src/include>"
@@ -1480,7 +1486,6 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
-        "/home/vk/opt/rocksdb/include"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1492,7 +1497,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
-        "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_LIBRARY};zstd;bz2>"
+        "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
 )
 
 #
