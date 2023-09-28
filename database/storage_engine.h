@@ -9,4 +9,8 @@
 STORAGE_ENGINE* storage_engine_foreach_init();
 STORAGE_ENGINE* storage_engine_foreach_next(STORAGE_ENGINE* it);
 
+#ifdef ENABLE_BENCHMARKS
+int storage_engine_benchmarks(int argc, char *argv[]);
+#endif
+
 #endif

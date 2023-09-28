@@ -82,6 +82,7 @@ option(ENABLE_DBENGINE "enable dbengine" True)
 option(ENABLE_ROCKSDB "enable rocksdb" True)
 
 option(ENABLE_TESTS "enable tests" True)
+option(ENABLE_BENCHMARKS "enable benchmarks" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -689,6 +690,11 @@ endif()
 if(ENABLE_TESTS)
     list(APPEND RRD_PLUGIN_FILES database/engine/page_test.cc
                                  database/engine/page_test.h)
+endif()
+
+if(ENABLE_BENCHMARKS)
+    list(APPEND RRD_PLUGIN_FILES database/storage_engine_benchmarks.cc
+                                 database/storage_engine_benchmarks.h)
 endif()
 
 if(ENABLE_ROCKSDB)
@@ -1467,6 +1473,10 @@ if(ENABLE_TESTS)
         pkg_check_modules(GTEST gtest)
 endif()
 
+if(ENABLE_BENCHMARKS)
+        pkg_check_modules(BENCHMARK benchmark)
+endif()
+
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
@@ -1478,6 +1488,7 @@ add_executable(netdata
 target_compile_options(netdata PRIVATE
                        "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_CFLAGS_OTHER}>"
                        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_CFLAGS_OTHER}>"
+                       "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_CFLAGS_OTHER}>"
 )
 
 target_compile_definitions(netdata PRIVATE
@@ -1497,6 +1508,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_INCLUDE_DIRS}>"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1510,6 +1522,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
         "$<$<BOOL:${ENABLE_ROCKSDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
         "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_LIBRARIES}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
 )
 
 #

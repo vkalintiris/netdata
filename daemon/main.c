@@ -1448,6 +1448,12 @@ int main(int argc, char **argv) {
                         }
 #endif
 
+#ifdef ENABLE_BENCHMARKS
+                        if(strcmp(optarg, "storage-engine-benchmarks") == 0) {
+                            return storage_engine_benchmarks(argc, argv);
+                        }
+#endif
+
                         if(strcmp(optarg, "sqlite-meta-recover") == 0) {
                             sql_init_database(DB_CHECK_RECOVER, 0);
                             return 0;
