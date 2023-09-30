@@ -79,6 +79,9 @@ option(ENABLE_ACLK "enable aclk" True)
 option(ENABLE_ML "enable machine learning" True)
 option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
+option(ENABLE_RDB "enable rdb" True)
+
+option(ENABLE_BENCHMARKS "enable benchmarks" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -678,6 +681,12 @@ if(ENABLE_DBENGINE)
                                  database/engine/metric.h
                                  database/engine/pdc.c
                                  database/engine/pdc.h)
+endif()
+
+if(ENABLE_RDB)
+    list(APPEND RRD_PLUGIN_FILES database/rdb/rdb.cc
+                                 database/rdb/rdb.h
+                                 database/rdb/rdb-private.h)
 endif()
 
 set(REGISTRY_PLUGIN_FILES registry/registry.c
@@ -1443,6 +1452,10 @@ endif()
 # build netdata (only Linux ATM)
 #
 
+if(ENABLE_BENCHMARKS)
+        pkg_check_modules(BENCHMARK REQUIRED benchmark)
+endif()
+
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
@@ -1456,6 +1469,7 @@ target_compile_definitions(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ML}>:DLIB_NO_GUI_SUPPORT>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_CFLAGS_OTHER}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_CFLAGS_OTHER}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_CFLAGS_OTHER}>"
 )
 
 target_include_directories(netdata PRIVATE
@@ -1466,6 +1480,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ML}>:${CMAKE_SOURCE_DIR}/ml/dlib>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_INCLUDE_DIRS}>"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1476,6 +1491,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
 )
 

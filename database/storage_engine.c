@@ -5,6 +5,9 @@
 #ifdef ENABLE_DBENGINE
 #include "engine/rrdengineapi.h"
 #endif
+#ifdef ENABLE_RDB
+#include "rdb/rdb.h"
+#endif
 
 static STORAGE_ENGINE engines[] = {
     {
@@ -78,6 +81,20 @@ static STORAGE_ENGINE engines[] = {
             .metric_dup = rrdeng_metric_dup,
             .metric_release = rrdeng_metric_release,
             .metric_retention_by_uuid = rrdeng_metric_retention_by_uuid,
+        }
+    },
+#endif
+#ifdef ENABLE_RDB
+    {
+        .id = RRD_MEMORY_MODE_RDB,
+        .name = RRD_MEMORY_MODE_RDB_NAME,
+        .backend = STORAGE_ENGINE_BACKEND_RDB,
+        .api = {
+            .metric_get = rdb_metric_get,
+            .metric_get_or_create = rdb_metric_get_or_create,
+            .metric_dup = rdb_metric_dup,
+            .metric_release = rdb_metric_release,
+            .metric_retention_by_uuid = rdb_metric_retention_by_uuid,
         }
     },
 #endif

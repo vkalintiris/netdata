@@ -46,6 +46,9 @@ inline const char *rrd_memory_mode_name(RRD_MEMORY_MODE id) {
 
         case RRD_MEMORY_MODE_DBENGINE:
             return RRD_MEMORY_MODE_DBENGINE_NAME;
+
+        case RRD_MEMORY_MODE_RDB:
+            return RRD_MEMORY_MODE_RDB_NAME;
     }
 
     STORAGE_ENGINE* eng = storage_engine_get(id);
