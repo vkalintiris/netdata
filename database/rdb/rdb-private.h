@@ -11,6 +11,12 @@
 
 #include "uuid_utils.h"
 
+struct rdb_metrics_group {
+    uuid_t uuid;
+    uint32_t id;
+    uint32_t rc;
+};
+
 struct rdb_metric_handle {
     uuid_t uuid;
     uint32_t id;
@@ -23,8 +29,5 @@ struct rdb_metrics {
     uint32_t max_id;
 };
 
-struct rdb_metrics_group {
-    uint32_t rc;
-};
 
 #endif /* RDB_PRIVATE_H */

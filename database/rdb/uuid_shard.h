@@ -86,7 +86,7 @@ private:
 
 private:
     std::vector<std::mutex> mutexes;
-    std::vector<std::unordered_map<UUID, rdb_metric_handle *>> maps;
+    std::vector<std::unordered_map<UUID, T *>> maps;
 
     std::atomic<uint32_t> max_reserved_id;
 };

@@ -17,6 +17,17 @@
 
 #include "uuid_shard.h"
 
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+
+// Function to get the RSS in bytes
+std::size_t getRSSBytes() {
+    struct rusage rusage;
+    getrusage(RUSAGE_SELF, &rusage);
+    return rusage.ru_maxrss * 1024;  // ru_maxrss is in kilobytes
+}
+
 class Barrier
 {
 public:
@@ -96,6 +107,8 @@ void tier0_compaction_data_add(tier0_compaction_data &t0cd, const RepeatedField<
             (const char *) t0cd.events.data(), compressed_buffer,
             input_size, max_compressed_size);
 
+        UNUSED(compressed_size);
+
         netdata_log_error("Flusing events!");
 
         t0cd.events.Clear();
@@ -123,6 +136,8 @@ void tier0_inflight_buffer_add(tier0_inflight_buffer &ib, tier0_event &event)
             (const char *) ib.events.data(), compressed_buffer,
             input_size, max_compressed_size);
 
+        UNUSED(compressed_size);
+
         ib.events.Clear();
         ib.arena.Reset();
     }
@@ -136,13 +151,14 @@ std::vector<tier0_inflight_buffer> t0_inflight_buffers(8192);
  * STORAGE_METRIC_HANDLE
 */
 
-static class UuidShard<rdb_metric_handle> pmetrics(10);
+static class UuidShard<rdb_metric_handle> MetricsRegistry(24);
+static class UuidShard<rdb_metrics_group> GroupsRegistry(24);
 
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
     UNUSED(si);
 
-    rdb_metric_handle *rmh = pmetrics.acquire(*uuid);
+    rdb_metric_handle *rmh = MetricsRegistry.acquire(*uuid);
     return (STORAGE_METRIC_HANDLE *) rmh;
 }
 
@@ -151,21 +167,21 @@ STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *si
 {
     UNUSED(si);
 
-    rdb_metric_handle *rmh = pmetrics.add_or_create(rd->metric_uuid);
+    rdb_metric_handle *rmh = MetricsRegistry.add_or_create(rd->metric_uuid);
     return (STORAGE_METRIC_HANDLE *) rmh;
 }
 
 STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh)
 {
     rdb_metric_handle *rmh = (rdb_metric_handle *) smh;
-    pmetrics.acquire(rmh);
+    MetricsRegistry.acquire(rmh);
     return smh;
 }
 
 void rdb_metric_release(STORAGE_METRIC_HANDLE *smh)
 {
     rdb_metric_handle *rmh = (rdb_metric_handle *) smh;
-    pmetrics.release(rmh);
+    MetricsRegistry.release(rmh);
 }
 
 bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s) {
@@ -219,7 +235,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->rmh = (rdb_metric_handle *) rdb_metric_dup(smh);
     rch->ib = &t0_inflight_buffers[gettid() % t0_inflight_buffers.size()];
 
-    rch->sns.Reserve(1024);
+    // rch->sns.Reserve(1024);
 
     UNUSED(update_every);
     UNUSED(smg);
@@ -373,8 +389,8 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 512;
-    size_t num_groups = 500;
+    size_t num_threads = 24;
+    size_t num_groups = 5000;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 4 * 3600;
 
