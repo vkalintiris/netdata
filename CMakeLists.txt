@@ -1492,6 +1492,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_INCLUDE_DIRS}>"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -1504,6 +1505,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
+        "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
 )
 
