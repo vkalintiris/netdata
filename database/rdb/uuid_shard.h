@@ -3,76 +3,77 @@
 
 #include "rdb-private.h"
 
-class Metrics {
+template<typename T>
+class UuidShard {
 public:
-    Metrics(size_t shards) {
+    UuidShard(size_t shards) {
         mutexes = std::vector<std::mutex>(shards);
-        maps = std::vector<std::unordered_map<UUID, rdb_metric_handle *>>(shards);
+        maps = std::vector<std::unordered_map<UUID, T *>>(shards);
     }
 
-    rdb_metric_handle *create(const uuid_t &uuid) {
-        rdb_metric_handle *rmh = new rdb_metric_handle();
-        uuid_copy(rmh->uuid, uuid);
-        rmh->id = ++max_reserved_id;
-        rmh->rc = 1;
+    T *create(const uuid_t &uuid) {
+        T *v = new T();
+        uuid_copy(v->uuid, uuid);
+        v->id = ++max_reserved_id;
+        v->rc = 1;
 
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
-            maps[i][UUID{ .inner = uuid }] = rmh;
+            maps[i][UUID{ .inner = uuid }] = v;
         }
 
-        return rmh; 
+        return v; 
     }
 
-    rdb_metric_handle *add_or_create(const uuid_t &uuid) {
-        rdb_metric_handle *rmh = nullptr;
+    T *add_or_create(const uuid_t &uuid) {
+        T *v = nullptr;
 
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
             auto it = maps[i].find(UUID{ .inner = uuid });
             if (it != maps[i].cend()) {
-                rmh = it->second;
-                rmh->rc++;
+                v= it->second;
+                v->rc++;
             }
         }
 
-        if (rmh)
-            return rmh;
+        if (v)
+            return v;
         else
             return create(uuid);
     }
 
-    void acquire(rdb_metric_handle *rmh) {
-        size_t i = shard(rmh->uuid);
+    void acquire(T *v) {
+        size_t i = shard(v->uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
-            rmh->rc++;
+            v->rc++;
         }
     }
 
-    rdb_metric_handle *acquire(const uuid_t &uuid) {
+    T *acquire(const uuid_t &uuid) {
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
-            auto *rmh = maps[i][UUID{ .inner = uuid }];
-            rmh->rc++;
-            return rmh;
+            T *v = maps[i][UUID{ .inner = uuid }];
+            v->rc++;
+            return v;
         }
     }
 
-    rdb_metric_handle *acquire(uuid_t *uuid) {
+    T *acquire(uuid_t *uuid) {
         return acquire(*uuid);
     }
 
-    void release(rdb_metric_handle *rmh) {
-        size_t i = shard(rmh->uuid);
+    void release(T *v) {
+        size_t i = shard(v->uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
 
-            if (--rmh->rc == 0)
-                delete rmh;
+            if (--v->rc == 0)
+                delete v;
         }
     }
 

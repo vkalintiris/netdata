@@ -15,7 +15,7 @@
 
 #include <lz4.h>
 
-#include "metrics.h"
+#include "uuid_shard.h"
 
 class Barrier
 {
@@ -136,8 +136,7 @@ std::vector<tier0_inflight_buffer> t0_inflight_buffers(8192);
  * STORAGE_METRIC_HANDLE
 */
 
-static class Metrics pmetrics(10);
-static struct rdb_metrics metrics;
+static class UuidShard<rdb_metric_handle> pmetrics(10);
 
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
@@ -374,7 +373,7 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 24;
+    size_t num_threads = 512;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 4 * 3600;
