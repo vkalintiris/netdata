@@ -687,6 +687,9 @@ endif()
 if(ENABLE_RDB)
     list(APPEND RRD_PLUGIN_FILES database/rdb/rdb.cc
                                  database/rdb/rdb.h
+                                 database/rdb/metrics.cc
+                                 database/rdb/metrics.h
+                                 database/rdb/uuid_utils.h
                                  database/rdb/rdb-private.h)
 endif()
 

@@ -15,6 +15,8 @@
 
 #include <lz4.h>
 
+#include "metrics.h"
+
 class Barrier
 {
 public:
@@ -134,75 +136,37 @@ std::vector<tier0_inflight_buffer> t0_inflight_buffers(8192);
  * STORAGE_METRIC_HANDLE
 */
 
+static class Metrics pmetrics(10);
 static struct rdb_metrics metrics;
-
-static STORAGE_METRIC_HANDLE *rdb_metric_create(STORAGE_INSTANCE *si, uuid_t *uuid)
-{
-    UNUSED(si);
-
-    struct rdb_metric_handle *rmh = new rdb_metric_handle();
-    uuid_copy(rmh->uuid, *uuid);
-    rmh->rc = 0;
-
-    {
-        std::lock_guard<std::mutex> L(metrics.mutex);
-
-        rmh->id = metrics.max_id++;
-        metrics.values.push_back(rmh);
-    }
-
-    return (STORAGE_METRIC_HANDLE *) rmh;
-}
 
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
     UNUSED(si);
-    
-    std::lock_guard<std::mutex> L(metrics.mutex);
 
-    for (rdb_metric_handle *rmh : metrics.values) {
-        if (uuid_compare(rmh->uuid, *uuid) == 0) {
-            rmh->rc++;
-
-            return (STORAGE_METRIC_HANDLE *) rmh;
-        }
-    }
-
-    return nullptr;
+    rdb_metric_handle *rmh = pmetrics.acquire(*uuid);
+    return (STORAGE_METRIC_HANDLE *) rmh;
 }
 
 // FIXME:
 STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *si)
 {
-    return rdb_metric_create(si, &rd->metric_uuid);
+    UNUSED(si);
 
-    // STORAGE_METRIC_HANDLE *smh = rdb_metric_get(si, &rd->metric_uuid);
-    // if (!smh)
-    //     smh = rdb_metric_create(si, &rd->metric_uuid);
-
-    // return smh;
+    rdb_metric_handle *rmh = pmetrics.add_or_create(rd->metric_uuid);
+    return (STORAGE_METRIC_HANDLE *) rmh;
 }
 
 STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh)
 {
-    std::lock_guard<std::mutex> L(metrics.mutex);
-
     rdb_metric_handle *rmh = (rdb_metric_handle *) smh;
-    rmh->rc++;
-
-    return (STORAGE_METRIC_HANDLE *) rmh;
+    pmetrics.acquire(rmh);
+    return smh;
 }
 
 void rdb_metric_release(STORAGE_METRIC_HANDLE *smh)
 {
-    std::lock_guard<std::mutex> L(metrics.mutex);
-
-    rdb_metric_handle *rmh = (rdb_metric_handle  *) smh;
-    if (--rmh->rc == 0) {
-        delete rmh;
-    }
-
-    // TODO: reclaim memory from vector
+    rdb_metric_handle *rmh = (rdb_metric_handle *) smh;
+    pmetrics.release(rmh);
 }
 
 bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s) {
@@ -397,6 +361,8 @@ int rdb_main(int argc, char *argv[]) {
     (void) argc;
     (void) argv;
 
+    netdata_log_error("Program started...");
+
     t0_compaction_data = new tier0_compaction_data();
     spinlock_init(&t0_compaction_data->spinlock);
     
@@ -408,21 +374,29 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 16;
+    size_t num_threads = 24;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 4 * 3600;
 
     std::vector<std::thread> threads;
 
-    Barrier Bar(num_threads + 1);
-    B = &Bar;
+    {
+        Barrier Bar(num_threads + 1);
+        B = &Bar;
 
-    for (size_t i = 0; i < num_threads; ++i)
-        threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
+        auto start_time = std::chrono::high_resolution_clock::now();
+        for (size_t i = 0; i < num_threads; ++i)
+            threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
 
-    B->wait();
+        B->wait();
     
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
+        netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
+    }
+
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (std::thread& thread : threads)
