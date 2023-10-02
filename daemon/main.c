@@ -1942,8 +1942,6 @@ int main(int argc, char **argv) {
         signals_block();
         signals_init(); // setup the signals we want to use
 
-        dyn_conf_init();
-
         // --------------------------------------------------------------------
         // check which threads are enabled and initialize them
 
@@ -2008,6 +2006,8 @@ int main(int argc, char **argv) {
     // fork, switch user, create pid file, set process priority
     if(become_daemon(dont_fork, user) == -1)
         fatal("Cannot daemonize myself.");
+
+    dyn_conf_init();
 
     netdata_log_info("netdata started on pid %d.", getpid());
 
