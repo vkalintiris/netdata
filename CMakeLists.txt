@@ -685,12 +685,15 @@ if(ENABLE_DBENGINE)
 endif()
 
 if(ENABLE_RDB)
-    list(APPEND RRD_PLUGIN_FILES database/rdb/rdb.cc
-                                 database/rdb/rdb.h
+    list(APPEND RRD_PLUGIN_FILES database/rdb/group_registry.cc
                                  database/rdb/metric_registry.cc
-                                 database/rdb/group_registry.cc
-                                 database/rdb/uuid_shard.h
-                                 database/rdb/rdb-private.h)
+                                 database/rdb/rdb.cc
+                                 database/rdb/rdb.h
+                                 database/rdb/rdb-private.h
+                                 database/rdb/si.cc
+                                 database/rdb/si.h
+                                 database/rdb/storage_handles.cc
+                                 database/rdb/uuid_shard.h)
 endif()
 
 set(REGISTRY_PLUGIN_FILES registry/registry.c

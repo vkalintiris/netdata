@@ -29,7 +29,7 @@ namespace std {
 template<typename T>
 class UuidShard {
 public:
-    UuidShard(size_t shards) {
+    UuidShard(size_t shards = 0) {
         mutexes = std::vector<std::mutex>(shards);
         maps = std::vector<std::unordered_map<UUID, T *>>(shards);
     }
