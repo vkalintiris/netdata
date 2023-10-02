@@ -3,13 +3,7 @@
 
 #include "rdb.h"
 
-#include <atomic>
-#include <mutex>
-#include <unordered_map>
-#include <map>
-#include <vector>
-
-#include "uuid_utils.h"
+#include "uuid_shard.h"
 
 struct rdb_metrics_group {
     uuid_t uuid;

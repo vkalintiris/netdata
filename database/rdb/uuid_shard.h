@@ -1,7 +1,30 @@
-#ifndef RDB_METRICS_H
-#define RDB_METRICS_H
+#ifndef RDB_UUID_SHARD_H
+#define RDB_UUID_SHARD_H
 
-#include "rdb-private.h"
+#include "libnetdata/libnetdata.h"
+#include "libnetdata/xxhash.h"
+
+#include <atomic>
+#include <mutex>
+#include <vector>
+#include <unordered_map>
+
+struct UUID {
+    const unsigned char *inner;
+
+    bool operator==(const UUID &other) const {
+        return uuid_compare(inner, other.inner) == 0;
+    }
+};
+
+namespace std {
+    template<> struct hash<UUID> {
+        auto operator()(const UUID &uuid) const -> size_t {
+            // I suspect we can just pick 4-bytes from the uuid
+            return XXH32(uuid.inner, 16, 0);
+        }
+    };
+}
 
 template<typename T>
 class UuidShard {
@@ -57,7 +80,11 @@ public:
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
-            T *v = maps[i][UUID{ .inner = uuid }];
+            auto it = maps[i].find(UUID{ .inner = uuid });
+            if (it == maps[i].cend())
+                return nullptr;
+
+            T *v = it->second;
             v->rc++;
             return v;
         }
@@ -91,4 +118,4 @@ private:
     std::atomic<uint32_t> max_reserved_id;
 };
 
-#endif /* RDB_METRICS_H */
+#endif /* RDB_UUID_SHARD_H */
