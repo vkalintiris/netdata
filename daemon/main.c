@@ -1446,6 +1446,13 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 
+#ifdef ENABLE_BENCHMARKS
+                        if(strcmp(optarg, "rdb") == 0) {
+                            rdb_main(argc, argv);
+                            return 0;
+                        }
+#endif
+
                         if(strcmp(optarg, "unittest") == 0) {
                             unittest_running = true;
 

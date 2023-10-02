@@ -6,6 +6,8 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <map>
+#include <vector>
 
 struct rdb_metric_handle {
     uuid_t uuid;
@@ -15,7 +17,7 @@ struct rdb_metric_handle {
 
 struct rdb_metrics {
     std::mutex mutex;
-    std::unordered_map<std::size_t, rdb_metric_handle *> map;
+    std::vector<rdb_metric_handle *> values;
     uint32_t max_id;
 };
 

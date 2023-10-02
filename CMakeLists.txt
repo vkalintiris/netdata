@@ -60,7 +60,7 @@ project(netdata
 find_package(PkgConfig REQUIRED)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_C_STANDARD_REQUIRED On)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
@@ -68,6 +68,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED On)
 set(CMAKE_BUILD_TYPE "Debug")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -B/usr/local/bin/mold ")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS On)
 
@@ -1456,12 +1457,22 @@ if(ENABLE_BENCHMARKS)
         pkg_check_modules(BENCHMARK REQUIRED benchmark)
 endif()
 
+if(ENABLE_RDB)
+        pkg_check_modules(ROCKSDB REQUIRED rocksdb)
+
+        message(WARNING "")
+endif()
+
 add_executable(netdata
         ${NETDATA_FILES}
         "$<$<BOOL:${ENABLE_ACLK}>:${ACLK_FILES}>"
         "$<$<BOOL:${ENABLE_H2O}>:${H2O_FILES}>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGODB_EXPORTING_FILES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES}>"
+)
+
+target_compile_options(netdata PRIVATE
+        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_CFLAGS}>"
 )
 
 target_compile_definitions(netdata PRIVATE
@@ -1493,6 +1504,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
+        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
 )
 
 #

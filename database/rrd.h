@@ -130,7 +130,10 @@ typedef enum __attribute__ ((__packed__)) {
     STORAGE_ENGINE_BACKEND_RDB = 3,
 } STORAGE_ENGINE_BACKEND;
 
-#define is_valid_backend(backend) ((backend) >= STORAGE_ENGINE_BACKEND_RRDDIM && (backend) <= STORAGE_ENGINE_BACKEND_DBENGINE)
+#define is_valid_backend(backend) \
+    ((backend) >= STORAGE_ENGINE_BACKEND_RRDDIM && \
+     (backend) >= STORAGE_ENGINE_BACKEND_DBENGINE && \
+     (backend) <= STORAGE_ENGINE_BACKEND_RDB)
 
 // iterator state for RRD dimension data queries
 struct storage_engine_query_handle {
@@ -395,9 +398,14 @@ void rrddim_memory_file_save(RRDDIM *rd);
 
 STORAGE_METRICS_GROUP *rrdeng_metrics_group_get(STORAGE_INSTANCE *db_instance, uuid_t *uuid);
 STORAGE_METRICS_GROUP *rrddim_metrics_group_get(STORAGE_INSTANCE *db_instance, uuid_t *uuid);
+STORAGE_METRICS_GROUP *rdb_metrics_group_get(STORAGE_INSTANCE *db_instance, uuid_t *uuid);
 static inline STORAGE_METRICS_GROUP *storage_engine_metrics_group_get(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance, uuid_t *uuid) {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_metrics_group_get(db_instance, uuid);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_metrics_group_get(db_instance, uuid);
@@ -407,22 +415,33 @@ static inline STORAGE_METRICS_GROUP *storage_engine_metrics_group_get(STORAGE_EN
 
 void rrdeng_metrics_group_release(STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg);
 void rrddim_metrics_group_release(STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg);
+void rdb_metrics_group_release(STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg);
 static inline void storage_engine_metrics_group_release(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg) {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_metrics_group_release(db_instance, smg);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
-        rrdeng_metrics_group_release(db_instance, smg);
+        return rrdeng_metrics_group_release(db_instance, smg);
     else
 #endif
-        rrddim_metrics_group_release(db_instance, smg);
+        return rrddim_metrics_group_release(db_instance, smg);
 }
 
 STORAGE_COLLECT_HANDLE *rrdeng_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
 STORAGE_COLLECT_HANDLE *rrddim_collect_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
+STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
+
 static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg) {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_store_metric_init(db_metric_handle, update_every, smg);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_store_metric_init(db_metric_handle, update_every, smg);
@@ -431,6 +450,11 @@ static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_B
 }
 
 void rrdeng_store_metric_next(
+        STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
+        NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+        uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
+
+void rdb_store_metric_next(
         STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
         NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
         uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
@@ -446,6 +470,12 @@ static inline void storage_engine_store_metric(
         uint16_t count, uint16_t anomaly_count, SN_FLAGS flags) {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
 
+#ifdef ENABLE_RDB
+    if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_store_metric_next(collection_handle, point_in_time_ut,
+                                     n, min_value, max_value,
+                                     count, anomaly_count, flags);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_store_metric_next(collection_handle, point_in_time_ut,
@@ -501,11 +531,17 @@ static inline size_t storage_engine_collected_metrics(STORAGE_ENGINE_BACKEND bac
 
 void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *collection_handle);
 void rrddim_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
+void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
 static inline void storage_engine_store_flush(STORAGE_COLLECT_HANDLE *collection_handle) {
     if(unlikely(!collection_handle))
         return;
 
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
+
+#ifdef ENABLE_RDB
+    if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_store_metric_flush(collection_handle);
+#endif
 
 #ifdef ENABLE_DBENGINE
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))
@@ -515,12 +551,18 @@ static inline void storage_engine_store_flush(STORAGE_COLLECT_HANDLE *collection
         rrddim_store_metric_flush(collection_handle);
 }
 
+int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 int rrddim_collect_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 // a finalization function to run after collection is over
 // returns 1 if it's safe to delete the dimension
 static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *collection_handle) {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
+
+#ifdef ENABLE_RDB
+    if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rrdeng_store_metric_finalize(collection_handle);
+#endif
 
 #ifdef ENABLE_DBENGINE
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))
@@ -537,10 +579,10 @@ static inline void storage_engine_store_change_collection_frequency(STORAGE_COLL
 
 #ifdef ENABLE_DBENGINE
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))
-        rrdeng_store_metric_change_collection_frequency(collection_handle, update_every);
+        return rrdeng_store_metric_change_collection_frequency(collection_handle, update_every);
     else
 #endif
-        rrddim_store_metric_change_collection_frequency(collection_handle, update_every);
+        return rrddim_store_metric_change_collection_frequency(collection_handle, update_every);
 }
 
 
@@ -1565,6 +1607,9 @@ static inline void rrdhost_retention(RRDHOST *host, time_t now, bool online, tim
 
 #ifdef ENABLE_DBENGINE
 #include "database/engine/rrdengineapi.h"
+#endif
+#ifdef ENABLE_RDB
+#include "database/rdb/rdb.h"
 #endif
 #include "sqlite/sqlite_functions.h"
 #include "sqlite/sqlite_context.h"

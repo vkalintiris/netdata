@@ -37,6 +37,10 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
 void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch);
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
 
+#ifdef ENABLE_BENCHMARKS
+int rdb_main(int argc, char *argv[]);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
