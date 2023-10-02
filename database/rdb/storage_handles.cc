@@ -1,20 +1,29 @@
 #include "rdb-private.h"
+#include <google/protobuf/arena.h>
+#include <google/protobuf/repeated_field.h>
+
+using namespace google::protobuf;
 
 struct rdb_collect_handle {
     struct storage_collect_handle common; // has to be first item
     rdb_metric_handle *rmh;
-    storage_number *sns;
+    RepeatedField<storage_number> sns;
+    SPINLOCK lock;
 };
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
-    rdb_collect_handle *rch = new rdb_collect_handle();
+    rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
 
+    rdb_collect_handle *rch = new rdb_collect_handle();
     rch->common.backend = STORAGE_ENGINE_BACKEND_RDB;
     rch->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
+    rch->sns = RepeatedField<storage_number>(rmg->arena);
+
+    // FIXME: improve this
+    spinlock_init(&rch->lock);
 
     UNUSED(update_every);
-    UNUSED(smg);
 
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
@@ -31,6 +40,19 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     UNUSED(count);
     UNUSED(anomaly_count);
     UNUSED(flags);
+
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+
+    spinlock_lock(&rch->lock);
+
+    storage_number *sn = rch->sns.Add();
+    *sn = pack_storage_number(n, flags);
+
+    if (rch->sns.size() >= 1024) {
+        rch->sns.Clear();
+    }
+    
+    spinlock_unlock(&rch->lock);
 }
 
 void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch) {

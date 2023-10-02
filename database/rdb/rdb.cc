@@ -146,8 +146,8 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 24;
-    size_t num_groups = 5000;
+    size_t num_threads = 8;
+    size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 4 * 3600;
 
