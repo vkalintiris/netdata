@@ -48,3 +48,25 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh) {
 
     return 0;
 }
+
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh) {
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
+
+    char scratch[12];
+
+    uint32_t gid = rmh->gid;
+    uint32_t mid = rmh->id + 1;
+    uint32_t pit = 0;
+    
+    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+
+    Iterator *it = RDB->NewIterator(ReadOptions());
+    for (it->SeekForPrev(StartK); it->Valid(); it->Next()) {
+        const Slice &K = it->key();
+
+        rdb_collection_key_deserialize(K, gid, mid, pit);
+        return pit;
+    }
+
+    return 0;
+}

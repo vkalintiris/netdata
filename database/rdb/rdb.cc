@@ -136,6 +136,12 @@ void print_first_time_of_dimensions(std::vector<dimension_t> &dimensions) {
     }
 }
 
+void print_last_time_of_dimensions(std::vector<dimension_t> &dimensions) {
+    for (const dimension_t &d : dimensions) {
+        netdata_log_error("last_time of mid %lu is %ld", reinterpret_cast<rdb_metric_handle *>(d.smh)->id, rdb_metric_latest_time(d.smh));
+    }
+}
+
 static Barrier *B = nullptr;
 
 static void gen_thread(size_t thread_id,
@@ -170,6 +176,7 @@ static void gen_thread(size_t thread_id,
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
     print_first_time_of_dimensions(dimensions);
+    print_last_time_of_dimensions(dimensions);
 }
 
 #include <rocksdb/options.h>
