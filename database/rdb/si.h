@@ -45,5 +45,6 @@ namespace rocksdb {
 
 extern StorageInstance *SI;
 extern rocksdb::DB *RDB;
+extern std::atomic<size_t> num_pages_written;
 
 #endif /* RDB_SI_H */

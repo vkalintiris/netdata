@@ -23,7 +23,7 @@
 StorageInstance *SI = nullptr;
 rocksdb::DB *RDB = nullptr;
 
-
+std::atomic<size_t> num_pages_written = 0;
 
 // Function to get the RSS in bytes
 std::size_t getRSSBytes() {
@@ -149,20 +149,22 @@ static void gen_thread(size_t thread_id, size_t num_threads, size_t num_groups, 
 rocksdb::DB *open_kv_db(const char *path) {
     rocksdb::Options options;
 
-    options.create_if_missing = true;
     // options.enable_blob_files = true;
     // options.min_blob_size = 1024;
-    options.target_file_size_base = 1024 * 1024 * 1024;
-    options.max_bytes_for_level_base = 10 * options.target_file_size_base; 
+    // options.target_file_size_base = 1024 * 1024 * 1024;
+    // options.max_bytes_for_level_base = 10 * options.target_file_size_base; 
 
-    options.write_buffer_size = 512 * 1024 * 1024;
-    options.max_write_buffer_number = 5;
+    // options.write_buffer_size = 512 * 1024 * 1024;
+    // options.max_write_buffer_number = 5;
 
-    options.writable_file_max_buffer_size = 1024 * 1024 * 1024;
-    options.min_write_buffer_number_to_merge = 2;
+    // options.writable_file_max_buffer_size = 1024 * 1024 * 1024;
+    // options.min_write_buffer_number_to_merge = 2;
     
-    options.max_background_flushes = 32;
-    options.max_background_compactions = 32;
+    options.create_if_missing = true;
+    options.compaction_style = rocksdb::kCompactionStyleFIFO;
+
+    options.max_background_flushes = 16;
+    options.max_background_compactions = 16;
     options.statistics = rocksdb::CreateDBStatistics();
     options.stats_dump_period_sec = 1;
     options.manual_wal_flush = true;
@@ -186,14 +188,14 @@ int rdb_main(int argc, char *argv[]) {
     (void) argv;
 
     SI = new StorageInstance(16);
-    RDB = open_kv_db("/home/cm/opt/tmp");
+    RDB = open_kv_db("/home/vk/opt/tmp");
 
     netdata_log_error("Program started...");
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 16;
+    size_t num_threads = 128;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 24 * 3600;
@@ -216,7 +218,46 @@ int rdb_main(int argc, char *argv[]) {
         netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
     }
 
-    auto start_time = std::chrono::high_resolution_clock::now();
+    {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        size_t total_pages_written = 0;
+        size_t n = 15;
+        while (n--) {
+            double prev_num_pages_written = num_pages_written;
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            total_pages_written = num_pages_written;
+
+            netdata_log_error("Pages written per second: %.2lf\n", static_cast<double>(total_pages_written) - prev_num_pages_written);
+        }
+    
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
+        netdata_log_error("Overall execution time: %.2lf seconds", seconds);
+
+        netdata_log_error("Test config: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
+                          num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
+
+        netdata_log_error("Total pages written: %zu", total_pages_written);
+
+        size_t total_points = (num_pages_written * 1024);
+        netdata_log_error("Points written: %zu", total_points);
+
+        size_t total_bytes = total_points * sizeof(storage_number) ;
+        double total_mib = static_cast<double>(total_bytes) / (1024 * 1024);
+        netdata_log_error("MiB written: %.2lf", total_mib);
+
+        double points_per_sec = static_cast<double>(total_points) / seconds;
+        netdata_log_error("Points per second: %.2lf", points_per_sec);
+
+        double bytes_per_sec =  static_cast<double>(total_bytes) / seconds;
+        double mib_per_sec = static_cast<double>(bytes_per_sec) / (1024.0 * 1024.0);
+        netdata_log_error("MiB per second: %.2lf", mib_per_sec);
+
+        double pages_per_sec = points_per_sec / 1024.0;
+        netdata_log_error("pages per second: %.2lf", pages_per_sec);
+    }
 
     for (std::thread& thread : threads)
         thread.join();
@@ -229,31 +270,6 @@ int rdb_main(int argc, char *argv[]) {
     RDB->SyncWAL();
     RDB->Close();
     delete RDB;
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
-    netdata_log_error("Overall execution time: %.2lf seconds", seconds);
-
-    netdata_log_error("Test config: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
-                      num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
-
-    size_t total_points = num_threads * num_groups * num_dims_per_group * num_points_per_dimension;
-    netdata_log_error("Points written: %zu", total_points);
-
-    size_t total_bytes = total_points * sizeof(storage_number) ;
-    double total_mib = static_cast<double>(total_bytes) / (1024 * 1024);
-    netdata_log_error("MiB written: %.2lf", total_mib);
-
-    double points_per_sec = static_cast<double>(total_points) / seconds;
-    netdata_log_error("Points per second: %.2lf", points_per_sec);
-
-    double bytes_per_sec =  static_cast<double>(total_bytes) / seconds;
-    double mib_per_sec = static_cast<double>(bytes_per_sec) / (1024.0 * 1024.0);
-    netdata_log_error("MiB per second: %.2lf", mib_per_sec);
-
-    double pages_per_sec = points_per_sec / 1024.0;
-    netdata_log_error("pages per second: %.2lf", pages_per_sec);
 
     exit(EXIT_SUCCESS);
 }

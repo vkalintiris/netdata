@@ -22,6 +22,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->common.backend = STORAGE_ENGINE_BACKEND_RDB;
     rch->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
     rch->sns = RepeatedField<storage_number>(rmg->arena);
+    rch->sns.Reserve(1024);
 
     // FIXME: improve this
     spinlock_init(&rch->lock);
@@ -48,9 +49,6 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
 
     spinlock_lock(&rch->lock);
 
-    storage_number *sn = rch->sns.Add();
-    *sn = pack_storage_number(n, flags);
-
     if (rch->sns.size() >= 1024) {
         uint32_t pit = point_in_time / USEC_PER_SEC;
 
@@ -67,8 +65,12 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
         RDB->Put(WO, K, V);
 
         rch->sns.Clear();
+        num_pages_written++;
     }
     
+    storage_number *sn = rch->sns.AddAlreadyReserved();
+    *sn = pack_storage_number(n, flags);
+
     spinlock_unlock(&rch->lock);
 }
 
