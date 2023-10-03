@@ -24,7 +24,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->sns = RepeatedField<storage_number>(rmg->arena);
     rch->sns.Reserve(1024);
 
-    // FIXME: improve this
+    // TODO: Improve this. Can we make this per-thread "global"?
     spinlock_init(&rch->lock);
 
     UNUSED(update_every);

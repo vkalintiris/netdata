@@ -1,5 +1,3 @@
-#include "rocksdb/compression_type.h"
-#include "rocksdb/options.h"
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
@@ -14,12 +12,12 @@
 #include <google/protobuf/repeated_field.h>
 #include <lz4.h>
 
+#include <rocksdb/db.h>
+#include <rocksdb/statistics.h>
+
 #include "rdb-private.h"
 #include "uuid_shard.h"
 #include "si.h"
-
-#include <rocksdb/db.h>
-#include <rocksdb/statistics.h>
 
 StorageInstance *SI = nullptr;
 rocksdb::DB *RDB = nullptr;
@@ -149,7 +147,7 @@ static void gen_thread(size_t thread_id,
 
     // shift each thread's entries so that we can avoid compressing all threads
     // at the same point in time
-    usec_t point_in_time = (now_realtime_sec() - (365 * 24 * 3600)) * USEC_PER_SEC;
+    usec_t point_in_time = 0x9F013B63 * USEC_PER_SEC;
     for (size_t i = 0; i != thread_id; i++) {
         for (size_t j = 0; j != dimensions.size(); j++) {
             storage_engine_store_metric(dimensions[j].sch, point_in_time, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
@@ -204,22 +202,61 @@ rocksdb::DB *open_kv_db(const char *path) {
     return db;
 }
 
+static void print_keys() {
+    {
+        rocksdb::Iterator* it = RDB->NewIterator(rocksdb::ReadOptions());
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+            netdata_log_error("key: %s", it->key().ToString(true).c_str());
+        }
+        assert(it->status().ok());
+        delete it;
+    }
+
+    {
+        uint32_t start_metric_id = 0x0000000E;
+        char start_buf[8] = { 0 };
+        memset(start_buf, 0, 8);
+        memcpy(start_buf, &start_metric_id, sizeof(uint32_t));
+        rocksdb::Slice StartK(start_buf, 8);
+
+        uint32_t limit_metric_id = 0x0000000F;
+        char limit_buf[8] = { 0 };
+        memset(limit_buf, 0, 8);
+        memcpy(limit_buf, &limit_metric_id, sizeof(uint32_t));
+        rocksdb::Slice LimitK(limit_buf, 8);
+
+        netdata_log_error("Range: [%s, %s) = %d", StartK.ToString(true).c_str(), LimitK.ToString(true).c_str(), StartK.compare(LimitK));
+
+        rocksdb::Iterator* it = RDB->NewIterator(rocksdb::ReadOptions());
+        for (it->Seek(StartK); it->Valid() && (it->key().compare(LimitK) < 0); it->Next()) {
+            netdata_log_error("found key: %s", it->key().ToString(true).c_str());
+        }
+
+        if (!it->status().ok()) {
+            netdata_log_error("Failed to lookup key %u: %s", start_metric_id, it->status().ToString().c_str());
+        }
+
+        delete it;
+    }
+
+}
+
 int rdb_main(int argc, char *argv[]) {
     (void) argc;
     (void) argv;
 
     SI = new StorageInstance(16);
-    RDB = open_kv_db("/home/vk/opt/tmp");
+    RDB = open_kv_db("/home/cm/opt/tmp");
 
     netdata_log_error("Program started...");
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 512;
-    size_t num_groups = 500;
-    size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 365 * 24 * 3600;
+    size_t num_threads = 2;
+    size_t num_groups = 2;
+    size_t num_dims_per_group = 4;
+    size_t num_points_per_dimension = 4 * 3600;
 
     std::vector<std::thread> threads;
 
@@ -245,6 +282,7 @@ int rdb_main(int argc, char *argv[]) {
         netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
     }
 
+#if 0
     {
         auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -258,7 +296,7 @@ int rdb_main(int argc, char *argv[]) {
             netdata_log_error("Pages written per second: %.2lf\n", static_cast<double>(total_pages_written) - prev_num_pages_written);
             RDB->Flush(rocksdb::FlushOptions());
             if ((n % 5) == 0)
-                system("du -hs /home/vk/opt/tmp");
+                system("du -hs /home/cm/opt/tmp");
         }
     
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -288,9 +326,12 @@ int rdb_main(int argc, char *argv[]) {
         double pages_per_sec = points_per_sec / 1024.0;
         netdata_log_error("pages per second: %.2lf", pages_per_sec);
     }
+#endif
 
     for (std::thread& thread : threads)
         thread.join();
+
+    print_keys();
 
     rocksdb::FlushOptions FO;
     FO.allow_write_stall = true;
