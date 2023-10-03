@@ -1,4 +1,5 @@
 #include "database/rdb/rdb.h"
+#include "database/rrd.h"
 #include "libnetdata/log/log.h"
 #include <chrono>
 #include <condition_variable>
@@ -129,6 +130,12 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     }
 }
 
+void print_first_time_of_dimensions(std::vector<dimension_t> &dimensions) {
+    for (const dimension_t &d : dimensions) {
+        netdata_log_error("first_time of mid %lu is %ld", reinterpret_cast<rdb_metric_handle *>(d.smh)->id, rdb_metric_oldest_time(d.smh));
+    }
+}
+
 static Barrier *B = nullptr;
 
 static void gen_thread(size_t thread_id,
@@ -160,6 +167,9 @@ static void gen_thread(size_t thread_id,
     B->wait();
     
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
+
+    std::this_thread::sleep_for(std::chrono::seconds{1});
+    print_first_time_of_dimensions(dimensions);
 }
 
 #include <rocksdb/options.h>

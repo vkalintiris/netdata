@@ -48,6 +48,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
     // TODO: dup like metric handle
     rch->rmg = reinterpret_cast<rdb_metrics_group *>(smg);
+    rch->rmh->gid = rch->rmg->id;
     rch->sns = RepeatedField<storage_number>(rmg->arena);
     rch->sns.Reserve(1024);
 
@@ -79,7 +80,7 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     if (rch->sns.size() >= 1024) {
         // TODO: check perf if we have a uint64_t field just for the id inside
         // rch, ie. (rmg->id << 32 | rmh->id).
-        uint32_t gid = rch->rmg->id;
+        uint32_t gid = rch->rmh->gid;
         uint32_t mid = rch->rmh->id;
         uint32_t pit = point_in_time / USEC_PER_SEC;
 

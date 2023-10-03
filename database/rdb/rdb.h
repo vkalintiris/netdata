@@ -43,6 +43,8 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
 
 time_t rdb_global_first_time_s(STORAGE_INSTANCE *si);
 
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh);
+
 #ifdef ENABLE_BENCHMARKS
 int rdb_main(int argc, char *argv[]);
 #endif

@@ -16,6 +16,8 @@ struct rdb_metric_handle {
     uuid_t uuid;
     uint32_t id;
     uint32_t rc;
+
+    uint32_t gid;
 };
 
 const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit);

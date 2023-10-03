@@ -604,9 +604,14 @@ static inline void storage_engine_store_change_collection_frequency(STORAGE_COLL
 // TODO: RDB
 time_t rrdeng_metric_oldest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rrddim_query_oldest_time_s(STORAGE_METRIC_HANDLE *db_metric_handle);
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 static inline time_t storage_engine_oldest_time_s(STORAGE_ENGINE_BACKEND backend  __maybe_unused, STORAGE_METRIC_HANDLE *db_metric_handle) {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_metric_oldest_time(db_metric_handle);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_metric_oldest_time(db_metric_handle);
