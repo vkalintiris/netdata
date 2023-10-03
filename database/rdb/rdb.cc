@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
+#include <random>
 #include <thread>
 
 #include <sys/types.h>
@@ -30,6 +31,20 @@ std::size_t getRSSBytes() {
     struct rusage rusage;
     getrusage(RUSAGE_SELF, &rusage);
     return rusage.ru_maxrss * 1024;  // ru_maxrss is in kilobytes
+}
+
+static std::vector<uint32_t> genRandVector(size_t n) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dis(0, std::numeric_limits<uint32_t>::max());
+
+    std::vector<uint32_t> v;
+    v.reserve(n);
+
+    for (int i = 0; i < n; ++i)
+        v.push_back(dis(gen));
+
+    return v;
 }
 
 class Barrier
@@ -99,12 +114,12 @@ static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
     }
 }
 
-static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_points_per_dimension, usec_t point_in_time)
+static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_points_per_dimension, usec_t point_in_time, const std::vector<uint32_t> &rand_vals)
 {
-
     for (size_t i = 0; i != num_points_per_dimension; i++) {
         for (size_t j = 0; j != dimensions.size(); j++) {
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, i % 1111, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            uint32_t val = rand_vals[(i + j) % rand_vals.size()];
+            storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
         point_in_time += USEC_PER_SEC;
     }
@@ -116,7 +131,13 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
 
 static Barrier *B = nullptr;
 
-static void gen_thread(size_t thread_id, size_t num_threads, size_t num_groups, size_t num_dims_per_group, size_t num_points_per_dimension) {
+static void gen_thread(size_t thread_id,
+                       size_t num_threads,
+                       size_t num_groups,
+                       size_t num_dims_per_group,
+                       size_t num_points_per_dimension,
+                       const std::vector<uint32_t> &rand_vals)
+{
     UNUSED(num_threads);
     
     char thread_name[128];
@@ -138,7 +159,7 @@ static void gen_thread(size_t thread_id, size_t num_threads, size_t num_groups, 
 
     B->wait();
     
-    gen_random_data(dimensions, num_points_per_dimension, point_in_time);
+    gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
 }
 
 #include <rocksdb/options.h>
@@ -195,20 +216,26 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 1024;
+    size_t num_threads = 512;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 365 * 24 * 3600;
 
     std::vector<std::thread> threads;
 
+    netdata_log_error("Generating random values...");
+    std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
+
     {
+        netdata_log_error("Setting up metrics...");
+
         Barrier Bar(num_threads + 1);
         B = &Bar;
 
         auto start_time = std::chrono::high_resolution_clock::now();
+
         for (size_t i = 0; i < num_threads; ++i)
-            threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
+            threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension, rand_vals);
 
         B->wait();
     
@@ -222,7 +249,7 @@ int rdb_main(int argc, char *argv[]) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         size_t total_pages_written = 0;
-        size_t n = 1200;
+        size_t n = 20;
         while (n--) {
             double prev_num_pages_written = num_pages_written;
             std::this_thread::sleep_for(std::chrono::seconds{1});

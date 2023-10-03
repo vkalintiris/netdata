@@ -65,7 +65,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED On)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
 
-set(CMAKE_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE "Release")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -B/usr/local/bin/mold ")
@@ -123,6 +123,11 @@ else()
         set(LINUX True)
         add_definitions(-D_GNU_SOURCE)
 endif()
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT supported OUTPUT error)
+
+# set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 
 #
 # Libm
@@ -680,6 +685,9 @@ if(ENABLE_DBENGINE)
                                  database/engine/cache.h
                                  database/engine/metric.c
                                  database/engine/metric.h
+                                 database/engine/page.c
+                                 database/engine/page.h
+                                 database/engine/page_test.cc
                                  database/engine/pdc.c
                                  database/engine/pdc.h)
 endif()
@@ -1511,7 +1519,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
         "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_LIBRARIES}>"
-        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS}>"
+        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS};-lzstd;-lbz2>"
 )
 
 #
