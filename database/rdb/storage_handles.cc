@@ -1,6 +1,9 @@
+#include "libnetdata/libnetdata.h"
 #include "rdb-private.h"
 #include <google/protobuf/arena.h>
 #include <google/protobuf/repeated_field.h>
+#include "rocksdb/db.h"
+#include "si.h"
 
 using namespace google::protobuf;
 
@@ -49,6 +52,20 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     *sn = pack_storage_number(n, flags);
 
     if (rch->sns.size() >= 1024) {
+        uint32_t pit = point_in_time / USEC_PER_SEC;
+
+        char buf[8] = { 0 };
+        memcpy(buf, &rch->rmh->id, sizeof(uint32_t));
+        memcpy(&buf[sizeof(uint32_t)], &pit, sizeof(uint32_t));
+
+        rocksdb::Slice K(buf, 8);
+        rocksdb::Slice V((const char *) rch->sns.data(), rch->sns.size() * sizeof(storage_number));
+
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        RDB->Put(WO, K, V);
+
         rch->sns.Clear();
     }
     

@@ -30,7 +30,6 @@ public:
             }
         }
     }
-    
 
 public:
     UuidShard<rdb_metrics_group> GroupsRegistry;
@@ -40,6 +39,11 @@ public:
     std::unordered_map<pid_t, google::protobuf::Arena *> Arenas;
 };
 
-extern StorageInstance SI;
+namespace rocksdb {
+    class DB;
+};
+
+extern StorageInstance *SI;
+extern rocksdb::DB *RDB;
 
 #endif /* RDB_SI_H */

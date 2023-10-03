@@ -1,25 +1,29 @@
-#include "database/rrd.h"
-#include "libnetdata/locks/locks.h"
-#include "libnetdata/storage_number/storage_number.h"
-#include "rdb-private.h"
-#include <google/protobuf/repeated_field.h>
-
-#include <thread>
+#include "rocksdb/compression_type.h"
+#include "rocksdb/options.h"
 #include <chrono>
-
-#include <iostream>
 #include <condition_variable>
+#include <iostream>
 #include <mutex>
 #include <thread>
-#include <chrono>
-
-#include <lz4.h>
-
-#include "uuid_shard.h"
 
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+
+#include <google/protobuf/repeated_field.h>
+#include <lz4.h>
+
+#include "rdb-private.h"
+#include "uuid_shard.h"
+#include "si.h"
+
+#include <rocksdb/db.h>
+#include <rocksdb/statistics.h>
+
+StorageInstance *SI = nullptr;
+rocksdb::DB *RDB = nullptr;
+
+
 
 // Function to get the RSS in bytes
 std::size_t getRSSBytes() {
@@ -100,9 +104,11 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
 
     for (size_t i = 0; i != num_points_per_dimension; i++) {
         for (size_t j = 0; j != dimensions.size(); j++) {
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            storage_engine_store_metric(dimensions[j].sch, point_in_time, i % 1111, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
         point_in_time += USEC_PER_SEC;
+
+        RDB->Flush(rocksdb::FlushOptions());
     }
 
     for (size_t i = 0; i != dimensions.size(); i++) {
@@ -137,19 +143,60 @@ static void gen_thread(size_t thread_id, size_t num_threads, size_t num_groups, 
     gen_random_data(dimensions, num_points_per_dimension, point_in_time);
 }
 
+#include <rocksdb/options.h>
+#include <rocksdb/advanced_options.h>
+
+rocksdb::DB *open_kv_db(const char *path) {
+    rocksdb::Options options;
+
+    options.create_if_missing = true;
+    // options.enable_blob_files = true;
+    // options.min_blob_size = 1024;
+    options.target_file_size_base = 1024 * 1024 * 1024;
+    options.max_bytes_for_level_base = 10 * options.target_file_size_base; 
+
+    options.write_buffer_size = 512 * 1024 * 1024;
+    options.max_write_buffer_number = 5;
+
+    options.writable_file_max_buffer_size = 1024 * 1024 * 1024;
+    options.min_write_buffer_number_to_merge = 2;
+    
+    options.max_background_flushes = 32;
+    options.max_background_compactions = 32;
+    options.statistics = rocksdb::CreateDBStatistics();
+    options.stats_dump_period_sec = 1;
+    options.manual_wal_flush = true;
+
+    options.allow_concurrent_memtable_write = true;
+    options.enable_write_thread_adaptive_yield = true;
+
+    rocksdb::DB* db;
+    rocksdb::Status S = rocksdb::DB::Open(options, path, &db);
+    if (!S.ok())
+        fatal("Failed to open db: %s", S.ToString().c_str());
+
+    // dbopts.manual_wal_flush
+
+
+    return db;
+}
+
 int rdb_main(int argc, char *argv[]) {
     (void) argc;
     (void) argv;
+
+    SI = new StorageInstance(16);
+    RDB = open_kv_db("/home/cm/opt/tmp");
 
     netdata_log_error("Program started...");
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 8;
+    size_t num_threads = 16;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 4 * 3600;
+    size_t num_points_per_dimension = 24 * 3600;
 
     std::vector<std::thread> threads;
 
@@ -173,6 +220,15 @@ int rdb_main(int argc, char *argv[]) {
 
     for (std::thread& thread : threads)
         thread.join();
+
+    rocksdb::FlushOptions FO;
+    FO.allow_write_stall = true;
+    FO.wait = true;
+    
+    RDB->Flush(FO);
+    RDB->SyncWAL();
+    RDB->Close();
+    delete RDB;
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);

@@ -690,7 +690,6 @@ if(ENABLE_RDB)
                                  database/rdb/rdb.cc
                                  database/rdb/rdb.h
                                  database/rdb/rdb-private.h
-                                 database/rdb/si.cc
                                  database/rdb/si.h
                                  database/rdb/storage_handles.cc
                                  database/rdb/uuid_shard.h)
