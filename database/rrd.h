@@ -487,6 +487,7 @@ static inline void storage_engine_store_metric(
                                        count, anomaly_count, flags);
 }
 
+// TODO: RDB
 uint64_t rrdeng_disk_space_max(STORAGE_INSTANCE *db_instance);
 static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
 #ifdef ENABLE_DBENGINE
@@ -497,6 +498,7 @@ static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND back
     return 0;
 }
 
+// TODO: RDB
 uint64_t rrdeng_disk_space_used(STORAGE_INSTANCE *db_instance);
 static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
 #ifdef ENABLE_DBENGINE
@@ -508,6 +510,7 @@ static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backe
     return 0;
 }
 
+// TODO: RDB
 time_t rrdeng_global_first_time_s(STORAGE_INSTANCE *db_instance);
 static inline time_t storage_engine_global_first_time_s(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
 #ifdef ENABLE_DBENGINE
@@ -518,6 +521,7 @@ static inline time_t storage_engine_global_first_time_s(STORAGE_ENGINE_BACKEND b
     return now_realtime_sec() - (time_t)(default_rrd_history_entries * default_rrd_update_every);
 }
 
+// TODO: RDB
 size_t rrdeng_currently_collected_metrics(STORAGE_INSTANCE *db_instance);
 static inline size_t storage_engine_collected_metrics(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
 #ifdef ENABLE_DBENGINE
@@ -529,6 +533,7 @@ static inline size_t storage_engine_collected_metrics(STORAGE_ENGINE_BACKEND bac
     return 0;
 }
 
+// TODO: RDB
 void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *collection_handle);
 void rrddim_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
 void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
@@ -551,6 +556,7 @@ static inline void storage_engine_store_flush(STORAGE_COLLECT_HANDLE *collection
         rrddim_store_metric_flush(collection_handle);
 }
 
+// TODO: RDB
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 int rrddim_collect_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
@@ -572,6 +578,7 @@ static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *collecti
     return rrddim_collect_finalize(collection_handle);
 }
 
+// TODO: RDB
 void rrdeng_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 void rrddim_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 static inline void storage_engine_store_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every) {
@@ -589,6 +596,7 @@ static inline void storage_engine_store_change_collection_frequency(STORAGE_COLL
 // ----------------------------------------------------------------------------
 // STORAGE ENGINE QUERY OPS
 
+// TODO: RDB
 time_t rrdeng_metric_oldest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rrddim_query_oldest_time_s(STORAGE_METRIC_HANDLE *db_metric_handle);
 static inline time_t storage_engine_oldest_time_s(STORAGE_ENGINE_BACKEND backend  __maybe_unused, STORAGE_METRIC_HANDLE *db_metric_handle) {
@@ -601,6 +609,7 @@ static inline time_t storage_engine_oldest_time_s(STORAGE_ENGINE_BACKEND backend
     return rrddim_query_oldest_time_s(db_metric_handle);
 }
 
+// TODO: RDB
 time_t rrdeng_metric_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rrddim_query_latest_time_s(STORAGE_METRIC_HANDLE *db_metric_handle);
 static inline time_t storage_engine_latest_time_s(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_METRIC_HANDLE *db_metric_handle) {
@@ -613,6 +622,7 @@ static inline time_t storage_engine_latest_time_s(STORAGE_ENGINE_BACKEND backend
     return rrddim_query_latest_time_s(db_metric_handle);
 }
 
+// TODO: RDB
 void rrdeng_load_metric_init(
         STORAGE_METRIC_HANDLE *db_metric_handle, struct storage_engine_query_handle *rrddim_handle,
                 time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
@@ -635,6 +645,7 @@ static inline void storage_engine_query_init(
         rrddim_query_init(db_metric_handle, handle, start_time_s, end_time_s, priority);
 }
 
+// TODO: RDB
 STORAGE_POINT rrdeng_load_metric_next(struct storage_engine_query_handle *rrddim_handle);
 STORAGE_POINT rrddim_query_next_metric(struct storage_engine_query_handle *handle);
 static inline STORAGE_POINT storage_engine_query_next_metric(struct storage_engine_query_handle *handle) {
@@ -647,6 +658,7 @@ static inline STORAGE_POINT storage_engine_query_next_metric(struct storage_engi
     return rrddim_query_next_metric(handle);
 }
 
+// TODO: RDB
 int rrdeng_load_metric_is_finished(struct storage_engine_query_handle *rrddim_handle);
 int rrddim_query_is_finished(struct storage_engine_query_handle *handle);
 static inline int storage_engine_query_is_finished(struct storage_engine_query_handle *handle) {
@@ -659,6 +671,7 @@ static inline int storage_engine_query_is_finished(struct storage_engine_query_h
     return rrddim_query_is_finished(handle);
 }
 
+// TODO: RDB
 void rrdeng_load_metric_finalize(struct storage_engine_query_handle *rrddim_handle);
 void rrddim_query_finalize(struct storage_engine_query_handle *handle);
 static inline void storage_engine_query_finalize(struct storage_engine_query_handle *handle) {
@@ -672,6 +685,7 @@ static inline void storage_engine_query_finalize(struct storage_engine_query_han
         rrddim_query_finalize(handle);
 }
 
+// TODO: RDB
 time_t rrdeng_load_align_to_optimal_before(struct storage_engine_query_handle *rrddim_handle);
 time_t rrddim_query_align_to_optimal_before(struct storage_engine_query_handle *rrddim_handle);
 static inline time_t storage_engine_align_to_optimal_before(struct storage_engine_query_handle *handle) {

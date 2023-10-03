@@ -32,9 +32,9 @@ bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint
     
     const char *data = S.data();
 
-    memcpy(&gid, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
+    memcpy(&gid, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
     memcpy(&mid, &data[1 * sizeof(uint32_t)], sizeof(uint32_t));
-    memcpy(&pit, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
+    memcpy(&pit, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
 
     return true;
 }

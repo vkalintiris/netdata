@@ -1,3 +1,5 @@
+#include "database/rdb/rdb.h"
+#include "libnetdata/log/log.h"
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
@@ -340,6 +342,9 @@ int rdb_main(int argc, char *argv[]) {
         thread.join();
 
     print_keys();
+
+    time_t first_time_s = rdb_global_first_time_s(nullptr);
+    netdata_log_error("first_time_s: %ld", first_time_s);
 
     rocksdb::FlushOptions FO;
     FO.allow_write_stall = true;
