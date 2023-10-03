@@ -213,27 +213,35 @@ static void print_keys() {
     }
 
     {
-        uint32_t start_metric_id = 0x0000000E;
-        char start_buf[8] = { 0 };
-        memset(start_buf, 0, 8);
-        memcpy(start_buf, &start_metric_id, sizeof(uint32_t));
-        rocksdb::Slice StartK(start_buf, 8);
+        uint32_t start_gid = 0;
+        uint32_t start_mid = 0x0000000E;
+        uint32_t start_pit = 0;
+        char start_buf[12];
+        const rocksdb::Slice StartK = rdb_collection_key_serialize(start_buf, start_gid, start_mid, start_pit);
 
-        uint32_t limit_metric_id = 0x0000000F;
-        char limit_buf[8] = { 0 };
-        memset(limit_buf, 0, 8);
-        memcpy(limit_buf, &limit_metric_id, sizeof(uint32_t));
-        rocksdb::Slice LimitK(limit_buf, 8);
+        uint32_t limit_gid = 0;
+        uint32_t limit_mid = 0x0000000E;
+        uint32_t limit_pit = 0xFFFFFFFF;
+        char limit_buf[12];
+        const rocksdb::Slice LimitK = rdb_collection_key_serialize(limit_buf, limit_gid, limit_mid, limit_pit);
 
-        netdata_log_error("Range: [%s, %s) = %d", StartK.ToString(true).c_str(), LimitK.ToString(true).c_str(), StartK.compare(LimitK));
 
         rocksdb::Iterator* it = RDB->NewIterator(rocksdb::ReadOptions());
         for (it->Seek(StartK); it->Valid() && (it->key().compare(LimitK) < 0); it->Next()) {
-            netdata_log_error("found key: %s", it->key().ToString(true).c_str());
+            rocksdb::Slice K = it->key();
+            netdata_log_error("Range: [%s, %s) = %s",
+                              StartK.ToString(true).c_str(),
+                              LimitK.ToString(true).c_str(),
+                              K.ToString(true).c_str());
+
+            // netdata_log_error("[%s, %s): peeked %s",
+            //                   StartK.ToString(true).c_str(),
+            //                   LimitK.ToString(true).c_str(),
+            //                   K.ToString(true).c_str());
         }
 
         if (!it->status().ok()) {
-            netdata_log_error("Failed to lookup key %u: %s", start_metric_id, it->status().ToString().c_str());
+            netdata_log_error("Failed to lookup key %u: %s", start_mid, it->status().ToString().c_str());
         }
 
         delete it;

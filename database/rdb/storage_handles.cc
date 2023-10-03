@@ -14,6 +14,30 @@ struct rdb_collect_handle {
     SPINLOCK lock;
 };
 
+const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit)
+{
+    memcpy(&scratch[0 * sizeof(uint32_t)], &gid, sizeof(uint32_t));
+    memcpy(&scratch[1 * sizeof(uint32_t)], &mid, sizeof(uint32_t));
+    memcpy(&scratch[2 * sizeof(uint32_t)], &pit, sizeof(uint32_t));
+
+    return rocksdb::Slice(scratch, 3 * sizeof(uint32_t));
+}
+
+bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint32_t &mid, uint32_t &pit)
+{
+    // TODO: skip this on release builds
+    if (S.size() != 3 * sizeof(uint32_t))
+        return false;
+    
+    const char *data = S.data();
+
+    memcpy(&gid, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
+    memcpy(&mid, &data[1 * sizeof(uint32_t)], sizeof(uint32_t));
+    memcpy(&pit, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
+
+    return true;
+}
+
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
     rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
@@ -50,13 +74,12 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     spinlock_lock(&rch->lock);
 
     if (rch->sns.size() >= 1024) {
+        uint32_t gid = 0;
+        uint32_t mid = rch->rmh->id;
         uint32_t pit = point_in_time / USEC_PER_SEC;
 
-        char buf[8] = { 0 };
-        memcpy(buf, &rch->rmh->id, sizeof(uint32_t));
-        memcpy(&buf[sizeof(uint32_t)], &pit, sizeof(uint32_t));
-
-        rocksdb::Slice K(buf, 8);
+        char buf[12];
+        rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
         rocksdb::Slice V((const char *) rch->sns.data(), rch->sns.size() * sizeof(storage_number));
 
         rocksdb::WriteOptions WO;
