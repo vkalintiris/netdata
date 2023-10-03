@@ -510,9 +510,14 @@ static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backe
     return 0;
 }
 
-// TODO: RDB
 time_t rrdeng_global_first_time_s(STORAGE_INSTANCE *db_instance);
+time_t rdb_global_first_time_s(STORAGE_INSTANCE *db_instance);
+
 static inline time_t storage_engine_global_first_time_s(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_global_first_time_s(db_instance);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_global_first_time_s(db_instance);
