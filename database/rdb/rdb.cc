@@ -213,14 +213,14 @@ static void print_keys() {
     }
 
     {
-        uint32_t start_gid = 0;
-        uint32_t start_mid = 0x0000000E;
+        uint32_t start_gid = 0x00000004;
+        uint32_t start_mid = 0x0000000F;
         uint32_t start_pit = 0;
         char start_buf[12];
         const rocksdb::Slice StartK = rdb_collection_key_serialize(start_buf, start_gid, start_mid, start_pit);
 
-        uint32_t limit_gid = 0;
-        uint32_t limit_mid = 0x0000000E;
+        uint32_t limit_gid = 0x00000004;
+        uint32_t limit_mid = 0x0000000F;
         uint32_t limit_pit = 0xFFFFFFFF;
         char limit_buf[12];
         const rocksdb::Slice LimitK = rdb_collection_key_serialize(limit_buf, limit_gid, limit_mid, limit_pit);
