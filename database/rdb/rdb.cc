@@ -107,8 +107,6 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
             storage_engine_store_metric(dimensions[j].sch, point_in_time, i % 1111, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
         point_in_time += USEC_PER_SEC;
-
-        RDB->Flush(rocksdb::FlushOptions());
     }
 
     for (size_t i = 0; i != dimensions.size(); i++) {
@@ -145,35 +143,37 @@ static void gen_thread(size_t thread_id, size_t num_threads, size_t num_groups, 
 
 #include <rocksdb/options.h>
 #include <rocksdb/advanced_options.h>
+#include <rocksdb/table.h>
+
 
 rocksdb::DB *open_kv_db(const char *path) {
-    rocksdb::Options options;
+    rocksdb::Options Opts;
 
-    // options.enable_blob_files = true;
-    // options.min_blob_size = 1024;
-    // options.target_file_size_base = 1024 * 1024 * 1024;
-    // options.max_bytes_for_level_base = 10 * options.target_file_size_base; 
-
-    // options.write_buffer_size = 512 * 1024 * 1024;
     // options.max_write_buffer_number = 5;
-
     // options.writable_file_max_buffer_size = 1024 * 1024 * 1024;
     // options.min_write_buffer_number_to_merge = 2;
     
-    options.create_if_missing = true;
-    options.compaction_style = rocksdb::kCompactionStyleFIFO;
+    Opts.create_if_missing = true;
+    Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
 
-    options.max_background_flushes = 16;
-    options.max_background_compactions = 16;
-    options.statistics = rocksdb::CreateDBStatistics();
-    options.stats_dump_period_sec = 1;
-    options.manual_wal_flush = true;
+    Opts.write_buffer_size = 512 * 1024 * 1024;
+    Opts.target_file_size_base = 32 * 1024 * 1024;
+    Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
 
-    options.allow_concurrent_memtable_write = true;
-    options.enable_write_thread_adaptive_yield = true;
+    Opts.statistics = rocksdb::CreateDBStatistics();
+
+    rocksdb::BlockBasedTableOptions TableOpts = rocksdb::BlockBasedTableOptions();
+    TableOpts.block_size = 64 * 1024;
+    Opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(TableOpts));
+
+    Opts.stats_dump_period_sec = 1;
+    Opts.manual_wal_flush = true;
+
+    // Opts.allow_concurrent_memtable_write = true;
+    // Opts.enable_write_thread_adaptive_yield = true;
 
     rocksdb::DB* db;
-    rocksdb::Status S = rocksdb::DB::Open(options, path, &db);
+    rocksdb::Status S = rocksdb::DB::Open(Opts, path, &db);
     if (!S.ok())
         fatal("Failed to open db: %s", S.ToString().c_str());
 
@@ -195,10 +195,10 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 128;
+    size_t num_threads = 1024;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_points_per_dimension = 365 * 24 * 3600;
 
     std::vector<std::thread> threads;
 
@@ -222,13 +222,16 @@ int rdb_main(int argc, char *argv[]) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         size_t total_pages_written = 0;
-        size_t n = 15;
+        size_t n = 1200;
         while (n--) {
             double prev_num_pages_written = num_pages_written;
             std::this_thread::sleep_for(std::chrono::seconds{1});
             total_pages_written = num_pages_written;
 
             netdata_log_error("Pages written per second: %.2lf\n", static_cast<double>(total_pages_written) - prev_num_pages_written);
+            RDB->Flush(rocksdb::FlushOptions());
+            if ((n % 5) == 0)
+                system("du -hs /home/vk/opt/tmp");
         }
     
         auto end_time = std::chrono::high_resolution_clock::now();
