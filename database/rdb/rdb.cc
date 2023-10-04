@@ -271,7 +271,7 @@ int rdb_main(int argc, char *argv[]) {
     (void) argv;
 
     SI = new StorageInstance(16);
-    RDB = open_kv_db("/home/vk/opt/tmp");
+    RDB = open_kv_db("/home/cm/opt/tmp");
 
     netdata_log_error("Program started...");
 
@@ -320,7 +320,7 @@ int rdb_main(int argc, char *argv[]) {
             netdata_log_error("Pages written per second: %.2lf\n", static_cast<double>(total_pages_written) - prev_num_pages_written);
             RDB->Flush(rocksdb::FlushOptions());
             if ((n % 5) == 0)
-                system("du -hs /home/vk/opt/tmp");
+                system("du -hs /home/cm/opt/tmp");
         }
     
         auto end_time = std::chrono::high_resolution_clock::now();
