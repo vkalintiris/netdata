@@ -487,9 +487,13 @@ static inline void storage_engine_store_metric(
                                        count, anomaly_count, flags);
 }
 
-// TODO: RDB
 uint64_t rrdeng_disk_space_max(STORAGE_INSTANCE *db_instance);
 static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        fatal("%s() not implemented yet for RDB", __func__);
+#endif
+
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_disk_space_max(db_instance);
@@ -498,7 +502,6 @@ static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND back
     return 0;
 }
 
-// TODO: RDB
 uint64_t rdb_disk_space_used(STORAGE_INSTANCE *db_instance);
 uint64_t rrdeng_disk_space_used(STORAGE_INSTANCE *db_instance);
 static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
@@ -531,9 +534,12 @@ static inline time_t storage_engine_global_first_time_s(STORAGE_ENGINE_BACKEND b
     return now_realtime_sec() - (time_t)(default_rrd_history_entries * default_rrd_update_every);
 }
 
-// TODO: RDB
 size_t rrdeng_currently_collected_metrics(STORAGE_INSTANCE *db_instance);
 static inline size_t storage_engine_collected_metrics(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
+        fatal("%s() not implemented yet for RDB", __func__);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_currently_collected_metrics(db_instance);

@@ -1474,7 +1474,14 @@ endif()
 if(ENABLE_RDB)
         pkg_check_modules(ROCKSDB REQUIRED rocksdb)
 
-        message(WARNING "")
+        protoc_generate_cpp("${CMAKE_SOURCE_DIR}/database/rdb/protos"
+                            "${CMAKE_SOURCE_DIR}/database/rdb/protos"
+                            RDB_PROTO_BUILT_SRCS
+                            RDB_PROTO_BUILT_HDRS
+                            "${CMAKE_SOURCE_DIR}/database/rdb/protos/rdbv.proto")
+
+        list(APPEND NETDATA_FILES ${RDB_PROTO_BUILT_SRCS}
+                                  ${RDB_PROTO_BUILT_HDRS})
 endif()
 
 add_executable(netdata

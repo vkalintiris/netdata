@@ -5,13 +5,18 @@
 #include "rocksdb/db.h"
 #include "si.h"
 
+#include "protos/rdbv.pb.h"
+
 using namespace google::protobuf;
 
 struct rdb_collect_handle {
     struct storage_collect_handle common; // has to be first item
     rdb_metrics_group *rmg;
     rdb_metric_handle *rmh;
+
+    uint32_t pit;
     RepeatedField<storage_number> sns;
+
     SPINLOCK lock;
 };
 
@@ -39,16 +44,19 @@ bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint
     return true;
 }
 
+// TODO: rrd api should specify the page type
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
     rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
 
     rdb_collect_handle *rch = new rdb_collect_handle();
     rch->common.backend = STORAGE_ENGINE_BACKEND_RDB;
+
+    // TODO: dup group like metric handle (rrd api should allow this)
     rch->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
-    // TODO: dup like metric handle
     rch->rmg = reinterpret_cast<rdb_metrics_group *>(smg);
     rch->rmh->gid = rch->rmg->id;
+
     rch->sns = RepeatedField<storage_number>(rmg->arena);
     rch->sns.Reserve(1024);
 
@@ -78,20 +86,7 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     spinlock_lock(&rch->lock);
 
     if (rch->sns.size() >= 1024) {
-        // TODO: check perf if we have a uint64_t field just for the id inside
-        // rch, ie. (rmg->id << 32 | rmh->id).
-        uint32_t gid = rch->rmh->gid;
-        uint32_t mid = rch->rmh->id;
-        uint32_t pit = point_in_time / USEC_PER_SEC;
-
-        char buf[12];
-        rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
-        rocksdb::Slice V((const char *) rch->sns.data(), rch->sns.size() * sizeof(storage_number));
-
-        rocksdb::WriteOptions WO;
-        WO.disableWAL = true;
-        WO.sync = false;
-        RDB->Put(WO, K, V);
+        rdb_store_metric_flush(sch);
 
         rch->sns.Clear();
         num_pages_written++;
@@ -104,7 +99,22 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
 }
 
 void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch) {
-    UNUSED(sch);
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+
+    // TODO: check perf if we have a uint64_t field just for the id inside
+    // rch, ie. (rmg->id << 32 | rmh->id).
+    uint32_t gid = rch->rmh->gid;
+    uint32_t mid = rch->rmh->id;
+    uint32_t pit = rch->pit;
+
+    char buf[12];
+    rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
+    rocksdb::Slice V((const char *) rch->sns.data(), rch->sns.size() * sizeof(storage_number));
+
+    rocksdb::WriteOptions WO;
+    WO.disableWAL = true;
+    WO.sync = false;
+    RDB->Put(WO, K, V);
 }
 
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch) {

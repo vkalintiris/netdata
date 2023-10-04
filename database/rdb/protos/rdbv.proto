@@ -1,0 +1,14 @@
+syntax = "proto3";
+package rdbv;
+
+import "google/protobuf/descriptor.proto";
+
+message StorageNumbersPage {
+    repeated fixed32 storage_numbers = 1;
+}
+
+message RdbValue {
+    oneof Page {
+        StorageNumbersPage storage_numbers_page = 1;
+    }
+}
