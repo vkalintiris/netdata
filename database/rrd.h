@@ -618,7 +618,6 @@ static inline time_t storage_engine_oldest_time_s(STORAGE_ENGINE_BACKEND backend
     return rrddim_query_oldest_time_s(db_metric_handle);
 }
 
-// TODO: RDB
 time_t rrdeng_metric_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rrddim_query_latest_time_s(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
