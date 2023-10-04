@@ -15,7 +15,7 @@ struct rdb_collect_handle {
     rdb_metric_handle *rmh;
 
     uint32_t pit;
-    RepeatedField<storage_number> sns;
+    rdbv::RdbValue *rdb_value;
 
     SPINLOCK lock;
 };
@@ -57,8 +57,8 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->rmg = reinterpret_cast<rdb_metrics_group *>(smg);
     rch->rmh->gid = rch->rmg->id;
 
-    rch->sns = RepeatedField<storage_number>(rmg->arena);
-    rch->sns.Reserve(1024);
+    rch->rdb_value = Arena::Create<rdbv::RdbValue>(rmg->arena);
+    rch->rdb_value->mutable_storage_numbers_page()->mutable_storage_numbers()->Reserve(1024);
 
     // TODO: Improve this. Can we make this per-thread "global"?
     spinlock_init(&rch->lock);
@@ -82,17 +82,17 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     UNUSED(flags);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+    RepeatedField<uint32_t> *sns = rch->rdb_value->mutable_storage_numbers_page()->mutable_storage_numbers();
 
     spinlock_lock(&rch->lock);
 
-    if (rch->sns.size() >= 1024) {
+    if (sns->size() >= 1024) {
         rdb_store_metric_flush(sch);
 
-        rch->sns.Clear();
-        num_pages_written++;
+        sns->Clear();
     }
     
-    storage_number *sn = rch->sns.AddAlreadyReserved();
+    storage_number *sn = sns->AddAlreadyReserved();
     *sn = pack_storage_number(n, flags);
 
     spinlock_unlock(&rch->lock);
@@ -109,12 +109,20 @@ void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch) {
 
     char buf[12];
     rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
-    rocksdb::Slice V((const char *) rch->sns.data(), rch->sns.size() * sizeof(storage_number));
+
+    std::array<char, 64 * 1024> bytes;
+    size_t n = rch->rdb_value->ByteSizeLong();
+    if (n > bytes.size()) {
+        fatal("Could not serialize rdb value: (n=%zu > %zu bytes)", n, bytes.size());
+    }
+    rch->rdb_value->SerializeToArray(bytes.data(), bytes.size());
+    rocksdb::Slice V(bytes.data(), n);
 
     rocksdb::WriteOptions WO;
     WO.disableWAL = true;
     WO.sync = false;
     RDB->Put(WO, K, V);
+    num_pages_written++;
 }
 
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch) {

@@ -175,8 +175,6 @@ static void gen_thread(size_t thread_id,
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
-    print_first_time_of_dimensions(dimensions);
-    print_last_time_of_dimensions(dimensions);
 }
 
 #include <rocksdb/options.h>
@@ -280,10 +278,10 @@ int rdb_main(int argc, char *argv[]) {
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 2;
-    size_t num_groups = 2;
-    size_t num_dims_per_group = 4;
-    size_t num_points_per_dimension = 4 * 3600;
+    size_t num_threads = 24;
+    size_t num_groups = 500;
+    size_t num_dims_per_group = 5;
+    size_t num_points_per_dimension = 12 * 3600;
 
     std::vector<std::thread> threads;
 
@@ -309,7 +307,6 @@ int rdb_main(int argc, char *argv[]) {
         netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
     }
 
-#if 0
     {
         auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -353,15 +350,9 @@ int rdb_main(int argc, char *argv[]) {
         double pages_per_sec = points_per_sec / 1024.0;
         netdata_log_error("pages per second: %.2lf", pages_per_sec);
     }
-#endif
 
     for (std::thread& thread : threads)
         thread.join();
-
-    print_keys();
-
-    time_t first_time_s = rdb_global_first_time_s(nullptr);
-    netdata_log_error("first_time_s: %ld", first_time_s);
 
     rocksdb::FlushOptions FO;
     FO.allow_write_stall = true;
@@ -370,7 +361,7 @@ int rdb_main(int argc, char *argv[]) {
     RDB->Flush(FO);
     RDB->SyncWAL();
 
-    netdata_log_error("Approximate disk space used: %zu bytes", rdb_disk_space_used(nullptr));
+    rdb_disk_space_used(nullptr);
     
     RDB->Close();
     delete RDB;
