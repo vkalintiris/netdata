@@ -369,6 +369,9 @@ int rdb_main(int argc, char *argv[]) {
     
     RDB->Flush(FO);
     RDB->SyncWAL();
+
+    netdata_log_error("Approximate disk space used: %zu bytes", rdb_disk_space_used(nullptr));
+    
     RDB->Close();
     delete RDB;
 

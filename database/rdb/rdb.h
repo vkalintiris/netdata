@@ -46,6 +46,8 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si);
 time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh);
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh);
 
+uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si);
+
 #ifdef ENABLE_BENCHMARKS
 int rdb_main(int argc, char *argv[]);
 #endif

@@ -499,8 +499,13 @@ static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND back
 }
 
 // TODO: RDB
+uint64_t rdb_disk_space_used(STORAGE_INSTANCE *db_instance);
 uint64_t rrdeng_disk_space_used(STORAGE_INSTANCE *db_instance);
 static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
+#ifdef ENABLE_RDB
+    if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_disk_space_used(db_instance);
+#endif
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_disk_space_used(db_instance);
