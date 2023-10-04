@@ -4,7 +4,8 @@ package rdbv;
 import "google/protobuf/descriptor.proto";
 
 message StorageNumbersPage {
-    repeated fixed32 storage_numbers = 1;
+    uint32 update_every = 1;
+    repeated fixed32 storage_numbers = 2;
 }
 
 message RdbValue {

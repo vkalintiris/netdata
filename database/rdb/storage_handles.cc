@@ -59,6 +59,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
 
     rch->rdb_value = Arena::Create<rdbv::RdbValue>(rmg->arena);
     rch->rdb_value->mutable_storage_numbers_page()->mutable_storage_numbers()->Reserve(1024);
+    rch->rdb_value->mutable_storage_numbers_page()->set_update_every(update_every);
 
     // TODO: Improve this. Can we make this per-thread "global"?
     spinlock_init(&rch->lock);
@@ -88,7 +89,6 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
 
     if (sns->size() >= 1024) {
         rdb_store_metric_flush(sch);
-
         sns->Clear();
     }
     
@@ -110,6 +110,9 @@ void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch) {
     char buf[12];
     rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
 
+    // TODO: the max size should be 4096 + 6 bytes. is there
+    // any performance difference if the bytes buffer has exact size?
+    // ie. are we hitting hot vs. cold memory on serialization?
     std::array<char, 64 * 1024> bytes;
     size_t n = rch->rdb_value->ByteSizeLong();
     if (n > bytes.size()) {
