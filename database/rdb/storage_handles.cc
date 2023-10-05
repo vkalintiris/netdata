@@ -1,12 +1,5 @@
-#include "database/rrd.h"
-#include "libnetdata/libnetdata.h"
-#include "rdb-private.h"
-#include <google/protobuf/arena.h>
-#include <google/protobuf/repeated_field.h>
-#include "rocksdb/db.h"
+#include "rdb.h"
 #include "si.h"
-
-#include "protos/rdbv.pb.h"
 
 namespace pb = google::protobuf;
 
