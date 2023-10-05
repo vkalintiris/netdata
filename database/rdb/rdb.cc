@@ -23,7 +23,6 @@
 #include "si.h"
 
 StorageInstance *SI = nullptr;
-rocksdb::DB *RDB = nullptr;
 
 std::atomic<size_t> num_pages_written = 0;
 
@@ -218,7 +217,7 @@ rocksdb::DB *open_kv_db(const char *path) {
 
 static void print_keys() {
     {
-        rocksdb::Iterator* it = RDB->NewIterator(rocksdb::ReadOptions());
+        rocksdb::Iterator* it = SI->RDB->NewIterator(rocksdb::ReadOptions());
         for (it->SeekToFirst(); it->Valid(); it->Next()) {
             netdata_log_error("key: %s", it->key().ToString(true).c_str());
         }
@@ -240,7 +239,7 @@ static void print_keys() {
         const rocksdb::Slice LimitK = rdb_collection_key_serialize(limit_buf, limit_gid, limit_mid, limit_pit);
 
 
-        rocksdb::Iterator* it = RDB->NewIterator(rocksdb::ReadOptions());
+        rocksdb::Iterator* it = SI->RDB->NewIterator(rocksdb::ReadOptions());
         for (it->Seek(StartK); it->Valid() && (it->key().compare(LimitK) < 0); it->Next()) {
             rocksdb::Slice K = it->key();
             netdata_log_error("Range: [%s, %s) = %s",
@@ -268,7 +267,7 @@ int rdb_main(int argc, char *argv[]) {
     (void) argv;
 
     SI = new StorageInstance(16);
-    RDB = open_kv_db("/home/vk/opt/tmp");
+    SI->RDB = open_kv_db("/home/vk/opt/tmp");
 
     netdata_log_error("Program started...");
 
@@ -328,7 +327,7 @@ int rdb_main(int argc, char *argv[]) {
             netdata_log_error("pages/sec: %.2lf, points/sec: %.2lf, mib/sec: %.2lf, capacity: %.2lf",
                               pages_per_second, points_per_sec, mib_per_sec, capacity);
 
-            RDB->Flush(rocksdb::FlushOptions());
+            SI->RDB->Flush(rocksdb::FlushOptions());
         }
     }
 
@@ -339,13 +338,13 @@ int rdb_main(int argc, char *argv[]) {
     FO.allow_write_stall = true;
     FO.wait = true;
     
-    RDB->Flush(FO);
-    RDB->SyncWAL();
+    SI->RDB->Flush(FO);
+    SI->RDB->SyncWAL();
 
     rdb_disk_space_used(nullptr);
     
-    RDB->Close();
-    delete RDB;
+    SI->RDB->Close();
+    delete SI->RDB;
 
     exit(EXIT_SUCCESS);
 }

@@ -56,7 +56,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh) {
     
     const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
 
-    Iterator *it = RDB->NewIterator(ReadOptions());
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
     for (it->Seek(StartK); it->Valid(); it->Next()) {
         const Slice &K = it->key();
 
@@ -78,7 +78,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh) {
     
     const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
 
-    Iterator *it = RDB->NewIterator(ReadOptions());
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
     for (it->SeekForPrev(StartK); it->Valid(); it->Next()) {
         const Slice &K = it->key();
 

@@ -21,7 +21,7 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si) {
     
     const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
 
-    Iterator *it = RDB->NewIterator(ReadOptions());
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
     uint32_t first_pit = ~0u;
     for (it->Seek(StartK); it->Valid(); it->Next()) {
         const Slice &K = it->key();
@@ -56,7 +56,7 @@ uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si) {
     ranges[0].start = StartK;
     ranges[0].limit = LimitK;
 
-    Status S = RDB->GetApproximateSizes(Opts, RDB->DefaultColumnFamily(), ranges.data(), ranges.size(), sizes.data());
+    Status S = SI->RDB->GetApproximateSizes(Opts, SI->RDB->DefaultColumnFamily(), ranges.data(), ranges.size(), sizes.data());
     if (!S.ok()) {
         netdata_log_error("Could not get approximate size for default CF: %s", S.ToString().c_str());
         return 0;

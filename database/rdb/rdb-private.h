@@ -5,6 +5,8 @@
 #include <google/protobuf/arena.h>
 #include <rocksdb/db.h>
 
+#include <mutex>
+
 struct rdb_metrics_group {
     uuid_t uuid;
     uint32_t id;

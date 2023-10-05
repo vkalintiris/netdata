@@ -106,7 +106,7 @@ static void rdb_store_metric_flush_internal(STORAGE_COLLECT_HANDLE *sch, bool pr
     rocksdb::WriteOptions WO;
     WO.disableWAL = true;
     WO.sync = false;
-    RDB->Put(WO, K, V);
+    SI->RDB->Put(WO, K, V);
     num_pages_written++;
 }
 
