@@ -200,53 +200,6 @@ static rocksdb::Options get_db_options()
     return Opts;
 }
 
-static void print_keys() {
-    {
-        rocksdb::Iterator* it = SI->RDB->NewIterator(rocksdb::ReadOptions());
-        for (it->SeekToFirst(); it->Valid(); it->Next()) {
-            netdata_log_error("key: %s", it->key().ToString(true).c_str());
-        }
-        assert(it->status().ok());
-        delete it;
-    }
-
-    {
-        uint32_t start_gid = 0x00000004;
-        uint32_t start_mid = 0x0000000F;
-        uint32_t start_pit = 0;
-        char start_buf[12];
-        const rocksdb::Slice StartK = rdb_collection_key_serialize(start_buf, start_gid, start_mid, start_pit);
-
-        uint32_t limit_gid = 0x00000004;
-        uint32_t limit_mid = 0x0000000F;
-        uint32_t limit_pit = 0xFFFFFFFF;
-        char limit_buf[12];
-        const rocksdb::Slice LimitK = rdb_collection_key_serialize(limit_buf, limit_gid, limit_mid, limit_pit);
-
-
-        rocksdb::Iterator* it = SI->RDB->NewIterator(rocksdb::ReadOptions());
-        for (it->Seek(StartK); it->Valid() && (it->key().compare(LimitK) < 0); it->Next()) {
-            rocksdb::Slice K = it->key();
-            netdata_log_error("Range: [%s, %s) = %s",
-                              StartK.ToString(true).c_str(),
-                              LimitK.ToString(true).c_str(),
-                              K.ToString(true).c_str());
-
-            // netdata_log_error("[%s, %s): peeked %s",
-            //                   StartK.ToString(true).c_str(),
-            //                   LimitK.ToString(true).c_str(),
-            //                   K.ToString(true).c_str());
-        }
-
-        if (!it->status().ok()) {
-            netdata_log_error("Failed to lookup key %u: %s", start_mid, it->status().ToString().c_str());
-        }
-
-        delete it;
-    }
-
-}
-
 int rdb_main(int argc, char *argv[]) {
     (void) argc;
     (void) argv;
