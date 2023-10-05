@@ -15,30 +15,6 @@ using rocksdb::Status;
 using rocksdb::Iterator;
 using rocksdb::ReadOptions;
 
-const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit)
-{
-    memcpy(&scratch[0 * sizeof(uint32_t)], &gid, sizeof(uint32_t));
-    memcpy(&scratch[1 * sizeof(uint32_t)], &mid, sizeof(uint32_t));
-    memcpy(&scratch[2 * sizeof(uint32_t)], &pit, sizeof(uint32_t));
-
-    return rocksdb::Slice(scratch, 3 * sizeof(uint32_t));
-}
-
-bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint32_t &mid, uint32_t &pit)
-{
-    // TODO: skip this on release builds
-    if (S.size() != 3 * sizeof(uint32_t))
-        return false;
-    
-    const char *data = S.data();
-
-    memcpy(&gid, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
-    memcpy(&mid, &data[1 * sizeof(uint32_t)], sizeof(uint32_t));
-    memcpy(&pit, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
-
-    return true;
-}
-
 /*===---------------------------------------------------------------------===*/
 /* Metrics                                                                   */
 /*===---------------------------------------------------------------------===*/
@@ -94,13 +70,13 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     uint32_t mid = rmh->id;
     uint32_t pit = 0;
 
-    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
 
-    Iterator *it = SI->RDB->NewIterator(ReadOptions());
-    for (it->Seek(StartK); it->Valid(); it->Next()) {
-        const Slice &K = it->key();
+    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    for (It->Seek(StartK); It->Valid(); It->Next()) {
+        const Slice &K = It->key();
 
-        rdb_collection_key_deserialize(K, gid, mid, pit);
+        SI->parseKey(K, gid, mid, pit);
         return pit;
     }
 
@@ -117,13 +93,13 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
     uint32_t mid = rmh->id + 1;
     uint32_t pit = 0;
 
-    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
 
-    Iterator *it = SI->RDB->NewIterator(ReadOptions());
-    for (it->SeekForPrev(StartK); it->Valid(); it->Next()) {
-        const Slice &K = it->key();
+    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    for (It->SeekForPrev(StartK); It->Valid(); It->Next()) {
+        const Slice &K = It->key();
 
-        rdb_collection_key_deserialize(K, gid, mid, pit);
+        SI->parseKey(K, gid, mid, pit);
         return pit;
     }
 
@@ -193,7 +169,7 @@ static void rdb_store_metric_flush_internal(STORAGE_COLLECT_HANDLE *sch, bool pr
     uint32_t pit = rch->collection.pit;
 
     char buf[12];
-    rocksdb::Slice K = rdb_collection_key_serialize(buf, gid, mid, pit);
+    rocksdb::Slice K = SI->keySlice(buf, gid, mid, pit);
 
     // TODO: the max size should be 4096 + 6 bytes. is there
     // any performance difference if the bytes buffer has exact size?
@@ -369,18 +345,21 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
     uint32_t mid = 0;
     uint32_t pit = 0;
 
-    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
 
-    Iterator *it = SI->RDB->NewIterator(ReadOptions());
-    uint32_t first_pit = ~0u;
-    for (it->Seek(StartK); it->Valid(); it->Next()) {
-        const Slice &K = it->key();
-        rdb_collection_key_deserialize(K, gid, mid, pit);
+    uint32_t FirstPit = ~0u;
+
+    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+
+    for (It->Seek(StartK); It->Valid(); It->Next())
+    {
+        const Slice &K = It->key();
+        SI->parseKey(K, gid, mid, pit);
         netdata_log_error("gid=%u, mid=%u, pit=%u", gid, mid, pit);
-        first_pit = std::min(first_pit, pit);
+        FirstPit = std::min(FirstPit, pit);
     }
 
-    return first_pit;
+    return FirstPit;
 }
 
 uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si)
@@ -395,10 +374,10 @@ uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si)
     Opts.files_size_error_margin = 0.1;
 
     char StartBuf[12];
-    const Slice &StartK = rdb_collection_key_serialize(StartBuf, 0, 0, 0);
+    const Slice &StartK = SI->keySlice(StartBuf, 0, 0, 0);
 
     char LimitBuf[12];
-    const Slice &LimitK = rdb_collection_key_serialize(LimitBuf,
+    const Slice &LimitK = SI->keySlice(LimitBuf,
         std::numeric_limits<uint32_t>::max(),
         std::numeric_limits<uint32_t>::max(),
         std::numeric_limits<uint32_t>::max()

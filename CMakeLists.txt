@@ -693,15 +693,12 @@ if(ENABLE_DBENGINE)
 endif()
 
 if(ENABLE_RDB)
-    list(APPEND RRD_PLUGIN_FILES database/rdb/group_registry.cc
-                                 database/rdb/metric_registry.cc
-                                 database/rdb/barrier.h
+    list(APPEND RRD_PLUGIN_FILES database/rdb/barrier.h
+                                 database/rdb/rdb-private.h
+                                 database/rdb/storage_handles.cc
                                  database/rdb/rdb.cc
                                  database/rdb/rdb.h
-                                 database/rdb/rdb-private.h
                                  database/rdb/si.h
-                                 database/rdb/storage_handles.cc
-                                 database/rdb/query_ops.cc
                                  database/rdb/uuid_shard.h)
 endif()
 

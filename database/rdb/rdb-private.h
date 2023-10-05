@@ -2,11 +2,10 @@
 #define RDB_PRIVATE_H
 
 #include "rdb.h"
-#include <google/protobuf/arena.h>
-#include <rocksdb/db.h>
-#include <rocksdb/statistics.h>
-#include "protos/rdbv.pb.h"
 #include "barrier.h"
+#include "protos/rdbv.pb.h"
+
+#include <rocksdb/db.h>
 
 struct rdb_collect_handle;
 
@@ -42,9 +41,5 @@ struct rdb_collect_handle {
         uint32_t pit;
     } collection;
 };
-
-
-const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit);
-bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint32_t &mid, uint32_t &pit);
 
 #endif /* RDB_PRIVATE_H */

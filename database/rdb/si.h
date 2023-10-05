@@ -8,6 +8,8 @@ namespace rocksdb {
     class DB;
 };
 
+using rocksdb::Slice;
+
 class StorageInstance {
 public:
     StorageInstance(size_t registry_shards) :
@@ -39,6 +41,26 @@ public:
         RDB->Close();
         delete RDB;
         RDB = nullptr;
+    }
+
+    inline const Slice keySlice(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit)
+    {
+        memcpy(&scratch[0 * sizeof(uint32_t)], &gid, sizeof(uint32_t));
+        memcpy(&scratch[1 * sizeof(uint32_t)], &mid, sizeof(uint32_t));
+        memcpy(&scratch[2 * sizeof(uint32_t)], &pit, sizeof(uint32_t));
+
+        return Slice(scratch, 3 * sizeof(uint32_t));
+    }
+
+    inline bool parseKey(const Slice &S, uint32_t &gid, uint32_t &mid, uint32_t &pit)
+    {
+        const char *data = S.data();
+
+        memcpy(&gid, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
+        memcpy(&mid, &data[1 * sizeof(uint32_t)], sizeof(uint32_t));
+        memcpy(&pit, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
+
+        return true;
     }
 
     google::protobuf::Arena *getThreadArena()
