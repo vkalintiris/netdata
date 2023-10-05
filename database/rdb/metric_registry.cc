@@ -50,7 +50,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh) {
 
     char scratch[12];
 
-    uint32_t gid = rmh->gid;
+    uint32_t gid = rmh->rmg->id;
     uint32_t mid = rmh->id;
     uint32_t pit = 0;
     
@@ -72,7 +72,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh) {
 
     char scratch[12];
 
-    uint32_t gid = rmh->gid;
+    uint32_t gid = rmh->rmg->id;
     uint32_t mid = rmh->id + 1;
     uint32_t pit = 0;
     

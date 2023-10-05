@@ -19,11 +19,10 @@ struct rdb_metric_handle {
     uint32_t id;
     uint32_t rc;
 
-    uint32_t gid;
+    rdb_metrics_group *rmg;
 };
 
 const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit);
-
 bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint32_t &mid, uint32_t &pit);
 
 #endif /* RDB_PRIVATE_H */
