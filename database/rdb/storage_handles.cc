@@ -8,7 +8,12 @@
 
 #include "protos/rdbv.pb.h"
 
-using namespace google::protobuf;
+namespace pb = google::protobuf;
+
+using rocksdb::Slice;
+using rocksdb::Status;
+using rocksdb::Iterator;
+using rocksdb::ReadOptions;
 
 const rocksdb::Slice rdb_collection_key_serialize(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit)
 {
@@ -34,6 +39,123 @@ bool rdb_collection_key_deserialize(const rocksdb::Slice &S, uint32_t &gid, uint
     return true;
 }
 
+/*===---------------------------------------------------------------------===*/
+/* Metrics                                                                   */
+/*===---------------------------------------------------------------------===*/
+
+STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
+{
+    UNUSED(si);
+
+    rdb_metric_handle *rmh = SI->MetricsRegistry.acquire(*uuid);
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh);
+}
+
+STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *si)
+{
+    UNUSED(si);
+
+    rdb_metric_handle *rmh = SI->MetricsRegistry.add_or_create(rd->metric_uuid);
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh);
+}
+
+STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh)
+{
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
+    SI->MetricsRegistry.acquire(rmh);
+    return smh;
+}
+
+void rdb_metric_release(STORAGE_METRIC_HANDLE *smh)
+{
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
+    SI->MetricsRegistry.release(rmh);
+}
+
+bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s)
+{
+    UNUSED(si);
+    UNUSED(uuid);
+    UNUSED(first_entry_s);
+    UNUSED(last_entry_s);
+
+    fatal("Not implemented yet.");
+
+    return false;
+}
+
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
+{
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
+
+    char scratch[12];
+
+    uint32_t gid = rmh->rmg->id;
+    uint32_t mid = rmh->id;
+    uint32_t pit = 0;
+
+    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
+    for (it->Seek(StartK); it->Valid(); it->Next()) {
+        const Slice &K = it->key();
+
+        rdb_collection_key_deserialize(K, gid, mid, pit);
+        return pit;
+    }
+
+    return 0;
+}
+
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
+{
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
+
+    char scratch[12];
+
+    uint32_t gid = rmh->rmg->id;
+    uint32_t mid = rmh->id + 1;
+    uint32_t pit = 0;
+
+    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
+    for (it->SeekForPrev(StartK); it->Valid(); it->Next()) {
+        const Slice &K = it->key();
+
+        rdb_collection_key_deserialize(K, gid, mid, pit);
+        return pit;
+    }
+
+    return 0;
+}
+
+/*===---------------------------------------------------------------------===*/
+/* Groups                                                                    */
+/*===---------------------------------------------------------------------===*/
+
+STORAGE_METRICS_GROUP *rdb_metrics_group_get(STORAGE_INSTANCE *si, uuid_t *uuid)
+{
+    UNUSED(si);
+
+    rdb_metrics_group *rmg = SI->GroupsRegistry.create(*uuid);
+    rmg->arena = SI->getThreadArena();
+
+    return reinterpret_cast<STORAGE_METRICS_GROUP *>(rmg);
+}
+
+void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
+{
+    UNUSED(si);
+
+    rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
+    SI->GroupsRegistry.release(rmg);
+}
+
+/*===---------------------------------------------------------------------===*/
+/* Collection handles                                                        */
+/*===---------------------------------------------------------------------===*/
+
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
     rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
@@ -50,7 +172,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
 
     spinlock_init(&rch->collection.lock);
     rch->collection.pit = 0;
-    rch->collection.rdb_value = Arena::Create<rdbv::RdbValue>(rmg->arena);
+    rch->collection.rdb_value = pb::Arena::Create<rdbv::RdbValue>(rmg->arena);
     rch->collection.rdb_value->mutable_storage_numbers_page()->mutable_storage_numbers()->Reserve(1024);
     memset(rch->collection.rdb_value->mutable_storage_numbers_page()->mutable_storage_numbers()->mutable_data(), 0xDEADBEEF, 4096);
     rch->collection.rdb_value->mutable_storage_numbers_page()->set_update_every(update_every);
@@ -58,7 +180,8 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
 
-static void rdb_store_metric_flush_internal(STORAGE_COLLECT_HANDLE *sch, bool protect) {
+static void rdb_store_metric_flush_internal(STORAGE_COLLECT_HANDLE *sch, bool protect)
+{
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
     if (protect) {
@@ -107,7 +230,7 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     
     rdbv::StorageNumbersPage *snp = rch->collection.rdb_value->mutable_storage_numbers_page();
-    RepeatedField<uint32_t> *sns = snp->mutable_storage_numbers();
+    pb::RepeatedField<uint32_t> *sns = snp->mutable_storage_numbers();
 
     spinlock_lock(&rch->collection.lock);
 
@@ -202,7 +325,7 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
     rdbv::StorageNumbersPage *snp = rch->collection.rdb_value->mutable_storage_numbers_page();
-    RepeatedField<uint32_t> *sns = snp->mutable_storage_numbers();
+    pb::RepeatedField<uint32_t> *sns = snp->mutable_storage_numbers();
 
     spinlock_lock(&rch->collection.lock);
 
@@ -225,8 +348,70 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
     spinlock_unlock(&rch->collection.lock);
 }
 
-int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch) {
+int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
+{
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     delete rch;
     return 0;
+}
+
+
+time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
+{
+    UNUSED(si);
+
+    // FIXME: this will iterate _ALL_ keys.
+    netdata_log_error("Expensive operation: %s()", __func__);
+
+    char scratch[12];
+
+    uint32_t gid = 0;
+    uint32_t mid = 0;
+    uint32_t pit = 0;
+
+    const Slice StartK = rdb_collection_key_serialize(scratch, gid, mid, pit);
+
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
+    uint32_t first_pit = ~0u;
+    for (it->Seek(StartK); it->Valid(); it->Next()) {
+        const Slice &K = it->key();
+        rdb_collection_key_deserialize(K, gid, mid, pit);
+        netdata_log_error("gid=%u, mid=%u, pit=%u", gid, mid, pit);
+        first_pit = std::min(first_pit, pit);
+    }
+
+    return first_pit;
+}
+
+uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si)
+{
+    UNUSED(si);
+
+    std::array<rocksdb::Range, 1> ranges;
+    std::array<uint64_t, 1> sizes;
+    rocksdb::SizeApproximationOptions Opts;
+
+    Opts.include_memtables = false;
+    Opts.files_size_error_margin = 0.1;
+
+    char StartBuf[12];
+    const Slice &StartK = rdb_collection_key_serialize(StartBuf, 0, 0, 0);
+
+    char LimitBuf[12];
+    const Slice &LimitK = rdb_collection_key_serialize(LimitBuf,
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max()
+    );
+
+    ranges[0].start = StartK;
+    ranges[0].limit = LimitK;
+
+    Status S = SI->RDB->GetApproximateSizes(Opts, SI->RDB->DefaultColumnFamily(), ranges.data(), ranges.size(), sizes.data());
+    if (!S.ok()) {
+        netdata_log_error("Could not get approximate size for default CF: %s", S.ToString().c_str());
+        return 0;
+    }
+
+    return sizes[0];
 }
