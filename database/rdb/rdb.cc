@@ -98,18 +98,6 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     }
 }
 
-void print_first_time_of_dimensions(std::vector<dimension_t> &dimensions) {
-    for (const dimension_t &d : dimensions) {
-        netdata_log_error("first_time of mid %lu is %ld", reinterpret_cast<rdb_metric_handle *>(d.smh)->id, rdb_metric_oldest_time(d.smh));
-    }
-}
-
-void print_last_time_of_dimensions(std::vector<dimension_t> &dimensions) {
-    for (const dimension_t &d : dimensions) {
-        netdata_log_error("last_time of mid %lu is %ld", reinterpret_cast<rdb_metric_handle *>(d.smh)->id, rdb_metric_latest_time(d.smh));
-    }
-}
-
 static Barrier *B = nullptr;
 
 static void gen_thread(size_t thread_id,
@@ -169,7 +157,8 @@ static rocksdb::Options get_db_options()
     return Opts;
 }
 
-int rdb_main(int argc, char *argv[]) {
+int rdb_main(int argc, char *argv[])
+{
     (void) argc;
     (void) argv;
 
@@ -191,11 +180,12 @@ int rdb_main(int argc, char *argv[]) {
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 365 * 24 * 3600;
 
-    std::vector<std::thread> threads;
+    netdata_log_error("Test config: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
+                      num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
 
-    netdata_log_error("Generating random values...");
     std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
 
+    std::vector<std::thread> threads;
     {
         netdata_log_error("Setting up metrics...");
 
@@ -215,10 +205,6 @@ int rdb_main(int argc, char *argv[]) {
         netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
     }
 
-    netdata_log_error("Test config: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
-                      num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
-
-    if (1)
     {
         size_t n = 60;
 
@@ -246,17 +232,6 @@ int rdb_main(int argc, char *argv[]) {
     for (std::thread& thread : threads)
         thread.join();
 
-    rocksdb::FlushOptions FO;
-    FO.allow_write_stall = true;
-    FO.wait = true;
-    
-    SI->RDB->Flush(FO);
-    SI->RDB->SyncWAL();
-
-    rdb_disk_space_used(nullptr);
-    
-    SI->RDB->Close();
-    delete SI->RDB;
-
+    SI->close();
     exit(EXIT_SUCCESS);
 }

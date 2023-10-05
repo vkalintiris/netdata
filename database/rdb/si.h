@@ -16,7 +16,8 @@ public:
         MetricsRegistry(registry_shards)
     {}
 
-    rocksdb::Status open(rocksdb::Options Opts, const char *path) {
+    rocksdb::Status open(rocksdb::Options Opts, const char *path)
+    {
         rocksdb::Status S = rocksdb::DB::Open(Opts, path, &RDB);
         if (!S.ok())
             RDB = nullptr;
@@ -24,7 +25,24 @@ public:
         return S;
     }
 
-    google::protobuf::Arena *getThreadArena() {
+    void close()
+    {
+        rocksdb::FlushOptions FO;
+        FO.allow_write_stall = true;
+        FO.wait = true;
+
+        RDB->Flush(FO);
+        RDB->SyncWAL();
+
+        rdb_disk_space_used(nullptr);
+
+        RDB->Close();
+        delete RDB;
+        RDB = nullptr;
+    }
+
+    google::protobuf::Arena *getThreadArena()
+    {
         pid_t tid = gettid();
 
         {
