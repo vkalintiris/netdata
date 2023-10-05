@@ -293,22 +293,8 @@ int rdb_main(int argc, char *argv[]) {
 
         auto start_time = std::chrono::high_resolution_clock::now();
 
-        for (size_t i = 0; i < num_threads; ++i) {
+        for (size_t i = 0; i < num_threads; ++i)
             threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension, rand_vals);
-
-            // pthread_attr_t attr;
-            // pthread_attr_init(&attr);
-            // pthread_attr_setschedpolicy(&attr, SCHED_BATCH);
-
-            // struct sched_param param;
-            // param.sched_priority = 0;
-            // pthread_attr_setschedparam(&attr, &param);
-
-            // int rc = pthread_setschedparam(threads[i].native_handle(), SCHED_BATCH, &param);
-            // if (rc) {
-            //     fatal("Failed to set scheduling priority... (rc=%d)", rc);
-            // }
-        }
 
         B->wait();
     
