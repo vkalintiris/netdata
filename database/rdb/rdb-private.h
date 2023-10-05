@@ -32,9 +32,9 @@ class ValueWrapper
 public:
     static ValueWrapper create(rdbv::RdbValue::PageCase PC, google::protobuf::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery);
 
-    bool appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                     NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                     uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
+    inline bool appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
+                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
 
     const rocksdb::Slice flush(char *buffer, size_t n) const;
 

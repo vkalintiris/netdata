@@ -135,7 +135,7 @@ static rocksdb::Options get_db_options()
 
     Opts.create_if_missing = true;
     Opts.statistics = rocksdb::CreateDBStatistics();
-    Opts.compaction_style = rocksdb::kCompactionStyleLevel;
+    Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
     Opts.write_buffer_size = 512 * 1024 * 1024;
     Opts.target_file_size_base = 32 * 1024 * 1024;
     Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
@@ -167,7 +167,7 @@ int rdb_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 512;
+    size_t num_threads = 24;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 365 * 24 * 3600;

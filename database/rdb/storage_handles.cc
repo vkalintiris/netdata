@@ -289,9 +289,9 @@ ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint3
     return VW;
 }
 
-bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                               NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                               uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
+inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
+                                      NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+                                      uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
     UNUSED(point_in_time_ut);
     UNUSED(min_value);
