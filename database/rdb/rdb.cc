@@ -47,37 +47,6 @@ static std::vector<uint32_t> genRandVector(size_t n) {
     return v;
 }
 
-class Barrier
-{
-public:
-    Barrier(int count) : thread_count(count), counter(0), waiting(0) { }
-
-    void wait() {
-        //fence mechanism
-        std::unique_lock<std::mutex> lk(m);
-        ++counter;
-        ++waiting;
-        cv.wait(lk, [&]{return counter >= thread_count;});
-        cv.notify_one();
-
-        --waiting;
-
-        if(waiting == 0) {
-           //reset barrier
-           counter = 0;
-        }
-
-        lk.unlock();
-    }
-
- private:
-      std::mutex m;
-      std::condition_variable cv;
-      int thread_count;
-      int counter;
-      int waiting;
-};
-
 static STORAGE_ENGINE *se = nullptr;
 static STORAGE_INSTANCE *si = nullptr;
 

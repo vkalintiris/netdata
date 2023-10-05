@@ -695,6 +695,7 @@ endif()
 if(ENABLE_RDB)
     list(APPEND RRD_PLUGIN_FILES database/rdb/group_registry.cc
                                  database/rdb/metric_registry.cc
+                                 database/rdb/barrier.h
                                  database/rdb/rdb.cc
                                  database/rdb/rdb.h
                                  database/rdb/rdb-private.h

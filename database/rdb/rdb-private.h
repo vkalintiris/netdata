@@ -6,8 +6,7 @@
 #include <rocksdb/db.h>
 #include <rocksdb/statistics.h>
 #include "protos/rdbv.pb.h"
-
-#include <mutex>
+#include "barrier.h"
 
 struct rdb_collect_handle;
 
