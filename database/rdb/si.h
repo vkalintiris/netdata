@@ -16,6 +16,14 @@ public:
         MetricsRegistry(registry_shards)
     {}
 
+    rocksdb::Status open(rocksdb::Options Opts, const char *path) {
+        rocksdb::Status S = rocksdb::DB::Open(Opts, path, &RDB);
+        if (!S.ok())
+            RDB = nullptr;
+
+        return S;
+    }
+
     google::protobuf::Arena *getThreadArena() {
         pid_t tid = gettid();
 

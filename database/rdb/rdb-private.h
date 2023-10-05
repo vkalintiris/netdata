@@ -4,6 +4,7 @@
 #include "rdb.h"
 #include <google/protobuf/arena.h>
 #include <rocksdb/db.h>
+#include <rocksdb/statistics.h>
 #include "protos/rdbv.pb.h"
 
 #include <mutex>

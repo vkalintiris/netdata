@@ -180,39 +180,24 @@ static void gen_thread(size_t thread_id,
 #include <rocksdb/advanced_options.h>
 #include <rocksdb/table.h>
 
-
-rocksdb::DB *open_kv_db(const char *path) {
+static rocksdb::Options get_db_options()
+{
     rocksdb::Options Opts;
 
-    // options.max_write_buffer_number = 5;
-    // options.writable_file_max_buffer_size = 1024 * 1024 * 1024;
-    // options.min_write_buffer_number_to_merge = 2;
-    
     Opts.create_if_missing = true;
+    Opts.statistics = rocksdb::CreateDBStatistics();
     Opts.compaction_style = rocksdb::kCompactionStyleLevel;
-
     Opts.write_buffer_size = 512 * 1024 * 1024;
     Opts.target_file_size_base = 32 * 1024 * 1024;
     Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
-
-    Opts.statistics = rocksdb::CreateDBStatistics();
+    Opts.manual_wal_flush = true;
+    Opts.stats_dump_period_sec = 1;
 
     rocksdb::BlockBasedTableOptions TableOpts = rocksdb::BlockBasedTableOptions();
     TableOpts.block_size = 64 * 1024;
     Opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(TableOpts));
 
-    Opts.stats_dump_period_sec = 1;
-    Opts.manual_wal_flush = true;
-
-    // Opts.allow_concurrent_memtable_write = true;
-    // Opts.enable_write_thread_adaptive_yield = true;
-
-    rocksdb::DB* db;
-    rocksdb::Status S = rocksdb::DB::Open(Opts, path, &db);
-    if (!S.ok())
-        fatal("Failed to open db: %s", S.ToString().c_str());
-
-    return db;
+    return Opts;
 }
 
 static void print_keys() {
@@ -267,7 +252,12 @@ int rdb_main(int argc, char *argv[]) {
     (void) argv;
 
     SI = new StorageInstance(16);
-    SI->RDB = open_kv_db("/home/vk/opt/tmp");
+
+    rocksdb::Options Opts = get_db_options();
+    const char *Path = "/home/vk/opt/tmp";
+    rocksdb::Status S = SI->open(Opts, Path);
+    if (!S.ok())
+        fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
 
     netdata_log_error("Program started...");
 
