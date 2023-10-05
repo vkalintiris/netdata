@@ -718,36 +718,6 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
 
     bool updated = false;
 
-    const size_t logsz = 8192;
-    char logbuf[logsz];
-    size_t logoff = 0;
-
-    if (have_read_error)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [0] have_read_error: %d", have_read_error);
-    if (vd.page_length == 0)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [1] vd.page_length = %zu", vd.page_length);
-    if (vd.page_length > RRDENG_BLOCK_SIZE)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [2] vd.page_length = %zu", vd.page_length);
-    if (vd.start_time_s > vd.end_time_s)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [3] vd.start_time_s = %ld, vd.end_time_s = %ld", vd.start_time_s, vd.end_time_s);
-    if (vd.start_time_s > vd.end_time_s)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [4] vd.start_time_s = %ld, vd.end_time_s = %ld", vd.start_time_s, vd.end_time_s);
-    if (now_s && vd.end_time_s > now_s)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [5] now_s = %ld, vd.end_time_s = %ld", now_s, vd.end_time_s);
-    if (vd.start_time_s <= 0)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [6] vd.start_time_s = %ld", vd.start_time_s);
-    if (vd.end_time_s <= 0)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [7] vd.end_time_s = %ld", vd.end_time_s);
-    if (vd.update_every_s < 0)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [8] vd.update_ever_s = %ld", vd.update_every_s);
-    if (vd.start_time_s == vd.end_time_s && vd.entries > 1)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [9] vd.start_time_s = %ld, vd.end_time_s = %ld, vd_entries = %zu", vd.start_time_s, vd.end_time_s, vd.entries);
-    if (vd.update_every_s == 0 && vd.entries > 1)
-        logoff += snprintfz(logbuf + logoff, logsz - logoff, " [10] vd.update_every = %ld, vd.entries = %zu", vd.update_every_s, vd.entries);
-
-    if (logoff)
-        fatal("Invalid vd: %s", logbuf);
-
     if( have_read_error                                         ||
         vd.page_length == 0                                     ||
         vd.page_length > RRDENG_BLOCK_SIZE                      ||
@@ -760,6 +730,37 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
         (vd.update_every_s == 0 && vd.entries > 1))
     {
         vd.is_valid = false;
+
+        const size_t logsz = 8192;
+        char logbuf[logsz];
+        size_t logoff = 0;
+
+        if (have_read_error)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [0] have_read_error: %d", have_read_error);
+        if (vd.page_length == 0)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [1] vd.page_length = %zu", vd.page_length);
+        if (vd.page_length > RRDENG_BLOCK_SIZE)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [2] vd.page_length = %zu", vd.page_length);
+        if (vd.start_time_s > vd.end_time_s)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [3] vd.start_time_s = %ld, vd.end_time_s = %ld", vd.start_time_s, vd.end_time_s);
+        if (vd.start_time_s > vd.end_time_s)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [4] vd.start_time_s = %ld, vd.end_time_s = %ld", vd.start_time_s, vd.end_time_s);
+        if (now_s && vd.end_time_s > now_s)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [5] now_s = %ld, vd.end_time_s = %ld", now_s, vd.end_time_s);
+        if (vd.start_time_s <= 0)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [6] vd.start_time_s = %ld", vd.start_time_s);
+        if (vd.end_time_s <= 0)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [7] vd.end_time_s = %ld", vd.end_time_s);
+        if (vd.update_every_s < 0)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [8] vd.update_ever_s = %ld", vd.update_every_s);
+        if (vd.start_time_s == vd.end_time_s && vd.entries > 1)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [9] vd.start_time_s = %ld, vd.end_time_s = %ld, vd_entries = %zu", vd.start_time_s, vd.end_time_s, vd.entries);
+        if (vd.update_every_s == 0 && vd.entries > 1)
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [10] vd.update_every = %ld, vd.entries = %zu", vd.update_every_s, vd.entries);
+
+        if (logoff)
+            fatal("Invalid vd: %s", logbuf);
+
     }
     else {
         if(unlikely(vd.entries != entries || vd.update_every_s != update_every_s)) {
@@ -768,12 +769,10 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
         }
 
         if (likely(vd.update_every_s)) {
-            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [12] vd.update_every_s = %ld", vd.update_every_s);
-
             size_t entries_by_time = page_entries_by_time(vd.start_time_s, vd.end_time_s, vd.update_every_s);
 
             if (vd.entries != entries_by_time) {
-                logoff += snprintfz(logbuf + logoff, logsz - logoff, " [13] vd.entries = %zu, entries_by_time = %zu (vd.start_time_s = %ld, vd.end_time_s = %ld, vd.update_every_s = %ld)", vd.entries, entries_by_time, vd.start_time_s, vd.end_time_s, vd.update_every_s);
+                fatal("[GVD-B] vd.entries = %zu, entries_by_time = %zu", vd.entries, entries_by_time);
             
                 if (overwrite_zero_update_every_s < vd.update_every_s)
                     vd.update_every_s = overwrite_zero_update_every_s;
@@ -794,14 +793,11 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             }
         }
         else if(overwrite_zero_update_every_s) {
-            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [14] overwrite_zero_update_every_s = %ld", overwrite_zero_update_every_s);
+            fatal("[GVD-C] overwrite_zero_update_every_s");
             vd.update_every_s = overwrite_zero_update_every_s;
             updated = true;
         }
     }
-
-    if (logoff)
-        fatal("Invalid vd: %s", logbuf);
 
     if(unlikely(!vd.is_valid || updated)) {
         char uuid_str[UUID_STR_LEN + 1];
