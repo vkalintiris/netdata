@@ -165,7 +165,7 @@ int rdb_main(int argc, char *argv[])
     SI = new StorageInstance(16);
 
     rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/vk/opt/tmp";
+    const char *Path = "/home/cm/opt/tmp";
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
