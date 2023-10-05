@@ -304,6 +304,7 @@ void spinlock_lock(SPINLOCK *spinlock) {
     size_t spins = 0;
 #endif
 
+    // TODO: expose a lock_options struct. this takes 5% in RDB under stress.
     netdata_thread_disable_cancelability();
 
     for(int i = 1;
