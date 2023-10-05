@@ -763,7 +763,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
     }
     else {
         if(unlikely(vd.entries != entries || vd.update_every_s != update_every_s)) {
-            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [11] vd.entries = %zu, entries = %zu, vd.update_every_s = %ld, update_every = %ld", vd.entries, entries, vd.update_every_s, vd.update_every_s);
+            fatal("[GVD-A] vd.entries = %zu, entries = %zu, vd.update_every_s = %ld, update_every = %ld", vd.entries, entries, vd.update_every_s, vd.update_every_s);
             updated = true;
         }
 
@@ -804,9 +804,6 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
         fatal("Invalid vd: %s", logbuf);
 
     if(unlikely(!vd.is_valid || updated)) {
-#ifndef NETDATA_INTERNAL_CHECKS
-        error_limit_static_global_var(erl, 1, 0);
-#endif
         char uuid_str[UUID_STR_LEN + 1];
         uuid_unparse(*uuid, uuid_str);
 
@@ -818,11 +815,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
         }
 
         if(!vd.is_valid) {
-#ifdef NETDATA_INTERNAL_CHECKS
-            internal_error(true,
-#else
-            error_limit(&erl,
-#endif
+            fatal(
                         "DBENGINE: metric '%s' %s invalid page of type %u "
                         "from %ld to %ld (now %ld), update every %ld, page length %zu, entries %zu (flags: %s)",
                         uuid_str, msg, vd.type,
@@ -838,11 +831,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             const char *err_entries = (vd.entries == entries) ? "" : "entries updated, ";
             const char *err_future = (now_s && vd.end_time_s <= now_s) ? "" : "future end time, ";
 
-#ifdef NETDATA_INTERNAL_CHECKS
-            internal_error(true,
-#else
-            error_limit(&erl,
-#endif
+            fatal(
                         "DBENGINE: metric '%s' %s page of type %u "
                         "from %ld to %ld (now %ld), update every %ld, page length %zu, entries %zu (flags: %s), "
                         "found inconsistent - the right is "
