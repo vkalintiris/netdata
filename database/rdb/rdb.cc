@@ -268,7 +268,7 @@ int rdb_main(int argc, char *argv[]) {
     (void) argv;
 
     SI = new StorageInstance(16);
-    RDB = open_kv_db("/home/cm/opt/tmp");
+    RDB = open_kv_db("/home/vk/opt/tmp");
 
     netdata_log_error("Program started...");
 
