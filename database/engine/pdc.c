@@ -773,6 +773,8 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             size_t entries_by_time = page_entries_by_time(vd.start_time_s, vd.end_time_s, vd.update_every_s);
 
             if (vd.entries != entries_by_time) {
+                logoff += snprintfz(logbuf + logoff, logsz - logoff, " [13] vd.entries = %zu, entries_by_time = %zu (vd.start_time_s = %ld, vd.end_time_s = %ld, vd.update_every_s = %ld)", vd.entries, entries_by_time, vd.start_time_s, vd.end_time_s, vd.update_every_s);
+            
                 if (overwrite_zero_update_every_s < vd.update_every_s)
                     vd.update_every_s = overwrite_zero_update_every_s;
 
@@ -792,7 +794,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             }
         }
         else if(overwrite_zero_update_every_s) {
-            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [13] overwrite_zero_update_every_s = %ld", overwrite_zero_update_every_s);
+            logoff += snprintfz(logbuf + logoff, logsz - logoff, " [14] overwrite_zero_update_every_s = %ld", overwrite_zero_update_every_s);
             vd.update_every_s = overwrite_zero_update_every_s;
             updated = true;
         }
