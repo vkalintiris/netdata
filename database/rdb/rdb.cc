@@ -85,17 +85,19 @@ static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
 
 static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_points_per_dimension, usec_t point_in_time, const std::vector<uint32_t> &rand_vals)
 {
-    for (size_t i = 0; i != num_points_per_dimension; i++) {
-        for (size_t j = 0; j != dimensions.size(); j++) {
+    for (size_t i = 0; i != num_points_per_dimension; i++)
+    {
+        for (size_t j = 0; j != dimensions.size(); j++)
+        {
             uint32_t val = rand_vals[(i + j) % rand_vals.size()];
             storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
+
         point_in_time += USEC_PER_SEC;
     }
 
-    for (size_t i = 0; i != dimensions.size(); i++) {
+    for (size_t i = 0; i != dimensions.size(); i++)
         storage_engine_store_flush(dimensions[i].sch);
-    }
 }
 
 static Barrier *B = nullptr;
@@ -115,19 +117,9 @@ static void gen_thread(size_t thread_id,
 
     std::vector<dimension_t> dimensions;
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);
-
-    // shift each thread's entries so that we can avoid compressing all threads
-    // at the same point in time
-    usec_t point_in_time = 0x9F013B63 * USEC_PER_SEC;
-    for (size_t i = 0; i != thread_id; i++) {
-        for (size_t j = 0; j != dimensions.size(); j++) {
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
-        }
-        point_in_time += USEC_PER_SEC;
-    }
-
     B->wait();
-    
+
+    usec_t point_in_time = 0x9F013B63 * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
@@ -175,7 +167,7 @@ int rdb_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 8;
+    size_t num_threads = 512;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 365 * 24 * 3600;
