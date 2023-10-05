@@ -55,6 +55,7 @@ public:
 
 private:
     rdbv::RdbValue *Value;
+    rdbv::RdbValue::PageCase PC;
     uint32_t Slots;
 };
 
@@ -71,8 +72,9 @@ struct rdb_collect_handle
     struct {
         // Can we make the lock per-thread?
         SPINLOCK lock;
-        ValueWrapper value;
         usec_t pit_ut;
+        usec_t update_every_ut;
+        ValueWrapper value;
     } collection;
 };
 

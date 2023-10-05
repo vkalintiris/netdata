@@ -320,8 +320,9 @@ inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
 
 const Slice ValueWrapper::flush(char *buffer, size_t n) const
 {
+    size_t nbytes = Value->ByteSizeLong();
     Value->SerializeToArray(buffer, n);
-    return rocksdb::Slice(buffer, n);
+    return rocksdb::Slice(buffer, nbytes);
 }
 
 void ValueWrapper::reset(uint32_t Slots)
@@ -362,6 +363,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
 
     spinlock_init(&rch->collection.lock);
     rch->collection.pit_ut = 0;
+    rch->collection.update_every_ut = update_every * USEC_PER_SEC;
     rch->collection.value = ValueWrapper::create(RdbValue::PageCase::kStorageNumbersPage, rmg->arena, initial_slots, update_every);
 
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
@@ -387,7 +389,7 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
     }
 
     usec_t delta_ut = point_in_time_ut - rch->collection.pit_ut;
-    usec_t update_every_ut = rch->collection.value.updateEvery() * USEC_PER_SEC;
+    usec_t update_every_ut = rch->collection.update_every_ut;
 
     if (unlikely(delta_ut != update_every_ut))
     {
