@@ -42,6 +42,25 @@ public:
         return Slots;
     }
 
+    inline uint32_t size() const {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage: {
+                return Value->storage_numbers_page().storage_numbers_size();
+            }
+            default:
+                return 0;
+        }
+    }
+
+    inline uint32_t duration() const {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
+                return updateEvery() * size();
+            default:
+                return 0;
+        }
+    }
+
     inline uint32_t updateEvery() const {
         switch (Value->Page_case()) {
             case rdbv::RdbValue::PageCase::kStorageNumbersPage:
