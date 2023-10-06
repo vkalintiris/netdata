@@ -12,6 +12,103 @@ using rocksdb::Status;
 using rocksdb::Iterator;
 using rocksdb::ReadOptions;
 
+using rdbv::RdbValue;
+using rdbv::StorageNumbersPage;
+
+/*===---------------------------------------------------------------------===*/
+/* ValueWrapper                                                                    */
+/*===---------------------------------------------------------------------===*/
+
+static const char *page_case_string(const RdbValue::PageCase &PC)
+{
+    switch (PC) {
+        case RdbValue::PageCase::kStorageNumbersPage:
+            return "StorageNumbersPage";
+        default:
+            return "UknownPage";
+    }
+}
+
+ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
+{
+    RdbValue *Value = pb::Arena::Create<rdbv::RdbValue>(Arena);
+
+    switch (PC)
+    {
+        case RdbValue::PageCase::kStorageNumbersPage:
+        {
+            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
+
+            // Make 1024 an SI constant;
+            SNP->mutable_storage_numbers()->Reserve(1024);
+            SNP->set_update_every(UpdateEvery);
+            break;
+        }
+        default:
+            fatal("Unknown page case: %s", page_case_string(PC));
+    }
+
+    ValueWrapper VW;
+    VW.Value = Value;
+    VW.Slots = Slots;
+    return VW;
+}
+
+inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
+                                      NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+                                      uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
+{
+    UNUSED(point_in_time_ut);
+    UNUSED(min_value);
+    UNUSED(max_value);
+    UNUSED(count);
+    UNUSED(anomaly_count);
+
+    switch (Value->Page_case())
+    {
+        case RdbValue::PageCase::kStorageNumbersPage:
+        {
+            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
+            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
+
+            storage_number *SN = SNs->AddAlreadyReserved();
+            *SN = pack_storage_number(n, flags);
+            Slots--;
+            break;
+        }
+        default:
+            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
+    }
+
+    return true;
+}
+
+const Slice ValueWrapper::flush(char *buffer, size_t n) const
+{
+    size_t nbytes = Value->ByteSizeLong();
+    Value->SerializeToArray(buffer, n);
+    return rocksdb::Slice(buffer, nbytes);
+}
+
+void ValueWrapper::reset(uint32_t Slots)
+{
+    switch (Value->Page_case())
+    {
+        case RdbValue::PageCase::kStorageNumbersPage:
+        {
+            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
+            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
+
+            SNs->Clear();
+            break;
+        }
+        default:
+            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
+    }
+
+    this->Slots = Slots;
+}
+
 /*===---------------------------------------------------------------------===*/
 /* Groups                                                                    */
 /*===---------------------------------------------------------------------===*/
@@ -259,99 +356,6 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
     {
         fatal("WTF?");
     }
-}
-
-using rdbv::RdbValue;
-using rdbv::StorageNumbersPage;
-
-static const char *page_case_string(const RdbValue::PageCase &PC)
-{
-    switch (PC) {
-        case RdbValue::PageCase::kStorageNumbersPage:
-            return "StorageNumbersPage";
-        default:
-            return "UknownPage";
-    }
-}
-
-ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
-{
-    RdbValue *Value = pb::Arena::Create<rdbv::RdbValue>(Arena);
-
-    switch (PC)
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-
-            // Make 1024 an SI constant;
-            SNP->mutable_storage_numbers()->Reserve(1024);
-            SNP->set_update_every(UpdateEvery);
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(PC));
-    }
-
-    ValueWrapper VW;
-    VW.Value = Value;
-    VW.Slots = Slots;
-    return VW;
-}
-
-inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                                      NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                                      uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
-{
-    UNUSED(point_in_time_ut);
-    UNUSED(min_value);
-    UNUSED(max_value);
-    UNUSED(count);
-    UNUSED(anomaly_count);
-
-    switch (Value->Page_case())
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-
-            storage_number *SN = SNs->AddAlreadyReserved();
-            *SN = pack_storage_number(n, flags);
-            Slots--;
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
-    }
-
-    return true;
-}
-
-const Slice ValueWrapper::flush(char *buffer, size_t n) const
-{
-    size_t nbytes = Value->ByteSizeLong();
-    Value->SerializeToArray(buffer, n);
-    return rocksdb::Slice(buffer, nbytes);
-}
-
-void ValueWrapper::reset(uint32_t Slots)
-{
-    switch (Value->Page_case())
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-
-            SNs->Clear();
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
-    }
-
-    this->Slots = Slots;
 }
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
