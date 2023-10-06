@@ -129,6 +129,15 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 /* Collection handles                                                        */
 /*===---------------------------------------------------------------------===*/
 
+static uint32_t rdb_store_metric_start_time(rdb_collect_handle *rch) {
+    if (!rch->collection.value.size())
+        return 0;
+
+    const ValueWrapper &VW = rch->collection.value;
+    uint32_t shift = VW.duration() - VW.updateEvery();
+    return (rch->collection.pit_ut / USEC_PER_SEC) - shift;
+}
+
 static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protect)
 {
     if (protect) {
@@ -137,13 +146,13 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
 
     uint32_t gid = rch->rmh->rmg->id;
     uint32_t mid = rch->rmh->id;
-    uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
+    uint32_t pit = rdb_store_metric_start_time(rch);
 
     char buf[12];
     rocksdb::Slice K = SI->keySlice(buf, gid, mid, pit);
 
     // TODO: the max size should be 4096 + 6 bytes. is there
-    // any performance difference if the bytes buffer has exact size?
+    // any performance difference if the bytes array has exact size?
     // ie. are we hitting hot vs. cold memory on serialization?
     std::array<char, 64 * 1024> bytes;
     const Slice V = rch->collection.value.flush(bytes.data(), bytes.size());
