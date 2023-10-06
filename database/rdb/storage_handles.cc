@@ -3,6 +3,7 @@
 #include "rdb.h"
 #include "si.h"
 #include <google/protobuf/arena.h>
+#include <limits>
 
 namespace pb = google::protobuf;
 
@@ -369,12 +370,6 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
 
-void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch)
-{
-    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
-    rdb_store_metric_flush_internal(rch, true);
-}
-
 void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
                            NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
@@ -401,6 +396,26 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
     rch->collection.value.appendPoint(point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
     rch->collection.pit_ut += update_every_ut;
     spinlock_unlock(&rch->collection.lock);
+}
+
+void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s)
+{
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+
+    spinlock_lock(&rch->collection.lock);
+
+    rdb_store_metric_flush_internal(rch, false);
+
+    rch->collection.update_every_ut = update_every_s * USEC_PER_SEC;
+    rch->collection.value.changeCollectionFrequency(update_every_s);
+
+    spinlock_unlock(&rch->collection.lock);
+}
+
+void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch)
+{
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+    rdb_store_metric_flush_internal(rch, true);
 }
 
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)

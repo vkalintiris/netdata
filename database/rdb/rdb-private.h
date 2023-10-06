@@ -51,6 +51,16 @@ public:
         }
     }
 
+    inline void changeCollectionFrequency(uint32_t updateEvery) {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
+                Value->mutable_storage_numbers_page()->set_update_every(updateEvery);
+                break;
+            default:
+                break;
+        }
+    }
+
     void reset(uint32_t Slots);
 
 private:

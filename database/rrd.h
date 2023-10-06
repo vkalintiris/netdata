@@ -594,11 +594,16 @@ static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *collecti
     return rrddim_collect_finalize(collection_handle);
 }
 
-// TODO: RDB
+void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 void rrdeng_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 void rrddim_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 static inline void storage_engine_store_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every) {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
+
+#ifdef ENABLE_RDB
+    if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_store_metric_change_collection_frequency(collection_handle, update_every);
+#endif
 
 #ifdef ENABLE_DBENGINE
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))
