@@ -14,8 +14,12 @@ extern "C" {
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid);
 STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *si);
 STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh);
+
 void rdb_metric_release(STORAGE_METRIC_HANDLE *smh);
 bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *db_instance, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s);
+
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh);
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh);
 
 /*
  * STORAGE_METRICS_GROUP
@@ -40,13 +44,17 @@ void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch);
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
 
 /*
- * query ops
+ * STORAGE_ENGINE_QUERY_HANDLE
+*/
+
+void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
+                          time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
+
+/*
+ * STORAGE_INSTANCE
 */
 
 time_t rdb_global_first_time_s(STORAGE_INSTANCE *si);
-
-time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh);
-time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh);
 
 uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si);
 

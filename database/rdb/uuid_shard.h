@@ -108,7 +108,6 @@ private:
     size_t shard(const uuid_t &uuid) {
         size_t h = std::hash<UUID>{}(UUID{ .inner = &uuid[0] });
         return h % maps.size();
-        return 10;
     }
 
 private:

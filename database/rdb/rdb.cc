@@ -1,6 +1,5 @@
 #include "database/rdb/rdb.h"
 #include "database/rrd.h"
-#include "libnetdata/log/log.h"
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
@@ -27,10 +26,10 @@ StorageInstance *SI = nullptr;
 std::atomic<size_t> num_pages_written = 0;
 
 // Function to get the RSS in bytes
-std::size_t getRSSBytes() {
+std::size_t getRSS() {
     struct rusage rusage;
     getrusage(RUSAGE_SELF, &rusage);
-    return rusage.ru_maxrss * 1024;  // ru_maxrss is in kilobytes
+    return rusage.ru_maxrss / 1024;  // ru_maxrss is in kilobytes
 }
 
 static std::vector<uint32_t> genRandVector(size_t n) {
@@ -119,7 +118,7 @@ static void gen_thread(size_t thread_id,
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);
     B->wait();
 
-    usec_t point_in_time = 0x9F013B63 * USEC_PER_SEC;
+    usec_t point_in_time = 0x00AB0000 * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
@@ -167,19 +166,20 @@ int rdb_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 16;
-    size_t num_groups = 500;
+    size_t num_threads = 8;
+    size_t num_groups = 5000;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 365 * 24 * 3600;
 
-    netdata_log_error("Test config: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
+    netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
+                      (num_threads * num_groups * num_dims_per_group) / 2500,
                       num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
 
     std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
 
     std::vector<std::thread> threads;
     {
-        netdata_log_error("Setting up metrics...");
+        netdata_log_error("Setting up metrics... (RSS: %zu MiB)", getRSS());
 
         Barrier Bar(num_threads + 1);
         B = &Bar;
@@ -194,7 +194,7 @@ int rdb_main(int argc, char *argv[])
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
-        netdata_log_error("Time to setup metrics: %.2lf seconds", seconds);
+        netdata_log_error("Time to setup metrics: %.2lf seconds (RSS: %zu MiB)", seconds, getRSS());
     }
 
     {
@@ -214,8 +214,8 @@ int rdb_main(int argc, char *argv[])
 
             double capacity = points_per_sec / 2500.0;
 
-            netdata_log_error("pages/sec: %.2lf, points/sec: %.2lf, mib/sec: %.2lf, capacity: %.2lf",
-                              pages_per_second, points_per_sec, mib_per_sec, capacity);
+            netdata_log_error("pages/sec: %.1lf, points/sec: %.1lf, mib/sec: %.1lf, capacity: %.1lf (RSS: %zu MiB)",
+                              pages_per_second, points_per_sec, mib_per_sec, capacity, getRSS());
 
             SI->RDB->Flush(rocksdb::FlushOptions());
         }

@@ -15,6 +15,9 @@ using rocksdb::ReadOptions;
 using rdbv::RdbValue;
 using rdbv::StorageNumbersPage;
 
+static uint32_t rdb_store_metric_start_time(rdb_collect_handle *rch);
+static uint32_t rdb_store_metric_end_time(rdb_collect_handle *rch);
+
 /*===---------------------------------------------------------------------===*/
 /* ValueWrapper                                                                    */
 /*===---------------------------------------------------------------------===*/
@@ -180,12 +183,11 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 {
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
-    char scratch[12];
-
     uint32_t gid = rmh->rmg->id;
     uint32_t mid = rmh->id;
     uint32_t pit = 0;
 
+    char scratch[12];
     const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
 
     Iterator *It = SI->RDB->NewIterator(ReadOptions());
@@ -196,30 +198,52 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
         return pit;
     }
 
-    return 0;
+    // FIXME: maybe it's rmh that needs the spinlock for rch
+    rdb_collect_handle *rch = rmh->rch;
+    if (!rch)
+        return 0;
+
+    spinlock_lock(&rch->collection.lock);
+    uint32_t start_time = rdb_store_metric_start_time(rch);
+    spinlock_unlock(&rch->collection.lock);
+
+    return start_time;
 }
 
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 {
+    uint32_t end_time = 0;
+
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
-    char scratch[12];
-
-    uint32_t gid = rmh->rmg->id;
-    uint32_t mid = rmh->id + 1;
-    uint32_t pit = 0;
-
-    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
-
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
-    for (It->SeekForPrev(StartK); It->Valid(); It->Next()) {
-        const Slice &K = It->key();
-
-        SI->parseKey(K, gid, mid, pit);
-        return pit;
+    rdb_collect_handle *rch = rmh->rch;
+    if (rch) {
+        spinlock_lock(&rch->collection.lock);
+        end_time = rdb_store_metric_end_time(rch);
+        spinlock_unlock(&rch->collection.lock);
     }
 
-    return 0;
+    if (!end_time)
+    {
+        char scratch[12];
+
+        uint32_t gid = rmh->rmg->id;
+        uint32_t mid = rmh->id + 1;
+        uint32_t pit = 0;
+
+        const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
+
+        Iterator *It = SI->RDB->NewIterator(ReadOptions());
+        for (It->SeekForPrev(StartK); It->Valid(); It->Next()) {
+            const Slice &K = It->key();
+
+            SI->parseKey(K, gid, mid, pit);
+            end_time = pit;
+            break;
+        }
+    }
+
+    return end_time;
 }
 
 /*===---------------------------------------------------------------------===*/
@@ -233,6 +257,13 @@ static uint32_t rdb_store_metric_start_time(rdb_collect_handle *rch) {
     const ValueWrapper &VW = rch->collection.value;
     uint32_t shift = VW.duration() - VW.updateEvery();
     return (rch->collection.pit_ut / USEC_PER_SEC) - shift;
+}
+
+static uint32_t rdb_store_metric_end_time(rdb_collect_handle *rch) {
+    if (!rch->collection.value.size())
+        return 0;
+
+    return rch->collection.pit_ut / USEC_PER_SEC;
 }
 
 static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protect)
@@ -380,6 +411,9 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     rch->collection.update_every_ut = update_every * USEC_PER_SEC;
     rch->collection.value = ValueWrapper::create(RdbValue::PageCase::kStorageNumbersPage, rmg->arena, initial_slots, update_every);
 
+    // link collection handle to its metric
+    rmh->rch = rch;
+
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
 
@@ -436,6 +470,45 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     delete rch;
     return 0;
+}
+
+/*===---------------------------------------------------------------------===*/
+/* Query ops                                                                 */
+/*===---------------------------------------------------------------------===*/
+
+struct rdb_query_handle
+{
+    rdb_metric_handle *rmh;
+
+    std::optional<ValueWrapper> VW;
+    uint32_t now_s;
+};
+
+void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
+                          time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority)
+{
+    time_t db_start_time_s = rdb_metric_oldest_time(smh);
+    time_t db_end_time_s = rdb_metric_latest_time(smh);
+
+    seqh->start_time_s = std::max(db_start_time_s, start_time_s);
+    seqh->end_time_s = std::min(db_end_time_s, end_time_s);
+    seqh->backend = STORAGE_ENGINE_BACKEND_RDB;
+    seqh->priority = priority;
+
+    rdb_query_handle *rqh = new rdb_query_handle();
+    rqh->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
+
+    seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
+}
+
+static void rdb_load_metric_next_value(rdb_query_handle *rqh)
+{
+    if (rqh->now_s >= rdb_store_metric_start_time(rqh->rmh->rch)) {
+
+    }
+
+    if (!rqh->VW.has_value()) {
+    }
 }
 
 /*===---------------------------------------------------------------------===*/
