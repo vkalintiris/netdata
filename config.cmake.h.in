@@ -43,6 +43,7 @@
 #cmakedefine ENABLE_DBENGINE
 #cmakedefine ENABLE_RDB
 #cmakedefine ENABLE_BENCHMARKS
+#cmakedefine ENABLE_TESTS
 #cmakedefine ENABLE_HTTPS
 #cmakedefine ENABLE_LZ4
 #cmakedefine STORAGE_WITH_MATH

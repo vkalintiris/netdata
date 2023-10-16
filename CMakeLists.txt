@@ -83,6 +83,7 @@ option(ENABLE_DBENGINE "enable dbengine" True)
 option(ENABLE_RDB "enable rdb" True)
 
 option(ENABLE_BENCHMARKS "enable benchmarks" True)
+option(ENABLE_TESTS "enable tests" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
 option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
@@ -1469,6 +1470,10 @@ if(ENABLE_BENCHMARKS)
         pkg_check_modules(BENCHMARK REQUIRED benchmark)
 endif()
 
+if(ENABLE_TESTS)
+        pkg_check_modules(GTEST REQUIRED gtest)
+endif()
+
 if(ENABLE_RDB)
         pkg_check_modules(ROCKSDB REQUIRED rocksdb)
 
@@ -1480,6 +1485,10 @@ if(ENABLE_RDB)
 
         list(APPEND NETDATA_FILES ${RDB_PROTO_BUILT_SRCS}
                                   ${RDB_PROTO_BUILT_HDRS})
+
+        if(ENABLE_TESTS)
+                list(APPEND NETDATA_FILES "database/rdb/rdb_tests.cc")
+        endif()
 endif()
 
 add_executable(netdata
@@ -1492,6 +1501,7 @@ add_executable(netdata
 
 target_compile_options(netdata PRIVATE
         "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_CFLAGS}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_CFLAGS_OTHER}>"
 )
 
 target_compile_definitions(netdata PRIVATE
@@ -1511,6 +1521,7 @@ target_include_directories(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_INCLUDE_DIRS}>"
 )
 
@@ -1523,6 +1534,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_LIBRARIES}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
         "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS};-lzstd;-lbz2>"

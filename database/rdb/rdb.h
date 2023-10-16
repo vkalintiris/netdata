@@ -62,6 +62,10 @@ uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si);
 int rdb_main(int argc, char *argv[]);
 #endif
 
+#ifdef ENABLE_TESTS
+int rdb_tests_main(int argc, char *argv[]);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
