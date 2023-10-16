@@ -525,12 +525,21 @@ static void rdb_load_metric_next_page(rdb_query_handle *rqh)
     }
 }
 
-static void rdb_load_metric_next_value(rdb_query_handle *rqh)
+void rdb_load_metric_next_value(rdb_query_handle *rqh)
 {
     /* Find the proper value wrapper */
     if (!rqh->P.has_value()) {
         rdb_load_metric_next_page(rqh);
     }
+}
+
+STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh) {
+    rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
+    rdb_load_metric_next_page(rqh);
+
+    STORAGE_POINT sp;
+    storage_point_empty(sp, 10, 10);
+    return sp;
 }
 
 /*===---------------------------------------------------------------------===*/

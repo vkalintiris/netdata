@@ -50,6 +50,8 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
                           time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
 
+STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh);
+
 /*
  * STORAGE_INSTANCE
 */

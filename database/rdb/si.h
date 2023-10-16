@@ -36,8 +36,6 @@ public:
         RDB->Flush(FO);
         RDB->SyncWAL();
 
-        rdb_disk_space_used(nullptr);
-
         RDB->Close();
         delete RDB;
         RDB = nullptr;
