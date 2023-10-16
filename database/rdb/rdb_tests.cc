@@ -72,7 +72,7 @@ TEST(rdb, SomeTest) {
     STORAGE_METRICS_GROUP *smg = rdb_metrics_group_get(si, &group_uuid);
     EXPECT_NE(smg, nullptr);
 
-    usec_t update_every = 1 * USEC_PER_SEC;
+    usec_t update_every = 5 * USEC_PER_SEC;
     STORAGE_COLLECT_HANDLE *sch = rdb_store_metric_init(smh, update_every / USEC_PER_SEC, smg);
     EXPECT_NE(sch, nullptr);
 
@@ -80,11 +80,28 @@ TEST(rdb, SomeTest) {
     usec_t after = 3600 * USEC_PER_SEC;
     usec_t before = after + N * update_every;
 
+    netdata_log_error("Filling %zu elements in page with ue=%zu, after=%zu and before=%zu",
+                      N,
+                      update_every / USEC_PER_SEC,
+                      after / USEC_PER_SEC,
+                      before / USEC_PER_SEC);
+    netdata_log_error("");
+
     for (usec_t i = 0; i != N; i++)
-        rdb_store_metric_next(sch, after + i * update_every, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+    {
+        usec_t pit = after + i * update_every;
+        rdb_store_metric_next(sch, pit, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+
+        netdata_log_error("page size: %zu",
+                          reinterpret_cast<rdb_collect_handle *>(sch)->collection.value.size());
+        netdata_log_error("sch[%zu] = %zu", pit / USEC_PER_SEC, i);
+        netdata_log_error("");
+    }
 
     struct storage_engine_query_handle seqh;
     rdb_load_metric_init(smh, &seqh, after / USEC_PER_SEC, before / USEC_PER_SEC, STORAGE_PRIORITY_NORMAL);
+
+    storage_engine_query_next_metric(&seqh);
 
     storage_instance_delete();
     temp_dir_delete(TmpDir);

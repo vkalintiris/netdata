@@ -16,8 +16,8 @@ using rocksdb::ReadOptions;
 using rdbv::RdbValue;
 using rdbv::StorageNumbersPage;
 
-static uint32_t rdb_store_metric_start_time(rdb_collect_handle *rch);
-static uint32_t rdb_store_metric_end_time(rdb_collect_handle *rch);
+static inline uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch);
+static inline uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch);
 
 /*===---------------------------------------------------------------------===*/
 /* ValueWrapper                                                                    */
@@ -75,8 +75,7 @@ inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
             StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
             pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
 
-            storage_number *SN = SNs->AddAlreadyReserved();
-            *SN = pack_storage_number(n, flags);
+            SNs->AddAlreadyReserved(pack_storage_number(n, flags));
             Slots--;
             break;
         }
@@ -202,7 +201,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     // FIXME: maybe it's rmh that needs the spinlock for rch
     rdb_collect_handle *rch = rmh->rch;
     if (!rch)
-        return 0;
+        return std::numeric_limits<uint32_t>::max();
 
     spinlock_lock(&rch->collection.lock);
     uint32_t start_time = rdb_store_metric_start_time(rch);
@@ -213,7 +212,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 {
-    uint32_t end_time = 0;
+    uint32_t end_time = std::numeric_limits<uint32_t>::min();
 
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
@@ -224,7 +223,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
         spinlock_unlock(&rch->collection.lock);
     }
 
-    if (!end_time)
+    if (end_time == std::numeric_limits<uint32_t>::min())
     {
         char scratch[12];
 
@@ -251,20 +250,20 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 /* Collection handles                                                        */
 /*===---------------------------------------------------------------------===*/
 
-static uint32_t rdb_store_metric_start_time(rdb_collect_handle *rch) {
-    if (!rch->collection.value.size())
-        return 0;
+static uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch) {
+    if (!rch->collection.pit_ut)
+        return std::numeric_limits<uint32_t>::max();
 
-    const ValueWrapper &VW = rch->collection.value;
-    uint32_t shift = VW.duration() - VW.updateEvery();
-    return (rch->collection.pit_ut / USEC_PER_SEC) - shift;
+    uint32_t ue = rch->collection.update_every_ut / USEC_PER_SEC;
+    uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
+    return pit - rch->collection.value.duration() + ue;
 }
 
-static uint32_t rdb_store_metric_end_time(rdb_collect_handle *rch) {
-    if (!rch->collection.value.size())
-        return 0;
+static uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch) {
+    if (!rch->collection.pit_ut)
+        return std::numeric_limits<uint32_t>::min();
 
-    return rch->collection.pit_ut / USEC_PER_SEC;
+    return (rch->collection.pit_ut + rch->collection.update_every_ut) / USEC_PER_SEC;
 }
 
 static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protect)
@@ -276,6 +275,10 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     uint32_t gid = rch->rmh->rmg->id;
     uint32_t mid = rch->rmh->id;
     uint32_t pit = rdb_store_metric_start_time(rch);
+
+    internal_fatal(pit == 0 ||
+                   pit == std::numeric_limits<uint32_t>::max(),
+                   "Invalid start time: %u", pit);
 
     char buf[12];
     rocksdb::Slice K = SI->keySlice(buf, gid, mid, pit);
@@ -313,11 +316,9 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
     // this might be the first time we are saving something in the collection handle.
     if (rch->collection.pit_ut == 0)
     {
-        rch->collection.pit_ut = point_in_time_ut - update_every_ut;
-
-        // try again
+        rch->collection.value.appendPoint(point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
+        rch->collection.pit_ut = point_in_time_ut;
         spinlock_unlock(&rch->collection.lock);
-        rdb_store_metric_next(sch, point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
         return;
     }
 
@@ -474,6 +475,51 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 }
 
 /*===---------------------------------------------------------------------===*/
+/* Serialized iterator                                                       */
+/*===---------------------------------------------------------------------===*/
+
+class FlushedPageIterator {
+public:
+    FlushedPageIterator(uint32_t gid, uint32_t mid, uint32_t after_s, uint32_t before_s)
+    {
+        start_key = SI->keySlice(scratch[0], gid, mid, after_s);
+        end_key = SI->keySlice(scratch[1], gid, mid, before_s);
+
+        it = SI->RDB->NewIterator(ReadOptions());
+        it->SeekForPrev(start_key);
+    }
+
+    Slice nextPage()
+    {
+        if (!it->Valid())
+            return nullptr;
+
+        if (it->key().compare(end_key) > 0)
+        {
+            it->Next();
+            return it->value();
+        }
+
+        return nullptr;
+    }
+
+    bool isFinished() const
+    {
+        if (!it->Valid())
+            return true;
+
+        it->Next();
+    }
+
+private:
+    Iterator *it;
+
+    char scratch[2][12];
+    Slice start_key;
+    Slice end_key;
+}
+
+/*===---------------------------------------------------------------------===*/
 /* Query ops                                                                 */
 /*===---------------------------------------------------------------------===*/
 
@@ -512,16 +558,35 @@ static void rdb_load_metric_next_page(rdb_query_handle *rqh)
     {
         spinlock_lock(&rch->collection.lock);
 
-        // find the start time of the current collection handle
-        uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
-        uint32_t duration = rch->collection.value.duration();
-        uint32_t start_time_s = pit - duration;
-
+        uint32_t start_time_s = rdb_store_metric_start_time(rch);
         if (rqh->now_s >= start_time_s)
         {
-            rqh->P = rch->collection.value.getPage(&rqh->Arena, pit);
+            rqh->P = rch->collection.value.getPage(&rqh->Arena, start_time_s);
+        } else {
+            rqh->P.reset();
         }
+
         spinlock_unlock(&rch->collection.lock);
+    }
+
+    if (rqh->P.has_value())
+        return;
+
+    char scratch[12];
+
+    uint32_t gid = rqh->rmh->rmg->id;
+    uint32_t mid = rqh->rmh->id;
+    uint32_t pit = rqh->now_s;
+
+    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
+
+    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    for (It->SeekForPrev(StartK); It->Valid(); It->Next())
+    {
+        const Slice &K = It->key();
+
+        SI->parseKey(K, gid, mid, pit);
+        break;
     }
 }
 

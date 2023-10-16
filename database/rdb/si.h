@@ -41,7 +41,7 @@ public:
         RDB = nullptr;
     }
 
-    inline const Slice keySlice(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit)
+    inline const Slice keySlice(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit) const
     {
         memcpy(&scratch[0 * sizeof(uint32_t)], &gid, sizeof(uint32_t));
         memcpy(&scratch[1 * sizeof(uint32_t)], &mid, sizeof(uint32_t));

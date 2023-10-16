@@ -30,27 +30,24 @@ struct rdb_metric_handle
 
 class Page {
 public:
-    Page(uint32_t PIT, const rdbv::RdbValue *Value) :
-        PIT(PIT), Value(Value), After(0), Before(0)
+    Page(uint32_t StartTime, const rdbv::RdbValue *Value) :
+        StartTime(StartTime), Value(Value) { }
+
+    storage_number get(uint32_t Pos)
     {
         const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
-        uint32_t Duration = SNP.update_every() * SNP.storage_numbers_size();
-
-        Before = PIT;
-        After = Before - Duration;
+        return SNP.storage_numbers().Get(Pos);
     }
 
-    storage_number get(uint32_t Time) {
+    uint32_t size()
+    {
         const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
-        uint32_t Index = (Time - After) / SNP.update_every();
-        return SNP.storage_numbers().Get(Index);
+        return SNP.storage_numbers().size();
     }
 
 private:
-    uint32_t PIT;
+    uint32_t StartTime;
     const rdbv::RdbValue *Value;
-    uint32_t After;
-    uint32_t Before;
 };
 
 class ValueWrapper
@@ -106,11 +103,11 @@ public:
         }
     }
 
-    Page getPage(google::protobuf::Arena *Arena, uint32_t PIT) {
+    Page getPage(google::protobuf::Arena *Arena, uint32_t StartTime) {
         rdbv::RdbValue *V = google::protobuf::Arena::CreateMessage<rdbv::RdbValue>(Arena);
 
         V->CopyFrom(*Value);
-        return Page(PIT - updateEvery(), V);
+        return Page(StartTime, V);
     }
 
     void reset(uint32_t Slots);
