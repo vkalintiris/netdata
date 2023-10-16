@@ -504,27 +504,32 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_quer
     seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
 }
 
+static void rdb_load_metric_next_page(rdb_query_handle *rqh)
+{
+    // check the collection handle first
+    rdb_collect_handle *rch = rqh->rmh->rch;
+    if (rch)
+    {
+        spinlock_lock(&rch->collection.lock);
+
+        // find the start time of the current collection handle
+        uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
+        uint32_t duration = rch->collection.value.duration();
+        uint32_t start_time_s = pit - duration;
+
+        if (rqh->now_s >= start_time_s)
+        {
+            rqh->P = rch->collection.value.getPage(&rqh->Arena, pit);
+        }
+        spinlock_unlock(&rch->collection.lock);
+    }
+}
+
 static void rdb_load_metric_next_value(rdb_query_handle *rqh)
 {
     /* Find the proper value wrapper */
-    if (!rqh->VW.has_value())
-    {
-        // check the collection handle first
-        rdb_collect_handle *rch = rqh->rmh->rch;
-        if (rch)
-        {
-            spinlock_lock(&rch->collection.lock);
-            time_t pit = rch->collection.pit_ut / USEC_PER_SEC;
-            time_t duration = rch->collection.value.duration();
-
-            time_t start_time_s = pit - duration;
-            if (rqh->now_s >= start_time_s)
-            {
-                rqh->P = Page::create(&rqh->Arena, rch->collection.value, rch->collection.pit_ut, rch->collection.update_every_ut);
-            }
-            spinlock_unlock(&rch->collection.lock);
-        }
-        
+    if (!rqh->P.has_value()) {
+        rdb_load_metric_next_page(rqh);
     }
 }
 

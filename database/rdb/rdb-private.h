@@ -30,11 +30,27 @@ struct rdb_metric_handle
 
 class Page {
 public:
-    Page(uint32_t PIT, rdbv::RdbValue *Value) : PIT(PIT), Value(Value) {}
+    Page(uint32_t PIT, const rdbv::RdbValue *Value) :
+        PIT(PIT), Value(Value), After(0), Before(0)
+    {
+        const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
+        uint32_t Duration = SNP.update_every() * SNP.storage_numbers_size();
+
+        Before = PIT;
+        After = Before - Duration;
+    }
+
+    storage_number get(uint32_t Time) {
+        const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
+        uint32_t Index = (Time - After) / SNP.update_every();
+        return SNP.storage_numbers().Get(Index);
+    }
 
 private:
     uint32_t PIT;
-    rdbv::RdbValue *Value;
+    const rdbv::RdbValue *Value;
+    uint32_t After;
+    uint32_t Before;
 };
 
 class ValueWrapper
