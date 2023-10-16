@@ -5,6 +5,7 @@
 #include "barrier.h"
 #include "protos/rdbv.pb.h"
 
+#include <google/protobuf/arena.h>
 #include <rocksdb/db.h>
 
 struct rdb_collect_handle;
@@ -25,6 +26,15 @@ struct rdb_metric_handle
 
     rdb_metrics_group *rmg;
     rdb_collect_handle *rch;
+};
+
+class Page {
+public:
+    Page(uint32_t PIT, rdbv::RdbValue *Value) : PIT(PIT), Value(Value) {}
+
+private:
+    uint32_t PIT;
+    rdbv::RdbValue *Value;
 };
 
 class ValueWrapper
@@ -80,11 +90,17 @@ public:
         }
     }
 
+    Page getPage(google::protobuf::Arena *Arena, uint32_t PIT) {
+        rdbv::RdbValue *V = google::protobuf::Arena::CreateMessage<rdbv::RdbValue>(Arena);
+
+        V->CopyFrom(*Value);
+        return Page(PIT - updateEvery(), V);
+    }
+
     void reset(uint32_t Slots);
 
 private:
     rdbv::RdbValue *Value;
-    rdbv::RdbValue::PageCase PC;
     uint32_t Slots;
 };
 

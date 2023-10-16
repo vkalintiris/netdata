@@ -1,5 +1,6 @@
 #include "database/rdb/protos/rdbv.pb.h"
 #include "database/rdb/rdb-private.h"
+#include "libnetdata/locks/locks.h"
 #include "rdb.h"
 #include "si.h"
 #include <google/protobuf/arena.h>
@@ -34,7 +35,7 @@ static const char *page_case_string(const RdbValue::PageCase &PC)
 
 ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
 {
-    RdbValue *Value = pb::Arena::Create<rdbv::RdbValue>(Arena);
+    RdbValue *Value = pb::Arena::CreateMessage<rdbv::RdbValue>(Arena);
 
     switch (PC)
     {
@@ -479,9 +480,10 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 struct rdb_query_handle
 {
     rdb_metric_handle *rmh;
-
-    std::optional<ValueWrapper> VW;
     uint32_t now_s;
+
+    pb::Arena Arena;
+    std::optional<Page> P;
 };
 
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
@@ -497,17 +499,32 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_quer
 
     rdb_query_handle *rqh = new rdb_query_handle();
     rqh->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
+    rqh->now_s = seqh->start_time_s;
 
     seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
 }
 
 static void rdb_load_metric_next_value(rdb_query_handle *rqh)
 {
-    if (rqh->now_s >= rdb_store_metric_start_time(rqh->rmh->rch)) {
+    /* Find the proper value wrapper */
+    if (!rqh->VW.has_value())
+    {
+        // check the collection handle first
+        rdb_collect_handle *rch = rqh->rmh->rch;
+        if (rch)
+        {
+            spinlock_lock(&rch->collection.lock);
+            time_t pit = rch->collection.pit_ut / USEC_PER_SEC;
+            time_t duration = rch->collection.value.duration();
 
-    }
-
-    if (!rqh->VW.has_value()) {
+            time_t start_time_s = pit - duration;
+            if (rqh->now_s >= start_time_s)
+            {
+                rqh->P = Page::create(&rqh->Arena, rch->collection.value, rch->collection.pit_ut, rch->collection.update_every_ut);
+            }
+            spinlock_unlock(&rch->collection.lock);
+        }
+        
     }
 }
 
