@@ -28,28 +28,6 @@ struct rdb_metric_handle
     rdb_collect_handle *rch;
 };
 
-class Page {
-public:
-    Page(uint32_t StartTime, const rdbv::RdbValue *Value) :
-        StartTime(StartTime), Value(Value) { }
-
-    storage_number get(uint32_t Pos)
-    {
-        const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
-        return SNP.storage_numbers().Get(Pos);
-    }
-
-    uint32_t size()
-    {
-        const rdbv::StorageNumbersPage &SNP = Value->storage_numbers_page();
-        return SNP.storage_numbers().size();
-    }
-
-private:
-    uint32_t StartTime;
-    const rdbv::RdbValue *Value;
-};
-
 class ValueWrapper
 {
 public:
@@ -101,13 +79,6 @@ public:
             default:
                 break;
         }
-    }
-
-    Page getPage(google::protobuf::Arena *Arena, uint32_t StartTime) {
-        rdbv::RdbValue *V = google::protobuf::Arena::CreateMessage<rdbv::RdbValue>(Arena);
-
-        V->CopyFrom(*Value);
-        return Page(StartTime, V);
     }
 
     void reset(uint32_t Slots);

@@ -466,51 +466,6 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 }
 
 /*===---------------------------------------------------------------------===*/
-/* Serialized iterator                                                       */
-/*===---------------------------------------------------------------------===*/
-
-class FlushedPageIterator
-{
-public:
-    FlushedPageIterator(uint32_t gid, uint32_t mid, uint32_t after_s, uint32_t before_s)
-        : start_key(gid, mid, after_s),
-          end_key(gid, mid, before_s),
-          it(SI->RDB->NewIterator(ReadOptions()))
-    {
-        it->SeekForPrev(start_key.slice());
-    }
-
-    Slice nextPage()
-    {
-        if (!it->Valid())
-            return nullptr;
-
-        if (it->key().compare(end_key.slice()) > 0)
-        {
-            it->Next();
-            return it->value();
-        }
-
-        return nullptr;
-    }
-
-    bool isFinished() const
-    {
-        if (!it->Valid())
-            return true;
-
-        it->Next();
-
-        return false;
-    }
-
-private:
-    rdb::Key start_key;
-    rdb::Key end_key;
-    Iterator *it;
-};
-
-/*===---------------------------------------------------------------------===*/
 /* Query ops                                                                 */
 /*===---------------------------------------------------------------------===*/
 
@@ -536,32 +491,6 @@ static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
     return keys;
 }
 
-struct rdb_offline_query_handle {
-    Slice Key;
-    std::optional<Page> P;
-
-    uint32_t now;
-    uint32_t after;
-    uint32_t before;
-};
-
-static rdb_offline_query_handle
-rdb_offline_query_handle_init(const Slice &K, uint32_t after, uint32_t before)
-{
-    rdb_offline_query_handle roqh;
-
-    roqh.Key = K;
-    roqh.P.reset();
-    roqh.now = after;
-    roqh.after = after;
-    roqh.before = before;
-    return roqh;
-}
-
-STORAGE_POINT rdb_offline_query_handle_next(rdb_offline_query_handle &roqh)
-{
-}
-
 struct rdb_query_handle
 {
     rdb_metric_handle *rmh;
@@ -572,8 +501,6 @@ struct rdb_query_handle
 
     pb::Arena Arena;
     pb::RepeatedField<std::array<char, 12>> *keys;
-
-    std::optional<Page> P;
 };
 
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
@@ -602,6 +529,10 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
 
 static bool rdb_load_metric_next_page(rdb_query_handle *rqh, uint32_t after, uint32_t before)
 {
+    UNUSED(rqh);
+    UNUSED(after);
+    UNUSED(before);
+
     // // check the collection handle first
     // rdb_collect_handle *rch = rqh->rmh->rch;
     // if (rch)

@@ -1,6 +1,7 @@
 #ifndef RDB_SI_H
 #define RDB_SI_H
 
+#include "database/rdb/protos/rdbv.pb.h"
 #include "rdb-private.h"
 #include "uuid_shard.h"
 #include <iterator>
@@ -13,6 +14,8 @@ namespace rocksdb
 using rocksdb::Slice;
 
 namespace rdb {
+
+using Value = rdbv::RdbValue;
 
 namespace pb = google::protobuf;
 
@@ -102,15 +105,15 @@ private:
 
 enum class PageType : uint8_t
 {
-    StorageNumbersPage = rdbv::RdbValue::PageCase::kStorageNumbersPage,
+    StorageNumbersPage = Value::PageCase::kStorageNumbersPage,
 };
 
-class ImmutablePage
+class Page
 {
 public:
-    class ImmutablePageIterator
+    class PageIterator
     {
-        friend class ImmutablePage;
+        friend class Page;
 
     public:
         using iterator_category = std::random_access_iterator_tag;
@@ -120,24 +123,24 @@ public:
         using reference         = value_type&;
 
     private:
-        ImmutablePageIterator(const ImmutablePage *IP, const uint32_t PIT, const uint32_t Pos)
+        PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
             : IP(IP), PIT(PIT), Pos(Pos) { }
 
     public:
-        static ImmutablePageIterator create(const ImmutablePage *IP,
+        static PageIterator create(const Page *IP,
                                             uint32_t Pos,
                                             uint32_t PIT)
         {
-            return ImmutablePageIterator(IP, Pos, PIT);
+            return PageIterator(IP, Pos, PIT);
         }
 
-        bool operator==(const ImmutablePageIterator& Other) const
+        bool operator==(const PageIterator& Other) const
         {
             // We intentionaly ignore PIT to simplify the begin()/end() API.
             return (IP == Other.IP) && (Pos == Other.Pos);
         }
 
-        bool operator!=(const ImmutablePageIterator& Other) const
+        bool operator!=(const PageIterator& Other) const
         {
                 return !(*this == Other);
         }
@@ -147,52 +150,52 @@ public:
             return IP->get(Pos, PIT);
         }
 
-        inline ImmutablePageIterator& operator++()
+        inline PageIterator& operator++()
         {
             ++Pos;
             return *this;
         }
 
-        inline ImmutablePageIterator& operator--() {
+        inline PageIterator& operator--() {
             --Pos;
             return *this;
         }
 
-        inline ImmutablePageIterator operator++(int)
+        inline PageIterator operator++(int)
         {
-            ImmutablePageIterator It = *this;
+            PageIterator It = *this;
             ++(*this);
             return It;
         }
 
-        inline ImmutablePageIterator operator--(int)
+        inline PageIterator operator--(int)
         {
-            ImmutablePageIterator It = *this;
+            PageIterator It = *this;
             --(*this);
             return It;
         }
 
-        inline ImmutablePageIterator operator+(int N) const
+        inline PageIterator operator+(int N) const
         {
-            ImmutablePageIterator It = *this;
+            PageIterator It = *this;
             It.Pos += N;
             return It;
         }
 
-        inline ImmutablePageIterator operator-(int N) const
+        inline PageIterator operator-(int N) const
         {
-            ImmutablePageIterator It = *this;
+            PageIterator It = *this;
             It.Pos -= N;
             return It;
         }
 
-        inline ImmutablePageIterator& operator+=(int N)
+        inline PageIterator& operator+=(int N)
         {
             Pos += N;
             return *this;
         }
 
-        inline ImmutablePageIterator& operator-=(int N)
+        inline PageIterator& operator-=(int N)
         {
             Pos -= N;
             return *this;
@@ -203,39 +206,39 @@ public:
             return IP->get(Pos + N, PIT);
         }
 
-        inline bool operator<(const ImmutablePageIterator& Other) const
+        inline bool operator<(const PageIterator& Other) const
         {
             return Pos < Other.Pos;
         }
 
-        inline bool operator>(const ImmutablePageIterator& Other) const
+        inline bool operator>(const PageIterator& Other) const
         {
             return Pos > Other.Pos;
         }
 
-        inline bool operator<=(const ImmutablePageIterator& Other) const
+        inline bool operator<=(const PageIterator& Other) const
         {
             return Pos <= Other.Pos;
         }
 
-        inline bool operator>=(const ImmutablePageIterator& Other) const
+        inline bool operator>=(const PageIterator& Other) const
         {
             return Pos >= Other.Pos;
         }
 
-        inline int operator-(const ImmutablePageIterator& Other) const
+        inline int operator-(const PageIterator& Other) const
         {
             return Pos - Other.Pos;
         }
 
     private:
-        const ImmutablePage *IP;
+        const Page *IP;
         const uint32_t PIT;
         uint32_t Pos;
     };
 
 public:
-    ImmutablePage(const rdbv::RdbValue *V) : V(V) { }
+    Page(const Value *V) : V(V) { }
 
     inline PageType pageType() const
     {
@@ -303,18 +306,18 @@ public:
         }
     }
 
-    inline ImmutablePageIterator begin(uint32_t PIT = 0) const
+    inline PageIterator begin(uint32_t PIT = 0) const
     {
-        return ImmutablePageIterator(this, PIT, 0);
+        return PageIterator(this, PIT, 0);
     }
 
-    inline ImmutablePageIterator end() const
+    inline PageIterator end() const
     {
-        return ImmutablePageIterator(this, 0, size());
+        return PageIterator(this, 0, size());
     }
 
 private:
-    const rdbv::RdbValue *V;
+    const Value *V;
 };
 
 } // namespace rdb

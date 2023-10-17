@@ -52,7 +52,7 @@ TEST(rdb, ImmutablePage)
         *snp = sn;
     }
 
-    rdb::ImmutablePage IP(&V);
+    rdb::Page IP(&V);
 
     uint32_t PIT = 3600;
     size_t i = 0;
