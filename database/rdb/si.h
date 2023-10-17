@@ -109,6 +109,8 @@ class ImmutablePage
 public:
     class ImmutablePageIterator
     {
+        friend class ImmutablePage;
+
     public:
         using iterator_category = std::forward_iterator_tag;
         using difference_type   = std::ptrdiff_t;
@@ -116,15 +118,22 @@ public:
         using pointer           = value_type*;
         using reference         = value_type&;
 
-        ImmutablePageIterator(const ImmutablePage *IP)
-            : IP(IP), Position(0) { }
+    private:
+        ImmutablePageIterator(const ImmutablePage *IP, const uint32_t PIT, const uint32_t Pos)
+            : IP(IP), PIT(PIT), Pos(Pos) { }
 
-        ImmutablePageIterator(const ImmutablePage *IP, uint32_t Position)
-            : IP(IP), Position(Position) { }
+    public:
+        static ImmutablePageIterator create(const ImmutablePage *IP,
+                                            uint32_t Pos,
+                                            uint32_t PIT)
+        {
+            return ImmutablePageIterator(IP, Pos, PIT);
+        }
 
         bool operator==(const ImmutablePageIterator& Other) const
         {
-            return (IP == Other.IP) && (Position == Other.Position);
+            // We intentionaly ignore PIT to simplify the begin()/end() API.
+            return (IP == Other.IP) && (Pos == Other.Pos);
         }
 
         bool operator!=(const ImmutablePageIterator& Other) const
@@ -134,17 +143,17 @@ public:
 
         inline value_type operator*() const
         {
-            return IP->get(Position);
+            return IP->get(Pos, PIT);
         }
 
         inline ImmutablePageIterator& operator++()
         {
-            ++Position;
+            ++Pos;
             return *this;
         }
 
         inline ImmutablePageIterator& operator--() {
-            --Position;
+            --Pos;
             return *this;
         }
 
@@ -164,7 +173,8 @@ public:
 
     private:
         const ImmutablePage *IP;
-        uint32_t Position;
+        const uint32_t PIT;
+        uint32_t Pos;
     };
 
 public:
@@ -194,21 +204,28 @@ public:
         }
     }
 
-    inline const STORAGE_POINT get(uint32_t index) const
+    inline const STORAGE_POINT get(uint32_t Pos, uint32_t PIT) const
     {
-        switch (pageType()) {
+        switch (pageType())
+        {
             case PageType::StorageNumbersPage:
             {
                 auto &SNP = V->storage_numbers_page();
                 assert(index < SNP.storage_numbers_size());
-                storage_number SN = SNP.storage_numbers().Get(index);
+                storage_number SN = SNP.storage_numbers().Get(Pos);
 
                 STORAGE_POINT SP;
 
                 SP.min = SP.max = SP.sum = unpack_storage_number(SN);
-                SP.flags = static_cast<SN_FLAGS>(SN & SN_USER_FLAGS);
+
+                SP.start_time_s = PIT + (Pos * SNP.update_every());
+                SP.end_time_s = SP.start_time_s + SNP.update_every();
+
                 SP.count = 1;
                 SP.anomaly_count = is_storage_number_anomalous(SN) ? 1 : 0;
+
+                SP.flags = static_cast<SN_FLAGS>(SN & SN_USER_FLAGS);
+
                 return SP;
             }
             default:
@@ -216,14 +233,14 @@ public:
         }
     }
 
-    inline ImmutablePageIterator begin()
+    inline ImmutablePageIterator begin(uint32_t PIT = 0) const
     {
-        return ImmutablePageIterator(this);
+        return ImmutablePageIterator(this, PIT, 0);
     }
 
-    inline ImmutablePageIterator end()
+    inline ImmutablePageIterator end() const
     {
-        return ImmutablePageIterator(this, size());
+        return ImmutablePageIterator(this, 0, size());
     }
 
 private:

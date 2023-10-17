@@ -10,18 +10,18 @@
 #include "rdb-private.h"
 #include "si.h"
 
+static std::random_device RandDev;
+static std::mt19937 Gen(RandDev());
+static std::uniform_int_distribution<uint32_t> Dist(std::numeric_limits<uint32_t>::min(),
+                                                    std::numeric_limits<uint32_t>::max());
+
 TEST(rdb, Key)
 {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dis(std::numeric_limits<uint32_t>::min(),
-                                                std::numeric_limits<uint32_t>::max());
-
     for (size_t i = 0; i != 128; i++)
     {
-        uint32_t gid = dis(gen);
-        uint32_t mid = dis(gen);
-        uint32_t pit = dis(gen);
+        uint32_t gid = Dist(Gen);
+        uint32_t mid = Dist(Gen);
+        uint32_t pit = Dist(Gen);
 
         rdb::Key k1{gid, mid, pit};
         Slice s1 = k1.slice();
@@ -35,32 +35,32 @@ TEST(rdb, Key)
 }
 
 TEST(rdb, ImmutablePage) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dis(std::numeric_limits<uint32_t>::min(),
-                                                std::numeric_limits<uint32_t>::max());
+    std::vector<uint32_t> random_numbers(128);
+    std::generate(random_numbers.begin(), random_numbers.end(),
+                  [](){ return Dist(Gen); });
 
     rdbv::RdbValue V;
     rdbv::StorageNumbersPage *SNP = V.mutable_storage_numbers_page();
-    google::protobuf::RepeatedField<storage_number> *SNs = SNP->mutable_storage_numbers();
+    SNP->set_update_every(2);
 
-    size_t N = 10;
-    for (size_t i = 0; i != N; i++) {
-        storage_number sn = pack_storage_number(i + 666, SN_DEFAULT_FLAGS);
+    google::protobuf::RepeatedField<storage_number> *SNs = SNP->mutable_storage_numbers();
+    for (uint32_t i : random_numbers)
+    {
+        storage_number sn = pack_storage_number(i, SN_DEFAULT_FLAGS);
         storage_number *snp = SNs->Add();
         *snp = sn;
     }
 
-    SNP->set_update_every(2);
-
     rdb::ImmutablePage IP(&V);
-    rdb::ImmutablePage::ImmutablePageIterator It(&IP);
 
     size_t i = 0;
-    for (auto It = IP.begin(); It != IP.end(); It++)
+    for (auto It = IP.begin(3600); It != IP.end(); It++)
     {
-        const STORAGE_POINT SP = *It;
-        netdata_log_error("storage_point[%zu]: %lf (count=%u)", i++, SP.sum, SP.count);
+        const STORAGE_POINT &SP = *It;
+
+        netdata_log_error("Orig It[%zu]: %lf, tr: [%u, %u)", i, SP.sum, SP.start_time_s, SP.end_time_s);
+        NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
+        EXPECT_EQ(SP.sum, exp);
     }
 }
 
