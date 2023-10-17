@@ -684,7 +684,6 @@ static inline void storage_engine_query_init(
         rrddim_query_init(db_metric_handle, handle, start_time_s, end_time_s, priority);
 }
 
-// TODO: RDB
 STORAGE_POINT rrdeng_load_metric_next(struct storage_engine_query_handle *rrddim_handle);
 STORAGE_POINT rrddim_query_next_metric(struct storage_engine_query_handle *handle);
 STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *handle);
@@ -703,11 +702,16 @@ static inline STORAGE_POINT storage_engine_query_next_metric(struct storage_engi
     return rrddim_query_next_metric(handle);
 }
 
-// TODO: RDB
 int rrdeng_load_metric_is_finished(struct storage_engine_query_handle *rrddim_handle);
 int rrddim_query_is_finished(struct storage_engine_query_handle *handle);
+int rdb_load_metric_is_finished(struct storage_engine_query_handle *handle);
 static inline int storage_engine_query_is_finished(struct storage_engine_query_handle *handle) {
     internal_fatal(!is_valid_backend(handle->backend), "STORAGE: invalid backend");
+
+#ifdef ENABLE_RDB
+    if(likely(handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        return rdb_load_metric_is_finished(handle);
+#endif
 
 #ifdef ENABLE_DBENGINE
     if(likely(handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))

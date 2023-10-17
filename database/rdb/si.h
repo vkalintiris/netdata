@@ -4,11 +4,96 @@
 #include "rdb-private.h"
 #include "uuid_shard.h"
 
-namespace rocksdb {
+namespace rocksdb
+{
     class DB;
 };
 
 using rocksdb::Slice;
+
+class RdbKey
+{
+public:
+    constexpr static size_t Fields = 3;
+    constexpr static size_t Bytes = Fields * sizeof(uint32_t);
+
+private:
+    constexpr static size_t GroupIdField = 0;
+    constexpr static size_t MetricIdField = 1;
+    constexpr static size_t PointInTimeField = 2;
+
+private:
+    RdbKey() = delete;
+
+    inline uint32_t field(size_t i) const
+    {
+        assert(i < 3);
+
+        uint32_t f;
+        memcpy(&f, &scratch[i * sizeof(uint32_t)], sizeof(uint32_t));
+        return be32toh(f);
+    }
+
+public:
+    inline RdbKey(uint32_t gid, uint32_t mid, uint32_t pit)
+    {
+        gid = htobe32(gid);
+        mid = htobe32(mid);
+        pit = htobe32(pit);
+
+        memcpy(&scratch[GroupIdField * sizeof(uint32_t)], &gid, sizeof(uint32_t));
+        memcpy(&scratch[MetricIdField * sizeof(uint32_t)], &mid, sizeof(uint32_t));
+        memcpy(&scratch[PointInTimeField * sizeof(uint32_t)], &pit, sizeof(uint32_t));
+    }
+
+    inline RdbKey(const Slice &S)
+    {
+        memcpy(&scratch[0], S.data(), 12);
+    }
+
+    inline const Slice slice() const
+    {
+        return Slice(scratch, RdbKey::Bytes);
+    }
+
+    inline uint32_t gid() const
+    {
+        return field(GroupIdField);
+    }
+
+    inline uint32_t mid() const
+    {
+        return field(MetricIdField);
+    }
+    
+    inline uint32_t pit() const
+    {
+        return field(PointInTimeField);
+    }
+
+    std::string toString(bool hex = false) const
+    {
+        std::array<char, 1024> buf;
+
+        if (hex)
+        {
+            snprintfz(buf.data(), buf.size() - 1,
+                      "gid=%u, mid=%u, pit=%u (0x%s)",
+                      gid(), mid(), pit(), slice().ToString(true).c_str());
+        }
+        else
+        {
+            snprintfz(buf.data(), buf.size() - 1,
+                      "gid=%u, mid=%u, pit=%u",
+                      gid(), mid(), pit());
+        }
+
+        return std::string(buf.data()); 
+    }
+
+private:
+    char scratch[RdbKey::Bytes];
+};
 
 class StorageInstance {
 public:
@@ -43,6 +128,10 @@ public:
 
     inline const Slice keySlice(char scratch[12], uint32_t gid, uint32_t mid, uint32_t pit) const
     {
+        gid = htobe32(gid);
+        mid = htobe32(mid);
+        pit = htobe32(pit);
+
         memcpy(&scratch[0 * sizeof(uint32_t)], &gid, sizeof(uint32_t));
         memcpy(&scratch[1 * sizeof(uint32_t)], &mid, sizeof(uint32_t));
         memcpy(&scratch[2 * sizeof(uint32_t)], &pit, sizeof(uint32_t));
@@ -57,6 +146,10 @@ public:
         memcpy(&gid, &data[0 * sizeof(uint32_t)], sizeof(uint32_t));
         memcpy(&mid, &data[1 * sizeof(uint32_t)], sizeof(uint32_t));
         memcpy(&pit, &data[2 * sizeof(uint32_t)], sizeof(uint32_t));
+
+        gid = be32toh(gid);
+        mid = be32toh(mid);
+        pit = be32toh(pit);
 
         return true;
     }

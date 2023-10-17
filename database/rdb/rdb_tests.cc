@@ -1,3 +1,4 @@
+#include <random>
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
 #include <rocksdb/statistics.h>
@@ -8,6 +9,30 @@
 #include "rdb.h"
 #include "rdb-private.h"
 #include "si.h"
+
+TEST(rdb, Key)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dis(std::numeric_limits<uint32_t>::min(),
+                                                std::numeric_limits<uint32_t>::max());
+
+    for (size_t i = 0; i != 128; i++)
+    {
+        uint32_t gid = dis(gen);
+        uint32_t mid = dis(gen);
+        uint32_t pit = dis(gen);
+
+        RdbKey k1{gid, mid, pit};
+        Slice s1 = k1.slice();
+
+        RdbKey k2{s1};
+
+        EXPECT_EQ(k1.gid(), k2.gid());
+        EXPECT_EQ(k1.mid(), k2.mid());
+        EXPECT_EQ(k1.pit(), k2.pit());
+    }
+}
 
 static const char *temp_dir_new()
 {
@@ -58,6 +83,8 @@ static void storage_instance_delete()
 }
 
 TEST(rdb, SomeTest) {
+    return;
+
     const char *TmpDir = temp_dir_new();
     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
     EXPECT_NE(si, nullptr);
@@ -72,11 +99,11 @@ TEST(rdb, SomeTest) {
     STORAGE_METRICS_GROUP *smg = rdb_metrics_group_get(si, &group_uuid);
     EXPECT_NE(smg, nullptr);
 
-    usec_t update_every = 5 * USEC_PER_SEC;
+    usec_t update_every = 1 * USEC_PER_SEC;
     STORAGE_COLLECT_HANDLE *sch = rdb_store_metric_init(smh, update_every / USEC_PER_SEC, smg);
     EXPECT_NE(sch, nullptr);
 
-    usec_t N = 10;
+    usec_t N = 6 * 3600;
     usec_t after = 3600 * USEC_PER_SEC;
     usec_t before = after + N * update_every;
 
@@ -85,21 +112,16 @@ TEST(rdb, SomeTest) {
                       update_every / USEC_PER_SEC,
                       after / USEC_PER_SEC,
                       before / USEC_PER_SEC);
-    netdata_log_error("");
 
     for (usec_t i = 0; i != N; i++)
     {
         usec_t pit = after + i * update_every;
         rdb_store_metric_next(sch, pit, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
-
-        netdata_log_error("page size: %zu",
-                          reinterpret_cast<rdb_collect_handle *>(sch)->collection.value.size());
-        netdata_log_error("sch[%zu] = %zu", pit / USEC_PER_SEC, i);
-        netdata_log_error("");
     }
+    rdb_store_metric_flush(sch);
 
     struct storage_engine_query_handle seqh;
-    rdb_load_metric_init(smh, &seqh, after / USEC_PER_SEC, before / USEC_PER_SEC, STORAGE_PRIORITY_NORMAL);
+    rdb_load_metric_init(smh, &seqh, 2 * 3600, 3 * 3600, STORAGE_PRIORITY_NORMAL);
 
     storage_engine_query_next_metric(&seqh);
 

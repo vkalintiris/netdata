@@ -141,6 +141,9 @@ static rocksdb::Options get_db_options()
     Opts.manual_wal_flush = true;
     Opts.stats_dump_period_sec = 1;
 
+    // Opts.enable_blob_files = true;
+    // Opts.min_blob_size = 1024;
+
     rocksdb::BlockBasedTableOptions TableOpts = rocksdb::BlockBasedTableOptions();
     TableOpts.block_size = 64 * 1024;
     Opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(TableOpts));
@@ -156,7 +159,7 @@ int rdb_main(int argc, char *argv[])
     SI = new StorageInstance(16);
 
     rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/cm/opt/tmp";
+    const char *Path = "/home/vk/opt/tmp";
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());

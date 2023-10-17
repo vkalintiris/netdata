@@ -183,19 +183,12 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 {
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
-    uint32_t gid = rmh->rmg->id;
-    uint32_t mid = rmh->id;
-    uint32_t pit = 0;
+    const RdbKey key{rmh->rmg->id, rmh->id, 0};
 
-    char scratch[12];
-    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
-
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
-    for (It->Seek(StartK); It->Valid(); It->Next()) {
-        const Slice &K = It->key();
-
-        SI->parseKey(K, gid, mid, pit);
-        return pit;
+    Iterator *it = SI->RDB->NewIterator(ReadOptions());
+    for (it->Seek(key.slice()); it->Valid(); it->Next())
+    {
+        return RdbKey{it->key()}.pit();
     }
 
     // FIXME: maybe it's rmh that needs the spinlock for rch
@@ -225,20 +218,14 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 
     if (end_time == std::numeric_limits<uint32_t>::min())
     {
-        char scratch[12];
+        const RdbKey key{rmh->rmg->id, rmh->id + 1, 0};
 
-        uint32_t gid = rmh->rmg->id;
-        uint32_t mid = rmh->id + 1;
-        uint32_t pit = 0;
-
-        const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
-
-        Iterator *It = SI->RDB->NewIterator(ReadOptions());
-        for (It->SeekForPrev(StartK); It->Valid(); It->Next()) {
-            const Slice &K = It->key();
-
-            SI->parseKey(K, gid, mid, pit);
-            end_time = pit;
+        Iterator *it = SI->RDB->NewIterator(ReadOptions());
+        for (it->SeekForPrev(key.slice());
+             it->Valid();
+             it->Next())
+        {
+            end_time = RdbKey{it->key()}.pit();
             break;
         }
     }
@@ -268,7 +255,8 @@ static uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch) {
 
 static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protect)
 {
-    if (protect) {
+    if (protect)
+    {
         spinlock_lock(&rch->collection.lock);
     }
 
@@ -280,8 +268,10 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
                    pit == std::numeric_limits<uint32_t>::max(),
                    "Invalid start time: %u", pit);
 
-    char buf[12];
-    rocksdb::Slice K = SI->keySlice(buf, gid, mid, pit);
+    const RdbKey key{gid, mid, pit};
+    netdata_log_error("Adding key: %s (storage numbers: %zu)",
+                      key.toString(true).c_str(),
+                      rch->collection.value.size());
 
     // TODO: the max size should be 4096 + 6 bytes. is there
     // any performance difference if the bytes array has exact size?
@@ -292,14 +282,15 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     // TODO: make 1024 an SI constant
     rch->collection.value.reset(1024);
 
-    if (protect) {
+    if (protect)
+    {
         spinlock_unlock(&rch->collection.lock);
     }
 
     rocksdb::WriteOptions WO;
     WO.disableWAL = true;
     WO.sync = false;
-    SI->RDB->Put(WO, K, V);
+    SI->RDB->Put(WO, key.slice(), V);
 
     num_pages_written++;
 }
@@ -478,15 +469,15 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 /* Serialized iterator                                                       */
 /*===---------------------------------------------------------------------===*/
 
-class FlushedPageIterator {
+class FlushedPageIterator
+{
 public:
     FlushedPageIterator(uint32_t gid, uint32_t mid, uint32_t after_s, uint32_t before_s)
+        : start_key(gid, mid, after_s),
+          end_key(gid, mid, before_s),
+          it(SI->RDB->NewIterator(ReadOptions()))
     {
-        start_key = SI->keySlice(scratch[0], gid, mid, after_s);
-        end_key = SI->keySlice(scratch[1], gid, mid, before_s);
-
-        it = SI->RDB->NewIterator(ReadOptions());
-        it->SeekForPrev(start_key);
+        it->SeekForPrev(start_key.slice());
     }
 
     Slice nextPage()
@@ -494,7 +485,7 @@ public:
         if (!it->Valid())
             return nullptr;
 
-        if (it->key().compare(end_key) > 0)
+        if (it->key().compare(end_key.slice()) > 0)
         {
             it->Next();
             return it->value();
@@ -509,102 +500,157 @@ public:
             return true;
 
         it->Next();
+
+        return false;
     }
 
 private:
+    RdbKey start_key;
+    RdbKey end_key;
     Iterator *it;
-
-    char scratch[2][12];
-    Slice start_key;
-    Slice end_key;
-}
+};
 
 /*===---------------------------------------------------------------------===*/
 /* Query ops                                                                 */
 /*===---------------------------------------------------------------------===*/
 
+using RepKeyField = pb::RepeatedField<std::array<char, 12>>;
+
+static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
+                                          const RdbKey &key_start, const RdbKey &key_end)
+{
+    RepKeyField *keys = pb::Arena::CreateMessage<RepKeyField>(&Arena);
+    size_t size_hint = 2 * (key_end.pit() - key_start.pit()) / 1024;
+    keys->Reserve(size_hint);
+
+    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    for (It->SeekForPrev(key_start.slice());
+         It->Valid() && ((It->key().compare(key_end.slice()) <= 0));
+         It->Next())
+    {
+        const std::array<char, 12> &AR =
+                *reinterpret_cast<const std::array<char, 12> *>(It->key().data());
+        keys->Add(AR);
+    }
+
+    return keys;
+}
+
+struct rdb_offline_query_handle {
+    Slice Key;
+    std::optional<Page> P;
+
+    uint32_t now;
+    uint32_t after;
+    uint32_t before;
+};
+
+static rdb_offline_query_handle
+rdb_offline_query_handle_init(const Slice &K, uint32_t after, uint32_t before)
+{
+    rdb_offline_query_handle roqh;
+
+    roqh.Key = K;
+    roqh.P.reset();
+    roqh.now = after;
+    roqh.after = after;
+    roqh.before = before;
+    return roqh;
+}
+
+STORAGE_POINT rdb_offline_query_handle_next(rdb_offline_query_handle &roqh)
+{
+}
+
 struct rdb_query_handle
 {
     rdb_metric_handle *rmh;
+
+    uint32_t after_s;
+    uint32_t before_s;
     uint32_t now_s;
 
     pb::Arena Arena;
+    pb::RepeatedField<std::array<char, 12>> *keys;
+
     std::optional<Page> P;
 };
 
-void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
-                          time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority)
+void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
+                          struct storage_engine_query_handle *seqh,
+                          time_t start_time_s,
+                          time_t end_time_s,
+                          STORAGE_PRIORITY priority)
 {
-    time_t db_start_time_s = rdb_metric_oldest_time(smh);
-    time_t db_end_time_s = rdb_metric_latest_time(smh);
+    rdb_query_handle *rqh = new rdb_query_handle();
 
-    seqh->start_time_s = std::max(db_start_time_s, start_time_s);
-    seqh->end_time_s = std::min(db_end_time_s, end_time_s);
+    rqh->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
+    rqh->after_s = std::max(rdb_metric_oldest_time(smh), start_time_s);
+    rqh->before_s = std::min(rdb_metric_latest_time(smh), end_time_s);
+    rqh->now_s = rqh->after_s;
+
+    RdbKey key_start{rqh->rmh->rmg->id, rqh->rmh->id, rqh->after_s};
+    RdbKey key_end{rqh->rmh->rmg->id, rqh->rmh->id, rqh->before_s};
+    rqh->keys = rdb_util_collect_keys(rqh->Arena, key_start, key_end);
+
+    seqh->start_time_s = rqh->after_s;
+    seqh->end_time_s = rqh->before_s;
     seqh->backend = STORAGE_ENGINE_BACKEND_RDB;
     seqh->priority = priority;
-
-    rdb_query_handle *rqh = new rdb_query_handle();
-    rqh->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
-    rqh->now_s = seqh->start_time_s;
-
     seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
 }
 
-static void rdb_load_metric_next_page(rdb_query_handle *rqh)
+static bool rdb_load_metric_next_page(rdb_query_handle *rqh, uint32_t after, uint32_t before)
 {
-    // check the collection handle first
-    rdb_collect_handle *rch = rqh->rmh->rch;
-    if (rch)
-    {
-        spinlock_lock(&rch->collection.lock);
+    // // check the collection handle first
+    // rdb_collect_handle *rch = rqh->rmh->rch;
+    // if (rch)
+    // {
+    //     spinlock_lock(&rch->collection.lock);
 
-        uint32_t start_time_s = rdb_store_metric_start_time(rch);
-        if (rqh->now_s >= start_time_s)
-        {
-            rqh->P = rch->collection.value.getPage(&rqh->Arena, start_time_s);
-        } else {
-            rqh->P.reset();
-        }
+    //     uint32_t start_time_s = rdb_store_metric_start_time(rch);
+    //     if (rqh->now_s >= start_time_s)
+    //     {
+    //         rqh->P = rch->collection.value.getPage(&rqh->Arena, start_time_s);
+    //     } else {
+    //         rqh->P.reset();
+    //     }
 
-        spinlock_unlock(&rch->collection.lock);
-    }
+    //     spinlock_unlock(&rch->collection.lock);
+    // }
 
-    if (rqh->P.has_value())
-        return;
+    // if (rqh->P.has_value())
+    //     return false;
 
-    char scratch[12];
 
-    uint32_t gid = rqh->rmh->rmg->id;
-    uint32_t mid = rqh->rmh->id;
-    uint32_t pit = rqh->now_s;
-
-    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
-
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
-    for (It->SeekForPrev(StartK); It->Valid(); It->Next())
-    {
-        const Slice &K = It->key();
-
-        SI->parseKey(K, gid, mid, pit);
-        break;
-    }
+    return false;
 }
 
-void rdb_load_metric_next_value(rdb_query_handle *rqh)
+STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh)
 {
-    /* Find the proper value wrapper */
-    if (!rqh->P.has_value()) {
-        rdb_load_metric_next_page(rqh);
-    }
-}
-
-STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh) {
     rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
-    rdb_load_metric_next_page(rqh);
+
+    rdb_load_metric_next_page(rqh, seqh->start_time_s, seqh->end_time_s);
+
+    for (size_t i = 0; i != rqh->keys->size(); i++) {
+        const std::array<char, 12> &ArrRef = rqh->keys->Get(i);
+        uint32_t gid;
+        uint32_t mid;
+        uint32_t pit;
+        SI->parseKey(Slice(ArrRef.data(), ArrRef.size()), gid, mid, pit);
+
+        netdata_log_error("Retrieved key: gid=%u, mid=%u, pit=%u", gid, mid, pit);
+    }
 
     STORAGE_POINT sp;
     storage_point_empty(sp, 10, 10);
     return sp;
+}
+
+int rdb_load_metric_is_finished(struct storage_engine_query_handle *seqh)
+{
+    rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
+    return rqh->now_s > seqh->end_time_s;
 }
 
 /*===---------------------------------------------------------------------===*/
