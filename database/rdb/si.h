@@ -13,6 +13,8 @@ using rocksdb::Slice;
 
 namespace rdb {
 
+namespace pb = google::protobuf;
+
 class Key
 {
 public:
@@ -95,6 +97,105 @@ public:
 
 private:
     char scratch[Key::Bytes];
+};
+
+
+enum class PageType : uint8_t {
+    StorageNumbersPage = rdbv::RdbValue::PageCase::kStorageNumbersPage,
+};
+
+class ValueWrapper
+{
+
+public:
+    static ValueWrapper create(google::protobuf::Arena *Arena,
+                               rdbv::RdbValue::PageCase PC,
+                               uint32_t Slots,
+                               uint32_t UpdateEvery)
+    {
+        rdbv::RdbValue *Value = pb::Arena::CreateMessage<rdbv::RdbValue>(Arena);
+
+        switch (PC)
+        {
+            case RdbValue::PageCase::kStorageNumbersPage:
+            {
+                StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
+
+                // Make 1024 an SI constant;
+                SNP->mutable_storage_numbers()->Reserve(1024);
+                SNP->set_update_every(UpdateEvery);
+                break;
+            }
+            default:
+                fatal("Unknown page case: %s", page_case_string(PC));
+        }
+
+        ValueWrapper VW;
+        VW.Value = Value;
+        VW.Slots = Slots;
+        return VW;
+    }
+
+    inline bool appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
+                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
+
+    const rocksdb::Slice flush(char *buffer, size_t n) const;
+
+    inline uint32_t capacity() const {
+        return Slots;
+    }
+
+    inline uint32_t size() const {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage: {
+                return Value->storage_numbers_page().storage_numbers_size();
+            }
+            default:
+                return 0;
+        }
+    }
+
+    inline uint32_t duration() const {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
+                return updateEvery() * size();
+            default:
+                return 0;
+        }
+    }
+
+    inline uint32_t updateEvery() const {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
+                return Value->storage_numbers_page().update_every();
+            default:
+                return 0;
+        }
+    }
+
+    inline void changeCollectionFrequency(uint32_t updateEvery) {
+        switch (Value->Page_case()) {
+            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
+                Value->mutable_storage_numbers_page()->set_update_every(updateEvery);
+                break;
+            default:
+                break;
+        }
+    }
+
+    Page getPage(google::protobuf::Arena *Arena, uint32_t StartTime) {
+        rdbv::RdbValue *V = google::protobuf::Arena::CreateMessage<rdbv::RdbValue>(Arena);
+
+        V->CopyFrom(*Value);
+        return Page(StartTime, V);
+    }
+
+    void reset(uint32_t Slots);
+
+private:
+    rdbv::RdbValue *Value;
+    uint32_t Slots;
 };
 
 } // namespace rdb
