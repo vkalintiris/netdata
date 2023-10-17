@@ -183,12 +183,12 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 {
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
-    const RdbKey key{rmh->rmg->id, rmh->id, 0};
+    const rdb::Key key{rmh->rmg->id, rmh->id, 0};
 
     Iterator *it = SI->RDB->NewIterator(ReadOptions());
     for (it->Seek(key.slice()); it->Valid(); it->Next())
     {
-        return RdbKey{it->key()}.pit();
+        return rdb::Key{it->key()}.pit();
     }
 
     // FIXME: maybe it's rmh that needs the spinlock for rch
@@ -218,14 +218,14 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 
     if (end_time == std::numeric_limits<uint32_t>::min())
     {
-        const RdbKey key{rmh->rmg->id, rmh->id + 1, 0};
+        const rdb::Key key{rmh->rmg->id, rmh->id + 1, 0};
 
         Iterator *it = SI->RDB->NewIterator(ReadOptions());
         for (it->SeekForPrev(key.slice());
              it->Valid();
              it->Next())
         {
-            end_time = RdbKey{it->key()}.pit();
+            end_time = rdb::Key{it->key()}.pit();
             break;
         }
     }
@@ -268,7 +268,7 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
                    pit == std::numeric_limits<uint32_t>::max(),
                    "Invalid start time: %u", pit);
 
-    const RdbKey key{gid, mid, pit};
+    const rdb::Key key{gid, mid, pit};
     netdata_log_error("Adding key: %s (storage numbers: %zu)",
                       key.toString(true).c_str(),
                       rch->collection.value.size());
@@ -505,8 +505,8 @@ public:
     }
 
 private:
-    RdbKey start_key;
-    RdbKey end_key;
+    rdb::Key start_key;
+    rdb::Key end_key;
     Iterator *it;
 };
 
@@ -517,7 +517,7 @@ private:
 using RepKeyField = pb::RepeatedField<std::array<char, 12>>;
 
 static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
-                                          const RdbKey &key_start, const RdbKey &key_end)
+                                          const rdb::Key &key_start, const rdb::Key &key_end)
 {
     RepKeyField *keys = pb::Arena::CreateMessage<RepKeyField>(&Arena);
     size_t size_hint = 2 * (key_end.pit() - key_start.pit()) / 1024;
@@ -589,8 +589,8 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
     rqh->before_s = std::min(rdb_metric_latest_time(smh), end_time_s);
     rqh->now_s = rqh->after_s;
 
-    RdbKey key_start{rqh->rmh->rmg->id, rqh->rmh->id, rqh->after_s};
-    RdbKey key_end{rqh->rmh->rmg->id, rqh->rmh->id, rqh->before_s};
+    rdb::Key key_start{rqh->rmh->rmg->id, rqh->rmh->id, rqh->after_s};
+    rdb::Key key_end{rqh->rmh->rmg->id, rqh->rmh->id, rqh->before_s};
     rqh->keys = rdb_util_collect_keys(rqh->Arena, key_start, key_end);
 
     seqh->start_time_s = rqh->after_s;

@@ -11,7 +11,9 @@ namespace rocksdb
 
 using rocksdb::Slice;
 
-class RdbKey
+namespace rdb {
+
+class Key
 {
 public:
     constexpr static size_t Fields = 3;
@@ -23,7 +25,7 @@ private:
     constexpr static size_t PointInTimeField = 2;
 
 private:
-    RdbKey() = delete;
+    Key() = delete;
 
     inline uint32_t field(size_t i) const
     {
@@ -35,7 +37,7 @@ private:
     }
 
 public:
-    inline RdbKey(uint32_t gid, uint32_t mid, uint32_t pit)
+    inline Key(uint32_t gid, uint32_t mid, uint32_t pit)
     {
         gid = htobe32(gid);
         mid = htobe32(mid);
@@ -46,14 +48,14 @@ public:
         memcpy(&scratch[PointInTimeField * sizeof(uint32_t)], &pit, sizeof(uint32_t));
     }
 
-    inline RdbKey(const Slice &S)
+    inline Key(const Slice &S)
     {
         memcpy(&scratch[0], S.data(), 12);
     }
 
     inline const Slice slice() const
     {
-        return Slice(scratch, RdbKey::Bytes);
+        return Slice(scratch, Key::Bytes);
     }
 
     inline uint32_t gid() const
@@ -92,8 +94,10 @@ public:
     }
 
 private:
-    char scratch[RdbKey::Bytes];
+    char scratch[Key::Bytes];
 };
+
+} // namespace rdb
 
 class StorageInstance {
 public:

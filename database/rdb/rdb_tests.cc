@@ -23,10 +23,10 @@ TEST(rdb, Key)
         uint32_t mid = dis(gen);
         uint32_t pit = dis(gen);
 
-        RdbKey k1{gid, mid, pit};
+        rdb::Key k1{gid, mid, pit};
         Slice s1 = k1.slice();
 
-        RdbKey k2{s1};
+        rdb::Key k2{s1};
 
         EXPECT_EQ(k1.gid(), k2.gid());
         EXPECT_EQ(k1.mid(), k2.mid());
