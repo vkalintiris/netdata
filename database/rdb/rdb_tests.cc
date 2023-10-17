@@ -34,8 +34,9 @@ TEST(rdb, Key)
     }
 }
 
-TEST(rdb, ImmutablePage) {
-    std::vector<uint32_t> random_numbers(128);
+TEST(rdb, ImmutablePage)
+{
+    std::vector<uint32_t> random_numbers(8);
     std::generate(random_numbers.begin(), random_numbers.end(),
                   [](){ return Dist(Gen); });
 
@@ -53,12 +54,15 @@ TEST(rdb, ImmutablePage) {
 
     rdb::ImmutablePage IP(&V);
 
+    uint32_t PIT = 3600;
     size_t i = 0;
-    for (auto It = IP.begin(3600); It != IP.end(); It++)
+
+    for (auto It = IP.begin(PIT); It != IP.end(); It++)
     {
         const STORAGE_POINT &SP = *It;
+        EXPECT_EQ(SP.start_time_s, PIT + (i * SNP->update_every()));
+        EXPECT_EQ(SP.end_time_s, SP.start_time_s + SNP->update_every());
 
-        netdata_log_error("Orig It[%zu]: %lf, tr: [%u, %u)", i, SP.sum, SP.start_time_s, SP.end_time_s);
         NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
         EXPECT_EQ(SP.sum, exp);
     }

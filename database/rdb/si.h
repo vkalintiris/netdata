@@ -3,6 +3,7 @@
 
 #include "rdb-private.h"
 #include "uuid_shard.h"
+#include <iterator>
 
 namespace rocksdb
 {
@@ -112,7 +113,7 @@ public:
         friend class ImmutablePage;
 
     public:
-        using iterator_category = std::forward_iterator_tag;
+        using iterator_category = std::random_access_iterator_tag;
         using difference_type   = std::ptrdiff_t;
         using value_type        = STORAGE_POINT;
         using pointer           = value_type*;
@@ -169,6 +170,62 @@ public:
             ImmutablePageIterator It = *this;
             --(*this);
             return It;
+        }
+
+        inline ImmutablePageIterator operator+(int N) const
+        {
+            ImmutablePageIterator It = *this;
+            It.Pos += N;
+            return It;
+        }
+
+        inline ImmutablePageIterator operator-(int N) const
+        {
+            ImmutablePageIterator It = *this;
+            It.Pos -= N;
+            return It;
+        }
+
+        inline ImmutablePageIterator& operator+=(int N)
+        {
+            Pos += N;
+            return *this;
+        }
+
+        inline ImmutablePageIterator& operator-=(int N)
+        {
+            Pos -= N;
+            return *this;
+        }
+
+        inline value_type operator[](int N) const
+        {
+            return IP->get(Pos + N, PIT);
+        }
+
+        inline bool operator<(const ImmutablePageIterator& Other) const
+        {
+            return Pos < Other.Pos;
+        }
+
+        inline bool operator>(const ImmutablePageIterator& Other) const
+        {
+            return Pos > Other.Pos;
+        }
+
+        inline bool operator<=(const ImmutablePageIterator& Other) const
+        {
+            return Pos <= Other.Pos;
+        }
+
+        inline bool operator>=(const ImmutablePageIterator& Other) const
+        {
+            return Pos >= Other.Pos;
+        }
+
+        inline int operator-(const ImmutablePageIterator& Other) const
+        {
+            return Pos - Other.Pos;
         }
 
     private:
@@ -233,6 +290,19 @@ public:
         }
     }
 
+    inline uint32_t duration() const
+    {
+        uint32_t N = end() - begin();
+
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+                return N * V->storage_numbers_page().update_every();
+            default:
+                __builtin_unreachable();
+        }
+    }
+
     inline ImmutablePageIterator begin(uint32_t PIT = 0) const
     {
         return ImmutablePageIterator(this, PIT, 0);
@@ -249,7 +319,8 @@ private:
 
 } // namespace rdb
 
-class StorageInstance {
+class StorageInstance
+{
 public:
     StorageInstance(size_t registry_shards) :
         RDB(nullptr),
