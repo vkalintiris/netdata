@@ -34,6 +34,36 @@ TEST(rdb, Key)
     }
 }
 
+TEST(rdb, ImmutablePage) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dis(std::numeric_limits<uint32_t>::min(),
+                                                std::numeric_limits<uint32_t>::max());
+
+    rdbv::RdbValue V;
+    rdbv::StorageNumbersPage *SNP = V.mutable_storage_numbers_page();
+    google::protobuf::RepeatedField<storage_number> *SNs = SNP->mutable_storage_numbers();
+
+    size_t N = 10;
+    for (size_t i = 0; i != N; i++) {
+        storage_number sn = pack_storage_number(i + 666, SN_DEFAULT_FLAGS);
+        storage_number *snp = SNs->Add();
+        *snp = sn;
+    }
+
+    SNP->set_update_every(2);
+
+    rdb::ImmutablePage IP(&V);
+    rdb::ImmutablePage::ImmutablePageIterator It(&IP);
+
+    size_t i = 0;
+    for (auto It = IP.begin(); It != IP.end(); It++)
+    {
+        const STORAGE_POINT SP = *It;
+        netdata_log_error("storage_point[%zu]: %lf (count=%u)", i++, SP.sum, SP.count);
+    }
+}
+
 static const char *temp_dir_new()
 {
     char tmpl[] = "/tmp/mydirXXXXXX";

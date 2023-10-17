@@ -99,103 +99,135 @@ private:
     char scratch[Key::Bytes];
 };
 
-
-enum class PageType : uint8_t {
+enum class PageType : uint8_t
+{
     StorageNumbersPage = rdbv::RdbValue::PageCase::kStorageNumbersPage,
 };
 
-class ValueWrapper
+class ImmutablePage
 {
+public:
+    class ImmutablePageIterator
+    {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type   = std::ptrdiff_t;
+        using value_type        = STORAGE_POINT;
+        using pointer           = value_type*;
+        using reference         = value_type&;
+
+        ImmutablePageIterator(const ImmutablePage *IP)
+            : IP(IP), Position(0) { }
+
+        ImmutablePageIterator(const ImmutablePage *IP, uint32_t Position)
+            : IP(IP), Position(Position) { }
+
+        bool operator==(const ImmutablePageIterator& Other) const
+        {
+            return (IP == Other.IP) && (Position == Other.Position);
+        }
+
+        bool operator!=(const ImmutablePageIterator& Other) const
+        {
+                return !(*this == Other);
+        }
+
+        inline value_type operator*() const
+        {
+            return IP->get(Position);
+        }
+
+        inline ImmutablePageIterator& operator++()
+        {
+            ++Position;
+            return *this;
+        }
+
+        inline ImmutablePageIterator& operator--() {
+            --Position;
+            return *this;
+        }
+
+        inline ImmutablePageIterator operator++(int)
+        {
+            ImmutablePageIterator It = *this;
+            ++(*this);
+            return It;
+        }
+
+        inline ImmutablePageIterator operator--(int)
+        {
+            ImmutablePageIterator It = *this;
+            --(*this);
+            return It;
+        }
+
+    private:
+        const ImmutablePage *IP;
+        uint32_t Position;
+    };
 
 public:
-    static ValueWrapper create(google::protobuf::Arena *Arena,
-                               rdbv::RdbValue::PageCase PC,
-                               uint32_t Slots,
-                               uint32_t UpdateEvery)
+    ImmutablePage(const rdbv::RdbValue *V) : V(V) { }
+
+    inline PageType pageType() const
     {
-        rdbv::RdbValue *Value = pb::Arena::CreateMessage<rdbv::RdbValue>(Arena);
+        return static_cast<PageType>(V->Page_case());
+    }
 
-        switch (PC)
+    template<uint32_t N>
+    const Slice flush(std::array<char, N> &AR) const
+    {
+        assert(V->ByteSizeLong() <= AR.size());
+        V->SerializeToArray(AR.data(), AR.size());
+        return Slice(AR.data(), V->ByteSizeLong());
+    }
+
+    inline uint32_t size() const
+    {
+        switch (pageType())
         {
-            case RdbValue::PageCase::kStorageNumbersPage:
+            case PageType::StorageNumbersPage:
+                return V->storage_numbers_page().storage_numbers_size();
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+    inline const STORAGE_POINT get(uint32_t index) const
+    {
+        switch (pageType()) {
+            case PageType::StorageNumbersPage:
             {
-                StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
+                auto &SNP = V->storage_numbers_page();
+                assert(index < SNP.storage_numbers_size());
+                storage_number SN = SNP.storage_numbers().Get(index);
 
-                // Make 1024 an SI constant;
-                SNP->mutable_storage_numbers()->Reserve(1024);
-                SNP->set_update_every(UpdateEvery);
-                break;
+                STORAGE_POINT SP;
+
+                SP.min = SP.max = SP.sum = unpack_storage_number(SN);
+                SP.flags = static_cast<SN_FLAGS>(SN & SN_USER_FLAGS);
+                SP.count = 1;
+                SP.anomaly_count = is_storage_number_anomalous(SN) ? 1 : 0;
+                return SP;
             }
             default:
-                fatal("Unknown page case: %s", page_case_string(PC));
-        }
-
-        ValueWrapper VW;
-        VW.Value = Value;
-        VW.Slots = Slots;
-        return VW;
-    }
-
-    inline bool appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
-
-    const rocksdb::Slice flush(char *buffer, size_t n) const;
-
-    inline uint32_t capacity() const {
-        return Slots;
-    }
-
-    inline uint32_t size() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage: {
-                return Value->storage_numbers_page().storage_numbers_size();
-            }
-            default:
-                return 0;
+                __builtin_unreachable();
         }
     }
 
-    inline uint32_t duration() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                return updateEvery() * size();
-            default:
-                return 0;
-        }
+    inline ImmutablePageIterator begin()
+    {
+        return ImmutablePageIterator(this);
     }
 
-    inline uint32_t updateEvery() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                return Value->storage_numbers_page().update_every();
-            default:
-                return 0;
-        }
+    inline ImmutablePageIterator end()
+    {
+        return ImmutablePageIterator(this, size());
     }
-
-    inline void changeCollectionFrequency(uint32_t updateEvery) {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                Value->mutable_storage_numbers_page()->set_update_every(updateEvery);
-                break;
-            default:
-                break;
-        }
-    }
-
-    Page getPage(google::protobuf::Arena *Arena, uint32_t StartTime) {
-        rdbv::RdbValue *V = google::protobuf::Arena::CreateMessage<rdbv::RdbValue>(Arena);
-
-        V->CopyFrom(*Value);
-        return Page(StartTime, V);
-    }
-
-    void reset(uint32_t Slots);
 
 private:
-    rdbv::RdbValue *Value;
-    uint32_t Slots;
+    const rdbv::RdbValue *V;
 };
 
 } // namespace rdb
