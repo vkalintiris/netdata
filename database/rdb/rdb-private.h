@@ -18,11 +18,14 @@
 
 namespace rdb {
 
+namespace pb = google::protobuf;
+
+using Options = rocksdb::Options;
 using Slice = rocksdb::Slice;
+using Status = rocksdb::Status;
+
 using Value = rdbv::RdbValue;
 using StorageNumbersPage = rdbv::StorageNumbersPage;
-
-namespace pb = google::protobuf;
 
 class Key
 {
@@ -486,7 +489,7 @@ public:
         return true;
     }
 
-    google::protobuf::Arena *getThreadArena()
+    pb::Arena *getThreadArena()
     {
         pid_t tid = gettid();
 
@@ -495,7 +498,7 @@ public:
 
             auto It = Arenas.find(tid);
             if (It == Arenas.cend()) {
-                google::protobuf::Arena *A = new google::protobuf::Arena();
+                pb::Arena *A = new pb::Arena();
                 Arenas[tid] = A;
                 return A;
             } else {
@@ -510,7 +513,7 @@ public:
     UuidShard<MetricsRegistryT> MetricsRegistry;
 
     std::mutex ArenasMutex;
-    std::unordered_map<pid_t, google::protobuf::Arena *> Arenas;
+    std::unordered_map<pid_t, pb::Arena *> Arenas;
 };
 
 } // namespace rdb

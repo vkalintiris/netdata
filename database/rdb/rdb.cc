@@ -106,10 +106,6 @@ static void gen_thread(size_t thread_id,
     std::this_thread::sleep_for(std::chrono::seconds{1});
 }
 
-#include <rocksdb/options.h>
-#include <rocksdb/advanced_options.h>
-#include <rocksdb/table.h>
-
 static rocksdb::Options get_db_options()
 {
     rocksdb::Options Opts;
