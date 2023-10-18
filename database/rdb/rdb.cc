@@ -19,7 +19,7 @@
 
 #include "rdb-private.h"
 
-StorageInstance *SI = nullptr;
+rdb::StorageInstance *SI = nullptr;
 
 std::atomic<size_t> num_pages_written = 0;
 
@@ -154,7 +154,7 @@ int rdb_main(int argc, char *argv[])
     (void) argc;
     (void) argv;
 
-    SI = new StorageInstance(16);
+    SI = new rdb::StorageInstance(16);
 
     rocksdb::Options Opts = get_db_options();
     const char *Path = "/home/vk/opt/tmp";

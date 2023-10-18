@@ -105,7 +105,7 @@ static rocksdb::Options get_db_options()
 
 static STORAGE_INSTANCE *storage_instance_new(const char *Path)
 {
-    SI = new StorageInstance(16);
+    SI = new rdb::StorageInstance(16);
     rocksdb::Status S = SI->open(get_db_options(), Path);
     EXPECT_TRUE(S.ok());
     return reinterpret_cast<STORAGE_INSTANCE *>(SI);
