@@ -4,6 +4,7 @@
 #include "database/rdb/protos/rdbv.pb.h"
 #include "rdb-private.h"
 #include "uuid_shard.h"
+#include <google/protobuf/arena.h>
 #include <iterator>
 
 namespace rocksdb
@@ -16,6 +17,7 @@ using rocksdb::Slice;
 namespace rdb {
 
 using Value = rdbv::RdbValue;
+using StorageNumbersPage = rdbv::StorageNumbersPage;
 
 namespace pb = google::protobuf;
 
@@ -111,6 +113,8 @@ enum class PageType : uint8_t
 class Page
 {
 public:
+    // A full blown random-access iterator, we most probably need
+    // just a simple forward iterator
     class PageIterator
     {
         friend class Page;
@@ -238,18 +242,44 @@ public:
     };
 
 public:
-    Page(const Value *V) : V(V) { }
+    static std::optional<const Page> fromSlice(pb::Arena &Arena, const Slice &S)
+    {
+        Value *V = pb::Arena::CreateMessage<Value>(&Arena);
+        if (!V)
+            return {};
 
+        if (!V->ParseFromArray(S.data(), S.size()))
+            return {};
+
+        return Page(V);
+    }
+
+    static std::optional<Page> create(pb::Arena &Arena, uint32_t Capacity)
+    {
+        Value *V = pb::Arena::CreateMessage<Value>(&Arena);
+        if (!V)
+            return {};
+
+        Page P(V);
+        P.reserve(Capacity);
+        return P;
+    }
+
+private:
+    Page(Value *V) : V(V) { }
+
+public:
     inline PageType pageType() const
     {
         return static_cast<PageType>(V->Page_case());
     }
 
     template<uint32_t N>
-    const Slice flush(std::array<char, N> &AR) const
+    const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
-        V->SerializeToArray(AR.data(), AR.size());
+        if (!V->SerializeToArray(AR.data(), AR.size()))
+            return {};
         return Slice(AR.data(), V->ByteSizeLong());
     }
 
@@ -295,12 +325,13 @@ public:
 
     inline uint32_t duration() const
     {
-        uint32_t N = end() - begin();
-
         switch (pageType())
         {
             case PageType::StorageNumbersPage:
-                return N * V->storage_numbers_page().update_every();
+            {
+                const StorageNumbersPage &SNP = V->storage_numbers_page();
+                return SNP.storage_numbers_size() * SNP.update_every();
+            }
             default:
                 __builtin_unreachable();
         }
@@ -316,8 +347,71 @@ public:
         return PageIterator(this, 0, size());
     }
 
+    inline void appendPoint(STORAGE_POINT &SP)
+    {
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+            {
+                StorageNumbersPage *SNP = V->mutable_storage_numbers_page();
+                pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
+
+                storage_number SN = pack_storage_number(SP.sum, SP.flags);
+                SNs->AddAlreadyReserved(SN);
+                break;
+            }
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+    inline void setUpdateEvery(uint32_t updateEvery)
+    {
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+                V->mutable_storage_numbers_page()->set_update_every(updateEvery);
+                break;
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+    inline void reset()
+    {
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+            {
+                StorageNumbersPage *SNP = V->mutable_storage_numbers_page();
+                pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
+
+                SNs->Clear();
+                break;
+            }
+            default:
+                __builtin_unreachable();
+        }
+    }
+
 private:
-    const Value *V;
+    inline void reserve(uint32_t N)
+    {
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+            {
+                StorageNumbersPage *SNP = V->mutable_storage_numbers_page();
+                SNP->mutable_storage_numbers()->Reserve(N);
+                break;
+            }
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+private:
+    Value *V;
 };
 
 } // namespace rdb

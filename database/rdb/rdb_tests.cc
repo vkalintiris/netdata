@@ -1,3 +1,4 @@
+#include <google/protobuf/arena.h>
 #include <random>
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
@@ -36,35 +37,39 @@ TEST(rdb, Key)
 
 TEST(rdb, ImmutablePage)
 {
-    std::vector<uint32_t> random_numbers(8);
+    constexpr size_t N = 1;
+    std::vector<uint32_t> random_numbers(N);
     std::generate(random_numbers.begin(), random_numbers.end(),
                   [](){ return Dist(Gen); });
 
-    rdbv::RdbValue V;
-    rdbv::StorageNumbersPage *SNP = V.mutable_storage_numbers_page();
-    SNP->set_update_every(2);
+    google::protobuf::Arena A;
+    std::optional<rdb::Page> OP = rdb::Page::create(A, N);
+    EXPECT_TRUE(OP.has_value());
 
-    google::protobuf::RepeatedField<storage_number> *SNs = SNP->mutable_storage_numbers();
+    uint32_t UE = 2;
+    OP->setUpdateEvery(UE);
+
     for (uint32_t i : random_numbers)
     {
-        storage_number sn = pack_storage_number(i, SN_DEFAULT_FLAGS);
-        storage_number *snp = SNs->Add();
-        *snp = sn;
+        STORAGE_POINT SP;
+        SP.sum = i;
+        SP.flags = SN_DEFAULT_FLAGS;
+        OP->appendPoint(SP);
     }
-
-    rdb::Page IP(&V);
 
     uint32_t PIT = 3600;
     size_t i = 0;
 
-    for (auto It = IP.begin(PIT); It != IP.end(); It++)
+    for (auto It = OP->begin(PIT); It != OP->end(); It++)
     {
         const STORAGE_POINT &SP = *It;
-        EXPECT_EQ(SP.start_time_s, PIT + (i * SNP->update_every()));
-        EXPECT_EQ(SP.end_time_s, SP.start_time_s + SNP->update_every());
+        EXPECT_EQ(SP.start_time_s, PIT + (i * UE));
+        EXPECT_EQ(SP.end_time_s, SP.start_time_s + UE);
 
         NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
         EXPECT_EQ(SP.sum, exp);
+
+        EXPECT_EQ(SP.flags, SN_DEFAULT_FLAGS);
     }
 }
 
