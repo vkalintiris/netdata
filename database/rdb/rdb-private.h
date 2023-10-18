@@ -41,7 +41,7 @@ private:
 private:
     Key() = delete;
 
-    inline uint32_t field(size_t i) const
+    [[nodiscard]] inline uint32_t field(size_t i) const
     {
         assert(i < 3);
 
@@ -67,27 +67,27 @@ public:
         memcpy(&scratch[0], S.data(), 12);
     }
 
-    inline const Slice slice() const
+    [[nodiscard]] inline const Slice slice() const
     {
         return Slice(scratch, Key::Bytes);
     }
 
-    inline uint32_t gid() const
+    [[nodiscard]] inline uint32_t gid() const
     {
         return field(GroupIdField);
     }
 
-    inline uint32_t mid() const
+    [[nodiscard]] inline uint32_t mid() const
     {
         return field(MetricIdField);
     }
     
-    inline uint32_t pit() const
+    [[nodiscard]] inline uint32_t pit() const
     {
         return field(PointInTimeField);
     }
 
-    std::string toString(bool hex = false) const
+    [[nodiscard]] std::string toString(bool hex = false) const
     {
         std::array<char, 1024> buf;
 
@@ -145,9 +145,9 @@ public:
             : IP(IP), PIT(PIT), Pos(Pos) { }
 
     public:
-        static PageIterator create(const Page *IP,
-                                            uint32_t Pos,
-                                            uint32_t PIT)
+        [[nodiscard]] static PageIterator create(const Page *IP,
+                                                 uint32_t Pos,
+                                                 uint32_t PIT)
         {
             return PageIterator(IP, Pos, PIT);
         }
@@ -256,7 +256,7 @@ public:
     };
 
 public:
-    static std::optional<const Page> fromSlice(pb::Arena &Arena, const Slice &S)
+    [[nodiscard]] static std::optional<const Page> fromSlice(pb::Arena &Arena, const Slice &S)
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
@@ -268,7 +268,7 @@ public:
         return Page(V);
     }
 
-    static std::optional<Page> create(pb::Arena &Arena, const PageOptions &PO)
+    [[nodiscard]] static std::optional<Page> create(pb::Arena &Arena, const PageOptions &PO)
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
@@ -283,13 +283,13 @@ private:
     Page(Value *V) : V(V) { }
 
 public:
-    inline PageType pageType() const
+    [[nodiscard]] inline PageType pageType() const
     {
         return static_cast<PageType>(V->Page_case());
     }
 
     template<uint32_t N>
-    const std::optional<const Slice> flush(std::array<char, N> &AR) const
+    [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
         if (!V->SerializeToArray(AR.data(), AR.size()))
@@ -297,7 +297,7 @@ public:
         return Slice(AR.data(), V->ByteSizeLong());
     }
 
-    inline uint32_t size() const
+    [[nodiscard]] inline uint32_t size() const
     {
         switch (pageType())
         {
@@ -308,7 +308,7 @@ public:
         }
     }
 
-    inline const STORAGE_POINT get(uint32_t Pos, uint32_t PIT) const
+    [[nodiscard]] inline const STORAGE_POINT get(uint32_t Pos, uint32_t PIT) const
     {
         switch (pageType())
         {
@@ -337,7 +337,7 @@ public:
         }
     }
 
-    inline uint32_t duration() const
+    [[nodiscard]] inline uint32_t duration() const
     {
         switch (pageType())
         {
@@ -351,12 +351,12 @@ public:
         }
     }
 
-    inline PageIterator begin(uint32_t PIT = 0) const
+    [[nodiscard]] inline PageIterator begin(uint32_t PIT = 0) const
     {
         return PageIterator(this, PIT, 0);
     }
 
-    inline PageIterator end() const
+    [[nodiscard]] inline PageIterator end() const
     {
         return PageIterator(this, 0, size());
     }
@@ -426,6 +426,44 @@ private:
 
 private:
     Value *V;
+};
+
+class CollectionPage
+{
+public:
+    CollectionPage(Page *MutablePage, uint32_t Slots)
+        : MutablePage(MutablePage), Slots(Slots) {}
+
+    inline void appendPoint(STORAGE_POINT &SP)
+    {
+        MutablePage->appendPoint(SP);
+        Slots--;
+    }
+
+    inline void reset(uint32_t Slots)
+    {
+        MutablePage->reset();
+        this->Slots = Slots;
+    }
+
+    [[nodiscard]] inline uint32_t duration() const
+    {
+        return MutablePage->duration();
+    }
+
+    [[nodiscard]] inline uint32_t size() const
+    {
+        return MutablePage->size();
+    }
+
+    [[nodiscard]] inline uint32_t capacity() const
+    {
+            return Slots;
+    }
+
+private:
+    Page *MutablePage;
+    uint32_t Slots;
 };
 
 template<typename GroupsRegistryT, typename MetricsRegistryT>
