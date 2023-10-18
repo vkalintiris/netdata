@@ -1,4 +1,3 @@
-#include "database/rdb/protos/rdbv.pb.h"
 #include "rdb-private.h"
 
 namespace pb = google::protobuf;
@@ -95,9 +94,9 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     if (!rch)
         return std::numeric_limits<uint32_t>::max();
 
-    spinlock_lock(&rch->collection.lock);
+    spinlock_lock(&rch->cd.lock);
     uint32_t start_time = rdb_store_metric_start_time(rch);
-    spinlock_unlock(&rch->collection.lock);
+    spinlock_unlock(&rch->cd.lock);
 
     return start_time;
 }
@@ -110,9 +109,9 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 
     rdb_collect_handle *rch = rmh->rch;
     if (rch) {
-        spinlock_lock(&rch->collection.lock);
+        spinlock_lock(&rch->cd.lock);
         end_time = rdb_store_metric_end_time(rch);
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
     }
 
     if (end_time == std::numeric_limits<uint32_t>::min())
@@ -137,26 +136,26 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 /*===---------------------------------------------------------------------===*/
 
 static uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch) {
-    if (!rch->collection.pit_ut)
+    if (!rch->cd.pit_ut)
         return std::numeric_limits<uint32_t>::max();
 
-    uint32_t ue = rch->collection.update_every_ut / USEC_PER_SEC;
-    uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
-    return pit - rch->collection.cp->duration() + ue;
+    uint32_t ue = rch->cd.update_every_ut / USEC_PER_SEC;
+    uint32_t pit = rch->cd.pit_ut / USEC_PER_SEC;
+    return pit - rch->cd.cp.duration() + ue;
 }
 
 static uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch) {
-    if (!rch->collection.pit_ut)
+    if (!rch->cd.pit_ut)
         return std::numeric_limits<uint32_t>::min();
 
-    return (rch->collection.pit_ut + rch->collection.update_every_ut) / USEC_PER_SEC;
+    return (rch->cd.pit_ut + rch->cd.update_every_ut) / USEC_PER_SEC;
 }
 
 static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protect)
 {
     if (protect)
     {
-        spinlock_lock(&rch->collection.lock);
+        spinlock_lock(&rch->cd.lock);
     }
 
     uint32_t gid = rch->rmh->rmg->id;
@@ -170,9 +169,9 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     const rdb::Key key{gid, mid, pit};
     netdata_log_error("Adding key: %s (storage numbers: %zu)",
                       key.toString(true).c_str(),
-                      rch->collection.cp->size());
+                      rch->cd.cp.size());
 
-    rdb::Page P = rch->collection.cp->page();
+    rdb::Page P = rch->cd.cp.page();
 
     // TODO: the max size should be 4096 + 6 bytes. is there
     // any performance difference if the bytes array has exact size?
@@ -186,11 +185,11 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     }
 
     // TODO: make 1024 an SI constant
-    rch->collection.cp->reset(1024);
+    rch->cd.cp.reset(1024);
 
     if (protect)
     {
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
     }
 
     rocksdb::WriteOptions WO;
@@ -213,23 +212,23 @@ static void rdb_store_metric_next_internal_slow(STORAGE_COLLECT_HANDLE *sch,
 {
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     
-    spinlock_lock(&rch->collection.lock);
+    spinlock_lock(&rch->cd.lock);
 
     // this might be the first time we are saving something in the collection handle.
-    if (rch->collection.pit_ut == 0)
+    if (rch->cd.pit_ut == 0)
     {
-        rch->collection.cp->appendPoint(SP);
-        rch->collection.pit_ut = point_in_time_ut;
-        spinlock_unlock(&rch->collection.lock);
+        rch->cd.cp.appendPoint(SP);
+        rch->cd.pit_ut = point_in_time_ut;
+        spinlock_unlock(&rch->cd.lock);
         return;
     }
 
-    if (rch->collection.pit_ut < point_in_time_ut)
+    if (rch->cd.pit_ut < point_in_time_ut)
     {
         // point_in_time is in the future
         netdata_log_error("[1] point_in_time is in the future");
 
-        usec_t delta_ut = point_in_time_ut - rch->collection.pit_ut;
+        usec_t delta_ut = point_in_time_ut - rch->cd.pit_ut;
 
         if (delta_ut < update_every_ut)
         {
@@ -246,7 +245,7 @@ static void rdb_store_metric_next_internal_slow(STORAGE_COLLECT_HANDLE *sch,
             // aligned but in the future
             size_t points_gap = delta_ut / update_every_ut;
 
-            if (points_gap >= rch->collection.cp->capacity())
+            if (points_gap >= rch->cd.cp.capacity())
             {
                 // we can't store any points in the current page
                 rdb_store_metric_flush_internal(rch, false);
@@ -256,11 +255,11 @@ static void rdb_store_metric_next_internal_slow(STORAGE_COLLECT_HANDLE *sch,
                 // fill gaps in the current page
                 usec_t stop_ut = point_in_time_ut - update_every_ut;
 
-                for (usec_t this_ut = (rch->collection.pit_ut + update_every_ut);
+                for (usec_t this_ut = (rch->cd.pit_ut + update_every_ut);
                      this_ut <= stop_ut;
-                     this_ut = (rch->collection.pit_ut + update_every_ut))
+                     this_ut = (rch->cd.pit_ut + update_every_ut))
                 {
-                    spinlock_unlock(&rch->collection.lock);
+                    spinlock_unlock(&rch->cd.lock);
 
                     STORAGE_POINT EmptySP = {
                         .min = NAN,
@@ -277,29 +276,29 @@ static void rdb_store_metric_next_internal_slow(STORAGE_COLLECT_HANDLE *sch,
                     };
 
                     rdb_store_metric_next_internal(sch, EmptySP, this_ut);
-                    spinlock_lock(&rch->collection.lock);
+                    spinlock_lock(&rch->cd.lock);
                 }
             }
         }
 
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
         rdb_store_metric_next_internal(sch, SP, point_in_time_ut);
         return;
     }
-    else if (rch->collection.pit_ut > point_in_time_ut)
+    else if (rch->cd.pit_ut > point_in_time_ut)
     {
         netdata_log_error("[2] point_in_time is in the past");
 
         // point_in_time is in the past, nothing to do
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
         return;
     }
-    else if (rch->collection.pit_ut == point_in_time_ut)
+    else if (rch->cd.pit_ut == point_in_time_ut)
     {
         netdata_log_error("[3] point_in_time has not progressed");
 
         // point_in_time has already been saved, nothing to do
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
         return;
     }
     else
@@ -314,62 +313,43 @@ static inline void rdb_store_metric_next_internal(STORAGE_COLLECT_HANDLE *sch,
 {
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
-    spinlock_lock(&rch->collection.lock);
+    spinlock_lock(&rch->cd.lock);
 
-    if (unlikely(rch->collection.cp->capacity() == 0))
+    if (unlikely(rch->cd.cp.capacity() == 0))
     {
         rdb_store_metric_flush_internal(rch, false);
     }
 
-    usec_t delta_ut = point_in_time_ut - rch->collection.pit_ut;
-    usec_t update_every_ut = rch->collection.update_every_ut;
+    usec_t delta_ut = point_in_time_ut - rch->cd.pit_ut;
+    usec_t update_every_ut = rch->cd.update_every_ut;
 
     if (unlikely(delta_ut != update_every_ut))
     {
-        spinlock_unlock(&rch->collection.lock);
+        spinlock_unlock(&rch->cd.lock);
         rdb_store_metric_next_internal_slow(sch, SP, point_in_time_ut, update_every_ut);
         return;
     }
 
-    rch->collection.cp->appendPoint(SP);
+    rch->cd.cp.appendPoint(SP);
 
-    rch->collection.pit_ut += update_every_ut;
-    spinlock_unlock(&rch->collection.lock);
+    rch->cd.pit_ut += update_every_ut;
+    spinlock_unlock(&rch->cd.lock);
 }
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
     rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
-
-    // link metric handle to its group
     rmh->rmg = rmg;
 
-    // initialize a new collection handle
-    rdb_collect_handle *rch = new rdb_collect_handle();
-
-    rch->common.backend = STORAGE_ENGINE_BACKEND_RDB;
-    rch->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
-
-    // TODO: make 1024 an SI constant
-    uint32_t initial_slots = (rmg->id % 1024) + 1;
-
-    spinlock_init(&rch->collection.lock);
-    rch->collection.pit_ut = 0;
-    rch->collection.update_every_ut = update_every * USEC_PER_SEC;
-
     std::optional<rdb::Page> OP = rdb::Page::create(*rmg->arena, rdb::PageOptions());
-    if (!OP.has_value()) {
-        fatal("Could not create new page for collection handle.");
-    }
+    uint32_t initial_slots = (rmg->id % 1024) + 1;
+    rdb::CollectionPage CP = rdb::CollectionPage(OP.value(), initial_slots);
 
-    rch->collection.cp = rdb::CollectionPage(OP.value(), initial_slots);
-    rch->collection.cp->setUpdateEvery(update_every);
+    struct rdb_collect_handle::collection_data cd(CP, update_every);
+    rmh->rch = new rdb_collect_handle(rmg, rmh, cd);
 
-    // link collection handle to its metric
-    rmh->rch = rch;
-
-    return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
+    return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rmh->rch);
 }
 
 void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
@@ -397,14 +377,14 @@ void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, i
 {
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
-    spinlock_lock(&rch->collection.lock);
+    spinlock_lock(&rch->cd.lock);
 
     rdb_store_metric_flush_internal(rch, false);
 
-    rch->collection.update_every_ut = update_every_s * USEC_PER_SEC;
-    rch->collection.cp->setUpdateEvery(update_every_s);
+    rch->cd.update_every_ut = update_every_s * USEC_PER_SEC;
+    rch->cd.cp.setUpdateEvery(update_every_s);
 
-    spinlock_unlock(&rch->collection.lock);
+    spinlock_unlock(&rch->cd.lock);
 }
 
 void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch)

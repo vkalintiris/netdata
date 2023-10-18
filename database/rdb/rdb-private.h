@@ -596,13 +596,26 @@ struct rdb_collect_handle
     rdb_metric_handle *rmh;
 
     // collection data
-    struct {
+    struct collection_data {
         // Can we make the lock per-thread?
-        SPINLOCK lock;
+        rdb::CollectionPage cp;
         usec_t pit_ut;
         usec_t update_every_ut;
-        std::optional<rdb::CollectionPage> cp;
-    } collection;
+        SPINLOCK lock;
+
+        collection_data(rdb::CollectionPage &cp, uint32_t update_every)
+            : cp(cp), pit_ut(0), update_every_ut(update_every * USEC_PER_SEC)
+        {
+            spinlock_init(&lock);
+        }
+    } cd;
+
+    rdb_collect_handle(rdb_metrics_group *rmg,
+                       rdb_metric_handle *rmh,
+                       collection_data &cd)
+        : common({ .backend = STORAGE_ENGINE_BACKEND_RDB }),
+          rmg(rmg), rmh(reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh)))), cd(cd)
+    { }
 };
 
 namespace rdb {
