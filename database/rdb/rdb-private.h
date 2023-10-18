@@ -746,18 +746,18 @@ private:
             spinlock_lock(&Lock);
         }
 
-        if (!CurrPIT)
+        if (!CP.duration())
         {
             if (Protect)
             {
                 spinlock_unlock(&Lock);
             }
 
-            netdata_log_error("Page can not be flushed because it's empty");
+            netdata_log_error("Not flushing because page's duration is 0");
             return;
         }
 
-        uint32_t StartPIT = (CurrPIT + UE) / USEC_PER_SEC - CP.duration();
+        uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
 
         const Key K{GID, MID, StartPIT};
         netdata_log_error("Adding key: %s (storage numbers: %zu)",
@@ -820,9 +820,10 @@ private:
         }
 
         if (CurrPIT)
-            Before = CurrPIT + (CP.duration() * USEC_PER_SEC);
+            Before = CurrPIT + UE;
 
-        if (Protect) {
+        if (Protect)
+        {
             spinlock_unlock(&Lock);
         }
 
@@ -879,6 +880,17 @@ public:
     [[nodiscard]] inline usec_t before() const
     {
         return before_internal(true);
+    }
+
+    [[nodiscard]] inline usec_t duration() const
+    {
+        spinlock_lock(&Lock);
+
+        usec_t D = before_internal(false) - after_internal(false);
+
+        spinlock_unlock(&Lock);
+
+        return D;
     }
 
 private:

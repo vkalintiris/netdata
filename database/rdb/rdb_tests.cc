@@ -83,7 +83,6 @@ TEST(rdb, CollectionHandle)
     using namespace rdb;
 
     PageOptions PO;
-    PO.capacity = 4;
     PO.initial_slots = 4;
     PO.update_every = 1;
 
@@ -93,11 +92,12 @@ TEST(rdb, CollectionHandle)
 
     EXPECT_EQ(CH->after(), 0);
     EXPECT_EQ(CH->before(), 0);
+    EXPECT_EQ(CH->duration(), 0);
 
-    STORAGE_POINT SP1 = {
-        .min = 1,
-        .max = 1,
-        .sum = 1,
+    STORAGE_POINT SP = {
+        .min = 0,
+        .max = 0,
+        .sum = 0,
 
         .start_time_s = 0,
         .end_time_s = 0,
@@ -108,29 +108,49 @@ TEST(rdb, CollectionHandle)
         .flags = SN_DEFAULT_FLAGS,
     };
 
-    STORAGE_POINT SP2 = SP1;
-    SP2.min = SP2.max = SP2.sum = 2;
+    // Fill the entire page
+    for (uint32_t i = 0; i != PO.initial_slots; i++)
+    {
+        usec_t PIT = (10 + i) * USEC_PER_SEC;
+        usec_t After = 10 * USEC_PER_SEC;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
 
-    STORAGE_POINT SP3 = SP1;
-    SP3.min = SP3.max = SP3.sum = 3;
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
+    }
 
-    STORAGE_POINT SP4 = SP1;
-    SP4.min = SP4.max = SP4.sum = 4;
+    // Adding a new point will cause the handle to flush the page
+    {
+        uint32_t i = PO.initial_slots;
+        usec_t PIT = (10 + i) * USEC_PER_SEC;
+        usec_t After = PIT;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = PO.update_every * USEC_PER_SEC;
 
-    CH->store_next(10 * USEC_PER_SEC, SP1);
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
 
-    EXPECT_EQ(CH->after(), 10 * USEC_PER_SEC);
-    EXPECT_EQ(CH->before(), (10 + PO.update_every) * USEC_PER_SEC);
+        // Flushing should maintain the handle's PIT
+        CH->flush();
+        EXPECT_EQ(CH->after(), Before);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), 0);
 
+        // No effect if we flush twice without adding new elements
+        CH->flush();
+        EXPECT_EQ(CH->after(), Before);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), 0);
+    }
+
+    storage_instance_delete();
+    temp_dir_delete(TmpDir);
     return;
-    netdata_log_error("Will store SP2");
-    CH->store_next(11 * USEC_PER_SEC, SP2);
-
-    netdata_log_error("Will store SP3");
-    CH->store_next(12 * USEC_PER_SEC, SP3);
-
-    netdata_log_error("Will store SP4");
-    CH->store_next(13 * USEC_PER_SEC, SP4);
 
     netdata_log_error("Will flush");
     CH->flush();
