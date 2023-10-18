@@ -123,30 +123,53 @@ TEST(rdb, CollectionHandle)
     }
 
     // Adding a new point will cause the handle to flush the page
+    uint32_t i = PO.initial_slots;
+    usec_t PIT = (10 + i) * USEC_PER_SEC;
+    usec_t After = PIT;
+    usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+    usec_t Duration = PO.update_every * USEC_PER_SEC;
+
+    CH->store_next(PIT, SP);
+    EXPECT_EQ(CH->after(), After);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), Duration);
+
+    // Flushing should maintain the handle's PIT
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
+
+    // No effect if we flush twice without adding new elements
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
+
+    // ... repeatedly
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
+
+    // After the original flush the page should be able to hold 1024 points
+    usec_t StartPIT = Before;
+    for (uint32_t i = 0; i != PO.capacity; i++)
     {
-        uint32_t i = PO.initial_slots;
-        usec_t PIT = (10 + i) * USEC_PER_SEC;
-        usec_t After = PIT;
+        usec_t PIT = StartPIT + i * USEC_PER_SEC;
         usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-        usec_t Duration = PO.update_every * USEC_PER_SEC;
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
 
         CH->store_next(PIT, SP);
-        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->after(), StartPIT);
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
-
-        // Flushing should maintain the handle's PIT
-        CH->flush();
-        EXPECT_EQ(CH->after(), Before);
-        EXPECT_EQ(CH->before(), Before);
-        EXPECT_EQ(CH->duration(), 0);
-
-        // No effect if we flush twice without adding new elements
-        CH->flush();
-        EXPECT_EQ(CH->after(), Before);
-        EXPECT_EQ(CH->before(), Before);
-        EXPECT_EQ(CH->duration(), 0);
     }
+
+    // Adding a new point will cause the handle to flush the page
+    CH->store_next(CH->before(), SP);
+    EXPECT_EQ(CH->before(), CH->after() + (PO.update_every * USEC_PER_SEC));
+    EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
 
     storage_instance_delete();
     temp_dir_delete(TmpDir);

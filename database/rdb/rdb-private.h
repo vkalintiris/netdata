@@ -760,7 +760,7 @@ private:
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
 
         const Key K{GID, MID, StartPIT};
-        netdata_log_error("Adding key: %s (storage numbers: %zu)",
+        netdata_log_error("Adding key: %s (storage numbers: %u)",
                           K.toString(true).c_str(), CP.size());
 
         // TODO: the max size should be 4096 + 6 bytes. is there
