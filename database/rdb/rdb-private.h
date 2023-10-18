@@ -449,39 +449,39 @@ private:
 class CollectionPage
 {
 public:
-    CollectionPage(Page MutablePage, const PageOptions &PO)
-        : MutablePage(MutablePage), Slots(PO.initial_slots) { }
+    CollectionPage(Page P, const PageOptions &PO)
+        : Inner(P), Slots(PO.initial_slots) { }
 
     inline void appendPoint(STORAGE_POINT &SP)
     {
-        MutablePage.appendPoint(SP);
+        Inner.appendPoint(SP);
         Slots--;
     }
 
     inline void setUpdateEvery(uint32_t UE)
     {
-        MutablePage.setUpdateEvery(UE);
+        Inner.setUpdateEvery(UE);
     }
 
     [[nodiscard]] inline uint32_t getUpdateEvery() const
     {
-        return MutablePage.updateEvery();
+        return Inner.updateEvery();
     }
 
     inline void reset(uint32_t Slots)
     {
-        MutablePage.reset();
+        Inner.reset();
         this->Slots = Slots;
     }
 
     [[nodiscard]] inline uint32_t duration() const
     {
-        return MutablePage.duration();
+        return Inner.duration();
     }
 
     [[nodiscard]] inline uint32_t size() const
     {
-        return MutablePage.size();
+        return Inner.size();
     }
 
     [[nodiscard]] inline uint32_t capacity() const
@@ -491,11 +491,11 @@ public:
 
     [[nodiscard]] Page page() const
     {
-        return MutablePage;
+        return Inner;
     }
 
 private:
-    Page MutablePage;
+    Page Inner;
     uint32_t Slots;
 };
 
