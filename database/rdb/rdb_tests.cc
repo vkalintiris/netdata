@@ -1,13 +1,5 @@
 #include "rdb-private.h"
 
-#include <rocksdb/statistics.h>
-#include <rocksdb/advanced_options.h>
-#include <rocksdb/table.h>
-
-#include <gtest/gtest.h>
-
-#include <random>
-
 static std::random_device RandDev;
 static std::mt19937 Gen(RandDev());
 static std::uniform_int_distribution<uint32_t> Dist(std::numeric_limits<uint32_t>::min(),
@@ -22,7 +14,7 @@ TEST(rdb, Key)
         uint32_t pit = Dist(Gen);
 
         rdb::Key k1{gid, mid, pit};
-        Slice s1 = k1.slice();
+        rdb::Slice s1 = k1.slice();
 
         rdb::Key k2{s1};
 

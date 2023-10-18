@@ -1,23 +1,24 @@
 #ifndef RDB_PRIVATE_H
 #define RDB_PRIVATE_H
 
-#include "rdb.h"
-#include "uuid_shard.h"
 #include "barrier.h"
 #include "protos/rdbv.pb.h"
+#include "rdb.h"
+#include "uuid_shard.h"
 
-#include <google/protobuf/arena.h>
+#include <rocksdb/advanced_options.h>
 #include <rocksdb/db.h>
+#include <rocksdb/statistics.h>
+#include <rocksdb/table.h>
 
-namespace rocksdb
-{
-    class DB;
-};
-
-using rocksdb::Slice;
+#ifdef ENABLE_TESTS
+#include <gtest/gtest.h>
+#include <random>
+#endif
 
 namespace rdb {
 
+using Slice = rocksdb::Slice;
 using Value = rdbv::RdbValue;
 using StorageNumbersPage = rdbv::StorageNumbersPage;
 
