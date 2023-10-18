@@ -1,10 +1,5 @@
 #include "database/rdb/protos/rdbv.pb.h"
-#include "database/rdb/rdb-private.h"
-#include "libnetdata/locks/locks.h"
-#include "rdb.h"
 #include "rdb-private.h"
-#include <google/protobuf/arena.h>
-#include <limits>
 
 namespace pb = google::protobuf;
 
@@ -14,7 +9,6 @@ using rocksdb::Iterator;
 using rocksdb::ReadOptions;
 
 using rdbv::RdbValue;
-using rdbv::StorageNumbersPage;
 
 static inline uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch);
 static inline uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch);
@@ -33,7 +27,7 @@ static const char *page_case_string(const RdbValue::PageCase &PC)
     }
 }
 
-ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
+rdb::ValueWrapper rdb::ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
 {
     RdbValue *Value = pb::Arena::CreateMessage<rdbv::RdbValue>(Arena);
 
@@ -58,7 +52,7 @@ ValueWrapper ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint3
     return VW;
 }
 
-inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
+inline bool rdb::ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
                                       NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                                       uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
@@ -86,14 +80,14 @@ inline bool ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
     return true;
 }
 
-const Slice ValueWrapper::flush(char *buffer, size_t n) const
+const Slice rdb::ValueWrapper::flush(char *buffer, size_t n) const
 {
     size_t nbytes = Value->ByteSizeLong();
     Value->SerializeToArray(buffer, n);
     return rocksdb::Slice(buffer, nbytes);
 }
 
-void ValueWrapper::reset(uint32_t Slots)
+void rdb::ValueWrapper::reset(uint32_t Slots)
 {
     switch (Value->Page_case())
     {
@@ -402,7 +396,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     spinlock_init(&rch->collection.lock);
     rch->collection.pit_ut = 0;
     rch->collection.update_every_ut = update_every * USEC_PER_SEC;
-    rch->collection.value = ValueWrapper::create(RdbValue::PageCase::kStorageNumbersPage, rmg->arena, initial_slots, update_every);
+    rch->collection.value = rdb::ValueWrapper::create(RdbValue::PageCase::kStorageNumbersPage, rmg->arena, initial_slots, update_every);
 
     // link collection handle to its metric
     rmh->rch = rch;

@@ -516,8 +516,6 @@ public:
     std::unordered_map<pid_t, pb::Arena *> Arenas;
 };
 
-} // namespace rdb
-
 class ValueWrapper
 {
 public:
@@ -578,6 +576,8 @@ private:
     uint32_t Slots;
 };
 
+} // namespace rdb
+
 struct rdb_collect_handle;
 
 struct rdb_metrics_group
@@ -613,7 +613,7 @@ struct rdb_collect_handle
         SPINLOCK lock;
         usec_t pit_ut;
         usec_t update_every_ut;
-        ValueWrapper value;
+        rdb::ValueWrapper value;
     } collection;
 };
 
