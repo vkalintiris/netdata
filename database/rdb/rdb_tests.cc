@@ -43,7 +43,7 @@ TEST(rdb, ImmutablePage)
                   [](){ return Dist(Gen); });
 
     google::protobuf::Arena A;
-    std::optional<rdb::Page> OP = rdb::Page::create(A, N);
+    std::optional<rdb::Page> OP = rdb::Page::create(A, rdb::PageOptions());
     EXPECT_TRUE(OP.has_value());
 
     uint32_t UE = 2;

@@ -110,6 +110,14 @@ enum class PageType : uint8_t
     StorageNumbersPage = Value::PageCase::kStorageNumbersPage,
 };
 
+struct PageOptions
+{
+    PageType page_type = PageType::StorageNumbersPage;
+    uint32_t capacity = 1024;
+
+    PageOptions() {}
+};
+
 class Page
 {
 public:
@@ -254,14 +262,14 @@ public:
         return Page(V);
     }
 
-    static std::optional<Page> create(pb::Arena &Arena, uint32_t Capacity)
+    static std::optional<Page> create(pb::Arena &Arena, const PageOptions &PO)
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
             return {};
 
         Page P(V);
-        P.reserve(Capacity);
+        P.reserve(PO.page_type, PO.capacity);
         return P;
     }
 
@@ -395,9 +403,9 @@ public:
     }
 
 private:
-    inline void reserve(uint32_t N)
+    inline void reserve(PageType PT, uint32_t N)
     {
-        switch (pageType())
+        switch (PT)
         {
             case PageType::StorageNumbersPage:
             {
