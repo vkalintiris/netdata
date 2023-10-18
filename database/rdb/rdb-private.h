@@ -658,19 +658,23 @@ private:
         if (CurrPIT < PIT)
         {
             // point_in_time is in the future
-            netdata_log_error("[1] point_in_time is in the future");
-
             usec_t Delta = PIT - CurrPIT;
 
             if (Delta < UE)
             {
                 // step is too small
                 flush_internal(false);
+                fatal("Ask @ktsaou: should we ignore the point or change the collection frequency?");
+                CurrPIT = PIT - Delta;
+                UE = Delta;
             }
-            else if (Delta < UE)
+            else if (Delta % UE)
             {
                 // step is unaligned
                 flush_internal(false);
+                fatal("Ask @ktsaou: should we ignore the point or change the collection frequency?");
+                CurrPIT = PIT - Delta;
+                UE = Delta;
             }
             else
             {
@@ -681,6 +685,7 @@ private:
                 {
                     // we can't store any points in the current page
                     flush_internal(false);
+                    CurrPIT = PIT - UE;
                 }
                 else
                 {
