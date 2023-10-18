@@ -18,8 +18,6 @@
 #include <rocksdb/statistics.h>
 
 #include "rdb-private.h"
-#include "uuid_shard.h"
-#include "si.h"
 
 StorageInstance *SI = nullptr;
 

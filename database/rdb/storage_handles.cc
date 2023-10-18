@@ -2,7 +2,7 @@
 #include "database/rdb/rdb-private.h"
 #include "libnetdata/locks/locks.h"
 #include "rdb.h"
-#include "si.h"
+#include "rdb-private.h"
 #include <google/protobuf/arena.h>
 #include <limits>
 

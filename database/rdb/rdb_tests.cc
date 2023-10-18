@@ -9,7 +9,6 @@
 
 #include "rdb.h"
 #include "rdb-private.h"
-#include "si.h"
 
 static std::random_device RandDev;
 static std::mt19937 Gen(RandDev());

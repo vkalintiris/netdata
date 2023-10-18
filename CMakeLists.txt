@@ -699,7 +699,6 @@ if(ENABLE_RDB)
                                  database/rdb/storage_handles.cc
                                  database/rdb/rdb.cc
                                  database/rdb/rdb.h
-                                 database/rdb/si.h
                                  database/rdb/uuid_shard.h)
 endif()
 
