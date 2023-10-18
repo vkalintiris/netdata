@@ -463,15 +463,15 @@ public:
         Inner.setUpdateEvery(UE);
     }
 
-    [[nodiscard]] inline uint32_t getUpdateEvery() const
-    {
-        return Inner.updateEvery();
-    }
-
     inline void reset(uint32_t Slots)
     {
         Inner.reset();
         this->Slots = Slots;
+    }
+
+    [[nodiscard]] inline uint32_t getUpdateEvery() const
+    {
+        return Inner.updateEvery();
     }
 
     [[nodiscard]] inline uint32_t duration() const
