@@ -120,6 +120,8 @@ struct PageOptions
 {
     PageType page_type = PageType::StorageNumbersPage;
     uint32_t capacity = 1024;
+    uint32_t initial_slots = 1024;
+    uint32_t update_every = 1;
 
     PageOptions() {}
 };
@@ -275,7 +277,9 @@ public:
             return {};
 
         Page P(V);
+
         P.reserve(PO.page_type, PO.capacity);
+        P.setUpdateEvery(PO.update_every);
         return P;
     }
 
@@ -315,7 +319,7 @@ public:
             case PageType::StorageNumbersPage:
             {
                 auto &SNP = V->storage_numbers_page();
-                assert(index < SNP.storage_numbers_size());
+                assert(Pos < SNP.storage_numbers_size());
                 storage_number SN = SNP.storage_numbers().Get(Pos);
 
                 STORAGE_POINT SP;
@@ -345,6 +349,20 @@ public:
             {
                 const StorageNumbersPage &SNP = V->storage_numbers_page();
                 return SNP.storage_numbers_size() * SNP.update_every();
+            }
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+    [[nodiscard]] inline uint32_t updateEvery() const
+    {
+        switch (pageType())
+        {
+            case PageType::StorageNumbersPage:
+            {
+                const StorageNumbersPage &SNP = V->storage_numbers_page();
+                return SNP.update_every();
             }
             default:
                 __builtin_unreachable();
@@ -399,7 +417,7 @@ public:
             {
                 StorageNumbersPage *SNP = V->mutable_storage_numbers_page();
                 pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-
+                
                 SNs->Clear();
                 break;
             }
@@ -431,8 +449,8 @@ private:
 class CollectionPage
 {
 public:
-    CollectionPage(Page MutablePage, uint32_t Slots)
-        : MutablePage(MutablePage), Slots(Slots) { }
+    CollectionPage(Page MutablePage, const PageOptions &PO)
+        : MutablePage(MutablePage), Slots(PO.initial_slots) { }
 
     inline void appendPoint(STORAGE_POINT &SP)
     {
@@ -441,6 +459,11 @@ public:
     }
 
     inline void setUpdateEvery(uint32_t UE)
+    {
+        MutablePage.setUpdateEvery(UE);
+    }
+
+    inline void getUpdateEvery(uint32_t UE)
     {
         MutablePage.setUpdateEvery(UE);
     }
@@ -463,7 +486,7 @@ public:
 
     [[nodiscard]] inline uint32_t capacity() const
     {
-            return Slots;
+        return Slots;
     }
 
     [[nodiscard]] Page page() const
@@ -586,44 +609,299 @@ struct rdb_metric_handle
     rdb_collect_handle *rch;
 };
 
-struct rdb_collect_handle
-{
-    // has to be first item
-    struct storage_collect_handle common;
-
-    // back-links to group/metric handles
-    rdb_metrics_group *rmg;
-    rdb_metric_handle *rmh;
-
-    // collection data
-    struct collection_data {
-        // Can we make the lock per-thread?
-        rdb::CollectionPage cp;
-        usec_t pit_ut;
-        usec_t update_every_ut;
-        SPINLOCK lock;
-
-        collection_data(rdb::CollectionPage &cp, uint32_t update_every)
-            : cp(cp), pit_ut(0), update_every_ut(update_every * USEC_PER_SEC)
-        {
-            spinlock_init(&lock);
-        }
-    } cd;
-
-    rdb_collect_handle(rdb_metrics_group *rmg,
-                       rdb_metric_handle *rmh,
-                       collection_data &cd)
-        : common({ .backend = STORAGE_ENGINE_BACKEND_RDB }),
-          rmg(rmg), rmh(reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh)))), cd(cd)
-    { }
-};
-
 namespace rdb {
     using StorageInstance = rdb::StorageInstanceHandler<rdb_metrics_group, rdb_metric_handle>;
 }
 
 extern rdb::StorageInstance *SI;
-
 extern std::atomic<size_t> num_pages_written;
+
+namespace rdb {
+    
+class CollectionHandle
+{
+public:
+    static std::optional<CollectionHandle> create(pb::Arena &Arena, const PageOptions &PO,
+                                                  uint32_t GID, uint32_t MID)
+    {
+        std::optional<rdb::Page> OP = rdb::Page::create(Arena, PO);
+        if (!OP.has_value())
+            return {};
+
+        CollectionPage CP = CollectionPage(OP.value(), PO);
+        return CollectionHandle(GID, MID, CP);
+    }
+
+private:
+    CollectionHandle(uint32_t GID, uint32_t MID,
+                     CollectionPage &CP)
+        : GID(GID), MID(MID),
+          CurrPIT(0), UE(0),
+          CP(CP)
+    {
+        spinlock_init(&Lock);        
+    }
+
+    void store_next_internal(usec_t PIT, STORAGE_POINT &SP)
+    {
+        spinlock_lock(&Lock);
+
+        // this might be the first time we are saving something in the collection handle.
+        if (CurrPIT == 0)
+        {
+            CP.appendPoint(SP);
+            CurrPIT = PIT;
+            spinlock_unlock(&Lock);
+            return;
+        }
+
+        if (CurrPIT < PIT)
+        {
+            // point_in_time is in the future
+            netdata_log_error("[1] point_in_time is in the future");
+
+            usec_t Delta = PIT - CurrPIT;
+
+            if (Delta < UE)
+            {
+                // step is too small
+                flush_internal(false);
+            }
+            else if (Delta < UE)
+            {
+                // step is unaligned
+                flush_internal(false);
+            }
+            else
+            {
+                // aligned but in the future
+                size_t PointsInGap = Delta / UE;
+
+                if (PointsInGap >= CP.capacity())
+                {
+                    // we can't store any points in the current page
+                    flush_internal(false);
+                }
+                else
+                {
+                    // fill gaps in the current page
+                    usec_t StopPIT = PIT - UE;
+
+                    for (usec_t ThisPIT = (CurrPIT + UE);
+                         ThisPIT <= StopPIT;
+                         ThisPIT = (CurrPIT + UE))
+                    {
+                        spinlock_unlock(&Lock);
+
+                        STORAGE_POINT EmptySP = {
+                            .min = NAN,
+                            .max = NAN,
+                            .sum = NAN,
+
+                            .start_time_s = 0,
+                            .end_time_s = 0,
+
+                            .count = 1,
+                            .anomaly_count = 0,
+
+                            .flags = SN_EMPTY_SLOT,
+                        };
+                        store_next(ThisPIT, EmptySP);
+
+                        spinlock_lock(&Lock);
+                    }
+                }
+            }
+
+            spinlock_unlock(&Lock);
+            store_next(PIT, SP);
+            return;
+        }
+        else if (CurrPIT > PIT)
+        {
+            netdata_log_error("[2] point_in_time is in the past");
+
+            // point_in_time is in the past, nothing to do
+            spinlock_unlock(&Lock);
+            return;
+        }
+        else if (CurrPIT == PIT)
+        {
+            netdata_log_error("[3] point_in_time has not progressed");
+
+            // point_in_time has already been saved, nothing to do
+            spinlock_unlock(&Lock);
+            return;
+        }
+        else
+        {
+            fatal("WTF?");
+        }
+    }
+        
+    inline void flush_internal(bool Protect)
+    {
+        if (Protect)
+        {
+            spinlock_lock(&Lock);
+        }
+
+        if (!CurrPIT)
+        {
+            if (Protect)
+            {
+                spinlock_unlock(&Lock);
+            }
+
+            netdata_log_error("Page can not be flushed because it's empty");
+            return;
+        }
+
+        uint32_t StartPIT = (CurrPIT + UE) / USEC_PER_SEC - CP.duration();
+
+        const Key K{GID, MID, StartPIT};
+        netdata_log_error("Adding key: %s (storage numbers: %zu)",
+                          K.toString(true).c_str(), CP.size());
+
+        // TODO: the max size should be 4096 + 6 bytes. is there
+        // any performance difference if the bytes array has exact size?
+        // ie. are we hitting hot vs. cold memory on serialization?
+        std::array<char, 64 * 1024> bytes;
+
+        std::optional<const Slice> OV = CP.page().flush(bytes);
+        if (!OV.has_value())
+        {
+            fatal("Failed to flush page...");
+        }
+
+        // TODO: make 1024 an SI constant
+        CP.reset(1024);
+
+        if (Protect)
+        {
+            spinlock_unlock(&Lock);
+        }
+
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        SI->RDB->Put(WO, K.slice(), OV.value());
+
+        num_pages_written++;
+    }
+
+    [[nodiscard]] inline usec_t after_internal(bool Protect) const
+    {
+        usec_t After = 0;
+
+        if (Protect)
+        {
+            spinlock_lock(&Lock);
+        }
+
+        if (CurrPIT)
+            After = CurrPIT + UE - (CP.duration() * USEC_PER_SEC);
+
+        if (Protect)
+        {
+            spinlock_unlock(&Lock);
+        }
+
+        return After;
+    }
+
+    [[nodiscard]] inline usec_t before_internal(bool Protect) const
+    {
+        usec_t Before = 0;
+            
+        if (Protect)
+        {
+            spinlock_lock(&Lock);
+        }
+
+        if (CurrPIT)
+            Before = CurrPIT + (CP.duration() * USEC_PER_SEC);
+
+        if (Protect) {
+            spinlock_unlock(&Lock);
+        }
+
+        return Before;
+    }
+
+public:
+    inline void store_next(usec_t PIT, STORAGE_POINT &SP)
+    {
+        spinlock_lock(&Lock);
+
+        if (unlikely(CP.capacity() == 0))
+        {
+            flush_internal(false);
+        }
+
+        usec_t Delta = PIT - this->CurrPIT;
+
+        if (unlikely(Delta != UE))
+        {
+            spinlock_unlock(&Lock);
+            store_next_internal(PIT, SP);
+            return;
+        }
+
+        CP.appendPoint(SP);
+        this->CurrPIT += UE;
+
+        spinlock_unlock(&Lock);
+    }
+
+    inline void flush()
+    {
+        flush_internal(true);
+    }
+
+    inline void setUpdateEvery(usec_t UE)
+    {
+        spinlock_lock(&Lock);
+
+        flush_internal(false);
+
+        CP.setUpdateEvery(UE / USEC_PER_SEC);
+        this->UE = UE;
+
+        spinlock_unlock(&Lock);
+    }
+
+    [[nodiscard]] inline usec_t after() const
+    {
+        return after_internal(true);
+    }
+
+    [[nodiscard]] inline usec_t before() const
+    {
+        return before_internal(true);
+    }
+
+private:
+    uint32_t GID;
+    uint32_t MID;
+    usec_t CurrPIT;
+    usec_t UE;
+    CollectionPage CP;
+    mutable SPINLOCK Lock;
+};
+
+} // namespace rdb
+
+struct rdb_collect_handle
+{
+    // has to be first item
+    struct storage_collect_handle common;
+
+    // collection data
+    rdb::CollectionHandle ch;
+
+    rdb_collect_handle(rdb::CollectionHandle &CH)
+        : common({ .backend = STORAGE_ENGINE_BACKEND_RDB }), ch(CH) { }
+};
 
 #endif /* RDB_PRIVATE_H */

@@ -71,6 +71,7 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
         for (size_t j = 0; j != dimensions.size(); j++)
         {
             uint32_t val = rand_vals[(i + j) % rand_vals.size()];
+            netdata_log_error("Adding value: %u", val);
             storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
 
@@ -100,7 +101,7 @@ static void gen_thread(size_t thread_id,
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);
     B->wait();
 
-    usec_t point_in_time = 0x00AB0000 * USEC_PER_SEC;
+    usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
@@ -148,9 +149,9 @@ int rdb_main(int argc, char *argv[])
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
     size_t num_threads = 1;
-    size_t num_groups = 4;
-    size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 6 * 3600;
+    size_t num_groups = 1;
+    size_t num_dims_per_group = 1;
+    size_t num_points_per_dimension = 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
@@ -184,21 +185,21 @@ int rdb_main(int argc, char *argv[])
         auto start_time = std::chrono::high_resolution_clock::now();
         while (n--) {
             std::this_thread::sleep_for(std::chrono::seconds{1});
-            auto end_time = std::chrono::high_resolution_clock::now();
+            // auto end_time = std::chrono::high_resolution_clock::now();
 
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
+            // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            // double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
 
-            double pages_per_second = static_cast<double>(num_pages_written) / seconds;
-            double points_per_sec = pages_per_second * 1024;
-            double mib_per_sec = (points_per_sec * sizeof(storage_number)) / (1024.0 * 1024.0);
+            // double pages_per_second = static_cast<double>(num_pages_written) / seconds;
+            // double points_per_sec = pages_per_second * 1024;
+            // double mib_per_sec = (points_per_sec * sizeof(storage_number)) / (1024.0 * 1024.0);
 
-            double capacity = points_per_sec / 2500.0;
+            // double capacity = points_per_sec / 2500.0;
 
-            netdata_log_error("pages/sec: %.1lf, points/sec: %.1lf, mib/sec: %.1lf, capacity: %.1lf (RSS: %zu MiB)",
-                              pages_per_second, points_per_sec, mib_per_sec, capacity, getRSS());
+            // netdata_log_error("pages/sec: %.1lf, points/sec: %.1lf, mib/sec: %.1lf, capacity: %.1lf (RSS: %zu MiB)",
+            //                   pages_per_second, points_per_sec, mib_per_sec, capacity, getRSS());
 
-            SI->RDB->Flush(rocksdb::FlushOptions());
+            // SI->RDB->Flush(rocksdb::FlushOptions());
         }
     }
 

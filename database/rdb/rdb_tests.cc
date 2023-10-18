@@ -1,66 +1,11 @@
 #include "rdb-private.h"
+#include <google/protobuf/arena.h>
 
 static std::random_device RandDev;
 static std::mt19937 Gen(RandDev());
 static std::uniform_int_distribution<uint32_t> Dist(std::numeric_limits<uint32_t>::min(),
                                                     std::numeric_limits<uint32_t>::max());
 
-TEST(rdb, Key)
-{
-    for (size_t i = 0; i != 128; i++)
-    {
-        uint32_t gid = Dist(Gen);
-        uint32_t mid = Dist(Gen);
-        uint32_t pit = Dist(Gen);
-
-        rdb::Key k1{gid, mid, pit};
-        rdb::Slice s1 = k1.slice();
-
-        rdb::Key k2{s1};
-
-        EXPECT_EQ(k1.gid(), k2.gid());
-        EXPECT_EQ(k1.mid(), k2.mid());
-        EXPECT_EQ(k1.pit(), k2.pit());
-    }
-}
-
-TEST(rdb, ImmutablePage)
-{
-    constexpr size_t N = 1;
-    std::vector<uint32_t> random_numbers(N);
-    std::generate(random_numbers.begin(), random_numbers.end(),
-                  [](){ return Dist(Gen); });
-
-    google::protobuf::Arena A;
-    std::optional<rdb::Page> OP = rdb::Page::create(A, rdb::PageOptions());
-    EXPECT_TRUE(OP.has_value());
-
-    uint32_t UE = 2;
-    OP->setUpdateEvery(UE);
-
-    for (uint32_t i : random_numbers)
-    {
-        STORAGE_POINT SP;
-        SP.sum = i;
-        SP.flags = SN_DEFAULT_FLAGS;
-        OP->appendPoint(SP);
-    }
-
-    uint32_t PIT = 3600;
-    size_t i = 0;
-
-    for (auto It = OP->begin(PIT); It != OP->end(); It++)
-    {
-        const STORAGE_POINT &SP = *It;
-        EXPECT_EQ(SP.start_time_s, PIT + (i * UE));
-        EXPECT_EQ(SP.end_time_s, SP.start_time_s + UE);
-
-        NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
-        EXPECT_EQ(SP.sum, exp);
-
-        EXPECT_EQ(SP.flags, SN_DEFAULT_FLAGS);
-    }
-}
 
 static const char *temp_dir_new()
 {
@@ -108,6 +53,124 @@ static void storage_instance_delete()
     SI->close();
     delete SI;
     SI = nullptr;
+}
+
+TEST(rdb, Key)
+{
+    for (size_t i = 0; i != 128; i++)
+    {
+        uint32_t gid = Dist(Gen);
+        uint32_t mid = Dist(Gen);
+        uint32_t pit = Dist(Gen);
+
+        rdb::Key k1{gid, mid, pit};
+        rdb::Slice s1 = k1.slice();
+
+        rdb::Key k2{s1};
+
+        EXPECT_EQ(k1.gid(), k2.gid());
+        EXPECT_EQ(k1.mid(), k2.mid());
+        EXPECT_EQ(k1.pit(), k2.pit());
+    }
+}
+
+TEST(rdb, CollectionHandle)
+{
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
+
+    using namespace rdb;
+
+    PageOptions PO;
+    PO.capacity = 4;
+    PO.initial_slots = 4;
+    PO.update_every = 1;
+
+    pb::Arena Arena;
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    EXPECT_TRUE(CH.has_value());
+
+    EXPECT_EQ(CH->after(), 0);
+    EXPECT_EQ(CH->before(), 0);
+
+    return;
+
+    STORAGE_POINT SP1 = {
+        .min = 1,
+        .max = 1,
+        .sum = 1,
+
+        .start_time_s = 0,
+        .end_time_s = 0,
+
+        .count = 1,
+        .anomaly_count = 0,
+
+        .flags = SN_DEFAULT_FLAGS,
+    };
+
+    STORAGE_POINT SP2 = SP1;
+    SP2.min = SP2.max = SP2.sum = 2;
+
+    STORAGE_POINT SP3 = SP1;
+    SP3.min = SP3.max = SP3.sum = 3;
+
+    STORAGE_POINT SP4 = SP1;
+    SP4.min = SP4.max = SP4.sum = 4;
+
+    netdata_log_error("Will store SP1");
+    CH->store_next(10 * USEC_PER_SEC, SP1);
+
+    netdata_log_error("Will store SP2");
+    CH->store_next(11 * USEC_PER_SEC, SP2);
+
+    netdata_log_error("Will store SP3");
+    CH->store_next(12 * USEC_PER_SEC, SP3);
+
+    netdata_log_error("Will store SP4");
+    CH->store_next(13 * USEC_PER_SEC, SP4);
+
+    netdata_log_error("Will flush");
+    CH->flush();
+}
+
+TEST(rdb, ImmutablePage)
+{
+    constexpr size_t N = 1;
+    std::vector<uint32_t> random_numbers(N);
+    std::generate(random_numbers.begin(), random_numbers.end(),
+                  [](){ return Dist(Gen); });
+
+    google::protobuf::Arena A;
+    std::optional<rdb::Page> OP = rdb::Page::create(A, rdb::PageOptions());
+    EXPECT_TRUE(OP.has_value());
+
+    uint32_t UE = 2;
+    OP->setUpdateEvery(UE);
+
+    for (uint32_t i : random_numbers)
+    {
+        STORAGE_POINT SP;
+        SP.sum = i;
+        SP.flags = SN_DEFAULT_FLAGS;
+        OP->appendPoint(SP);
+    }
+
+    uint32_t PIT = 3600;
+    size_t i = 0;
+
+    for (auto It = OP->begin(PIT); It != OP->end(); It++)
+    {
+        const STORAGE_POINT &SP = *It;
+        EXPECT_EQ(SP.start_time_s, PIT + (i * UE));
+        EXPECT_EQ(SP.end_time_s, SP.start_time_s + UE);
+
+        NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
+        EXPECT_EQ(SP.sum, exp);
+
+        EXPECT_EQ(SP.flags, SN_DEFAULT_FLAGS);
+    }
 }
 
 TEST(rdb, SomeTest) {
