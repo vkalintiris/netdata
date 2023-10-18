@@ -1,16 +1,13 @@
 #ifndef RDB_PRIVATE_H
 #define RDB_PRIVATE_H
 
+#include "rdb.h"
 #include "uuid_shard.h"
 #include "barrier.h"
 #include "protos/rdbv.pb.h"
 
-#include "database/rrd.h"
-
 #include <google/protobuf/arena.h>
 #include <rocksdb/db.h>
-
-#include <iterator>
 
 struct rdb_collect_handle;
 
