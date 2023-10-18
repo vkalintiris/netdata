@@ -463,9 +463,9 @@ public:
         MutablePage.setUpdateEvery(UE);
     }
 
-    inline void getUpdateEvery(uint32_t UE)
+    [[nodiscard]] inline uint32_t getUpdateEvery() const
     {
-        MutablePage.setUpdateEvery(UE);
+        return MutablePage.updateEvery();
     }
 
     inline void reset(uint32_t Slots)
@@ -636,7 +636,7 @@ private:
     CollectionHandle(uint32_t GID, uint32_t MID,
                      CollectionPage &CP)
         : GID(GID), MID(MID),
-          CurrPIT(0), UE(0),
+          CurrPIT(0), UE(CP.getUpdateEvery() * USEC_PER_SEC),
           CP(CP)
     {
         spinlock_init(&Lock);        
@@ -800,7 +800,7 @@ private:
         }
 
         if (CurrPIT)
-            After = CurrPIT + UE - (CP.duration() * USEC_PER_SEC);
+            After = CurrPIT - (CP.duration() * USEC_PER_SEC) + UE;
 
         if (Protect)
         {

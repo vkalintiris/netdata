@@ -94,8 +94,6 @@ TEST(rdb, CollectionHandle)
     EXPECT_EQ(CH->after(), 0);
     EXPECT_EQ(CH->before(), 0);
 
-    return;
-
     STORAGE_POINT SP1 = {
         .min = 1,
         .max = 1,
@@ -119,9 +117,12 @@ TEST(rdb, CollectionHandle)
     STORAGE_POINT SP4 = SP1;
     SP4.min = SP4.max = SP4.sum = 4;
 
-    netdata_log_error("Will store SP1");
     CH->store_next(10 * USEC_PER_SEC, SP1);
 
+    EXPECT_EQ(CH->after(), 10 * USEC_PER_SEC);
+    EXPECT_EQ(CH->before(), (10 + PO.update_every) * USEC_PER_SEC);
+
+    return;
     netdata_log_error("Will store SP2");
     CH->store_next(11 * USEC_PER_SEC, SP2);
 
