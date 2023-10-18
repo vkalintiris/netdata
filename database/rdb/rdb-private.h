@@ -288,7 +288,7 @@ public:
         return static_cast<PageType>(V->Page_case());
     }
 
-    template<uint32_t N>
+    template<size_t N>
     [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
@@ -431,29 +431,34 @@ private:
 class CollectionPage
 {
 public:
-    CollectionPage(Page *MutablePage, uint32_t Slots)
-        : MutablePage(MutablePage), Slots(Slots) {}
+    CollectionPage(Page MutablePage, uint32_t Slots)
+        : MutablePage(MutablePage), Slots(Slots) { }
 
     inline void appendPoint(STORAGE_POINT &SP)
     {
-        MutablePage->appendPoint(SP);
+        MutablePage.appendPoint(SP);
         Slots--;
+    }
+
+    inline void setUpdateEvery(uint32_t UE)
+    {
+        MutablePage.setUpdateEvery(UE);
     }
 
     inline void reset(uint32_t Slots)
     {
-        MutablePage->reset();
+        MutablePage.reset();
         this->Slots = Slots;
     }
 
     [[nodiscard]] inline uint32_t duration() const
     {
-        return MutablePage->duration();
+        return MutablePage.duration();
     }
 
     [[nodiscard]] inline uint32_t size() const
     {
-        return MutablePage->size();
+        return MutablePage.size();
     }
 
     [[nodiscard]] inline uint32_t capacity() const
@@ -461,8 +466,13 @@ public:
             return Slots;
     }
 
+    [[nodiscard]] Page page() const
+    {
+        return MutablePage;
+    }
+
 private:
-    Page *MutablePage;
+    Page MutablePage;
     uint32_t Slots;
 };
 
@@ -554,66 +564,6 @@ public:
     std::unordered_map<pid_t, pb::Arena *> Arenas;
 };
 
-class ValueWrapper
-{
-public:
-    static ValueWrapper create(rdbv::RdbValue::PageCase PC, google::protobuf::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery);
-
-    inline bool appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
-
-    const rocksdb::Slice flush(char *buffer, size_t n) const;
-
-    inline uint32_t capacity() const {
-        return Slots;
-    }
-
-    inline uint32_t size() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage: {
-                return Value->storage_numbers_page().storage_numbers_size();
-            }
-            default:
-                return 0;
-        }
-    }
-
-    inline uint32_t duration() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                return updateEvery() * size();
-            default:
-                return 0;
-        }
-    }
-
-    inline uint32_t updateEvery() const {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                return Value->storage_numbers_page().update_every();
-            default:
-                return 0;
-        }
-    }
-
-    inline void changeCollectionFrequency(uint32_t updateEvery) {
-        switch (Value->Page_case()) {
-            case rdbv::RdbValue::PageCase::kStorageNumbersPage:
-                Value->mutable_storage_numbers_page()->set_update_every(updateEvery);
-                break;
-            default:
-                break;
-        }
-    }
-
-    void reset(uint32_t Slots);
-
-private:
-    rdbv::RdbValue *Value;
-    uint32_t Slots;
-};
-
 } // namespace rdb
 
 struct rdb_collect_handle;
@@ -651,7 +601,7 @@ struct rdb_collect_handle
         SPINLOCK lock;
         usec_t pit_ut;
         usec_t update_every_ut;
-        rdb::ValueWrapper value;
+        std::optional<rdb::CollectionPage> cp;
     } collection;
 };
 

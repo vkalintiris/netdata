@@ -137,7 +137,7 @@ int rdb_main(int argc, char *argv[])
     SI = new rdb::StorageInstance(16);
 
     rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/vk/opt/tmp";
+    const char *Path = "/home/cm/opt/tmp";
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
@@ -147,10 +147,10 @@ int rdb_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 8;
-    size_t num_groups = 5000;
+    size_t num_threads = 1;
+    size_t num_groups = 4;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 365 * 24 * 3600;
+    size_t num_points_per_dimension = 6 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,

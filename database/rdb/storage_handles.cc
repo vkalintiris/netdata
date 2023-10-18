@@ -8,103 +8,8 @@ using rocksdb::Status;
 using rocksdb::Iterator;
 using rocksdb::ReadOptions;
 
-using rdbv::RdbValue;
-
 static inline uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch);
 static inline uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch);
-
-/*===---------------------------------------------------------------------===*/
-/* ValueWrapper                                                                    */
-/*===---------------------------------------------------------------------===*/
-
-static const char *page_case_string(const RdbValue::PageCase &PC)
-{
-    switch (PC) {
-        case RdbValue::PageCase::kStorageNumbersPage:
-            return "StorageNumbersPage";
-        default:
-            return "UknownPage";
-    }
-}
-
-rdb::ValueWrapper rdb::ValueWrapper::create(RdbValue::PageCase PC, pb::Arena *Arena, uint32_t Slots, uint32_t UpdateEvery)
-{
-    RdbValue *Value = pb::Arena::CreateMessage<rdbv::RdbValue>(Arena);
-
-    switch (PC)
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-
-            // Make 1024 an SI constant;
-            SNP->mutable_storage_numbers()->Reserve(1024);
-            SNP->set_update_every(UpdateEvery);
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(PC));
-    }
-
-    ValueWrapper VW;
-    VW.Value = Value;
-    VW.Slots = Slots;
-    return VW;
-}
-
-inline bool rdb::ValueWrapper::appendPoint(usec_t point_in_time_ut, NETDATA_DOUBLE n,
-                                      NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                                      uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
-{
-    UNUSED(point_in_time_ut);
-    UNUSED(min_value);
-    UNUSED(max_value);
-    UNUSED(count);
-    UNUSED(anomaly_count);
-
-    switch (Value->Page_case())
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-
-            SNs->AddAlreadyReserved(pack_storage_number(n, flags));
-            Slots--;
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
-    }
-
-    return true;
-}
-
-const Slice rdb::ValueWrapper::flush(char *buffer, size_t n) const
-{
-    size_t nbytes = Value->ByteSizeLong();
-    Value->SerializeToArray(buffer, n);
-    return rocksdb::Slice(buffer, nbytes);
-}
-
-void rdb::ValueWrapper::reset(uint32_t Slots)
-{
-    switch (Value->Page_case())
-    {
-        case RdbValue::PageCase::kStorageNumbersPage:
-        {
-            StorageNumbersPage *SNP = Value->mutable_storage_numbers_page();
-            pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-
-            SNs->Clear();
-            break;
-        }
-        default:
-            fatal("Unknown page case: %s", page_case_string(Value->Page_case()));
-    }
-
-    this->Slots = Slots;
-}
 
 /*===---------------------------------------------------------------------===*/
 /* Groups                                                                    */
@@ -237,7 +142,7 @@ static uint32_t rdb_store_metric_start_time(const rdb_collect_handle *rch) {
 
     uint32_t ue = rch->collection.update_every_ut / USEC_PER_SEC;
     uint32_t pit = rch->collection.pit_ut / USEC_PER_SEC;
-    return pit - rch->collection.value.duration() + ue;
+    return pit - rch->collection.cp->duration() + ue;
 }
 
 static uint32_t rdb_store_metric_end_time(const rdb_collect_handle *rch) {
@@ -265,16 +170,23 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     const rdb::Key key{gid, mid, pit};
     netdata_log_error("Adding key: %s (storage numbers: %zu)",
                       key.toString(true).c_str(),
-                      rch->collection.value.size());
+                      rch->collection.cp->size());
+
+    rdb::Page P = rch->collection.cp->page();
 
     // TODO: the max size should be 4096 + 6 bytes. is there
     // any performance difference if the bytes array has exact size?
     // ie. are we hitting hot vs. cold memory on serialization?
     std::array<char, 64 * 1024> bytes;
-    const Slice V = rch->collection.value.flush(bytes.data(), bytes.size());
+
+    std::optional<const Slice> OV = P.flush(bytes);
+    if (!OV.has_value())
+    {
+        fatal("Failed to flush page...");
+    }
 
     // TODO: make 1024 an SI constant
-    rch->collection.value.reset(1024);
+    rch->collection.cp->reset(1024);
 
     if (protect)
     {
@@ -284,15 +196,20 @@ static void rdb_store_metric_flush_internal(rdb_collect_handle *rch, bool protec
     rocksdb::WriteOptions WO;
     WO.disableWAL = true;
     WO.sync = false;
-    SI->RDB->Put(WO, key.slice(), V);
+    SI->RDB->Put(WO, key.slice(), OV.value());
 
     num_pages_written++;
 }
 
+static inline void rdb_store_metric_next_internal(STORAGE_COLLECT_HANDLE *sch,
+                                                  STORAGE_POINT &SP,
+                                                  usec_t point_in_time_ut);
+
 [[gnu::cold]]
-static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut, usec_t update_every_ut,
-                                       NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-                                       uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
+static void rdb_store_metric_next_internal_slow(STORAGE_COLLECT_HANDLE *sch,
+                                                STORAGE_POINT &SP,
+                                                usec_t point_in_time_ut,
+                                                usec_t update_every_ut)
 {
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     
@@ -301,7 +218,7 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
     // this might be the first time we are saving something in the collection handle.
     if (rch->collection.pit_ut == 0)
     {
-        rch->collection.value.appendPoint(point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
+        rch->collection.cp->appendPoint(SP);
         rch->collection.pit_ut = point_in_time_ut;
         spinlock_unlock(&rch->collection.lock);
         return;
@@ -329,7 +246,7 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
             // aligned but in the future
             size_t points_gap = delta_ut / update_every_ut;
 
-            if (points_gap >= rch->collection.value.capacity())
+            if (points_gap >= rch->collection.cp->capacity())
             {
                 // we can't store any points in the current page
                 rdb_store_metric_flush_internal(rch, false);
@@ -344,14 +261,29 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
                      this_ut = (rch->collection.pit_ut + update_every_ut))
                 {
                     spinlock_unlock(&rch->collection.lock);
-                    rdb_store_metric_next(sch, this_ut, NAN, NAN, NAN, 1, 0, SN_EMPTY_SLOT);
+
+                    STORAGE_POINT EmptySP = {
+                        .min = NAN,
+                        .max = NAN,
+                        .sum = NAN,
+
+                        .start_time_s = 0,
+                        .end_time_s = 0,
+
+                        .count = 1,
+                        .anomaly_count = 0,
+
+                        .flags = SN_EMPTY_SLOT,
+                    };
+
+                    rdb_store_metric_next_internal(sch, EmptySP, this_ut);
                     spinlock_lock(&rch->collection.lock);
                 }
             }
         }
 
         spinlock_unlock(&rch->collection.lock);
-        rdb_store_metric_next(sch, point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
+        rdb_store_metric_next_internal(sch, SP, point_in_time_ut);
         return;
     }
     else if (rch->collection.pit_ut > point_in_time_ut)
@@ -376,6 +308,35 @@ static void rdb_store_metric_next_slow(STORAGE_COLLECT_HANDLE *sch, usec_t point
     }
 }
 
+static inline void rdb_store_metric_next_internal(STORAGE_COLLECT_HANDLE *sch,
+                                                  STORAGE_POINT &SP,
+                                                  usec_t point_in_time_ut)
+{
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+
+    spinlock_lock(&rch->collection.lock);
+
+    if (unlikely(rch->collection.cp->capacity() == 0))
+    {
+        rdb_store_metric_flush_internal(rch, false);
+    }
+
+    usec_t delta_ut = point_in_time_ut - rch->collection.pit_ut;
+    usec_t update_every_ut = rch->collection.update_every_ut;
+
+    if (unlikely(delta_ut != update_every_ut))
+    {
+        spinlock_unlock(&rch->collection.lock);
+        rdb_store_metric_next_internal_slow(sch, SP, point_in_time_ut, update_every_ut);
+        return;
+    }
+
+    rch->collection.cp->appendPoint(SP);
+
+    rch->collection.pit_ut += update_every_ut;
+    spinlock_unlock(&rch->collection.lock);
+}
+
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg)
 {
     rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
@@ -396,7 +357,14 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32
     spinlock_init(&rch->collection.lock);
     rch->collection.pit_ut = 0;
     rch->collection.update_every_ut = update_every * USEC_PER_SEC;
-    rch->collection.value = rdb::ValueWrapper::create(RdbValue::PageCase::kStorageNumbersPage, rmg->arena, initial_slots, update_every);
+
+    std::optional<rdb::Page> OP = rdb::Page::create(*rmg->arena, rdb::PageOptions());
+    if (!OP.has_value()) {
+        fatal("Could not create new page for collection handle.");
+    }
+
+    rch->collection.cp = rdb::CollectionPage(OP.value(), initial_slots);
+    rch->collection.cp->setUpdateEvery(update_every);
 
     // link collection handle to its metric
     rmh->rch = rch;
@@ -408,28 +376,21 @@ void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
                            NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
-    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+    STORAGE_POINT SP = {
+        .min = min_value,
+        .max = max_value,
+        .sum = n,
 
-    spinlock_lock(&rch->collection.lock);
+        .start_time_s = 0,
+        .end_time_s = 0,
 
-    if (unlikely(rch->collection.value.capacity() == 0))
-    {
-        rdb_store_metric_flush_internal(rch, false);
-    }
+        .count = count,
+        .anomaly_count = anomaly_count,
 
-    usec_t delta_ut = point_in_time_ut - rch->collection.pit_ut;
-    usec_t update_every_ut = rch->collection.update_every_ut;
+        .flags = flags,
+    };
 
-    if (unlikely(delta_ut != update_every_ut))
-    {
-        spinlock_unlock(&rch->collection.lock);
-        rdb_store_metric_next_slow(sch, point_in_time_ut, update_every_ut, n, min_value, max_value, count, anomaly_count, flags);
-        return;
-    }
-
-    rch->collection.value.appendPoint(point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags);
-    rch->collection.pit_ut += update_every_ut;
-    spinlock_unlock(&rch->collection.lock);
+    rdb_store_metric_next_internal(sch, SP, point_in_time_ut);
 }
 
 void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s)
@@ -441,7 +402,7 @@ void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, i
     rdb_store_metric_flush_internal(rch, false);
 
     rch->collection.update_every_ut = update_every_s * USEC_PER_SEC;
-    rch->collection.value.changeCollectionFrequency(update_every_s);
+    rch->collection.cp->setUpdateEvery(update_every_s);
 
     spinlock_unlock(&rch->collection.lock);
 }
