@@ -144,52 +144,65 @@ public:
 
     private:
         PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
-            : IP(IP), PIT(PIT), Pos(Pos) { }
+            : IP(IP), PIT(PIT), Pos(Pos)
+        {
+            netdata_log_error("[PI] Constructing iterator with V=0x%p, Pos=%u, PIT=%u", this->IP->V, Pos, PIT);
+        }
 
     public:
         [[nodiscard]] static PageIterator create(const Page *IP,
                                                  uint32_t Pos,
                                                  uint32_t PIT)
         {
+            netdata_log_error("[PI] Creating iterator with V=0x%p, Pos=%u, PIT=%u", IP->V, Pos, PIT);
             return PageIterator(IP, Pos, PIT);
         }
 
         bool operator==(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [1]");
             // We intentionaly ignore PIT to simplify the begin()/end() API.
             return (IP == Other.IP) && (Pos == Other.Pos);
         }
 
         bool operator!=(const PageIterator& Other) const
         {
-                return !(*this == Other);
+            netdata_log_error("PI: [2]");
+            return !(*this == Other);
         }
 
         inline value_type operator*() const
         {
+            netdata_log_error("Trying to get Pos=%u, PIT=%u, V=0x%p", Pos, PIT, IP->V);
             return IP->get(Pos, PIT);
         }
 
         inline PageIterator& operator++()
         {
+            netdata_log_error("PI: [3]");
             ++Pos;
             return *this;
         }
 
         inline PageIterator& operator--() {
+            netdata_log_error("PI: [4]");
             --Pos;
             return *this;
         }
 
         inline PageIterator operator++(int)
         {
+            netdata_log_error("PI: [5a] this->IP->V=0x%p", this->IP->V);
             PageIterator It = *this;
+            netdata_log_error("PI: [5b] It.IP->V=0x%p", It.IP->V);
             ++(*this);
+            netdata_log_error("PI: [5c] this->IP->V=0x%p, It.IP->V=0x%p", this->IP->V, It.IP->V);
             return It;
         }
 
         inline PageIterator operator--(int)
         {
+            netdata_log_error("PI: [6]");
             PageIterator It = *this;
             --(*this);
             return It;
@@ -197,6 +210,7 @@ public:
 
         inline PageIterator operator+(int N) const
         {
+            netdata_log_error("PI: [7]");
             PageIterator It = *this;
             It.Pos += N;
             return It;
@@ -204,6 +218,7 @@ public:
 
         inline PageIterator operator-(int N) const
         {
+            netdata_log_error("PI: [8]");
             PageIterator It = *this;
             It.Pos -= N;
             return It;
@@ -211,47 +226,55 @@ public:
 
         inline PageIterator& operator+=(int N)
         {
+            netdata_log_error("PI: [9]");
             Pos += N;
             return *this;
         }
 
         inline PageIterator& operator-=(int N)
         {
+            netdata_log_error("PI: [10]");
             Pos -= N;
             return *this;
         }
 
         inline value_type operator[](int N) const
         {
+            netdata_log_error("PI: [11]");
             return IP->get(Pos + N, PIT);
         }
 
         inline bool operator<(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [12]");
             return Pos < Other.Pos;
         }
 
         inline bool operator>(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [13]");
             return Pos > Other.Pos;
         }
 
         inline bool operator<=(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [14]");
             return Pos <= Other.Pos;
         }
 
         inline bool operator>=(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [15]");
             return Pos >= Other.Pos;
         }
 
         inline int operator-(const PageIterator& Other) const
         {
+            netdata_log_error("PI: [16]");
             return Pos - Other.Pos;
         }
 
-    private:
+    public:
         const Page *IP;
         const uint32_t PIT;
         uint32_t Pos;
@@ -308,7 +331,7 @@ public:
             case PageType::StorageNumbersPage:
                 return V->storage_numbers_page().storage_numbers_size();
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[1]");
         }
     }
 
@@ -318,6 +341,7 @@ public:
         {
             case PageType::StorageNumbersPage:
             {
+                netdata_log_error("Getting pos=%u, PIT=%u", Pos, PIT);
                 auto &SNP = V->storage_numbers_page();
                 assert(Pos < SNP.storage_numbers_size());
                 storage_number SN = SNP.storage_numbers().Get(Pos);
@@ -337,7 +361,7 @@ public:
                 return SP;
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[2]");
         }
     }
 
@@ -351,7 +375,7 @@ public:
                 return SNP.storage_numbers_size() * SNP.update_every();
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[3]");
         }
     }
 
@@ -365,7 +389,7 @@ public:
                 return SNP.update_every();
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[4]");
         }
     }
 
@@ -393,7 +417,7 @@ public:
                 break;
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[5]");
         }
     }
 
@@ -405,7 +429,7 @@ public:
                 V->mutable_storage_numbers_page()->set_update_every(updateEvery);
                 break;
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[6]");
         }
     }
 
@@ -422,7 +446,7 @@ public:
                 break;
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[7]");
         }
     }
 
@@ -438,11 +462,11 @@ private:
                 break;
             }
             default:
-                __builtin_unreachable();
+                fatal("Page: Tsimpa[8]");
         }
     }
 
-private:
+public:
     Value *V;
 };
 
@@ -489,9 +513,9 @@ public:
         return Slots;
     }
 
-    [[nodiscard]] Page page() const
+    [[nodiscard]] const Page *page() const
     {
-        return Inner;
+        return &Inner;
     }
 
 private:
@@ -746,6 +770,7 @@ private:
         
     inline void flush_internal(bool Protect)
     {
+        netdata_log_error("Flushing page");
         if (Protect)
         {
             spinlock_lock(&Lock);
@@ -773,7 +798,7 @@ private:
         // ie. are we hitting hot vs. cold memory on serialization?
         std::array<char, 64 * 1024> bytes;
 
-        std::optional<const Slice> OV = CP.page().flush(bytes);
+        std::optional<const Slice> OV = CP.page()->flush(bytes);
         if (!OV.has_value())
         {
             fatal("Failed to flush page...");
@@ -857,6 +882,14 @@ public:
         CP.appendPoint(SP);
         this->CurrPIT += UE;
 
+        switch (CP.page()->pageType())
+        {
+            case PageType::StorageNumbersPage:
+                netdata_log_error("Added point to page type SNP");
+                break;
+            default:
+                fatal("Bad page type");
+        }
         spinlock_unlock(&Lock);
     }
 
@@ -896,6 +929,40 @@ public:
         spinlock_unlock(&Lock);
 
         return D;
+    }
+
+    [[nodiscard]] std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
+    queryLock(usec_t After) const
+    {
+        spinlock_lock(&Lock);
+
+        netdata_log_error("[1] After: %zu, Page After: %zu, Page Before: %zu",
+                          After / USEC_PER_SEC,
+                          after_internal(false) / USEC_PER_SEC,
+                          before_internal(false) / USEC_PER_SEC);
+
+        After = std::max(After, after_internal(false));
+        if (After > before_internal(false))
+        {
+            spinlock_unlock(&Lock);
+            return {};
+        }
+
+        usec_t IndexStart = (After - after_internal(false)) / UE;
+        netdata_log_error("[2] After: %zu, CurrPIT: %zu, IndexStart: %zu",
+                          After / USEC_PER_SEC,
+                          CurrPIT / USEC_PER_SEC,
+                          IndexStart);
+
+        Page::PageIterator It = CP.page()->begin(After / USEC_PER_SEC);
+        // std::advance(It, IndexStart);
+
+        return { { It, CP.page()->end() } };
+    }
+
+    inline void queryUnlock() const
+    {
+        spinlock_unlock(&Lock);
     }
 
 private:
