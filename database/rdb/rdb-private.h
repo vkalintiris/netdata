@@ -293,8 +293,7 @@ public:
         return static_cast<PageType>(V->Page_case());
     }
 
-    template<size_t N>
-    [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
+    template<size_t N> [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
         if (!V->SerializeToArray(AR.data(), AR.size()))
@@ -899,6 +898,7 @@ public:
         return D;
     }
 
+    // The iterator will return all SPs with an QH->after() >= After
     [[nodiscard]] std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
     queryLock(usec_t After) const
     {
@@ -909,21 +909,21 @@ public:
                           after_internal(false) / USEC_PER_SEC,
                           before_internal(false) / USEC_PER_SEC);
 
-        After = std::max(After, after_internal(false));
-        if (After > before_internal(false))
-        {
-            spinlock_unlock(&Lock);
+        if (After == 0)
             return {};
-        }
 
-        usec_t IndexStart = (After - after_internal(false)) / UE;
-        netdata_log_error("[2] After: %zu, CurrPIT: %zu, IndexStart: %zu",
-                          After / USEC_PER_SEC,
-                          CurrPIT / USEC_PER_SEC,
-                          IndexStart);
+        if (After >= before_internal(false))
+            return {};
 
-        Page::PageIterator It = CP.page()->begin(after_internal(false) / USEC_PER_SEC);
-        std::advance(It, IndexStart);
+        if (After % UE)
+            After -= After % UE;
+
+        usec_t AfterCH = after_internal(false);
+        Page::PageIterator It = CP.page()->begin(AfterCH / USEC_PER_SEC);
+
+        After = std::max(After, AfterCH);
+        usec_t Skip = (After - AfterCH) / UE;
+        std::advance(It, Skip);
 
         return { { It, CP.page()->end() } };
     }

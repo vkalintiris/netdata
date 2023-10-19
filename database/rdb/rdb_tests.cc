@@ -1,5 +1,6 @@
 #include "rdb-private.h"
 #include <google/protobuf/arena.h>
+#include <gtest/gtest.h>
 
 static std::random_device RandDev;
 static std::mt19937 Gen(RandDev());
@@ -250,8 +251,9 @@ TEST(rdb, CollectionHandleQuery)
     using namespace rdb;
 
     PageOptions PO;
-    PO.initial_slots = 128;
+    PO.initial_slots = 1024;
     PO.update_every = 5;
+    usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
     auto CH = CollectionHandle::create(Arena, PO, 1, 1);
@@ -272,12 +274,12 @@ TEST(rdb, CollectionHandleQuery)
     };
 
     // Fill the entire page
-    for (uint32_t i = 0; i != 4; i++)
+    const usec_t After = 10 * USEC_PER_SEC;
+    for (uint32_t i = 0; i != PO.initial_slots; i++)
     {
-        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
-        usec_t After = 10 * USEC_PER_SEC;
-        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+        usec_t PIT = After + (i * UE);
+        usec_t Before = PIT + UE;
+        usec_t Duration = (i + 1) * UE;
 
         SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
         CH->store_next(PIT, SP);
@@ -285,29 +287,203 @@ TEST(rdb, CollectionHandleQuery)
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
     }
+    const usec_t Before = CH->before();
 
-    netdata_log_error("Page has range: [%u, %u]",
-                      CH->after() / USEC_PER_SEC,
-                      CH->before() / USEC_PER_SEC);
-
-    auto OP = CH->queryLock(CH->after() + (PO.update_every * USEC_PER_SEC));
-    EXPECT_TRUE(OP.has_value());
-
-    for (Page::PageIterator It = OP->first, End = OP->second;
-         It != End;
-         It++)
+    // Query the entire page range
     {
-        STORAGE_POINT SP = *It;
+        auto OP = CH->queryLock(CH->after());
+        EXPECT_TRUE(OP.has_value());
 
-        netdata_log_error("Start time: %ld, end time: %ld, value: %lf",
-                          SP.start_time_s, SP.end_time_s, SP.sum);
+        uint32_t PIT = After / USEC_PER_SEC;
+        for (Page::PageIterator It = OP->first, End = OP->second;
+             It != End;
+             It++)
+        {
+            STORAGE_POINT SP = *It;
+
+            EXPECT_EQ(SP.start_time_s, PIT);
+            EXPECT_EQ(SP.end_time_s, PIT + PO.update_every);
+            EXPECT_EQ(SP.sum, (It - OP->first) + 666);
+
+            PIT += PO.update_every;
+        }
+        EXPECT_EQ(PIT * USEC_PER_SEC, Before);
+
+        CH->queryUnlock();
     }
 
-    CH->queryUnlock();
+    // Query the first half
+    {
+        auto OP = CH->queryLock(CH->after());
+        EXPECT_TRUE(OP.has_value());
+
+        uint32_t PIT = After / USEC_PER_SEC;
+        for (Page::PageIterator It = OP->first, End = OP->second;
+             It != End;
+             It++)
+        {
+            STORAGE_POINT SP = *It;
+
+            EXPECT_EQ(SP.start_time_s, PIT);
+            EXPECT_EQ(SP.end_time_s, PIT + PO.update_every);
+            EXPECT_EQ(SP.sum, (It - OP->first) + 666);
+
+            PIT += PO.update_every;
+        }
+        EXPECT_EQ(PIT * USEC_PER_SEC, Before);
+
+        CH->queryUnlock();
+    }
 
     storage_instance_delete();
     temp_dir_delete(TmpDir);
 }
+
+TEST(Gpt, EmptyHandleQuery)
+{
+    using namespace rdb;
+
+    pb::Arena Arena;
+    PageOptions PO;
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    ASSERT_TRUE(CH.has_value());
+
+    auto queryResult = CH->queryLock(CH->after());
+    EXPECT_FALSE(queryResult.has_value());
+}
+
+TEST(Gpt, InvalidTimeRangeQuery)
+{
+    using namespace rdb;
+
+    pb::Arena Arena;
+    PageOptions PO;
+    PO.update_every = 5;
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    ASSERT_TRUE(CH.has_value());
+
+    {
+        auto q = CH->queryLock(CH->after());
+        EXPECT_FALSE(q.has_value());
+        CH->queryUnlock();
+    }
+
+    STORAGE_POINT SP = {
+        .min = 6,
+        .max = 6,
+        .sum = 6,
+        .start_time_s = 0,
+        .end_time_s = 0,
+        .count = 1,
+        .anomaly_count = 0,
+        .flags = SN_DEFAULT_FLAGS,
+    };
+    CH->store_next(100 * PO.update_every * USEC_PER_SEC, SP);
+    SP.min = SP.max = SP.sum = 7;
+    CH->store_next(101 * PO.update_every * USEC_PER_SEC, SP);
+
+    // Query the handle with a starting time older than CH's time range
+    {
+        auto q = CH->queryLock((50 * PO.update_every) * USEC_PER_SEC);
+        EXPECT_TRUE(q.has_value());
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 100 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.sum, 6);
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 102 * PO.update_every);
+        EXPECT_EQ(SP.sum, 7);
+
+        EXPECT_EQ(q->first, q->second);
+        CH->queryUnlock();
+    }
+
+    // Query the handle with an valid time range
+    {
+        auto q = CH->queryLock(100 * PO.update_every * USEC_PER_SEC);
+        EXPECT_TRUE(q.has_value());
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 100 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.sum, 6);
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 102 * PO.update_every);
+        EXPECT_EQ(SP.sum, 7);
+
+        EXPECT_EQ(q->first, q->second);
+        CH->queryUnlock();
+    }
+
+    // Query the handle with an valid but unaligned time range
+    {
+        auto q = CH->queryLock((100 * PO.update_every + 1) * USEC_PER_SEC);
+        EXPECT_TRUE(q.has_value());
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 100 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.sum, 6);
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 102 * PO.update_every);
+        EXPECT_EQ(SP.sum, 7);
+
+        EXPECT_EQ(q->first, q->second);
+        CH->queryUnlock();
+    }
+
+    // Query the handle with an valid time at the second point
+    {
+        auto q = CH->queryLock((101 * PO.update_every) * USEC_PER_SEC);
+        EXPECT_TRUE(q.has_value());
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 102 * PO.update_every);
+        EXPECT_EQ(SP.sum, 7);
+
+        EXPECT_EQ(q->first, q->second);
+        CH->queryUnlock();
+    }
+
+    // Query the handle with an valid but unaligned time at the second
+    {
+        auto q = CH->queryLock((101 * PO.update_every + 1) * USEC_PER_SEC);
+        EXPECT_TRUE(q.has_value());
+
+        SP = *q->first++;
+        EXPECT_EQ(SP.start_time_s, 101 * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, 102 * PO.update_every);
+        EXPECT_EQ(SP.sum, 7);
+
+        EXPECT_EQ(q->first, q->second);
+        CH->queryUnlock();
+    }
+
+    // Query the handle with a timepoint past the end of the page
+    {
+        auto q = CH->queryLock((102 * PO.update_every) * USEC_PER_SEC);
+        EXPECT_FALSE(q.has_value());
+
+        CH->queryUnlock();
+    }
+
+    // Query the handle with an unaligned timepoint past the end of the page
+    {
+        auto q = CH->queryLock((102 * PO.update_every + 1) * USEC_PER_SEC);
+        EXPECT_FALSE(q.has_value());
+
+        CH->queryUnlock();
+    }
+}
+
 
 // TEST(rdb, PageIterator)
 // {
