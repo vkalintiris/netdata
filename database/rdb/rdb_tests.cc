@@ -232,7 +232,7 @@ TEST(rdb, CollectionHandleQuery)
     };
 
     // Fill the entire page
-    for (uint32_t i = 0; i != PO.initial_slots / 2; i++)
+    for (uint32_t i = 0; i != 4; i++)
     {
         usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
         usec_t After = 10 * USEC_PER_SEC;
@@ -250,22 +250,18 @@ TEST(rdb, CollectionHandleQuery)
                       CH->after() / USEC_PER_SEC,
                       CH->before() / USEC_PER_SEC);
 
-    auto OP = CH->queryLock(CH->after());
+    auto OP = CH->queryLock(CH->after() + (PO.update_every * USEC_PER_SEC));
     EXPECT_TRUE(OP.has_value());
 
-    int i = 0;
     for (Page::PageIterator It = OP->first, End = OP->second;
-         i++ != 10;)
+         It != End;
+         It++)
     {
-        netdata_log_error("IT.IP->V: 0x%p", It.IP->V);
         STORAGE_POINT SP = *It;
 
         netdata_log_error("Start time: %ld, end time: %ld, value: %lf",
                           SP.start_time_s, SP.end_time_s, SP.sum);
 
-        netdata_log_error("Incrementing iterator");
-        It++;
-        netdata_log_error("Incremented iterator");
         netdata_log_error("");
     }
 

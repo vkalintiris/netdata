@@ -144,65 +144,53 @@ public:
 
     private:
         PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
-            : IP(IP), PIT(PIT), Pos(Pos)
-        {
-            netdata_log_error("[PI] Constructing iterator with V=0x%p, Pos=%u, PIT=%u", this->IP->V, Pos, PIT);
-        }
+            : IP(IP), PIT(PIT), Pos(Pos) { }
 
     public:
         [[nodiscard]] static PageIterator create(const Page *IP,
                                                  uint32_t Pos,
                                                  uint32_t PIT)
         {
-            netdata_log_error("[PI] Creating iterator with V=0x%p, Pos=%u, PIT=%u", IP->V, Pos, PIT);
             return PageIterator(IP, Pos, PIT);
         }
 
         bool operator==(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [1]");
             // We intentionaly ignore PIT to simplify the begin()/end() API.
             return (IP == Other.IP) && (Pos == Other.Pos);
         }
 
         bool operator!=(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [2]");
             return !(*this == Other);
         }
 
         inline value_type operator*() const
         {
-            netdata_log_error("Trying to get Pos=%u, PIT=%u, V=0x%p", Pos, PIT, IP->V);
             return IP->get(Pos, PIT);
         }
 
         inline PageIterator& operator++()
         {
-            netdata_log_error("PI: [3]");
             ++Pos;
             return *this;
         }
 
-        inline PageIterator& operator--() {
-            netdata_log_error("PI: [4]");
+        inline PageIterator& operator--()
+        {
             --Pos;
             return *this;
         }
 
         inline PageIterator operator++(int)
         {
-            netdata_log_error("PI: [5a] this->IP->V=0x%p", this->IP->V);
             PageIterator It = *this;
-            netdata_log_error("PI: [5b] It.IP->V=0x%p", It.IP->V);
             ++(*this);
-            netdata_log_error("PI: [5c] this->IP->V=0x%p, It.IP->V=0x%p", this->IP->V, It.IP->V);
             return It;
         }
 
         inline PageIterator operator--(int)
         {
-            netdata_log_error("PI: [6]");
             PageIterator It = *this;
             --(*this);
             return It;
@@ -210,7 +198,6 @@ public:
 
         inline PageIterator operator+(int N) const
         {
-            netdata_log_error("PI: [7]");
             PageIterator It = *this;
             It.Pos += N;
             return It;
@@ -218,7 +205,6 @@ public:
 
         inline PageIterator operator-(int N) const
         {
-            netdata_log_error("PI: [8]");
             PageIterator It = *this;
             It.Pos -= N;
             return It;
@@ -226,55 +212,47 @@ public:
 
         inline PageIterator& operator+=(int N)
         {
-            netdata_log_error("PI: [9]");
             Pos += N;
             return *this;
         }
 
         inline PageIterator& operator-=(int N)
         {
-            netdata_log_error("PI: [10]");
             Pos -= N;
             return *this;
         }
 
         inline value_type operator[](int N) const
         {
-            netdata_log_error("PI: [11]");
             return IP->get(Pos + N, PIT);
         }
 
         inline bool operator<(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [12]");
             return Pos < Other.Pos;
         }
 
         inline bool operator>(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [13]");
             return Pos > Other.Pos;
         }
 
         inline bool operator<=(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [14]");
             return Pos <= Other.Pos;
         }
 
         inline bool operator>=(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [15]");
             return Pos >= Other.Pos;
         }
 
         inline int operator-(const PageIterator& Other) const
         {
-            netdata_log_error("PI: [16]");
             return Pos - Other.Pos;
         }
 
-    public:
+    private:
         const Page *IP;
         const uint32_t PIT;
         uint32_t Pos;
@@ -466,7 +444,7 @@ private:
         }
     }
 
-public:
+private:
     Value *V;
 };
 
@@ -954,8 +932,8 @@ public:
                           CurrPIT / USEC_PER_SEC,
                           IndexStart);
 
-        Page::PageIterator It = CP.page()->begin(After / USEC_PER_SEC);
-        // std::advance(It, IndexStart);
+        Page::PageIterator It = CP.page()->begin(after_internal(false) / USEC_PER_SEC);
+        std::advance(It, IndexStart);
 
         return { { It, CP.page()->end() } };
     }
