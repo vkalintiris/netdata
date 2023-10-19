@@ -55,150 +55,189 @@ static void storage_instance_delete()
     SI = nullptr;
 }
 
-// TEST(rdb, Key)
-// {
-//     for (size_t i = 0; i != 128; i++)
-//     {
-//         uint32_t gid = Dist(Gen);
-//         uint32_t mid = Dist(Gen);
-//         uint32_t pit = Dist(Gen);
+TEST(rdb, Key)
+{
+    for (size_t i = 0; i != 128; i++)
+    {
+        uint32_t gid = Dist(Gen);
+        uint32_t mid = Dist(Gen);
+        uint32_t pit = Dist(Gen);
 
-//         rdb::Key k1{gid, mid, pit};
-//         rdb::Slice s1 = k1.slice();
+        rdb::Key k1{gid, mid, pit};
+        rdb::Slice s1 = k1.slice();
 
-//         rdb::Key k2{s1};
+        rdb::Key k2{s1};
 
-//         EXPECT_EQ(k1.gid(), k2.gid());
-//         EXPECT_EQ(k1.mid(), k2.mid());
-//         EXPECT_EQ(k1.pit(), k2.pit());
-//     }
-// }
+        EXPECT_EQ(k1.gid(), k2.gid());
+        EXPECT_EQ(k1.mid(), k2.mid());
+        EXPECT_EQ(k1.pit(), k2.pit());
+    }
+}
 
-// TEST(rdb, CollectionHandle)
-// {
-//     const char *TmpDir = temp_dir_new();
-//     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
-//     EXPECT_NE(si, nullptr);
+TEST(rdb, Page)
+{
+    constexpr size_t N = 10;
+    std::vector<uint32_t> random_numbers(N);
+    std::generate(random_numbers.begin(), random_numbers.end(),
+                  [](){ return Dist(Gen); });
 
-//     using namespace rdb;
+    google::protobuf::Arena A;
+    std::optional<rdb::Page> OP = rdb::Page::create(A, rdb::PageOptions());
+    EXPECT_TRUE(OP.has_value());
 
-//     PageOptions PO;
-//     PO.initial_slots = 4;
-//     PO.update_every = 5;
+    uint32_t UE = 2;
+    OP->setUpdateEvery(UE);
 
-//     pb::Arena Arena;
-//     auto CH = CollectionHandle::create(Arena, PO, 1, 1);
-//     EXPECT_TRUE(CH.has_value());
+    for (uint32_t i : random_numbers)
+    {
+        STORAGE_POINT SP;
+        SP.sum = i;
+        SP.flags = SN_DEFAULT_FLAGS;
+        OP->appendPoint(SP);
+    }
 
-//     EXPECT_EQ(CH->after(), 0);
-//     EXPECT_EQ(CH->before(), 0);
-//     EXPECT_EQ(CH->duration(), 0);
+    uint32_t PIT = 3600;
+    size_t i = 0;
 
-//     STORAGE_POINT SP = {
-//         .min = 0,
-//         .max = 0,
-//         .sum = 0,
+    auto End = OP->end();
+    for (auto It = OP->begin(PIT); It != End; It++)
+    {
+        STORAGE_POINT SP = *It;
+        EXPECT_EQ(SP.start_time_s, PIT + (i * UE));
+        EXPECT_EQ(SP.end_time_s, SP.start_time_s + UE);
 
-//         .start_time_s = 0,
-//         .end_time_s = 0,
+        NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
+        EXPECT_EQ(SP.sum, exp);
 
-//         .count = 1,
-//         .anomaly_count = 0,
+        EXPECT_EQ(SP.flags, SN_DEFAULT_FLAGS);
+    }
+}
 
-//         .flags = SN_DEFAULT_FLAGS,
-//     };
+TEST(rdb, CollectionHandle)
+{
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
 
-//     // Fill the entire page
-//     for (uint32_t i = 0; i != PO.initial_slots; i++)
-//     {
-//         usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
-//         usec_t After = 10 * USEC_PER_SEC;
-//         usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-//         usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+    using namespace rdb;
 
-//         CH->store_next(PIT, SP);
-//         EXPECT_EQ(CH->after(), After);
-//         EXPECT_EQ(CH->before(), Before);
-//         EXPECT_EQ(CH->duration(), Duration);
-//     }
+    PageOptions PO;
+    PO.initial_slots = 4;
+    PO.update_every = 5;
 
-//     // Adding a new point will cause the handle to flush the page
-//     uint32_t i = PO.initial_slots;
-//     usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
-//     usec_t After = PIT;
-//     usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-//     usec_t Duration = PO.update_every * USEC_PER_SEC;
+    pb::Arena Arena;
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    EXPECT_TRUE(CH.has_value());
 
-//     CH->store_next(PIT, SP);
-//     EXPECT_EQ(CH->after(), After);
-//     EXPECT_EQ(CH->before(), Before);
-//     EXPECT_EQ(CH->duration(), Duration);
+    EXPECT_EQ(CH->after(), 0);
+    EXPECT_EQ(CH->before(), 0);
+    EXPECT_EQ(CH->duration(), 0);
 
-//     // Flushing should maintain the handle's PIT
-//     CH->flush();
-//     EXPECT_EQ(CH->after(), Before);
-//     EXPECT_EQ(CH->before(), Before);
-//     EXPECT_EQ(CH->duration(), 0);
+    STORAGE_POINT SP = {
+        .min = 0,
+        .max = 0,
+        .sum = 0,
 
-//     // No effect if we flush twice without adding new elements
-//     CH->flush();
-//     EXPECT_EQ(CH->after(), Before);
-//     EXPECT_EQ(CH->before(), Before);
-//     EXPECT_EQ(CH->duration(), 0);
+        .start_time_s = 0,
+        .end_time_s = 0,
 
-//     // ... repeatedly
-//     CH->flush();
-//     EXPECT_EQ(CH->after(), Before);
-//     EXPECT_EQ(CH->before(), Before);
-//     EXPECT_EQ(CH->duration(), 0);
+        .count = 1,
+        .anomaly_count = 0,
 
-//     // After the original flush the page should be able to hold 1024 points
-//     usec_t StartPIT = Before;
-//     for (uint32_t i = 0; i != PO.capacity; i++)
-//     {
-//         usec_t PIT = StartPIT + (i * PO.update_every) * USEC_PER_SEC;
-//         usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-//         usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+        .flags = SN_DEFAULT_FLAGS,
+    };
 
-//         CH->store_next(PIT, SP);
-//         EXPECT_EQ(CH->after(), StartPIT);
-//         EXPECT_EQ(CH->before(), Before);
-//         EXPECT_EQ(CH->duration(), Duration);
-//     }
+    // Fill the entire page
+    for (uint32_t i = 0; i != PO.initial_slots; i++)
+    {
+        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+        usec_t After = 10 * USEC_PER_SEC;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
 
-//     // Adding a new point will cause the handle to flush the page
-//     CH->store_next(CH->before(), SP);
-//     EXPECT_EQ(CH->before(), CH->after() + (PO.update_every * USEC_PER_SEC));
-//     EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
+    }
 
-//     // Flush the only point we have
-//     CH->flush();
-//     EXPECT_EQ(CH->after(), CH->before());
-//     EXPECT_EQ(CH->duration(), 0);
+    // Adding a new point will cause the handle to flush the page
+    uint32_t i = PO.initial_slots;
+    usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+    usec_t After = PIT;
+    usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+    usec_t Duration = PO.update_every * USEC_PER_SEC;
 
-//     // Try adding a gap that can be filled without flushing
-//     CH->flush();
-//     {
-//         usec_t StartPIT = CH->before();
-//         CH->store_next(StartPIT + ((10 * PO.update_every) * USEC_PER_SEC), SP);
-//         EXPECT_EQ(CH->after(), StartPIT);
-//         EXPECT_EQ(CH->before(), StartPIT + ((11 * PO.update_every) * USEC_PER_SEC));
-//         EXPECT_EQ(CH->duration(), (11 * PO.update_every) * USEC_PER_SEC);
-//     }
+    CH->store_next(PIT, SP);
+    EXPECT_EQ(CH->after(), After);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), Duration);
 
-//     // Try adding a gap that can be filled after only flushing
-//     CH->flush();
-//     {
-//         usec_t StartPIT = CH->before() + (PO.capacity * PO.update_every) * USEC_PER_SEC;
-//         CH->store_next(StartPIT, SP);
-//         EXPECT_EQ(CH->after(), StartPIT);
-//         EXPECT_EQ(CH->before(), StartPIT + PO.update_every * USEC_PER_SEC);
-//         EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
-//     }
+    // Flushing should maintain the handle's PIT
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
 
-//     storage_instance_delete();
-//     temp_dir_delete(TmpDir);
-// }
+    // No effect if we flush twice without adding new elements
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
+
+    // ... repeatedly
+    CH->flush();
+    EXPECT_EQ(CH->after(), Before);
+    EXPECT_EQ(CH->before(), Before);
+    EXPECT_EQ(CH->duration(), 0);
+
+    // After the original flush the page should be able to hold 1024 points
+    usec_t StartPIT = Before;
+    for (uint32_t i = 0; i != PO.capacity; i++)
+    {
+        usec_t PIT = StartPIT + (i * PO.update_every) * USEC_PER_SEC;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), StartPIT);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
+    }
+
+    // Adding a new point will cause the handle to flush the page
+    CH->store_next(CH->before(), SP);
+    EXPECT_EQ(CH->before(), CH->after() + (PO.update_every * USEC_PER_SEC));
+    EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
+
+    // Flush the only point we have
+    CH->flush();
+    EXPECT_EQ(CH->after(), CH->before());
+    EXPECT_EQ(CH->duration(), 0);
+
+    // Try adding a gap that can be filled without flushing
+    CH->flush();
+    {
+        usec_t StartPIT = CH->before();
+        CH->store_next(StartPIT + ((10 * PO.update_every) * USEC_PER_SEC), SP);
+        EXPECT_EQ(CH->after(), StartPIT);
+        EXPECT_EQ(CH->before(), StartPIT + ((11 * PO.update_every) * USEC_PER_SEC));
+        EXPECT_EQ(CH->duration(), (11 * PO.update_every) * USEC_PER_SEC);
+    }
+
+    // Try adding a gap that can be filled after only flushing
+    CH->flush();
+    {
+        usec_t StartPIT = CH->before() + (PO.capacity * PO.update_every) * USEC_PER_SEC;
+        CH->store_next(StartPIT, SP);
+        EXPECT_EQ(CH->after(), StartPIT);
+        EXPECT_EQ(CH->before(), StartPIT + PO.update_every * USEC_PER_SEC);
+        EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
+    }
+
+    storage_instance_delete();
+    temp_dir_delete(TmpDir);
+}
 
 
 TEST(rdb, CollectionHandleQuery)
@@ -261,8 +300,6 @@ TEST(rdb, CollectionHandleQuery)
 
         netdata_log_error("Start time: %ld, end time: %ld, value: %lf",
                           SP.start_time_s, SP.end_time_s, SP.sum);
-
-        netdata_log_error("");
     }
 
     CH->queryUnlock();
@@ -345,46 +382,6 @@ TEST(rdb, CollectionHandleQuery)
 
 //     storage_instance_delete();
 //     temp_dir_delete(TmpDir);
-// }
-
-// TEST(rdb, ImmutablePage)
-// {
-//     constexpr size_t N = 10;
-//     std::vector<uint32_t> random_numbers(N);
-//     std::generate(random_numbers.begin(), random_numbers.end(),
-//                   [](){ return Dist(Gen); });
-
-//     google::protobuf::Arena A;
-//     std::optional<rdb::Page> OP = rdb::Page::create(A, rdb::PageOptions());
-//     EXPECT_TRUE(OP.has_value());
-
-//     uint32_t UE = 2;
-//     OP->setUpdateEvery(UE);
-
-//     for (uint32_t i : random_numbers)
-//     {
-//         STORAGE_POINT SP;
-//         SP.sum = i;
-//         SP.flags = SN_DEFAULT_FLAGS;
-//         OP->appendPoint(SP);
-//     }
-
-//     uint32_t PIT = 3600;
-//     size_t i = 0;
-
-//     auto End = OP->end();
-//     for (auto It = OP->begin(PIT); It != End; It++)
-//     {
-//         STORAGE_POINT SP = *It;
-//         EXPECT_EQ(SP.start_time_s, PIT + (i * UE));
-//         EXPECT_EQ(SP.end_time_s, SP.start_time_s + UE);
-
-//         NETDATA_DOUBLE exp = unpack_storage_number(pack_storage_number(random_numbers[i++], SN_DEFAULT_FLAGS));
-//         EXPECT_EQ(SP.sum, exp);
-
-//         EXPECT_EQ(SP.flags, SN_DEFAULT_FLAGS);
-//         netdata_log_error("");
-//     }
 // }
 
 // TEST(rdb, SomeTest) {

@@ -319,7 +319,6 @@ public:
         {
             case PageType::StorageNumbersPage:
             {
-                netdata_log_error("Getting pos=%u, PIT=%u", Pos, PIT);
                 auto &SNP = V->storage_numbers_page();
                 assert(Pos < SNP.storage_numbers_size());
                 storage_number SN = SNP.storage_numbers().Get(Pos);
@@ -726,16 +725,12 @@ private:
         }
         else if (CurrPIT > PIT)
         {
-            netdata_log_error("[2] point_in_time is in the past");
-
             // point_in_time is in the past, nothing to do
             spinlock_unlock(&Lock);
             return;
         }
         else if (CurrPIT == PIT)
         {
-            netdata_log_error("[3] point_in_time has not progressed");
-
             // point_in_time has already been saved, nothing to do
             spinlock_unlock(&Lock);
             return;
@@ -748,7 +743,6 @@ private:
         
     inline void flush_internal(bool Protect)
     {
-        netdata_log_error("Flushing page");
         if (Protect)
         {
             spinlock_lock(&Lock);
@@ -761,15 +755,12 @@ private:
                 spinlock_unlock(&Lock);
             }
 
-            netdata_log_error("Not flushing because page's duration is 0");
             return;
         }
 
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
 
         const Key K{GID, MID, StartPIT};
-        netdata_log_error("Adding key: %s (storage numbers: %u)",
-                          K.toString(true).c_str(), CP.size());
 
         // TODO: the max size should be 4096 + 6 bytes. is there
         // any performance difference if the bytes array has exact size?
@@ -863,7 +854,6 @@ public:
         switch (CP.page()->pageType())
         {
             case PageType::StorageNumbersPage:
-                netdata_log_error("Added point to page type SNP");
                 break;
             default:
                 fatal("Bad page type");
