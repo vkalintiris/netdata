@@ -124,6 +124,7 @@ TEST(rdb, CollectionHandle)
     PageOptions PO;
     PO.initial_slots = 4;
     PO.update_every = 5;
+    usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
     auto CH = CollectionHandle::create(Arena, PO, 1, 1);
@@ -150,10 +151,10 @@ TEST(rdb, CollectionHandle)
     // Fill the entire page
     for (uint32_t i = 0; i != PO.initial_slots; i++)
     {
-        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+        usec_t PIT = 10 * USEC_PER_SEC + i * UE;
         usec_t After = 10 * USEC_PER_SEC;
-        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+        usec_t Before = PIT + UE;
+        usec_t Duration = (i + 1) * UE;
 
         CH->store_next(PIT, SP);
         EXPECT_EQ(CH->after(), After);
@@ -163,10 +164,10 @@ TEST(rdb, CollectionHandle)
 
     // Adding a new point will cause the handle to flush the page
     uint32_t i = PO.initial_slots;
-    usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+    usec_t PIT = (10 * USEC_PER_SEC) + (i * UE);
     usec_t After = PIT;
-    usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-    usec_t Duration = PO.update_every * USEC_PER_SEC;
+    usec_t Before = PIT + UE;
+    usec_t Duration = UE;
 
     CH->store_next(PIT, SP);
     EXPECT_EQ(CH->after(), After);
@@ -195,9 +196,9 @@ TEST(rdb, CollectionHandle)
     usec_t StartPIT = Before;
     for (uint32_t i = 0; i != PO.capacity; i++)
     {
-        usec_t PIT = StartPIT + (i * PO.update_every) * USEC_PER_SEC;
-        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+        usec_t PIT = StartPIT + (i * UE);
+        usec_t Before = PIT + UE;
+        usec_t Duration = (i + 1) * UE;
 
         CH->store_next(PIT, SP);
         EXPECT_EQ(CH->after(), StartPIT);
@@ -207,8 +208,8 @@ TEST(rdb, CollectionHandle)
 
     // Adding a new point will cause the handle to flush the page
     CH->store_next(CH->before(), SP);
-    EXPECT_EQ(CH->before(), CH->after() + (PO.update_every * USEC_PER_SEC));
-    EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
+    EXPECT_EQ(CH->before(), CH->after() + UE);
+    EXPECT_EQ(CH->duration(), UE);
 
     // Flush the only point we have
     CH->flush();
@@ -219,20 +220,20 @@ TEST(rdb, CollectionHandle)
     CH->flush();
     {
         usec_t StartPIT = CH->before();
-        CH->store_next(StartPIT + ((10 * PO.update_every) * USEC_PER_SEC), SP);
+        CH->store_next(StartPIT + (10 * UE), SP);
         EXPECT_EQ(CH->after(), StartPIT);
-        EXPECT_EQ(CH->before(), StartPIT + ((11 * PO.update_every) * USEC_PER_SEC));
-        EXPECT_EQ(CH->duration(), (11 * PO.update_every) * USEC_PER_SEC);
+        EXPECT_EQ(CH->before(), StartPIT + (11 * UE));
+        EXPECT_EQ(CH->duration(), (11 * UE));
     }
 
     // Try adding a gap that can be filled after only flushing
     CH->flush();
     {
-        usec_t StartPIT = CH->before() + (PO.capacity * PO.update_every) * USEC_PER_SEC;
+        usec_t StartPIT = CH->before() + PO.capacity * UE;
         CH->store_next(StartPIT, SP);
         EXPECT_EQ(CH->after(), StartPIT);
-        EXPECT_EQ(CH->before(), StartPIT + PO.update_every * USEC_PER_SEC);
-        EXPECT_EQ(CH->duration(), PO.update_every * USEC_PER_SEC);
+        EXPECT_EQ(CH->before(), StartPIT + UE);
+        EXPECT_EQ(CH->duration(), UE);
     }
 
     storage_instance_delete();
