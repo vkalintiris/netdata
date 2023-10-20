@@ -91,7 +91,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     if (!rch)
         return std::numeric_limits<uint32_t>::max();
 
-    return rch->ch.after();
+    return rch->ch.after() / USEC_PER_SEC;
 }
 
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
@@ -100,7 +100,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 
     rdb_collect_handle *rch = rmh->rch;
     if (rch)
-        return rch->ch.before();
+        return rch->ch.before() / USEC_PER_SEC;
 
     const rdb::Key key{rmh->rmg->id, rmh->id + 1, 0};
 
@@ -109,6 +109,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
          it->Valid();
          it->Next())
     {
+        // FIXME: Need to add page duration
         return rdb::Key{it->key()}.pit();
     }
 
