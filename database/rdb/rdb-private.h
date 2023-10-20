@@ -379,6 +379,28 @@ public:
         return PageIterator(this, 0, size());
     }
 
+    // The iterator will return all SPs with an QH->after() >= After
+    [[nodiscard]] std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
+    query(uint32_t StartPIT, uint32_t After) const
+    {
+        if (After == 0)
+            return {};
+
+        if (After >= StartPIT + duration())
+            return {};
+
+        if (After % updateEvery())
+            After -= After % updateEvery();
+
+        Page::PageIterator It = begin(StartPIT);
+
+        After = std::max(After, StartPIT);
+        usec_t Skip = (After - StartPIT) / updateEvery();
+        std::advance(It, Skip);
+
+        return { { It, end() } };
+    }
+
     inline void appendPoint(STORAGE_POINT &SP)
     {
         switch (pageType())
@@ -904,28 +926,8 @@ public:
     {
         spinlock_lock(&Lock);
 
-        netdata_log_error("[1] After: %zu, Page After: %zu, Page Before: %zu",
-                          After / USEC_PER_SEC,
-                          after_internal(false) / USEC_PER_SEC,
-                          before_internal(false) / USEC_PER_SEC);
-
-        if (After == 0)
-            return {};
-
-        if (After >= before_internal(false))
-            return {};
-
-        if (After % UE)
-            After -= After % UE;
-
-        usec_t AfterCH = after_internal(false);
-        Page::PageIterator It = CP.page()->begin(AfterCH / USEC_PER_SEC);
-
-        After = std::max(After, AfterCH);
-        usec_t Skip = (After - AfterCH) / UE;
-        std::advance(It, Skip);
-
-        return { { It, CP.page()->end() } };
+        const Page *P = CP.page();
+        return P->query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
 
     inline void queryUnlock() const
