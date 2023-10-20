@@ -67,6 +67,11 @@ public:
         memcpy(&scratch[0], S.data(), 12);
     }
 
+    inline Key(const std::array<char, 12> &AR)
+    {
+        memcpy(&scratch[0], AR.data(), AR.size());
+    }
+
     [[nodiscard]] inline const Slice slice() const
     {
         return Slice(scratch, Key::Bytes);
