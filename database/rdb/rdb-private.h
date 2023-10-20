@@ -44,7 +44,7 @@ private:
         assert(i < 3);
 
         uint32_t f;
-        memcpy(&f, &scratch[i * sizeof(uint32_t)], sizeof(uint32_t));
+        memcpy(&f, &Scratch[i * sizeof(uint32_t)], sizeof(uint32_t));
         return be32toh(f);
     }
 
@@ -68,24 +68,24 @@ public:
         mid = htobe32(mid);
         pit = htobe32(pit);
 
-        memcpy(&scratch[GroupIdField * sizeof(uint32_t)], &gid, sizeof(uint32_t));
-        memcpy(&scratch[MetricIdField * sizeof(uint32_t)], &mid, sizeof(uint32_t));
-        memcpy(&scratch[PointInTimeField * sizeof(uint32_t)], &pit, sizeof(uint32_t));
+        memcpy(&Scratch[GroupIdField * sizeof(uint32_t)], &gid, sizeof(uint32_t));
+        memcpy(&Scratch[MetricIdField * sizeof(uint32_t)], &mid, sizeof(uint32_t));
+        memcpy(&Scratch[PointInTimeField * sizeof(uint32_t)], &pit, sizeof(uint32_t));
     }
 
     inline Key(const Slice &S)
     {
-        memcpy(&scratch[0], S.data(), 12);
+        memcpy(&Scratch[0], S.data(), rdb::Key::Bytes);
     }
 
     inline Key(const std::array<char, 12> &AR)
     {
-        memcpy(&scratch[0], AR.data(), AR.size());
+        memcpy(&Scratch[0], AR.data(), AR.size());
     }
 
     [[nodiscard]] inline const Slice slice() const
     {
-        return Slice(scratch, Key::Bytes);
+        return Slice(Scratch.data(), Scratch.size());
     }
 
     [[nodiscard]] inline uint32_t gid() const
@@ -109,14 +109,12 @@ public:
 
         if (hex)
         {
-            snprintfz(buf.data(), buf.size() - 1,
-                      "gid=%u, mid=%u, pit=%u (0x%s)",
+            snprintfz(buf.data(), buf.size() - 1, "gid=%u, mid=%u, pit=%u (0x%s)",
                       gid(), mid(), pit(), slice().ToString(true).c_str());
         }
         else
         {
-            snprintfz(buf.data(), buf.size() - 1,
-                      "gid=%u, mid=%u, pit=%u",
+            snprintfz(buf.data(), buf.size() - 1, "gid=%u, mid=%u, pit=%u",
                       gid(), mid(), pit());
         }
 
@@ -124,7 +122,7 @@ public:
     }
 
 private:
-    char scratch[Key::Bytes];
+    std::array<char, Key::Bytes> Scratch;
 };
 
 enum class PageType : uint8_t
