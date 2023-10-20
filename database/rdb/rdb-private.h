@@ -39,8 +39,6 @@ private:
     constexpr static size_t PointInTimeField = 2;
 
 private:
-    Key() = delete;
-
     [[nodiscard]] inline uint32_t field(size_t i) const
     {
         assert(i < 3);
@@ -51,6 +49,19 @@ private:
     }
 
 public:
+    static const Key min()
+    {
+        return Key(0, 0, 0);
+    }
+        
+    static const Key max()
+    {
+        uint32_t m = std::numeric_limits<uint32_t>::max();
+        return Key(m, m, m);
+    }
+
+    inline Key() = default;
+
     inline Key(uint32_t gid, uint32_t mid, uint32_t pit)
     {
         gid = htobe32(gid);

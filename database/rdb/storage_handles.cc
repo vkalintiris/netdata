@@ -186,7 +186,7 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 /* Query ops                                                                 */
 /*===---------------------------------------------------------------------===*/
 
-using RepKeyField = pb::RepeatedField<std::array<char, 12>>;
+using RepKeyField = pb::RepeatedField<rdb::Key>;
 
 static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
                                           const rdb::Key &key_start, const rdb::Key &key_end)
@@ -200,8 +200,8 @@ static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
          It->Valid() && ((It->key().compare(key_end.slice()) <= 0));
          It->Next())
     {
-        const std::array<char, 12> &AR =
-                *reinterpret_cast<const std::array<char, 12> *>(It->key().data());
+        const std::array<char, rdb::Key::Bytes> &AR =
+                *reinterpret_cast<const std::array<char, rdb::Key::Bytes> *>(It->key().data());
         keys->Add(AR);
     }
 
@@ -217,7 +217,7 @@ struct rdb_query_handle
     uint32_t now_s;
 
     pb::Arena Arena;
-    pb::RepeatedField<std::array<char, 12>> *keys;
+    pb::RepeatedField<rdb::Key> *keys;
 };
 
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
@@ -236,6 +236,11 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
     rdb::Key key_start{rqh->rmh->rmg->id, rqh->rmh->id, rqh->after_s};
     rdb::Key key_end{rqh->rmh->rmg->id, rqh->rmh->id, rqh->before_s};
     rqh->keys = rdb_util_collect_keys(rqh->Arena, key_start, key_end);
+
+    for (auto It = rqh->keys->begin(); It != rqh->keys->end(); It++) {
+        const rdb::Key &K = *It;
+        netdata_log_error("Found key: %s", K.toString(true).c_str());
+    }
 
     seqh->start_time_s = rqh->after_s;
     seqh->end_time_s = rqh->before_s;
@@ -280,14 +285,11 @@ STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh)
 
     rdb_load_metric_next_page(rqh, seqh->start_time_s, seqh->end_time_s);
 
-    for (size_t i = 0; i != rqh->keys->size(); i++) {
-        const std::array<char, 12> &ArrRef = rqh->keys->Get(i);
-        uint32_t gid;
-        uint32_t mid;
-        uint32_t pit;
-        SI->parseKey(Slice(ArrRef.data(), ArrRef.size()), gid, mid, pit);
-
-        netdata_log_error("Retrieved key: gid=%u, mid=%u, pit=%u", gid, mid, pit);
+    for (size_t i = 0; i != rqh->keys->size(); i++)
+    {
+        const rdb::Key &K = rqh->keys->Get(i);
+        netdata_log_error("Retrieved key: gid=%u, mid=%u, pit=%u",
+                          K.gid(), K.mid(), K.pit());
     }
 
     STORAGE_POINT sp;
@@ -312,24 +314,17 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
     // FIXME: this will iterate _ALL_ keys.
     netdata_log_error("Expensive operation: %s()", __func__);
 
-    char scratch[12];
-
-    uint32_t gid = 0;
-    uint32_t mid = 0;
-    uint32_t pit = 0;
-
-    const Slice StartK = SI->keySlice(scratch, gid, mid, pit);
+    const rdb::Key StartK(0, 0, 0);
 
     uint32_t FirstPit = ~0u;
 
     Iterator *It = SI->RDB->NewIterator(ReadOptions());
 
-    for (It->Seek(StartK); It->Valid(); It->Next())
+    for (It->Seek(StartK.slice()); It->Valid(); It->Next())
     {
-        const Slice &K = It->key();
-        SI->parseKey(K, gid, mid, pit);
-        netdata_log_error("gid=%u, mid=%u, pit=%u", gid, mid, pit);
-        FirstPit = std::min(FirstPit, pit);
+        const rdb::Key K(It->key());
+        netdata_log_error("gid=%u, mid=%u, pit=%u", K.gid(), K.mid(), K.pit());
+        FirstPit = std::min(FirstPit, K.pit());
     }
 
     return FirstPit;
@@ -346,18 +341,8 @@ uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si)
     Opts.include_memtables = false;
     Opts.files_size_error_margin = 0.1;
 
-    char StartBuf[12];
-    const Slice &StartK = SI->keySlice(StartBuf, 0, 0, 0);
-
-    char LimitBuf[12];
-    const Slice &LimitK = SI->keySlice(LimitBuf,
-        std::numeric_limits<uint32_t>::max(),
-        std::numeric_limits<uint32_t>::max(),
-        std::numeric_limits<uint32_t>::max()
-    );
-
-    ranges[0].start = StartK;
-    ranges[0].limit = LimitK;
+    ranges[0].start = rdb::Key::min().slice();
+    ranges[0].limit = rdb::Key::max().slice();
 
     Status S = SI->RDB->GetApproximateSizes(Opts, SI->RDB->DefaultColumnFamily(), ranges.data(), ranges.size(), sizes.data());
     if (!S.ok()) {
