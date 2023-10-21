@@ -1,6 +1,7 @@
 #include "rdb-private.h"
-#include <google/protobuf/arena.h>
 #include <gtest/gtest.h>
+
+using namespace rdb;
 
 static std::random_device RandDev;
 static std::mt19937 Gen(RandDev());
@@ -119,8 +120,6 @@ TEST(rdb, CollectionHandle)
     const char *TmpDir = temp_dir_new();
     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
     EXPECT_NE(si, nullptr);
-
-    using namespace rdb;
 
     PageOptions PO;
     PO.initial_slots = 4;
@@ -248,8 +247,6 @@ TEST(rdb, CollectionHandleQuery)
     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
     EXPECT_NE(si, nullptr);
 
-    using namespace rdb;
-
     PageOptions PO;
     PO.initial_slots = 1024;
     PO.update_every = 5;
@@ -341,8 +338,6 @@ TEST(rdb, CollectionHandleQuery)
 
 TEST(Gpt, EmptyHandleQuery)
 {
-    using namespace rdb;
-
     pb::Arena Arena;
     PageOptions PO;
     auto CH = CollectionHandle::create(Arena, PO, 1, 1);
@@ -354,8 +349,6 @@ TEST(Gpt, EmptyHandleQuery)
 
 TEST(Gpt, InvalidTimeRangeQuery)
 {
-    using namespace rdb;
-
     pb::Arena Arena;
     PageOptions PO;
     PO.update_every = 5;
@@ -484,14 +477,97 @@ TEST(Gpt, InvalidTimeRangeQuery)
     }
 }
 
+using RepKeyField = pb::RepeatedField<rdb::Key>;
+
+static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
+                                          const rdb::Key &key_start, const rdb::Key &key_end)
+{
+    EXPECT_GE(key_end.pit(), key_start.pit());
+
+    RepKeyField *keys = pb::Arena::CreateMessage<RepKeyField>(&Arena);
+    size_t size_hint = 2 * (key_end.pit() - key_start.pit()) / 1024;
+    keys->Reserve(size_hint);
+
+    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+    for (It->SeekForPrev(key_start.slice());
+         It->Valid() && ((It->key().compare(key_end.slice()) <= 0));
+         It->Next())
+    {
+        keys->Add(It->key());
+    }
+
+    return keys;
+}
+
+TEST(rdb, GVD) {
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
+
+    // Set up CollectionHandle
+    PageOptions PO;
+    PO.initial_slots = 1024;
+    PO.update_every = 4;
+    usec_t UE = PO.update_every * USEC_PER_SEC;
+
+    pb::Arena Arena;
+    uint32_t gid = 1;
+    uint32_t mid = 1;
+    auto CH = CollectionHandle::create(Arena, PO, gid, mid);
+    EXPECT_TRUE(CH.has_value());
+
+    STORAGE_POINT SP = {
+        .min = 0, .max = 0, .sum = 0,
+        .start_time_s = 0, .end_time_s = 0,
+        .count = 1, .anomaly_count = 0,
+        .flags = SN_DEFAULT_FLAGS,
+    };
+
+    const usec_t Hour = 3600 * USEC_PER_SEC;
+
+    // Fill 10 minutes at the start of each hour of a day
+    for (usec_t PIT = Hour; PIT < 24 * Hour; PIT += Hour)
+    {
+        SP.min = SP.max = SP.sum = static_cast<NETDATA_DOUBLE>(PIT) / Hour;
+
+        for (usec_t CurrPIT = PIT; CurrPIT < PIT + (10 * UE); CurrPIT += UE)
+        {
+            uint32_t Timepoint = CurrPIT / USEC_PER_SEC;
+            netdata_log_error("CurrPIT: %u, Value: %lf", Timepoint, SP.sum);
+            CH->store_next(CurrPIT, SP);
+            SP.min = SP.max = SP.sum += 1;
+        }
+    }
+
+    // Flush the remaining data
+    CH->flush();
+
+    uint32_t After = Hour / USEC_PER_SEC;
+    uint32_t Before = (24 * Hour) / USEC_PER_SEC;
+
+    Key StartK(gid, mid, After);
+    Key EndK(gid, mid, Before);
+
+    netdata_log_error("Querying keys in range: (%s, %s)",
+                      StartK.toString().c_str(), EndK.toString().c_str());
+
+    const auto &Keys = rdb_util_collect_keys(Arena, StartK, EndK);
+    for (const Key &K: *Keys)
+    {
+        netdata_log_error("%s", K.toString(true).c_str());
+    }
+
+    // Clean up
+    storage_instance_delete();
+    temp_dir_delete(TmpDir);
+}
+
 
 // TEST(rdb, PageIterator)
 // {
 //     const char *TmpDir = temp_dir_new();
 //     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
 //     EXPECT_NE(si, nullptr);
-
-//     using namespace rdb;
 
 //     PageOptions PO;
 //     PO.initial_slots = 128;
