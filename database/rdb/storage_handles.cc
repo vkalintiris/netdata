@@ -1,4 +1,5 @@
 #include "rdb-private.h"
+#include <limits>
 
 namespace pb = google::protobuf;
 
@@ -311,23 +312,17 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
 {
     UNUSED(si);
 
-    // FIXME: this will iterate _ALL_ keys.
-    netdata_log_error("Expensive operation: %s()", __func__);
-
-    const rdb::Key StartK(0, 0, 0);
-
-    uint32_t FirstPit = ~0u;
-
     Iterator *It = SI->RDB->NewIterator(ReadOptions());
 
-    for (It->Seek(StartK.slice()); It->Valid(); It->Next())
-    {
-        const rdb::Key K(It->key());
-        netdata_log_error("gid=%u, mid=%u, pit=%u", K.gid(), K.mid(), K.pit());
-        FirstPit = std::min(FirstPit, K.pit());
+    It->SeekToFirst();
+    if (!It->Valid()) {
+        // We probably haven't written anything yet. Should we consult the
+        // collection handles?
+        return 0;
     }
 
-    return FirstPit;
+    rdb::Key K(It->key());
+    return static_cast<time_t>(K.pit());
 }
 
 uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si)

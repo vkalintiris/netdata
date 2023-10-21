@@ -2,6 +2,7 @@
 #define RDB_PAGE_H
 
 #include "rdb-common.h"
+#include <optional>
 
 namespace rdb {
 
@@ -36,9 +37,9 @@ public:
         using pointer           = value_type*;
         using reference         = value_type&;
 
-    private:
-        PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
-            : IP(IP), PIT(PIT), Pos(Pos) { }
+    PageIterator() = default;
+    PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
+        : IP(IP), PIT(PIT), Pos(Pos) { }
 
     public:
         [[nodiscard]] static PageIterator create(const Page *IP,
@@ -148,7 +149,7 @@ public:
 
     private:
         const Page *IP;
-        const uint32_t PIT;
+        uint32_t PIT;
         uint32_t Pos;
     };
 
@@ -157,10 +158,10 @@ public:
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
-            return {};
+            return std::nullopt;
 
         if (!V->ParseFromArray(S.data(), S.size()))
-            return {};
+            return std::nullopt;
 
         return Page(V);
     }
@@ -169,7 +170,7 @@ public:
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
-            return {};
+            return std::nullopt;
 
         Page P(V);
 
@@ -190,8 +191,10 @@ public:
     template<size_t N> [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
+
         if (!V->SerializeToArray(AR.data(), AR.size()))
-            return {};
+            return std::nullopt;
+
         return Slice(AR.data(), V->ByteSizeLong());
     }
 
@@ -278,10 +281,10 @@ public:
     query(uint32_t StartPIT, uint32_t After) const
     {
         if (After == 0)
-            return {};
+            return std::nullopt;
 
         if (After >= StartPIT + duration())
-            return {};
+            return std::nullopt;
 
         if (After % updateEvery())
             After -= After % updateEvery();
@@ -291,6 +294,9 @@ public:
         After = std::max(After, StartPIT);
         usec_t Skip = (After - StartPIT) / updateEvery();
         std::advance(It, Skip);
+
+        if (It == end())
+            return std::nullopt;
 
         return { { It, end() } };
     }

@@ -1,4 +1,6 @@
 #include "rdb-private.h"
+#include <google/protobuf/arena.h>
+#include <google/protobuf/repeated_field.h>
 #include <gtest/gtest.h>
 
 using namespace rdb;
@@ -477,27 +479,127 @@ TEST(Gpt, InvalidTimeRangeQuery)
     }
 }
 
-using RepKeyField = pb::RepeatedField<rdb::Key>;
-
-static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
-                                          const rdb::Key &key_start, const rdb::Key &key_end)
+class QueryHandle
 {
-    EXPECT_GE(key_end.pit(), key_start.pit());
-
-    RepKeyField *keys = pb::Arena::CreateMessage<RepKeyField>(&Arena);
-    size_t size_hint = 2 * (key_end.pit() - key_start.pit()) / 1024;
-    keys->Reserve(size_hint);
-
-    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
-    for (It->SeekForPrev(key_start.slice());
-         It->Valid() && ((It->key().compare(key_end.slice()) <= 0));
-         It->Next())
+public:
+    QueryHandle(pb::Arena &Arena, const Key &StartK)
+        : Arena(Arena), StartK(StartK),
+          It(SI->RDB->NewIterator(rocksdb::ReadOptions())) 
     {
-        keys->Add(It->key());
+        It->SeekForPrev(StartK.slice());
     }
 
-    return keys;
-}
+    STORAGE_POINT next()
+    {
+        if (OP->first == OP->second)
+            fatal("PageIterator already consumed");
+
+        return *OP->first++;
+    }
+
+    bool isFinished()
+    {
+        if (OP.has_value() && (OP->first != OP->second))
+            return false;
+
+        return !advance(Arena);
+    }
+
+private:
+    bool advance(pb::Arena &Arena)
+    {
+        // We can not advance an invalid iterator
+        if (!It->Valid())
+            return false;
+
+        while (It->Valid())
+        {
+            // Any old pages have been consumed. Reclaim space before
+            // creating a new one to keep memory consumption low.
+            Arena.Reset();
+
+            Key K = Key(It->key());
+            std::optional<Page> P = Page::fromSlice(Arena, It->value());
+
+            if (P.has_value())
+            {
+                OP = P->query(K.pit(), StartK.pit());
+                if (OP.has_value())
+                {
+                    It->Next();
+                    netdata_log_error("Space allocated: %zu, used: %zu", Arena.SpaceAllocated(), Arena.SpaceUsed());
+                    return true;
+                }
+            }
+
+            It->Next();
+            netdata_log_error("Space allocated: %zu, used: %zu", Arena.SpaceAllocated(), Arena.SpaceUsed());
+        }
+
+        return false;
+    }
+
+private:
+    pb::Arena &Arena;
+    Key StartK;
+    rocksdb::Iterator *It;
+    std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
+};
+
+
+    // bool foo(pb::Arena &Arena, STORAGE_POINT &SP)
+    // {
+    //     if (!It->Valid())
+    //         return false;
+
+    //     const Slice &KS = It->key();
+    //     const Slice &VS = It->value();
+
+    //     std::optional<Page> P = Page::fromSlice(Arena, VS);
+    //     if (!P.has_value())
+    //         return false;
+
+    //     Key K(KS);
+    //     netdata_log_error("Looked up page with key: %s",
+    //                       K.toString(true).c_str());
+        
+    //     auto OP = P->query(K.pit(), StartK.pit());
+    //     if (!OP.has_value())
+    //         return false;
+
+    //     for (auto PI = OP->first; PI != OP->second; PI++)
+    //     {
+    //         SP = *PI;
+    //         netdata_log_error("Point: [%u, %u] = %lf",
+    //                           SP.start_time_s, SP.end_time_s, SP.sum);
+    //     }
+
+    //     It->Next();
+    //     return true;
+    // }
+
+    // pb::RepeatedField<Key> *keys(pb::Arena &Arena)
+    // {
+    //     EXPECT_LE(StartK.pit(), EndK.pit());
+
+    //     pb::RepeatedField<Key> *keys =
+    //         pb::Arena::CreateMessage<pb::RepeatedField<Key>>(&Arena);
+
+    //     size_t size_hint = 2 * (EndK.pit() - StartK.pit()) / 1024;
+    //     keys->Reserve(size_hint);
+
+    //     rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+    //     for (It->SeekForPrev(StartK.slice());
+    //          It->Valid() && ((It->key().compare(EndK.slice()) <= 0));
+    //          It->Next())
+    //     {
+    //         keys->Add(It->key());
+    //     }
+
+    //     netdata_log_error("Size hint: %zu, Actual size: %d", size_hint, keys->size());
+
+    //     return keys;
+    // }
 
 TEST(rdb, GVD) {
     const char *TmpDir = temp_dir_new();
@@ -513,8 +615,6 @@ TEST(rdb, GVD) {
     pb::Arena Arena;
     uint32_t gid = 1;
     uint32_t mid = 1;
-    auto CH = CollectionHandle::create(Arena, PO, gid, mid);
-    EXPECT_TRUE(CH.has_value());
 
     STORAGE_POINT SP = {
         .min = 0, .max = 0, .sum = 0,
@@ -525,10 +625,15 @@ TEST(rdb, GVD) {
 
     const usec_t Hour = 3600 * USEC_PER_SEC;
 
+    auto CH = CollectionHandle::create(Arena, PO, gid, mid);
+
     // Fill 10 minutes at the start of each hour of a day
     for (usec_t PIT = Hour; PIT < 24 * Hour; PIT += Hour)
     {
         SP.min = SP.max = SP.sum = static_cast<NETDATA_DOUBLE>(PIT) / Hour;
+
+        // TODO: Add another test that use a persistent collection handle.
+        EXPECT_TRUE(CH.has_value());
 
         for (usec_t CurrPIT = PIT; CurrPIT < PIT + (10 * UE); CurrPIT += UE)
         {
@@ -537,25 +642,28 @@ TEST(rdb, GVD) {
             CH->store_next(CurrPIT, SP);
             SP.min = SP.max = SP.sum += 1;
         }
-    }
+        CH->flush();
 
-    // Flush the remaining data
-    CH->flush();
+        netdata_log_error("");
+    }
 
     uint32_t After = Hour / USEC_PER_SEC;
     uint32_t Before = (24 * Hour) / USEC_PER_SEC;
+    UNUSED(Before);
 
-    Key StartK(gid, mid, After);
-    Key EndK(gid, mid, Before);
+    pb::Arena QA;
+    const Key StartK(gid, mid, After);
 
-    netdata_log_error("Querying keys in range: (%s, %s)",
-                      StartK.toString().c_str(), EndK.toString().c_str());
+    QueryHandle QH(QA, StartK);
 
-    const auto &Keys = rdb_util_collect_keys(Arena, StartK, EndK);
-    for (const Key &K: *Keys)
+    while (!QH.isFinished())
     {
-        netdata_log_error("%s", K.toString(true).c_str());
+        STORAGE_POINT SP = QH.next();        
+        if (std::isnan(SP.sum))
+            continue;
+        netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
     }
+
 
     // Clean up
     storage_instance_delete();
