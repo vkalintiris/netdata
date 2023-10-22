@@ -494,7 +494,10 @@ public:
         if (OP->first == OP->second)
             fatal("PageIterator already consumed");
 
-        return *OP->first++;
+        auto &It = OP->first;
+        STORAGE_POINT SP = *It;
+        It++;
+        return SP;
     }
 
     bool isFinished()
@@ -503,6 +506,11 @@ public:
             return false;
 
         return !advance(Arena);
+    }
+
+    void finalize()
+    {
+        delete It;
     }
 
 private:
@@ -664,6 +672,7 @@ TEST(rdb, GVD) {
         netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
     }
 
+    QH.finalize();
 
     // Clean up
     storage_instance_delete();

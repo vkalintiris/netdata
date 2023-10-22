@@ -37,22 +37,22 @@ public:
         using pointer           = value_type*;
         using reference         = value_type&;
 
-    PageIterator() = default;
-    PageIterator(const Page *IP, const uint32_t PIT, const uint32_t Pos)
-        : IP(IP), PIT(PIT), Pos(Pos) { }
+    private:
+        PageIterator(Value *V, const uint32_t PIT, const uint32_t Pos)
+            : V(V), PIT(PIT), Pos(Pos) { }
 
     public:
-        [[nodiscard]] static PageIterator create(const Page *IP,
+        [[nodiscard]] static PageIterator create(Value *V,
                                                  uint32_t Pos,
                                                  uint32_t PIT)
         {
-            return PageIterator(IP, Pos, PIT);
+            return PageIterator(V, Pos, PIT);
         }
 
         bool operator==(const PageIterator& Other) const
         {
             // We intentionaly ignore PIT to simplify the begin()/end() API.
-            return (IP == Other.IP) && (Pos == Other.Pos);
+            return (V == Other.V) && (Pos == Other.Pos);
         }
 
         bool operator!=(const PageIterator& Other) const
@@ -62,7 +62,7 @@ public:
 
         inline value_type operator*() const
         {
-            return IP->get(Pos, PIT);
+            return Page(V).get(Pos, PIT);
         }
 
         inline PageIterator& operator++()
@@ -119,7 +119,7 @@ public:
 
         inline value_type operator[](int N) const
         {
-            return IP->get(Pos + N, PIT);
+            return Page(V).get(Pos + N, PIT);
         }
 
         inline bool operator<(const PageIterator& Other) const
@@ -148,7 +148,7 @@ public:
         }
 
     private:
-        const Page *IP;
+        Value *V;
         uint32_t PIT;
         uint32_t Pos;
     };
@@ -206,6 +206,7 @@ public:
                 return V->storage_numbers_page().storage_numbers_size();
             default:
                 fatal("Page: Tsimpa[1]");
+                return 0;
         }
     }
 
@@ -233,8 +234,17 @@ public:
 
                 return SP;
             }
-            default:
+            default: {
                 fatal("Page: Tsimpa[2]");
+
+                STORAGE_POINT SP = {
+                    .min = 0, .max = 0, .sum = 0,
+                    .start_time_s = 0, .end_time_s = 0,
+                    .count = 0, .anomaly_count = 0,
+                    .flags = SN_DEFAULT_FLAGS,
+                };
+                return SP;
+            }
         }
     }
 
@@ -249,6 +259,7 @@ public:
             }
             default:
                 fatal("Page: Tsimpa[3]");
+                return 0;
         }
     }
 
@@ -263,17 +274,18 @@ public:
             }
             default:
                 fatal("Page: Tsimpa[4]");
+                return 0;
         }
     }
 
     [[nodiscard]] inline PageIterator begin(uint32_t PIT = 0) const
     {
-        return PageIterator(this, PIT, 0);
+        return PageIterator::create(V, PIT, 0);
     }
 
     [[nodiscard]] inline PageIterator end() const
     {
-        return PageIterator(this, 0, size());
+        return PageIterator(V, 0, size());
     }
 
     // The iterator will return all SPs with an QH->after() >= After
