@@ -2,7 +2,6 @@
 #define RDB_PAGE_H
 
 #include "rdb-common.h"
-#include <optional>
 
 namespace rdb {
 
@@ -313,7 +312,7 @@ public:
         return { { It, end() } };
     }
 
-    inline void appendPoint(STORAGE_POINT &SP)
+    inline void appendPoint(const STORAGE_POINT &SP)
     {
         switch (pageType())
         {

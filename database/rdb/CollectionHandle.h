@@ -33,7 +33,7 @@ private:
         spinlock_init(&Lock);        
     }
 
-    void store_next_internal(usec_t PIT, STORAGE_POINT &SP)
+    void store_next_internal(usec_t PIT, const STORAGE_POINT &SP)
     {
         spinlock_lock(&Lock);
 
@@ -151,7 +151,6 @@ private:
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
 
         const Key K{GID, MID, StartPIT};
-        netdata_log_error("Flushing key: %s", K.toString(true).c_str());
 
         // TODO: the max size should be 4096 + 6 bytes. is there
         // any performance difference if the bytes array has exact size?
@@ -221,7 +220,7 @@ private:
     }
 
 public:
-    inline void store_next(usec_t PIT, STORAGE_POINT &SP)
+    inline void store_next(usec_t PIT, const STORAGE_POINT &SP)
     {
         spinlock_lock(&Lock);
 

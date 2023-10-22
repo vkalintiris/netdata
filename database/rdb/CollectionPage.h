@@ -12,7 +12,7 @@ public:
     CollectionPage(const Page &P, const PageOptions &PO)
         : Inner(P), Slots(PO.initial_slots) { }
 
-    inline void appendPoint(STORAGE_POINT &SP)
+    inline void appendPoint(const STORAGE_POINT &SP)
     {
         Inner.appendPoint(SP);
         Slots--;

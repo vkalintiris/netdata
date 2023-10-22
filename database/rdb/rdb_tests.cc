@@ -242,7 +242,6 @@ TEST(rdb, CollectionHandle)
     temp_dir_delete(TmpDir);
 }
 
-
 TEST(rdb, CollectionHandleQuery)
 {
     const char *TmpDir = temp_dir_new();
@@ -494,10 +493,7 @@ public:
         if (OP->first == OP->second)
             fatal("PageIterator already consumed");
 
-        auto &It = OP->first;
-        STORAGE_POINT SP = *It;
-        It++;
-        return SP;
+        return *OP->first++;
     }
 
     bool isFinished()
@@ -535,13 +531,11 @@ private:
                 if (OP.has_value())
                 {
                     It->Next();
-                    netdata_log_error("Space allocated: %zu, used: %zu", Arena.SpaceAllocated(), Arena.SpaceUsed());
                     return true;
                 }
             }
 
             It->Next();
-            netdata_log_error("Space allocated: %zu, used: %zu", Arena.SpaceAllocated(), Arena.SpaceUsed());
         }
 
         return false;
@@ -633,7 +627,7 @@ TEST(rdb, GVD) {
 
     const usec_t Hour = 3600 * USEC_PER_SEC;
 
-    auto CH = CollectionHandle::create(Arena, PO, gid, mid);
+    std::vector<std::pair<time_t, uint32_t>> StoredValues;
 
     // Fill 10 minutes at the start of each hour of a day
     for (usec_t PIT = Hour; PIT < 24 * Hour; PIT += Hour)
@@ -641,18 +635,20 @@ TEST(rdb, GVD) {
         SP.min = SP.max = SP.sum = static_cast<NETDATA_DOUBLE>(PIT) / Hour;
 
         // TODO: Add another test that use a persistent collection handle.
+        auto CH = CollectionHandle::create(Arena, PO, gid, mid);
         EXPECT_TRUE(CH.has_value());
 
         for (usec_t CurrPIT = PIT; CurrPIT < PIT + (10 * UE); CurrPIT += UE)
         {
-            uint32_t Timepoint = CurrPIT / USEC_PER_SEC;
-            netdata_log_error("CurrPIT: %u, Value: %lf", Timepoint, SP.sum);
+            time_t Timepoint = CurrPIT / USEC_PER_SEC;
+
             CH->store_next(CurrPIT, SP);
+            StoredValues.push_back({ Timepoint, static_cast<uint32_t>(SP.sum)});
+
             SP.min = SP.max = SP.sum += 1;
         }
-        CH->flush();
 
-        netdata_log_error("");
+        CH->flush();
     }
 
     uint32_t After = Hour / USEC_PER_SEC;
@@ -662,17 +658,20 @@ TEST(rdb, GVD) {
     pb::Arena QA;
     const Key StartK(gid, mid, After);
 
+    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+
     QueryHandle QH(QA, StartK);
 
     while (!QH.isFinished())
     {
         STORAGE_POINT SP = QH.next();        
-        if (std::isnan(SP.sum))
-            continue;
-        netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
+        CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
+        // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
     }
 
     QH.finalize();
+
+    EXPECT_EQ(StoredValues, CollectedValues);
 
     // Clean up
     storage_instance_delete();
@@ -680,79 +679,76 @@ TEST(rdb, GVD) {
 }
 
 
-// TEST(rdb, PageIterator)
-// {
-//     const char *TmpDir = temp_dir_new();
-//     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
-//     EXPECT_NE(si, nullptr);
+TEST(rdb, PageIterator)
+{
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
 
-//     PageOptions PO;
-//     PO.initial_slots = 128;
-//     PO.update_every = 5;
+    PageOptions PO;
+    PO.initial_slots = 128;
+    PO.update_every = 5;
 
-//     pb::Arena Arena;
-//     std::optional<Page> P = Page::create(Arena, PO);
-//     EXPECT_TRUE(P.has_value());
+    pb::Arena Arena;
+    std::optional<Page> P = Page::create(Arena, PO);
+    EXPECT_TRUE(P.has_value());
 
-//     P->
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    EXPECT_TRUE(CH.has_value());
 
+    STORAGE_POINT SP = {
+        .min = 0,
+        .max = 0,
+        .sum = 0,
 
-//     STORAGE_POINT SP = {
-//         .min = 0,
-//         .max = 0,
-//         .sum = 0,
+        .start_time_s = 0,
+        .end_time_s = 0,
 
-//         .start_time_s = 0,
-//         .end_time_s = 0,
+        .count = 1,
+        .anomaly_count = 0,
 
-//         .count = 1,
-//         .anomaly_count = 0,
+        .flags = SN_DEFAULT_FLAGS,
+    };
 
-//         .flags = SN_DEFAULT_FLAGS,
-//     };
+    // Fill the entire page
+    std::vector<std::pair<time_t, uint32_t>> StoredValues;
 
-//     // Fill the entire page
-//     for (uint32_t i = 0; i != PO.initial_slots; i++)
-//     {
-//         usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
-//         usec_t After = 10 * USEC_PER_SEC;
-//         usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-//         usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+    for (uint32_t i = 0; i != PO.initial_slots; i++)
+    {
+        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+        usec_t After = 10 * USEC_PER_SEC;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
 
-//         SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
-//         CH->store_next(PIT, SP);
-//         EXPECT_EQ(CH->after(), After);
-//         EXPECT_EQ(CH->before(), Before);
-//         EXPECT_EQ(CH->duration(), Duration);
-//     }
+        SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
+        StoredValues.push_back({ PIT / USEC_PER_SEC, SP.sum });
 
-//     netdata_log_error("Page has range: [%u, %u]",
-//                       CH->after() / USEC_PER_SEC,
-//                       CH->before() / USEC_PER_SEC);
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
+    }
 
-//     auto OP = CH->queryLock(CH->after());
-//     EXPECT_TRUE(OP.has_value());
+    auto OP = CH->queryLock(CH->after());
+    EXPECT_TRUE(OP.has_value());
 
-//     int i = 0;
-//     for (Page::PageIterator It = OP->first, End = OP->second;
-//          i++ != 10;)
-//     {
-//         STORAGE_POINT SP = *It;
+    EXPECT_EQ(std::distance(OP->first, OP->second), PO.initial_slots);
+    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+    for (Page::PageIterator& It = OP->first, End = OP->second;
+         It != End; It++)
+    {
+        STORAGE_POINT SP = *It;
 
-//         netdata_log_error("Start time: %ld, end time: %ld, value: %lf",
-//                           SP.start_time_s, SP.end_time_s, SP.sum);
+        CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
+    }
 
-//         netdata_log_error("Incrementing iterator");
-//         It++;
-//         netdata_log_error("Incremented iterator");
-//         netdata_log_error("");
-//     }
+    CH->queryUnlock();
 
-//     CH->queryUnlock();
+    EXPECT_EQ(StoredValues, CollectedValues);
 
-//     storage_instance_delete();
-//     temp_dir_delete(TmpDir);
-// }
+    storage_instance_delete();
+    temp_dir_delete(TmpDir);
+}
 
 // TEST(rdb, SomeTest) {
 //     return;
@@ -815,5 +811,7 @@ int rdb_tests_main(int argc, char *argv[])
     }
 
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    int rc = RUN_ALL_TESTS();
+    google::protobuf::ShutdownProtobufLibrary();
+    return rc;
 }
