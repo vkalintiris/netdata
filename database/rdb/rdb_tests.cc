@@ -478,6 +478,77 @@ TEST(Gpt, InvalidTimeRangeQuery)
     }
 }
 
+TEST(rdb, PageIterator)
+{
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
+
+    PageOptions PO;
+    PO.initial_slots = 128;
+    PO.update_every = 5;
+
+    pb::Arena Arena;
+    std::optional<Page> P = Page::create(Arena, PO);
+    EXPECT_TRUE(P.has_value());
+
+    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    EXPECT_TRUE(CH.has_value());
+
+    STORAGE_POINT SP = {
+        .min = 0,
+        .max = 0,
+        .sum = 0,
+
+        .start_time_s = 0,
+        .end_time_s = 0,
+
+        .count = 1,
+        .anomaly_count = 0,
+
+        .flags = SN_DEFAULT_FLAGS,
+    };
+
+    // Fill the entire page
+    std::vector<std::pair<time_t, uint32_t>> StoredValues;
+
+    for (uint32_t i = 0; i != PO.initial_slots; i++)
+    {
+        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
+        usec_t After = 10 * USEC_PER_SEC;
+        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
+        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
+
+        SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
+        StoredValues.push_back({ PIT / USEC_PER_SEC, SP.sum });
+
+        CH->store_next(PIT, SP);
+        EXPECT_EQ(CH->after(), After);
+        EXPECT_EQ(CH->before(), Before);
+        EXPECT_EQ(CH->duration(), Duration);
+    }
+
+    auto OP = CH->queryLock(CH->after());
+    EXPECT_TRUE(OP.has_value());
+
+    EXPECT_EQ(std::distance(OP->first, OP->second), PO.initial_slots);
+    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+    for (Page::PageIterator& It = OP->first, End = OP->second;
+         It != End; It++)
+    {
+        STORAGE_POINT SP = *It;
+
+        CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
+    }
+
+    CH->queryUnlock();
+
+    EXPECT_EQ(StoredValues, CollectedValues);
+
+    storage_instance_delete();
+    temp_dir_delete(TmpDir);
+}
+
 class QueryHandle
 {
 public:
@@ -547,61 +618,6 @@ private:
     rocksdb::Iterator *It;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
 };
-
-
-    // bool foo(pb::Arena &Arena, STORAGE_POINT &SP)
-    // {
-    //     if (!It->Valid())
-    //         return false;
-
-    //     const Slice &KS = It->key();
-    //     const Slice &VS = It->value();
-
-    //     std::optional<Page> P = Page::fromSlice(Arena, VS);
-    //     if (!P.has_value())
-    //         return false;
-
-    //     Key K(KS);
-    //     netdata_log_error("Looked up page with key: %s",
-    //                       K.toString(true).c_str());
-        
-    //     auto OP = P->query(K.pit(), StartK.pit());
-    //     if (!OP.has_value())
-    //         return false;
-
-    //     for (auto PI = OP->first; PI != OP->second; PI++)
-    //     {
-    //         SP = *PI;
-    //         netdata_log_error("Point: [%u, %u] = %lf",
-    //                           SP.start_time_s, SP.end_time_s, SP.sum);
-    //     }
-
-    //     It->Next();
-    //     return true;
-    // }
-
-    // pb::RepeatedField<Key> *keys(pb::Arena &Arena)
-    // {
-    //     EXPECT_LE(StartK.pit(), EndK.pit());
-
-    //     pb::RepeatedField<Key> *keys =
-    //         pb::Arena::CreateMessage<pb::RepeatedField<Key>>(&Arena);
-
-    //     size_t size_hint = 2 * (EndK.pit() - StartK.pit()) / 1024;
-    //     keys->Reserve(size_hint);
-
-    //     rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
-    //     for (It->SeekForPrev(StartK.slice());
-    //          It->Valid() && ((It->key().compare(EndK.slice()) <= 0));
-    //          It->Next())
-    //     {
-    //         keys->Add(It->key());
-    //     }
-
-    //     netdata_log_error("Size hint: %zu, Actual size: %d", size_hint, keys->size());
-
-    //     return keys;
-    // }
 
 TEST(rdb, GVD) {
     const char *TmpDir = temp_dir_new();
@@ -674,78 +690,6 @@ TEST(rdb, GVD) {
     EXPECT_EQ(StoredValues, CollectedValues);
 
     // Clean up
-    storage_instance_delete();
-    temp_dir_delete(TmpDir);
-}
-
-
-TEST(rdb, PageIterator)
-{
-    const char *TmpDir = temp_dir_new();
-    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
-    EXPECT_NE(si, nullptr);
-
-    PageOptions PO;
-    PO.initial_slots = 128;
-    PO.update_every = 5;
-
-    pb::Arena Arena;
-    std::optional<Page> P = Page::create(Arena, PO);
-    EXPECT_TRUE(P.has_value());
-
-    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
-    EXPECT_TRUE(CH.has_value());
-
-    STORAGE_POINT SP = {
-        .min = 0,
-        .max = 0,
-        .sum = 0,
-
-        .start_time_s = 0,
-        .end_time_s = 0,
-
-        .count = 1,
-        .anomaly_count = 0,
-
-        .flags = SN_DEFAULT_FLAGS,
-    };
-
-    // Fill the entire page
-    std::vector<std::pair<time_t, uint32_t>> StoredValues;
-
-    for (uint32_t i = 0; i != PO.initial_slots; i++)
-    {
-        usec_t PIT = (10 + i * PO.update_every) * USEC_PER_SEC;
-        usec_t After = 10 * USEC_PER_SEC;
-        usec_t Before = PIT + (PO.update_every * USEC_PER_SEC);
-        usec_t Duration = ((i + 1) * PO.update_every) * USEC_PER_SEC;
-
-        SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
-        StoredValues.push_back({ PIT / USEC_PER_SEC, SP.sum });
-
-        CH->store_next(PIT, SP);
-        EXPECT_EQ(CH->after(), After);
-        EXPECT_EQ(CH->before(), Before);
-        EXPECT_EQ(CH->duration(), Duration);
-    }
-
-    auto OP = CH->queryLock(CH->after());
-    EXPECT_TRUE(OP.has_value());
-
-    EXPECT_EQ(std::distance(OP->first, OP->second), PO.initial_slots);
-    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
-    for (Page::PageIterator& It = OP->first, End = OP->second;
-         It != End; It++)
-    {
-        STORAGE_POINT SP = *It;
-
-        CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
-    }
-
-    CH->queryUnlock();
-
-    EXPECT_EQ(StoredValues, CollectedValues);
-
     storage_instance_delete();
     temp_dir_delete(TmpDir);
 }
