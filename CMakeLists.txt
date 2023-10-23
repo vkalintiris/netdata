@@ -695,10 +695,17 @@ endif()
 
 if(ENABLE_RDB)
     list(APPEND RRD_PLUGIN_FILES database/rdb/barrier.h
+                                 database/rdb/CollectionHandle.h
+                                 database/rdb/CollectionPage.h
+                                 database/rdb/FlushedQueryHandle.h
+                                 database/rdb/Key.h
+                                 database/rdb/Page.h
+                                 database/rdb/rdb.cc
+                                 database/rdb/rdb-common.h
+                                 database/rdb/rdb.h
                                  database/rdb/rdb-private.h
                                  database/rdb/storage_handles.cc
-                                 database/rdb/rdb.cc
-                                 database/rdb/rdb.h
+                                 database/rdb/StorageInstance.h
                                  database/rdb/uuid_shard.h)
 endif()
 
