@@ -1,7 +1,4 @@
 #include "rdb-private.h"
-#include <google/protobuf/arena.h>
-#include <google/protobuf/repeated_field.h>
-#include <gtest/gtest.h>
 
 using namespace rdb;
 
@@ -549,76 +546,6 @@ TEST(rdb, PageIterator)
     temp_dir_delete(TmpDir);
 }
 
-class QueryHandle
-{
-public:
-    QueryHandle(pb::Arena &Arena, const Key &StartK)
-        : Arena(Arena), StartK(StartK),
-          It(SI->RDB->NewIterator(rocksdb::ReadOptions())) 
-    {
-        It->SeekForPrev(StartK.slice());
-    }
-
-    STORAGE_POINT next()
-    {
-        if (OP->first == OP->second)
-            fatal("PageIterator already consumed");
-
-        return *OP->first++;
-    }
-
-    bool isFinished()
-    {
-        if (OP.has_value() && (OP->first != OP->second))
-            return false;
-
-        return !advance(Arena);
-    }
-
-    void finalize()
-    {
-        delete It;
-    }
-
-private:
-    bool advance(pb::Arena &Arena)
-    {
-        // We can not advance an invalid iterator
-        if (!It->Valid())
-            return false;
-
-        while (It->Valid())
-        {
-            // Any old pages have been consumed. Reclaim space before
-            // creating a new one to keep memory consumption low.
-            Arena.Reset();
-
-            Key K = Key(It->key());
-            std::optional<Page> P = Page::fromSlice(Arena, It->value());
-
-            if (P.has_value())
-            {
-                OP = P->query(K.pit(), StartK.pit());
-                if (OP.has_value())
-                {
-                    It->Next();
-                    return true;
-                }
-            }
-
-            It->Next();
-        }
-
-        return false;
-    }
-
-private:
-    pb::Arena &Arena;
-    Key StartK;
-    rocksdb::Iterator *It;
-    std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
-};
-
 TEST(rdb, GVD) {
     const char *TmpDir = temp_dir_new();
     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
@@ -676,16 +603,16 @@ TEST(rdb, GVD) {
 
     std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
-    QueryHandle QH(QA, StartK);
+    FlushedQueryHandle FQH(QA, StartK);
 
-    while (!QH.isFinished())
+    while (!FQH.isFinished())
     {
-        STORAGE_POINT SP = QH.next();        
+        STORAGE_POINT SP = FQH.next();        
         CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
         // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
     }
 
-    QH.finalize();
+    FQH.finalize();
 
     EXPECT_EQ(StoredValues, CollectedValues);
 

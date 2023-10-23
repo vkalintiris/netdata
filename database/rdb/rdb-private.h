@@ -7,6 +7,7 @@
 #include "CollectionPage.h"
 #include "StorageInstance.h"
 #include "CollectionHandle.h"
+#include "FlushedQueryHandle.h"
 
 #include <cstdint>
 
