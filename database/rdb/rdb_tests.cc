@@ -621,53 +621,6 @@ TEST(rdb, GVD) {
     temp_dir_delete(TmpDir);
 }
 
-// TEST(rdb, SomeTest) {
-//     return;
-
-//     const char *TmpDir = temp_dir_new();
-//     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
-//     EXPECT_NE(si, nullptr);
-
-//     RRDDIM rd;
-//     uuid_generate(rd.metric_uuid);
-//     STORAGE_METRIC_HANDLE *smh = rdb_metric_get_or_create(&rd, si);
-//     EXPECT_NE(smh, nullptr);
-
-//     uuid_t group_uuid;
-//     uuid_generate(group_uuid);
-//     STORAGE_METRICS_GROUP *smg = rdb_metrics_group_get(si, &group_uuid);
-//     EXPECT_NE(smg, nullptr);
-
-//     usec_t update_every = 1 * USEC_PER_SEC;
-//     STORAGE_COLLECT_HANDLE *sch = rdb_store_metric_init(smh, update_every / USEC_PER_SEC, smg);
-//     EXPECT_NE(sch, nullptr);
-
-//     usec_t N = 6 * 3600;
-//     usec_t after = 3600 * USEC_PER_SEC;
-//     usec_t before = after + N * update_every;
-
-//     netdata_log_error("Filling %zu elements in page with ue=%zu, after=%zu and before=%zu",
-//                       N,
-//                       update_every / USEC_PER_SEC,
-//                       after / USEC_PER_SEC,
-//                       before / USEC_PER_SEC);
-
-//     for (usec_t i = 0; i != N; i++)
-//     {
-//         usec_t pit = after + i * update_every;
-//         rdb_store_metric_next(sch, pit, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
-//     }
-//     rdb_store_metric_flush(sch);
-
-//     struct storage_engine_query_handle seqh;
-//     rdb_load_metric_init(smh, &seqh, 2 * 3600, 3 * 3600, STORAGE_PRIORITY_NORMAL);
-
-//     storage_engine_query_next_metric(&seqh);
-
-//     storage_instance_delete();
-//     temp_dir_delete(TmpDir);
-// }
-
 int rdb_tests_main(int argc, char *argv[])
 {
     // skip the `-W rdb-tests` args

@@ -12,7 +12,6 @@ namespace rdb
 class FlushedQueryHandle
 {
 public:
-    // TODO: Iterator should outlive this object and get reused.
     FlushedQueryHandle(pb::Arena &Arena, const Key &StartK)
         : Arena(Arena), StartK(StartK),
           It(SI->RDB->NewIterator(rocksdb::ReadOptions())) 
@@ -38,6 +37,7 @@ public:
 
     void finalize()
     {
+        // TODO: Iterator should outlive us and get reused.
         delete It;
     }
 
