@@ -594,18 +594,18 @@ TEST(rdb, GVD) {
         CH->flush();
     }
 
+    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+
     uint32_t After = Hour / USEC_PER_SEC;
     uint32_t Before = (24 * Hour) / USEC_PER_SEC;
     UNUSED(Before);
 
     pb::Arena QA;
+    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
     const Key StartK(gid, mid, After);
 
-    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
-
-    FlushedQueryHandle FQH(StartK);
-    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
     It->SeekForPrev(StartK.slice());
+    FlushedQueryHandle FQH(StartK);
 
     while (!FQH.isFinished(QA, *It))
     {

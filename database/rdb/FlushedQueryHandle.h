@@ -5,6 +5,7 @@
 #include "Key.h"
 #include "Page.h"
 #include "StorageInstance.h"
+#include "CollectionHandle.h"
 
 namespace rdb
 {
@@ -12,10 +13,10 @@ namespace rdb
 class FlushedQueryHandle
 {
 public:
-    FlushedQueryHandle(const Key &StartK)
-        : StartK(StartK) { }
+    FlushedQueryHandle(const Key &AfterK)
+        : AfterK(AfterK) { }
 
-    bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
+    [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
     {
         if (OP.has_value() && (OP->first != OP->second))
             return false;
@@ -23,7 +24,7 @@ public:
         return !advance(Arena, It);
     }
 
-    STORAGE_POINT next()
+    [[nodiscard]] inline STORAGE_POINT next()
     {
         if (OP->first == OP->second)
             fatal("PageIterator already consumed");
@@ -31,8 +32,12 @@ public:
         return *OP->first++;
     }
 
+    inline void finalize()
+    {
+    }
+
 private:
-    bool advance(pb::Arena &Arena, rocksdb::Iterator &It)
+    [[nodiscard]] bool advance(pb::Arena &Arena, rocksdb::Iterator &It)
     {
         // We can not advance an invalid iterator
         if (!It.Valid())
@@ -49,7 +54,7 @@ private:
 
             if (P.has_value())
             {
-                OP = P->query(K.pit(), StartK.pit());
+                OP = P->query(K.pit(), AfterK.pit());
                 if (OP.has_value())
                 {
                     It.Next();
@@ -64,7 +69,42 @@ private:
     }
 
 private:
-    Key StartK;
+    const Key &AfterK;
+    std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
+};
+
+class CollectionQueryHandle
+{
+public:
+    CollectionQueryHandle(CollectionHandle &CH, const Key &StartK)
+        : CH(CH), OP(CH.queryLock(StartK.pit())) { }
+
+    CollectionQueryHandle(CollectionHandle &CH, usec_t After)
+        : CH(CH), OP(CH.queryLock(After)) { }
+
+    [[nodiscard]] inline bool isFinished()
+    {
+        if (!OP.has_value())
+            return true;
+
+        return OP->first == OP->second;
+    }
+
+    [[nodiscard]] inline STORAGE_POINT next()
+    {
+        if (OP->first == OP->second)
+            fatal("PageIterator already consumed");
+
+        return *OP->first++;
+    }
+
+    void finalize()
+    {
+        CH.queryUnlock();
+    }
+
+private:
+    CollectionHandle &CH;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
 };
 

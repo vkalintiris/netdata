@@ -289,12 +289,17 @@ public:
         return D;
     }
 
-    // The iterator will return all SPs with an QH->after() >= After
-    [[nodiscard]] std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
-    queryLock(usec_t After) const
+    [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
+    queryLock(uint32_t After) const
     {
         spinlock_lock(&Lock);
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
+    }
+
+    [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
+    queryLock(const Key &StartK) const
+    {
+        return queryLock(StartK.pit() * USEC_PER_SEC);
     }
 
     inline void queryUnlock() const
