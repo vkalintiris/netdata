@@ -546,7 +546,8 @@ TEST(rdb, PageIterator)
     temp_dir_delete(TmpDir);
 }
 
-TEST(rdb, GVD) {
+TEST(rdb, FlushedQueryHandle)
+{
     const char *TmpDir = temp_dir_new();
     STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
     EXPECT_NE(si, nullptr);
@@ -594,27 +595,78 @@ TEST(rdb, GVD) {
         CH->flush();
     }
 
-    std::vector<std::pair<time_t, uint32_t>> CollectedValues;
-
-    uint32_t After = Hour / USEC_PER_SEC;
-    uint32_t Before = (24 * Hour) / USEC_PER_SEC;
-    UNUSED(Before);
-
-    pb::Arena QA;
-    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
-    const Key StartK(gid, mid, After);
-
-    It->SeekForPrev(StartK.slice());
-    FlushedQueryHandle FQH(StartK);
-
-    while (!FQH.isFinished(QA, *It))
+    // Query entire range
     {
-        STORAGE_POINT SP = FQH.next();
-        CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
-        // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
+        std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+
+        uint32_t After = Hour / USEC_PER_SEC;
+        const Key StartK(gid, mid, After);
+
+        pb::Arena QA;
+        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        It->SeekForPrev(StartK.slice());
+
+        FlushedQueryHandle FQH(StartK);
+        while (!FQH.isFinished(QA, *It))
+        {
+            STORAGE_POINT SP = FQH.next();
+            CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
+            // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
+        }
+        FQH.finalize();
+        delete It;
+
+        EXPECT_EQ(StoredValues, CollectedValues);
+
     }
 
-    EXPECT_EQ(StoredValues, CollectedValues);
+    // Query the last hour
+    {
+        uint32_t After = (23 * Hour) / USEC_PER_SEC;
+        uint32_t Before = (24 * Hour) / USEC_PER_SEC;
+
+        pb::Arena QA;
+        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        const Key StartK(gid, mid, After);
+        It->SeekForPrev(StartK.slice());
+
+        FlushedQueryHandle FQH(StartK);
+        while (!FQH.isFinished(QA, *It))
+        {
+            STORAGE_POINT SP = FQH.next();
+
+            EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
+
+            EXPECT_GE(SP.start_time_s, After);
+            EXPECT_LT(SP.start_time_s, Before);
+        }
+        FQH.finalize();
+        delete It;
+    }
+
+    // Query from inbetween
+    {
+        uint32_t After = (6 * Hour) / USEC_PER_SEC;
+        uint32_t Before = (24 * Hour) / USEC_PER_SEC;
+
+        pb::Arena QA;
+        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        const Key StartK(gid, mid, After);
+        It->SeekForPrev(StartK.slice());
+
+        FlushedQueryHandle FQH(StartK);
+        while (!FQH.isFinished(QA, *It))
+        {
+            STORAGE_POINT SP = FQH.next();
+
+            EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
+
+            EXPECT_GE(SP.start_time_s, After);
+            EXPECT_LT(SP.start_time_s, Before);
+        }
+        FQH.finalize();
+        delete It;
+    }
 
     // Clean up
     storage_instance_delete();
