@@ -606,18 +606,18 @@ TEST(rdb, FlushedQueryHandle)
         rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
         It->SeekForPrev(StartK.slice());
 
-        FlushedQueryHandle FQH(StartK);
-        while (!FQH.isFinished(QA, *It))
+        auto CH = CollectionHandle::create(QA, PO, 0, 0);
+        UniversalQuery UQ(CH.value(), StartK);
+        while (!UQ.isFinished(QA, *It))
         {
-            STORAGE_POINT SP = FQH.next();
+            STORAGE_POINT SP = UQ.next();
             CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
             // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
         }
-        FQH.finalize();
+        UQ.finalize();
         delete It;
 
         EXPECT_EQ(StoredValues, CollectedValues);
-
     }
 
     // Queries for each second within the day
@@ -633,17 +633,18 @@ TEST(rdb, FlushedQueryHandle)
             const Key StartK(gid, mid, After);
             It->SeekForPrev(StartK.slice());
 
-            FlushedQueryHandle FQH(StartK);
-            while (!FQH.isFinished(QA, *It))
+            auto CH = CollectionHandle::create(QA, PO, 0, 0);
+            UniversalQuery UQ(CH.value(), StartK);
+            while (!UQ.isFinished(QA, *It))
             {
-                STORAGE_POINT SP = FQH.next();
+                STORAGE_POINT SP = UQ.next();
 
                 EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
 
                 EXPECT_GE(SP.start_time_s, After);
                 EXPECT_LT(SP.start_time_s, Before);
             }
-            FQH.finalize();
+            UQ.finalize();
         }
         delete It;
     }
