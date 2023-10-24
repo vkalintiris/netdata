@@ -29,7 +29,11 @@ public:
         this->Slots = Slots;
     }
 
-    [[nodiscard]] inline uint32_t getUpdateEvery() const
+    [[nodiscard]] inline PageType pageType() const {
+        return Inner.pageType();
+    }
+
+    [[nodiscard]] inline uint32_t updateEvery() const
     {
         return Inner.updateEvery();
     }
@@ -49,9 +53,17 @@ public:
         return Slots;
     }
 
-    [[nodiscard]] const Page *page() const
+    template<size_t N>
+    [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
     {
-        return &Inner;
+        return Inner.flush(AR);
+    }
+
+    [[nodiscard]] inline
+    std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
+    query(uint32_t StartPIT, uint32_t After) const
+    {
+        return Inner.query(StartPIT, After);
     }
 
 private:

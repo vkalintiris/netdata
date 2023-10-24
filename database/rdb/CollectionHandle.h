@@ -27,7 +27,7 @@ private:
     CollectionHandle(uint32_t GID, uint32_t MID,
                      CollectionPage &CP)
         : GID(GID), MID(MID),
-          CurrPIT(0), UE(CP.getUpdateEvery() * USEC_PER_SEC),
+          CurrPIT(0), UE(CP.updateEvery() * USEC_PER_SEC),
           CP(CP)
     {
         spinlock_init(&Lock);        
@@ -157,7 +157,7 @@ private:
         // ie. are we hitting hot vs. cold memory on serialization?
         std::array<char, 64 * 1024> bytes;
 
-        std::optional<const Slice> OV = CP.page()->flush(bytes);
+        std::optional<const Slice> OV = CP.flush(bytes);
         if (!OV.has_value())
         {
             fatal("Failed to flush page...");
@@ -241,7 +241,7 @@ public:
         CP.appendPoint(SP);
         this->CurrPIT += UE;
 
-        switch (CP.page()->pageType())
+        switch (CP.pageType())
         {
             case PageType::StorageNumbersPage:
                 break;
@@ -295,8 +295,7 @@ public:
     {
         spinlock_lock(&Lock);
 
-        const Page *P = CP.page();
-        return P->query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
+        return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
 
     inline void queryUnlock() const
