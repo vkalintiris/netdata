@@ -29,7 +29,8 @@ public:
         this->Slots = Slots;
     }
 
-    [[nodiscard]] inline PageType pageType() const {
+    [[nodiscard]] inline PageType pageType() const
+    {
         return Inner.pageType();
     }
 

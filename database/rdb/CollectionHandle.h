@@ -294,7 +294,6 @@ public:
     queryLock(usec_t After) const
     {
         spinlock_lock(&Lock);
-
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
 
