@@ -87,7 +87,7 @@ class CollectionQueryHandle
 
 public:
     CollectionQueryHandle(CollectionHandle &CH, const Key &AfterK)
-        : CH(CH), OP(CH.queryLock(AfterK.pit())), Finished(false) { }
+        : CH(CH), OP(CH.queryLock(AfterK.pit() * USEC_PER_SEC)), Finished(false) { }
 
     CollectionQueryHandle(CollectionHandle &CH, usec_t After)
         : CH(CH), OP(CH.queryLock(After)), Finished(false) { }

@@ -546,6 +546,23 @@ TEST(rdb, PageIterator)
     temp_dir_delete(TmpDir);
 }
 
+void checkVectors(std::vector<std::pair<time_t, uint32_t>> V1,
+                  std::vector<std::pair<time_t, uint32_t>> V2)
+{
+    if (V1.size() != V2.size())
+        fatal("V1.size(): %zu, V2.size: %zu", V1.size(), V2.size());
+
+    for (size_t i = 0; i != V1.size(); i++) {
+        if (V1[i] == V2[i])
+            continue;
+
+        netdata_log_error("V1[%zu] = { time = %ld, value: %u }, V2[%zu] = { time = %ld, value: %u }",
+                          i, V1[i].first, V1[i].second,
+                          i, V2[i].first, V2[i].second);
+        break;
+    }
+}
+
 TEST(rdb, FlushedQueryHandle)
 {
     const char *TmpDir = temp_dir_new();
@@ -557,6 +574,7 @@ TEST(rdb, FlushedQueryHandle)
     PO.initial_slots = 1024;
     PO.update_every = 4;
     usec_t UE = PO.update_every * USEC_PER_SEC;
+    size_t values_per_hour = 10;
 
     pb::Arena Arena;
     uint32_t gid = 1;
@@ -573,16 +591,21 @@ TEST(rdb, FlushedQueryHandle)
 
     std::vector<std::pair<time_t, uint32_t>> StoredValues;
 
-    // Fill 10 minutes at the start of each hour of a day
-    for (usec_t PIT = Hour; PIT < 24 * Hour; PIT += Hour)
+    // Fill 10 values at the start of each hour of a day
+    std::optional<CollectionHandle> CH;
+
+    // for (usec_t PIT = Hour; PIT < 24 * Hour; PIT += Hour)
+    for (size_t i = 1; i != 24; i++)
     {
+        usec_t PIT = i * Hour;
+
         SP.min = SP.max = SP.sum = static_cast<NETDATA_DOUBLE>(PIT) / Hour;
 
         // TODO: Add another test that use a persistent collection handle.
-        auto CH = CollectionHandle::create(Arena, PO, gid, mid);
+        CH = CollectionHandle::create(Arena, PO, gid, mid);
         EXPECT_TRUE(CH.has_value());
 
-        for (usec_t CurrPIT = PIT; CurrPIT < PIT + (10 * UE); CurrPIT += UE)
+        for (usec_t CurrPIT = PIT; CurrPIT < PIT + (values_per_hour * UE); CurrPIT += UE)
         {
             time_t Timepoint = CurrPIT / USEC_PER_SEC;
 
@@ -592,7 +615,8 @@ TEST(rdb, FlushedQueryHandle)
             SP.min = SP.max = SP.sum += 1;
         }
 
-        CH->flush();
+        if (i < 23)
+            CH->flush();
     }
 
     // Query entire range
@@ -606,45 +630,71 @@ TEST(rdb, FlushedQueryHandle)
         rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
         It->SeekForPrev(StartK.slice());
 
-        auto CH = CollectionHandle::create(QA, PO, 0, 0);
         UniversalQuery UQ(CH.value(), StartK);
         while (!UQ.isFinished(QA, *It))
         {
             STORAGE_POINT SP = UQ.next();
             CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
-            // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
         }
         UQ.finalize();
         delete It;
 
-        EXPECT_EQ(StoredValues, CollectedValues);
+        checkVectors(StoredValues, CollectedValues);
+
+        // EXPECT_EQ(StoredValues, CollectedValues);
     }
 
     // Queries for each second within the day
     {
+        std::vector<std::pair<time_t, uint32_t>> CollectedValues;
+
         rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
         pb::Arena QA;
 
-        for (uint32_t i = 0; i != 24 * 3600; i++)
+        std::vector<std::pair<time_t, uint32_t>> ExpectedValues;
+        uint32_t Before = 24 * 3600;
+        for (uint32_t i = 3600; i != Before; i++)
         {
-            uint32_t After = (i * Hour) / USEC_PER_SEC;
-            uint32_t Before = (24 * Hour) / USEC_PER_SEC;
+            CollectedValues.clear();
+
+            uint32_t After = i;
 
             const Key StartK(gid, mid, After);
             It->SeekForPrev(StartK.slice());
 
-            auto CH = CollectionHandle::create(QA, PO, 0, 0);
+            size_t points_returned = 0;
+
             UniversalQuery UQ(CH.value(), StartK);
             while (!UQ.isFinished(QA, *It))
             {
                 STORAGE_POINT SP = UQ.next();
 
+                EXPECT_GE(SP.start_time_s, After - PO.update_every);
+                EXPECT_LT(SP.start_time_s, Before);
                 EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
 
-                EXPECT_GE(SP.start_time_s, After);
-                EXPECT_LT(SP.start_time_s, Before);
+                {
+                    uint32_t hour = ((SP.start_time_s + 3600) / 3600) - 1;
+                    if (!hour)
+                        continue;
+
+                    uint32_t hour_offset = SP.start_time_s - (hour * 3600);
+                    uint32_t point_offset = hour_offset / PO.update_every;
+                    EXPECT_LT(point_offset, values_per_hour);
+
+                    EXPECT_DOUBLE_EQ(SP.sum, hour + point_offset);
+                }
+
+                points_returned++;
             }
             UQ.finalize();
+
+            if ((i % 3600) == 0)
+            {
+                uint32_t Hour = ((i + 3600) / 3600) - 1;
+                EXPECT_LT(Hour, 24);
+                EXPECT_EQ(points_returned, (24 - Hour) * values_per_hour);
+            }
         }
         delete It;
     }

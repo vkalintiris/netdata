@@ -290,7 +290,7 @@ public:
     }
 
     [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
-    queryLock(uint32_t After) const
+    queryLock(usec_t After) const
     {
         spinlock_lock(&Lock);
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
