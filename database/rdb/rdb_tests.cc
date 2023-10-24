@@ -620,51 +620,31 @@ TEST(rdb, FlushedQueryHandle)
 
     }
 
-    // Query the last hour
+    // Queries for each second within the day
     {
-        uint32_t After = (23 * Hour) / USEC_PER_SEC;
-        uint32_t Before = (24 * Hour) / USEC_PER_SEC;
-
-        pb::Arena QA;
         rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
-        const Key StartK(gid, mid, After);
-        It->SeekForPrev(StartK.slice());
-
-        FlushedQueryHandle FQH(StartK);
-        while (!FQH.isFinished(QA, *It))
-        {
-            STORAGE_POINT SP = FQH.next();
-
-            EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
-
-            EXPECT_GE(SP.start_time_s, After);
-            EXPECT_LT(SP.start_time_s, Before);
-        }
-        FQH.finalize();
-        delete It;
-    }
-
-    // Query from inbetween
-    {
-        uint32_t After = (6 * Hour) / USEC_PER_SEC;
-        uint32_t Before = (24 * Hour) / USEC_PER_SEC;
-
         pb::Arena QA;
-        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
-        const Key StartK(gid, mid, After);
-        It->SeekForPrev(StartK.slice());
 
-        FlushedQueryHandle FQH(StartK);
-        while (!FQH.isFinished(QA, *It))
+        for (uint32_t i = 0; i != 24 * 3600; i++)
         {
-            STORAGE_POINT SP = FQH.next();
+            uint32_t After = (i * Hour) / USEC_PER_SEC;
+            uint32_t Before = (24 * Hour) / USEC_PER_SEC;
 
-            EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
+            const Key StartK(gid, mid, After);
+            It->SeekForPrev(StartK.slice());
 
-            EXPECT_GE(SP.start_time_s, After);
-            EXPECT_LT(SP.start_time_s, Before);
+            FlushedQueryHandle FQH(StartK);
+            while (!FQH.isFinished(QA, *It))
+            {
+                STORAGE_POINT SP = FQH.next();
+
+                EXPECT_EQ(SP.end_time_s - SP.start_time_s, PO.update_every);
+
+                EXPECT_GE(SP.start_time_s, After);
+                EXPECT_LT(SP.start_time_s, Before);
+            }
+            FQH.finalize();
         }
-        FQH.finalize();
         delete It;
     }
 
