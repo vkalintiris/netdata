@@ -12,11 +12,15 @@ namespace rdb
 class FlushedQueryHandle
 {
 public:
-    FlushedQueryHandle(pb::Arena &Arena, const Key &StartK)
-        : Arena(Arena), StartK(StartK),
-          It(SI->RDB->NewIterator(rocksdb::ReadOptions())) 
+    FlushedQueryHandle(const Key &StartK)
+        : StartK(StartK) { }
+
+    bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
     {
-        It->SeekForPrev(StartK.slice());
+        if (OP.has_value() && (OP->first != OP->second))
+            return false;
+
+        return !advance(Arena, It);
     }
 
     STORAGE_POINT next()
@@ -27,56 +31,40 @@ public:
         return *OP->first++;
     }
 
-    bool isFinished()
-    {
-        if (OP.has_value() && (OP->first != OP->second))
-            return false;
-
-        return !advance(Arena);
-    }
-
-    void finalize()
-    {
-        // TODO: Iterator should outlive us and get reused.
-        delete It;
-    }
-
 private:
-    bool advance(pb::Arena &Arena)
+    bool advance(pb::Arena &Arena, rocksdb::Iterator &It)
     {
         // We can not advance an invalid iterator
-        if (!It->Valid())
+        if (!It.Valid())
             return false;
 
-        while (It->Valid())
+        while (It.Valid())
         {
             // Any old pages have been consumed. Reclaim space before
             // creating a new one to keep memory consumption low.
             Arena.Reset();
 
-            Key K = Key(It->key());
-            std::optional<Page> P = Page::fromSlice(Arena, It->value());
+            Key K = Key(It.key());
+            std::optional<Page> P = Page::fromSlice(Arena, It.value());
 
             if (P.has_value())
             {
                 OP = P->query(K.pit(), StartK.pit());
                 if (OP.has_value())
                 {
-                    It->Next();
+                    It.Next();
                     return true;
                 }
             }
 
-            It->Next();
+            It.Next();
         }
 
         return false;
     }
 
 private:
-    pb::Arena &Arena;
     Key StartK;
-    rocksdb::Iterator *It;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
 };
 

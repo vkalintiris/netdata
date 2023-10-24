@@ -603,16 +603,16 @@ TEST(rdb, GVD) {
 
     std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
-    FlushedQueryHandle FQH(QA, StartK);
+    FlushedQueryHandle FQH(StartK);
+    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+    It->SeekForPrev(StartK.slice());
 
-    while (!FQH.isFinished())
+    while (!FQH.isFinished(QA, *It))
     {
-        STORAGE_POINT SP = FQH.next();        
+        STORAGE_POINT SP = FQH.next();
         CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
         // netdata_log_error("SP[%ld, %ld]: %lf", SP.start_time_s, SP.end_time_s, SP.sum);
     }
-
-    FQH.finalize();
 
     EXPECT_EQ(StoredValues, CollectedValues);
 
