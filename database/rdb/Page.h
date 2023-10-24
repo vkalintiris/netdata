@@ -205,7 +205,6 @@ public:
                 return V->storage_numbers_page().storage_numbers_size();
             default:
                 fatal("Page: Tsimpa[1]");
-                return 0;
         }
     }
 
@@ -233,17 +232,8 @@ public:
 
                 return SP;
             }
-            default: {
+            default:
                 fatal("Page: Tsimpa[2]");
-
-                STORAGE_POINT SP = {
-                    .min = 0, .max = 0, .sum = 0,
-                    .start_time_s = 0, .end_time_s = 0,
-                    .count = 0, .anomaly_count = 0,
-                    .flags = SN_DEFAULT_FLAGS,
-                };
-                return SP;
-            }
         }
     }
 
@@ -258,7 +248,6 @@ public:
             }
             default:
                 fatal("Page: Tsimpa[3]");
-                return 0;
         }
     }
 
@@ -273,7 +262,6 @@ public:
             }
             default:
                 fatal("Page: Tsimpa[4]");
-                return 0;
         }
     }
 

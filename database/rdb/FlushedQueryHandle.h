@@ -12,16 +12,23 @@ namespace rdb
 
 class FlushedQueryHandle
 {
+    friend class UniversalQuery;
+
 public:
     FlushedQueryHandle(const Key &AfterK)
-        : AfterK(AfterK) { }
+        : AfterK(AfterK), OP(), Finished(false) { }
 
     [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
     {
-        if (OP.has_value() && (OP->first != OP->second))
-            return false;
+        if (!Finished)
+        {
+            if (OP.has_value() && (OP->first != OP->second))
+                return false;
 
-        return !advance(Arena, It);
+            Finished = !advance(Arena, It);
+        }
+
+        return Finished;
     }
 
     [[nodiscard]] inline STORAGE_POINT next()
@@ -71,23 +78,31 @@ private:
 private:
     const Key &AfterK;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
+    bool Finished;
 };
 
 class CollectionQueryHandle
 {
+    friend class UniversalQuery;
+
 public:
-    CollectionQueryHandle(CollectionHandle &CH, const Key &StartK)
-        : CH(CH), OP(CH.queryLock(StartK.pit())) { }
+    CollectionQueryHandle(CollectionHandle &CH, const Key &AfterK)
+        : CH(CH), OP(CH.queryLock(AfterK.pit())), Finished(false) { }
 
     CollectionQueryHandle(CollectionHandle &CH, usec_t After)
-        : CH(CH), OP(CH.queryLock(After)) { }
+        : CH(CH), OP(CH.queryLock(After)), Finished(false) { }
 
     [[nodiscard]] inline bool isFinished()
     {
-        if (!OP.has_value())
-            return true;
+        if (!Finished)
+        {
+            if (!OP.has_value())
+                return true;
 
-        return OP->first == OP->second;
+            Finished = OP->first == OP->second;
+        }
+
+        return Finished;
     }
 
     [[nodiscard]] inline STORAGE_POINT next()
@@ -98,7 +113,7 @@ public:
         return *OP->first++;
     }
 
-    void finalize()
+    inline void finalize()
     {
         CH.queryUnlock();
     }
@@ -106,6 +121,41 @@ public:
 private:
     CollectionHandle &CH;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
+    bool Finished;
+};
+
+class UniversalQuery
+{
+public:
+    UniversalQuery(CollectionHandle &CH, const Key &AfterK)
+        : AfterK(AfterK), FQH(this->AfterK), CQH(CH, this->AfterK) { }
+
+    [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
+    {
+        return FQH.isFinished(Arena, It) && CQH.isFinished();
+    }
+
+    [[nodiscard]] inline STORAGE_POINT next()
+    {
+        if (!FQH.Finished)
+            return FQH.next();
+
+        if (!CQH.Finished)
+            return CQH.next();
+
+        fatal("Tried to get storage point from finished query.");
+    }
+
+    void finalize()
+    {
+        FQH.finalize();
+        CQH.finalize();
+    }
+
+private:
+    const Key AfterK;
+    FlushedQueryHandle FQH;
+    CollectionQueryHandle CQH;
 };
 
 } // namespace rdb

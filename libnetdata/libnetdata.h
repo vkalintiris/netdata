@@ -229,11 +229,7 @@ extern "C" {
 #define PRINTFLIKE(f, a)
 #endif
 
-#ifdef HAVE_FUNC_ATTRIBUTE_NORETURN
 #define NORETURN __attribute__ ((noreturn))
-#else
-#define NORETURN
-#endif
 
 #ifdef HAVE_FUNC_ATTRIBUTE_WARN_UNUSED_RESULT
 #define WARNUNUSED __attribute__ ((warn_unused_result))
