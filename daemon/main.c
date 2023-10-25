@@ -1456,7 +1456,7 @@ int main(int argc, char **argv) {
 
 #ifdef ENABLE_BENCHMARKS
                         if(strcmp(optarg, "rdb") == 0) {
-                            rdb_main(argc, argv);
+                            rdb_profile_main(argc, argv);
                             return 0;
                         }
 #endif

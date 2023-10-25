@@ -1,4 +1,5 @@
 #include "rdb-private.h"
+#include "Barrier.h"
 
 #include <chrono>
 #include <thread>
@@ -130,7 +131,7 @@ static rocksdb::Options get_db_options()
     return Opts;
 }
 
-int rdb_main(int argc, char *argv[])
+int rdb_profile_main(int argc, char *argv[])
 {
     (void) argc;
     (void) argv;

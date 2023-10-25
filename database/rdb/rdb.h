@@ -65,7 +65,7 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si);
 uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si);
 
 #ifdef ENABLE_BENCHMARKS
-int rdb_main(int argc, char *argv[]);
+int rdb_profile_main(int argc, char *argv[]);
 extern STORAGE_INSTANCE *RDB_StorageInstance;
 #endif
 
