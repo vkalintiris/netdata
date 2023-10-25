@@ -4,6 +4,7 @@
 #include <thread>
 
 rdb::StorageInstance *SI = nullptr;
+STORAGE_INSTANCE *RDB_StorageInstance = nullptr;
 
 std::atomic<size_t> num_pages_written = 0;
 
@@ -135,12 +136,15 @@ int rdb_main(int argc, char *argv[])
     (void) argv;
 
     SI = new rdb::StorageInstance(16);
+    RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
 
     rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/cm/opt/tmp";
+    const char *Path = "/home/vk/opt/tmp";
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
+
+    return 0;
 
     netdata_log_error("Program started...");
 

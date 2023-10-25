@@ -66,6 +66,7 @@ uint64_t rdb_disk_space_used(STORAGE_INSTANCE *si);
 
 #ifdef ENABLE_BENCHMARKS
 int rdb_main(int argc, char *argv[]);
+extern STORAGE_INSTANCE *RDB_StorageInstance;
 #endif
 
 #ifdef ENABLE_TESTS

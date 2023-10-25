@@ -205,7 +205,9 @@ struct rdb_query_handle
         rmh(rmh), Arena(), It(nullptr), AfterK(AfterK),
         Before(Before), Now(AfterK.pit()),
         UQ(CH, AfterK)
-    { }
+    {
+        seek();
+    }
 
     void seek()
     {

@@ -6,7 +6,7 @@
 static void rrdhost_streaming_sender_structures_init(RRDHOST *host);
 
 bool dbengine_enabled = false; // will become true if and when dbengine is initialized
-size_t storage_tiers = 3;
+size_t storage_tiers = 1;
 bool use_direct_io = true;
 size_t storage_tiers_grouping_iterations[RRD_STORAGE_TIERS] = { 1, 60, 60, 60, 60 };
 RRD_BACKFILL storage_tiers_backfill[RRD_STORAGE_TIERS] = { RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW, RRD_BACKFILL_NEW };
@@ -409,7 +409,13 @@ int is_legacy = 1;
     rrdcalctemplate_index_init(host);
     rrdcalc_rrdhost_index_init(host);
 
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+    if (host->rrd_memory_mode == RRD_MEMORY_MODE_RDB) {
+        host->db[0].mode = RRD_MEMORY_MODE_RDB;
+        host->db[0].eng = storage_engine_get(host->db[0].mode);
+        host->db[0].instance = RDB_StorageInstance;
+        host->db[0].tier_grouping = get_tier_grouping(0);
+    }
+    else if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
 #ifdef ENABLE_DBENGINE
         char dbenginepath[FILENAME_MAX + 1];
         int ret;
