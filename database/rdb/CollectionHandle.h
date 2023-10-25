@@ -343,7 +343,8 @@ struct rdb_collect_handle
     rdb::CollectionHandle ch;
 
     rdb_collect_handle(rdb::CollectionHandle &CH)
-        : common({ .backend = STORAGE_ENGINE_BACKEND_RDB }), ch(CH) { }
+        : common({ .backend = STORAGE_ENGINE_BACKEND_RDB }), ch(CH)
+    { }
 };
 
 #endif /* RDB_COLLECTION_HANDLE_H */
