@@ -11,6 +11,8 @@ struct rdb_metrics_group
     uint32_t id;
     uint32_t rc;
     google::protobuf::Arena *arena;
+
+    rdb_metrics_group() : uuid{}, id{0}, rc{0}, arena{nullptr} { }
 };
 
 struct rdb_metric_handle
@@ -21,6 +23,8 @@ struct rdb_metric_handle
 
     rdb_metrics_group *rmg;
     rdb_collect_handle *rch;
+
+    rdb_metric_handle() : uuid{}, id{0}, rc{0}, rmg{nullptr}, rch{nullptr} { }
 };
 
 namespace rdb {
@@ -32,7 +36,7 @@ public:
         RDB(nullptr),
         GroupsRegistry(registry_shards),
         MetricsRegistry(registry_shards)
-    {}
+    { }
 
     rocksdb::Status open(rocksdb::Options Opts, const char *path)
     {

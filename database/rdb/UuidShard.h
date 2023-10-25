@@ -12,7 +12,8 @@
 struct UUID {
     const unsigned char *inner;
 
-    bool operator==(const UUID &other) const {
+    bool operator==(const UUID &other) const
+    {
         return uuid_compare(inner, other.inner) == 0;
     }
 };
@@ -29,12 +30,11 @@ namespace std {
 template<typename T>
 class UuidShard {
 public:
-    UuidShard(size_t shards = 0) {
-        mutexes = std::vector<std::mutex>(shards);
-        maps = std::vector<std::unordered_map<UUID, T *>>(shards);
-    }
+    UuidShard(size_t shards = 4)
+        : mutexes(shards), maps(shards), max_reserved_id(0) { }
 
-    T *create(const uuid_t &uuid) {
+    T *create(const uuid_t &uuid)
+    {
         T *v = new T();
         uuid_copy(v->uuid, uuid);
         v->id = ++max_reserved_id;
@@ -43,18 +43,21 @@ public:
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
+
             maps[i][UUID{ .inner = uuid }] = v;
         }
 
         return v; 
     }
 
-    T *add_or_create(const uuid_t &uuid) {
+    T *add_or_create(const uuid_t &uuid)
+    {
         T *v = nullptr;
 
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
+
             auto it = maps[i].find(UUID{ .inner = uuid });
             if (it != maps[i].cend()) {
                 v= it->second;
@@ -68,7 +71,8 @@ public:
             return create(uuid);
     }
 
-    void acquire(T *v) {
+    void acquire(T *v)
+    {
         size_t i = shard(v->uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
@@ -76,10 +80,12 @@ public:
         }
     }
 
-    T *acquire(const uuid_t &uuid) {
+    T *acquire(const uuid_t &uuid)
+    {
         size_t i = shard(uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
+
             auto it = maps[i].find(UUID{ .inner = uuid });
             if (it == maps[i].cend())
                 return nullptr;
@@ -90,11 +96,13 @@ public:
         }
     }
 
-    T *acquire(uuid_t *uuid) {
+    T *acquire(const uuid_t *uuid)
+    {
         return acquire(*uuid);
     }
 
-    void release(T *v) {
+    void release(T *v)
+    {
         size_t i = shard(v->uuid);
         {
             std::lock_guard<std::mutex> L(mutexes[i]);
@@ -105,7 +113,8 @@ public:
     }
 
 private:
-    size_t shard(const uuid_t &uuid) {
+    size_t shard(const uuid_t &uuid)
+    {
         size_t h = std::hash<UUID>{}(UUID{ .inner = &uuid[0] });
         return h % maps.size();
     }
@@ -113,7 +122,6 @@ private:
 private:
     std::vector<std::mutex> mutexes;
     std::vector<std::unordered_map<UUID, T *>> maps;
-
     std::atomic<uint32_t> max_reserved_id;
 };
 

@@ -3,7 +3,6 @@
 
 namespace pb = google::protobuf;
 
-using rocksdb::Slice;
 using rocksdb::Status;
 using rocksdb::Iterator;
 using rocksdb::ReadOptions;
@@ -193,7 +192,7 @@ struct rdb_query_handle
     rdb_metric_handle *rmh;
 
     pb::Arena Arena;
-    rocksdb::Iterator *It;
+    Iterator *It;
 
     rdb::Key AfterK;
     uint32_t Before;
