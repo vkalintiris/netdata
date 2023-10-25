@@ -57,6 +57,9 @@ private:
             Arena.Reset();
 
             Key K = Key(It.key());
+            if (K.mid() != AfterK.mid())
+                return false;
+
             std::optional<Page> P = Page::fromSlice(Arena, It.value());
 
             if (P.has_value())
@@ -86,11 +89,17 @@ class CollectionQueryHandle
     friend class UniversalQuery;
 
 public:
-    CollectionQueryHandle(CollectionHandle &CH, const Key &AfterK)
-        : CH(CH), OP(CH.queryLock(AfterK.pit() * USEC_PER_SEC)), Finished(false) { }
+    CollectionQueryHandle(CollectionHandle *CH, const Key &AfterK) :
+        CH(CH),
+        OP(CH ? CH->queryLock(AfterK.pit() * USEC_PER_SEC) : std::nullopt),
+        Finished(!OP.has_value())
+    { }
 
-    CollectionQueryHandle(CollectionHandle &CH, usec_t After)
-        : CH(CH), OP(CH.queryLock(After)), Finished(false) { }
+    CollectionQueryHandle(CollectionHandle *CH, usec_t After)
+        : CH(CH),
+          OP(CH ? CH->queryLock(After) : std::nullopt),
+          Finished(!OP.has_value())
+    { }
 
     [[nodiscard]] inline bool isFinished()
     {
@@ -115,11 +124,11 @@ public:
 
     inline void finalize()
     {
-        CH.queryUnlock();
+        CH->queryUnlock();
     }
 
 private:
-    CollectionHandle &CH;
+    CollectionHandle *CH;
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
     bool Finished;
 };
@@ -127,7 +136,7 @@ private:
 class UniversalQuery
 {
 public:
-    UniversalQuery(CollectionHandle &CH, const Key &AfterK)
+    UniversalQuery(CollectionHandle *CH, const Key &AfterK)
         : AfterK(AfterK), FQH(this->AfterK), CQH(CH, this->AfterK) { }
 
     [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)

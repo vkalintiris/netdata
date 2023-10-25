@@ -723,8 +723,15 @@ static inline int storage_engine_query_is_finished(struct storage_engine_query_h
 // TODO: RDB
 void rrdeng_load_metric_finalize(struct storage_engine_query_handle *rrddim_handle);
 void rrddim_query_finalize(struct storage_engine_query_handle *handle);
+void rdb_load_metric_finalize(struct storage_engine_query_handle *seqh);
 static inline void storage_engine_query_finalize(struct storage_engine_query_handle *handle) {
     internal_fatal(!is_valid_backend(handle->backend), "STORAGE: invalid backend");
+
+#ifdef ENABLE_RDB
+    if(likely(handle->backend == STORAGE_ENGINE_BACKEND_RDB))
+        rdb_load_metric_finalize(handle);
+    else
+#endif
 
 #ifdef ENABLE_DBENGINE
     if(likely(handle->backend == STORAGE_ENGINE_BACKEND_DBENGINE))

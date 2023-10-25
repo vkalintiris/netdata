@@ -54,6 +54,8 @@ STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh);
 
 int rdb_query_is_finished(struct storage_engine_query_handle *handle);
 
+void rdb_load_metric_finalize(struct storage_engine_query_handle *seqh);
+
 /*
  * STORAGE_INSTANCE
 */

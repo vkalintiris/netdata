@@ -187,121 +187,98 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 /* Query ops                                                                 */
 /*===---------------------------------------------------------------------===*/
 
-using RepKeyField = pb::RepeatedField<rdb::Key>;
-
-static RepKeyField *rdb_util_collect_keys(pb::Arena &Arena,
-                                          const rdb::Key &key_start, const rdb::Key &key_end)
-{
-    RepKeyField *keys = pb::Arena::CreateMessage<RepKeyField>(&Arena);
-    size_t size_hint = 2 * (key_end.pit() - key_start.pit()) / 1024;
-    keys->Reserve(size_hint);
-
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
-    for (It->SeekForPrev(key_start.slice());
-         It->Valid() && ((It->key().compare(key_end.slice()) <= 0));
-         It->Next())
-    {
-        const std::array<char, rdb::Key::Bytes> &AR =
-                *reinterpret_cast<const std::array<char, rdb::Key::Bytes> *>(It->key().data());
-        keys->Add(AR);
-    }
-
-    return keys;
-}
-
 struct rdb_query_handle
 {
     rdb_metric_handle *rmh;
 
-    uint32_t after_s;
-    uint32_t before_s;
-    uint32_t now_s;
-
     pb::Arena Arena;
-    pb::RepeatedField<rdb::Key> *keys;
+    rocksdb::Iterator *It;
+
+    rdb::Key AfterK;
+    uint32_t Before;
+    uint32_t Now;
+    rdb::UniversalQuery UQ;
+
+    rdb_query_handle(rdb_metric_handle *rmh,
+                     rdb::CollectionHandle *CH,
+                     const rdb::Key &AfterK, uint32_t Before) :
+        rmh(rmh), Arena(), It(nullptr), AfterK(AfterK),
+        Before(Before), Now(AfterK.pit()),
+        UQ(CH, AfterK)
+    { }
+
+    void seek()
+    {
+        It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        if (!It)
+            fatal("Could not get new allocator from RocksDB");
+
+        It->SeekForPrev(AfterK.slice());
+        if (!It->Valid())
+            It->Seek(AfterK.slice());
+
+        if (!It->Valid())
+            Now = Before;
+    }
+
+    inline STORAGE_POINT next()
+    {
+        STORAGE_POINT SP = UQ.next();
+        Now = SP.start_time_s;
+        return SP;
+    }
+
+    inline bool isFinished()
+    {
+        return (Now > Before) ? true : UQ.isFinished(Arena, *It);
+    }
+
+    ~rdb_query_handle()
+    {
+        if (It)
+            delete It;
+
+        rdb_metric_release(reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh));
+    }
 };
 
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
                           struct storage_engine_query_handle *seqh,
-                          time_t start_time_s,
-                          time_t end_time_s,
+                          time_t After,
+                          time_t Before,
                           STORAGE_PRIORITY priority)
 {
-    rdb_query_handle *rqh = new rdb_query_handle();
+    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
 
-    rqh->rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
-    rqh->after_s = std::max(rdb_metric_oldest_time(smh), start_time_s);
-    rqh->before_s = std::min(rdb_metric_latest_time(smh), end_time_s);
-    rqh->now_s = rqh->after_s;
+    After = std::max(rdb_metric_oldest_time(smh), After);
+    Before = std::min(rdb_metric_latest_time(smh), Before);
 
-    rdb::Key key_start{rqh->rmh->rmg->id, rqh->rmh->id, rqh->after_s};
-    rdb::Key key_end{rqh->rmh->rmg->id, rqh->rmh->id, rqh->before_s};
-    rqh->keys = rdb_util_collect_keys(rqh->Arena, key_start, key_end);
+    rdb::Key StartK(rmh->rmg->id, rmh->id, After);
 
-    for (auto It = rqh->keys->begin(); It != rqh->keys->end(); It++) {
-        const rdb::Key &K = *It;
-        netdata_log_error("Found key: %s", K.toString(true).c_str());
-    }
+    rdb_query_handle *rqh = new rdb_query_handle(rmh, &rmh->rch->ch, StartK, Before);
 
-    seqh->start_time_s = rqh->after_s;
-    seqh->end_time_s = rqh->before_s;
+    seqh->start_time_s = After;
+    seqh->end_time_s = Before;
     seqh->backend = STORAGE_ENGINE_BACKEND_RDB;
     seqh->priority = priority;
     seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
 }
 
-static bool rdb_load_metric_next_page(rdb_query_handle *rqh, uint32_t after, uint32_t before)
-{
-    UNUSED(rqh);
-    UNUSED(after);
-    UNUSED(before);
-
-    // // check the collection handle first
-    // rdb_collect_handle *rch = rqh->rmh->rch;
-    // if (rch)
-    // {
-    //     spinlock_lock(&rch->collection.lock);
-
-    //     uint32_t start_time_s = rdb_store_metric_start_time(rch);
-    //     if (rqh->now_s >= start_time_s)
-    //     {
-    //         rqh->P = rch->collection.value.getPage(&rqh->Arena, start_time_s);
-    //     } else {
-    //         rqh->P.reset();
-    //     }
-
-    //     spinlock_unlock(&rch->collection.lock);
-    // }
-
-    // if (rqh->P.has_value())
-    //     return false;
-
-
-    return false;
-}
-
 STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh)
 {
     rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
-
-    rdb_load_metric_next_page(rqh, seqh->start_time_s, seqh->end_time_s);
-
-    for (size_t i = 0; i != rqh->keys->size(); i++)
-    {
-        const rdb::Key &K = rqh->keys->Get(i);
-        netdata_log_error("Retrieved key: gid=%u, mid=%u, pit=%u",
-                          K.gid(), K.mid(), K.pit());
-    }
-
-    STORAGE_POINT sp;
-    storage_point_empty(sp, 10, 10);
-    return sp;
+    return rqh->UQ.next();
 }
 
 int rdb_load_metric_is_finished(struct storage_engine_query_handle *seqh)
 {
     rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
-    return rqh->now_s > seqh->end_time_s;
+    return rqh->isFinished();
+}
+
+void rdb_load_metric_finalize(struct storage_engine_query_handle *seqh) {
+    rdb_query_handle *rqh = reinterpret_cast<rdb_query_handle *>(seqh->handle);
+    delete rqh;
 }
 
 /*===---------------------------------------------------------------------===*/

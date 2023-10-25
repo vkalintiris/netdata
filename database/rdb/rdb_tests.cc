@@ -630,7 +630,7 @@ TEST(rdb, FlushedQueryHandle)
         rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
         It->SeekForPrev(StartK.slice());
 
-        UniversalQuery UQ(CH.value(), StartK);
+        UniversalQuery UQ(&CH.value(), StartK);
         while (!UQ.isFinished(QA, *It))
         {
             STORAGE_POINT SP = UQ.next();
@@ -664,7 +664,7 @@ TEST(rdb, FlushedQueryHandle)
 
             size_t points_returned = 0;
 
-            UniversalQuery UQ(CH.value(), StartK);
+            UniversalQuery UQ(&CH.value(), StartK);
             while (!UQ.isFinished(QA, *It))
             {
                 STORAGE_POINT SP = UQ.next();
