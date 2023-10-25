@@ -471,7 +471,6 @@ void rrdset_push_metrics_finished(RRDSET_STREAM_BUFFER *rsb, RRDSET *st) {
 // TODO enable this macro before release
 #define bail_if_no_cap(cap) \
     if(unlikely(!stream_has_capability(host->sender, cap))) { \
-        netdata_log_error("STREAM %s [send]: cannot send job status update - parent does not support it.", rrdhost_hostname(host)); \
         return; \
     }
 
@@ -669,6 +668,19 @@ void rrdpush_send_dyncfg_reg_job(RRDHOST *host, const char *plugin_name, const c
     BUFFER *wb = sender_start(host->sender);
 
     buffer_sprintf(wb, PLUGINSD_KEYWORD_DYNCFG_REGISTER_JOB " %s %s %s %s %"PRIu32"\n", plugin_name, module_name, job_name, job_type2str(type), flags);
+
+    sender_commit(host->sender, wb, STREAM_TRAFFIC_TYPE_METADATA);
+
+    sender_thread_buffer_free();
+}
+
+void rrdpush_send_dyncfg_reset(RRDHOST *host, const char *plugin_name)
+{
+    dyncfg_check_can_push(host);
+
+    BUFFER *wb = sender_start(host->sender);
+
+    buffer_sprintf(wb, PLUGINSD_KEYWORD_DYNCFG_RESET " %s\n", plugin_name);
 
     sender_commit(host->sender, wb, STREAM_TRAFFIC_TYPE_METADATA);
 

@@ -502,13 +502,14 @@ static inline uint64_t storage_engine_disk_space_max(STORAGE_ENGINE_BACKEND back
     return 0;
 }
 
-uint64_t rdb_disk_space_used(STORAGE_INSTANCE *db_instance);
 uint64_t rrdeng_disk_space_used(STORAGE_INSTANCE *db_instance);
-static inline size_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
+uint64_t rdb_disk_space_used(STORAGE_INSTANCE *db_instance);
+static inline uint64_t storage_engine_disk_space_used(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_INSTANCE *db_instance __maybe_unused) {
 #ifdef ENABLE_RDB
     if(likely(backend == STORAGE_ENGINE_BACKEND_RDB))
         return rdb_disk_space_used(db_instance);
 #endif
+
 #ifdef ENABLE_DBENGINE
     if(likely(backend == STORAGE_ENGINE_BACKEND_DBENGINE))
         return rrdeng_disk_space_used(db_instance);
@@ -1107,7 +1108,6 @@ struct alarm_entry {
     STRING *chart;
     STRING *chart_context;
     STRING *chart_name;
-    STRING *family;
 
     STRING *classification;
     STRING *component;
@@ -1152,7 +1152,6 @@ struct alarm_entry {
 #define ae_chart_id(ae) string2str((ae)->chart)
 #define ae_chart_name(ae) string2str((ae)->chart_name)
 #define ae_chart_context(ae) string2str((ae)->chart_context)
-#define ae_family(ae) string2str((ae)->family)
 #define ae_classification(ae) string2str((ae)->classification)
 #define ae_exec(ae) string2str((ae)->exec)
 #define ae_recipient(ae) string2str((ae)->recipient)

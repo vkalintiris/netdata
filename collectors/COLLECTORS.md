@@ -55,8 +55,6 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [Dependency-Track](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/dependency-track.md)
 
-- [Dynatrace](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/dynatrace.md)
-
 - [Go applications (EXPVAR)](https://github.com/netdata/netdata/blob/master/collectors/python.d.plugin/go_expvar/integrations/go_applications_expvar.md)
 
 - [Google Pagespeed](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/google_pagespeed.md)
@@ -68,8 +66,6 @@ If you don't see the app/service you'd like to monitor in this list:
 - [Java Spring-boot 2 applications](https://github.com/netdata/go.d.plugin/blob/master/modules/springboot2/integrations/java_spring-boot_2_applications.md)
 
 - [NRPE daemon](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/nrpe_daemon.md)
-
-- [Prometheus endpoint](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/prometheus_endpoint.md)
 
 - [Sentry](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/sentry.md)
 
@@ -97,7 +93,7 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [LDAP](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/ldap.md)
 
-- [OpenLDAP](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/openldap.md)
+- [OpenLDAP (community)](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/openldap_community.md)
 
 - [OpenLDAP](https://github.com/netdata/netdata/blob/master/collectors/python.d.plugin/openldap/integrations/openldap.md)
 
@@ -125,7 +121,7 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [Sia](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/sia.md)
 
-### CI/CD Platforms
+### CICD Platforms
 
 - [Concourse](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/concourse.md)
 
@@ -209,8 +205,6 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [Docker](https://github.com/netdata/go.d.plugin/blob/master/modules/docker/integrations/docker.md)
 
-- [Kubernetes Containers](https://github.com/netdata/netdata/blob/master/collectors/cgroups.plugin/integrations/kubernetes_containers.md)
-
 - [LXC Containers](https://github.com/netdata/netdata/blob/master/collectors/cgroups.plugin/integrations/lxc_containers.md)
 
 - [Libvirt Containers](https://github.com/netdata/netdata/blob/master/collectors/cgroups.plugin/integrations/libvirt_containers.md)
@@ -222,8 +216,6 @@ If you don't see the app/service you'd like to monitor in this list:
 - [Proxmox Containers](https://github.com/netdata/netdata/blob/master/collectors/cgroups.plugin/integrations/proxmox_containers.md)
 
 - [Proxmox VE](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/proxmox_ve.md)
-
-- [VMWare](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/vmware.md)
 
 - [VMware vCenter Server](https://github.com/netdata/go.d.plugin/blob/master/modules/vsphere/integrations/vmware_vcenter_server.md)
 
@@ -265,7 +257,7 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [MariaDB](https://github.com/netdata/go.d.plugin/blob/master/modules/mysql/integrations/mariadb.md)
 
-- [Memcached](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/memcached.md)
+- [Memcached (community)](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/memcached_community.md)
 
 - [Memcached](https://github.com/netdata/netdata/blob/master/collectors/python.d.plugin/memcached/integrations/memcached.md)
 
@@ -275,7 +267,7 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [ODBC](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/odbc.md)
 
-- [Oracle DB](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/oracle_db.md)
+- [Oracle DB (community)](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/oracle_db_community.md)
 
 - [Oracle DB](https://github.com/netdata/netdata/blob/master/collectors/python.d.plugin/oracledb/integrations/oracle_db.md)
 
@@ -907,6 +899,8 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [Collectd](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/collectd.md)
 
+- [Dynatrace](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/dynatrace.md)
+
 - [Grafana](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/grafana.md)
 
 - [Hubble](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/hubble.md)
@@ -948,10 +942,6 @@ If you don't see the app/service you'd like to monitor in this list:
 - [Cloud Foundry Firehose](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/cloud_foundry_firehose.md)
 
 - [Cloud Foundry](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/cloud_foundry.md)
-
-- [Mesos](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/mesos.md)
-
-- [Slurm](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/slurm.md)
 
 - [Spacelift](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/spacelift.md)
 
@@ -1099,8 +1089,6 @@ If you don't see the app/service you'd like to monitor in this list:
 
 ### Task Queues
 
-- [Beanstalk](https://github.com/netdata/netdata/blob/master/collectors/python.d.plugin/beanstalk/integrations/beanstalk.md)
-
 - [Celery](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/celery.md)
 
 - [Mesos](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/mesos.md)
@@ -1121,9 +1109,7 @@ If you don't see the app/service you'd like to monitor in this list:
 
 - [Eaton UPS](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/eaton_ups.md)
 
-- [Network UPS Tools (NUT)](https://github.com/netdata/netdata/blob/master/collectors/charts.d.plugin/nut/integrations/network_ups_tools_nut.md)
-
-- [Network UPS Tools](https://github.com/netdata/go.d.plugin/blob/master/modules/prometheus/integrations/network_ups_tools.md)
+- [UPS (NUT)](https://github.com/netdata/go.d.plugin/blob/master/modules/upsd/integrations/ups_nut.md)
 
 ### VPNs
 

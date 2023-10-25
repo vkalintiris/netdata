@@ -86,9 +86,9 @@ modules:
           description: ""
           labels:
             - name: container_name
-              description: TBD
+              description: The container name or group path if name resolution fails.
             - name: image
-              description: TBD
+              description: Docker/Podman container image name.
           metrics:
             - name: cgroup.cpu_limit
               description: CPU Usage within the limits
@@ -314,13 +314,15 @@ modules:
           description: ""
           labels:
             - name: container_name
-              description: TBD
+              description: The container name or group path if name resolution fails.
             - name: image
-              description: TBD
+              description: Docker/Podman container image name.
             - name: device
-              description: TBD
+              description: "The name of the host network interface linked to the container's network interface."
+            - name: container_device
+              description: Container network interface name.
             - name: interface_type
-              description: TBD
+              description: 'Network interface type. Always "virtual" for the containers.'
           metrics:
             - name: cgroup.net_net
               description: Bandwidth
@@ -406,7 +408,7 @@ modules:
         link: https://kubernetes.io/
         icon_filename: kubernetes.svg
         categories:
-          - data-collection.containers-and-vms
+          #- data-collection.containers-and-vms
           - data-collection.kubernetes
       keywords:
         - k8s
@@ -445,30 +447,26 @@ modules:
       availability: []
       scopes:
         - name: k8s cgroup
-          description: ""
+          description: These metrics refer to the Pod container.
           labels:
-            - name: k8s_namespace
-              description: TBD
-            - name: k8s_pod_name
-              description: TBD
-            - name: k8s_pod_uid
-              description: TBD
-            - name: k8s_controller_kind
-              description: TBD
-            - name: k8s_controller_name
-              description: TBD
             - name: k8s_node_name
-              description: TBD
+              description: 'Node name. The value of _pod.spec.nodeName_.'
+            - name: k8s_namespace
+              description: 'Namespace name. The value of _pod.metadata.namespace_.'
+            - name: k8s_controller_kind
+              description: 'Controller kind (ReplicaSet, DaemonSet, StatefulSet, Job, etc.). The value of _pod.OwnerReferences.Controller.Kind_.'
+            - name: k8s_controller_name
+              description: 'Controller name.The value of _pod.OwnerReferences.Controller.Name_.'
+            - name: k8s_pod_name
+              description: 'Pod name. The value of _pod.metadata.name_.'
             - name: k8s_container_name
-              description: TBD
-            - name: k8s_container_id
-              description: TBD
+              description: 'Container name. The value of _pod.spec.containers.name_.'
             - name: k8s_kind
-              description: TBD
+              description: 'Instance kind: "pod" or "container".'
             - name: k8s_qos_class
-              description: TBD
+              description: 'QoS class (guaranteed, burstable, besteffort).'
             - name: k8s_cluster_id
-              description: TBD
+              description: 'Cluster ID. The value of kube-system namespace _namespace.metadata.uid_.'
           metrics:
             - name: k8s.cgroup.cpu_limit
               description: CPU Usage within the limits
@@ -691,34 +689,32 @@ modules:
               dimensions:
                 - name: time
         - name: k8s cgroup network device
-          description: ""
+          description: These metrics refer to the Pod container network interface.
           labels:
             - name: device
-              description: TBD
+              description: "The name of the host network interface linked to the container's network interface."
+            - name: container_device
+              description: Container network interface name.
             - name: interface_type
-              description: TBD
-            - name: k8s_namespace
-              description: TBD
-            - name: k8s_pod_name
-              description: TBD
-            - name: k8s_pod_uid
-              description: TBD
-            - name: k8s_controller_kind
-              description: TBD
-            - name: k8s_controller_name
-              description: TBD
+              description: 'Network interface type. Always "virtual" for the containers.'
             - name: k8s_node_name
-              description: TBD
+              description: 'Node name. The value of _pod.spec.nodeName_.'
+            - name: k8s_namespace
+              description: 'Namespace name. The value of _pod.metadata.namespace_.'
+            - name: k8s_controller_kind
+              description: 'Controller kind (ReplicaSet, DaemonSet, StatefulSet, Job, etc.). The value of _pod.OwnerReferences.Controller.Kind_.'
+            - name: k8s_controller_name
+              description: 'Controller name.The value of _pod.OwnerReferences.Controller.Name_.'
+            - name: k8s_pod_name
+              description: 'Pod name. The value of _pod.metadata.name_.'
             - name: k8s_container_name
-              description: TBD
-            - name: k8s_container_id
-              description: TBD
+              description: 'Container name. The value of _pod.spec.containers.name_.'
             - name: k8s_kind
-              description: TBD
+              description: 'Instance kind: "pod" or "container".'
             - name: k8s_qos_class
-              description: TBD
+              description: 'QoS class (guaranteed, burstable, besteffort).'
             - name: k8s_cluster_id
-              description: TBD
+              description: 'Cluster ID. The value of kube-system namespace _namespace.metadata.uid_.'
           metrics:
             - name: k8s.cgroup.net_net
               description: Bandwidth
@@ -821,154 +817,104 @@ modules:
       description: ""
       availability: []
       scopes:
-        - name: global
+        - name: systemd service
           description: ""
-          labels: []
+          labels:
+            - name: service_name
+              description: Service name
           metrics:
-            - name: services.cpu
+            - name: systemd.service.cpu.utilization
               description: Systemd Services CPU utilization (100% = 1 core)
-              unit: "percentage"
+              unit: percentage
               chart_type: stacked
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_usage
+                - name: user
+                - name: system
+            - name: systemd.service.memory.usage
               description: Systemd Services Used Memory
-              unit: "MiB"
+              unit: MiB
               chart_type: stacked
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_rss
-              description: Systemd Services RSS Memory
-              unit: "MiB"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_mapped
-              description: Systemd Services Mapped Memory
-              unit: "MiB"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_cache
-              description: Systemd Services Cache Memory
-              unit: "MiB"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_writeback
-              description: Systemd Services Writeback Memory
-              unit: "MiB"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_pgfault
-              description: Systemd Services Memory Minor Page Faults
-              unit: "MiB/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_pgmajfault
-              description: Systemd Services Memory Major Page Faults
-              unit: "MiB/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_pgpgin
-              description: Systemd Services Memory Charging Activity
-              unit: "MiB/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_pgpgout
-              description: Systemd Services Memory Uncharging Activity
-              unit: "MiB/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.mem_failcnt
+                - name: ram
+                - name: swap
+            - name: systemd.service.memory.failcnt
               description: Systemd Services Memory Limit Failures
-              unit: "failures"
+              unit: failures/s
+              chart_type: line
+              dimensions:
+                - name: fail
+            - name: systemd.service.memory.ram.usage
+              description: Systemd Services Memory
+              unit: MiB
               chart_type: stacked
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.swap_usage
-              description: Systemd Services Swap Memory Used
-              unit: "MiB"
+                - name: rss
+                - name: cache
+                - name: mapped_file
+                - name: rss_huge
+            - name: systemd.service.memory.writeback
+              description: Systemd Services Writeback Memory
+              unit: MiB
               chart_type: stacked
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.io_read
-              description: Systemd Services Disk Read Bandwidth
-              unit: "KiB/s"
-              chart_type: stacked
+                - name: writeback
+                - name: dirty
+            - name: systemd.service.memory.paging.faults
+              description: Systemd Services Memory Minor and Major Page Faults
+              unit: MiB/s
+              chart_type: area
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.io_write
-              description: Systemd Services Disk Write Bandwidth
-              unit: "KiB/s"
-              chart_type: stacked
+                - name: minor
+                - name: major
+            - name: systemd.service.memory.paging.io
+              description: Systemd Services Memory Paging IO
+              unit: MiB/s
+              chart_type: area
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.io_ops_read
-              description: Systemd Services Disk Read Operations
-              unit: "operations/s"
-              chart_type: stacked
+                - name: in
+                - name: out
+            - name: systemd.service.disk.io
+              description: Systemd Services Disk Read/Write Bandwidth
+              unit: KiB/s
+              chart_type: area
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.io_ops_write
-              description: Systemd Services Disk Write Operations
-              unit: "operations/s"
-              chart_type: stacked
+                - name: read
+                - name: write
+            - name: systemd.service.disk.iops
+              description: Systemd Services Disk Read/Write Operations
+              unit: operations/s
+              chart_type: line
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.throttle_io_read
-              description: Systemd Services Throttle Disk Read Bandwidth
-              unit: "KiB/s"
-              chart_type: stacked
+                - name: read
+                - name: write
+            - name: systemd.service.disk.throttle.io
+              description: Systemd Services Throttle Disk Read/Write Bandwidth
+              unit: KiB/s
+              chart_type: area
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.services.throttle_io_write
-              description: Systemd Services Throttle Disk Write Bandwidth
-              unit: "KiB/s"
-              chart_type: stacked
+                - name: read
+                - name: write
+            - name: systemd.service.disk.throttle.iops
+              description: Systemd Services Throttle Disk Read/Write Operations
+              unit: operations/s
+              chart_type: line
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.throttle_io_ops_read
-              description: Systemd Services Throttle Disk Read Operations
-              unit: "operations/s"
-              chart_type: stacked
+                - name: read
+                - name: write
+            - name: systemd.service.disk.queued_iops
+              description: Systemd Services Queued Disk Read/Write Operations
+              unit: operations/s
+              chart_type: line
               dimensions:
-                - name: a dimension per systemd service
-            - name: throttle_io_ops_write
-              description: Systemd Services Throttle Disk Write Operations
-              unit: "operations/s"
-              chart_type: stacked
+                - name: read
+                - name: write
+            - name: systemd.service.disk.merged_iops
+              description: Systemd Services Merged Disk Read/Write Operations
+              unit: operations/s
+              chart_type: line
               dimensions:
-                - name: a dimension per systemd service
-            - name: services.queued_io_ops_read
-              description: Systemd Services Queued Disk Read Operations
-              unit: "operations/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.queued_io_ops_write
-              description: Systemd Services Queued Disk Write Operations
-              unit: "operations/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.merged_io_ops_read
-              description: Systemd Services Merged Disk Read Operations
-              unit: "operations/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
-            - name: services.merged_io_ops_write
-              description: Systemd Services Merged Disk Write Operations
-              unit: "operations/s"
-              chart_type: stacked
-              dimensions:
-                - name: a dimension per systemd service
+                - name: read
+                - name: write
   - <<: *module
     meta:
       <<: *meta

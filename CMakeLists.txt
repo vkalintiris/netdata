@@ -1760,7 +1760,6 @@ install(FILES collectors/charts.d.plugin/ap/ap.chart.sh
               collectors/charts.d.plugin/apcupsd/apcupsd.chart.sh
               collectors/charts.d.plugin/example/example.chart.sh
               collectors/charts.d.plugin/libreswan/libreswan.chart.sh
-              collectors/charts.d.plugin/nut/nut.chart.sh
               collectors/charts.d.plugin/opensips/opensips.chart.sh
               collectors/charts.d.plugin/sensors/sensors.chart.sh
         DESTINATION usr/libexec/netdata/charts.d)
@@ -1771,7 +1770,6 @@ install(FILES collectors/charts.d.plugin/ap/ap.conf
               collectors/charts.d.plugin/apcupsd/apcupsd.conf
               collectors/charts.d.plugin/example/example.conf
               collectors/charts.d.plugin/libreswan/libreswan.conf
-              collectors/charts.d.plugin/nut/nut.conf
               collectors/charts.d.plugin/opensips/opensips.conf
               collectors/charts.d.plugin/sensors/sensors.conf
         DESTINATION usr/lib/netdata/conf.d/charts.d)

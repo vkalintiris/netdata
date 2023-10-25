@@ -1364,10 +1364,12 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
 
         if(!query_metric_is_valid_tier(qm, selected_tier))
             return false;
+    }
 
-        if(qm->tiers[selected_tier].db_first_time_s > before_wanted ||
-           qm->tiers[selected_tier].db_last_time_s < after_wanted)
-            return false;
+    if(qm->tiers[selected_tier].db_first_time_s > before_wanted ||
+       qm->tiers[selected_tier].db_last_time_s < after_wanted) {
+        // we don't have any data to satisfy this query
+        return false;
     }
 
     qm->plan.used = 1;
@@ -1389,9 +1391,10 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
 
                 // find the first time of this tier
                 time_t tier_first_time_s = qm->tiers[tr].db_first_time_s;
+                time_t tier_last_time_s = qm->tiers[tr].db_last_time_s;
 
                 // can it help?
-                if (tier_first_time_s < selected_tier_first_time_s) {
+                if (tier_first_time_s < selected_tier_first_time_s && tier_first_time_s <= before_wanted && tier_last_time_s >= after_wanted) {
                     // it can help us add detail at the beginning of the query
                     QUERY_PLAN_ENTRY t = {
                         .tier = tr,
@@ -1421,12 +1424,13 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
                     continue;
 
                 // find the last time of this tier
+                time_t tier_first_time_s = qm->tiers[tr].db_first_time_s;
                 time_t tier_last_time_s = qm->tiers[tr].db_last_time_s;
 
                 //buffer_sprintf(wb, ": EVAL BEFORE tier %d, %ld", tier, last_time_s);
 
                 // can it help?
-                if (tier_last_time_s > selected_tier_last_time_s) {
+                if (tier_last_time_s > selected_tier_last_time_s && tier_first_time_s <= before_wanted && tier_last_time_s >= after_wanted) {
                     // it can help us add detail at the end of the query
                     QUERY_PLAN_ENTRY t = {
                         .tier = tr,
@@ -2201,7 +2205,7 @@ bool query_target_calculate_window(QUERY_TARGET *qt) {
     }
 
     // convert our before_wanted and after_wanted to absolute
-    rrdr_relative_window_to_absolute(&after_wanted, &before_wanted, NULL, unittest_running);
+    rrdr_relative_window_to_absolute_query(&after_wanted, &before_wanted, NULL, unittest_running);
     query_debug_log(":relative2absolute after %ld, before %ld", after_wanted, before_wanted);
 
     if (natural_points && (options & RRDR_OPTION_SELECTED_TIER) && tier > 0 && storage_tiers > 1) {
