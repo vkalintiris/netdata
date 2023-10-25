@@ -30,11 +30,12 @@ private:
           CurrPIT(0), UE(CP.updateEvery() * USEC_PER_SEC),
           CP(CP)
     {
-        spinlock_init(&Lock);        
+        spinlock_init(&Lock);
     }
 
     void store_next_internal(usec_t PIT, const STORAGE_POINT &SP)
     {
+        // netdata_log_error("GVD[store_next_internal - 00]: lock");
         spinlock_lock(&Lock);
 
         // this might be the first time we are saving something in the collection handle.
@@ -42,6 +43,7 @@ private:
         {
             CP.appendPoint(SP);
             CurrPIT = PIT;
+            // netdata_log_error("GVD[store_next_internal -- 01]: unlock");
             spinlock_unlock(&Lock);
             return;
         }
@@ -87,6 +89,7 @@ private:
                          ThisPIT <= StopPIT;
                          ThisPIT = (CurrPIT + UE))
                     {
+                        // netdata_log_error("GVD[store_next_internal -- 02]: unlock");
                         spinlock_unlock(&Lock);
 
                         STORAGE_POINT EmptySP = {
@@ -104,11 +107,13 @@ private:
                         };
                         store_next(ThisPIT, EmptySP);
 
+                        // netdata_log_error("GVD[store_next_internal -- 03]: lock");
                         spinlock_lock(&Lock);
                     }
                 }
             }
 
+            // netdata_log_error("GVD[store_next_internal -- 04]: unlock");
             spinlock_unlock(&Lock);
             store_next(PIT, SP);
             return;
@@ -116,12 +121,14 @@ private:
         else if (CurrPIT > PIT)
         {
             // point_in_time is in the past, nothing to do
+            // netdata_log_error("GVD[store_next_internal -- 05]: unlock");
             spinlock_unlock(&Lock);
             return;
         }
         else if (CurrPIT == PIT)
         {
             // point_in_time has already been saved, nothing to do
+            // netdata_log_error("GVD[store_next_internal -- 06]: unlock");
             spinlock_unlock(&Lock);
             return;
         }
@@ -135,6 +142,7 @@ private:
     {
         if (Protect)
         {
+            // netdata_log_error("GVD[store_next_internal -- 07]: unlock");
             spinlock_lock(&Lock);
         }
 
@@ -142,6 +150,7 @@ private:
         {
             if (Protect)
             {
+                // netdata_log_error("GVD[store_next_internal -- 08]: unlock");
                 spinlock_unlock(&Lock);
             }
 
@@ -168,6 +177,7 @@ private:
 
         if (Protect)
         {
+            // netdata_log_error("GVD[store_next_internal -- 09]: unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -185,6 +195,7 @@ private:
 
         if (Protect)
         {
+            // netdata_log_error("GVD[after_internal -- 00]: lock");
             spinlock_lock(&Lock);
         }
 
@@ -193,6 +204,7 @@ private:
 
         if (Protect)
         {
+            // netdata_log_error("GVD[after_internal -- 01]: unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -205,6 +217,7 @@ private:
             
         if (Protect)
         {
+            // netdata_log_error("GVD[before -- 00]: lock");
             spinlock_lock(&Lock);
         }
 
@@ -213,6 +226,7 @@ private:
 
         if (Protect)
         {
+            // netdata_log_error("GVD[before -- 01]: unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -222,6 +236,7 @@ private:
 public:
     inline void store_next(usec_t PIT, const STORAGE_POINT &SP)
     {
+        // netdata_log_error("GVD[store_next -- 00]: lock");
         spinlock_lock(&Lock);
 
         if (unlikely(CP.capacity() == 0))
@@ -233,6 +248,7 @@ public:
 
         if (unlikely(Delta != UE))
         {
+            // netdata_log_error("GVD[store_next -- 01]: unlock");
             spinlock_unlock(&Lock);
             store_next_internal(PIT, SP);
             return;
@@ -241,13 +257,7 @@ public:
         CP.appendPoint(SP);
         this->CurrPIT += UE;
 
-        switch (CP.pageType())
-        {
-            case PageType::StorageNumbersPage:
-                break;
-            default:
-                fatal("Bad page type");
-        }
+        // netdata_log_error("GVD[store_next -- 02]: unlock");
         spinlock_unlock(&Lock);
     }
 
@@ -258,6 +268,7 @@ public:
 
     inline void setUpdateEvery(usec_t UE)
     {
+        // netdata_log_error("GVD[setUpdateEvery -- 00]: lock");
         spinlock_lock(&Lock);
 
         flush_internal(false);
@@ -265,6 +276,7 @@ public:
         CP.setUpdateEvery(UE / USEC_PER_SEC);
         this->UE = UE;
 
+        // netdata_log_error("GVD[setUpdateEvery -- 01]: unlock");
         spinlock_unlock(&Lock);
     }
 
@@ -280,10 +292,12 @@ public:
 
     [[nodiscard]] inline usec_t duration() const
     {
+        // netdata_log_error("GVD[duration -- 00]: lock");
         spinlock_lock(&Lock);
 
         usec_t D = before_internal(false) - after_internal(false);
 
+        // netdata_log_error("GVD[duration -- 01]: unlock");
         spinlock_unlock(&Lock);
 
         return D;
@@ -292,6 +306,7 @@ public:
     [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
     queryLock(usec_t After) const
     {
+        // netdata_log_error("GVD[queryLock -- 00]: lock");
         spinlock_lock(&Lock);
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
@@ -304,6 +319,7 @@ public:
 
     inline void queryUnlock() const
     {
+        // netdata_log_error("GVD[queryUnlock -- 00]: unlock");
         spinlock_unlock(&Lock);
     }
 

@@ -19,7 +19,7 @@ int default_rrd_history_entries = RRD_DEFAULT_HISTORY_ENTRIES;
 #ifdef ENABLE_DBENGINE
 RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_RDB;
 #else
-RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_SAVE;
+RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_RDB;
 #endif
 int gap_when_lost_iterations_above = 1;
 

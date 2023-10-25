@@ -1438,9 +1438,11 @@ int main(int argc, char **argv) {
                         char* stresstest_string = "stresstest=";
 #endif
 
+                        #if 0
                         if(strcmp(optarg, "pgd-tests") == 0) {
                             return pgd_test(argc, argv);
                         }
+                        #endif
 
                         if(strcmp(optarg, "sqlite-meta-recover") == 0) {
                             sql_init_database(DB_CHECK_RECOVER, 0);
@@ -1864,6 +1866,7 @@ int main(int argc, char **argv) {
             config_set_number(CONFIG_SECTION_GLOBAL, "libuv worker threads", libuv_worker_threads);
         }
 
+        libuv_worker_threads = 8;
         {
             char buf[20 + 1];
             snprintfz(buf, 20, "%d", libuv_worker_threads);

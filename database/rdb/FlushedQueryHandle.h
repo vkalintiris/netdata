@@ -124,7 +124,8 @@ public:
 
     inline void finalize()
     {
-        CH->queryUnlock();
+        if (CH)
+            CH->queryUnlock();
     }
 
 private:

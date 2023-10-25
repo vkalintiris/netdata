@@ -583,7 +583,7 @@ static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *collecti
 
 #ifdef ENABLE_RDB
     if(likely(collection_handle->backend == STORAGE_ENGINE_BACKEND_RDB))
-        return rrdeng_store_metric_finalize(collection_handle);
+        return rdb_store_metric_finalize(collection_handle);
 #endif
 
 #ifdef ENABLE_DBENGINE

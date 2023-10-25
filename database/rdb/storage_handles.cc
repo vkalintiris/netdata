@@ -179,6 +179,7 @@ void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, i
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
 {
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+    rch->ch.flush();
     delete rch;
     return 0;
 }
@@ -237,6 +238,8 @@ struct rdb_query_handle
 
     ~rdb_query_handle()
     {
+        UQ.finalize();
+
         if (It)
             delete It;
 
