@@ -9,7 +9,8 @@
 #include <vector>
 #include <unordered_map>
 
-struct UUID {
+struct UUID
+{
     const unsigned char *inner;
 
     bool operator==(const UUID &other) const
@@ -18,9 +19,12 @@ struct UUID {
     }
 };
 
-namespace std {
-    template<> struct hash<UUID> {
-        auto operator()(const UUID &uuid) const -> size_t {
+namespace std
+{
+    template<> struct hash<UUID>
+    {
+        auto operator()(const UUID &uuid) const -> size_t
+        {
             // I suspect we can just pick 4-bytes from the uuid
             return XXH32(uuid.inner, 16, 0);
         }
@@ -28,7 +32,8 @@ namespace std {
 }
 
 template<typename T>
-class UuidShard {
+class UuidShard
+{
 public:
     UuidShard(size_t shards = 4)
         : mutexes(shards), maps(shards), max_reserved_id(0) { }

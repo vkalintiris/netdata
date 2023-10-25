@@ -11,7 +11,8 @@
 
 #include <cstdint>
 
-class MetricHandle {
+class MetricHandle
+{
 public:
     MetricHandle(uint32_t gid, uint32_t mid) : gid(gid), mid(mid) {}
 
