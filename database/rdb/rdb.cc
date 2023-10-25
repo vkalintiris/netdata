@@ -144,8 +144,6 @@ int rdb_main(int argc, char *argv[])
     if (!S.ok())
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
 
-    return 0;
-
     netdata_log_error("Program started...");
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
