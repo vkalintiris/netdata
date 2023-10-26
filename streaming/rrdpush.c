@@ -406,9 +406,11 @@ void rrdset_push_metrics_v1(RRDSET_STREAM_BUFFER *rsb, RRDSET *st) {
     rrdpush_send_chart_metrics(rsb->wb, st, host->sender, rsb->rrdset_flags);
 }
 
-void rrddim_push_metrics_v2(RRDSET_STREAM_BUFFER *rsb, RRDDIM *rd, usec_t point_end_time_ut, NETDATA_DOUBLE n, SN_FLAGS flags) {
+bool rrddim_push_metrics_v2(RRDSET_STREAM_BUFFER *rsb, RRDDIM *rd, usec_t point_end_time_ut, NETDATA_DOUBLE n, SN_FLAGS flags) {
+    bool tainted = false;
+
     if(!rsb->wb || !rsb->v2 || !netdata_double_isnumber(n) || !does_storage_number_exist(flags))
-        return;
+        return tainted;
 
     NUMBER_ENCODING integer_encoding = stream_has_capability(rsb, STREAM_CAP_IEEE754) ? NUMBER_ENCODING_BASE64 : NUMBER_ENCODING_HEX;
     NUMBER_ENCODING doubles_encoding = stream_has_capability(rsb, STREAM_CAP_IEEE754) ? NUMBER_ENCODING_BASE64 : NUMBER_ENCODING_DECIMAL;
@@ -442,26 +444,43 @@ void rrddim_push_metrics_v2(RRDSET_STREAM_BUFFER *rsb, RRDDIM *rd, usec_t point_
     buffer_print_int64_encoded(wb, integer_encoding, rd->collector.last_collected_value);
     buffer_fast_strcat(wb, " ", 1);
 
-    if((NETDATA_DOUBLE)rd->collector.last_collected_value == n)
+    if((NETDATA_DOUBLE)rd->collector.last_collected_value == n) {
         buffer_fast_strcat(wb, "#", 1);
-    else
+    }
+    else {
         buffer_print_netdata_double_encoded(wb, doubles_encoding, n);
+        tainted = true;
+    }
 
     buffer_fast_strcat(wb, " ", 1);
     buffer_print_sn_flags(wb, flags, true);
     buffer_fast_strcat(wb, "\n", 1);
+
+    return tainted;
 }
 
-void rrdset_push_metrics_finished(RRDSET_STREAM_BUFFER *rsb, RRDSET *st) {
+void rrdset_push_metrics_finished(RRDSET_STREAM_BUFFER *rsb, RRDSET *st, bool tainted)
+{
     if(!rsb->wb)
         return;
 
     if(rsb->v2 && rsb->begin_v2_added) {
-        if(unlikely(rsb->rrdset_flags & RRDSET_FLAG_UPSTREAM_SEND_VARIABLES))
+        if(unlikely(rsb->rrdset_flags & RRDSET_FLAG_UPSTREAM_SEND_VARIABLES)) {
             rrdsetvar_print_to_streaming_custom_chart_variables(st, rsb->wb);
+            tainted = true;
+        }
 
         buffer_fast_strcat(rsb->wb, PLUGINSD_KEYWORD_END_V2 "\n", sizeof(PLUGINSD_KEYWORD_END_V2) - 1 + 1);
     }
+
+    if (!tainted)
+    {
+        buffer_flush(rsb->wb);
+        // send a command denoting that the chart's dimensions have not changed
+        // since last time        
+    }
+
+    netdata_log_error("GVD - tainted: %d", tainted);
 
     sender_commit(st->rrdhost->sender, rsb->wb, STREAM_TRAFFIC_TYPE_DATA);
 

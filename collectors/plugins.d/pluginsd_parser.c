@@ -1971,7 +1971,7 @@ static inline PARSER_RC pluginsd_end_v2(char **words __maybe_unused, size_t num_
     // ------------------------------------------------------------------------
     // propagate it forward
 
-    rrdset_push_metrics_finished(&parser->user.v2.stream_buffer, st);
+    rrdset_push_metrics_finished(&parser->user.v2.stream_buffer, st, true);
 
     timing_step(TIMING_STEP_END2_PROPAGATE);
 

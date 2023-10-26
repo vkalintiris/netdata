@@ -1288,7 +1288,7 @@ void rrdset_thread_rda_free(void) {
     thread_rda_entries = 0;
 }
 
-static inline size_t rrdset_done_interpolate(
+static inline bool rrdset_done_interpolate(
         RRDSET_STREAM_BUFFER *rsb
         , RRDSET *st
         , struct rda_item *rda_base
@@ -1318,6 +1318,8 @@ static inline size_t rrdset_done_interpolate(
 
     if (has_reset_value)
         storage_flags |= SN_FLAG_RESET;
+
+    bool tainted = false;
 
     for( ; next_store_ut <= now_collect_ut ; last_collect_ut = next_store_ut, next_store_ut += update_every_ut, iterations-- ) {
 
@@ -1423,7 +1425,7 @@ static inline size_t rrdset_done_interpolate(
                 (void) ml_dimension_is_anomalous(rd, current_time_s, 0, false);
 
                 if(rsb->wb && rsb->v2)
-                    rrddim_push_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
+                    tainted |= rrddim_push_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
 
                 rrddim_store_metric(rd, next_store_ut, NAN, SN_FLAG_NONE);
                 continue;
@@ -1438,7 +1440,7 @@ static inline size_t rrdset_done_interpolate(
                 }
 
                 if(rsb->wb && rsb->v2)
-                    rrddim_push_metrics_v2(rsb, rd, next_store_ut, new_value, dim_storage_flags);
+                    tainted |= rrddim_push_metrics_v2(rsb, rd, next_store_ut, new_value, dim_storage_flags);
 
                 rrddim_store_metric(rd, next_store_ut, new_value, dim_storage_flags);
                 rd->collector.last_stored_value = new_value;
@@ -1449,7 +1451,7 @@ static inline size_t rrdset_done_interpolate(
                 rrdset_debug(st, "%s: STORE[%ld] = NON EXISTING ", rrddim_name(rd), current_entry);
 
                 if(rsb->wb && rsb->v2)
-                    rrddim_push_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
+                    tainted |= rrddim_push_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
 
                 rrddim_store_metric(rd, next_store_ut, NAN, SN_FLAG_NONE);
                 rd->collector.last_stored_value = NAN;
@@ -1482,7 +1484,7 @@ static inline size_t rrdset_done_interpolate(
     }
 */
 
-    return stored_entries;
+    return tainted;
 }
 
 void rrdset_done(RRDSET *st) {
@@ -1880,7 +1882,7 @@ void rrdset_timed_done(RRDSET *st, struct timeval now, bool pending_rrdset_next)
 //     }
 // #endif
 
-    rrdset_done_interpolate(
+    bool tainted = rrdset_done_interpolate(
             &stream_buffer
             , st
             , rda_base
@@ -1952,7 +1954,7 @@ void rrdset_timed_done(RRDSET *st, struct timeval now, bool pending_rrdset_next)
     }
 
     spinlock_unlock(&st->data_collection_lock);
-    rrdset_push_metrics_finished(&stream_buffer, st);
+    rrdset_push_metrics_finished(&stream_buffer, st, tainted);
 
     // ALL DONE ABOUT THE DATA UPDATE
     // --------------------------------------------------------------------
