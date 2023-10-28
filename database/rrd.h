@@ -870,7 +870,7 @@ static inline time_t storage_engine_align_to_optimal_before(struct storage_engin
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_load_metric_finalize(handle);
+            return rrdeng_load_align_to_optimal_before(handle);
 #endif
 
         default:
