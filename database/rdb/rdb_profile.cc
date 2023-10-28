@@ -113,13 +113,15 @@ static rocksdb::Options get_db_options()
     rocksdb::Options Opts;
 
     Opts.create_if_missing = true;
-    Opts.statistics = rocksdb::CreateDBStatistics();
+    
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
-    Opts.write_buffer_size = 512 * 1024 * 1024;
+    Opts.write_buffer_size = 32 * 1024 * 1024;
     Opts.target_file_size_base = 32 * 1024 * 1024;
     Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
     Opts.manual_wal_flush = true;
-    Opts.stats_dump_period_sec = 1;
+
+    // Opts.statistics = rocksdb::CreateDBStatistics();
+    // Opts.stats_dump_period_sec = 1;
 
     // Opts.enable_blob_files = true;
     // Opts.min_blob_size = 1024;
@@ -129,6 +131,18 @@ static rocksdb::Options get_db_options()
     Opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(TableOpts));
 
     return Opts;
+}
+
+void rdb_init() {
+    SI = new rdb::StorageInstance(16);
+    RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
+
+    rocksdb::Options Opts = get_db_options();
+    const char *Path = "/home/cm/opt/tmp";
+
+    rocksdb::Status S = SI->open(Opts, Path);
+    if (!S.ok())
+        fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
 }
 
 int rdb_profile_main(int argc, char *argv[])

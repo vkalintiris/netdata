@@ -2069,6 +2069,8 @@ int main(int argc, char **argv) {
 
     delta_startup_time("initialize RRD structures");
 
+    rdb_init();
+
     if(rrd_init(netdata_configured_hostname, system_info, false)) {
         set_late_global_environment(system_info);
         fatal("Cannot initialize localhost instance with name '%s'.", netdata_configured_hostname);

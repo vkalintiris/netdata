@@ -83,9 +83,12 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     Iterator *it = SI->RDB->NewIterator(ReadOptions());
     for (it->Seek(key.slice()); it->Valid(); it->Next())
     {
-        return rdb::Key{it->key()}.pit();
+        uint32_t PIT = rdb::Key{it->key()}.pit();
+        delete it;
+        return PIT;
     }
-
+    delete it;
+    
     // FIXME: maybe it's rmh that needs the spinlock for rch
     rdb_collect_handle *rch = rmh->rch;
     if (!rch)
@@ -110,9 +113,12 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
          it->Next())
     {
         // FIXME: Need to add page duration
-        return rdb::Key{it->key()}.pit();
+        uint32_t PIT = rdb::Key{it->key()}.pit();
+        delete it;
+        return PIT;
     }
 
+    delete it;
     return 0;
 }
 
@@ -303,6 +309,8 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
     }
 
     rdb::Key K(It->key());
+
+    delete It;
     return static_cast<time_t>(K.pit());
 }
 
