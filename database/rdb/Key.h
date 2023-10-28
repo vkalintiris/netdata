@@ -1,6 +1,7 @@
 #ifndef RDB_KEY_H
 #define RDB_KEY_H
 
+#include <array>
 #include "rdb-common.h"
 #include "uuid.h"
 

@@ -73,8 +73,9 @@ void rdb_fini();
 
 #ifdef ENABLE_BENCHMARKS
 int rdb_profile_main(int argc, char *argv[]);
-extern STORAGE_INSTANCE *RDB_StorageInstance;
 #endif
+
+extern STORAGE_INSTANCE *RDB_StorageInstance;
 
 #ifdef ENABLE_TESTS
 int rdb_tests_main(int argc, char *argv[]);

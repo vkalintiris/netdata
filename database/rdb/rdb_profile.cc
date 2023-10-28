@@ -110,10 +110,14 @@ static void gen_thread(size_t thread_id,
                        const std::vector<uint32_t> &rand_vals)
 {
     UNUSED(num_threads);
-
+    
+#ifndef __APPLE__
     char thread_name[128];
     snprintfz(thread_name, 1024, "genthread-%04zu", thread_id);
     pthread_setname_np(pthread_self(), thread_name);
+#else
+    UNUSED(thread_id);
+#endif
 
     std::vector<dimension_t> dimensions;
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);

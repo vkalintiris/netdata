@@ -84,7 +84,7 @@ option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
 option(ENABLE_RDB "enable rdb" True)
 
-option(ENABLE_BENCHMARKS "enable benchmarks" True)
+option(ENABLE_BENCHMARKS "enable benchmarks" False)
 option(ENABLE_TESTS "enable tests" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
