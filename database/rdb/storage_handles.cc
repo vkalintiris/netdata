@@ -135,8 +135,10 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
 
     rmh->rmg = rmg;
 
+    rdb::PageOptions PO = rdb::PageOptions();
+    PO.initial_slots = (rmh->id % PO.capacity) + 1;
     std::optional<rdb::CollectionHandle> CH =
-        rdb::CollectionHandle::create(*rmg->arena, rdb::PageOptions(), rmg->id, rmh->id);
+        rdb::CollectionHandle::create(*rmg->arena, PO, rmg->id, rmh->id);
     if (!CH.has_value())
         fatal("Could not create collection handle");
 

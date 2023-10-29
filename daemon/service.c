@@ -297,6 +297,7 @@ void *service_main(void *ptr)
 
         svc_rrd_cleanup_obsolete_charts_from_all_hosts();
         svc_rrdhost_cleanup_orphan_hosts(localhost);
+        rdb_flush();
     }
 
     netdata_thread_cleanup_pop(1);
