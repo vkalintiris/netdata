@@ -116,7 +116,7 @@ static rocksdb::Options get_db_options()
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
     Opts.write_buffer_size = 64 * 1024 * 1024;
     Opts.target_file_size_base = 128 * 1024 * 1024;
-    Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
+    Opts.max_bytes_for_level_base = 64 * Opts.target_file_size_base; 
     Opts.manual_wal_flush = true;
 
     // Opts.statistics = rocksdb::CreateDBStatistics();
