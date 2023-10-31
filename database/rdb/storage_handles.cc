@@ -79,14 +79,19 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 
     const rdb::Key key{rmh->rmg->id, rmh->id, 0};
 
-    Iterator *it = SI->RDB->NewIterator(ReadOptions());
-    for (it->Seek(key.slice()); it->Valid(); it->Next())
-    {
-        uint32_t PIT = rdb::Key{it->key()}.pit();
+    if (!rmh->oldest_time) {
+        Iterator *it = SI->RDB->NewIterator(ReadOptions());
+        for (it->Seek(key.slice()); it->Valid(); it->Next())
+        {
+            uint32_t PIT = rdb::Key{it->key()}.pit();
+            delete it;
+            rmh->oldest_time = PIT;
+            return PIT;
+        }
         delete it;
-        return PIT;
+    } else {
+        return rmh->oldest_time;
     }
-    delete it;
     
     // FIXME: maybe it's rmh that needs the spinlock for rch
     rdb_collect_handle *rch = rmh->rch;

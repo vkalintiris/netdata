@@ -1871,7 +1871,6 @@ int main(int argc, char **argv) {
             config_set_number(CONFIG_SECTION_GLOBAL, "libuv worker threads", libuv_worker_threads);
         }
 
-        libuv_worker_threads = 8;
         {
             char buf[20 + 1];
             snprintfz(buf, 20, "%d", libuv_worker_threads);
