@@ -181,10 +181,10 @@ private:
             spinlock_unlock(&Lock);
         }
 
-        rocksdb::WriteOptions WO;
-        WO.disableWAL = true;
-        WO.sync = false;
-        SI->RDB->Put(WO, K.slice(), OV.value());
+        // rocksdb::WriteOptions WO;
+        // WO.disableWAL = true;
+        // WO.sync = false;
+        // SI->RDB->Put(WO, K.slice(), OV.value());
 
         num_pages_written++;
     }
