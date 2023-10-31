@@ -25,7 +25,9 @@ struct rdb_metric_handle
     rdb_metrics_group *rmg;
     rdb_collect_handle *rch;
 
-    rdb_metric_handle() : uuid{}, id{0}, rc{0}, rmg{nullptr}, rch{nullptr} { }
+    rdb_metric_handle() :
+        uuid{}, id{0}, rc{0}, rmg{nullptr}, rch{nullptr}
+    { }
 };
 
 namespace rdb {

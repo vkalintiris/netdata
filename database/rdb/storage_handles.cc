@@ -1,5 +1,4 @@
 #include "rdb-private.h"
-#include <limits>
 
 namespace pb = google::protobuf;
 

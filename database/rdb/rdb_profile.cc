@@ -8,8 +8,6 @@
 rdb::StorageInstance *SI = nullptr;
 STORAGE_INSTANCE *RDB_StorageInstance = nullptr;
 
-std::atomic<size_t> num_pages_written = 0;
-
 // Function to get the RSS in bytes
 std::size_t getRSS() {
     struct rusage rusage;
@@ -116,8 +114,8 @@ static rocksdb::Options get_db_options()
     Opts.create_if_missing = true;
     
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
-    Opts.write_buffer_size = 128 * 1024 * 1024;
-    Opts.target_file_size_base = 32 * 1024 * 1024;
+    Opts.write_buffer_size = 64 * 1024 * 1024;
+    Opts.target_file_size_base = 128 * 1024 * 1024;
     Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
     Opts.manual_wal_flush = true;
 
@@ -148,8 +146,8 @@ void rdb_init() {
         fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
 }
 
-void rdb_flush() {
-    netdata_log_error("Number of flushed pages: %zu", num_pages_written.load());
+void rdb_flush()
+{
     SI->RDB->Flush(rocksdb::FlushOptions());
 }
 
@@ -214,7 +212,8 @@ int rdb_profile_main(int argc, char *argv[])
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
 
-            double pages_per_second = static_cast<double>(num_pages_written) / seconds;
+            // FIXME: get number of flushed pages from global stats.
+            double pages_per_second = static_cast<double>(0) / seconds;
             double points_per_sec = pages_per_second * 1024;
             double mib_per_sec = (points_per_sec * sizeof(storage_number)) / (1024.0 * 1024.0);
 

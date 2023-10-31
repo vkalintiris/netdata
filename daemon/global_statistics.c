@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common.h"
+#include "database/rrd.h"
+#include "libnetdata/storage_number/storage_number.h"
 
 #define GLOBAL_STATS_RESET_WEB_USEC_MAX 0x01
 
@@ -71,6 +73,7 @@ static struct global_statistics {
     uint64_t tier0_disk_uncompressed_bytes;
 
     uint64_t rdb_collection_handles;
+    uint64_t rdb_flushed_pages;
 
     uint64_t db_points_stored_per_tier[RRD_STORAGE_TIERS];
 
@@ -93,6 +96,7 @@ static struct global_statistics {
         .tier0_disk_uncompressed_bytes = 0,
 
         .rdb_collection_handles = 0,
+        .rdb_flushed_pages = 0,
 };
 
 void global_statistics_rrdset_done_chart_collection_completed(size_t *points_read_per_tier_array) {
@@ -131,6 +135,10 @@ void global_statistics_rdb_collection_handles_incr() {
 
 void global_statistics_rdb_collection_handles_decr() {
     __atomic_fetch_sub(&global_statistics.rdb_collection_handles, 1, __ATOMIC_RELAXED);
+}
+
+void global_statistics_rdb_flushed_pages_incr() {
+    __atomic_fetch_add(&global_statistics.rdb_flushed_pages, 1, __ATOMIC_RELAXED);
 }
 
 void global_statistics_tier0_disk_compressed_bytes(uint32_t size) {
@@ -249,6 +257,7 @@ static inline void global_statistics_copy(struct global_statistics *gs, uint8_t 
     gs->tier0_disk_uncompressed_bytes = __atomic_load_n(&global_statistics.tier0_disk_uncompressed_bytes, __ATOMIC_RELAXED);
 
     gs->rdb_collection_handles = __atomic_load_n(&global_statistics.rdb_collection_handles, __ATOMIC_RELAXED);
+    gs->rdb_flushed_pages = __atomic_load_n(&global_statistics.rdb_flushed_pages, __ATOMIC_RELAXED);
 
     for(size_t tier = 0; tier < storage_tiers ;tier++)
         gs->db_points_stored_per_tier[tier] = __atomic_load_n(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
@@ -992,7 +1001,33 @@ static void global_statistics_charts(void) {
 
         collected_number cn = gs.rdb_collection_handles;
         rrddim_set_by_pointer(st, rd, 4096 * cn);
+        rrdset_done(st);
+    }
 
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "rdb_flushed_pages"
+                    , NULL
+                    , "rdb_flushed_pages"
+                    , NULL
+                    , "RDB flushed pages"
+                    , "pages/s"
+                    , "netdata"
+                    , "stats"
+                    , 131008
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd = rrddim_add(st, "flushed_pages", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd, (collected_number) gs.rdb_flushed_pages);
         rrdset_done(st);
     }
 #endif
