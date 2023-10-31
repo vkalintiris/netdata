@@ -50,6 +50,9 @@ void global_statistics_gorilla_buffer_add_hot();
 void global_statistics_tier0_disk_compressed_bytes(uint32_t size);
 void global_statistics_tier0_disk_uncompressed_bytes(uint32_t size);
 
+void global_statistics_rdb_collection_handles_incr();
+void global_statistics_rdb_collection_handles_decr();
+
 void global_statistics_web_request_completed(uint64_t dt,
                                              uint64_t bytes_received,
                                              uint64_t bytes_sent,

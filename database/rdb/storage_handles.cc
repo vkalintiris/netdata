@@ -144,6 +144,8 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
 
     CH->setUpdateEvery(update_every * USEC_PER_SEC);
 
+    global_statistics_rdb_collection_handles_incr();
+
     rmh->rch = new rdb_collect_handle(CH.value());
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rmh->rch);
 }
@@ -188,6 +190,7 @@ int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     rch->ch.flush();
     delete rch;
+    global_statistics_rdb_collection_handles_decr();
     return 0;
 }
 

@@ -1,3 +1,4 @@
+#include "daemon/common.h"
 #include "rdb-private.h"
 #include "Barrier.h"
 
@@ -136,9 +137,11 @@ static rocksdb::Options get_db_options()
 void rdb_init() {
     SI = new rdb::StorageInstance(16);
     RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
-
+    
     rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/cm/opt/tmp";
+
+    char Path[4096] = { };
+    snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
 
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())

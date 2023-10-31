@@ -1112,15 +1112,15 @@ int rrdpush_receiver_thread_spawn(struct web_client *w, char *decoded_query_stri
         return rrdpush_receiver_permission_denied(w);
     }
 
-    if(!appconfig_get_boolean(&stream_config, rpt->key, "enabled", 0)) {
-        rrdpush_receive_log_status(
-                rpt,
-                "API key is not enabled",
-                "API KEY DISABLED PERMISSION DENIED");
+    // if(!appconfig_get_boolean(&stream_config, rpt->key, "enabled", 0)) {
+    //     rrdpush_receive_log_status(
+    //             rpt,
+    //             "API key is not enabled",
+    //             "API KEY DISABLED PERMISSION DENIED");
 
-        receiver_state_free(rpt);
-        return rrdpush_receiver_permission_denied(w);
-    }
+    //     receiver_state_free(rpt);
+    //     return rrdpush_receiver_permission_denied(w);
+    // }
 
     {
         SIMPLE_PATTERN *key_allow_from = simple_pattern_create(

@@ -70,6 +70,8 @@ static struct global_statistics {
     uint64_t tier0_disk_compressed_bytes;
     uint64_t tier0_disk_uncompressed_bytes;
 
+    uint64_t rdb_collection_handles;
+
     uint64_t db_points_stored_per_tier[RRD_STORAGE_TIERS];
 
 } global_statistics = {
@@ -89,6 +91,8 @@ static struct global_statistics {
         .tier0_hot_gorilla_buffers = 0,
         .tier0_disk_compressed_bytes = 0,
         .tier0_disk_uncompressed_bytes = 0,
+
+        .rdb_collection_handles = 0,
 };
 
 void global_statistics_rrdset_done_chart_collection_completed(size_t *points_read_per_tier_array) {
@@ -119,6 +123,14 @@ void global_statistics_backfill_query_completed(size_t points_read) {
 
 void global_statistics_gorilla_buffer_add_hot() {
     __atomic_fetch_add(&global_statistics.tier0_hot_gorilla_buffers, 1, __ATOMIC_RELAXED);
+}
+
+void global_statistics_rdb_collection_handles_incr() {
+    __atomic_fetch_add(&global_statistics.rdb_collection_handles, 1, __ATOMIC_RELAXED);
+}
+
+void global_statistics_rdb_collection_handles_decr() {
+    __atomic_fetch_sub(&global_statistics.rdb_collection_handles, 1, __ATOMIC_RELAXED);
 }
 
 void global_statistics_tier0_disk_compressed_bytes(uint32_t size) {
@@ -235,6 +247,8 @@ static inline void global_statistics_copy(struct global_statistics *gs, uint8_t 
 
     gs->tier0_disk_compressed_bytes = __atomic_load_n(&global_statistics.tier0_disk_compressed_bytes, __ATOMIC_RELAXED);
     gs->tier0_disk_uncompressed_bytes = __atomic_load_n(&global_statistics.tier0_disk_uncompressed_bytes, __ATOMIC_RELAXED);
+
+    gs->rdb_collection_handles = __atomic_load_n(&global_statistics.rdb_collection_handles, __ATOMIC_RELAXED);
 
     for(size_t tier = 0; tier < storage_tiers ;tier++)
         gs->db_points_stored_per_tier[tier] = __atomic_load_n(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
@@ -920,6 +934,66 @@ static void global_statistics_charts(void) {
         rrddim_set_by_pointer(st_tier0_compression_info, rd_uncompressed_bytes, (collected_number)gs.tier0_disk_uncompressed_bytes);
 
         rrdset_done(st_tier0_compression_info);
+    }
+#endif
+
+#ifdef ENABLE_RDB
+    {
+        static RRDSET *st = NULL;
+
+        static RRDDIM *rd_collection_handles = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "rdb_collection_handles"
+                    , NULL
+                    , "rdb_collection_handles"
+                    , NULL
+                    , "RDB collection handles"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131006
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_collection_handles = rrddim_add(st, "collections", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        rrddim_set_by_pointer(st, rd_collection_handles, (collected_number) gs.rdb_collection_handles);
+
+        rrdset_done(st);
+    }
+
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "rdb_collection_memory"
+                    , NULL
+                    , "rdb_collection_memory"
+                    , NULL
+                    , "RDB collection memory"
+                    , "bytes"
+                    , "netdata"
+                    , "stats"
+                    , 131007
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd = rrddim_add(st, "collection_memory", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        collected_number cn = gs.rdb_collection_handles;
+        rrddim_set_by_pointer(st, rd, 4096 * cn);
+
+        rrdset_done(st);
     }
 #endif
 }
