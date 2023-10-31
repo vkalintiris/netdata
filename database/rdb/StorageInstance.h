@@ -70,12 +70,14 @@ public:
             std::lock_guard<std::mutex> L(ArenasMutex);
 
             auto It = Arenas.find(tid);
-            if (It == Arenas.cend()) {
+            if (It == Arenas.cend())
+            {
                 pb::ArenaOptions AO;
-                AO.start_block_size = 4096;
-                AO.max_block_size = 4096;
-                AO.initial_block_size = AO.start_block_size;
+                AO.start_block_size = 1024 * 1024;
+                AO.max_block_size = AO.start_block_size;
+
                 pb::Arena *A = new pb::Arena(AO);
+
                 Arenas[tid] = A;
                 return A;
             } else {
