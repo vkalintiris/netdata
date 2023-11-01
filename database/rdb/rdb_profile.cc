@@ -1,6 +1,7 @@
 #include "rdb-private.h"
 #include "Barrier.h"
 
+#include "rocksdb/advanced_options.h"
 #include <chrono>
 #include <thread>
 
@@ -75,8 +76,8 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     {
         for (size_t j = 0; j != dimensions.size(); j++)
         {
-            // uint32_t val = rand_vals[(i + j) % 256];
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            uint32_t val = rand_vals[(i + j) % 256];
+            storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
 
         point_in_time += USEC_PER_SEC;
@@ -112,7 +113,7 @@ static void gen_thread(size_t thread_id,
     std::this_thread::sleep_for(std::chrono::seconds{1});
 }
 
-static rocksdb::Options get_db_options()
+static rocksdb::Options get_fifo_db_options()
 {
     rocksdb::Options Opts;
 
@@ -128,7 +129,26 @@ static rocksdb::Options get_db_options()
     Opts.target_file_size_base = 256 * 1024 * 1024;
 
     Opts.enable_blob_files = true;
-    Opts.min_blob_size = 128;
+    Opts.min_blob_size = 64;
+    
+    Opts.manual_wal_flush = true;
+    return Opts;
+}
+
+static rocksdb::Options get_level_db_options()
+{
+    rocksdb::Options Opts;
+
+    Opts.create_if_missing = true;
+    
+    Opts.compaction_style = rocksdb::kCompactionStyleLevel;
+    
+    Opts.write_buffer_size = 128 * 1024 * 1024;
+    Opts.target_file_size_base = 256 * 1024 * 1024;
+    Opts.target_file_size_multiplier = 10;
+
+    Opts.enable_blob_files = true;
+    Opts.min_blob_size = 64;
     
     Opts.manual_wal_flush = true;
     return Opts;
@@ -138,7 +158,7 @@ void rdb_init() {
     SI = new rdb::StorageInstance(16);
     RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
     
-    rocksdb::Options Opts = get_db_options();
+    rocksdb::Options Opts = get_level_db_options();
 
     #if 0
     char Path[4096] = { };

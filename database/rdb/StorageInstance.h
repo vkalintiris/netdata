@@ -50,7 +50,7 @@ public:
         Opts.error_if_exists = false;
         Opts.create_if_missing = true;
         Opts.create_missing_column_families = true;
-            
+
         std::vector<std::string> CFs;
         Status S = DB::ListColumnFamilies(DBOptions(), Path, &CFs);
 
