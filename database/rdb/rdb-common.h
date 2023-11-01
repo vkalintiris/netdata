@@ -9,6 +9,7 @@
 #include <rocksdb/db.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
+#include <rocksdb/merge_operator.h>
 
 #ifdef ENABLE_TESTS
 #include <gtest/gtest.h>

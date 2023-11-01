@@ -62,7 +62,8 @@ static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
 
             uuid_generate(d.rd.metric_uuid);
             d.smh = se->api.metric_get_or_create(si, smg, &d.rd);
-            d.sch = storage_metric_store_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, 1, smg);
+            // d.sch = storage_metric_store_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, 1, smg);
+            d.sch = nullptr;
             d.smg = smg;
 
             dimensions.push_back(d);
@@ -107,10 +108,10 @@ static void gen_thread(size_t thread_id,
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);
     B->wait();
 
-    usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
-    gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
+    // usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
+    // gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
     
-    std::this_thread::sleep_for(std::chrono::seconds{1});
+    // std::this_thread::sleep_for(std::chrono::seconds{1});
 }
 
 static rocksdb::Options get_fifo_db_options()
@@ -163,7 +164,6 @@ void rdb_init() {
     #if 0
     char Path[4096] = { };
     snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
-    snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
     #else
     const char *Path = "/mnt/tmpfs";
     #endif
@@ -212,7 +212,8 @@ int rdb_profile_main(int argc, char *argv[])
                       (num_threads * num_groups * num_dims_per_group) / 2500,
                       num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
 
-    std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
+    // std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
+    std::vector<uint32_t> rand_vals;
 
     std::vector<std::thread> threads;
     {
@@ -232,6 +233,13 @@ int rdb_profile_main(int argc, char *argv[])
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
         netdata_log_error("Time to setup metrics: %.2lf seconds (RSS: %zu MiB)", seconds, getRSS());
+
+        for (std::thread& thread : threads)
+            thread.join();
+
+        SI->RDB->Flush(rocksdb::FlushOptions());
+        SI->close();
+        return 0;
     }
 
     {

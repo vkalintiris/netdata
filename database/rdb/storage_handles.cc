@@ -1,3 +1,4 @@
+#include "database/rdb/StorageInstance.h"
 #include "database/rdb/protos/rdbv.pb.h"
 #include "rdb-private.h"
 
@@ -36,51 +37,7 @@ void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
 /* Metrics                                                                   */
 /*===---------------------------------------------------------------------===*/
 
-class MetricHandle
-{
-    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t gid, uint32_t mid)
-    {
-        MetricHandle MH;
-
-        MH.group_id = gid;
-        MH.metric_id = mid;
-        MH.references = 0;
-        return MH;
-    }
-
-public:
-    template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> flush(std::array<char, N> &AR) const
-    {
-        rdbv::MetricHandle MH;
-
-        MH.set_group_id(group_id);
-        MH.set_metric_id(metric_id);
-        MH.set_references(references);
-
-        assert(MH.BySizeLong() <= AR.size());
-
-        if (!MH.SerializeToArray(AR.data(), AR.size()))
-            return std::nullopt;
-
-        return rocksdb::Slice(AR.data(), MH.ByteSizeLong());
-    }
-
-    [[nodiscard]] const inline uint32_t gid() const
-    {
-        return group_id;
-    }
-    
-    [[nodiscard]] const inline uint32_t mid() const
-    {
-        return metric_id;
-    }
-    
-private:
-    uint32_t group_id;
-    uint32_t metric_id;
-    uint32_t references;
-};
-
+#if 0
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
     UNUSED(si);
@@ -118,6 +75,55 @@ void rdb_metric_release(STORAGE_METRIC_HANDLE *smh)
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
     SI->MetricsRegistry.release(rmh);
 }
+#else
+STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
+{
+    UNUSED(si);
+
+    global_statistics_metric_get();
+
+    std::optional<rdb::MetricHandle> OMH = SI->getMetricHandle(*uuid);
+    if (!OMH.has_value())
+        return nullptr;
+
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(new rdb::MetricHandle(std::move(OMH.value())));
+}
+
+STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg, RRDDIM *rd)
+{
+    global_statistics_metric_get_or_create();
+
+    UNUSED(si);
+
+    STORAGE_METRIC_HANDLE *smh = rdb_metric_get(si, &rd->metric_uuid);
+    if (smh)
+        return smh;
+
+    rdb::MetricHandle MH = rdb::MetricHandle::fromIDs(reinterpret_cast<uintptr_t>(smg), ++MaxMetricID);
+    std::optional<rdb::MetricHandle> OMH = SI->createMetricHandle(rd->metric_uuid, MH);
+
+    if (!OMH.has_value())
+        return nullptr;
+
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(new rdb::MetricHandle(std::move(OMH.value())));
+}
+
+STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh)
+{
+    global_statistics_metric_dup();
+
+    rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(smh);
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(new rdb::MetricHandle(*MH));
+}
+
+void rdb_metric_release(STORAGE_METRIC_HANDLE *smh)
+{
+    global_statistics_metric_release();
+
+    rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(smh);
+    delete MH;
+}
+#endif
 
 bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s)
 {
