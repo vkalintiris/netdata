@@ -42,8 +42,8 @@ __attribute__((constructor)) void initialize_multidb_ctx(void) {
 }
 
 int db_engine_journal_check = 0;
-int default_rrdeng_disk_quota_mb = 256;
-int default_multidb_disk_quota_mb = 256;
+int default_rrdeng_disk_quota_mb = 8192;
+int default_multidb_disk_quota_mb = 8192;
 
 #if defined(ENV32BIT)
 int default_rrdeng_page_cache_mb = 16;

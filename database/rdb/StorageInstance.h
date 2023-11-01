@@ -102,6 +102,6 @@ public:
 } // namespace rdb
 
 extern rdb::StorageInstance *SI;
-extern std::atomic<size_t> num_pages_written;
+extern std::atomic<size_t> NumFlushedPages;
 
 #endif /* RDB_STORAGE_INSTANCE_H */

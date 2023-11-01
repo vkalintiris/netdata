@@ -1,12 +1,18 @@
 #include "daemon/common.h"
+#include "libnetdata/log/log.h"
 #include "rdb-private.h"
 #include "Barrier.h"
 
 #include <chrono>
 #include <thread>
 
+#include "rocksdb/cache.h"
+#include "rocksdb/table.h"
+
 rdb::StorageInstance *SI = nullptr;
 STORAGE_INSTANCE *RDB_StorageInstance = nullptr;
+
+std::atomic<size_t> NumFlushedPages = 0;
 
 // Function to get the RSS in bytes
 std::size_t getRSS() {
@@ -71,8 +77,8 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     {
         for (size_t j = 0; j != dimensions.size(); j++)
         {
-            uint32_t val = rand_vals[(i + j) % 256];
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            // uint32_t val = rand_vals[(i + j) % 256];
+            storage_engine_store_metric(dimensions[j].sch, point_in_time, i, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
 
         point_in_time += USEC_PER_SEC;
@@ -114,21 +120,18 @@ static rocksdb::Options get_db_options()
     Opts.create_if_missing = true;
     
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
-    Opts.write_buffer_size = 64 * 1024 * 1024;
-    Opts.target_file_size_base = 128 * 1024 * 1024;
-    Opts.max_bytes_for_level_base = 64 * Opts.target_file_size_base; 
+
+    uint64_t db_size_in_mib = 1024 * 1024 * 1024;
+    db_size_in_mib *= 256LU;
+    Opts.compaction_options_fifo.max_table_files_size = db_size_in_mib;
+
+    Opts.write_buffer_size = 128 * 1024 * 1024;
+    Opts.target_file_size_base = 256 * 1024 * 1024;
+
+    Opts.enable_blob_files = true;
+    Opts.min_blob_size = 128;
+    
     Opts.manual_wal_flush = true;
-
-    // Opts.statistics = rocksdb::CreateDBStatistics();
-    // Opts.stats_dump_period_sec = 1;
-
-    // Opts.enable_blob_files = true;
-    // Opts.min_blob_size = 1024;
-
-    rocksdb::BlockBasedTableOptions TableOpts = rocksdb::BlockBasedTableOptions();
-    TableOpts.block_size = 64 * 1024;
-    Opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(TableOpts));
-
     return Opts;
 }
 
@@ -151,29 +154,35 @@ void rdb_flush()
     SI->RDB->Flush(rocksdb::FlushOptions());
 }
 
+void oldestKey()
+{
+    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+
+    It->SeekToFirst();
+    if (!It->Valid()) {
+        fatal("Could not seek to first key!");
+    }
+    
+    rdb::Key K = It->key();
+    netdata_log_error("Oldest key: %s", K.toString(true).c_str());
+
+    delete It;
+}
+
 int rdb_profile_main(int argc, char *argv[])
 {
     (void) argc;
     (void) argv;
 
-    SI = new rdb::StorageInstance(16);
-    RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
-
-    rocksdb::Options Opts = get_db_options();
-    const char *Path = "/home/cm/opt/tmp";
-    rocksdb::Status S = SI->open(Opts, Path);
-    if (!S.ok())
-        fatal("Could not open db at '%s': %s", Path, S.ToString().c_str());
-
-    netdata_log_error("Program started...");
+    rdb_init();
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 8;
-    size_t num_groups = 100;
-    size_t num_dims_per_group = 50;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_threads = 10;
+    size_t num_groups = 500;
+    size_t num_dims_per_group = 5;
+    size_t num_points_per_dimension = 6 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
@@ -202,18 +211,17 @@ int rdb_profile_main(int argc, char *argv[])
     }
 
     {
-        size_t n = 60;
-
         auto start_time = std::chrono::high_resolution_clock::now();
-        while (n--) {
+        while (true)
+        {
+            size_t PrevNumFlushedPages = NumFlushedPages;
             std::this_thread::sleep_for(std::chrono::seconds{1});
             auto end_time = std::chrono::high_resolution_clock::now();
 
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
-
-            // FIXME: get number of flushed pages from global stats.
-            double pages_per_second = static_cast<double>(0) / seconds;
+            
+            double pages_per_second = static_cast<double>(NumFlushedPages) / seconds;
             double points_per_sec = pages_per_second * 1024;
             double mib_per_sec = (points_per_sec * sizeof(storage_number)) / (1024.0 * 1024.0);
 
@@ -223,8 +231,16 @@ int rdb_profile_main(int argc, char *argv[])
                               pages_per_second, points_per_sec, mib_per_sec, capacity, getRSS());
 
             SI->RDB->Flush(rocksdb::FlushOptions());
+            oldestKey();
+
+            if (PrevNumFlushedPages == NumFlushedPages)
+            {
+                break;
+            }
         }
     }
+
+    netdata_log_error("Collection threads finished!");
 
     for (std::thread& thread : threads)
         thread.join();

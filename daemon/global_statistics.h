@@ -55,6 +55,31 @@ void global_statistics_rdb_collection_handles_decr();
 
 void global_statistics_rdb_flushed_pages_incr();
 
+void global_statistics_metrics_group_get();
+void global_statistics_metrics_group_release();
+
+void global_statistics_metric_get();
+void global_statistics_metric_get_or_create();
+void global_statistics_metric_dup();
+void global_statistics_metric_release();
+void global_statistics_metric_retention_by_uuid();
+void global_statistics_metric_oldest_time();
+void global_statistics_metric_latest_time();
+
+void global_statistics_store_metric_init();
+void global_statistics_store_metric_next();
+void global_statistics_store_metric_flush();
+void global_statistics_store_metric_change_collection_frequency();
+void global_statistics_store_metric_finalize();
+
+void global_statistics_load_metric_init();
+void global_statistics_load_metric_next();
+void global_statistics_load_metric_is_finished();
+void global_statistics_load_metric_finalize();
+
+void global_statistics_global_first_time();
+void global_statistics_disk_space_used();
+
 void global_statistics_web_request_completed(uint64_t dt,
                                              uint64_t bytes_received,
                                              uint64_t bytes_sent,

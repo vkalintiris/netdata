@@ -28,7 +28,7 @@ private:
                      CollectionPage &CP)
         : GID(GID), MID(MID),
           CurrPIT(0), UE(CP.updateEvery() * USEC_PER_SEC),
-          CP(CP)
+          CP(CP), OldestKey(std::nullopt)
     {
         spinlock_init(&Lock);
     }
@@ -186,6 +186,8 @@ private:
         WO.sync = false;
         SI->RDB->Put(WO, K.slice(), OV.value());
 
+        NumFlushedPages++;
+
         global_statistics_rdb_flushed_pages_incr();
     }
 
@@ -323,6 +325,43 @@ public:
         spinlock_unlock(&Lock);
     }
 
+    inline uint32_t oldestTime()
+    {
+        spinlock_lock(&Lock);
+
+        if (OldestKey.has_value())
+        {
+            spinlock_unlock(&Lock);
+            return OldestKey->pit();
+        }
+
+        const rdb::Key key{GID, MID, 0};
+
+        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        It->Seek(key.slice());
+        if (It->Valid())
+        {
+            rdb::Key K = It->key();
+            if (K.mid() == MID) {
+                OldestKey = K;
+                netdata_log_error("MID: %u, OldestPIT: %u", MID, OldestKey->pit());
+            }
+        }
+        delete It;
+
+        if (OldestKey.has_value())
+        {
+            spinlock_unlock(&Lock);
+            return OldestKey->pit();
+        }
+
+        uint32_t PIT = after_internal(false) / USEC_PER_SEC;
+
+        spinlock_unlock(&Lock);
+
+        return PIT;
+    }
+
 private:
     uint32_t GID;
     uint32_t MID;
@@ -330,6 +369,7 @@ private:
     usec_t UE;
     CollectionPage CP;
     mutable SPINLOCK Lock;
+    std::optional<Key> OldestKey;
 };
 
 } // namespace rdb

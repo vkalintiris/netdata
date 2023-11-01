@@ -27,6 +27,35 @@ struct netdata_buffers_statistics netdata_buffers_statistics = {};
 static size_t dbengine_total_memory = 0;
 size_t rrddim_db_memory_size = 0;
 
+#ifdef NETDATA_SI_OPS_CHARTS
+struct storage_instance_ops {
+    uint64_t metrics_group_get;
+    uint64_t metrics_group_release;
+
+    uint64_t metric_get;
+    uint64_t metric_get_or_create;
+    uint64_t metric_dup;
+    uint64_t metric_release;
+    uint64_t metric_retention_by_uuid;
+    uint64_t metric_oldest_time;
+    uint64_t metric_latest_time;
+
+    uint64_t store_metric_init;
+    uint64_t store_metric_next;
+    uint64_t store_metric_flush;
+    uint64_t store_metric_change_collection_frequency;
+    uint64_t store_metric_finalize;
+
+    uint64_t load_metric_init;
+    uint64_t load_metric_next;
+    uint64_t load_metric_is_finished;
+    uint64_t load_metric_finalize;
+
+    uint64_t global_first_time;
+    uint64_t disk_space_used;
+};
+#endif
+
 static struct global_statistics {
     uint16_t connected_clients;
 
@@ -75,6 +104,10 @@ static struct global_statistics {
     uint64_t rdb_collection_handles;
     uint64_t rdb_flushed_pages;
 
+#ifdef NETDATA_SI_OPS_CHARTS
+    struct storage_instance_ops si_ops;
+#endif
+
     uint64_t db_points_stored_per_tier[RRD_STORAGE_TIERS];
 
 } global_statistics = {
@@ -97,6 +130,35 @@ static struct global_statistics {
 
         .rdb_collection_handles = 0,
         .rdb_flushed_pages = 0,
+
+#ifdef NETDATA_SI_OPS_CHARTS
+        .si_ops = {
+            .metrics_group_get = 0,
+            .metrics_group_release = 0,
+
+            .metric_get = 0,
+            .metric_get_or_create = 0,
+            .metric_dup = 0,
+            .metric_release = 0,
+            .metric_retention_by_uuid = 0,
+            .metric_oldest_time = 0,
+            .metric_latest_time = 0,
+
+            .store_metric_init = 0,
+            .store_metric_next = 0,
+            .store_metric_flush = 0,
+            .store_metric_change_collection_frequency = 0,
+            .store_metric_finalize = 0,
+
+            .load_metric_init = 0,
+            .load_metric_next = 0,
+            .load_metric_is_finished = 0,
+            .load_metric_finalize = 0,
+
+            .global_first_time = 0,
+            .disk_space_used = 0,
+        },
+#endif
 };
 
 void global_statistics_rrdset_done_chart_collection_completed(size_t *points_read_per_tier_array) {
@@ -139,6 +201,127 @@ void global_statistics_rdb_collection_handles_decr() {
 
 void global_statistics_rdb_flushed_pages_incr() {
     __atomic_fetch_add(&global_statistics.rdb_flushed_pages, 1, __ATOMIC_RELAXED);
+}
+
+
+void global_statistics_metrics_group_get() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metrics_group_get, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metrics_group_release() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metrics_group_release, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_get() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_get, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_get_or_create() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_get_or_create, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_dup() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_dup, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_release() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_release, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_retention_by_uuid() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_retention_by_uuid, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_oldest_time() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_oldest_time, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_metric_latest_time() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.metric_latest_time, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_store_metric_init() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.store_metric_init, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_store_metric_next() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.store_metric_next, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_store_metric_flush() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.store_metric_flush, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_store_metric_change_collection_frequency() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.store_metric_change_collection_frequency, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_store_metric_finalize() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.store_metric_finalize, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_load_metric_init() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.load_metric_init, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_load_metric_next() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.load_metric_next, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_load_metric_is_finished() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.load_metric_is_finished, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_load_metric_finalize() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.load_metric_finalize, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_global_first_time() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.global_first_time, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void global_statistics_disk_space_used() {
+#ifdef NETDATA_SI_OPS_CHARTS
+    __atomic_fetch_add(&global_statistics.si_ops.disk_space_used, 1, __ATOMIC_RELAXED);
+#endif
 }
 
 void global_statistics_tier0_disk_compressed_bytes(uint32_t size) {
@@ -258,6 +441,32 @@ static inline void global_statistics_copy(struct global_statistics *gs, uint8_t 
 
     gs->rdb_collection_handles = __atomic_load_n(&global_statistics.rdb_collection_handles, __ATOMIC_RELAXED);
     gs->rdb_flushed_pages = __atomic_load_n(&global_statistics.rdb_flushed_pages, __ATOMIC_RELAXED);
+
+#ifdef NETDATA_SI_OPS_CHARTS
+    gs->si_ops.metrics_group_get = __atomic_load_n(&global_statistics.si_ops.metrics_group_get, __ATOMIC_RELAXED);
+    gs->si_ops.metrics_group_release = __atomic_load_n(&global_statistics.si_ops.metrics_group_release, __ATOMIC_RELAXED);
+
+    gs->si_ops.metric_get = __atomic_load_n(&global_statistics.si_ops.metric_get, __ATOMIC_RELAXED);
+    gs->si_ops.metric_get_or_create = __atomic_load_n(&global_statistics.si_ops.metric_get_or_create, __ATOMIC_RELAXED);
+    gs->si_ops.metric_dup = __atomic_load_n(&global_statistics.si_ops.metric_dup, __ATOMIC_RELAXED);
+    gs->si_ops.metric_release = __atomic_load_n(&global_statistics.si_ops.metric_release, __ATOMIC_RELAXED);
+    gs->si_ops.metric_retention_by_uuid = __atomic_load_n(&global_statistics.si_ops.metric_retention_by_uuid, __ATOMIC_RELAXED);
+    gs->si_ops.metric_oldest_time = __atomic_load_n(&global_statistics.si_ops.metric_oldest_time, __ATOMIC_RELAXED);
+    gs->si_ops.metric_latest_time = __atomic_load_n(&global_statistics.si_ops.metric_latest_time, __ATOMIC_RELAXED);
+
+    gs->si_ops.store_metric_init = __atomic_load_n(&global_statistics.si_ops.store_metric_init, __ATOMIC_RELAXED);
+    gs->si_ops.load_metric_next = __atomic_load_n(&global_statistics.si_ops.load_metric_next, __ATOMIC_RELAXED);
+    gs->si_ops.store_metric_flush = __atomic_load_n(&global_statistics.si_ops.store_metric_flush, __ATOMIC_RELAXED);
+    gs->si_ops.store_metric_change_collection_frequency = __atomic_load_n(&global_statistics.si_ops.store_metric_change_collection_frequency, __ATOMIC_RELAXED);
+    gs->si_ops.store_metric_finalize = __atomic_load_n(&global_statistics.si_ops.store_metric_finalize, __ATOMIC_RELAXED);
+
+    gs->si_ops.load_metric_init = __atomic_load_n(&global_statistics.si_ops.load_metric_init, __ATOMIC_RELAXED);
+    gs->si_ops.load_metric_next = __atomic_load_n(&global_statistics.si_ops.load_metric_next, __ATOMIC_RELAXED);
+    gs->si_ops.load_metric_is_finished = __atomic_load_n(&global_statistics.si_ops.load_metric_is_finished, __ATOMIC_RELAXED);
+
+    gs->si_ops.global_first_time = __atomic_load_n(&global_statistics.si_ops.global_first_time, __ATOMIC_RELAXED);
+    gs->si_ops.disk_space_used = __atomic_load_n(&global_statistics.si_ops.disk_space_used, __ATOMIC_RELAXED);
+#endif
 
     for(size_t tier = 0; tier < storage_tiers ;tier++)
         gs->db_points_stored_per_tier[tier] = __atomic_load_n(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
@@ -1031,6 +1240,197 @@ static void global_statistics_charts(void) {
         rrdset_done(st);
     }
 #endif
+
+#ifdef NETDATA_SI_OPS_CHARTS
+    // SI group ops
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd_get = NULL;
+        static RRDDIM *rd_release = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "si_ops_group"
+                    , NULL
+                    , "si_ops_group"
+                    , NULL
+                    , "SI group operations"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131009
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_get = rrddim_add(st, "get", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_release = rrddim_add(st, "release", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd_get, (collected_number) gs.si_ops.metrics_group_get);
+        rrddim_set_by_pointer(st, rd_release, (collected_number) gs.si_ops.metrics_group_release);
+        rrdset_done(st);
+    }
+
+    // SI metric ops
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd_get = NULL;
+        static RRDDIM *rd_get_or_create = NULL;
+        static RRDDIM *rd_dup = NULL;
+        static RRDDIM *rd_release = NULL;
+        static RRDDIM *rd_retention_by_uuid = NULL;
+        static RRDDIM *rd_oldest_time = NULL;
+        static RRDDIM *rd_latest_time = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "si_ops_metric"
+                    , NULL
+                    , "si_ops_metric"
+                    , NULL
+                    , "SI metric operations"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131010
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_get = rrddim_add(st, "get_or_create", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_get_or_create = rrddim_add(st, "get_or_create", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_dup = rrddim_add(st, "dup", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_release = rrddim_add(st, "release", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_retention_by_uuid = rrddim_add(st, "retention_by_uuid", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_oldest_time = rrddim_add(st, "oldest_time", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_latest_time = rrddim_add(st, "latest_time", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd_get, (collected_number) gs.si_ops.metric_get);
+        rrddim_set_by_pointer(st, rd_get_or_create, (collected_number) gs.si_ops.metric_get_or_create);
+        rrddim_set_by_pointer(st, rd_dup, (collected_number) gs.si_ops.metric_dup);
+        rrddim_set_by_pointer(st, rd_release, (collected_number) gs.si_ops.metric_release);
+        rrddim_set_by_pointer(st, rd_retention_by_uuid, (collected_number) gs.si_ops.metric_retention_by_uuid);
+        rrddim_set_by_pointer(st, rd_oldest_time, (collected_number) gs.si_ops.metric_oldest_time);
+        rrddim_set_by_pointer(st, rd_latest_time, (collected_number) gs.si_ops.metric_latest_time);
+
+        rrdset_done(st);
+    }
+
+    // SI store ops
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd_init = NULL;
+        static RRDDIM *rd_next = NULL;
+        static RRDDIM *rd_flush = NULL;
+        static RRDDIM *rd_change_collection_frequency = NULL;
+        static RRDDIM *rd_finalize = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "si_ops_store"
+                    , NULL
+                    , "si_ops_store"
+                    , NULL
+                    , "SI store operations"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131011
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_init = rrddim_add(st, "init", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_next = rrddim_add(st, "next", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_flush = rrddim_add(st, "flush", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_change_collection_frequency = rrddim_add(st, "change_collection_frequency", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_finalize = rrddim_add(st, "finalize", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd_init, (collected_number) gs.si_ops.store_metric_init);
+        rrddim_set_by_pointer(st, rd_next, (collected_number) gs.si_ops.store_metric_next);
+        rrddim_set_by_pointer(st, rd_flush, (collected_number) gs.si_ops.store_metric_flush);
+        rrddim_set_by_pointer(st, rd_change_collection_frequency, (collected_number) gs.si_ops.store_metric_change_collection_frequency);
+        rrddim_set_by_pointer(st, rd_finalize, (collected_number) gs.si_ops.store_metric_finalize);
+
+        rrdset_done(st);
+    }
+
+    // SI load ops
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd_init = NULL;
+        static RRDDIM *rd_next = NULL;
+        static RRDDIM *rd_is_finished = NULL;
+        static RRDDIM *rd_finalize = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "si_ops_load"
+                    , NULL
+                    , "si_ops_load"
+                    , NULL
+                    , "SI load operations"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131012
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_init = rrddim_add(st, "init", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_next = rrddim_add(st, "next", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_is_finished = rrddim_add(st, "is_finished", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_finalize = rrddim_add(st, "finalize", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd_init, (collected_number) gs.si_ops.load_metric_init);
+        rrddim_set_by_pointer(st, rd_next, (collected_number) gs.si_ops.load_metric_next);
+        rrddim_set_by_pointer(st, rd_is_finished, (collected_number) gs.si_ops.load_metric_is_finished);
+        rrddim_set_by_pointer(st, rd_finalize, (collected_number) gs.si_ops.load_metric_finalize);
+
+        rrdset_done(st);
+    }
+
+    // SI global ops
+    {
+        static RRDSET *st = NULL;
+        static RRDDIM *rd_global_first_time = NULL;
+        static RRDDIM *rd_disk_space_used = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "si_ops_global"
+                    , NULL
+                    , "si_ops_global"
+                    , NULL
+                    , "SI global operations"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131013
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_global_first_time = rrddim_add(st, "global_first_time", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            rd_disk_space_used = rrddim_add(st, "disk_space_used", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+        }
+
+        rrddim_set_by_pointer(st, rd_global_first_time, (collected_number) gs.si_ops.global_first_time);
+        rrddim_set_by_pointer(st, rd_disk_space_used, (collected_number) gs.si_ops.disk_space_used);
+
+        rrdset_done(st);
+    }
+#endif /* NETDATA_SI_OPS_CHARTS */
 }
 
 // ----------------------------------------------------------------------------
