@@ -38,10 +38,21 @@ void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
 
 class MetricHandle
 {
+    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t gid, uint32_t mid)
+    {
+        MetricHandle MH;
+
+        MH.group_id = gid;
+        MH.metric_id = mid;
+        MH.references = 0;
+        return MH;
+    }
+
 public:
     template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> flush(std::array<char, N> &AR) const
     {
         rdbv::MetricHandle MH;
+
         MH.set_group_id(group_id);
         MH.set_metric_id(metric_id);
         MH.set_references(references);
