@@ -2,8 +2,59 @@
 #define RDB_KEY_H
 
 #include "rdb-common.h"
+#include "uuid.h"
 
 namespace rdb {
+
+class UuidKey
+{
+public:
+    constexpr static size_t Bytes = sizeof(uuid_t);
+
+public:
+    [[nodiscard]] inline static const UuidKey min()
+    {
+        std::array<char, Bytes> v;
+        std::fill(v.begin(), v.end(), 0);
+        return UuidKey(v);
+    }
+
+    [[nodiscard]] inline static const UuidKey max()
+    {
+        std::array<char, Bytes> v;
+        std::fill(v.begin(), v.end(), 0xFF);
+        return UuidKey(v);
+    }
+
+public:
+    inline UuidKey(const std::array<char, Bytes> &AR)
+    {
+        memcpy(&Scratch[0], AR.data(), Bytes);
+    }
+
+    inline UuidKey(uuid_t *uuid)
+    {
+        memcpy(&Scratch[0], uuid, Bytes);
+    }
+
+    inline UuidKey(const Slice &S)
+    {
+        memcpy(&Scratch[0], S.data(), Bytes);
+    }
+
+    [[nodiscard]] inline const Slice slice() const
+    {
+        return Slice(reinterpret_cast<const char *>(Scratch.data()), Bytes);
+    }
+
+    inline void const uuid(uuid_t *uuid) const
+    {
+        memcpy(uuid, Scratch.data(), Bytes);
+    }
+
+private:
+    std::array<unsigned char, UuidKey::Bytes> Scratch;
+};
 
 /**
  * @brief Represents a key in the RocksDB database.

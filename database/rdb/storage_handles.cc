@@ -1,5 +1,3 @@
-#include "database/rdb/Key.h"
-#include "libnetdata/clocks/clocks.h"
 #include "rdb-private.h"
 
 namespace pb = google::protobuf;
@@ -8,30 +6,34 @@ using rocksdb::Status;
 using rocksdb::Iterator;
 using rocksdb::ReadOptions;
 
+static std::atomic<uint32_t> MaxGroupID = 0;
+static std::atomic<uint32_t> MaxMetricID = 0;
+
 /*===---------------------------------------------------------------------===*/
 /* Groups                                                                    */
 /*===---------------------------------------------------------------------===*/
 
+
 STORAGE_METRICS_GROUP *rdb_metrics_group_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
-    UNUSED(si);
-
     global_statistics_metrics_group_get();
 
-    rdb_metrics_group *rmg = SI->GroupsRegistry.create(*uuid);
-    rmg->arena = SI->getThreadArena();
-
-    return reinterpret_cast<STORAGE_METRICS_GROUP *>(rmg);
+    UNUSED(si);
+    
+    rdb::UuidKey UK(uuid);
+    uint32_t GID = ++MaxGroupID;
+    rocksdb::Slice V(reinterpret_cast<const char *>(&GID), sizeof(GID));
+    SI->putMH(UK.slice(), V);
+    
+    return reinterpret_cast<STORAGE_METRICS_GROUP *>(GID);
 }
 
 void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
 {
     UNUSED(si);
+    UNUSED(smg);
 
     global_statistics_metrics_group_release();
-
-    rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
-    SI->GroupsRegistry.release(rmg);
 }
 
 /*===---------------------------------------------------------------------===*/
@@ -145,7 +147,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
     if (rch)
         return rch->ch.before() / USEC_PER_SEC;
 
-    const rdb::Key key{rmh->rmg->id, rmh->id + 1, 0};
+    const rdb::Key key{rmh->rmg, rmh->id + 1, 0};
 
     Iterator *it = SI->getIteratorMD(ReadOptions());
     for (it->SeekForPrev(key.slice());
@@ -165,6 +167,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 /*===---------------------------------------------------------------------===*/
 /* Collection handles                                                        */
 /*===---------------------------------------------------------------------===*/
+thread_local pb::Arena *ThreadArena = nullptr;
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
                                               uint32_t update_every,
@@ -172,7 +175,11 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
 {
     global_statistics_store_metric_init();
 
-    rdb_metrics_group *rmg = reinterpret_cast<rdb_metrics_group *>(smg);
+    if (!ThreadArena) {
+        ThreadArena = new pb::Arena();
+    }
+
+    uintptr_t rmg = reinterpret_cast<uintptr_t>(smg);
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
     rmh->rmg = rmg;
@@ -180,7 +187,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
     rdb::PageOptions PO = rdb::PageOptions();
     PO.initial_slots = (rmh->id % PO.capacity) + 1;
     std::optional<rdb::CollectionHandle> CH =
-        rdb::CollectionHandle::create(*rmg->arena, PO, rmg->id, rmh->id);
+        rdb::CollectionHandle::create(*ThreadArena, PO, rmg, rmh->id);
     if (!CH.has_value())
         fatal("Could not create collection handle");
 
@@ -325,7 +332,7 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
     After = std::max(rdb_metric_oldest_time(smh), After);
     Before = std::min(rdb_metric_latest_time(smh), Before);
 
-    rdb::Key StartK(rmh->rmg->id, rmh->id, After);
+    rdb::Key StartK(rmh->rmg, rmh->id, After);
 
     rdb_query_handle *rqh = new rdb_query_handle(rmh, &rmh->rch->ch, StartK, Before);
 

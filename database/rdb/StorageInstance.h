@@ -6,29 +6,17 @@
 
 struct rdb_collect_handle;
 
-struct rdb_metrics_group
-{
-    uuid_t uuid;
-    uint32_t id;
-    uint32_t rc;
-    google::protobuf::Arena *arena;
-
-    rdb_metrics_group() : uuid{}, id{0}, rc{0}, arena{nullptr} { }
-};
-
 struct rdb_metric_handle
 {
     uuid_t uuid;
     uint32_t id;
     uint32_t rc;
 
-    rdb_metrics_group *rmg;
+    uint32_t rmg;
     rdb_collect_handle *rch;
-
-    std::atomic<uint32_t> oldest_time;
-
+    
     rdb_metric_handle() :
-        uuid{}, id{0}, rc{0}, rmg{nullptr}, rch{nullptr}, oldest_time{0}
+        uuid{}, id{0}, rc{0}, rmg{0}, rch{nullptr}
     { }
 };
 
@@ -108,7 +96,6 @@ private:
 public:
     StorageInstance(size_t registry_shards) :
         RDB(nullptr),
-        GroupsRegistry(registry_shards),
         MetricsRegistry(registry_shards)
     { }
 
@@ -140,6 +127,14 @@ public:
         WO.disableWAL = true;
         WO.sync = false;
         return RDB->Put(WO, CFHs[1], K, V);
+    }
+
+    rocksdb::Status putMH(const rocksdb::Slice &K, const rocksdb::Slice &V)
+    {
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        return RDB->Put(WO, CFHs[2], K, V);
     }
 
     rocksdb::Iterator *getIteratorMD(const rocksdb::ReadOptions &RO)
@@ -189,7 +184,6 @@ public:
 
 public:
     rocksdb::DB *RDB;
-    UuidShard<rdb_metrics_group> GroupsRegistry;
     UuidShard<rdb_metric_handle> MetricsRegistry;
 
     std::vector<rocksdb::ColumnFamilyHandle *> CFHs;
