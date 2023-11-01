@@ -90,6 +90,7 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
 
 static Barrier *B = nullptr;
 
+
 static void gen_thread(size_t thread_id,
                        size_t num_threads,
                        size_t num_groups,
@@ -109,7 +110,7 @@ static void gen_thread(size_t thread_id,
 
     usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
-
+    
     std::this_thread::sleep_for(std::chrono::seconds{1});
 }
 
