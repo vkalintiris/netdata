@@ -2,7 +2,7 @@
 #define RDB_STORAGE_INSTANCE_H
 
 #include "rdb-common.h"
-#include <google/protobuf/arena.h>
+#include "Key.h"
 
 struct rdb_collect_handle;
 
@@ -36,6 +36,75 @@ namespace rdb {
 
 class StorageInstance
 {
+private:
+    static rocksdb::ColumnFamilyOptions levelStyleOpts(size_t MemtableBudget)
+    {
+        using namespace rocksdb;
+
+        ColumnFamilyOptions CFO = ColumnFamilyOptions();
+
+        CFO.write_buffer_size = static_cast<size_t>(MemtableBudget / 4);
+
+        // merge two memtables when flushing to L0
+        CFO.min_write_buffer_number_to_merge = 2;
+
+        // this means we'll use 50% extra memory in the worst case, but will reduce
+        // write stalls.
+        CFO.max_write_buffer_number = 6;
+
+        // start flushing L0->L1 as soon as possible. each file on level0 is
+        // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
+        // memtable_memory_budget.
+        CFO.level0_file_num_compaction_trigger = 2;
+
+        // doesn't really matter much, but we don't want to create too many files
+        CFO.target_file_size_base = MemtableBudget/ 8;
+
+        // make L1 size equal to L0 size, so that L0 -> L1 compactions are fast
+        CFO.max_bytes_for_level_base = MemtableBudget;
+
+        // level style compaction
+        CFO.compaction_style = kCompactionStyleLevel;
+
+        // only compress levels >= 2
+        CFO.compression_per_level.resize(CFO.num_levels);
+        for (int i = 0; i < CFO.num_levels; ++i)
+        {
+            if (i == 0)
+            {
+                CFO.compression_per_level[i] = kLZ4Compression;
+            }
+            else
+            {
+                CFO.compression_per_level[i] = rocksdb::kZSTD;
+            }
+        }
+
+        return CFO;
+    }
+
+    static rocksdb::ColumnFamilyOptions metricDataCFO(const rocksdb::CompactionStyle CS)
+    {
+        using namespace rocksdb;
+        constexpr uint64_t MiB = 1024 * 1024;
+
+        switch (CS)
+        {
+            case kCompactionStyleLevel:
+            {
+                ColumnFamilyOptions CFO = levelStyleOpts(256 * MiB);
+
+                CFO.enable_blob_files = true;
+                CFO.min_blob_size = 30;
+                CFO.blob_compression_type = kZSTD;
+
+                return CFO;
+            }
+            default:
+                fatal("Unsupported compaction style");
+        }
+    }
+
 public:
     StorageInstance(size_t registry_shards) :
         RDB(nullptr),
@@ -45,27 +114,22 @@ public:
 
     rocksdb::Status open(rocksdb::Options Opts, const char *Path)
     {
-        using namespace rocksdb;
-            
+        using namespace rocksdb;       
+
         Opts.error_if_exists = false;
         Opts.create_if_missing = true;
         Opts.create_missing_column_families = true;
 
-        std::vector<std::string> CFs;
-        Status S = DB::ListColumnFamilies(DBOptions(), Path, &CFs);
+        ColumnFamilyOptions defaultCFO{};
+        ColumnFamilyDescriptor defaultCFD(kDefaultColumnFamilyName, defaultCFO);
 
-        if (!S.ok())
-        {
-            CFs = { kDefaultColumnFamilyName };
-            CFs.push_back("md");
-            CFs.push_back("mh");
-        }
-            
-        std::vector<ColumnFamilyDescriptor> CFDs;
-        for (const auto& CF : CFs)
-        {
-            CFDs.emplace_back(CF, rocksdb::ColumnFamilyOptions());
-        }
+        ColumnFamilyOptions mdCFO = metricDataCFO(kCompactionStyleLevel);
+        ColumnFamilyDescriptor mdCFD("md", mdCFO);
+
+        ColumnFamilyOptions mhCFO{};
+        ColumnFamilyDescriptor mhCFD("mh", mhCFO);
+
+        std::vector<ColumnFamilyDescriptor> CFDs = { defaultCFD, mdCFD, mhCFD };
 
         return rocksdb::DB::Open(Opts, Path, CFDs, &CFHs, &RDB);
     }
@@ -85,7 +149,9 @@ public:
 
     void close()
     {
-        rocksdb::FlushOptions FO;
+        using namespace rocksdb;
+            
+        FlushOptions FO;
         FO.allow_write_stall = true;
         FO.wait = true;
 

@@ -76,8 +76,8 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     {
         for (size_t j = 0; j != dimensions.size(); j++)
         {
-            uint32_t val = rand_vals[(i + j) % 256];
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, val, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            // uint32_t val = rand_vals[(i + j) % 256];
+            storage_engine_store_metric(dimensions[j].sch, point_in_time, 0, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
 
         point_in_time += USEC_PER_SEC;
@@ -206,7 +206,7 @@ int rdb_profile_main(int argc, char *argv[])
     size_t num_threads = 10;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 6 * 3600;
+    size_t num_points_per_dimension = 24 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
