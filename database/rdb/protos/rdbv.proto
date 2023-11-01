@@ -3,6 +3,12 @@ package rdbv;
 
 import "google/protobuf/descriptor.proto";
 
+message MetricHandle {
+    uint32 group_id = 1;
+    uint32 metric_id = 2;
+    uint32 references = 3;
+}
+
 message StorageNumbersPage {
     uint32 update_every = 1;
     repeated fixed32 storage_numbers = 2;

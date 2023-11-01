@@ -48,7 +48,7 @@ static void check_metric_handle_from_rrddim(struct mem_metric_handle *mh) {
 }
 
 STORAGE_METRIC_HANDLE *
-rrddim_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *db_instance __maybe_unused) {
+rrddim_metric_get_or_create(STORAGE_INSTANCE *db_instance __maybe_unused, RRDDIM *rd) {
     struct mem_metric_handle *mh = (struct mem_metric_handle *)rrddim_metric_get(db_instance, &rd->metric_uuid);
     while(!mh) {
         netdata_rwlock_wrlock(&rrddim_JudyHS_rwlock);

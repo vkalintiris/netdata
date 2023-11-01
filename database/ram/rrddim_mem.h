@@ -22,7 +22,7 @@ struct mem_query_handle {
     size_t last_slot;
 };
 
-STORAGE_METRIC_HANDLE *rrddim_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *db_instance);
+STORAGE_METRIC_HANDLE *rrddim_metric_get_or_create(STORAGE_INSTANCE *db_instance, RRDDIM *rd);
 STORAGE_METRIC_HANDLE *rrddim_metric_get(STORAGE_INSTANCE *db_instance, uuid_t *uuid);
 STORAGE_METRIC_HANDLE *rrddim_metric_dup(STORAGE_METRIC_HANDLE *db_metric_handle);
 void rrddim_metric_release(STORAGE_METRIC_HANDLE *db_metric_handle);

@@ -61,7 +61,7 @@ static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
             dimension_t d;
 
             uuid_generate(d.rd.metric_uuid);
-            d.smh = se->api.metric_get_or_create(&d.rd, si);
+            d.smh = se->api.metric_get_or_create(si, &d.rd);
             d.sch = storage_metric_store_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, 1, smg);
             d.smg = smg;
 

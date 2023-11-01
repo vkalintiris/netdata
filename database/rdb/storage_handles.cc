@@ -1,3 +1,4 @@
+#include "database/rdb/protos/rdbv.pb.h"
 #include "rdb-private.h"
 
 namespace pb = google::protobuf;
@@ -16,16 +17,11 @@ static std::atomic<uint32_t> MaxMetricID = 0;
 
 STORAGE_METRICS_GROUP *rdb_metrics_group_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
-    global_statistics_metrics_group_get();
-
     UNUSED(si);
-    
-    rdb::UuidKey UK(uuid);
-    uint32_t GID = ++MaxGroupID;
-    rocksdb::Slice V(reinterpret_cast<const char *>(&GID), sizeof(GID));
-    SI->putMH(UK.slice(), V);
-    
-    return reinterpret_cast<STORAGE_METRICS_GROUP *>(GID);
+    UNUSED(uuid);
+
+    global_statistics_metrics_group_get();
+    return reinterpret_cast<STORAGE_METRICS_GROUP *>(++MaxGroupID);
 }
 
 void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
@@ -40,6 +36,40 @@ void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
 /* Metrics                                                                   */
 /*===---------------------------------------------------------------------===*/
 
+class MetricHandle
+{
+public:
+    template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> flush(std::array<char, N> &AR) const
+    {
+        rdbv::MetricHandle MH;
+        MH.set_group_id(group_id);
+        MH.set_metric_id(metric_id);
+        MH.set_references(references);
+
+        assert(MH.BySizeLong() <= AR.size());
+
+        if (!MH.SerializeToArray(AR.data(), AR.size()))
+            return std::nullopt;
+
+        return rocksdb::Slice(AR.data(), MH.ByteSizeLong());
+    }
+
+    [[nodiscard]] const inline uint32_t gid() const
+    {
+        return group_id;
+    }
+    
+    [[nodiscard]] const inline uint32_t mid() const
+    {
+        return metric_id;
+    }
+    
+private:
+    uint32_t group_id;
+    uint32_t metric_id;
+    uint32_t references;
+};
+
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
     UNUSED(si);
@@ -50,7 +80,7 @@ STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
     return reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh);
 }
 
-STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE *si)
+STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, RRDDIM *rd)
 {
     UNUSED(si);
 
@@ -91,37 +121,6 @@ bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *fi
     return false;
 }
 
-#if 0
-time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
-{
-    global_statistics_metric_oldest_time();
-
-    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
-
-    uint32_t PIT = 0;
-    const rdb::Key key{rmh->rmg->id, rmh->id, 0};
-
-    Iterator *It = SI->getIteratorMD(ReadOptions());
-    It->Seek(key.slice());
-    if (It->Valid())
-    {
-        rdb::Key K = It->key();
-        if (K.mid() == rmh->id)
-            PIT = K.pit();
-    }
-    delete It;
-
-    if (PIT)
-        return PIT;
-    
-    // FIXME: maybe it's rmh that needs the spinlock for rch
-    rdb_collect_handle *rch = rmh->rch;
-    if (!rch)
-        return PIT;
-
-    return rch->ch.after() / USEC_PER_SEC;
-}
-#else
 time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 {
     global_statistics_metric_oldest_time();
@@ -135,7 +134,6 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
 
     return rch->ch.oldestTime();
 }
-#endif
 
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 {
