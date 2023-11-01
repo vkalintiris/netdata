@@ -883,7 +883,7 @@ static inline time_t storage_engine_align_to_optimal_before(struct storage_engin
 typedef struct storage_engine_api {
     // metric management
     STORAGE_METRIC_HANDLE *(*metric_get)(STORAGE_INSTANCE *instance, uuid_t *uuid);
-    STORAGE_METRIC_HANDLE *(*metric_get_or_create)(STORAGE_INSTANCE *instance, RRDDIM *rd);
+    STORAGE_METRIC_HANDLE *(*metric_get_or_create)(STORAGE_INSTANCE *instance, STORAGE_METRICS_GROUP *smg, RRDDIM *rd);
     void (*metric_release)(STORAGE_METRIC_HANDLE *);
     STORAGE_METRIC_HANDLE *(*metric_dup)(STORAGE_METRIC_HANDLE *);
     bool (*metric_retention_by_uuid)(STORAGE_INSTANCE *db_instance, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s);

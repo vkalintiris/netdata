@@ -148,7 +148,9 @@ static METRIC *rrdeng_metric_create(STORAGE_INSTANCE *db_instance, uuid_t *uuid)
     return metric;
 }
 
-STORAGE_METRIC_HANDLE *rrdeng_metric_get_or_create(STORAGE_INSTANCE *db_instance, RRDDIM *rd) {
+STORAGE_METRIC_HANDLE *rrdeng_metric_get_or_create(STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg, RRDDIM *rd) {
+    UNUSED(smg);
+
     struct rrdengine_instance *ctx = (struct rrdengine_instance *)db_instance;
     METRIC *metric;
 

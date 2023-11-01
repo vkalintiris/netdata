@@ -12,7 +12,7 @@ extern "C" {
 */
 
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid);
-STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, RRDDIM *rd);
+STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg, RRDDIM *rd);
 STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh);
 
 void rdb_metric_release(STORAGE_METRIC_HANDLE *smh);

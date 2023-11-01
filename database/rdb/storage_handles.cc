@@ -80,9 +80,10 @@ STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
     return reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh);
 }
 
-STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, RRDDIM *rd)
+STORAGE_METRIC_HANDLE *rdb_metric_get_or_create(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg, RRDDIM *rd)
 {
     UNUSED(si);
+    UNUSED(smg);
 
     global_statistics_metric_get_or_create();
 

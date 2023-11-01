@@ -26,7 +26,7 @@ extern uint8_t tier_page_type[];
 
 void rrdeng_generate_legacy_uuid(const char *dim_id, const char *chart_id, uuid_t *ret_uuid);
 
-STORAGE_METRIC_HANDLE *rrdeng_metric_get_or_create(STORAGE_INSTANCE *db_instance, RRDDIM *rd);
+STORAGE_METRIC_HANDLE *rrdeng_metric_get_or_create(STORAGE_INSTANCE *db_instance, STORAGE_METRICS_GROUP *smg, RRDDIM *rd);
 STORAGE_METRIC_HANDLE *rrdeng_metric_get(STORAGE_INSTANCE *db_instance, uuid_t *uuid);
 void rrdeng_metric_release(STORAGE_METRIC_HANDLE *db_metric_handle);
 STORAGE_METRIC_HANDLE *rrdeng_metric_dup(STORAGE_METRIC_HANDLE *db_metric_handle);
