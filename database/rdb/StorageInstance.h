@@ -43,13 +43,44 @@ public:
         MetricsRegistry(registry_shards)
     { }
 
-    rocksdb::Status open(rocksdb::Options Opts, const char *path)
+    rocksdb::Status open(rocksdb::Options Opts, const char *Path)
     {
-        rocksdb::Status S = rocksdb::DB::Open(Opts, path, &RDB);
-        if (!S.ok())
-            RDB = nullptr;
+        using namespace rocksdb;
+            
+        Opts.error_if_exists = false;
+        Opts.create_if_missing = true;
+        Opts.create_missing_column_families = true;
+            
+        std::vector<std::string> CFs;
+        Status S = DB::ListColumnFamilies(DBOptions(), Path, &CFs);
 
-        return S;
+        if (!S.ok())
+        {
+            CFs = { kDefaultColumnFamilyName };
+            CFs.push_back("md");
+            CFs.push_back("mh");
+        }
+            
+        std::vector<ColumnFamilyDescriptor> CFDs;
+        for (const auto& CF : CFs)
+        {
+            CFDs.emplace_back(CF, rocksdb::ColumnFamilyOptions());
+        }
+
+        return rocksdb::DB::Open(Opts, Path, CFDs, &CFHs, &RDB);
+    }
+
+    rocksdb::Status putMD(const rocksdb::Slice &K, const rocksdb::Slice &V)
+    {
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        return RDB->Put(WO, CFHs[1], K, V);
+    }
+
+    rocksdb::Iterator *getIteratorMD(const rocksdb::ReadOptions &RO)
+    {
+        return RDB->NewIterator(RO, CFHs[1]);
     }
 
     void close()
@@ -94,6 +125,8 @@ public:
     rocksdb::DB *RDB;
     UuidShard<rdb_metrics_group> GroupsRegistry;
     UuidShard<rdb_metric_handle> MetricsRegistry;
+
+    std::vector<rocksdb::ColumnFamilyHandle *> CFHs;
 
     std::mutex ArenasMutex;
     std::unordered_map<pid_t, pb::Arena *> Arenas;

@@ -1,5 +1,3 @@
-#include "daemon/common.h"
-#include "libnetdata/log/log.h"
 #include "rdb-private.h"
 #include "Barrier.h"
 
@@ -123,7 +121,7 @@ static rocksdb::Options get_db_options()
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
 
     uint64_t db_size_in_mib = 1024 * 1024 * 1024;
-    db_size_in_mib *= 256LU;
+    db_size_in_mib *= 4LU;
     Opts.compaction_options_fifo.max_table_files_size = db_size_in_mib;
 
     Opts.write_buffer_size = 128 * 1024 * 1024;
@@ -142,8 +140,13 @@ void rdb_init() {
     
     rocksdb::Options Opts = get_db_options();
 
+    #if 0
     char Path[4096] = { };
     snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
+    snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
+    #else
+    const char *Path = "/mnt/tmpfs";
+    #endif
 
     rocksdb::Status S = SI->open(Opts, Path);
     if (!S.ok())
@@ -157,7 +160,7 @@ void rdb_flush()
 
 void oldestKey()
 {
-    rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+    rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
 
     It->SeekToFirst();
     if (!It->Valid()) {

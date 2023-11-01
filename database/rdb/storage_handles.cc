@@ -99,7 +99,7 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
     uint32_t PIT = 0;
     const rdb::Key key{rmh->rmg->id, rmh->id, 0};
 
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    Iterator *It = SI->getIteratorMD(ReadOptions());
     It->Seek(key.slice());
     if (It->Valid())
     {
@@ -147,7 +147,7 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
 
     const rdb::Key key{rmh->rmg->id, rmh->id + 1, 0};
 
-    Iterator *it = SI->RDB->NewIterator(ReadOptions());
+    Iterator *it = SI->getIteratorMD(ReadOptions());
     for (it->SeekForPrev(key.slice());
          it->Valid();
          it->Next())
@@ -277,7 +277,7 @@ struct rdb_query_handle
                 return;
         }
         
-        It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        It = SI->getIteratorMD(rocksdb::ReadOptions());
         if (!It)
             fatal("Could not get new allocator from RocksDB");
 
@@ -369,7 +369,7 @@ time_t rdb_global_first_time_s(STORAGE_INSTANCE *si)
 
     UNUSED(si);
 
-    Iterator *It = SI->RDB->NewIterator(ReadOptions());
+    Iterator *It = SI->getIteratorMD(ReadOptions());
 
     It->SeekToFirst();
     if (!It->Valid()) {

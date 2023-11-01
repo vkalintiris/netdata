@@ -181,10 +181,13 @@ private:
             spinlock_unlock(&Lock);
         }
 
-        rocksdb::WriteOptions WO;
-        WO.disableWAL = true;
-        WO.sync = false;
-        SI->RDB->Put(WO, K.slice(), OV.value());
+        Status S = SI->putMD(K.slice(), OV.value());
+        if (!S.ok())
+        {
+            fatal("Failed to put key %s (%s)",
+                  K.toString(true).c_str(),
+                  S.ToString().c_str());
+        }
 
         NumFlushedPages++;
 
@@ -337,7 +340,7 @@ public:
 
         const rdb::Key key{GID, MID, 0};
 
-        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
         It->Seek(key.slice());
         if (It->Valid())
         {

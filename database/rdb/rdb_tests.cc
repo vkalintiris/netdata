@@ -627,7 +627,7 @@ TEST(rdb, FlushedQueryHandle)
         const Key StartK(gid, mid, After);
 
         pb::Arena QA;
-        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
         It->SeekForPrev(StartK.slice());
 
         UniversalQuery UQ(&CH.value(), StartK);
@@ -648,7 +648,7 @@ TEST(rdb, FlushedQueryHandle)
     {
         std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
-        rocksdb::Iterator *It = SI->RDB->NewIterator(rocksdb::ReadOptions());
+        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
         pb::Arena QA;
 
         std::vector<std::pair<time_t, uint32_t>> ExpectedValues;
