@@ -158,8 +158,12 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
     
     using namespace rdb;
     
-    if (!ThreadArena)
-        ThreadArena = new pb::Arena();
+    if (!ThreadArena) {
+        pb::ArenaOptions AO;
+        AO.start_block_size = 1024 * 1024;
+        AO.max_block_size = AO.start_block_size;
+        ThreadArena = new pb::Arena(AO);
+    }
 
     MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
 
