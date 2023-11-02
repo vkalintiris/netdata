@@ -218,17 +218,21 @@ void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *
     rch->ch.flush();
 }
 
-void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s)
+void rdb_store_metric_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, int update_every_s)
 {
     global_statistics_store_metric_change_collection_frequency();
+
+    UNUSED(smh);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     rch->ch.setUpdateEvery(update_every_s * USEC_PER_SEC);
 }
 
-int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch)
+int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     global_statistics_store_metric_finalize();
+
+    UNUSED(smh);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     rch->ch.flush();

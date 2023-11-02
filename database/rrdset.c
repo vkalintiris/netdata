@@ -2002,6 +2002,7 @@ time_t rrdset_set_update_every_s(RRDSET *st, time_t update_every_s) {
         for (size_t tier = 0; tier < storage_tiers; tier++) {
             if (rd->tiers[tier].db_collection_handle)
                 storage_engine_store_change_collection_frequency(
+                        rd->tiers[tier].db_metric_handle,
                         rd->tiers[tier].db_collection_handle,
                         (int)(st->rrdhost->db[tier].tier_grouping * st->update_every));
         }

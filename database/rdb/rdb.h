@@ -39,10 +39,10 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
 
-void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s);
+void rdb_store_metric_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, int update_every_s);
 
 void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
-int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
+int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 
 /*
  * STORAGE_ENGINE_QUERY_HANDLE

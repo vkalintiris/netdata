@@ -1927,7 +1927,9 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
     // feed it with the test data
     for (i = 0 ; i < CHARTS ; ++i) {
         for (j = 0 ; j < DIMS ; ++j) {
-            storage_engine_store_change_collection_frequency(rd[i][j]->tiers[0].db_collection_handle, update_every);
+            storage_engine_store_change_collection_frequency(rd[i][j]->tiers[0].db_metric_handle,
+                                                             rd[i][j]->tiers[0].db_collection_handle,
+                                                             update_every);
 
             rd[i][j]->collector.last_collected_time.tv_sec =
             st[i]->last_collected_time.tv_sec = st[i]->last_updated.tv_sec = time_now;

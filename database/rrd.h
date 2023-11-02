@@ -652,55 +652,59 @@ static inline void storage_engine_store_flush(STORAGE_METRIC_HANDLE *smh, STORAG
     }
 }
 
-int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
+int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 int rrddim_collect_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 
 // a finalization function to run after collection is over
 // returns 1 if it's safe to delete the dimension
-static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *collection_handle)
+static inline int storage_engine_store_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
 
-    switch (collection_handle->backend)
+    UNUSED(smh);
+    
+    switch (sch->backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_finalize(collection_handle);
+            return rdb_store_metric_finalize(smh, sch);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_store_metric_finalize(collection_handle);
+            return rrdeng_store_metric_finalize(sch);
 #endif
 
         default:
-            return rrddim_collect_finalize(collection_handle);
+            return rrddim_collect_finalize(sch);
     }
 }
 
-void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
+void rdb_store_metric_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 void rrdeng_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 void rrddim_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every);
 
-static inline void storage_engine_store_change_collection_frequency(STORAGE_COLLECT_HANDLE *collection_handle, int update_every)
+static inline void storage_engine_store_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, int update_every)
 {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
 
-    switch (collection_handle->backend)
+    UNUSED(smh);
+
+    switch (sch->backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_change_collection_frequency(collection_handle, update_every);
+            return rdb_store_metric_change_collection_frequency(smh, sch, update_every);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_store_metric_change_collection_frequency(collection_handle, update_every);
+            return rrdeng_store_metric_change_collection_frequency(sch, update_every);
 #endif
 
         default:
-            return rrddim_store_metric_change_collection_frequency(collection_handle, update_every);
+            return rrddim_store_metric_change_collection_frequency(sch, update_every);
     }
 }
 
