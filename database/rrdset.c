@@ -1132,6 +1132,7 @@ void store_metric_at_tier(RRDDIM *rd, size_t tier, struct rrddim_tier *t, STORAG
         if (likely(!storage_point_is_unset(t->virtual_point))) {
 
             storage_engine_store_metric(
+                t->db_metric_handle,
                 t->db_collection_handle,
                 t->next_point_end_time_s * USEC_PER_SEC,
                 t->virtual_point.sum,
@@ -1143,6 +1144,7 @@ void store_metric_at_tier(RRDDIM *rd, size_t tier, struct rrddim_tier *t, STORAG
         }
         else {
             storage_engine_store_metric(
+                t->db_metric_handle,
                 t->db_collection_handle,
                 t->next_point_end_time_s * USEC_PER_SEC,
                 NAN,
@@ -1214,9 +1216,9 @@ void rrddim_store_metric(RRDDIM *rd, usec_t point_end_time_ut, NETDATA_DOUBLE n,
 #endif // NETDATA_LOG_COLLECTION_ERRORS
 
     // store the metric on tier 0
-    storage_engine_store_metric(rd->tiers[0].db_collection_handle, point_end_time_ut,
-                                n, 0, 0,
-                                1, 0, flags);
+    storage_engine_store_metric(rd->tiers[0].db_metric_handle,
+                                rd->tiers[0].db_collection_handle,
+                                point_end_time_ut, n, 0, 0, 1, 0, flags);
 
     rrdset_done_statistics_points_stored_per_tier[0]++;
 

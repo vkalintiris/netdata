@@ -180,11 +180,14 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rmh->rch);
 }
 
-void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_ut,
-                           NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch,
+                           usec_t point_in_time_ut, NETDATA_DOUBLE n,
+                           NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
     global_statistics_store_metric_next();
+
+    UNUSED(smh);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 

@@ -78,7 +78,7 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
         for (size_t j = 0; j != dimensions.size(); j++)
         {
             // uint32_t val = rand_vals[(i + j) % 256];
-            storage_engine_store_metric(dimensions[j].sch, point_in_time, 0, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
+            storage_engine_store_metric(dimensions[j].smh, dimensions[j].sch, point_in_time, 0, 0, 0, 1, 0, SN_DEFAULT_FLAGS);
         }
 
         point_in_time += USEC_PER_SEC;

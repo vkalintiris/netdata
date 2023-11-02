@@ -34,8 +34,9 @@ void rdb_metrics_group_release(STORAGE_INSTANCE *si, STORAGE_METRICS_GROUP *smg)
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
 
-void rdb_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time,
-                           NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch,
+                           usec_t point_in_time, NETDATA_DOUBLE n,
+                           NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
 
 void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s);

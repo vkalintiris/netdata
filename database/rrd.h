@@ -450,64 +450,75 @@ STORAGE_COLLECT_HANDLE *rrdeng_store_metric_init(STORAGE_METRIC_HANDLE *db_metri
 STORAGE_COLLECT_HANDLE *rrddim_collect_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
 
-static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_BACKEND backend __maybe_unused, STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg) {
+static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_BACKEND backend __maybe_unused,
+                                                                STORAGE_METRIC_HANDLE *smh,
+                                                                uint32_t update_every,
+                                                                STORAGE_METRICS_GROUP *smg)
+{
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
     switch (backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_init(db_metric_handle, update_every, smg);
+            return rdb_store_metric_init(smh, update_every, smg);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_store_metric_init(db_metric_handle, update_every, smg);
+            return rrdeng_store_metric_init(smh, update_every, smg);
 #endif
 
         default:
-            return rrddim_collect_init(db_metric_handle, update_every, smg);
+            return rrddim_collect_init(smh, update_every, smg);
     }
 }
 
 void rrdeng_store_metric_next(
-        STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
-        NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
-        uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
-void rdb_store_metric_next(
-        STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
-        NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+        STORAGE_COLLECT_HANDLE *sch,
+        usec_t point_in_time_ut, NETDATA_DOUBLE n,
+        NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
         uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
 void rrddim_collect_store_metric(
         STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
         NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
         uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
+void rdb_store_metric_next(
+        STORAGE_METRIC_HANDLE *smh,
+        STORAGE_COLLECT_HANDLE *sch,
+        usec_t point_in_time_ut, NETDATA_DOUBLE n,
+        NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+        uint16_t count, uint16_t anomaly_count, SN_FLAGS flags);
 
 static inline void storage_engine_store_metric(
-        STORAGE_COLLECT_HANDLE *collection_handle, usec_t point_in_time_ut,
-        NETDATA_DOUBLE n, NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
+        STORAGE_METRIC_HANDLE *smh,
+        STORAGE_COLLECT_HANDLE *sch,
+        usec_t point_in_time_ut, NETDATA_DOUBLE n,
+        NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
         uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
 
-    switch (collection_handle->backend)
+    UNUSED(smh);
+
+    switch (sch->backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_next(collection_handle, point_in_time_ut,
+            return rdb_store_metric_next(smh, sch, point_in_time_ut,
                                          n, min_value, max_value,
                                          count, anomaly_count, flags);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_store_metric_next(collection_handle, point_in_time_ut,
+            return rrdeng_store_metric_next(sch, point_in_time_ut,
                                             n, min_value, max_value,
                                             count, anomaly_count, flags);
 #endif
 
         default:
-            return rrddim_collect_store_metric(collection_handle, point_in_time_ut,
+            return rrddim_collect_store_metric(sch, point_in_time_ut,
                                                n, min_value, max_value,
                                                count, anomaly_count, flags);
     }
