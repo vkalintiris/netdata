@@ -95,7 +95,7 @@ bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *fi
     UNUSED(first_entry_s);
     UNUSED(last_entry_s);
 
-    fatal("Not implemented yet.");
+    fatal("%s() - Not implemented yet.", __func__);
 
     return false;
 }
