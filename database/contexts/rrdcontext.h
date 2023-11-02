@@ -211,6 +211,7 @@ typedef struct query_metric {
 
     struct query_metric_tier {
         STORAGE_METRIC_HANDLE *db_metric_handle;
+        STORAGE_COLLECT_HANDLE *db_collection_handle;
         time_t db_first_time_s;         // the oldest timestamp available for this tier
         time_t db_last_time_s;          // the latest timestamp available for this tier
         time_t db_update_every_s;       // latest update every for this tier

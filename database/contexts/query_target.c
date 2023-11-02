@@ -225,6 +225,7 @@ static inline void query_metric_release(QUERY_TARGET *qt, QUERY_METRIC *qm) {
             STORAGE_ENGINE *eng = query_metric_storage_engine(qt, qm, tier);
             eng->api.metric_release(qm->tiers[tier].db_metric_handle);
             qm->tiers[tier].db_metric_handle = NULL;
+            qm->tiers[tier].db_collection_handle = NULL;
         }
     }
 }
@@ -264,8 +265,12 @@ static bool query_metric_add(QUERY_TARGET_LOCALS *qtl, QUERY_NODE *qn, QUERY_CON
             tier_retention[tier].db_collection_handle = NULL;
 
         if(tier_retention[tier].db_metric_handle) {
-            tier_retention[tier].db_first_time_s = storage_engine_oldest_time_s(tier_retention[tier].eng->backend, tier_retention[tier].db_metric_handle, tier_retention[tier].db_collection_handle);
-            tier_retention[tier].db_last_time_s = storage_engine_latest_time_s(tier_retention[tier].eng->backend, tier_retention[tier].db_metric_handle);
+            tier_retention[tier].db_first_time_s = storage_engine_oldest_time_s(tier_retention[tier].eng->backend,
+                                                                                tier_retention[tier].db_metric_handle,
+                                                                                tier_retention[tier].db_collection_handle);
+            tier_retention[tier].db_last_time_s = storage_engine_latest_time_s(tier_retention[tier].eng->backend,
+                                                                               tier_retention[tier].db_metric_handle,
+                                                                               tier_retention[tier].db_collection_handle);
 
             if(!common_first_time_s)
                 common_first_time_s = tier_retention[tier].db_first_time_s;
@@ -338,6 +343,7 @@ static bool query_metric_add(QUERY_TARGET_LOCALS *qtl, QUERY_NODE *qn, QUERY_CON
         for (size_t tier = 0; tier < storage_tiers; tier++) {
             internal_fatal(tier_retention[tier].eng != query_metric_storage_engine(qt, qm, tier), "QUERY TARGET: storage engine mismatch");
             qm->tiers[tier].db_metric_handle = tier_retention[tier].db_metric_handle;
+            qm->tiers[tier].db_collection_handle = tier_retention[tier].db_collection_handle;
             qm->tiers[tier].db_first_time_s = tier_retention[tier].db_first_time_s;
             qm->tiers[tier].db_last_time_s = tier_retention[tier].db_last_time_s;
             qm->tiers[tier].db_update_every_s = tier_retention[tier].db_update_every_s;

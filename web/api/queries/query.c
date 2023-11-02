@@ -1261,8 +1261,13 @@ static void query_planer_initialize_plans(QUERY_ENGINE_OPS *ops) {
 
         struct query_metric_tier *tier_ptr = &qm->tiers[tier];
         STORAGE_ENGINE *eng = query_metric_storage_engine(ops->r->internal.qt, qm, tier);
-        storage_engine_query_init(eng->backend, tier_ptr->db_metric_handle, &ops->plans[p].handle,
-                after, before, ops->r->internal.qt->request.priority);
+        storage_engine_query_init(eng->backend,
+                                  tier_ptr->db_metric_handle,
+                                  NULL, /* GVD */
+                                  &ops->plans[p].handle,
+                                  after,
+                                  before,
+                                  ops->r->internal.qt->request.priority);
 
         ops->plans[p].initialized = true;
         ops->plans[p].finalized = false;
@@ -1960,7 +1965,7 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now_s
     struct rrddim_tier *t = &rd->tiers[tier];
     if(unlikely(!t)) return;
 
-    time_t latest_time_s = storage_engine_latest_time_s(t->backend, t->db_metric_handle);
+    time_t latest_time_s = storage_engine_latest_time_s(t->backend, t->db_metric_handle, t->db_collection_handle);
     time_t granularity = (time_t)t->tier_grouping * (time_t)rd->rrdset->update_every;
     time_t time_diff   = now_s - latest_time_s;
 
@@ -1977,14 +1982,22 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now_s
         time_t smaller_tier_first_time = storage_engine_oldest_time_s(rd->tiers[read_tier].backend,
                                                                       rd->tiers[read_tier].db_metric_handle,
                                                                       rd->tiers[read_tier].db_collection_handle);
-        time_t smaller_tier_last_time = storage_engine_latest_time_s(rd->tiers[read_tier].backend, rd->tiers[read_tier].db_metric_handle);
+        time_t smaller_tier_last_time = storage_engine_latest_time_s(rd->tiers[read_tier].backend,
+                                                                     rd->tiers[read_tier].db_metric_handle,
+                                                                     rd->tiers[read_tier].db_collection_handle);
         if(smaller_tier_last_time <= latest_time_s) continue;  // it is as bad as we are
 
         long after_wanted = (latest_time_s < smaller_tier_first_time) ? smaller_tier_first_time : latest_time_s;
         long before_wanted = smaller_tier_last_time;
 
         struct rrddim_tier *tmp = &rd->tiers[read_tier];
-        storage_engine_query_init(tmp->backend, tmp->db_metric_handle, &handle, after_wanted, before_wanted, STORAGE_PRIORITY_HIGH);
+        storage_engine_query_init(tmp->backend,
+                                  tmp->db_metric_handle,
+                                  tmp->db_collection_handle,
+                                  &handle,
+                                  after_wanted,
+                                  before_wanted,
+                                  STORAGE_PRIORITY_HIGH);
 
         size_t points_read = 0;
 

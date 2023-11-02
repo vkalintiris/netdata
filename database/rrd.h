@@ -9,6 +9,18 @@ extern "C" {
 
 #include "libnetdata/libnetdata.h"
 
+typedef enum __attribute__ ((__packed__)) {
+    STORAGE_ENGINE_BACKEND_RRDDIM = 1,
+    STORAGE_ENGINE_BACKEND_DBENGINE = 2,
+    STORAGE_ENGINE_BACKEND_RDB = 3,
+} STORAGE_ENGINE_BACKEND;
+
+// ----------------------------------------------------------------------------
+// engine-specific iterator state for dimension data collection
+typedef struct storage_collect_handle {
+    STORAGE_ENGINE_BACKEND backend;
+} STORAGE_COLLECT_HANDLE;
+
 // non-existing structs instead of voids
 // to enable type checking at compile time
 typedef struct storage_instance STORAGE_INSTANCE;
@@ -123,12 +135,6 @@ struct ml_metrics_statistics {
 #include "sqlite/sqlite_health.h"
 
 typedef struct storage_query_handle STORAGE_QUERY_HANDLE;
-
-typedef enum __attribute__ ((__packed__)) {
-    STORAGE_ENGINE_BACKEND_RRDDIM = 1,
-    STORAGE_ENGINE_BACKEND_DBENGINE = 2,
-    STORAGE_ENGINE_BACKEND_RDB = 3,
-} STORAGE_ENGINE_BACKEND;
 
 #define is_valid_backend(backend) \
     ((backend) >= STORAGE_ENGINE_BACKEND_RRDDIM && \
@@ -273,12 +279,6 @@ typedef enum __attribute__ ((__packed__)) rrddim_flags {
 #define rrddim_flag_check(rd, flag) (__atomic_load_n(&((rd)->flags), __ATOMIC_SEQ_CST) & (flag))
 #define rrddim_flag_set(rd, flag)   __atomic_or_fetch(&((rd)->flags), (flag), __ATOMIC_SEQ_CST)
 #define rrddim_flag_clear(rd, flag) __atomic_and_fetch(&((rd)->flags), ~(flag), __ATOMIC_SEQ_CST)
-
-// ----------------------------------------------------------------------------
-// engine-specific iterator state for dimension data collection
-typedef struct storage_collect_handle {
-    STORAGE_ENGINE_BACKEND backend;
-} STORAGE_COLLECT_HANDLE;
 
 // ----------------------------------------------------------------------------
 // Storage tier data for every dimension
@@ -722,43 +722,48 @@ static inline time_t storage_engine_oldest_time_s(STORAGE_ENGINE_BACKEND backend
 
 time_t rrdeng_metric_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
 time_t rrddim_query_latest_time_s(STORAGE_METRIC_HANDLE *db_metric_handle);
-time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *db_metric_handle);
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 
-static inline time_t storage_engine_latest_time_s(STORAGE_ENGINE_BACKEND backend, STORAGE_METRIC_HANDLE *db_metric_handle)
+static inline time_t storage_engine_latest_time_s(STORAGE_ENGINE_BACKEND backend, STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
+
+    UNUSED(sch);
 
     switch (backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_metric_latest_time(db_metric_handle);
+            return rdb_metric_latest_time(smh, sch);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_metric_latest_time(db_metric_handle);
+            return rrdeng_metric_latest_time(smh);
 #endif
 
         default:
-            return rrddim_query_latest_time_s(db_metric_handle);
+            return rrddim_query_latest_time_s(smh);
     }
 }
 
-void rdb_load_metric_init(
-        STORAGE_METRIC_HANDLE *db_metric_handle, struct storage_engine_query_handle *rrddim_handle,
-                time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
+
 void rrdeng_load_metric_init(
         STORAGE_METRIC_HANDLE *db_metric_handle, struct storage_engine_query_handle *rrddim_handle,
                 time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
 void rrddim_query_init(
         STORAGE_METRIC_HANDLE *db_metric_handle, struct storage_engine_query_handle *handle,
                 time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
+void rdb_load_metric_init(
+        STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, struct storage_engine_query_handle *seqh,
+                time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);
 
 static inline void storage_engine_query_init(
         STORAGE_ENGINE_BACKEND backend __maybe_unused,
-        STORAGE_METRIC_HANDLE *db_metric_handle, struct storage_engine_query_handle *handle,
-                time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority)
+        STORAGE_METRIC_HANDLE *smh,
+        STORAGE_COLLECT_HANDLE *sch,
+        struct storage_engine_query_handle *seqh,
+        time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority)
 {
     internal_fatal(!is_valid_backend(backend), "STORAGE: invalid backend");
 
@@ -766,16 +771,16 @@ static inline void storage_engine_query_init(
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_load_metric_init(db_metric_handle, handle, start_time_s, end_time_s, priority);
+            return rdb_load_metric_init(smh, sch, seqh, start_time_s, end_time_s, priority);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_load_metric_init(db_metric_handle, handle, start_time_s, end_time_s, priority);
+            return rrdeng_load_metric_init(smh, seqh, start_time_s, end_time_s, priority);
 #endif
 
         default:
-            return rrddim_query_init(db_metric_handle, handle, start_time_s, end_time_s, priority);
+            return rrddim_query_init(smh, seqh, start_time_s, end_time_s, priority);
     }
 }
 

@@ -1,5 +1,6 @@
 #include "database/rdb/StorageInstance.h"
 #include "database/rdb/protos/rdbv.pb.h"
+#include "database/rrd.h"
 #include "rdb-private.h"
 
 namespace pb = google::protobuf;
@@ -155,9 +156,11 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE
     return rch->ch.oldestTime();
 }
 
-time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh)
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     global_statistics_metric_latest_time();
+
+    UNUSED(sch);
 
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
 
@@ -338,6 +341,7 @@ struct rdb_query_handle
 };
 
 void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
+                          STORAGE_COLLECT_HANDLE *sch,
                           struct storage_engine_query_handle *seqh,
                           time_t After,
                           time_t Before,
@@ -345,10 +349,12 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
 {
     global_statistics_load_metric_init();
 
+    UNUSED(sch);
+
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
 
     After = std::max(rdb_metric_oldest_time(smh, nullptr), After);
-    Before = std::min(rdb_metric_latest_time(smh), Before);
+    Before = std::min(rdb_metric_latest_time(smh, nullptr), Before);
 
     rdb::Key StartK(rmh->rmg, rmh->id, After);
 
