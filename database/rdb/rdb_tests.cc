@@ -7,7 +7,6 @@ static std::mt19937 Gen(RandDev());
 static std::uniform_int_distribution<uint32_t> Dist(std::numeric_limits<uint32_t>::min(),
                                                     std::numeric_limits<uint32_t>::max());
 
-
 static const char *temp_dir_new()
 {
     char tmpl[] = "/tmp/mydirXXXXXX";
@@ -126,7 +125,8 @@ TEST(rdb, CollectionHandle)
     usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
-    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    auto MH = MetricHandle::fromIDs(1, 1);
+    auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
     EXPECT_EQ(CH->after(), 0);
@@ -155,7 +155,7 @@ TEST(rdb, CollectionHandle)
         usec_t Before = PIT + UE;
         usec_t Duration = (i + 1) * UE;
 
-        CH->store_next(PIT, SP);
+        CH->store_next(MH, PIT, SP);
         EXPECT_EQ(CH->after(), After);
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
@@ -168,25 +168,25 @@ TEST(rdb, CollectionHandle)
     usec_t Before = PIT + UE;
     usec_t Duration = UE;
 
-    CH->store_next(PIT, SP);
+    CH->store_next(MH, PIT, SP);
     EXPECT_EQ(CH->after(), After);
     EXPECT_EQ(CH->before(), Before);
     EXPECT_EQ(CH->duration(), Duration);
 
     // Flushing should maintain the handle's PIT
-    CH->flush();
+    CH->flush(MH);
     EXPECT_EQ(CH->after(), Before);
     EXPECT_EQ(CH->before(), Before);
     EXPECT_EQ(CH->duration(), 0);
 
     // No effect if we flush twice without adding new elements
-    CH->flush();
+    CH->flush(MH);
     EXPECT_EQ(CH->after(), Before);
     EXPECT_EQ(CH->before(), Before);
     EXPECT_EQ(CH->duration(), 0);
 
     // ... repeatedly
-    CH->flush();
+    CH->flush(MH);
     EXPECT_EQ(CH->after(), Before);
     EXPECT_EQ(CH->before(), Before);
     EXPECT_EQ(CH->duration(), 0);
@@ -199,37 +199,37 @@ TEST(rdb, CollectionHandle)
         usec_t Before = PIT + UE;
         usec_t Duration = (i + 1) * UE;
 
-        CH->store_next(PIT, SP);
+        CH->store_next(MH, PIT, SP);
         EXPECT_EQ(CH->after(), StartPIT);
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
     }
 
     // Adding a new point will cause the handle to flush the page
-    CH->store_next(CH->before(), SP);
+    CH->store_next(MH, CH->before(), SP);
     EXPECT_EQ(CH->before(), CH->after() + UE);
     EXPECT_EQ(CH->duration(), UE);
 
     // Flush the only point we have
-    CH->flush();
+    CH->flush(MH);
     EXPECT_EQ(CH->after(), CH->before());
     EXPECT_EQ(CH->duration(), 0);
 
     // Try adding a gap that can be filled without flushing
-    CH->flush();
+    CH->flush(MH);
     {
         usec_t StartPIT = CH->before();
-        CH->store_next(StartPIT + (10 * UE), SP);
+        CH->store_next(MH, StartPIT + (10 * UE), SP);
         EXPECT_EQ(CH->after(), StartPIT);
         EXPECT_EQ(CH->before(), StartPIT + (11 * UE));
         EXPECT_EQ(CH->duration(), (11 * UE));
     }
 
     // Try adding a gap that can be filled after only flushing
-    CH->flush();
+    CH->flush(MH);
     {
         usec_t StartPIT = CH->before() + PO.capacity * UE;
-        CH->store_next(StartPIT, SP);
+        CH->store_next(MH, StartPIT, SP);
         EXPECT_EQ(CH->after(), StartPIT);
         EXPECT_EQ(CH->before(), StartPIT + UE);
         EXPECT_EQ(CH->duration(), UE);
@@ -251,7 +251,8 @@ TEST(rdb, CollectionHandleQuery)
     usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
-    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    auto MH = MetricHandle::fromIDs(1, 1);
+    auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
     STORAGE_POINT SP = {
@@ -277,7 +278,7 @@ TEST(rdb, CollectionHandleQuery)
         usec_t Duration = (i + 1) * UE;
 
         SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
-        CH->store_next(PIT, SP);
+        CH->store_next(MH, PIT, SP);
         EXPECT_EQ(CH->after(), After);
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
@@ -350,7 +351,8 @@ TEST(Gpt, InvalidTimeRangeQuery)
     pb::Arena Arena;
     PageOptions PO;
     PO.update_every = 5;
-    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    auto MH = MetricHandle::fromIDs(1, 1);
+    auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     ASSERT_TRUE(CH.has_value());
 
     {
@@ -369,9 +371,9 @@ TEST(Gpt, InvalidTimeRangeQuery)
         .anomaly_count = 0,
         .flags = SN_DEFAULT_FLAGS,
     };
-    CH->store_next(100 * PO.update_every * USEC_PER_SEC, SP);
+    CH->store_next(MH, 100 * PO.update_every * USEC_PER_SEC, SP);
     SP.min = SP.max = SP.sum = 7;
-    CH->store_next(101 * PO.update_every * USEC_PER_SEC, SP);
+    CH->store_next(MH, 101 * PO.update_every * USEC_PER_SEC, SP);
 
     // Query the handle with a starting time older than CH's time range
     {
@@ -489,7 +491,8 @@ TEST(rdb, PageIterator)
     std::optional<Page> P = Page::create(Arena, PO);
     EXPECT_TRUE(P.has_value());
 
-    auto CH = CollectionHandle::create(Arena, PO, 1, 1);
+    auto MH = MetricHandle::fromIDs(1, 1);
+    auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
     STORAGE_POINT SP = {
@@ -519,7 +522,7 @@ TEST(rdb, PageIterator)
         SP.min = SP.max = SP.sum = static_cast<double>(i + 666);
         StoredValues.push_back({ PIT / USEC_PER_SEC, SP.sum });
 
-        CH->store_next(PIT, SP);
+        CH->store_next(MH, PIT, SP);
         EXPECT_EQ(CH->after(), After);
         EXPECT_EQ(CH->before(), Before);
         EXPECT_EQ(CH->duration(), Duration);
@@ -577,9 +580,7 @@ TEST(rdb, FlushedQueryHandle)
     size_t values_per_hour = 10;
 
     pb::Arena Arena;
-    uint32_t gid = 1;
-    uint32_t mid = 1;
-
+    auto MH = MetricHandle::fromIDs(1, 1);
     STORAGE_POINT SP = {
         .min = 0, .max = 0, .sum = 0,
         .start_time_s = 0, .end_time_s = 0,
@@ -602,21 +603,21 @@ TEST(rdb, FlushedQueryHandle)
         SP.min = SP.max = SP.sum = static_cast<NETDATA_DOUBLE>(PIT) / Hour;
 
         // TODO: Add another test that use a persistent collection handle.
-        CH = CollectionHandle::create(Arena, PO, gid, mid);
+        CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
         EXPECT_TRUE(CH.has_value());
 
         for (usec_t CurrPIT = PIT; CurrPIT < PIT + (values_per_hour * UE); CurrPIT += UE)
         {
             time_t Timepoint = CurrPIT / USEC_PER_SEC;
 
-            CH->store_next(CurrPIT, SP);
+            CH->store_next(MH, CurrPIT, SP);
             StoredValues.push_back({ Timepoint, static_cast<uint32_t>(SP.sum)});
 
             SP.min = SP.max = SP.sum += 1;
         }
 
         if (i < 23)
-            CH->flush();
+            CH->flush(MH);
     }
 
     // Query entire range
@@ -624,7 +625,7 @@ TEST(rdb, FlushedQueryHandle)
         std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
         uint32_t After = Hour / USEC_PER_SEC;
-        const Key StartK(gid, mid, After);
+        const Key StartK(MH.gid(), MH.mid(), After);
 
         pb::Arena QA;
         rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
@@ -659,7 +660,7 @@ TEST(rdb, FlushedQueryHandle)
 
             uint32_t After = i;
 
-            const Key StartK(gid, mid, After);
+            const Key StartK(MH.gid(), MH.mid(), After);
             It->SeekForPrev(StartK.slice());
 
             size_t points_returned = 0;

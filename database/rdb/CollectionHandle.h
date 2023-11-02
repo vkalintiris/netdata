@@ -33,7 +33,7 @@ private:
         spinlock_init(&Lock);
     }
 
-    void store_next_internal(usec_t PIT, const STORAGE_POINT &SP)
+    void store_next_internal(MetricHandle &MH, usec_t PIT, const STORAGE_POINT &SP)
     {
         // netdata_log_error("GVD[store_next_internal - 00]: lock");
         spinlock_lock(&Lock);
@@ -56,7 +56,7 @@ private:
             if (Delta < UE)
             {
                 // step is too small
-                flush_internal(false);
+                flush_internal(MH, false);
                 fatal("Ask @ktsaou: should we ignore the point or change the collection frequency?");
                 CurrPIT = PIT - Delta;
                 UE = Delta;
@@ -64,7 +64,7 @@ private:
             else if (Delta % UE)
             {
                 // step is unaligned
-                flush_internal(false);
+                flush_internal(MH, false);
                 fatal("Ask @ktsaou: should we ignore the point or change the collection frequency?");
                 CurrPIT = PIT - Delta;
                 UE = Delta;
@@ -77,7 +77,7 @@ private:
                 if (PointsInGap >= CP.capacity())
                 {
                     // we can't store any points in the current page
-                    flush_internal(false);
+                    flush_internal(MH, false);
                     CurrPIT = PIT - UE;
                 }
                 else
@@ -105,7 +105,7 @@ private:
 
                             .flags = SN_EMPTY_SLOT,
                         };
-                        store_next(ThisPIT, EmptySP);
+                        store_next(MH, ThisPIT, EmptySP);
 
                         // netdata_log_error("GVD[store_next_internal -- 03]: lock");
                         spinlock_lock(&Lock);
@@ -115,7 +115,7 @@ private:
 
             // netdata_log_error("GVD[store_next_internal -- 04]: unlock");
             spinlock_unlock(&Lock);
-            store_next(PIT, SP);
+            store_next(MH, PIT, SP);
             return;
         }
         else if (CurrPIT > PIT)
@@ -138,7 +138,7 @@ private:
         }
     }
         
-    inline void flush_internal(bool Protect)
+    inline void flush_internal(MetricHandle &MH, bool Protect)
     {
         if (Protect)
         {
@@ -158,6 +158,7 @@ private:
         }
 
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
+        uint32_t Duration = CP.duration();
 
         const Key K{GID, MID, StartPIT};
 
@@ -189,9 +190,12 @@ private:
                   S.ToString().c_str());
         }
 
-        NumFlushedPages++;
+        if (!MH.getAfter())
+            MH.setAfter(StartPIT);
+        MH.setBefore(StartPIT + Duration);
 
         global_statistics_rdb_flushed_pages_incr();
+        NumFlushedPages++;
     }
 
     [[nodiscard]] inline usec_t after_internal(bool Protect) const
@@ -239,14 +243,14 @@ private:
     }
 
 public:
-    inline void store_next(usec_t PIT, const STORAGE_POINT &SP)
+    inline void store_next(MetricHandle &MH, usec_t PIT, const STORAGE_POINT &SP)
     {
         // netdata_log_error("GVD[store_next -- 00]: lock");
         spinlock_lock(&Lock);
 
         if (unlikely(CP.capacity() == 0))
         {
-            flush_internal(false);
+            flush_internal(MH, false);
         }
 
         usec_t Delta = PIT - this->CurrPIT;
@@ -255,7 +259,7 @@ public:
         {
             // netdata_log_error("GVD[store_next -- 01]: unlock");
             spinlock_unlock(&Lock);
-            store_next_internal(PIT, SP);
+            store_next_internal(MH, PIT, SP);
             return;
         }
 
@@ -266,17 +270,17 @@ public:
         spinlock_unlock(&Lock);
     }
 
-    inline void flush()
+    inline void flush(MetricHandle &MH)
     {
-        flush_internal(true);
+        flush_internal(MH, true);
     }
 
-    inline void setUpdateEvery(usec_t UE)
+    inline void setUpdateEvery(MetricHandle &MH, usec_t UE)
     {
         // netdata_log_error("GVD[setUpdateEvery -- 00]: lock");
         spinlock_lock(&Lock);
 
-        flush_internal(false);
+        flush_internal(MH, false);
 
         CP.setUpdateEvery(UE / USEC_PER_SEC);
         this->UE = UE;

@@ -173,7 +173,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
     if (!CH.has_value())
         fatal("Could not create collection handle");
 
-    CH->setUpdateEvery(update_every * USEC_PER_SEC);
+    CH->setUpdateEvery(*MH, update_every * USEC_PER_SEC);
     
     rdb_collect_handle *rch = new rdb_collect_handle(CH.value());
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
@@ -184,11 +184,14 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
                            NETDATA_DOUBLE min_value, NETDATA_DOUBLE max_value,
                            uint16_t count, uint16_t anomaly_count, SN_FLAGS flags)
 {
+    using namespace rdb;
     global_statistics_store_metric_next();
 
     UNUSED(smh);
 
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
+    
 
     STORAGE_POINT SP = {
         .min = min_value,
@@ -204,38 +207,47 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
         .flags = flags,
     };
 
-    rch->ch.store_next(point_in_time_ut, SP);
+    rch->ch.store_next(*MH, point_in_time_ut, SP);
 }
 
 void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
+    using namespace rdb;
     global_statistics_store_metric_flush();
 
     UNUSED(smh);
 
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
-    rch->ch.flush();
+
+    rch->ch.flush(*MH);
 }
 
 void rdb_store_metric_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, int update_every_s)
 {
+    using namespace rdb;
     global_statistics_store_metric_change_collection_frequency();
 
     UNUSED(smh);
 
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
-    rch->ch.setUpdateEvery(update_every_s * USEC_PER_SEC);
+
+    rch->ch.setUpdateEvery(*MH, update_every_s * USEC_PER_SEC);
 }
 
 int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
+    using namespace rdb;
     global_statistics_store_metric_finalize();
     global_statistics_rdb_collection_handles_decr();
 
     UNUSED(smh);
 
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
-    rch->ch.flush();
+
+    rch->ch.flush(*MH);
     delete rch;
     return 0;
 }
