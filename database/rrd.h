@@ -624,29 +624,31 @@ static inline size_t storage_engine_collected_metrics(STORAGE_ENGINE_BACKEND bac
 
 void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *collection_handle);
 void rrddim_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
-void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *collection_handle);
+void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 
-static inline void storage_engine_store_flush(STORAGE_COLLECT_HANDLE *collection_handle)
+static inline void storage_engine_store_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
-    if(unlikely(!collection_handle))
+    if(unlikely(!sch))
         return;
 
     internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
 
-    switch (collection_handle->backend)
+    UNUSED(smh);
+
+    switch (sch->backend)
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_flush(collection_handle);
+            return rdb_store_metric_flush(smh, sch);
 #endif
 
 #ifdef ENABLE_DBENGINE
         case STORAGE_ENGINE_BACKEND_DBENGINE:
-            return rrdeng_store_metric_flush_current_page(collection_handle);
+            return rrdeng_store_metric_flush_current_page(sch);
 #endif
 
         default:
-            return rrddim_store_metric_flush(collection_handle);
+            return rrddim_store_metric_flush(sch);
     }
 }
 

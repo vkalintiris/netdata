@@ -41,7 +41,7 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
 
 void rdb_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *sch, int update_every_s);
 
-void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch);
+void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 int rdb_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
 
 /*

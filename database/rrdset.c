@@ -753,7 +753,8 @@ void rrdset_reset(RRDSET *st) {
 
         if(!rrddim_flag_check(rd, RRDDIM_FLAG_ARCHIVED)) {
             for(size_t tier = 0; tier < storage_tiers ;tier++)
-                storage_engine_store_flush(rd->tiers[tier].db_collection_handle);
+                storage_engine_store_flush(rd->tiers[tier].db_metric_handle,
+                                           rd->tiers[tier].db_collection_handle);
         }
     }
     rrddim_foreach_done(rd);

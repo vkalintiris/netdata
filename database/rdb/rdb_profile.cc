@@ -85,7 +85,7 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
     }
 
     for (size_t i = 0; i != dimensions.size(); i++)
-        storage_engine_store_flush(dimensions[i].sch);
+        storage_engine_store_flush(dimensions[i].smh, dimensions[i].sch);
 }
 
 static Barrier *B = nullptr;

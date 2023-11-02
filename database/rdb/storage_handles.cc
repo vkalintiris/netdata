@@ -208,9 +208,11 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
     rch->ch.store_next(point_in_time_ut, SP);
 }
 
-void rdb_store_metric_flush(STORAGE_COLLECT_HANDLE *sch)
+void rdb_store_metric_flush(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     global_statistics_store_metric_flush();
+
+    UNUSED(smh);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     rch->ch.flush();
