@@ -9,6 +9,9 @@
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rocksdb/merge_operator.h>
+#include <rocksdb/compaction_filter.h>
+#include <rocksdb/iostats_context.h>
+#include <rocksdb/perf_context.h>
 
 #ifdef ENABLE_TESTS
 #include <gtest/gtest.h>

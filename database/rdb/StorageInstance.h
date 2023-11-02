@@ -22,6 +22,36 @@ struct rdb_metric_handle
     { }
 };
 
+class CustomCF : public rocksdb::CompactionFilter
+{
+public:
+    rocksdb::CompactionFilter::Decision FilterBlobByKey(int Level, const rocksdb::Slice &SK, std::string *NewValue, std::string *SkipUntil) const override
+    {
+        UNUSED(Level);
+        UNUSED(NewValue);
+        UNUSED(SkipUntil);
+
+        rdb::Key K = SK;
+        uint32_t After = K.pit();
+
+        uint32_t Epoch = 0x000000FF;
+        uint32_t Diff = After - Epoch;
+        uint32_t Cutoff = 24 * 3600;
+
+        if (Diff >= Cutoff) {
+            // netdata_log_error("Dropping key: %s", K.toString(true).c_str());
+            return rocksdb::CompactionFilter::Decision::kRemove;
+        }
+        else
+            return rocksdb::CompactionFilter::Decision::kKeep;
+    }
+
+    const char* Name() const override
+    {
+        return "CustomCF";
+    }
+};
+
 namespace rdb {
 
 class StorageInstance
@@ -156,6 +186,8 @@ private:
                 CFO.min_blob_size = 64;
                 CFO.blob_compression_type = kZSTD;
 
+                // CFO.compaction_filter = new CustomCF();
+
                 return CFO;
             }
             default:
@@ -199,12 +231,20 @@ public:
         return rocksdb::DB::Open(Opts, Path, CFDs, &CFHs, &RDB);
     }
 
-    rocksdb::Status putMD(const rocksdb::Slice &K, const rocksdb::Slice &V)
+    [[nodiscard]] inline rocksdb::Status putMD(const rocksdb::Slice &K, const rocksdb::Slice &V)
     {
         rocksdb::WriteOptions WO;
         WO.disableWAL = true;
         WO.sync = false;
         return RDB->Put(WO, CFHs[1], K, V);
+    }
+
+    [[nodiscard]] inline rocksdb::Status deleteMD(const rocksdb::Slice &K)
+    {
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        return RDB->Delete(WO, CFHs[1], K);
     }
 
     rocksdb::Status putMH(const rocksdb::Slice &K, const rocksdb::Slice &V)

@@ -24,8 +24,7 @@ public:
     }
 
 private:
-    CollectionHandle(uint32_t GID, uint32_t MID,
-                     CollectionPage &CP)
+    CollectionHandle(uint32_t GID, uint32_t MID, CollectionPage &CP)
         : GID(GID), MID(MID),
           CurrPIT(0), UE(CP.updateEvery() * USEC_PER_SEC),
           CP(CP), OldestKey(std::nullopt)
@@ -182,7 +181,8 @@ private:
             spinlock_unlock(&Lock);
         }
 
-        Status S = SI->putMD(K.slice(), OV.value());
+        Slice EmptySlice("");
+        Status S = SI->putMD(K.slice(), EmptySlice);
         if (!S.ok())
         {
             fatal("Failed to put key %s (%s)",
