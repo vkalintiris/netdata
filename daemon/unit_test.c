@@ -2371,6 +2371,7 @@ void generate_dbengine_dataset(unsigned history_seconds)
         thread_info[i]->done = 0;
         completion_init(&thread_info[i]->charts_initialized);
         assert(0 == uv_thread_create(&thread_info[i]->thread, generate_dbengine_chart, thread_info[i]));
+        UNUSED(generate_dbengine_chart);
         completion_wait_for(&thread_info[i]->charts_initialized);
         completion_destroy(&thread_info[i]->charts_initialized);
     }
@@ -2607,6 +2608,7 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
         }
         query_threads[i]->delete_old_data = DISK_SPACE_MB ? 1 : 0;
         assert(0 == uv_thread_create(&query_threads[i]->thread, query_dbengine_chart, query_threads[i]));
+        UNUSED(query_dbengine_chart);
     }
     sleep(TEST_DURATION_SEC);
     /* stop workload */
