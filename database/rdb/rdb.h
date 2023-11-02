@@ -18,7 +18,7 @@ STORAGE_METRIC_HANDLE *rdb_metric_dup(STORAGE_METRIC_HANDLE *smh);
 void rdb_metric_release(STORAGE_METRIC_HANDLE *smh);
 bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *db_instance, uuid_t *uuid, time_t *first_entry_s, time_t *last_entry_s);
 
-time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh);
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch);
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh);
 
 /*

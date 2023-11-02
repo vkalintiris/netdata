@@ -139,9 +139,11 @@ bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *fi
     return false;
 }
 
-time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh)
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     global_statistics_metric_oldest_time();
+
+    UNUSED(sch);
 
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
     rdb_collect_handle *rch = rmh->rch;
@@ -345,7 +347,7 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
 
     rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
 
-    After = std::max(rdb_metric_oldest_time(smh), After);
+    After = std::max(rdb_metric_oldest_time(smh, nullptr), After);
     Before = std::min(rdb_metric_latest_time(smh), Before);
 
     rdb::Key StartK(rmh->rmg, rmh->id, After);

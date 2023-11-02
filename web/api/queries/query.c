@@ -1974,7 +1974,9 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now_s
 
     // for each lower tier
     for(int read_tier = (int)tier - 1; read_tier >= 0 ; read_tier--){
-        time_t smaller_tier_first_time = storage_engine_oldest_time_s(rd->tiers[read_tier].backend, rd->tiers[read_tier].db_metric_handle);
+        time_t smaller_tier_first_time = storage_engine_oldest_time_s(rd->tiers[read_tier].backend,
+                                                                      rd->tiers[read_tier].db_metric_handle,
+                                                                      rd->tiers[read_tier].db_collection_handle);
         time_t smaller_tier_last_time = storage_engine_latest_time_s(rd->tiers[read_tier].backend, rd->tiers[read_tier].db_metric_handle);
         if(smaller_tier_last_time <= latest_time_s) continue;  // it is as bad as we are
 

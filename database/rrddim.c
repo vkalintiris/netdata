@@ -444,7 +444,9 @@ time_t rrddim_first_entry_s_of_tier(RRDDIM *rd, size_t tier) {
     if(unlikely(tier > storage_tiers || !rd->tiers[tier].db_metric_handle))
         return 0;
 
-    return storage_engine_oldest_time_s(rd->tiers[tier].backend, rd->tiers[tier].db_metric_handle);
+    return storage_engine_oldest_time_s(rd->tiers[tier].backend,
+                                        rd->tiers[tier].db_metric_handle,
+                                        rd->tiers[tier].db_collection_handle);
 }
 
 time_t rrddim_first_entry_s(RRDDIM *rd) {
