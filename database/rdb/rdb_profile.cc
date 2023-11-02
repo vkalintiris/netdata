@@ -62,12 +62,20 @@ static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
 
             uuid_generate(d.rd.metric_uuid);
             d.smh = se->api.metric_get_or_create(si, smg, &d.rd);
-            // d.sch = storage_metric_store_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, 1, smg);
-            d.sch = nullptr;
+            d.sch = storage_metric_store_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, 1, smg);
             d.smg = smg;
 
             dimensions.push_back(d);
         }
+    }
+}
+
+static void free_random_dimensions(std::vector<dimension_t> &dimensions)
+{
+    for (size_t i = 0; i != dimensions.size(); i++)
+    {
+        storage_engine_store_finalize(dimensions[i].smh, dimensions[i].sch);
+        se->api.metric_release(dimensions[i].smh);
     }
 }
 
@@ -112,28 +120,8 @@ static void gen_thread(size_t thread_id,
     // gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
     
     // std::this_thread::sleep_for(std::chrono::seconds{1});
-}
 
-static rocksdb::Options get_fifo_db_options()
-{
-    rocksdb::Options Opts;
-
-    Opts.create_if_missing = true;
-    
-    Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
-
-    uint64_t db_size_in_mib = 1024 * 1024 * 1024;
-    db_size_in_mib *= 4LU;
-    Opts.compaction_options_fifo.max_table_files_size = db_size_in_mib;
-
-    Opts.write_buffer_size = 128 * 1024 * 1024;
-    Opts.target_file_size_base = 256 * 1024 * 1024;
-
-    Opts.enable_blob_files = true;
-    Opts.min_blob_size = 64;
-    
-    Opts.manual_wal_flush = true;
-    return Opts;
+    free_random_dimensions(dimensions);
 }
 
 static rocksdb::Options get_level_db_options()
@@ -203,7 +191,7 @@ int rdb_profile_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 128;
+    size_t num_threads = 64;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
     size_t num_points_per_dimension = 24 * 3600;

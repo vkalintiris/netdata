@@ -151,33 +151,29 @@ time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE
 thread_local pb::Arena *ThreadArena = nullptr;
 
 STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
-                                              uint32_t update_every,
-                                              STORAGE_METRICS_GROUP *smg)
+                                              uint32_t update_every)
 {
     global_statistics_store_metric_init();
-
-    if (!ThreadArena) {
+    global_statistics_rdb_collection_handles_incr();
+    
+    using namespace rdb;
+    
+    if (!ThreadArena)
         ThreadArena = new pb::Arena();
-    }
 
-    uintptr_t rmg = reinterpret_cast<uintptr_t>(smg);
-    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
-
-    rmh->rmg = rmg;
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
 
     rdb::PageOptions PO = rdb::PageOptions();
-    PO.initial_slots = (rmh->id % PO.capacity) + 1;
-    std::optional<rdb::CollectionHandle> CH =
-        rdb::CollectionHandle::create(*ThreadArena, PO, rmg, rmh->id);
+    PO.initial_slots = (MH->mid() % PO.capacity) + 1;
+
+    auto CH = rdb::CollectionHandle::create(*ThreadArena, PO, MH->gid(), MH->mid());
     if (!CH.has_value())
         fatal("Could not create collection handle");
 
     CH->setUpdateEvery(update_every * USEC_PER_SEC);
-
-    global_statistics_rdb_collection_handles_incr();
-
-    rmh->rch = new rdb_collect_handle(CH.value());
-    return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rmh->rch);
+    
+    rdb_collect_handle *rch = new rdb_collect_handle(CH.value());
+    return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
 
 void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch,
@@ -231,13 +227,13 @@ void rdb_store_metric_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, ST
 int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
     global_statistics_store_metric_finalize();
+    global_statistics_rdb_collection_handles_decr();
 
     UNUSED(smh);
 
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
     rch->ch.flush();
     delete rch;
-    global_statistics_rdb_collection_handles_decr();
     return 0;
 }
 

@@ -448,7 +448,7 @@ static inline void storage_engine_metrics_group_release(STORAGE_ENGINE_BACKEND b
 
 STORAGE_COLLECT_HANDLE *rrdeng_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
 STORAGE_COLLECT_HANDLE *rrddim_collect_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
-STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every, STORAGE_METRICS_GROUP *smg);
+STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *db_metric_handle, uint32_t update_every);
 
 static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_BACKEND backend __maybe_unused,
                                                                 STORAGE_METRIC_HANDLE *smh,
@@ -461,7 +461,7 @@ static inline STORAGE_COLLECT_HANDLE *storage_metric_store_init(STORAGE_ENGINE_B
     {
 #ifdef ENABLE_RDB
         case STORAGE_ENGINE_BACKEND_RDB:
-            return rdb_store_metric_init(smh, update_every, smg);
+            return rdb_store_metric_init(smh, update_every);
 #endif
 
 #ifdef ENABLE_DBENGINE
