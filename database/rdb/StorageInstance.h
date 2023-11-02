@@ -62,12 +62,12 @@ public:
         return rocksdb::Slice(AR.data(), V.ByteSizeLong());
     }
 
-    [[nodiscard]] const inline uint32_t gid() const
+    [[nodiscard]] inline uint32_t gid() const
     {
         return group_id;
     }
     
-    [[nodiscard]] const inline uint32_t mid() const
+    [[nodiscard]] inline uint32_t mid() const
     {
         return metric_id;
     }

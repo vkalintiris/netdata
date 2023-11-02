@@ -47,7 +47,7 @@ public:
         return Slice(reinterpret_cast<const char *>(Scratch.data()), Bytes);
     }
 
-    inline void const uuid(uuid_t *uuid) const
+    inline void uuid(uuid_t *uuid) const
     {
         memcpy(uuid, Scratch.data(), Bytes);
     }
