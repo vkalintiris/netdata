@@ -242,6 +242,7 @@ static bool query_metric_add(QUERY_TARGET_LOCALS *qtl, QUERY_NODE *qn, QUERY_CON
     struct {
         STORAGE_ENGINE *eng;
         STORAGE_METRIC_HANDLE *db_metric_handle;
+        STORAGE_COLLECT_HANDLE *db_collection_handle;
         time_t db_first_time_s;
         time_t db_last_time_s;
         time_t db_update_every_s;
@@ -257,8 +258,13 @@ static bool query_metric_add(QUERY_TARGET_LOCALS *qtl, QUERY_NODE *qn, QUERY_CON
         else
             tier_retention[tier].db_metric_handle = eng->api.metric_get(qn->rrdhost->db[tier].instance, &rm->uuid);
 
+        if(rm->rrddim && rm->rrddim->tiers[tier].db_collection_handle)
+            tier_retention[tier].db_collection_handle = rm->rrddim->tiers[tier].db_collection_handle;
+        else
+            tier_retention[tier].db_collection_handle = NULL;
+
         if(tier_retention[tier].db_metric_handle) {
-            tier_retention[tier].db_first_time_s = storage_engine_oldest_time_s(tier_retention[tier].eng->backend, tier_retention[tier].db_metric_handle, NULL);
+            tier_retention[tier].db_first_time_s = storage_engine_oldest_time_s(tier_retention[tier].eng->backend, tier_retention[tier].db_metric_handle, tier_retention[tier].db_collection_handle);
             tier_retention[tier].db_last_time_s = storage_engine_latest_time_s(tier_retention[tier].eng->backend, tier_retention[tier].db_metric_handle);
 
             if(!common_first_time_s)
