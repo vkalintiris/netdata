@@ -153,7 +153,7 @@ private:
                 ColumnFamilyOptions CFO = levelStyleOpts(256 * MiB);
 
                 CFO.enable_blob_files = true;
-                CFO.min_blob_size = 30;
+                CFO.min_blob_size = 64;
                 CFO.blob_compression_type = kZSTD;
 
                 return CFO;

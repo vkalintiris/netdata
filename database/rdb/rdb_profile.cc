@@ -197,7 +197,7 @@ int rdb_profile_main(int argc, char *argv[])
     size_t num_threads = 16;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_points_per_dimension = 7 * 24 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
