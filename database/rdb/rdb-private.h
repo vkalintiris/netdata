@@ -3,6 +3,7 @@
 
 #include "rdb-common.h"
 #include "Key.h"
+#include "MetricHandle.h"
 #include "Page.h"
 #include "CollectionPage.h"
 #include "StorageInstance.h"

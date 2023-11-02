@@ -16,7 +16,6 @@ static std::atomic<uint32_t> MaxMetricID = 0;
 /* Groups                                                                    */
 /*===---------------------------------------------------------------------===*/
 
-
 STORAGE_METRICS_GROUP *rdb_metrics_group_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 {
     UNUSED(si);

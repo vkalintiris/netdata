@@ -3,7 +3,6 @@
 
 #include "protos/rdbv.pb.h"
 #include "rdb.h"
-#include "UuidShard.h"
 
 #include <rocksdb/advanced_options.h>
 #include <rocksdb/db.h>

@@ -699,9 +699,9 @@ if(ENABLE_RDB)
                                  database/rdb/CollectionPage.h
                                  database/rdb/FlushedQueryHandle.h
                                  database/rdb/Key.h
+                                 database/rdb/MetricHandle.h
                                  database/rdb/Page.h
                                  database/rdb/StorageInstance.h
-                                 database/rdb/UuidShard.h
                                  database/rdb/rdb_profile.cc
                                  database/rdb/rdb-common.h
                                  database/rdb/rdb.h

@@ -2,7 +2,9 @@
 #define RDB_STORAGE_INSTANCE_H
 
 #include "rdb-common.h"
+
 #include "Key.h"
+#include "MetricHandle.h"
 
 struct rdb_collect_handle;
 
@@ -21,61 +23,6 @@ struct rdb_metric_handle
 };
 
 namespace rdb {
-
-
-class MetricHandle
-{
-public:
-    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t gid, uint32_t mid)
-    {
-        MetricHandle MH;
-
-        MH.group_id = gid;
-        MH.metric_id = mid;
-
-        return MH;
-    }
-
-    [[nodiscard]] static inline std::optional<MetricHandle> fromSlice(const Slice &S)
-    {
-        rdbv::MetricHandle V;;
-
-        if (!V.ParseFromArray(S.data(), S.size()))
-            return std::nullopt;
-
-        return fromIDs(V.group_id(), V.metric_id());
-    }
-
-public:
-    template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> flush(std::array<char, N> &AR) const
-    {
-        rdbv::MetricHandle V;
-
-        V.set_group_id(group_id);
-        V.set_metric_id(metric_id);
-
-        assert(MH.BySizeLong() <= AR.size());
-
-        if (!V.SerializeToArray(AR.data(), AR.size()))
-            return std::nullopt;
-
-        return rocksdb::Slice(AR.data(), V.ByteSizeLong());
-    }
-
-    [[nodiscard]] inline uint32_t gid() const
-    {
-        return group_id;
-    }
-    
-    [[nodiscard]] inline uint32_t mid() const
-    {
-        return metric_id;
-    }
-    
-private:
-    uint32_t group_id;
-    uint32_t metric_id;
-};
 
 class StorageInstance
 {
@@ -228,10 +175,7 @@ private:
     }
 
 public:
-    StorageInstance(size_t registry_shards) :
-        RDB(nullptr),
-        MetricsRegistry(registry_shards)
-    { }
+    StorageInstance() : RDB(nullptr) { }
 
     rocksdb::Status open(rocksdb::Options Opts, const char *Path)
     {
@@ -318,7 +262,6 @@ public:
 
 public:
     rocksdb::DB *RDB;
-    UuidShard<rdb_metric_handle> MetricsRegistry;
 
     std::vector<rocksdb::ColumnFamilyHandle *> CFHs;
 

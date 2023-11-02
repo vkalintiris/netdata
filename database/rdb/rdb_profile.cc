@@ -116,10 +116,11 @@ static void gen_thread(size_t thread_id,
     gen_random_dimensions(dimensions, num_groups, num_dims_per_group);
     B->wait();
 
-    // usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
-    // gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
+    usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
+    gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
     
-    // std::this_thread::sleep_for(std::chrono::seconds{1});
+    std::this_thread::sleep_for(std::chrono::seconds{1});
+    netdata_log_error("Will free dimensions");
 
     free_random_dimensions(dimensions);
 }
@@ -144,7 +145,7 @@ static rocksdb::Options get_level_db_options()
 }
 
 void rdb_init() {
-    SI = new rdb::StorageInstance(16);
+    SI = new rdb::StorageInstance();
     RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
     
     rocksdb::Options Opts = get_level_db_options();
@@ -191,10 +192,10 @@ int rdb_profile_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 64;
+    size_t num_threads = 16;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_points_per_dimension = 6 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
@@ -221,13 +222,6 @@ int rdb_profile_main(int argc, char *argv[])
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
         netdata_log_error("Time to setup metrics: %.2lf seconds (RSS: %zu MiB)", seconds, getRSS());
-
-        for (std::thread& thread : threads)
-            thread.join();
-
-        SI->RDB->Flush(rocksdb::FlushOptions());
-        SI->close();
-        return 0;
     }
 
     {
@@ -265,6 +259,7 @@ int rdb_profile_main(int argc, char *argv[])
     for (std::thread& thread : threads)
         thread.join();
 
+    SI->RDB->Flush(rocksdb::FlushOptions());
     SI->close();
     exit(EXIT_SUCCESS);
 }
