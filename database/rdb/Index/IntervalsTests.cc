@@ -357,6 +357,41 @@ TEST(Intervals, CompressedInterval)
     }
 }
 
+TEST(Intervals, IntervalsManager)
+{
+    IntervalManager<1024> IM;
+
+    fflush(stdout);
+    fflush(stderr);
+
+    IM.addInterval(0 * 1024, IM.PageSlots, 1);
+    IM.printMergedIntervals();
+
+    IM.addInterval(1 * 1024, IM.PageSlots, 1);
+    IM.printMergedIntervals();
+    
+    IM.addInterval(10 * 1024, IM.PageSlots, 1);
+    IM.printMergedIntervals();
+
+    IM.addInterval(11 * 1024, IM.PageSlots, 1);
+    IM.printMergedIntervals();
+
+    IM.addInterval(2 * 1024, IM.PageSlots, 1);
+    IM.printMergedIntervals();
+
+    // IM.addInterval(3 * 1024, IM.PageSlots, 1);
+    // printf("[3072, 4096) Intervals:");
+    // IM.printMergedIntervals();
+
+    // IM.addInterval(2 * 1024, IM.PageSlots, 1);
+    // printf("[2048, 3072) Intervals:");
+    // IM.printMergedIntervals();
+
+    // IM.addInterval(3 * 1024, IM.PageSlots, 1);
+    // printf("Should have just 1 interval now:");
+    // IM.printMergedIntervals();
+}
+
 int rdb_intervals_tests_main(int argc, char *argv[])
 {
     // skip the `-W intervals-tests` args
@@ -367,7 +402,7 @@ int rdb_intervals_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::GTEST_FLAG(filter) = "Intervals.*";
+    ::testing::GTEST_FLAG(filter) = "Intervals.IntervalsManager";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();

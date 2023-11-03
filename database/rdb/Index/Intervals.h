@@ -217,31 +217,115 @@ private:
 template<size_t TierSlots>
 class IntervalManager
 {
-public:
-    void readIntervalsFromStdin()
-    {
-        uint32_t After, Before, Slots;
-        while (std::cin >> After >> Before >> Slots)
-        {
-            CompressedInterval<1024> I(After, Before, Slots);
-            addInterval(I);
-        }
-    }
+    using CompInt = CompressedInterval<TierSlots>;
+    using Iterator = typename absl::InlinedVector<CompInt, 2>::iterator;
 
-    inline void addInterval(const CompressedInterval<TierSlots>& NI)
+public:
+    static constexpr size_t PageSlots = TierSlots;
+
+    inline bool addInterval(uint32_t After, uint32_t Slots, uint16_t UpdateEvery)
     {
-        if (Intervals.back().merge(NI))
-            return;
-        
-        Intervals.push_back(NI);
+        CompInt NCI(After, Slots, UpdateEvery);
+        printf("Trying to add interval: [%u, %u)\n", NCI.after(), NCI.before());
+
+        auto cmpFunc = [](const CompInt &LHS, const CompInt &RHS)
+        {
+            return LHS.after() < RHS.after();
+        };
+        auto It = std::lower_bound(Intervals.begin(), Intervals.end(), NCI, cmpFunc);
+
+        if (It == Intervals.end())
+        {
+            if (!Intervals.size())
+            {
+                Intervals.push_back(NCI);
+                return false;
+            }
+            else if (Intervals.back().merge(NCI))
+            {
+                return true;
+            }
+            else
+            {
+                Intervals.push_back(NCI);
+                return false;
+            }
+        }
+        else
+        {
+            // Try to merge the RHS into NCI
+            if (NCI.merge(*It))
+            {
+                if (It == Intervals.begin())
+                {
+                    *It = NCI;
+                    return true;
+                }
+                else
+                {
+                    // Go to the LHS and try to merge the updated NCI
+                    --It;
+                    if (It->merge(NCI))
+                    {
+                        // 1. we managed to merge RHS into NCI and NCI into LHS
+                        // 2. we can remove RHS from the vector
+                        Intervals.erase(++It);
+                        return true;
+                    }
+                    else
+                    {
+                        // 1. we managed to merge RHS into NCI.
+                        // 2. update RHS with NCI.
+                        ++It;
+                        *It = NCI;
+                        return true;
+                    }
+                }
+            }
+            else
+            {
+                if (It == Intervals.begin())
+                {
+                    // prepend NCI to the vector
+                    Intervals.insert(It, NCI);
+                    return false;
+                }
+                else
+                {
+                    // Go to the LHS and try to merge NCI
+                    --It;
+                    if (It->merge(NCI))
+                    {
+                        // Nothing else to do.
+                        return true;
+                    }
+                    else
+                    {
+                        // We could not merge NCI into LHS. Add a new element after LHS.
+                        Intervals.insert(++It, NCI);
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // auto isMergeCandidate = [](const CompInt &LHS, const CompInt &RHS) {
+        //     return LHS.after() == RHS.before();
+        // };
+
+        // bool Merged = false;
+        // Iterator FirstMerged;
     }
 
     void printMergedIntervals() const
     {
-        // for (const Interval<TierSlots> &I : Intervals)
-        // {
-        //     std::cout << I.After << " " << I.UpdateEvery << " " << I.Slots << std::endl;
-        // }
+        for (size_t Idx = 0; Idx != Intervals.size(); Idx++)
+        {
+            printf("\tInterval[%zu]: [%u, %u)\n",
+                   Idx, Intervals[Idx].after(), Intervals[Idx].before());
+        }
+
+        printf("\n");
     }
 
 private:
