@@ -253,6 +253,41 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
     }
 }
 
+TEST(Intervals, CompressedDuration)
+{
+    constexpr size_t TierSlots = 1024;
+
+    {
+        CompressedDuration CD(100 * CompressedDuration<>::PageSlots, 5);
+        EXPECT_EQ(CD.slots(), 100 * CD.PageSlots);
+        EXPECT_EQ(CD.duration(), CD.slots() * 5);
+    }
+
+    {
+        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration RHS(200 * CompressedDuration<>::PageSlots, 5);
+
+        EXPECT_TRUE(LHS.merge(RHS));
+        
+        EXPECT_EQ(LHS.slots(), 300 * LHS.PageSlots);
+        EXPECT_EQ(LHS.duration(), LHS.slots() * 5);
+    }
+
+    {
+        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration RHS(200 * CompressedDuration<>::PageSlots, 15);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+
+    {
+        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration RHS(51, 15);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+}
+
 int rdb_intervals_tests_main(int argc, char *argv[])
 {
     // skip the `-W intervals-tests` args

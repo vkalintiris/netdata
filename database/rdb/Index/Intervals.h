@@ -140,45 +140,41 @@ template<size_t TierSlots = 1024>
 class CompressedDuration
 {
 public:
+    static constexpr size_t PageSlots = TierSlots;
+
+public:
     CompressedDuration() = default;
 
-    CompressedDuration(uint16_t UpdateEvery, uint16_t Slots)
-        : BS(((uint32_t) UpdateEvery << 16) | Slots)
-    { }
-
-    [[nodiscard]] inline CompressedSlots<TierSlots> compressedSlots() const
+    CompressedDuration(uint32_t Slots, uint16_t UpdateEvery)
+        : CS(Slots), UpdateEvery(UpdateEvery)
     {
-        return CompressedSlots<TierSlots>(BS.getLower());
-    }
-
-    [[nodiscard]] inline uint32_t updateEvery() const
-    {
-        return BS.getUpper();    
-    }
+        static_assert(sizeof(CompressedDuration<>) <= 4,
+                      "Size of class exceeds 4 bytes threshold.");
+    } 
 
     [[nodiscard]] inline uint32_t slots() const
     {
-        CompressedSlots<TierSlots> CS = slots();
         return CS.slots();
     }
 
     [[nodiscard]] inline uint32_t duration() const
     {
-        return updateEvery() * slots();
+        return UpdateEvery * slots();
     }
 
-    [[nodiscard]] inline bool Merge(const CompressedDuration<TierSlots> &Other)
+    [[nodiscard]] inline bool merge(const CompressedDuration<TierSlots> &Other)
     {
-        if (updateEvery() == Other.updateEvery())
+        if (UpdateEvery == Other.UpdateEvery)
         {
-            return compressedSlots().merge(Other.compressedSlots());
+            return CS.merge(Other.CS);
         }
         
         return false;
     }
 
 private:
-    BitSplitter<uint32_t, 16> BS;    
+    CompressedSlots<TierSlots> CS;
+    uint16_t UpdateEvery;
 };
 
 template<size_t TierSlots>
@@ -202,7 +198,7 @@ public:
     [[nodiscard]] inline bool merge(const Interval &Other)
     {
         if (before() == Other.after())
-            return CD.Merge(Other.CD);
+            return CD.merge(Other.CD);
 
         return false;
     }
