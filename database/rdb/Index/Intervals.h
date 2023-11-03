@@ -15,7 +15,7 @@ class BitSplitter
 public:
     BitSplitter() = default;
 
-    BitSplitter(T Value) : Value(Value)
+    explicit BitSplitter(T Value) : Value(Value)
     {
         static_assert(std::is_integral<T>::value,
                       "T must be an integral type");
@@ -62,7 +62,7 @@ public:
 public:
     CompressedSlots() = default;
 
-    CompressedSlots(uint32_t Slots) : BS(Slots)
+    explicit CompressedSlots(uint32_t Slots) : BS(Slots)
     {
         static_assert(sizeof(CompressedSlots<>) <= 2,
                       "Size of class exceeds 2 bytes threshold.");
@@ -145,7 +145,7 @@ public:
 public:
     CompressedDuration() = default;
 
-    CompressedDuration(uint32_t Slots, uint16_t UpdateEvery)
+    explicit CompressedDuration(uint32_t Slots, uint16_t UpdateEvery)
         : CS(Slots), UpdateEvery(UpdateEvery)
     {
         static_assert(sizeof(CompressedDuration<>) <= 4,
@@ -177,13 +177,19 @@ private:
     uint16_t UpdateEvery;
 };
 
-template<size_t TierSlots>
-class Interval
+template<size_t TierSlots = 1024>
+class CompressedInterval
 {
 public:
-    Interval(uint32_t After, uint16_t UpdateEvery, uint16_t Slots) :
-        After(After), CD(UpdateEvery, Slots)
-    { }
+    static constexpr size_t PageSlots = TierSlots;
+
+public:
+    CompressedInterval(uint32_t After, uint32_t Slots, uint16_t UpdateEvery)
+        : After(After), CD(Slots, UpdateEvery)
+    {
+        static_assert(sizeof(CompressedInterval) == 8,
+                      "Size of class exceeds 8 bytes threshold.");
+    }
 
     [[nodiscard]] inline uint32_t after() const
     {
@@ -195,7 +201,7 @@ public:
         return after() + CD.duration();
     }
 
-    [[nodiscard]] inline bool merge(const Interval &Other)
+    [[nodiscard]] inline bool merge(const CompressedInterval &Other)
     {
         if (before() == Other.after())
             return CD.merge(Other.CD);
@@ -203,12 +209,7 @@ public:
         return false;
     }
 
-    inline void mergeWith(const Interval &Other)
-    {
-        // UpdateEvery = Other.UpdateEvery;
-    }
-
-public:
+private:
     uint32_t After;
     CompressedDuration<TierSlots> CD;
 };
@@ -222,12 +223,12 @@ public:
         uint32_t After, Before, Slots;
         while (std::cin >> After >> Before >> Slots)
         {
-            Interval<1024> I(After, Before, Slots);
+            CompressedInterval<1024> I(After, Before, Slots);
             addInterval(I);
         }
     }
 
-    inline void addInterval(const Interval<TierSlots>& NI)
+    inline void addInterval(const CompressedInterval<TierSlots>& NI)
     {
         if (Intervals.back().merge(NI))
             return;
@@ -244,7 +245,7 @@ public:
     }
 
 private:
-    absl::InlinedVector<Interval<TierSlots>, 2> Intervals;
+    absl::InlinedVector<CompressedInterval<TierSlots>, 2> Intervals;
 };
 
 } // namespace rdb

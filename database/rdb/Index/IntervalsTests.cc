@@ -286,6 +286,75 @@ TEST(Intervals, CompressedDuration)
 
         EXPECT_FALSE(LHS.merge(RHS));
     }
+
+    {
+        CompressedDuration LHS(51, 15);
+        CompressedDuration RHS(51, 15);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+}
+
+TEST(Intervals, CompressedInterval)
+{
+    constexpr size_t TierSlots = 1024;
+
+    {
+        CompressedInterval CI(333, 66, 3600);
+        EXPECT_EQ(CI.after(), 333);
+        EXPECT_EQ(CI.before(), 333 + 66 * 3600);
+    }
+
+    {
+        CompressedInterval CI(100, 0, 1);
+        EXPECT_EQ(CI.after(), 100);
+        EXPECT_EQ(CI.before(), 100);
+    }
+
+    {
+        CompressedInterval CI(100, 1, 5);
+        EXPECT_EQ(CI.after(), 100);
+        EXPECT_EQ(CI.before(), 105);
+    }
+
+    {
+        CompressedInterval CI(333, 100 * TierSlots, 5);
+        EXPECT_EQ(CI.after(), 333);
+        EXPECT_EQ(CI.before(), 333 + (100 * TierSlots) * 5);
+    }
+
+    {
+        CompressedInterval LHS(333, 100 * TierSlots, 5);
+        CompressedInterval RHS(333, 100 * TierSlots, 5);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+
+    {
+        CompressedInterval LHS(333, 100 * TierSlots, 5);
+        CompressedInterval RHS(333, 100 * TierSlots, 15);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+    
+    {
+        CompressedInterval LHS(100, 50, 10);
+        CompressedInterval RHS(LHS.before(), 50, 10);
+
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+
+    {
+        CompressedInterval LHS(100, 100 * TierSlots, 10);
+        CompressedInterval RHS(LHS.before(), 100 * TierSlots, 10);
+
+        EXPECT_EQ(LHS.after(), 100);
+        EXPECT_EQ(RHS.before(), LHS.before() + (100 * TierSlots) * 10);
+
+        EXPECT_TRUE(LHS.merge(RHS));
+        EXPECT_EQ(LHS.after(), 100);
+        EXPECT_EQ(LHS.before(), RHS.before());
+    }
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])
