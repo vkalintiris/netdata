@@ -57,15 +57,26 @@ template<size_t TierSlots = 1024>
 class CompressedSlots
 {
 public:
+    static constexpr size_t PageSlots = TierSlots;
+
+public:
     CompressedSlots() = default;
 
-    CompressedSlots(uint16_t Slots)
-        : BS(Slots)
+    CompressedSlots(uint32_t Slots) : BS(Slots)
     {
+        static_assert(sizeof(CompressedSlots<>) <= 2,
+                      "Size of class exceeds 2 bytes threshold.");
+
         if ((Slots % TierSlots) == 0)
         {
             BS.setUpper(1);
             BS.setLower(Slots / TierSlots);
+        }
+        else
+        {
+            assert(Slots < TierSlots);
+            BS.setUpper(0);
+            BS.setLower(Slots);
         }
     }
 
@@ -73,7 +84,10 @@ public:
     {
         if (isPageCounter() && Other.isPageCounter())
         {
-            // Check if the result can be stored in a uint16_t and doesn't have the top-most bit set
+            // We need to check that:
+            //    - the result can be stored in a uint16_t, and
+            //    - the sum does not have the MSB set
+
             uint32_t Sum = pages() + Other.pages();
             bool canMerge = (Sum < std::numeric_limits<uint16_t>::max()) && ((Sum & 0x8000) == 0);
 
@@ -100,10 +114,15 @@ public:
 
     [[nodiscard]] inline uint32_t slots() const
     {
-        if (isPageCounter())
-            return BS.getLower() * TierSlots;
-        else
+        if (!isPageCounter())
             return BS.getLower();
+
+        return BS.getLower() * PageSlots;
+    }
+
+    [[nodiscard]] inline BitSplitter<uint16_t, 15> bitSplitter() const
+    {
+        return BS;
     }
 
 private:

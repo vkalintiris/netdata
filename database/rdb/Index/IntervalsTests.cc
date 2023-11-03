@@ -1,4 +1,6 @@
 #include "../rdb-private.h"
+#include "libnetdata/log/log.h"
+#include <gtest/gtest.h>
 
 using namespace rdb;
 
@@ -86,6 +88,168 @@ TEST(Intervals, BitSplitter)
         BitSplitter<uint32_t, 28> BS(0xDEADBEEF);
         EXPECT_EQ(BS.getUpper(), 0xD);
         EXPECT_EQ(BS.getLower(), 0xEADBEEF);
+    }
+}
+
+TEST(Intervals, CompressedSlots_TierSlots_1024)
+{
+    for (size_t TierSlots = 1024, Idx = 0; Idx != 4 * TierSlots; Idx++)
+    {
+        CompressedSlots CS(Idx);
+        EXPECT_EQ(CS.slots(), Idx);
+        EXPECT_EQ(CS.isPageCounter(), (Idx % TierSlots) == 0);
+
+        auto BS = CS.bitSplitter();
+        if (CS.isPageCounter())
+        {
+            EXPECT_EQ(BS.getUpper(), 0x1);
+            EXPECT_EQ(BS.getLower(), Idx / TierSlots);
+        }
+        else
+        {
+            EXPECT_EQ(BS.getUpper(), 0x0);
+        }
+    }
+
+    {
+        CompressedSlots LHS(512);
+        CompressedSlots RHS(512);
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+
+    {
+        CompressedSlots LHS(0);
+
+        for (size_t Page = 0; Page != 0x7FFF; Page++)
+        {
+            CompressedSlots RHS(LHS.PageSlots);
+            EXPECT_TRUE(LHS.merge(RHS));
+            EXPECT_EQ(LHS.slots(), (Page + 1) * LHS.PageSlots);
+
+            auto BS = LHS.bitSplitter();
+            EXPECT_EQ(BS.getUpper(), 0x1);
+            EXPECT_EQ(BS.getLower(), Page + 1);
+        }
+
+        CompressedSlots RHS(LHS.PageSlots);
+        EXPECT_FALSE(LHS.merge(RHS));
+        EXPECT_EQ(LHS.slots(), 0x7FFF * LHS.PageSlots);
+    }
+
+    {
+        CompressedSlots LHS(0);
+        CompressedSlots RHS(0);
+
+        EXPECT_EQ(LHS.PageSlots, RHS.PageSlots);
+
+        size_t NumPagesLHS = 100;
+        for (size_t Page = 0; Page != NumPagesLHS; Page++)
+        {
+            CompressedSlots Tmp(LHS.PageSlots);
+            EXPECT_TRUE(LHS.merge(Tmp));
+        }
+        EXPECT_EQ(LHS.slots(), NumPagesLHS * LHS.PageSlots);
+
+        size_t NumPagesRHS = 500;
+        for (size_t Page = 0; Page != NumPagesRHS; Page++)
+        {
+            CompressedSlots Tmp(RHS.PageSlots);
+            EXPECT_TRUE(RHS.merge(Tmp));
+        }
+        EXPECT_EQ(RHS.slots(), NumPagesRHS * RHS.PageSlots);
+
+        EXPECT_TRUE(LHS.merge(RHS));
+        EXPECT_EQ(LHS.slots(), (NumPagesLHS + NumPagesRHS) * LHS.PageSlots);
+
+        CompressedSlots NonPageCS(111);
+        EXPECT_FALSE(LHS.merge(NonPageCS));
+    }
+
+    {
+        CompressedSlots CS(100 * CompressedSlots<>::PageSlots);
+        EXPECT_EQ(CS.slots(), 100 * CompressedSlots<>::PageSlots);
+    }
+}
+
+TEST(Intervals, CompressedSlots_TierSlots_641)
+{
+    constexpr size_t TierSlots = 641;
+
+    for (size_t Idx = 0; Idx != 4 * TierSlots; Idx++)
+    {
+        CompressedSlots<TierSlots> CS(Idx);
+        EXPECT_EQ(CS.slots(), Idx);
+        EXPECT_EQ(CS.isPageCounter(), (Idx % TierSlots) == 0);
+
+        auto BS = CS.bitSplitter();
+        if (CS.isPageCounter())
+        {
+            EXPECT_EQ(BS.getUpper(), 0x1);
+            EXPECT_EQ(BS.getLower(), Idx / TierSlots);
+        }
+        else
+        {
+            EXPECT_EQ(BS.getUpper(), 0x0);
+        }
+    }
+
+    {
+        CompressedSlots<TierSlots> LHS(512);
+        CompressedSlots<TierSlots> RHS(512);
+        EXPECT_FALSE(LHS.merge(RHS));
+    }
+
+    {
+        CompressedSlots<TierSlots> LHS(0);
+
+        for (size_t Page = 0; Page != 0x7FFF; Page++)
+        {
+            CompressedSlots<TierSlots> RHS(LHS.PageSlots);
+            EXPECT_TRUE(LHS.merge(RHS));
+            EXPECT_EQ(LHS.slots(), (Page + 1) * LHS.PageSlots);
+
+            auto BS = LHS.bitSplitter();
+            EXPECT_EQ(BS.getUpper(), 0x1);
+            EXPECT_EQ(BS.getLower(), Page + 1);
+        }
+
+        CompressedSlots<TierSlots> RHS(LHS.PageSlots);
+        EXPECT_FALSE(LHS.merge(RHS));
+        EXPECT_EQ(LHS.slots(), 0x7FFF * LHS.PageSlots);
+    }
+
+    {
+        CompressedSlots<TierSlots> LHS(0);
+        CompressedSlots<TierSlots> RHS(0);
+
+        EXPECT_EQ(LHS.PageSlots, RHS.PageSlots);
+
+        size_t NumPagesLHS = 100;
+        for (size_t Page = 0; Page != NumPagesLHS; Page++)
+        {
+            CompressedSlots<TierSlots> Tmp(LHS.PageSlots);
+            EXPECT_TRUE(LHS.merge(Tmp));
+        }
+        EXPECT_EQ(LHS.slots(), NumPagesLHS * LHS.PageSlots);
+
+        size_t NumPagesRHS = 500;
+        for (size_t Page = 0; Page != NumPagesRHS; Page++)
+        {
+            CompressedSlots<TierSlots> Tmp(RHS.PageSlots);
+            EXPECT_TRUE(RHS.merge(Tmp));
+        }
+        EXPECT_EQ(RHS.slots(), NumPagesRHS * RHS.PageSlots);
+
+        EXPECT_TRUE(LHS.merge(RHS));
+        EXPECT_EQ(LHS.slots(), (NumPagesLHS + NumPagesRHS) * LHS.PageSlots);
+
+        CompressedSlots<TierSlots> NonPageCS(111);
+        EXPECT_FALSE(LHS.merge(NonPageCS));
+    }
+
+    {
+        CompressedSlots<TierSlots> CS(100 * TierSlots);
+        EXPECT_EQ(CS.slots(), 100 * TierSlots);
     }
 }
 
