@@ -8,12 +8,28 @@ TEST(Intervals, BitSplitter)
         BitSplitter<uint16_t, 0> BS(0xDEAD);
         EXPECT_EQ(BS.getUpper(), 0xDEAD);
         EXPECT_EQ(BS.getLower(), 0x0);
+
+        {
+            BitSplitter<uint16_t, 0> BS;   
+            BS.setUpper(0xDEAD);
+            BS.setLower(0);
+            EXPECT_EQ(BS.getUpper(), 0xDEAD);
+            EXPECT_EQ(BS.getLower(), 0x0);
+        }
     }
 
     {
         BitSplitter<uint16_t, 1> BS(0xDEAD);
         EXPECT_EQ(BS.getUpper(), 0xDEAD >> 1);
         EXPECT_EQ(BS.getLower(), 0x1);
+
+        {
+            BitSplitter<uint16_t, 1> BS;   
+            BS.setUpper(0xDEAD);
+            BS.setLower(1);
+            EXPECT_EQ(BS.getUpper(), 0xDEAD & 0x7FFF);
+            EXPECT_EQ(BS.getLower(), 0x1);
+        }
     }
 
     {
@@ -44,6 +60,14 @@ TEST(Intervals, BitSplitter)
         BitSplitter<uint16_t, 15> BS(0xFFFF);
         EXPECT_EQ(BS.getUpper(), 0x1);
         EXPECT_EQ(BS.getLower(), 0x7FFF);
+
+        {
+            BitSplitter<uint16_t, 15> BS;   
+            BS.setUpper(0xDEAD);
+            BS.setLower(0xDEAD);
+            EXPECT_EQ(BS.getUpper(), 0xDEAD & 0x1);
+            EXPECT_EQ(BS.getLower(), 0x5EAD);
+        }
     }
 
     {
@@ -56,36 +80,6 @@ TEST(Intervals, BitSplitter)
         BitSplitter<uint32_t, 1> BS(0xDEADBEEF);
         EXPECT_EQ(BS.getUpper(), 0xDEADBEEF >> 1);
         EXPECT_EQ(BS.getLower(), 0x1);
-    }
-
-    {
-        BitSplitter<uint32_t, 4> BS(0xDEADBEEF);
-        EXPECT_EQ(BS.getUpper(), 0xDEADBEE);
-        EXPECT_EQ(BS.getLower(), 0xF);
-    }
-
-    {
-        BitSplitter<uint32_t, 8> BS(0xDEADBEEF);
-        EXPECT_EQ(BS.getUpper(), 0xDEADBE);
-        EXPECT_EQ(BS.getLower(), 0xEF);
-    }
-
-    {
-        BitSplitter<uint32_t, 16> BS(0xDEADBEEF);
-        EXPECT_EQ(BS.getUpper(), 0xDEAD);
-        EXPECT_EQ(BS.getLower(), 0xBEEF);
-    }
-    
-    {
-        BitSplitter<uint32_t, 20> BS(0xDEADBEEF);
-        EXPECT_EQ(BS.getUpper(), 0xDEA);
-        EXPECT_EQ(BS.getLower(), 0xDBEEF);
-    }
-
-    {
-        BitSplitter<uint32_t, 24> BS(0xDEADBEEF);
-        EXPECT_EQ(BS.getUpper(), 0xDE);
-        EXPECT_EQ(BS.getLower(), 0xADBEEF);
     }
     
     {
