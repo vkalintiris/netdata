@@ -274,6 +274,12 @@ if(ENABLE_ACLK OR ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE)
 endif()
 
 #
+# abseil
+#
+
+add_subdirectory(third_party/abseil-cpp)
+
+#
 # source files
 #
 
