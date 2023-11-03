@@ -13,11 +13,13 @@ template<typename T, size_t N>
 class BitSplitter
 {
 public:
+    BitSplitter() = default;
+
     BitSplitter(T Value) : Value(Value)
     {
         static_assert(std::is_integral<T>::value,
                       "T must be an integral type");
-        static_assert(N <= (sizeof(uint16_t) * CHAR_BIT),
+        static_assert(N < (sizeof(T) * CHAR_BIT),
                       "N must be less than or equal to the number of bits in T");
     }
 
