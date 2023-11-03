@@ -1,12 +1,13 @@
 #include <iostream>
 #include <limits>
 #include <type_traits>
-#include <vector>
 #include <cassert>
-
 #include <cstdint>
 #include <climits>
-// #include "absl/container/inlined_vector.h"
+#include "absl/container/inlined_vector.h"
+
+namespace rdb
+{
 
 template<typename T, size_t N>
 class BitSplitter
@@ -211,14 +212,10 @@ public:
 
     inline void addInterval(const Interval<TierSlots>& NI)
     {
-        if (Intervals.empty() || !Intervals.back().canMerge(NI))
-        {
-            Intervals.push_back(NI);
-        }
-        else
-        {
-            Intervals.back().mergeWith(NI);
-        }
+        if (Intervals.back().merge(NI))
+            return;
+        
+        Intervals.push_back(NI);
     }
 
     void printMergedIntervals() const
@@ -230,15 +227,7 @@ public:
     }
 
 private:
-    std::vector<Interval<TierSlots>> Intervals;
+    absl::InlinedVector<Interval<TierSlots>, 2> Intervals;
 };
 
-int main()
-{
-    static_assert(sizeof(IntervalManager<1024>) == 24);
-    IntervalManager<1024> manager;
-    manager.readIntervalsFromStdin();
-    manager.printMergedIntervals();
-
-    return 0;
-}
+} // namespace rdb

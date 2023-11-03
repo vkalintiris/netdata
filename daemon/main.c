@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "buildinfo.h"
+#include "database/rdb/rdb.h"
 #include "static_threads.h"
 
 #include "database/engine/page_test.h"
@@ -1469,6 +1470,11 @@ int main(int argc, char **argv) {
 #ifdef ENABLE_TESTS
                         if(strcmp(optarg, "rdb-tests") == 0) {
                             rdb_tests_main(argc, argv);
+                            return 0;
+                        }
+
+                        if(strcmp(optarg, "intervals-tests") == 0) {
+                            rdb_intervals_tests_main(argc, argv);
                             return 0;
                         }
 #endif

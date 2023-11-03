@@ -78,6 +78,7 @@ extern STORAGE_INSTANCE *RDB_StorageInstance;
 
 #ifdef ENABLE_TESTS
 int rdb_tests_main(int argc, char *argv[]);
+int rdb_intervals_tests_main(int argc, char *argv[]);
 #endif
 
 #ifdef __cplusplus

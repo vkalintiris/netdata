@@ -2,6 +2,7 @@
 #define RDB_PRIVATE_H
 
 #include "rdb-common.h"
+#include "Index/Intervals.h"
 #include "Key.h"
 #include "MetricHandle.h"
 #include "Page.h"
