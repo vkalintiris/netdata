@@ -1,5 +1,4 @@
 #include "../rdb-private.h"
-#include "libnetdata/log/log.h"
 #include <gtest/gtest.h>
 
 using namespace rdb;
@@ -532,24 +531,51 @@ TEST(Intervals, CompressedInterval)
 
 TEST(Intervals, IntervalsManager)
 {
-    IntervalManager<1024> IM;
-
     fflush(stdout);
     fflush(stderr);
 
-    IM.addInterval(4 * 1024, IM.PageSlots, 1);
-    IM.addInterval(5 * 1024, IM.PageSlots, 1);
-    IM.printMergedIntervals();
+    {
+        IntervalManager<1024> IM;
+        EXPECT_FALSE(IM.after().has_value());
+        EXPECT_FALSE(IM.before().has_value());
+        EXPECT_TRUE(IM.verify());
 
-    EXPECT_TRUE(IM.verify());
+        size_t Epoch = 5555;
+        size_t UpdateEvery = 3;
+        size_t PageDuration = IM.PageSlots * UpdateEvery;
+
+        for (size_t Idx = 0; Idx < 1024; Idx += 2) {
+            bool Merged = IM.addInterval(Epoch + Idx * PageDuration, IM.PageSlots, UpdateEvery);
+            EXPECT_TRUE(!Merged && IM.verify());
+        }
+        EXPECT_EQ(IM.size(), 512);
+
+        EXPECT_TRUE(IM.after().has_value());
+        EXPECT_EQ(IM.after(), Epoch);
+        EXPECT_TRUE(IM.before().has_value());
+        EXPECT_EQ(IM.before(), Epoch + 1022 * PageDuration + PageDuration);
+
+        std::vector<size_t> Indexes;
+        for (size_t Idx = 1; Idx < 1024; Idx += 2) {
+            Indexes.push_back(Idx);
+        }
+
+        unsigned Seed = std::chrono::system_clock::now().time_since_epoch().count();
+        std::default_random_engine Eng(Seed);
+        std::shuffle(Indexes.begin(), Indexes.end(), Eng);
     
-    // IM.addInterval(2 * 1024, IM.PageSlots, 1);
-    // printf("[2048, 3072) Intervals:");
-    // IM.printMergedIntervals();
-
-    // IM.addInterval(3 * 1024, IM.PageSlots, 1);
-    // printf("Should have just 1 interval now:");
-    // IM.printMergedIntervals();
+        for (size_t Idx : Indexes)
+        {
+            bool Merged = IM.addInterval(Epoch + Idx * PageDuration, IM.PageSlots, UpdateEvery);
+            EXPECT_TRUE(Merged && IM.verify());
+        }
+        EXPECT_EQ(IM.size(), 1);
+    
+        EXPECT_TRUE(IM.after().has_value());
+        EXPECT_EQ(IM.after(), Epoch);
+        EXPECT_TRUE(IM.before().has_value());
+        EXPECT_EQ(IM.before(), Epoch + 1024 * PageDuration);
+    }
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])
@@ -562,7 +588,7 @@ int rdb_intervals_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::GTEST_FLAG(filter) = "Intervals.CompressedInterval";
+    ::testing::GTEST_FLAG(filter) = "Intervals.IntervalsManager";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();

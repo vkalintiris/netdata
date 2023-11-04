@@ -297,7 +297,23 @@ class IntervalManager
 
 public:
     static constexpr size_t PageSlots = TierSlots;
-        
+
+    [[nodiscard]] inline std::optional<uint32_t> after() const
+    {
+        if (!Intervals.size())
+            return std::nullopt;
+
+        return Intervals[0].after();
+    }
+
+    [[nodiscard]] inline std::optional<uint32_t> before() const
+    {
+        if (!Intervals.size())
+            return std::nullopt;
+
+        return Intervals.back().before();
+    }
+
     inline bool addInterval(uint32_t After, uint32_t Slots, uint16_t UpdateEvery)
     {
         CompInt NCI(After, Slots, UpdateEvery);
@@ -407,18 +423,25 @@ public:
                       !CI.merge(RHS);
 
             if (!Ok)
+            {
                 return false;
+            }
         }
 
         return true;
+    }
+
+    [[nodiscard]] inline size_t size() const
+    {
+        return Intervals.size();   
     }
 
     void printMergedIntervals() const
     {
         for (size_t Idx = 0; Idx != Intervals.size(); Idx++)
         {
-            printf("\tInterval[%zu]: [%u, %u)\n",
-                   Idx, Intervals[Idx].after(), Intervals[Idx].before());
+            printf("\tInterval[%zu/%zu]: [%u, %u)\n", Idx + 1, Intervals.size(),
+                   Intervals[Idx].after(), Intervals[Idx].before());
         }
 
         printf("\n");

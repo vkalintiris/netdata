@@ -20,7 +20,7 @@ public:
 
     [[nodiscard]] static inline std::optional<MetricHandle> fromSlice(const Slice &S)
     {
-        rdbv::MetricHandle V;;
+        rdbv::MetricHandle V;
 
         if (!V.ParseFromArray(S.data(), S.size()))
             return std::nullopt;
@@ -45,7 +45,7 @@ public:
         V.set_group_id(group_id);
         V.set_metric_id(metric_id);
 
-        assert(MH.BySizeLong() <= AR.size());
+        assert(V.ByteSizeLong() <= AR.size());
 
         if (!V.SerializeToArray(AR.data(), AR.size()))
             return std::nullopt;
