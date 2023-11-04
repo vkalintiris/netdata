@@ -1,5 +1,6 @@
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <type_traits>
 #include <cassert>
 #include <cstdint>
@@ -151,15 +152,25 @@ public:
         static_assert(sizeof(CompressedDuration<>) <= 4,
                       "Size of class exceeds 4 bytes threshold.");
     } 
-
+        
     [[nodiscard]] inline uint32_t slots() const
     {
         return CS.slots();
     }
 
+    [[nodiscard]] inline uint32_t updateEvery() const
+    {
+        return UpdateEvery;    
+    }
+
     [[nodiscard]] inline uint32_t duration() const
     {
         return UpdateEvery * slots();
+    }
+
+    [[nodiscard]] inline bool isPageDuration() const
+    {
+        return CS.isPageCounter();
     }
 
     [[nodiscard]] inline bool merge(const CompressedDuration<TierSlots> &Other)
@@ -201,12 +212,76 @@ public:
         return after() + CD.duration();
     }
 
+    [[nodiscard]] inline uint32_t updateEvery() const
+    {
+        return CD.UpdateEvery;       
+    }
+
+    [[nodiscard]] inline uint32_t pageDuration() const
+    {
+        return TierSlots * updateEvery();
+    }
+
+    [[nodiscard]] inline uint32_t numPages() const
+    {
+        if (!CD.isPageDuration())
+            return 1;
+
+        return (before() - after()) / TierSlots;
+    }
+
     [[nodiscard]] inline bool merge(const CompressedInterval &Other)
     {
         if (before() == Other.after())
             return CD.merge(Other.CD);
 
         return false;
+    }
+
+    [[nodiscard]] inline std::pair<std::optional<CompressedInterval>,
+                                   std::optional<CompressedInterval>>
+    drop(uint32_t PIT) const
+    {
+        if (!CD.isPageDuration())
+        {
+            if (PIT == after())
+                return {};
+
+            return { *this, std::nullopt };
+        }
+
+        if (PIT < after())
+        {
+            return { *this, std::nullopt };
+        }
+        else if (PIT > before())
+        {
+            return { *this, std::nullopt };
+        }
+
+        const uint32_t PageDuration = TierSlots * CD.updateEvery();
+
+        // PIT should be already aligned. However, we want release builds to
+        // handle any possible errors.
+        assert((PIT % PageDuration) == 0);
+        PIT -= (PIT % PageDuration);
+
+        std::pair<std::optional<CompressedInterval>,
+                  std::optional<CompressedInterval>> P;
+
+        if (After < PIT)
+        {
+            uint32_t Slots = (PIT - After) / CD.updateEvery();
+            P.first = CompressedInterval(After, Slots, CD.updateEvery());
+        }
+
+        if (PIT < (before() - PageDuration))
+        {
+            uint32_t Slots = (before() - (PIT + PageDuration)) / CD.updateEvery();
+            P.second = CompressedInterval(PIT + PageDuration, Slots, CD.updateEvery());
+        }
+
+        return P;
     }
 
 private:

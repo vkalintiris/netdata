@@ -355,6 +355,179 @@ TEST(Intervals, CompressedInterval)
         EXPECT_EQ(LHS.after(), 100);
         EXPECT_EQ(LHS.before(), RHS.before());
     }
+
+    {
+        const size_t PageSlots = 8;
+        const size_t UpdateEvery = 3;
+        const size_t PageDuration = PageSlots * UpdateEvery;
+        const size_t NumPages = 10;
+
+        const CompressedInterval<PageSlots> CI(3600, NumPages * PageSlots, UpdateEvery);
+
+        EXPECT_EQ(CI.after(), 3600);
+        EXPECT_EQ(CI.before(), CI.after() + PageDuration * NumPages);
+
+        {
+            // Test dropping always the 1st page
+            
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            for (size_t Idx = 0; Idx != PageSlots; Idx++)
+            {
+                std::pair<std::optional<CompressedInterval<PageSlots>>,
+                          std::optional<CompressedInterval<PageSlots>>> P = TmpCI.drop(TmpCI.after());
+
+                EXPECT_FALSE(P.first.has_value());
+                EXPECT_TRUE(P.second.has_value());
+
+                TmpCI = P.second.value();
+                EXPECT_EQ(TmpCI.after(), CI.after() + PageDuration * (Idx + 1));
+                EXPECT_EQ(TmpCI.before(), CI.before());
+            }
+        }
+        
+        {
+            // Test dropping always the last page
+
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            for (size_t Idx = 0; Idx != PageSlots; Idx++)
+            {
+                std::pair<std::optional<CompressedInterval<PageSlots>>,
+                          std::optional<CompressedInterval<PageSlots>>> P =
+                    TmpCI.drop(TmpCI.before() - PageDuration);
+
+                EXPECT_TRUE(P.first.has_value());
+                EXPECT_FALSE(P.second.has_value());
+
+                TmpCI = P.first.value();
+                EXPECT_EQ(TmpCI.after(), CI.after());
+                EXPECT_EQ(TmpCI.before(), CI.before() - PageDuration * (Idx + 1));
+            }
+        }
+        
+        {
+            // Test dropping the 2nd page
+
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            std::pair<std::optional<CompressedInterval<PageSlots>>,
+                      std::optional<CompressedInterval<PageSlots>>> P =
+                TmpCI.drop(CI.after() + PageDuration);
+
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_TRUE(P.second.has_value());
+
+            const auto &LHS = P.first.value();
+            EXPECT_EQ(LHS.after(), CI.after());
+            EXPECT_EQ(LHS.before(), CI.after() + PageDuration);
+
+            const auto &RHS = P.second.value();
+            EXPECT_EQ(RHS.after(), LHS.after() + 2 * PageDuration);
+            EXPECT_EQ(RHS.before(), CI.before());
+        }
+
+        {
+            // Test dropping the 2nd-to-last page
+
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            std::pair<std::optional<CompressedInterval<PageSlots>>,
+                      std::optional<CompressedInterval<PageSlots>>> P =
+                TmpCI.drop(CI.before() - 2 * PageDuration);
+
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_TRUE(P.second.has_value());
+
+            const auto &LHS = P.first.value();
+            EXPECT_EQ(LHS.after(), CI.after());
+            EXPECT_EQ(LHS.before(), CI.before() - 2 * PageDuration);
+
+            const auto &RHS = P.second.value();
+            EXPECT_EQ(RHS.after(), CI.before() - PageDuration);
+            EXPECT_EQ(RHS.before(), CI.before());
+        }
+
+        {
+            // Test dropping before after()
+
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            std::pair<std::optional<CompressedInterval<PageSlots>>,
+                      std::optional<CompressedInterval<PageSlots>>> P =
+                TmpCI.drop(TmpCI.after() - PageDuration);
+
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            const auto &LHS = P.first.value();
+            EXPECT_EQ(LHS.after(), TmpCI.after());
+            EXPECT_EQ(LHS.before(), TmpCI.before());
+        }
+
+        {
+            // Test dropping after before()
+
+            CompressedInterval<PageSlots> TmpCI = CI;
+
+            std::pair<std::optional<CompressedInterval<PageSlots>>,
+                      std::optional<CompressedInterval<PageSlots>>> P =
+                TmpCI.drop(TmpCI.before() + 1);
+
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            const auto &LHS = P.first.value();
+            EXPECT_EQ(LHS.after(), TmpCI.after());
+            EXPECT_EQ(LHS.before(), TmpCI.before());
+        }
+
+        {
+            // Test drop()-ing on a non-page interval
+            const size_t PageSlots = 1024;
+            size_t Slots = 100;
+            size_t UpdateEvery = 3;
+
+            const CompressedInterval<PageSlots> CI(3600, Slots, UpdateEvery);
+            
+            std::pair<std::optional<CompressedInterval<PageSlots>>,
+                      std::optional<CompressedInterval<PageSlots>>> P;
+            
+            P = CI.drop(CI.before() + 1);
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            EXPECT_EQ(P.first.value().after(), CI.after());
+            EXPECT_EQ(P.first.value().before(), CI.before());
+
+            P = CI.drop(CI.before() - 1);
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            EXPECT_EQ(P.first.value().after(), CI.after());
+            EXPECT_EQ(P.first.value().before(), CI.before());
+
+            P = CI.drop(CI.after() + 1);
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            EXPECT_EQ(P.first.value().after(), CI.after());
+            EXPECT_EQ(P.first.value().before(), CI.before());
+
+            P = CI.drop(CI.after() - 1);
+            EXPECT_TRUE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+
+            EXPECT_EQ(P.first.value().after(), CI.after());
+            EXPECT_EQ(P.first.value().before(), CI.before());
+
+            // For intervals that are not a multiple of a page's duration,
+            // we only support droping the entire interval iff the PIT == after()
+            P = CI.drop(CI.after());
+            EXPECT_FALSE(P.first.has_value());
+            EXPECT_FALSE(P.second.has_value());
+        }
+    }
 }
 
 TEST(Intervals, IntervalsManager)
@@ -364,10 +537,8 @@ TEST(Intervals, IntervalsManager)
     fflush(stdout);
     fflush(stderr);
 
-    IM.addInterval(5 * 1024, IM.PageSlots, 1);
-    IM.printMergedIntervals();
-
     IM.addInterval(4 * 1024, IM.PageSlots, 1);
+    IM.addInterval(5 * 1024, IM.PageSlots, 1);
     IM.printMergedIntervals();
 
     EXPECT_TRUE(IM.verify());
@@ -391,7 +562,7 @@ int rdb_intervals_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::GTEST_FLAG(filter) = "Intervals.IntervalsManager";
+    ::testing::GTEST_FLAG(filter) = "Intervals.CompressedInterval";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();
