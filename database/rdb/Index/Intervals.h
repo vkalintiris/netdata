@@ -324,6 +324,12 @@ public:
         };
         auto It = std::lower_bound(Intervals.begin(), Intervals.end(), NCI, cmpFunc);
 
+        auto validIntervals = [](const CompInt &LHS, const CompInt &RHS)
+        {
+            // NOTE: this check runs only when we can't merge the intervals.
+            return LHS.before() < RHS.after();
+        };
+
         if (It == Intervals.end())
         {
             if (!Intervals.size())
@@ -337,7 +343,8 @@ public:
             }
             else
             {
-                Intervals.push_back(NCI);
+                if (validIntervals(Intervals.back(), NCI))
+                    Intervals.push_back(NCI);
                 return false;
             }
         }
@@ -377,7 +384,8 @@ public:
                 if (It == Intervals.begin())
                 {
                     // prepend NCI to the vector
-                    Intervals.insert(It, NCI);
+                    if (validIntervals(NCI, *It))
+                        Intervals.insert(It, NCI);
                     return false;
                 }
                 else
@@ -392,7 +400,9 @@ public:
                     else
                     {
                         // We could not merge NCI into LHS. Add a new element after LHS.
-                        Intervals.insert(++It, NCI);
+                        ++It;
+                        if (validIntervals(NCI, *It))
+                            Intervals.insert(It, NCI);
                         return false;
                     }
                 }

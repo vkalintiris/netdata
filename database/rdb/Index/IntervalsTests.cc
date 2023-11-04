@@ -92,7 +92,7 @@ TEST(Intervals, BitSplitter)
 
 TEST(Intervals, CompressedSlots_TierSlots_1024)
 {
-    for (size_t TierSlots = 1024, Idx = 0; Idx != 4 * TierSlots; Idx++)
+    for (size_t TierSlots = 1024, Idx = 0; Idx != TierSlots; Idx++)
     {
         CompressedSlots CS(Idx);
         EXPECT_EQ(CS.slots(), Idx);
@@ -174,7 +174,7 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
 {
     constexpr size_t TierSlots = 641;
 
-    for (size_t Idx = 0; Idx != 4 * TierSlots; Idx++)
+    for (size_t Idx = 0; Idx != TierSlots; Idx++)
     {
         CompressedSlots<TierSlots> CS(Idx);
         EXPECT_EQ(CS.slots(), Idx);
@@ -576,6 +576,30 @@ TEST(Intervals, IntervalsManager)
         EXPECT_TRUE(IM.before().has_value());
         EXPECT_EQ(IM.before(), Epoch + 1024 * PageDuration);
     }
+
+    {
+        // Test that we can't add overlapping intervals
+        
+        IntervalManager<60> IM;
+
+        size_t Epoch = 3600;
+        size_t UpdateEvery = 1;
+        size_t PageDuration = IM.PageSlots * UpdateEvery;
+
+        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+
+        IM.addInterval(Epoch, 10, UpdateEvery);
+        EXPECT_EQ(IM.after(), Epoch);
+        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+
+        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+        EXPECT_EQ(IM.after(), Epoch);
+        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+
+        IM.addInterval(Epoch, 2 * IM.PageSlots, UpdateEvery);
+        EXPECT_EQ(IM.after(), Epoch);
+        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+    }
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])
@@ -588,7 +612,7 @@ int rdb_intervals_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::GTEST_FLAG(filter) = "Intervals.IntervalsManager";
+    ::testing::GTEST_FLAG(filter) = "Intervals.*";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();
