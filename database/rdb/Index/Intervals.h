@@ -222,11 +222,10 @@ class IntervalManager
 
 public:
     static constexpr size_t PageSlots = TierSlots;
-
+        
     inline bool addInterval(uint32_t After, uint32_t Slots, uint16_t UpdateEvery)
     {
         CompInt NCI(After, Slots, UpdateEvery);
-        printf("Trying to add interval: [%u, %u)\n", NCI.after(), NCI.before());
 
         auto cmpFunc = [](const CompInt &LHS, const CompInt &RHS)
         {
@@ -309,12 +308,34 @@ public:
             }
         }
 
-        // auto isMergeCandidate = [](const CompInt &LHS, const CompInt &RHS) {
-        //     return LHS.after() == RHS.before();
-        // };
+        fatal("Unhandled case in %s", __FUNCTION__);
+    }
 
-        // bool Merged = false;
-        // Iterator FirstMerged;
+    [[nodiscard]] bool verify() const
+    {
+        if (Intervals.size() == 0)
+            return true;
+
+        if (Intervals.size() == 1)
+            return Intervals[0].after() < Intervals[0].before();
+
+        // Check that the intervals are in sorted order, they don't overlap
+        // and they can't be merged.
+        for (size_t Idx = 0; Idx != Intervals.size() - 1; Idx++)
+        {
+            CompInt CI = Intervals[Idx];
+            const CompInt &RHS = Intervals[Idx + 1];
+
+            bool Ok = (CI.after() < CI.before()) &&
+                      (CI.after() <= RHS.after()) &&
+                      (CI.before() <= RHS.after()) &&
+                      !CI.merge(RHS);
+
+            if (!Ok)
+                return false;
+        }
+
+        return true;
     }
 
     void printMergedIntervals() const

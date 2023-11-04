@@ -364,25 +364,14 @@ TEST(Intervals, IntervalsManager)
     fflush(stdout);
     fflush(stderr);
 
-    IM.addInterval(0 * 1024, IM.PageSlots, 1);
+    IM.addInterval(5 * 1024, IM.PageSlots, 1);
     IM.printMergedIntervals();
 
-    IM.addInterval(1 * 1024, IM.PageSlots, 1);
+    IM.addInterval(4 * 1024, IM.PageSlots, 1);
     IM.printMergedIntervals();
+
+    EXPECT_TRUE(IM.verify());
     
-    IM.addInterval(10 * 1024, IM.PageSlots, 1);
-    IM.printMergedIntervals();
-
-    IM.addInterval(11 * 1024, IM.PageSlots, 1);
-    IM.printMergedIntervals();
-
-    IM.addInterval(2 * 1024, IM.PageSlots, 1);
-    IM.printMergedIntervals();
-
-    // IM.addInterval(3 * 1024, IM.PageSlots, 1);
-    // printf("[3072, 4096) Intervals:");
-    // IM.printMergedIntervals();
-
     // IM.addInterval(2 * 1024, IM.PageSlots, 1);
     // printf("[2048, 3072) Intervals:");
     // IM.printMergedIntervals();
