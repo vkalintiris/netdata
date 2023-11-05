@@ -3,6 +3,8 @@
 
 #include "absl/container/inlined_vector.h"
 #include "rdb-common.h"
+#include <cstdint>
+#include <cstdlib>
 
 namespace rdb
 {
@@ -11,14 +13,25 @@ template<typename T, size_t N>
 class BitSplitter
 {
 public:
+    [[nodiscard]] inline static BitSplitter<T, N> fromRawValue(T RV)
+    {
+        BitSplitter<T, N> BS;
+        BS.Value = RV;
+        return BS;
+    }
+
+public:
     BitSplitter() = default;
 
     explicit BitSplitter(T Value) : Value(Value)
     {
         static_assert(std::is_integral<T>::value,
                       "T must be an integral type");
+        static_assert(std::is_trivially_copyable_v<BitSplitter<T, N>>);
+
         static_assert(N < (sizeof(T) * CHAR_BIT),
                       "N must be less than or equal to the number of bits in T");
+
     }
 
     BitSplitter(T UV, T LV)
@@ -47,6 +60,11 @@ public:
         Value = (UV << N) | (Value & ((1 << N) - 1));
     }
 
+    [[nodiscard]] inline T rawValue() const
+    {
+        return Value;
+    }
+
 private:
     T Value;
 };
@@ -57,14 +75,27 @@ class CompressedSlots
 public:
     static constexpr size_t PageSlots = TierSlots;
 
+    static CompressedSlots fromRawValue(uint16_t RV)
+    {
+        CompressedSlots<TierSlots> CS;
+        CS.BS = BitSplitter<uint16_t, 15>::fromRawValue(RV);
+    }
+
+    [[nodiscard]] inline uint16_t rawValue() const
+    {
+        return BS.rawValue();
+    }
+
 public:
     CompressedSlots() = default;
 
     explicit CompressedSlots(uint32_t Slots) : BS(Slots)
     {
-        static_assert(sizeof(CompressedSlots<>) <= 2,
-                      "Size of class exceeds 2 bytes threshold.");
+        static_assert(std::is_trivially_copyable_v<CompressedSlots>);
 
+        static_assert(sizeof(CompressedSlots) <= 2,
+                      "Size of class exceeds 2 bytes threshold.");
+            
         if ((Slots % TierSlots) == 0)
         {
             BS.setUpper(1);
@@ -140,12 +171,30 @@ class CompressedDuration
 public:
     static constexpr size_t PageSlots = TierSlots;
 
+    [[nodiscard]] static inline CompressedDuration<TierSlots> fromRawValue(uint32_t RV)
+    {
+        uint16_t RawCS = static_cast<uint16_t>(RV >> 16);
+        uint16_t UpdateEvery = static_cast<uint16_t>(RV);
+
+        CompressedDuration<TierSlots> CD;
+        CD.UpdateEvery = UpdateEvery;
+        CD.CS = CompressedSlots<TierSlots>::fromRawValue(RawCS);
+        return CD;
+    }
+
+    [[nodiscard]] inline uint32_t rawValue() const
+    {
+        return (static_cast<uint32_t>(CS.rawValue()) << 16) | UpdateEvery;
+    }
+
 public:
     CompressedDuration() = default;
 
     explicit CompressedDuration(uint32_t Slots, uint16_t UpdateEvery)
         : CS(Slots), UpdateEvery(UpdateEvery)
     {
+        static_assert(std::is_trivially_copyable_v<CompressedDuration>);
+
         static_assert(sizeof(CompressedDuration<>) <= 4,
                       "Size of class exceeds 4 bytes threshold.");
     } 
@@ -191,10 +240,30 @@ class CompressedInterval
 public:
     static constexpr size_t PageSlots = TierSlots;
 
+    static CompressedInterval<TierSlots> fromRawValue(uint64_t RV)
+    {
+        uint32_t After = static_cast<uint32_t>(RV >> 32);
+        uint32_t RawCS = static_cast<uint32_t>(RV & 0xFFFFFFFF);
+
+        CompressedInterval<TierSlots> CI;
+        CI.After = After;
+        CI.CD = CompressedDuration<TierSlots>::fromRawValue(RawCS);
+        return CI;
+    }
+
+    [[nodiscard]] inline uint64_t rawValue() const
+    {
+        return (static_cast<uint64_t>(After) << 32) | CD.rawValue();
+    }
+
 public:
+    CompressedInterval() = default;
+
     CompressedInterval(uint32_t After, uint32_t Slots, uint16_t UpdateEvery)
         : After(After), CD(Slots, UpdateEvery)
     {
+        static_assert(std::is_trivially_copyable_v<CompressedInterval>);
+
         static_assert(sizeof(CompressedInterval) == 8,
                       "Size of class exceeds 8 bytes threshold.");
     }
@@ -286,12 +355,57 @@ private:
     CompressedDuration<TierSlots> CD;
 };
 
-// TODO: add support for removing intervals
+// TODO:
+//  1. add support for removing intervals
+//  2. store intervals from newest to older
 template<size_t TierSlots>
 class IntervalManager
 {
     using CompInt = CompressedInterval<TierSlots>;
     using Iterator = typename absl::InlinedVector<CompInt, 2>::iterator;
+
+public:
+    template<size_t N> [[nodiscard]] const std::optional<const Slice> serialize(std::array<char, N> &AR) const
+    {
+        size_t SerializedSize = sizeof(uint32_t) + (Intervals.size() * sizeof(CompInt));
+        if (SerializedSize > AR.size())
+        {
+            return std::nullopt;
+        }
+
+        // encode the length
+        uint32_t Length = Intervals.size();
+        memcpy(&AR[0], &Length, sizeof(uint32_t));
+
+        // encode the intervals
+        std::memcpy(&AR[sizeof(uint32_t)], Intervals.data(), Intervals.size() * sizeof(CompInt));
+
+        return Slice(AR.data(), SerializedSize);
+    }
+
+    [[nodiscard]] static std::optional<IntervalManager> deserialize(const Slice &S)
+    {
+        IntervalManager<TierSlots> IM;
+
+        if (S.size() < sizeof(uint32_t))
+        {
+            return std::nullopt;
+        }
+
+        uint32_t Length;
+        std::memcpy(&Length, S.data(), sizeof(uint32_t));
+
+        uint32_t BytesToCopy = Length * sizeof(CompInt);
+        if (S.size() < sizeof(uint32_t) + BytesToCopy)
+        {
+            return std::nullopt;
+        }
+
+        IM.Intervals.resize(Length);
+        std::memcpy(IM.Intervals.data(), S.data() + sizeof(uint32_t), BytesToCopy);
+
+        return IM;
+    }
 
 public:
     static constexpr size_t PageSlots = TierSlots;

@@ -153,6 +153,16 @@ public:
     };
 
 public:
+    template<size_t N> [[nodiscard]] const std::optional<const Slice> serialize(std::array<char, N> &AR) const
+    {
+        assert(V->ByteSizeLong() <= AR.size());
+
+        if (!V->SerializeToArray(AR.data(), AR.size()))
+            return std::nullopt;
+
+        return Slice(AR.data(), V->ByteSizeLong());
+    }
+
     [[nodiscard]] static std::optional<const Page> deserialize(pb::Arena &Arena, const Slice &S)
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
@@ -185,16 +195,6 @@ public:
     [[nodiscard]] inline PageType pageType() const
     {
         return static_cast<PageType>(V->Page_case());
-    }
-
-    template<size_t N> [[nodiscard]] const std::optional<const Slice> serialize(std::array<char, N> &AR) const
-    {
-        assert(V->ByteSizeLong() <= AR.size());
-
-        if (!V->SerializeToArray(AR.data(), AR.size()))
-            return std::nullopt;
-
-        return Slice(AR.data(), V->ByteSizeLong());
     }
 
     [[nodiscard]] inline uint32_t size() const

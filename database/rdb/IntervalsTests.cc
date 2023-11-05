@@ -1,3 +1,4 @@
+#include "database/rdb/Intervals.h"
 #include "rdb-private.h"
 #include <gtest/gtest.h>
 
@@ -549,6 +550,20 @@ TEST(Intervals, IntervalsManager)
             EXPECT_TRUE(!Merged && IM.verify());
         }
         EXPECT_EQ(IM.size(), 512);
+
+        {
+            constexpr size_t SerializedSize = sizeof(uint32_t) + 512 * sizeof(CompressedInterval<IM.PageSlots>);
+            std::array<char, SerializedSize> Buffer;
+
+            auto OS = IM.serialize(Buffer);
+            EXPECT_TRUE(OS);
+
+            const Slice S(Buffer.data(), Buffer.size());
+            std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(S);
+            EXPECT_TRUE(OIM.has_value());
+
+            IM = OIM.value();
+        }
 
         EXPECT_TRUE(IM.after().has_value());
         EXPECT_EQ(IM.after(), Epoch);
