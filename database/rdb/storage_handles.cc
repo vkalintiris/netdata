@@ -106,46 +106,46 @@ time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *SMH, STORAGE_COLLECT_HANDLE
 {
     global_statistics_metric_oldest_time();
 
-    time_t Before = 0;
+    time_t After = 0;
 
     if (SMH)
     {
         rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(SMH);
-        std::optional<uint32_t> OB = MH->before();
+        std::optional<uint32_t> OB = MH->after();
         if (OB.has_value())
-            Before = OB.value();
+            After = OB.value();
     }
 
-    if (!Before && SCH)
+    if (!After && SCH)
     {
-        rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(SCH);
-        Before = rch->ch.before() / USEC_PER_SEC;
+        rdb_collect_handle *RCH = reinterpret_cast<rdb_collect_handle *>(SCH);
+        After = RCH->ch.after() / USEC_PER_SEC;
     }
 
-    return Before;
+    return After;
 }
 
 time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *SMH, STORAGE_COLLECT_HANDLE *SCH)
 {
     global_statistics_metric_latest_time();
 
-    time_t After = 0;
+    time_t Before = 0;
 
     if (SCH)
     {
-        rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(SCH);
-        After = rch->ch.after() / USEC_PER_SEC;
+        rdb_collect_handle *RCH = reinterpret_cast<rdb_collect_handle *>(SCH);
+        Before = RCH->ch.before() / USEC_PER_SEC;
     }
 
-    if (SMH && !After)
+    if (SMH && !Before)
     {
         rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(SMH);
-        std::optional<uint32_t> OA = MH->after();
+        std::optional<uint32_t> OA = MH->before();
         if (OA.has_value())
-            After = OA.value();
+            Before = OA.value();
     }
 
-    return After;
+    return Before;
 }
 
 /*===---------------------------------------------------------------------===*/
