@@ -176,6 +176,13 @@ private:
             fatal("Failed to put key %s (%s)", K.toString(true).c_str(), S.ToString().c_str());
         }
 
+        MH.addInterval(StartPIT, 1024, CP.updateEvery());
+        S = SI->setIntervalManager(MH.gid(), MH.mid(), MH.intervalManager());
+        if (!S.ok())
+        {
+            fatal("Failed to set IM for MH(%u, %u) - %s", MH.gid(), MH.mid(), S.ToString().c_str());
+        }
+
         // TODO: make 1024 an SI constant
         CP.reset(1024);
 

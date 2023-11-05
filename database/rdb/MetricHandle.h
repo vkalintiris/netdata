@@ -32,6 +32,16 @@ public:
         return MID;
     }
 
+    [[nodiscard]] inline const IntervalManager<1024>& intervalManager()
+    {
+        return IM;
+    }
+
+    inline void addInterval(uint32_t PIT, uint32_t Slots, uint32_t UpdateEvery)
+    {
+        IM.addInterval(PIT, Slots, UpdateEvery);
+    }
+
     template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> serialize(std::array<char, N> &AR) const
     {
         rdbv::MetricHandle V;
