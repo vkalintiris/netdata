@@ -1,11 +1,5 @@
-#include <iostream>
-#include <limits>
-#include <optional>
-#include <type_traits>
-#include <cassert>
-#include <cstdint>
-#include <climits>
 #include "absl/container/inlined_vector.h"
+#include "rdb-common.h"
 
 namespace rdb
 {
@@ -459,7 +453,7 @@ public:
     }
 
 private:
-    absl::InlinedVector<CompressedInterval<TierSlots>, 2> Intervals;
+    absl::InlinedVector<CompInt, 2> Intervals;
 };
 
 } // namespace rdb
