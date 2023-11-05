@@ -157,8 +157,6 @@ private:
         }
 
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
-        uint32_t Duration = CP.duration();
-
         const Key K{GID, MID, StartPIT};
 
         // TODO: the max size should be 4096 + 6 bytes. is there
@@ -170,6 +168,12 @@ private:
         if (!OV.has_value())
         {
             fatal("Failed to serialize page...");
+        }
+
+        Status S = SI->putMD(K.slice(), OV.value());
+        if (!S.ok())
+        {
+            fatal("Failed to put key %s (%s)", K.toString(true).c_str(), S.ToString().c_str());
         }
 
         // TODO: make 1024 an SI constant

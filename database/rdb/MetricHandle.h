@@ -57,7 +57,6 @@ public:
 private:
     uint32_t group_id;
     uint32_t metric_id;
-    IntervalManager<1024> IM;
 };
 
 } // namespace rdb

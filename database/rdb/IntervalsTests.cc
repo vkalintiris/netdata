@@ -255,17 +255,17 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
 
 TEST(Intervals, CompressedDuration)
 {
-    constexpr size_t TierSlots = 1024;
+    constexpr size_t TierSlots = CompressedDuration<>::PageSlots;
 
     {
-        CompressedDuration CD(100 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration CD(100 * TierSlots, 5);
         EXPECT_EQ(CD.slots(), 100 * CD.PageSlots);
         EXPECT_EQ(CD.duration(), CD.slots() * 5);
     }
 
     {
-        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
-        CompressedDuration RHS(200 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration LHS(100 * TierSlots, 5);
+        CompressedDuration RHS(200 * TierSlots, 5);
 
         EXPECT_TRUE(LHS.merge(RHS));
         
@@ -274,14 +274,14 @@ TEST(Intervals, CompressedDuration)
     }
 
     {
-        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
-        CompressedDuration RHS(200 * CompressedDuration<>::PageSlots, 15);
+        CompressedDuration LHS(100 * TierSlots, 5);
+        CompressedDuration RHS(200 * TierSlots, 15);
 
         EXPECT_FALSE(LHS.merge(RHS));
     }
 
     {
-        CompressedDuration LHS(100 * CompressedDuration<>::PageSlots, 5);
+        CompressedDuration LHS(100 * TierSlots, 5);
         CompressedDuration RHS(51, 15);
 
         EXPECT_FALSE(LHS.merge(RHS));
