@@ -169,23 +169,6 @@ void rdb_flush()
     SI->RDB->Flush(rocksdb::FlushOptions());
 }
 
-void oldestKey()
-{
-#if 0
-    rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
-
-    It->SeekToFirst();
-    if (!It->Valid()) {
-        fatal("Could not seek to first key!");
-    }
-
-    rdb::Key K = It->key();
-    netdata_log_error("Oldest key: %s", K.toString(true).c_str());
-
-    delete It;
-#endif
-}
-
 static void itAllKeys(void)
 {
     rocksdb::ReadOptions RO;
@@ -193,36 +176,21 @@ static void itAllKeys(void)
     RO.pin_data = true;
     RO.verify_checksums = false;
 
-    for (size_t i = 0; i != 5; i++) {
-        auto start_time = std::chrono::high_resolution_clock::now();
+    size_t vbytes = 0;
 
-        size_t num_keys = 0;
-        size_t max_key = 0;
-        size_t vbytes = 0;
-
-        std::unique_ptr<rocksdb::Iterator> it(SI->RDB->NewIterator(RO, SI->CFHs[1]));
-        for (it->SeekToFirst(); true; it->Next())
-        {
-            if (!it->Valid()) {
-                rocksdb::Status S = it->status();
-                netdata_log_error("Iterator status: %s", S.ToString().c_str());
-                break;
-            }
-
-            rdb::Key K = it->key();
-            vbytes += it->value().size();
-
-            max_key = K.mid();
-            num_keys++;
+    std::unique_ptr<rocksdb::Iterator> it(SI->RDB->NewIterator(RO, SI->CFHs[1]));
+    for (it->SeekToFirst(); true; it->Next())
+    {
+        if (!it->Valid()) {
+            rocksdb::Status S = it->status();
+            netdata_log_error("Iterator status: %s", S.ToString().c_str());
+            break;
         }
 
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
-
-        netdata_log_error("num_keys: %zu, max_key: %zu, vbytes: %zu", num_keys, max_key, vbytes);
-        netdata_log_error("Duration: %.2lf", seconds);
+        vbytes += it->value().size();
     }
+
+    netdata_log_error("All value bytes: %zu", vbytes);
 }
 
 int rdb_profile_main(int argc, char *argv[])
@@ -231,24 +199,21 @@ int rdb_profile_main(int argc, char *argv[])
     (void) argv;
 
     rdb_init();
-    itAllKeys();
-    SI->close();
-    return 0;
 
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 16;
+    size_t num_threads = 8;
     size_t num_groups = 500;
     size_t num_dims_per_group = 5;
-    size_t num_points_per_dimension = 6 * 3600;
+    size_t num_points_per_dimension = 2 * 24 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
                       num_threads, num_groups, num_dims_per_group, num_points_per_dimension);
 
-    std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
-    // std::vector<uint32_t> rand_vals;
+    // std::vector<uint32_t> rand_vals = genRandVector(1024 * 1024);
+    std::vector<uint32_t> rand_vals(1024 * 1024);
 
     std::vector<std::thread> threads;
     {
@@ -291,7 +256,6 @@ int rdb_profile_main(int argc, char *argv[])
                               pages_per_second, points_per_sec, mib_per_sec, capacity, getRSS());
 
             SI->RDB->Flush(rocksdb::FlushOptions());
-            oldestKey();
 
             if (PrevNumFlushedPages == NumFlushedPages)
             {

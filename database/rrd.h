@@ -660,7 +660,7 @@ int rrddim_collect_finalize(STORAGE_COLLECT_HANDLE *collection_handle);
 // returns 1 if it's safe to delete the dimension
 static inline int storage_engine_store_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
 {
-    internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
+    internal_fatal(!is_valid_backend(sch->backend), "STORAGE: invalid backend");
 
     UNUSED(smh);
     
@@ -687,7 +687,7 @@ void rrddim_store_metric_change_collection_frequency(STORAGE_COLLECT_HANDLE *col
 
 static inline void storage_engine_store_change_collection_frequency(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch, int update_every)
 {
-    internal_fatal(!is_valid_backend(collection_handle->backend), "STORAGE: invalid backend");
+    internal_fatal(!is_valid_backend(sch->backend), "STORAGE: invalid backend");
 
     UNUSED(smh);
 
