@@ -95,7 +95,7 @@ public:
 
         static_assert(sizeof(CompressedSlots) <= 2,
                       "Size of class exceeds 2 bytes threshold.");
-            
+
         if ((Slots % TierSlots) == 0)
         {
             BS.setUpper(1);
@@ -197,8 +197,8 @@ public:
 
         static_assert(sizeof(CompressedDuration<>) <= 4,
                       "Size of class exceeds 4 bytes threshold.");
-    } 
-        
+    }
+
     [[nodiscard]] inline uint32_t slots() const
     {
         return CS.slots();
@@ -206,7 +206,7 @@ public:
 
     [[nodiscard]] inline uint32_t updateEvery() const
     {
-        return UpdateEvery;    
+        return UpdateEvery;
     }
 
     [[nodiscard]] inline uint32_t duration() const
@@ -225,7 +225,7 @@ public:
         {
             return CS.merge(Other.CS);
         }
-        
+
         return false;
     }
 
@@ -272,7 +272,7 @@ public:
     {
         return After;
     }
-    
+
     [[nodiscard]] inline uint32_t before() const
     {
         return after() + CD.duration();
@@ -280,7 +280,7 @@ public:
 
     [[nodiscard]] inline uint32_t updateEvery() const
     {
-        return CD.UpdateEvery;       
+        return CD.UpdateEvery;
     }
 
     [[nodiscard]] inline uint32_t pageDuration() const
@@ -555,7 +555,7 @@ public:
 
     [[nodiscard]] inline size_t size() const
     {
-        return Intervals.size();   
+        return Intervals.size();
     }
 
     void printMergedIntervals() const

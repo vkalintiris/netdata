@@ -109,7 +109,7 @@ static void gen_thread(size_t thread_id,
                        const std::vector<uint32_t> &rand_vals)
 {
     UNUSED(num_threads);
-    
+
     char thread_name[128];
     snprintfz(thread_name, 1024, "genthread-%04zu", thread_id);
     pthread_setname_np(pthread_self(), thread_name);
@@ -120,7 +120,7 @@ static void gen_thread(size_t thread_id,
 
     usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
-    
+
     std::this_thread::sleep_for(std::chrono::seconds{1});
     netdata_log_error("Will free dimensions");
 
@@ -132,16 +132,16 @@ static rocksdb::Options get_level_db_options()
     rocksdb::Options Opts;
 
     Opts.create_if_missing = true;
-    
+
     Opts.compaction_style = rocksdb::kCompactionStyleLevel;
-    
+
     Opts.write_buffer_size = 128 * 1024 * 1024;
     Opts.target_file_size_base = 256 * 1024 * 1024;
     Opts.target_file_size_multiplier = 10;
 
     Opts.enable_blob_files = true;
     Opts.min_blob_size = 64;
-    
+
     Opts.manual_wal_flush = true;
     return Opts;
 }
@@ -149,7 +149,7 @@ static rocksdb::Options get_level_db_options()
 void rdb_init() {
     SI = new rdb::StorageInstance();
     RDB_StorageInstance = reinterpret_cast<STORAGE_INSTANCE *>(SI);
-    
+
     rocksdb::Options Opts = get_level_db_options();
 
     #if 0
@@ -178,7 +178,7 @@ void oldestKey()
     if (!It->Valid()) {
         fatal("Could not seek to first key!");
     }
-    
+
     rdb::Key K = It->key();
     netdata_log_error("Oldest key: %s", K.toString(true).c_str());
 
@@ -199,7 +199,7 @@ static void itAllKeys(void)
         size_t num_keys = 0;
         size_t max_key = 0;
         size_t vbytes = 0;
-    
+
         std::unique_ptr<rocksdb::Iterator> it(SI->RDB->NewIterator(RO, SI->CFHs[1]));
         for (it->SeekToFirst(); true; it->Next())
         {
@@ -224,7 +224,7 @@ static void itAllKeys(void)
         netdata_log_error("Duration: %.2lf", seconds);
     }
 }
-    
+
 int rdb_profile_main(int argc, char *argv[])
 {
     (void) argc;
@@ -234,7 +234,7 @@ int rdb_profile_main(int argc, char *argv[])
     itAllKeys();
     SI->close();
     return 0;
-    
+
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
@@ -263,7 +263,7 @@ int rdb_profile_main(int argc, char *argv[])
             threads.emplace_back(gen_thread, i, num_threads, num_groups, num_dims_per_group, num_points_per_dimension, rand_vals);
 
         B->wait();
-    
+
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
@@ -280,7 +280,7 @@ int rdb_profile_main(int argc, char *argv[])
 
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
             double seconds = duration.count() / static_cast<double>(MSEC_PER_SEC);
-            
+
             double pages_per_second = static_cast<double>(NumFlushedPages) / seconds;
             double points_per_sec = pages_per_second * 1024;
             double mib_per_sec = (points_per_sec * sizeof(storage_number)) / (1024.0 * 1024.0);
@@ -305,7 +305,7 @@ int rdb_profile_main(int argc, char *argv[])
         thread.join();
 
     itAllKeys();
-    
+
     SI->RDB->Flush(rocksdb::FlushOptions());
     SI->close();
     exit(EXIT_SUCCESS);

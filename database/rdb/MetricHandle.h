@@ -1,43 +1,35 @@
 #ifndef RDB_METRIC_HANDLE_H
 #define RDB_METRIC_HANDLE_H
 
+#include "database/rdb/Key.h"
 #include "rdb-common.h"
 #include "Intervals.h"
 
 namespace rdb {
-    
+
 class MetricHandle
 {
 private:
     MetricHandle() = delete;
-    MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID) { }
 
 public:
-    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t GID, uint32_t MID)
+    MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID), IM() { }
+
+    [[nodiscard]] static inline MetricHandle fromKey(const MetricKey &MK)
     {
-        return MetricHandle(GID, MID);
-    }
-
-    [[nodiscard]] static inline std::optional<MetricHandle> deserialize(const Slice &S)
-    {
-        rdbv::MetricHandle V;
-
-        if (!V.ParseFromArray(S.data(), S.size()))
-            return std::nullopt;
-
-        return fromIDs(V.group_id(), V.metric_id());
+        return MetricHandle(MK.gid(), MK.mid());
     }
 
     [[nodiscard]] inline uint32_t gid() const
     {
         return GID;
     }
-    
+
     [[nodiscard]] inline uint32_t mid() const
     {
         return MID;
     }
-    
+
     template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> serialize(std::array<char, N> &AR) const
     {
         rdbv::MetricHandle V;

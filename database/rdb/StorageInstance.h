@@ -1,6 +1,7 @@
 #ifndef RDB_STORAGE_INSTANCE_H
 #define RDB_STORAGE_INSTANCE_H
 
+#include "database/rdb/Intervals.h"
 #include "rdb-common.h"
 
 #include "Key.h"
@@ -16,7 +17,7 @@ struct rdb_metric_handle
 
     uint32_t rmg;
     rdb_collect_handle *rch;
-    
+
     rdb_metric_handle() :
         uuid{}, id{0}, rc{0}, rmg{0}, rch{nullptr}
     { }
@@ -57,6 +58,35 @@ namespace rdb {
 class StorageInstance
 {
 public:
+    [[nodiscard]] inline std::optional<IntervalManager<1024>> getIntervalManager(uint32_t GID, uint32_t MID) const
+    {
+        using namespace rocksdb;
+
+        MetricKey MK(GID, MID);
+        PinnableSlice PV;
+
+        Status S = RDB->Get(rocksdb::ReadOptions(), CFHs[2], MK.slice(), &PV);
+        if (!S.ok())
+        {
+            // TODO: The Status check is very generic. We should check for
+            // some subcode that denotes a missing metric key.
+            return std::nullopt;
+        }
+
+        // TODO: verify copy-elision
+        return IntervalManager<1024>::deserialize(PV);
+    }
+
+    [[nodiscard]] inline Status setMetricHandle(const uuid_t &uuid, uint32_t GID, uint32_t MID)
+    {
+        using namespace rocksdb;
+
+        Slice K(reinterpret_cast<const char *>(uuid), sizeof(uuid_t));
+        MetricKey MK(GID, MID);
+
+        return putMH(K, MK.slice());
+    }
+
     [[nodiscard]] inline std::optional<MetricHandle> getMetricHandle(const uuid_t &uuid) const
     {
         using namespace rocksdb;
@@ -72,57 +102,13 @@ public:
             return std::nullopt;
         }
 
-        return MetricHandle::deserialize(PV);
-    }
-
-    [[nodiscard]] inline std::optional<MetricHandle> createMetricHandle(const uuid_t &uuid, const MetricHandle &MH)
-    {
-        using namespace rocksdb;
-
-        Slice K(reinterpret_cast<const char *>(uuid), sizeof(uuid_t));
-
-        std::array<char, 1024> Scratch;
-        std::optional<Slice> V = MH.serialize(Scratch);
-        if (!V.has_value())
-        {
-            fatal("Could not flush metric handle");
-        }
-
-        Status S = putMH(K, V.value());
-        if (!S.ok())
-        {
-            fatal("Could not put metric handle");
+        MetricKey MK(PV);
+        std::optional<IntervalManager<1024>> IM = getIntervalManager(MK.gid(), MK.mid());
+        if (!IM.has_value())
             return std::nullopt;
-        }
 
-        return MH;
+        return MetricHandle::fromKey(PV);
     }
-
-    // [[nodiscard]] inline std::optional<MetricHandle> getOrCreateMetricHandle(const uuid_t &uuid, const MetricHandle &MH)
-    // {
-    //     using namespace rocksdb;
-
-    //     std::optional<MetricHandle> ExistingMH = getMetricHandle(uuid);
-    //     if (ExistingMH.has_value())
-    //         return ExistingMH;
-
-    //     Slice K(reinterpret_cast<const char *>(uuid), sizeof(uuid_t));
-
-    //     std::array<char, 1024> Scratch;
-    //     std::optional<Slice> V = MH.flush(Scratch);
-    //     if (!V.has_value())
-    //     {
-    //         fatal("Could not flush metric handle");
-    //     }
-
-    //     Status S = RDB->Put(WriteOptions(), CFHs[2], K, V.value());
-    //     if (!S.ok()) {
-    //         fatal("Could not put metric handle");
-    //         return std::nullopt;
-    //     }
-
-    //     return MH;
-    // }
 
 private:
     static rocksdb::ColumnFamilyOptions levelStyleOpts(size_t MemtableBudget)
@@ -211,7 +197,7 @@ public:
 
     rocksdb::Status open(rocksdb::Options Opts, const char *Path)
     {
-        using namespace rocksdb;       
+        using namespace rocksdb;
 
         Opts.error_if_exists = false;
         Opts.create_if_missing = true;
@@ -263,7 +249,7 @@ public:
     void close()
     {
         using namespace rocksdb;
-            
+
         FlushOptions FO;
         FO.allow_write_stall = true;
         FO.wait = true;
@@ -273,6 +259,7 @@ public:
 
         RDB->Close();
         delete RDB;
+
         RDB = nullptr;
     }
 

@@ -338,7 +338,7 @@ public:
             {
                 StorageNumbersPage *SNP = V->mutable_storage_numbers_page();
                 pb::RepeatedField<uint32_t> *SNs = SNP->mutable_storage_numbers();
-                
+
                 SNs->Clear();
                 break;
             }

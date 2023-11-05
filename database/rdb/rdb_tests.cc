@@ -29,7 +29,7 @@ static rocksdb::Options get_db_options()
     Opts.compaction_style = rocksdb::kCompactionStyleFIFO;
     Opts.write_buffer_size = 512 * 1024 * 1024;
     Opts.target_file_size_base = 32 * 1024 * 1024;
-    Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base; 
+    Opts.max_bytes_for_level_base = 10 * Opts.target_file_size_base;
     Opts.manual_wal_flush = true;
     Opts.stats_dump_period_sec = 1;
 
@@ -125,7 +125,7 @@ TEST(rdb, CollectionHandle)
     usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
-    auto MH = MetricHandle::fromIDs(1, 1);
+    MetricHandle MH(1, 1);
     auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
@@ -251,7 +251,7 @@ TEST(rdb, CollectionHandleQuery)
     usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena Arena;
-    auto MH = MetricHandle::fromIDs(1, 1);
+    MetricHandle MH(1, 1);
     auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
@@ -351,7 +351,7 @@ TEST(Gpt, InvalidTimeRangeQuery)
     pb::Arena Arena;
     PageOptions PO;
     PO.update_every = 5;
-    auto MH = MetricHandle::fromIDs(1, 1);
+    MetricHandle MH(1, 1);
     auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     ASSERT_TRUE(CH.has_value());
 
@@ -491,7 +491,7 @@ TEST(rdb, PageIterator)
     std::optional<Page> P = Page::create(Arena, PO);
     EXPECT_TRUE(P.has_value());
 
-    auto MH = MetricHandle::fromIDs(1, 1);
+    MetricHandle MH(1, 1);
     auto CH = CollectionHandle::create(Arena, PO, MH.gid(), MH.mid());
     EXPECT_TRUE(CH.has_value());
 
@@ -580,7 +580,7 @@ TEST(rdb, FlushedQueryHandle)
     size_t values_per_hour = 10;
 
     pb::Arena Arena;
-    auto MH = MetricHandle::fromIDs(1, 1);
+    MetricHandle MH(1, 1);
     STORAGE_POINT SP = {
         .min = 0, .max = 0, .sum = 0,
         .start_time_s = 0, .end_time_s = 0,

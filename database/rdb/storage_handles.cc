@@ -2,6 +2,7 @@
 #include "database/rdb/protos/rdbv.pb.h"
 #include "database/rrd.h"
 #include "rdb-private.h"
+#include <cstdint>
 
 namespace pb = google::protobuf;
 
@@ -47,13 +48,14 @@ STORAGE_METRIC_HANDLE *rdb_metric_create(STORAGE_INSTANCE *si, STORAGE_METRICS_G
     if (smh)
         return smh;
 
-    rdb::MetricHandle MH = rdb::MetricHandle::fromIDs(reinterpret_cast<uintptr_t>(smg), ++MaxMetricID);
-    std::optional<rdb::MetricHandle> OMH = SI->createMetricHandle(rd->metric_uuid, MH);
+    uint32_t GID = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(smg));
+    uint32_t MID = ++MaxMetricID;
 
-    if (!OMH.has_value())
+    Status S = SI->setMetricHandle(rd->metric_uuid, GID, MID);
+    if (!S.ok())
         return nullptr;
 
-    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(new rdb::MetricHandle(std::move(OMH.value())));
+    return reinterpret_cast<STORAGE_METRIC_HANDLE *>(new rdb::MetricHandle(GID, MID));
 }
 
 STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
@@ -154,9 +156,9 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
 {
     global_statistics_store_metric_init();
     global_statistics_rdb_collection_handles_incr();
-    
+
     using namespace rdb;
-    
+
     if (!ThreadArena) {
         pb::ArenaOptions AO;
         AO.start_block_size = 1024 * 1024;
@@ -174,7 +176,7 @@ STORAGE_COLLECT_HANDLE *rdb_store_metric_init(STORAGE_METRIC_HANDLE *smh,
         fatal("Could not create collection handle");
 
     CH->setUpdateEvery(*MH, update_every * USEC_PER_SEC);
-    
+
     rdb_collect_handle *rch = new rdb_collect_handle(CH.value());
     return reinterpret_cast<STORAGE_COLLECT_HANDLE *>(rch);
 }
@@ -191,7 +193,7 @@ void rdb_store_metric_next(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *s
 
     MetricHandle *MH = reinterpret_cast<MetricHandle *>(smh);
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
-    
+
 
     STORAGE_POINT SP = {
         .min = min_value,
@@ -284,7 +286,7 @@ struct rdb_query_handle
             if (rmh->rch->ch.after() >= (AfterK.pit() / USEC_PER_SEC))
                 return;
         }
-        
+
         It = SI->getIteratorMD(rocksdb::ReadOptions());
         if (!It)
             fatal("Could not get new allocator from RocksDB");

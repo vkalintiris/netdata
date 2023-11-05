@@ -8,7 +8,7 @@
 #include "StorageInstance.h"
 
 namespace rdb {
-    
+
 class CollectionHandle
 {
 public:
@@ -136,7 +136,7 @@ private:
             fatal("WTF?");
         }
     }
-        
+
     inline void flush_internal(MetricHandle &MH, bool Protect)
     {
         if (Protect)
@@ -214,7 +214,7 @@ private:
     [[nodiscard]] inline usec_t before_internal(bool Protect) const
     {
         usec_t Before = 0;
-            
+
         if (Protect)
         {
             // netdata_log_error("GVD[before -- 00]: lock");

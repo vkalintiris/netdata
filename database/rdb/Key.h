@@ -57,6 +57,151 @@ private:
 };
 
 /**
+ * @brief Represents a metric key in the RocksDB database.
+ *
+ * A key is composed of 2 fields: `group-id` and `metric-id`
+ * The type of each field is `uint32_t` and is saved in big-endian order.
+ *
+*/
+class MetricKey
+{
+public:
+    /**
+     * @brief Number of fields in the key.
+    */
+    constexpr static size_t Fields = 2;
+
+    /**
+     * @brief Total size of the key in bytes.
+    */
+    constexpr static size_t Bytes = Fields * sizeof(uint32_t);
+
+private:
+    constexpr static size_t GroupIdField = 0;
+    constexpr static size_t MetricIdField = 1;
+
+private:
+    [[nodiscard]] inline uint32_t field(size_t i) const
+    {
+        assert(i < 2);
+
+        uint32_t f;
+        memcpy(&f, &Scratch[i * sizeof(uint32_t)], sizeof(uint32_t));
+        return be32toh(f);
+    }
+
+public:
+    /**
+     * @brief Min key with GroupID, MetricID and PointInTime equal to 0.
+    */
+    static const MetricKey min()
+    {
+        return MetricKey(0, 0);
+    }
+
+    /**
+     * @brief Max key with GroupID, MetricID and PointInTime equal to ~0u.
+    */
+    static const MetricKey max()
+    {
+        uint32_t m = std::numeric_limits<uint32_t>::max();
+        return MetricKey(m, m);
+    }
+
+    inline MetricKey() = default;
+
+    /**
+     * @brief Constructs a Key with the given field values.
+     * @param gid GroupId value.
+     * @param mid MetricId value.
+     * @param pit PointInTime value.
+    */
+    inline MetricKey(uint32_t gid, uint32_t mid)
+    {
+        gid = htobe32(gid);
+        mid = htobe32(mid);
+
+        memcpy(&Scratch[GroupIdField * sizeof(uint32_t)], &gid, sizeof(uint32_t));
+        memcpy(&Scratch[MetricIdField * sizeof(uint32_t)], &mid, sizeof(uint32_t));
+    }
+
+    /**
+     * @brief Constructor to initialize the key from a Slice.
+     * @param S The Slice containing the key bytes.
+    */
+    inline MetricKey(const Slice &S)
+    {
+        memcpy(&Scratch[0], S.data(), MetricKey::Bytes);
+    }
+
+    /**
+     * @brief Constructor to initialize the key from a char array.
+     * @param S The array containing the key bytes.
+    */
+    inline MetricKey(const std::array<char, MetricKey::Bytes> &AR)
+    {
+        assert(AR.size() >= MetricKey::Bytes);
+        memcpy(&Scratch[0], AR.data(), AR.size());
+    }
+
+    /**
+     * @brief Returns a Slice representation of the key.
+     * @return The Slice representation of the key.
+    */
+    [[nodiscard]] inline const Slice slice() const
+    {
+        return Slice(Scratch.data(), Scratch.size());
+    }
+
+    /**
+     * @brief Gets the GroupId component of the key.
+     * @return The GroupId value.
+    */
+    [[nodiscard]] inline uint32_t gid() const
+    {
+        return field(GroupIdField);
+    }
+
+    /**
+     * @brief Gets the MetricId component of the key.
+     * @return The MetricId value.
+    */
+    [[nodiscard]] inline uint32_t mid() const
+    {
+        return field(MetricIdField);
+    }
+
+    /**
+     * @brief Returns a string representation of the key.
+     * @param hex If true, display values in hexadecimal.
+     * @return The string representation of the key.
+    */
+    [[nodiscard]] std::string toString(bool hex = false) const
+    {
+        std::array<char, 1024> buf;
+
+        if (hex)
+        {
+            snprintfz(buf.data(), buf.size() - 1, "gid=%u, mid=%u (0x%s)",
+                      gid(), mid(), slice().ToString(true).c_str());
+        }
+        else
+        {
+            snprintfz(buf.data(), buf.size() - 1, "gid=%u, mid=%u",
+                      gid(), mid());
+        }
+
+        return std::string(buf.data());
+    }
+
+private:
+    /**
+     * @brief Internal storage for the key data.
+    */
+    std::array<char, MetricKey::Bytes> Scratch;
+};
+
+/**
  * @brief Represents a key in the RocksDB database.
  *
  * A key is composed of three fields: `group-id`, `metric-id` and `point-in-time`.
@@ -99,7 +244,7 @@ public:
     {
         return Key(0, 0, 0);
     }
-        
+
     /**
      * @brief Max Key with GroupID, MetricID and PointInTime equal to ~0u.
     */
@@ -203,7 +348,7 @@ public:
                       gid(), mid(), pit());
         }
 
-        return std::string(buf.data()); 
+        return std::string(buf.data());
     }
 
 private:

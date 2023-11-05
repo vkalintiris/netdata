@@ -12,7 +12,7 @@ TEST(Intervals, BitSplitter)
         EXPECT_EQ(BS.getLower(), 0x0);
 
         {
-            BitSplitter<uint16_t, 0> BS;   
+            BitSplitter<uint16_t, 0> BS;
             BS.setUpper(0xDEAD);
             BS.setLower(0);
             EXPECT_EQ(BS.getUpper(), 0xDEAD);
@@ -26,7 +26,7 @@ TEST(Intervals, BitSplitter)
         EXPECT_EQ(BS.getLower(), 0x1);
 
         {
-            BitSplitter<uint16_t, 1> BS;   
+            BitSplitter<uint16_t, 1> BS;
             BS.setUpper(0xDEAD);
             BS.setLower(1);
             EXPECT_EQ(BS.getUpper(), 0xDEAD & 0x7FFF);
@@ -64,7 +64,7 @@ TEST(Intervals, BitSplitter)
         EXPECT_EQ(BS.getLower(), 0x7FFF);
 
         {
-            BitSplitter<uint16_t, 15> BS;   
+            BitSplitter<uint16_t, 15> BS;
             BS.setUpper(0xDEAD);
             BS.setLower(0xDEAD);
             EXPECT_EQ(BS.getUpper(), 0xDEAD & 0x1);
@@ -83,7 +83,7 @@ TEST(Intervals, BitSplitter)
         EXPECT_EQ(BS.getUpper(), 0xDEADBEEF >> 1);
         EXPECT_EQ(BS.getLower(), 0x1);
     }
-    
+
     {
         BitSplitter<uint32_t, 28> BS(0xDEADBEEF);
         EXPECT_EQ(BS.getUpper(), 0xD);
@@ -268,7 +268,7 @@ TEST(Intervals, CompressedDuration)
         CompressedDuration RHS(200 * TierSlots, 5);
 
         EXPECT_TRUE(LHS.merge(RHS));
-        
+
         EXPECT_EQ(LHS.slots(), 300 * LHS.PageSlots);
         EXPECT_EQ(LHS.duration(), LHS.slots() * 5);
     }
@@ -336,7 +336,7 @@ TEST(Intervals, CompressedInterval)
 
         EXPECT_FALSE(LHS.merge(RHS));
     }
-    
+
     {
         CompressedInterval LHS(100, 50, 10);
         CompressedInterval RHS(LHS.before(), 50, 10);
@@ -369,7 +369,7 @@ TEST(Intervals, CompressedInterval)
 
         {
             // Test dropping always the 1st page
-            
+
             CompressedInterval<PageSlots> TmpCI = CI;
 
             for (size_t Idx = 0; Idx != PageSlots; Idx++)
@@ -385,7 +385,7 @@ TEST(Intervals, CompressedInterval)
                 EXPECT_EQ(TmpCI.before(), CI.before());
             }
         }
-        
+
         {
             // Test dropping always the last page
 
@@ -405,7 +405,7 @@ TEST(Intervals, CompressedInterval)
                 EXPECT_EQ(TmpCI.before(), CI.before() - PageDuration * (Idx + 1));
             }
         }
-        
+
         {
             // Test dropping the 2nd page
 
@@ -489,10 +489,10 @@ TEST(Intervals, CompressedInterval)
             size_t UpdateEvery = 3;
 
             const CompressedInterval<PageSlots> CI(3600, Slots, UpdateEvery);
-            
+
             std::pair<std::optional<CompressedInterval<PageSlots>>,
                       std::optional<CompressedInterval<PageSlots>>> P;
-            
+
             P = CI.drop(CI.before() + 1);
             EXPECT_TRUE(P.first.has_value());
             EXPECT_FALSE(P.second.has_value());
@@ -576,14 +576,14 @@ TEST(Intervals, IntervalsManager)
         unsigned Seed = std::chrono::system_clock::now().time_since_epoch().count();
         std::default_random_engine Eng(Seed);
         std::shuffle(Indexes.begin(), Indexes.end(), Eng);
-    
+
         for (size_t Idx : Indexes)
         {
             bool Merged = IM.addInterval(Epoch + Idx * PageDuration, IM.PageSlots, UpdateEvery);
             EXPECT_TRUE(Merged && IM.verify());
         }
         EXPECT_EQ(IM.size(), 1);
-    
+
         for (size_t Idx = 0; Idx != 2; Idx++)
         {
             EXPECT_TRUE(IM.after().has_value());
@@ -606,7 +606,7 @@ TEST(Intervals, IntervalsManager)
 
     {
         // Test that we can't add overlapping intervals
-        
+
         IntervalManager<60> IM;
 
         size_t Epoch = 3600;
