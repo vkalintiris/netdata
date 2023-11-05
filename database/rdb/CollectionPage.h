@@ -55,9 +55,9 @@ public:
     }
 
     template<size_t N>
-    [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
+    [[nodiscard]] const std::optional<const Slice> serialize(std::array<char, N> &AR) const
     {
-        return Inner.flush(AR);
+        return Inner.serialize(AR);
     }
 
     [[nodiscard]] inline

@@ -60,7 +60,7 @@ private:
             if (K.mid() != AfterK.mid())
                 return false;
 
-            std::optional<Page> P = Page::fromSlice(Arena, It.value());
+            std::optional<Page> P = Page::deserialize(Arena, It.value());
 
             if (P.has_value())
             {

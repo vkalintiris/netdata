@@ -19,7 +19,7 @@ public:
         return MH;
     }
 
-    [[nodiscard]] static inline std::optional<MetricHandle> fromSlice(const Slice &S)
+    [[nodiscard]] static inline std::optional<MetricHandle> deserialize(const Slice &S)
     {
         rdbv::MetricHandle V;
 
@@ -39,7 +39,7 @@ public:
         return metric_id;
     }
     
-    template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> flush(std::array<char, N> &AR) const
+    template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> serialize(std::array<char, N> &AR) const
     {
         rdbv::MetricHandle V;
 

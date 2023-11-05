@@ -153,7 +153,7 @@ public:
     };
 
 public:
-    [[nodiscard]] static std::optional<const Page> fromSlice(pb::Arena &Arena, const Slice &S)
+    [[nodiscard]] static std::optional<const Page> deserialize(pb::Arena &Arena, const Slice &S)
     {
         Value *V = pb::Arena::CreateMessage<Value>(&Arena);
         if (!V)
@@ -187,7 +187,7 @@ public:
         return static_cast<PageType>(V->Page_case());
     }
 
-    template<size_t N> [[nodiscard]] const std::optional<const Slice> flush(std::array<char, N> &AR) const
+    template<size_t N> [[nodiscard]] const std::optional<const Slice> serialize(std::array<char, N> &AR) const
     {
         assert(V->ByteSizeLong() <= AR.size());
 

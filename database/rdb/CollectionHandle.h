@@ -166,10 +166,10 @@ private:
         // ie. are we hitting hot vs. cold memory on serialization?
         std::array<char, 64 * 1024> bytes;
 
-        std::optional<const Slice> OV = CP.flush(bytes);
+        std::optional<const Slice> OV = CP.serialize(bytes);
         if (!OV.has_value())
         {
-            fatal("Failed to flush page...");
+            fatal("Failed to serialize page...");
         }
 
         // TODO: make 1024 an SI constant

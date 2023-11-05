@@ -72,7 +72,7 @@ public:
             return std::nullopt;
         }
 
-        return MetricHandle::fromSlice(PV);
+        return MetricHandle::deserialize(PV);
     }
 
     [[nodiscard]] inline std::optional<MetricHandle> createMetricHandle(const uuid_t &uuid, const MetricHandle &MH)
@@ -82,7 +82,7 @@ public:
         Slice K(reinterpret_cast<const char *>(uuid), sizeof(uuid_t));
 
         std::array<char, 1024> Scratch;
-        std::optional<Slice> V = MH.flush(Scratch);
+        std::optional<Slice> V = MH.serialize(Scratch);
         if (!V.has_value())
         {
             fatal("Could not flush metric handle");
