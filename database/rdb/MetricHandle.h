@@ -15,6 +15,8 @@ private:
 public:
     MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID), IM() { }
 
+    MetricHandle(uint32_t GID, uint32_t MID, IntervalManager<1024> &&IM) : GID(GID), MID(MID), IM(IM) { }
+
     [[nodiscard]] static inline MetricHandle fromKey(const MetricKey &MK)
     {
         return MetricHandle(MK.gid(), MK.mid());

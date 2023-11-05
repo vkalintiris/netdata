@@ -58,6 +58,18 @@ namespace rdb {
 class StorageInstance
 {
 public:
+    [[nodiscard]] inline Status setIntervalManager(uint32_t GID, uint32_t MID, const IntervalManager<1024> &IM)
+    {
+        std::array<char, 4096> AR;
+        auto OV = IM.serialize(AR);
+        if (!OV) {
+            return Status::InvalidArgument(Status::kNoSpace);
+        }
+
+        MetricKey MK(GID, MID);
+        return putIM(MK.slice(), OV.value());
+    }
+
     [[nodiscard]] inline std::optional<IntervalManager<1024>> getIntervalManager(uint32_t GID, uint32_t MID) const
     {
         using namespace rocksdb;
@@ -77,17 +89,22 @@ public:
         return IntervalManager<1024>::deserialize(PV);
     }
 
-    [[nodiscard]] inline Status setMetricHandle(const uuid_t &uuid, uint32_t GID, uint32_t MID)
+    [[nodiscard]] inline Status setUUIDtoIDs(const uuid_t &uuid, uint32_t GID, uint32_t MID)
     {
         using namespace rocksdb;
 
         Slice K(reinterpret_cast<const char *>(uuid), sizeof(uuid_t));
         MetricKey MK(GID, MID);
 
-        return putMH(K, MK.slice());
+        Status S = putMH(K, MK.slice());
+        if (!S.ok())
+            return S;
+
+        IntervalManager<1024> IM;
+        return setIntervalManager(GID, MID, IM);
     }
 
-    [[nodiscard]] inline std::optional<MetricHandle> getMetricHandle(const uuid_t &uuid) const
+    [[nodiscard]] inline std::optional<MetricHandle> getMetricHandleFromUUID(const uuid_t &uuid) const
     {
         using namespace rocksdb;
 
@@ -107,7 +124,7 @@ public:
         if (!IM.has_value())
             return std::nullopt;
 
-        return MetricHandle::fromKey(PV);
+        return MetricHandle(MK.gid(), MK.mid(), std::move(IM.value()));
     }
 
 private:
@@ -212,7 +229,10 @@ public:
         ColumnFamilyOptions mhCFO{};
         ColumnFamilyDescriptor mhCFD("mh", mhCFO);
 
-        std::vector<ColumnFamilyDescriptor> CFDs = { defaultCFD, mdCFD, mhCFD };
+        ColumnFamilyOptions imCFO{};
+        ColumnFamilyDescriptor imCFD("im", imCFO);
+
+        std::vector<ColumnFamilyDescriptor> CFDs = { defaultCFD, mdCFD, mhCFD, imCFD };
 
         return rocksdb::DB::Open(Opts, Path, CFDs, &CFHs, &RDB);
     }
@@ -239,6 +259,14 @@ public:
         WO.disableWAL = true;
         WO.sync = false;
         return RDB->Put(WO, CFHs[2], K, V);
+    }
+
+    rocksdb::Status putIM(const rocksdb::Slice &K, const rocksdb::Slice &V)
+    {
+        rocksdb::WriteOptions WO;
+        WO.disableWAL = true;
+        WO.sync = false;
+        return RDB->Put(WO, CFHs[3], K, V);
     }
 
     rocksdb::Iterator *getIteratorMD(const rocksdb::ReadOptions &RO)

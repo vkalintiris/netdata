@@ -51,7 +51,7 @@ STORAGE_METRIC_HANDLE *rdb_metric_create(STORAGE_INSTANCE *si, STORAGE_METRICS_G
     uint32_t GID = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(smg));
     uint32_t MID = ++MaxMetricID;
 
-    Status S = SI->setMetricHandle(rd->metric_uuid, GID, MID);
+    Status S = SI->setUUIDtoIDs(rd->metric_uuid, GID, MID);
     if (!S.ok())
         return nullptr;
 
@@ -64,7 +64,7 @@ STORAGE_METRIC_HANDLE *rdb_metric_get(STORAGE_INSTANCE *si, uuid_t *uuid)
 
     global_statistics_metric_get();
 
-    std::optional<rdb::MetricHandle> OMH = SI->getMetricHandle(*uuid);
+    std::optional<rdb::MetricHandle> OMH = SI->getMetricHandleFromUUID(*uuid);
     if (!OMH.has_value())
         return nullptr;
 
