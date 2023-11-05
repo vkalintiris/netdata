@@ -8,15 +8,14 @@ namespace rdb {
     
 class MetricHandle
 {
+private:
+    MetricHandle() = delete;
+    MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID) { }
+
 public:
-    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t gid, uint32_t mid)
+    [[nodiscard]] static inline MetricHandle fromIDs(uint32_t GID, uint32_t MID)
     {
-        MetricHandle MH;
-
-        MH.group_id = gid;
-        MH.metric_id = mid;
-
-        return MH;
+        return MetricHandle(GID, MID);
     }
 
     [[nodiscard]] static inline std::optional<MetricHandle> deserialize(const Slice &S)
@@ -31,20 +30,20 @@ public:
 
     [[nodiscard]] inline uint32_t gid() const
     {
-        return group_id;
+        return GID;
     }
     
     [[nodiscard]] inline uint32_t mid() const
     {
-        return metric_id;
+        return MID;
     }
     
     template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> serialize(std::array<char, N> &AR) const
     {
         rdbv::MetricHandle V;
 
-        V.set_group_id(group_id);
-        V.set_metric_id(metric_id);
+        V.set_group_id(GID);
+        V.set_metric_id(MID);
 
         assert(V.ByteSizeLong() <= AR.size());
 
@@ -55,8 +54,9 @@ public:
     }
 
 private:
-    uint32_t group_id;
-    uint32_t metric_id;
+    uint32_t GID;
+    uint32_t MID;
+    IntervalManager<1024> IM;
 };
 
 } // namespace rdb
