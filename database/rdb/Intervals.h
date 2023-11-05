@@ -1,3 +1,6 @@
+#ifndef RDB_INTERVALS_H
+#define RDB_INTERVALS_H
+
 #include "absl/container/inlined_vector.h"
 #include "rdb-common.h"
 
@@ -457,3 +460,5 @@ private:
 };
 
 } // namespace rdb
+
+#endif /* RDB_INTERVALS_H */
