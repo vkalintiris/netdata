@@ -714,7 +714,7 @@ if(ENABLE_RDB)
                                  database/rdb/rdb-common.h
                                  database/rdb/rdb.h
                                  database/rdb/rdb-private.h
-                                 database/rdb/Index/Intervals.h
+                                 database/rdb/Intervals.h
                                  database/rdb/storage_handles.cc)
 endif()
 
@@ -1503,7 +1503,7 @@ if(ENABLE_RDB)
 
         if(ENABLE_TESTS)
                 list(APPEND NETDATA_FILES "database/rdb/rdb_tests.cc")
-                list(APPEND NETDATA_FILES "database/rdb/Index/IntervalsTests.cc")
+                list(APPEND NETDATA_FILES "database/rdb/IntervalsTests.cc")
         endif()
 endif()
 

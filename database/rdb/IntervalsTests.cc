@@ -1,4 +1,4 @@
-#include "../rdb-private.h"
+#include "rdb-private.h"
 #include <gtest/gtest.h>
 
 using namespace rdb;
