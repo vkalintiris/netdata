@@ -530,15 +530,22 @@ public:
 
         auto cmpFunc = [](const CompInt &LHS, const CompInt &RHS)
         {
-            return LHS.after() < RHS.after();
+            return (LHS.after() <= RHS.after()) && (LHS.before() < RHS.after());
         };
         auto It = std::lower_bound(Intervals.begin(), Intervals.end(), NeedleCI, cmpFunc);
 
         if (It == Intervals.end())
+        {
             return false;
+        }
 
         CompInt &CI = *It;
-        printf("\nCI: [%u, %u]\n", CI.after(), CI.before());
+
+        if (NeedleCI.after() < CI.after() || NeedleCI.after() >= CI.before())
+        {
+            return false;
+        }
+
         auto [OLHS, ORHS] = CI.drop(PIT);
 
         if (!OLHS.has_value() && !ORHS.has_value())

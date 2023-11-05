@@ -83,7 +83,7 @@ static void free_random_dimensions(std::vector<dimension_t> &dimensions)
 static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_points_per_dimension, usec_t point_in_time, const std::vector<uint32_t> &rand_vals)
 {
     uint8_t ptr = 0;
-    
+
     for (size_t i = 0; i != num_points_per_dimension; i++)
     {
         for (size_t j = 0; j != dimensions.size(); j++)

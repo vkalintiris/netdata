@@ -1,5 +1,5 @@
-#include "database/rdb/Intervals.h"
 #include "rdb-private.h"
+#include <cstddef>
 #include <gtest/gtest.h>
 
 using namespace rdb;
@@ -605,46 +605,213 @@ TEST(Intervals, IntervalsManager)
     }
 
     {
-        // Test that we can't add overlapping intervals
-
-        IntervalManager<60> IM;
-
         size_t Epoch = 3600;
         size_t UpdateEvery = 1;
-        size_t PageDuration = IM.PageSlots * UpdateEvery;
+        constexpr size_t PageSlots = 60;
+        size_t PageDuration = PageSlots * UpdateEvery;
 
-        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+        #if 1
+        {
+            // Test that we can't add overlapping intervals
 
-        IM.addInterval(Epoch, 10, UpdateEvery);
-        EXPECT_EQ(IM.after(), Epoch);
-        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+            IntervalManager<PageSlots> IM;
 
-        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
-        EXPECT_EQ(IM.after(), Epoch);
-        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
 
-        IM.addInterval(Epoch, 2 * IM.PageSlots, UpdateEvery);
-        EXPECT_EQ(IM.after(), Epoch);
-        EXPECT_EQ(IM.before(), Epoch + PageDuration);
+            IM.addInterval(Epoch, 10, UpdateEvery);
+            EXPECT_EQ(IM.after(), Epoch);
+            EXPECT_EQ(IM.before(), Epoch + PageDuration);
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_EQ(IM.after(), Epoch);
+            EXPECT_EQ(IM.before(), Epoch + PageDuration);
+
+            IM.addInterval(Epoch, 2 * IM.PageSlots, UpdateEvery);
+            EXPECT_EQ(IM.after(), Epoch);
+            EXPECT_EQ(IM.before(), Epoch + PageDuration);
+        }
+
+        {
+            // Add/rm the same interval. Make sure IM returns null opts.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_TRUE(IM.drop(Epoch));
+
+            EXPECT_FALSE(IM.after().has_value());
+            EXPECT_FALSE(IM.before().has_value());
+        }
+
+        {
+            // Add an interval and remove a timestamp within the interval.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_TRUE(IM.drop(Epoch));
+
+            EXPECT_EQ(IM.size(), 0);
+            EXPECT_FALSE(IM.after().has_value());
+            EXPECT_FALSE(IM.before().has_value());
+        }
+
+        {
+            // Add an interval and remove a timestamp outside the interval.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_FALSE(IM.drop(Epoch + PageDuration + 1));
+            EXPECT_EQ(IM.size(), 1);
+        }
+
+        {
+            // Add an interval less than the page's duration and remove it.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, 2, UpdateEvery);
+            EXPECT_TRUE(IM.drop(Epoch));
+            EXPECT_EQ(IM.size(), 0);
+        }
+
+        {
+            // Add an interval and remove a timestamp before the interval.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_FALSE(IM.drop(Epoch - 1));
+            EXPECT_EQ(IM.size(), 1);
+        }
+
+        {
+            // Add an interval and remove a timestamp after the interval.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            EXPECT_FALSE(IM.drop(Epoch + PageDuration));
+            EXPECT_EQ(IM.size(), 1);
+        }
+
+        {
+            // Add two intervals and remove the first one.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            IM.addInterval(IM.before().value(), IM.PageSlots, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), Epoch + PageDuration);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), Epoch + 2 * PageDuration);
+        }
+
+        {
+            // Add two intervals and remove the second one.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+            IM.addInterval(IM.before().value(), IM.PageSlots, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(Epoch + PageDuration));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), Epoch + PageDuration);
+        }
+
+        {
+            // Add two unaligned intervals and remove the first one.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, 1, UpdateEvery);
+            IM.addInterval(2 * Epoch, 1, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), 2 * Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), 2 * Epoch + 1);
+        }
+
+        {
+            // Add two unaligned intervals and remove the second one.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(Epoch, 1, UpdateEvery);
+            IM.addInterval(2 * Epoch, 1, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), 2 * Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), 2 * Epoch + 1);
+        }
+        #endif
+
+        {
+            // Three disjoint, remove the first.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(0 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(2 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(4 * Epoch, PageDuration, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(0 * Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), 2 * Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), 4 * Epoch + PageDuration);
+
+            EXPECT_EQ(IM.size(), 2);
+        }
+
+        {
+            // Three disjoint, remove the middle.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(0 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(2 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(4 * Epoch, PageDuration, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(2 * Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), 0 * Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), 4 * Epoch + PageDuration);
+
+            EXPECT_EQ(IM.size(), 2);
+        }
+
+        {
+            // Three disjoint, remove the last.
+            IntervalManager<PageSlots> IM;
+
+            IM.addInterval(0 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(2 * Epoch, PageDuration, UpdateEvery);
+            IM.addInterval(4 * Epoch, PageDuration, UpdateEvery);
+
+            EXPECT_TRUE(IM.drop(4 * Epoch));
+
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after().value(), 0 * Epoch);
+
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before().value(), 2 * Epoch + PageDuration);
+
+            EXPECT_EQ(IM.size(), 2);
+        }
     }
-
-    {
-        // Test that we can't add overlapping intervals
-
-        fflush(stdout);
-        fflush(stderr);
-
-        IntervalManager<60> IM;
-
-        size_t Epoch = 3600;
-        size_t UpdateEvery = 1;
-        size_t PageDuration = IM.PageSlots * UpdateEvery;
-
-        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
-        bool Dropped = IM.drop(Epoch);
-        EXPECT_TRUE(Dropped);
-    }
-
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])
