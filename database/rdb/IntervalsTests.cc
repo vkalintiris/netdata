@@ -556,12 +556,10 @@ TEST(Intervals, IntervalsManager)
             std::array<char, SerializedSize> Buffer;
 
             auto OS = IM.serialize(Buffer);
-            EXPECT_TRUE(OS);
+            EXPECT_TRUE(OS.has_value());
 
-            const Slice S(Buffer.data(), Buffer.size());
-            std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(S);
+            std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(OS.value());
             EXPECT_TRUE(OIM.has_value());
-
             IM = OIM.value();
         }
 
@@ -586,10 +584,24 @@ TEST(Intervals, IntervalsManager)
         }
         EXPECT_EQ(IM.size(), 1);
     
-        EXPECT_TRUE(IM.after().has_value());
-        EXPECT_EQ(IM.after(), Epoch);
-        EXPECT_TRUE(IM.before().has_value());
-        EXPECT_EQ(IM.before(), Epoch + 1024 * PageDuration);
+        for (size_t Idx = 0; Idx != 2; Idx++)
+        {
+            EXPECT_TRUE(IM.after().has_value());
+            EXPECT_EQ(IM.after(), Epoch);
+            EXPECT_TRUE(IM.before().has_value());
+            EXPECT_EQ(IM.before(), Epoch + 1024 * PageDuration);
+
+            {
+                constexpr size_t SerializedSize = sizeof(uint32_t) + sizeof(CompressedInterval<IM.PageSlots>);
+                std::array<char, SerializedSize> Buffer;
+                auto OS = IM.serialize(Buffer);
+                EXPECT_TRUE(OS.has_value());
+
+                std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(OS.value());
+                EXPECT_TRUE(OIM.has_value());
+                IM = OIM.value();
+            }
+        }
     }
 
     {
