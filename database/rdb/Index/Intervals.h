@@ -289,6 +289,7 @@ private:
     CompressedDuration<TierSlots> CD;
 };
 
+// TODO: add support for removing intervals
 template<size_t TierSlots>
 class IntervalManager
 {
