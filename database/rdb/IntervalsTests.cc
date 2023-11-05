@@ -627,6 +627,24 @@ TEST(Intervals, IntervalsManager)
         EXPECT_EQ(IM.after(), Epoch);
         EXPECT_EQ(IM.before(), Epoch + PageDuration);
     }
+
+    {
+        // Test that we can't add overlapping intervals
+
+        fflush(stdout);
+        fflush(stderr);
+
+        IntervalManager<60> IM;
+
+        size_t Epoch = 3600;
+        size_t UpdateEvery = 1;
+        size_t PageDuration = IM.PageSlots * UpdateEvery;
+
+        IM.addInterval(Epoch, IM.PageSlots, UpdateEvery);
+        bool Dropped = IM.drop(Epoch);
+        EXPECT_TRUE(Dropped);
+    }
+
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])

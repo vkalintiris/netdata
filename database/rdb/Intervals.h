@@ -524,6 +524,50 @@ public:
         fatal("Unhandled case in %s", __FUNCTION__);
     }
 
+    [[nodiscard]] bool drop(uint32_t PIT)
+    {
+        CompInt NeedleCI(PIT, 0, 0);
+
+        auto cmpFunc = [](const CompInt &LHS, const CompInt &RHS)
+        {
+            return LHS.after() < RHS.after();
+        };
+        auto It = std::lower_bound(Intervals.begin(), Intervals.end(), NeedleCI, cmpFunc);
+
+        if (It == Intervals.end())
+            return false;
+
+        CompInt &CI = *It;
+        printf("\nCI: [%u, %u]\n", CI.after(), CI.before());
+        auto [OLHS, ORHS] = CI.drop(PIT);
+
+        if (!OLHS.has_value() && !ORHS.has_value())
+        {
+            assert(CI.after() == NeedleCI.after());
+            Intervals.erase(It);
+            return true;
+        }
+        else if (OLHS.has_value() && ORHS.has_value())
+        {
+            *It = *OLHS;
+            It = Intervals.emplace(++It, *ORHS);
+            return true;
+        }
+        else if(OLHS.has_value())
+        {
+            *It = *OLHS;
+            return true;
+        }
+        else if (ORHS.has_value())
+        {
+            *It = *ORHS;
+            return true;
+        }
+
+        // Should never reach this.
+        return false;
+     }
+
     [[nodiscard]] bool verify() const
     {
         if (Intervals.size() == 0)
