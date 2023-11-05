@@ -3,6 +3,7 @@
 #include "database/rrd.h"
 #include "rdb-private.h"
 #include <cstdint>
+#include <limits>
 
 namespace pb = google::protobuf;
 
@@ -101,49 +102,50 @@ bool rdb_metric_retention_by_uuid(STORAGE_INSTANCE *si, uuid_t *uuid, time_t *fi
     return false;
 }
 
-time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
+time_t rdb_metric_oldest_time(STORAGE_METRIC_HANDLE *SMH, STORAGE_COLLECT_HANDLE *SCH)
 {
     global_statistics_metric_oldest_time();
 
-    UNUSED(sch);
+    time_t Before = 0;
 
-    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
-    rdb_collect_handle *rch = rmh->rch;
+    if (SMH)
+    {
+        rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(SMH);
+        std::optional<uint32_t> OB = MH->before();
+        if (OB.has_value())
+            Before = OB.value();
+    }
 
-    if (!rch)
-        return 0;
+    if (!Before && SCH)
+    {
+        rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(SCH);
+        Before = rch->ch.before() / USEC_PER_SEC;
+    }
 
-
-    return rch->ch.oldestTime();
+    return Before;
 }
 
-time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE *sch)
+time_t rdb_metric_latest_time(STORAGE_METRIC_HANDLE *SMH, STORAGE_COLLECT_HANDLE *SCH)
 {
     global_statistics_metric_latest_time();
 
-    UNUSED(sch);
+    time_t After = 0;
 
-    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(smh);
-
-    rdb_collect_handle *rch = rmh->rch;
-    if (rch)
-        return rch->ch.before() / USEC_PER_SEC;
-
-    const rdb::Key key{rmh->rmg, rmh->id + 1, 0};
-
-    Iterator *it = SI->getIteratorMD(ReadOptions());
-    for (it->SeekForPrev(key.slice());
-         it->Valid();
-         it->Next())
+    if (SCH)
     {
-        // FIXME: Need to add page duration
-        uint32_t PIT = rdb::Key{it->key()}.pit();
-        delete it;
-        return PIT;
+        rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(SCH);
+        After = rch->ch.after() / USEC_PER_SEC;
     }
 
-    delete it;
-    return 0;
+    if (SMH && !After)
+    {
+        rdb::MetricHandle *MH = reinterpret_cast<rdb::MetricHandle *>(SMH);
+        std::optional<uint32_t> OA = MH->after();
+        if (OA.has_value())
+            After = OA.value();
+    }
+
+    return After;
 }
 
 /*===---------------------------------------------------------------------===*/
