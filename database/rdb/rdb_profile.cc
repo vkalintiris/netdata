@@ -46,7 +46,6 @@ typedef struct {
     RRDDIM rd;
 } dimension_t;
 
-
 static void gen_random_dimensions(std::vector<dimension_t> &dimensions,
                                   size_t num_groups,
                                   size_t num_dims_per_group)
