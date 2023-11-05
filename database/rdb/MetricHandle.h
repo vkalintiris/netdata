@@ -13,9 +13,16 @@ private:
     MetricHandle() = delete;
 
 public:
-    MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID), IM() { }
+    MetricHandle(uint32_t GID, uint32_t MID) : GID(GID), MID(MID), IM()
+    {
+        spinlock_init(&Lock);
+    }
 
-    MetricHandle(uint32_t GID, uint32_t MID, IntervalManager<1024> &&IM) : GID(GID), MID(MID), IM(IM) { }
+    MetricHandle(uint32_t GID, uint32_t MID, IntervalManager<1024> &&IM)
+        : GID(GID), MID(MID), IM(IM)
+    {
+        spinlock_init(&Lock);
+    }
 
     [[nodiscard]] static inline MetricHandle fromKey(const MetricKey &MK)
     {
@@ -39,7 +46,25 @@ public:
 
     inline void addInterval(uint32_t PIT, uint32_t Slots, uint32_t UpdateEvery)
     {
+        spinlock_lock(&Lock);
         IM.addInterval(PIT, Slots, UpdateEvery);
+        spinlock_unlock(&Lock);
+    }
+
+    [[nodiscard]] std::optional<uint32_t> after() const
+    {
+        spinlock_lock(&Lock);
+        std::optional<uint32_t> After = IM.after();
+        spinlock_unlock(&Lock);
+        return After;
+    }
+
+    [[nodiscard]] std::optional<uint32_t> before() const
+    {
+        spinlock_lock(&Lock);
+        std::optional<uint32_t> Before = IM.before();
+        spinlock_unlock(&Lock);
+        return Before;
     }
 
     template<size_t N> [[nodiscard]] const std::optional<const rocksdb::Slice> serialize(std::array<char, N> &AR) const
@@ -61,6 +86,7 @@ private:
     uint32_t GID;
     uint32_t MID;
     IntervalManager<1024> IM;
+    mutable SPINLOCK Lock;
 };
 
 } // namespace rdb
