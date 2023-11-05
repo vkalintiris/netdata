@@ -2,6 +2,7 @@
 #define RDB_METRIC_HANDLE_H
 
 #include "rdb-common.h"
+#include "Intervals.h"
 
 namespace rdb {
     
@@ -53,31 +54,10 @@ public:
         return rocksdb::Slice(AR.data(), V.ByteSizeLong());
     }
 
-    inline void setAfter(uint32_t After)
-    {
-        __atomic_store_n(&this->After, After, __ATOMIC_RELAXED);
-    }
-
-    [[nodiscard]] inline uint32_t getAfter() const
-    {
-        return __atomic_load_n(&this->After, __ATOMIC_ACQUIRE);
-    }
-
-    inline void setBefore(uint32_t Before)
-    {
-        __atomic_store_n(&this->Before, Before, __ATOMIC_RELAXED);
-    }
-
-    [[nodiscard]] inline uint32_t getBefore() const
-    {
-        return __atomic_load_n(&this->Before, __ATOMIC_ACQUIRE);
-    }
-
 private:
     uint32_t group_id;
     uint32_t metric_id;
-    uint32_t After;
-    uint32_t Before;
+    IntervalManager<1024> IM;
 };
 
 } // namespace rdb

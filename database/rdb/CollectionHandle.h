@@ -181,19 +181,6 @@ private:
             spinlock_unlock(&Lock);
         }
 
-        Slice EmptySlice("");
-        Status S = SI->putMD(K.slice(), EmptySlice);
-        if (!S.ok())
-        {
-            fatal("Failed to put key %s (%s)",
-                  K.toString(true).c_str(),
-                  S.ToString().c_str());
-        }
-
-        if (!MH.getAfter())
-            MH.setAfter(StartPIT);
-        MH.setBefore(StartPIT + Duration);
-
         global_statistics_rdb_flushed_pages_incr();
         NumFlushedPages++;
     }
