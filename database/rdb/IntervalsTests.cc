@@ -931,7 +931,7 @@ private:
 TEST(Intervals, IteratorBasicOperations)
 {
     TimeInterval TI(0, 10, 2);
-    auto It = TI.begin();
+    TimeInterval::Iterator It = TI.begin();
 
     ASSERT_EQ(*It, 0);
     ASSERT_EQ(It[0], 0);
