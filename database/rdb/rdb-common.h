@@ -13,6 +13,8 @@
 #include <rocksdb/iostats_context.h>
 #include <rocksdb/perf_context.h>
 
+#include "absl/container/inlined_vector.h"
+
 #ifdef ENABLE_TESTS
 #include <gtest/gtest.h>
 #include <random>

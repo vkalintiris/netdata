@@ -1,10 +1,7 @@
 #ifndef RDB_INTERVALS_H
 #define RDB_INTERVALS_H
 
-#include "absl/container/inlined_vector.h"
 #include "rdb-common.h"
-#include <cstdint>
-#include <cstdlib>
 
 namespace rdb
 {
@@ -743,6 +740,8 @@ public:
     {
         return Intervals.size();
     }
+
+    // [[nodiscard]] inline getIntervals(uint32_t = 0) ;
 
     void printMergedIntervals() const
     {
