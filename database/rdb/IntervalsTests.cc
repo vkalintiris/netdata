@@ -862,6 +862,64 @@ TEST(Intervals, IteratorRange)
     EXPECT_EQ(Before, *CI.end());
 }
 
+TEST(Intervals, IntervalManagerKeys)
+{
+    auto IM = IntervalManager<3600>();
+
+    // 1st day, even hours
+    for (size_t Idx = 0 * 24; Idx < 1 * 24; Idx += 2)
+    {
+        IM.addInterval(Idx * 3600, 3600, 1);
+
+        {
+            auto Keys = IM.getKeys<3600>(0, 24 * 3600);
+            EXPECT_EQ(Keys.size(), Idx / 2 + 1);
+            EXPECT_EQ(Keys[0], 0);
+            EXPECT_EQ(Keys.back(), Idx * 3600);
+        }
+
+        {
+            auto Keys = IM.getKeys<3600>(12 * 3600, 24 * 3600);
+            if (Idx < 12)
+            {
+                EXPECT_EQ(Keys.size(), 0);
+            }
+            else
+            {
+                EXPECT_EQ(Keys.size(), (Idx - 12) / 2 + 1);
+                EXPECT_EQ(Keys[0], 12 * 3600);
+                EXPECT_EQ(Keys.back(), Idx * 3600);
+            }
+        }
+    }
+
+    // 2nd day, full
+    for (size_t Idx = 1 * 24; Idx < 2 * 24; Idx += 1)
+    {
+        IM.addInterval(Idx * 3600, 3600, 1);
+
+        {
+            auto Keys = IM.getKeys<3600>(24 * 3600, 48 * 3600);
+            EXPECT_EQ(Keys.size(), Idx - 23);
+            EXPECT_EQ(Keys[0], 24 * 3600);
+            EXPECT_EQ(Keys.back(), Idx * 3600);
+        }
+    }
+
+    // 3rd day, subpage intervals
+    for (size_t Idx = 2 * 24; Idx < 3 * 24; Idx += 1)
+    {
+        IM.addInterval(Idx * 3600, 600, 1);
+
+        {
+            auto Keys = IM.getKeys<3600>(2 * 24 * 3600, 3 * 24 * 3600);
+            EXPECT_EQ(Keys.size(), Idx - 48 + 1);
+            EXPECT_EQ(Keys[0], 2 * 24 * 3600);
+            EXPECT_EQ(Keys.back(), Idx * 3600);
+        }
+    }
+}
+
 int rdb_intervals_tests_main(int argc, char *argv[])
 {
     // skip the `-W intervals-tests` args

@@ -415,6 +415,11 @@ public:
         return CD.updateEvery();
     }
 
+    [[nodiscard]] inline uint32_t duration() const
+    {
+        return before() - after();
+    }
+
     [[nodiscard]] inline uint32_t pageDuration() const
     {
         return TierSlots * updateEvery();
@@ -571,7 +576,7 @@ public:
         auto validIntervals = [](const CompInt &LHS, const CompInt &RHS)
         {
             // NOTE: this check runs only when we can't merge the intervals.
-            return LHS.before() < RHS.after();
+            return LHS.before() <= RHS.after();
         };
 
         if (It == Intervals.end())
@@ -741,7 +746,66 @@ public:
         return Intervals.size();
     }
 
-    // [[nodiscard]] inline getIntervals(uint32_t = 0) ;
+    template<size_t N, typename A = std::allocator<uint32_t>>
+    [[nodiscard]] absl::InlinedVector<uint32_t, N, A> getKeys(uint32_t After, uint32_t Before)
+    {
+        absl::InlinedVector<uint32_t, N, A> Keys;
+
+        if (!size())
+        {
+            return Keys;
+        }
+
+        After = std::max(After, after().value());
+        Before = std::min(Before, before().value());
+
+        if (Before < After)
+        {
+            return Keys;
+        }
+
+        for (const auto &CI: Intervals)
+        {
+            if (CI.before() < After)
+            {
+                continue;
+            }
+
+            if (CI.after() >= Before)
+            {
+                break;
+            }
+
+            if (CI.duration() <= CI.pageDuration())
+            {
+                Keys.insert(Keys.end(), CI.begin(), CI.end());
+            }
+            else
+            {
+                auto StartIt = CI.begin();
+                auto EndIt = CI.end();
+
+                if (After > CI.after())
+                {
+                    uint32_t TS = After - CI.after();
+                    size_t NumKeysToSkip = TS / CI.pageDuration();
+                    std::advance(StartIt, NumKeysToSkip);
+                }
+
+                if (Before < CI.before())
+                {
+                    uint32_t TS = Before - CI.after();
+                    int NumKeysToSkip = (TS + CI.pageDuration()) / CI.pageDuration();
+                    EndIt = CI.begin();
+                    std::advance(EndIt, NumKeysToSkip);
+                }
+
+                Keys.insert(Keys.end(), StartIt, EndIt);
+            }
+        }
+
+        return Keys;
+    }
 
     void printMergedIntervals() const
     {
