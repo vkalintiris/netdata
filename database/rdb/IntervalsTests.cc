@@ -800,12 +800,12 @@ public:
     {
     public:
         using iterator_category = std::random_access_iterator_tag;
-        using value_type = int;
+        using value_type = uint32_t;
         using difference_type = std::ptrdiff_t;
         using pointer = value_type *;
         using reference = value_type &;
 
-        Iterator(int After, int Step) : After(After), Step(Step) { }
+        Iterator(uint32_t After, uint32_t Step) : After(After), Step(Step) { }
 
         [[nodiscard]] inline bool operator==(const Iterator &Other) const
         {
@@ -908,8 +908,8 @@ public:
         }
 
     private:
-        int After;
-        int Step;
+        uint32_t After;
+        uint32_t Step;
     };
 
     [[nodiscard]] inline Iterator begin() const
