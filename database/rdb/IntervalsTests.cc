@@ -1,6 +1,4 @@
 #include "rdb-private.h"
-#include <cstddef>
-#include <gtest/gtest.h>
 
 using namespace rdb;
 
@@ -790,202 +788,78 @@ TEST(Intervals, IntervalsManager)
     }
 }
 
-class TimeInterval
+TEST(Intervals, CompressedIntervalIterator)
 {
-public:
-    TimeInterval(uint32_t After, uint32_t Before, uint32_t Step)
-        : After(After), Before(Before), Step(Step) { }
-
-    class Iterator
     {
-    public:
-        using iterator_category = std::random_access_iterator_tag;
-        using value_type = uint32_t;
-        using difference_type = std::ptrdiff_t;
-        using pointer = value_type *;
-        using reference = value_type &;
+        CompressedInterval<1024> CI(0, 100, 5);
 
-        Iterator(uint32_t After, uint32_t Step) : After(After), Step(Step) { }
+        EXPECT_EQ(*CI.begin(), 0);
+        EXPECT_EQ(*CI.end(), 500);
 
-        [[nodiscard]] inline bool operator==(const Iterator &Other) const
-        {
-            return After == Other.After;
-        }
-
-        [[nodiscard]] inline bool operator!=(const Iterator &Other) const
-        {
-            return !(*this == Other);
-        }
-
-        [[nodiscard]] inline reference operator*()
-        {
-            return After;
-        }
-
-        [[nodiscard]] inline pointer operator->()
-        {
-            return &After;
-        }
-
-        [[nodiscard]] inline value_type operator[](difference_type n) const
-        {
-            return After + n * Step;
-        }
-
-        inline Iterator &operator++()
-        {
-            After += Step;
-            return *this;
-        }
-
-        [[nodiscard]] inline Iterator operator++(int)
-        {
-            Iterator temp = *this;
-            (void) ++(*this);
-            return temp;
-        }
-
-        inline Iterator &operator--()
-        {
-            After -= Step;
-            return *this;
-        }
-
-        [[nodiscard]] inline Iterator operator--(int)
-        {
-            Iterator temp = *this;
-            (void) --(*this);
-            return temp;
-        }
-
-        inline Iterator &operator+=(difference_type n)
-        {
-            After += n * Step;
-            return *this;
-        }
-
-        inline Iterator &operator-=(difference_type n)
-        {
-            After -= n * Step;
-            return *this;
-        }
-
-        [[nodiscard]] inline Iterator operator+(difference_type n) const
-        {
-            Iterator temp = *this;
-            return temp += n;
-        }
-
-        [[nodiscard]] inline Iterator operator-(difference_type n) const
-        {
-            Iterator temp = *this;
-            return temp -= n;
-        }
-
-        [[nodiscard]] inline difference_type operator-(const Iterator &Other) const
-        {
-            return (After - Other.After) / Step;
-        }
-
-        [[nodiscard]] inline bool operator<(const Iterator &Other) const
-        {
-            return After < Other.After;
-        }
-
-        [[nodiscard]] inline bool operator>(const Iterator &Other) const
-        {
-            return After > Other.After;
-        }
-
-        [[nodiscard]] inline bool operator<=(const Iterator &Other) const
-        {
-            return After <= Other.After;
-        }
-
-        [[nodiscard]] inline bool operator>=(const Iterator &Other) const
-        {
-            return After >= Other.After;
-        }
-
-    private:
-        uint32_t After;
-        uint32_t Step;
-    };
-
-    [[nodiscard]] inline Iterator begin() const
-    {
-        return Iterator(After, Step);
+        auto It = CI.begin();
+        EXPECT_EQ(*It, 0);
+        It++;
+        EXPECT_EQ(It, CI.end());
     }
-
-    [[nodiscard]] inline Iterator end() const
+    
     {
-        return Iterator(Before, Step);
+        CompressedInterval<1024> CI(3600, 10 * 1024, 1);
+        auto It = CI.begin();
+
+        ASSERT_EQ(*It, 3600);
+        ASSERT_EQ(It[0], 3600);
+
+        ++It;
+        ASSERT_EQ(*It, 3600 + CI.pageDuration());
+        ASSERT_EQ(It[0], 3600 + CI.pageDuration());
+
+        --It;
+        ASSERT_EQ(*It, 3600);
+        ASSERT_EQ(It[0], 3600);
+
+        It += 2;
+        ASSERT_EQ(*It, 3600 + 2 * CI.pageDuration());
+        ASSERT_EQ(It[0], 3600 + 2 * CI.pageDuration());
+
+        It -= 1;
+        ASSERT_EQ(*It, 3600 + CI.pageDuration());
+        ASSERT_EQ(It[0], 3600 + CI.pageDuration());
+
+        auto It2 = It + 3;
+        ASSERT_EQ(*It2, 3600 + 4 * CI.pageDuration());
+        ASSERT_EQ(It2[0], 3600 + 4 * CI.pageDuration());
+
+        auto It3 = It - 1;
+        ASSERT_EQ(*It3, 3600);
+        ASSERT_EQ(It3[0], 3600);
+
+        ASSERT_EQ(It2 - It, 3);
+        ASSERT_EQ(It - It3, 1);
+
+        ASSERT_TRUE(It < It2);
+        ASSERT_TRUE(It2 > It);
+        ASSERT_TRUE(It <= It2);
+        ASSERT_TRUE(It2 >= It);
+
+        ASSERT_TRUE(It == It);
+        ASSERT_TRUE(It != It2);
     }
-
-private:
-    uint32_t After;
-    uint32_t Before;
-    uint32_t Step;
-};
-
-TEST(Intervals, IteratorBasicOperations)
-{
-    TimeInterval TI(0, 10, 2);
-    TimeInterval::Iterator It = TI.begin();
-
-    ASSERT_EQ(*It, 0);
-    ASSERT_EQ(It[0], 0);
-
-    ++It;
-    ASSERT_EQ(*It, 2);
-    ASSERT_EQ(It[0], 2);
-
-    --It;
-    ASSERT_EQ(*It, 0);
-    ASSERT_EQ(It[0], 0);
-
-    It += 2;
-    ASSERT_EQ(*It, 4);
-    ASSERT_EQ(It[0], 4);
-
-    It -= 1;
-    ASSERT_EQ(*It, 2);
-    ASSERT_EQ(It[0], 2);
-
-    auto it2 = It + 3;
-    ASSERT_EQ(*it2, 8);
-    ASSERT_EQ(it2[0], 8);
-
-    auto it3 = It - 1;
-    ASSERT_EQ(*it3, 0);
-    ASSERT_EQ(it3[0], 0);
-
-    ASSERT_EQ(it2 - It, 3);
-    ASSERT_EQ(It - it3, 1);
-
-    ASSERT_TRUE(It < it2);
-    ASSERT_TRUE(it2 > It);
-    ASSERT_TRUE(It <= it2);
-    ASSERT_TRUE(it2 >= It);
-
-    ASSERT_TRUE(It == It);
-    ASSERT_TRUE(It != it2);
 }
 
 TEST(Intervals, IteratorRange)
 {
-    TimeInterval TI(0, 10, 2);
-    auto It = TI.begin();
+    CompressedInterval<1024> CI(3600, 100 * 1024, 5);
+    auto It = CI.begin();
 
-    uint32_t Before = 0;
-    while (It != TI.end())
+    uint32_t Before = 3600;
+    while (It != CI.end())
     {
         ASSERT_EQ(*It, Before);
         ++It;
-        Before += 2;
+        Before += 1024 * 5;
     }
 
-    EXPECT_EQ(Before, 10);
+    EXPECT_EQ(Before, *CI.end());
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])

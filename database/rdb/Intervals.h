@@ -238,6 +238,141 @@ template<size_t TierSlots = 1024>
 class CompressedInterval
 {
 public:
+    class Iterator
+    {
+    public:
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = uint32_t;
+        using difference_type = std::ptrdiff_t;
+        using pointer = value_type *;
+        using reference = value_type &;
+
+        Iterator(const CompressedInterval<1024> &CI)
+            : After(CI.after()), Step(CI.pageDuration())
+        { }
+
+        Iterator(uint32_t After, uint32_t Step)
+            : After(After), Step(Step)
+        { }
+
+        inline bool operator==(const Iterator &Other) const
+        {
+            return After == Other.After;
+        }
+
+        inline bool operator!=(const Iterator &Other) const
+        {
+            return !(*this == Other);
+        }
+
+        [[nodiscard]] inline reference operator*()
+        {
+            return After;
+        }
+
+        [[nodiscard]] inline pointer operator->()
+        {
+            return &After;
+        }
+
+        [[nodiscard]] inline value_type operator[](difference_type n) const
+        {
+            return After + n * Step;
+        }
+
+        inline Iterator &operator++()
+        {
+            After += Step;
+            return *this;
+        }
+
+        inline Iterator operator++(int)
+        {
+            Iterator temp = *this;
+            (void) ++(*this);
+            return temp;
+        }
+
+        inline Iterator &operator--()
+        {
+            After -= Step;
+            return *this;
+        }
+
+        inline Iterator operator--(int)
+        {
+            Iterator temp = *this;
+            (void) --(*this);
+            return temp;
+        }
+
+        inline Iterator &operator+=(difference_type n)
+        {
+            After += n * Step;
+            return *this;
+        }
+
+        inline Iterator &operator-=(difference_type n)
+        {
+            After -= n * Step;
+            return *this;
+        }
+
+        inline Iterator operator+(difference_type n) const
+        {
+            Iterator temp = *this;
+            return temp += n;
+        }
+
+        inline Iterator operator-(difference_type n) const
+        {
+            Iterator temp = *this;
+            return temp -= n;
+        }
+
+        inline difference_type operator-(const Iterator &Other) const
+        {
+            return (After - Other.After) / Step;
+        }
+
+        inline bool operator<(const Iterator &Other) const
+        {
+            return After < Other.After;
+        }
+
+        inline bool operator>(const Iterator &Other) const
+        {
+            return After > Other.After;
+        }
+
+        inline bool operator<=(const Iterator &Other) const
+        {
+            return After <= Other.After;
+        }
+
+        inline bool operator>=(const Iterator &Other) const
+        {
+            return After >= Other.After;
+        }
+
+    private:
+        uint32_t After;
+        uint32_t Step;
+    };
+
+    [[nodiscard]] inline Iterator begin() const
+    {
+        uint32_t Step = (CD.duration() >= pageDuration()) ? pageDuration() : (before() - after());
+        return Iterator(after(), Step);
+    }
+
+    [[nodiscard]] inline Iterator end() const
+    {
+        uint32_t Step = (CD.duration() >= pageDuration()) ? pageDuration() : (before() - after());
+        return Iterator(before(), Step);
+    }
+
+public:
     static constexpr size_t PageSlots = TierSlots;
 
     static CompressedInterval<TierSlots> fromRawValue(uint64_t RV)
@@ -280,7 +415,7 @@ public:
 
     [[nodiscard]] inline uint32_t updateEvery() const
     {
-        return CD.UpdateEvery;
+        return CD.updateEvery();
     }
 
     [[nodiscard]] inline uint32_t pageDuration() const
