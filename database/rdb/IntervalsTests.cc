@@ -93,20 +93,16 @@ TEST(Intervals, BitSplitter)
 
 TEST(Intervals, CompressedSlots_TierSlots_1024)
 {
-    for (size_t TierSlots = 1024, Idx = 0; Idx != TierSlots; Idx++)
-    {
+    for (size_t TierSlots = 1024, Idx = 0; Idx != TierSlots; Idx++) {
         CompressedSlots CS(Idx);
         EXPECT_EQ(CS.slots(), Idx);
         EXPECT_EQ(CS.isPageCounter(), (Idx % TierSlots) == 0);
 
         auto BS = CS.bitSplitter();
-        if (CS.isPageCounter())
-        {
+        if (CS.isPageCounter()) {
             EXPECT_EQ(BS.getUpper(), 0x1);
             EXPECT_EQ(BS.getLower(), Idx / TierSlots);
-        }
-        else
-        {
+        } else {
             EXPECT_EQ(BS.getUpper(), 0x0);
         }
     }
@@ -120,8 +116,7 @@ TEST(Intervals, CompressedSlots_TierSlots_1024)
     {
         CompressedSlots LHS(0);
 
-        for (size_t Page = 0; Page != 0x7FFF; Page++)
-        {
+        for (size_t Page = 0; Page != 0x7FFF; Page++) {
             CompressedSlots RHS(LHS.PageSlots);
             EXPECT_TRUE(LHS.merge(RHS));
             EXPECT_EQ(LHS.slots(), (Page + 1) * LHS.PageSlots);
@@ -143,16 +138,14 @@ TEST(Intervals, CompressedSlots_TierSlots_1024)
         EXPECT_EQ(LHS.PageSlots, RHS.PageSlots);
 
         size_t NumPagesLHS = 100;
-        for (size_t Page = 0; Page != NumPagesLHS; Page++)
-        {
+        for (size_t Page = 0; Page != NumPagesLHS; Page++) {
             CompressedSlots Tmp(LHS.PageSlots);
             EXPECT_TRUE(LHS.merge(Tmp));
         }
         EXPECT_EQ(LHS.slots(), NumPagesLHS * LHS.PageSlots);
 
         size_t NumPagesRHS = 500;
-        for (size_t Page = 0; Page != NumPagesRHS; Page++)
-        {
+        for (size_t Page = 0; Page != NumPagesRHS; Page++) {
             CompressedSlots Tmp(RHS.PageSlots);
             EXPECT_TRUE(RHS.merge(Tmp));
         }
@@ -175,20 +168,16 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
 {
     constexpr size_t TierSlots = 641;
 
-    for (size_t Idx = 0; Idx != TierSlots; Idx++)
-    {
+    for (size_t Idx = 0; Idx != TierSlots; Idx++) {
         CompressedSlots<TierSlots> CS(Idx);
         EXPECT_EQ(CS.slots(), Idx);
         EXPECT_EQ(CS.isPageCounter(), (Idx % TierSlots) == 0);
 
         auto BS = CS.bitSplitter();
-        if (CS.isPageCounter())
-        {
+        if (CS.isPageCounter()) {
             EXPECT_EQ(BS.getUpper(), 0x1);
             EXPECT_EQ(BS.getLower(), Idx / TierSlots);
-        }
-        else
-        {
+        } else {
             EXPECT_EQ(BS.getUpper(), 0x0);
         }
     }
@@ -202,8 +191,7 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
     {
         CompressedSlots<TierSlots> LHS(0);
 
-        for (size_t Page = 0; Page != 0x7FFF; Page++)
-        {
+        for (size_t Page = 0; Page != 0x7FFF; Page++) {
             CompressedSlots<TierSlots> RHS(LHS.PageSlots);
             EXPECT_TRUE(LHS.merge(RHS));
             EXPECT_EQ(LHS.slots(), (Page + 1) * LHS.PageSlots);
@@ -225,16 +213,14 @@ TEST(Intervals, CompressedSlots_TierSlots_641)
         EXPECT_EQ(LHS.PageSlots, RHS.PageSlots);
 
         size_t NumPagesLHS = 100;
-        for (size_t Page = 0; Page != NumPagesLHS; Page++)
-        {
+        for (size_t Page = 0; Page != NumPagesLHS; Page++) {
             CompressedSlots<TierSlots> Tmp(LHS.PageSlots);
             EXPECT_TRUE(LHS.merge(Tmp));
         }
         EXPECT_EQ(LHS.slots(), NumPagesLHS * LHS.PageSlots);
 
         size_t NumPagesRHS = 500;
-        for (size_t Page = 0; Page != NumPagesRHS; Page++)
-        {
+        for (size_t Page = 0; Page != NumPagesRHS; Page++) {
             CompressedSlots<TierSlots> Tmp(RHS.PageSlots);
             EXPECT_TRUE(RHS.merge(Tmp));
         }
@@ -372,10 +358,9 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            for (size_t Idx = 0; Idx != PageSlots; Idx++)
-            {
-                std::pair<std::optional<CompressedInterval<PageSlots>>,
-                          std::optional<CompressedInterval<PageSlots>>> P = TmpCI.drop(TmpCI.after());
+            for (size_t Idx = 0; Idx != PageSlots; Idx++) {
+                std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > >
+                    P = TmpCI.drop(TmpCI.after());
 
                 EXPECT_FALSE(P.first.has_value());
                 EXPECT_TRUE(P.second.has_value());
@@ -391,11 +376,9 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            for (size_t Idx = 0; Idx != PageSlots; Idx++)
-            {
-                std::pair<std::optional<CompressedInterval<PageSlots>>,
-                          std::optional<CompressedInterval<PageSlots>>> P =
-                    TmpCI.drop(TmpCI.before() - PageDuration);
+            for (size_t Idx = 0; Idx != PageSlots; Idx++) {
+                std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > >
+                    P = TmpCI.drop(TmpCI.before() - PageDuration);
 
                 EXPECT_TRUE(P.first.has_value());
                 EXPECT_FALSE(P.second.has_value());
@@ -411,8 +394,7 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            std::pair<std::optional<CompressedInterval<PageSlots>>,
-                      std::optional<CompressedInterval<PageSlots>>> P =
+            std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > > P =
                 TmpCI.drop(CI.after() + PageDuration);
 
             EXPECT_TRUE(P.first.has_value());
@@ -432,8 +414,7 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            std::pair<std::optional<CompressedInterval<PageSlots>>,
-                      std::optional<CompressedInterval<PageSlots>>> P =
+            std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > > P =
                 TmpCI.drop(CI.before() - 2 * PageDuration);
 
             EXPECT_TRUE(P.first.has_value());
@@ -453,8 +434,7 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            std::pair<std::optional<CompressedInterval<PageSlots>>,
-                      std::optional<CompressedInterval<PageSlots>>> P =
+            std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > > P =
                 TmpCI.drop(TmpCI.after() - PageDuration);
 
             EXPECT_TRUE(P.first.has_value());
@@ -470,8 +450,7 @@ TEST(Intervals, CompressedInterval)
 
             CompressedInterval<PageSlots> TmpCI = CI;
 
-            std::pair<std::optional<CompressedInterval<PageSlots>>,
-                      std::optional<CompressedInterval<PageSlots>>> P =
+            std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > > P =
                 TmpCI.drop(TmpCI.before() + 1);
 
             EXPECT_TRUE(P.first.has_value());
@@ -490,8 +469,7 @@ TEST(Intervals, CompressedInterval)
 
             const CompressedInterval<PageSlots> CI(3600, Slots, UpdateEvery);
 
-            std::pair<std::optional<CompressedInterval<PageSlots>>,
-                      std::optional<CompressedInterval<PageSlots>>> P;
+            std::pair<std::optional<CompressedInterval<PageSlots> >, std::optional<CompressedInterval<PageSlots> > > P;
 
             P = CI.drop(CI.before() + 1);
             EXPECT_TRUE(P.first.has_value());
@@ -558,7 +536,7 @@ TEST(Intervals, IntervalsManager)
             auto OS = IM.serialize(Buffer);
             EXPECT_TRUE(OS.has_value());
 
-            std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(OS.value());
+            std::optional<IntervalManager<IM.PageSlots> > OIM = IM.deserialize(OS.value());
             EXPECT_TRUE(OIM.has_value());
             IM = OIM.value();
         }
@@ -577,15 +555,13 @@ TEST(Intervals, IntervalsManager)
         std::default_random_engine Eng(Seed);
         std::shuffle(Indexes.begin(), Indexes.end(), Eng);
 
-        for (size_t Idx : Indexes)
-        {
+        for (size_t Idx : Indexes) {
             bool Merged = IM.addInterval(Epoch + Idx * PageDuration, IM.PageSlots, UpdateEvery);
             EXPECT_TRUE(Merged && IM.verify());
         }
         EXPECT_EQ(IM.size(), 1);
 
-        for (size_t Idx = 0; Idx != 2; Idx++)
-        {
+        for (size_t Idx = 0; Idx != 2; Idx++) {
             EXPECT_TRUE(IM.after().has_value());
             EXPECT_EQ(IM.after(), Epoch);
             EXPECT_TRUE(IM.before().has_value());
@@ -597,7 +573,7 @@ TEST(Intervals, IntervalsManager)
                 auto OS = IM.serialize(Buffer);
                 EXPECT_TRUE(OS.has_value());
 
-                std::optional<IntervalManager<IM.PageSlots>> OIM = IM.deserialize(OS.value());
+                std::optional<IntervalManager<IM.PageSlots> > OIM = IM.deserialize(OS.value());
                 EXPECT_TRUE(OIM.has_value());
                 IM = OIM.value();
             }
@@ -610,7 +586,7 @@ TEST(Intervals, IntervalsManager)
         constexpr size_t PageSlots = 60;
         size_t PageDuration = PageSlots * UpdateEvery;
 
-        #if 1
+#if 1
         {
             // Test that we can't add overlapping intervals
 
@@ -753,7 +729,7 @@ TEST(Intervals, IntervalsManager)
             EXPECT_TRUE(IM.before().has_value());
             EXPECT_EQ(IM.before().value(), 2 * Epoch + 1);
         }
-        #endif
+#endif
 
         {
             // Three disjoint, remove the first.
@@ -812,6 +788,204 @@ TEST(Intervals, IntervalsManager)
             EXPECT_EQ(IM.size(), 2);
         }
     }
+}
+
+class TimeInterval
+{
+public:
+    TimeInterval(uint32_t After, uint32_t Before, uint32_t Step)
+        : After(After), Before(Before), Step(Step) { }
+
+    class Iterator
+    {
+    public:
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = int;
+        using difference_type = std::ptrdiff_t;
+        using pointer = value_type *;
+        using reference = value_type &;
+
+        Iterator(int After, int Step) : After(After), Step(Step) { }
+
+        [[nodiscard]] inline bool operator==(const Iterator &Other) const
+        {
+            return After == Other.After;
+        }
+
+        [[nodiscard]] inline bool operator!=(const Iterator &Other) const
+        {
+            return !(*this == Other);
+        }
+
+        [[nodiscard]] inline reference operator*()
+        {
+            return After;
+        }
+
+        [[nodiscard]] inline pointer operator->()
+        {
+            return &After;
+        }
+
+        [[nodiscard]] inline value_type operator[](difference_type n) const
+        {
+            return After + n * Step;
+        }
+
+        inline Iterator &operator++()
+        {
+            After += Step;
+            return *this;
+        }
+
+        [[nodiscard]] inline Iterator operator++(int)
+        {
+            Iterator temp = *this;
+            (void) ++(*this);
+            return temp;
+        }
+
+        inline Iterator &operator--()
+        {
+            After -= Step;
+            return *this;
+        }
+
+        [[nodiscard]] inline Iterator operator--(int)
+        {
+            Iterator temp = *this;
+            (void) --(*this);
+            return temp;
+        }
+
+        inline Iterator &operator+=(difference_type n)
+        {
+            After += n * Step;
+            return *this;
+        }
+
+        inline Iterator &operator-=(difference_type n)
+        {
+            After -= n * Step;
+            return *this;
+        }
+
+        [[nodiscard]] inline Iterator operator+(difference_type n) const
+        {
+            Iterator temp = *this;
+            return temp += n;
+        }
+
+        [[nodiscard]] inline Iterator operator-(difference_type n) const
+        {
+            Iterator temp = *this;
+            return temp -= n;
+        }
+
+        [[nodiscard]] inline difference_type operator-(const Iterator &Other) const
+        {
+            return (After - Other.After) / Step;
+        }
+
+        [[nodiscard]] inline bool operator<(const Iterator &Other) const
+        {
+            return After < Other.After;
+        }
+
+        [[nodiscard]] inline bool operator>(const Iterator &Other) const
+        {
+            return After > Other.After;
+        }
+
+        [[nodiscard]] inline bool operator<=(const Iterator &Other) const
+        {
+            return After <= Other.After;
+        }
+
+        [[nodiscard]] inline bool operator>=(const Iterator &Other) const
+        {
+            return After >= Other.After;
+        }
+
+    private:
+        int After;
+        int Step;
+    };
+
+    [[nodiscard]] inline Iterator begin() const
+    {
+        return Iterator(After, Step);
+    }
+
+    [[nodiscard]] inline Iterator end() const
+    {
+        return Iterator(Before, Step);
+    }
+
+private:
+    uint32_t After;
+    uint32_t Before;
+    uint32_t Step;
+};
+
+TEST(Intervals, IteratorBasicOperations)
+{
+    TimeInterval TI(0, 10, 2);
+    auto It = TI.begin();
+
+    ASSERT_EQ(*It, 0);
+    ASSERT_EQ(It[0], 0);
+
+    ++It;
+    ASSERT_EQ(*It, 2);
+    ASSERT_EQ(It[0], 2);
+
+    --It;
+    ASSERT_EQ(*It, 0);
+    ASSERT_EQ(It[0], 0);
+
+    It += 2;
+    ASSERT_EQ(*It, 4);
+    ASSERT_EQ(It[0], 4);
+
+    It -= 1;
+    ASSERT_EQ(*It, 2);
+    ASSERT_EQ(It[0], 2);
+
+    auto it2 = It + 3;
+    ASSERT_EQ(*it2, 8);
+    ASSERT_EQ(it2[0], 8);
+
+    auto it3 = It - 1;
+    ASSERT_EQ(*it3, 0);
+    ASSERT_EQ(it3[0], 0);
+
+    ASSERT_EQ(it2 - It, 3);
+    ASSERT_EQ(It - it3, 1);
+
+    ASSERT_TRUE(It < it2);
+    ASSERT_TRUE(it2 > It);
+    ASSERT_TRUE(It <= it2);
+    ASSERT_TRUE(it2 >= It);
+
+    ASSERT_TRUE(It == It);
+    ASSERT_TRUE(It != it2);
+}
+
+TEST(Intervals, IteratorRange)
+{
+    TimeInterval TI(0, 10, 2);
+    auto It = TI.begin();
+
+    uint32_t Before = 0;
+    while (It != TI.end())
+    {
+        ASSERT_EQ(*It, Before);
+        ++It;
+        Before += 2;
+    }
+
+    EXPECT_EQ(Before, 10);
 }
 
 int rdb_intervals_tests_main(int argc, char *argv[])
