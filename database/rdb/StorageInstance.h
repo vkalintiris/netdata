@@ -245,6 +245,12 @@ public:
         return RDB->Put(WO, CFHs[1], K, V);
     }
 
+    [[nodiscard]] inline rocksdb::Status getMD(const rocksdb::Slice &K, rocksdb::PinnableSlice *V)
+    {
+        rocksdb::ReadOptions RO;
+        return RDB->Get(RO, CFHs[1], K, V);
+    }
+
     [[nodiscard]] inline rocksdb::Status deleteMD(const rocksdb::Slice &K)
     {
         rocksdb::WriteOptions WO;

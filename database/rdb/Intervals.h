@@ -747,7 +747,7 @@ public:
     }
 
     template<size_t N, typename A = std::allocator<uint32_t>>
-    [[nodiscard]] absl::InlinedVector<uint32_t, N, A> getKeys(uint32_t After, uint32_t Before)
+    [[nodiscard]] absl::InlinedVector<uint32_t, N, A> getKeys(uint32_t After, uint32_t Before) const
     {
         absl::InlinedVector<uint32_t, N, A> Keys;
 
