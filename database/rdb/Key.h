@@ -3,7 +3,10 @@
 
 #include <array>
 #include "rdb-common.h"
+
+#ifndef __APPLE__
 #include "uuid.h"
+#endif
 
 namespace rdb {
 

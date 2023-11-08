@@ -84,7 +84,7 @@ option(ENABLE_H2O "enable h2o" True)
 option(ENABLE_DBENGINE "enable dbengine" True)
 option(ENABLE_RDB "enable rdb" True)
 
-option(ENABLE_BENCHMARKS "enable benchmarks" False)
+option(ENABLE_BENCHMARKS "enable benchmarks" True)
 option(ENABLE_TESTS "enable tests" True)
 
 option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
@@ -1549,11 +1549,11 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_ACLK}>:${PROTOBUF_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTING_MONGODB}>:${MONGOC_LIBRARIES}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_LIBRARIES}>"
-        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LIBRARIES}>"
-        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_LIBRARIES}>"
+        "$<$<BOOL:${ENABLE_BENCHMARKS}>:${BENCHMARK_LDFLAGS}>"
+        "$<$<BOOL:${ENABLE_TESTS}>:${GTEST_LDFLAGS}>"
         "$<$<BOOL:${MACOS}>:${IOKIT};${FOUNDATION}>"
         "$<$<BOOL:${ENABLE_RDB}>:${PROTOBUF_LIBRARIES}>"
-        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS};-lzstd;-lbz2>"
+        "$<$<BOOL:${ENABLE_RDB}>:${ROCKSDB_STATIC_LDFLAGS};-L/opt/homebrew/lib/;-lzstd;-lbz2>"
         absl::inlined_vector
 )
 

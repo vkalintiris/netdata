@@ -157,7 +157,7 @@ void rdb_init() {
 
     rocksdb::Options Opts = get_level_db_options();
 
-    #if 0
+    #if 1
     char Path[4096] = { };
     snprintf(Path, 4096 - 1, "%s/rdb", netdata_configured_cache_dir);
     #else
@@ -208,10 +208,10 @@ int rdb_profile_main(int argc, char *argv[])
     se = storage_engine_get(RRD_MEMORY_MODE_RDB);
     si = reinterpret_cast<STORAGE_INSTANCE *>(NULL);
 
-    size_t num_threads = 1;
-    size_t num_groups = 1;
-    size_t num_dims_per_group = 1;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_threads = 4;
+    size_t num_groups = 100;
+    size_t num_dims_per_group = 5;
+    size_t num_points_per_dimension = 6 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
