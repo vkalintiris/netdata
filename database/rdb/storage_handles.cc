@@ -262,43 +262,19 @@ int rdb_store_metric_finalize(STORAGE_METRIC_HANDLE *smh, STORAGE_COLLECT_HANDLE
 
 struct rdb_query_handle
 {
-    rdb_metric_handle *rmh;
-
+    rdb::MetricHandle *MH;
     pb::Arena Arena;
-    Iterator *It;
 
-    rdb::Key AfterK;
+    uint32_t After;
     uint32_t Before;
     uint32_t Now;
     rdb::UniversalQuery UQ;
 
-    rdb_query_handle(rdb_metric_handle *rmh,
-                     rdb::CollectionHandle *CH,
-                     const rdb::Key &AfterK, uint32_t Before) :
-        rmh(rmh), Arena(), It(nullptr), AfterK(AfterK),
-        Before(Before), Now(AfterK.pit()),
-        UQ(CH, AfterK)
+    rdb_query_handle(rdb::MetricHandle *MH, rdb::CollectionHandle *CH, uint32_t After, uint32_t Before) :
+        MH(MH), Arena(), 
+        After(After), Before(Before), Now(After),
+        UQ(MH, CH, After, Before)
     {
-        seek();
-    }
-
-    void seek()
-    {
-        if (!rmh->rch) {
-            if (rmh->rch->ch.after() >= (AfterK.pit() / USEC_PER_SEC))
-                return;
-        }
-
-        It = SI->getIteratorMD(rocksdb::ReadOptions());
-        if (!It)
-            fatal("Could not get new allocator from RocksDB");
-
-        It->SeekForPrev(AfterK.slice());
-        if (!It->Valid())
-            It->Seek(AfterK.slice());
-
-        if (!It->Valid())
-            Now = Before;
     }
 
     inline STORAGE_POINT next()
@@ -310,17 +286,13 @@ struct rdb_query_handle
 
     inline bool isFinished()
     {
-        return (Now > Before) ? true : UQ.isFinished(Arena, *It);
+        return (Now > Before) ? true : UQ.isFinished(Arena);
     }
 
     ~rdb_query_handle()
     {
         UQ.finalize();
-
-        if (It)
-            delete It;
-
-        rdb_metric_release(reinterpret_cast<STORAGE_METRIC_HANDLE *>(rmh));
+        rdb_metric_release(reinterpret_cast<STORAGE_METRIC_HANDLE *>(MH));
     }
 };
 
@@ -331,18 +303,16 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
                           time_t Before,
                           STORAGE_PRIORITY priority)
 {
+    using namespace rdb;
     global_statistics_load_metric_init();
 
-    UNUSED(sch);
+    MetricHandle *MH = reinterpret_cast<MetricHandle *>(rdb_metric_dup(smh));
+    rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
-    rdb_metric_handle *rmh = reinterpret_cast<rdb_metric_handle *>(rdb_metric_dup(smh));
-
-    After = std::max(rdb_metric_oldest_time(smh, nullptr), After);
+    After = std::max(rdb_metric_oldest_time(smh, sch), After);
     Before = std::min(rdb_metric_latest_time(smh, nullptr), Before);
 
-    rdb::Key StartK(rmh->rmg, rmh->id, After);
-
-    rdb_query_handle *rqh = new rdb_query_handle(rmh, &rmh->rch->ch, StartK, Before);
+    rdb_query_handle *rqh = new rdb_query_handle(MH, &rch->ch, After, Before);
 
     seqh->start_time_s = After;
     seqh->end_time_s = Before;

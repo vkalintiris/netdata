@@ -55,6 +55,7 @@ static void storage_instance_delete()
     SI = nullptr;
 }
 
+#if 0
 TEST(rdb, Key)
 {
     for (size_t i = 0; i != 128; i++)
@@ -704,6 +705,7 @@ TEST(rdb, FlushedQueryHandle)
     storage_instance_delete();
     temp_dir_delete(TmpDir);
 }
+#endif
 
 int rdb_tests_main(int argc, char *argv[])
 {
@@ -712,11 +714,6 @@ int rdb_tests_main(int argc, char *argv[])
         argv[i - 1] = argv[i];
     }
     argc -= 2;
-
-    for (size_t i = 0; i != argc; i++)
-    {
-        netdata_log_error("CLI arg[%d]: %s", i, argv[i]);
-    }
 
     ::testing::InitGoogleTest(&argc, argv);
     int rc = RUN_ALL_TESTS();

@@ -39,7 +39,7 @@ public:
         return MID;
     }
 
-    [[nodiscard]] inline const IntervalManager<1024>& intervalManager()
+    [[nodiscard]] inline const IntervalManager<1024>& intervalManager() const
     {
         return IM;
     }

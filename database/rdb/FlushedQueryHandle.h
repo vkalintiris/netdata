@@ -10,15 +10,16 @@
 namespace rdb
 {
 
-class KeyQueryHandle
+class MetricHandleQuery
 {
     friend class UniversalQuery;
     
 public:
-    KeyQueryHandle(uint32_t GID, uint32_t MID, const IntervalManager<1024> &IM, uint32_t After, uint32_t Before)
-        : GID(GID), MID(MID), After(After), Before(Before), Now(After), Keys(IM.getKeys<16>(After, Before)), It(Keys.begin()), OP(), Finished(false)
-    {
-    }
+    MetricHandleQuery(const MetricHandle *MH, uint32_t After, uint32_t Before)
+        : MH(MH), After(After), Before(Before), Now(After),
+          Keys(MH->intervalManager().getKeys<16>(After, Before)),
+          It(Keys.begin()), OP(), Finished(false)
+    { }
 
     [[nodiscard]] inline bool isFinished(pb::Arena &Arena)
     {
@@ -27,7 +28,7 @@ public:
             if (OP.has_value() && (OP->first != OP->second))
                 return false;
 
-            Finished = !advance(Arena);
+            Finished = (Now >= Before) || !advance(Arena);
         }
 
         return Finished;
@@ -42,6 +43,10 @@ public:
         return *OP->first++;
     }
 
+    inline void finalize() const
+    {
+    }
+
 private:
     [[nodiscard]] bool advance(pb::Arena &Arena)
     {
@@ -52,7 +57,7 @@ private:
             Arena.Reset();
 
             uint32_t PIT = *It;
-            Key K = Key(GID, MID, PIT);
+            Key K = Key(MH->gid(), MH->mid(), PIT);
             rocksdb::PinnableSlice PSV;
 
             // Use a MultiGet
@@ -79,88 +84,16 @@ private:
     }
 
 private:
-    uint32_t GID;
-    uint32_t MID;
+    const MetricHandle *MH;
     uint32_t After;
     uint32_t Before;
     uint32_t Now;
+
     absl::InlinedVector<uint32_t, 16> Keys;
     absl::InlinedVector<uint32_t, 16>::iterator It;
+
     std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
-    bool Finished;
-};
 
-class FlushedQueryHandle
-{
-    friend class UniversalQuery;
-
-public:
-    FlushedQueryHandle(const Key &AfterK)
-        : AfterK(AfterK), OP(), Finished(false) { }
-
-    [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
-    {
-        if (!Finished)
-        {
-            if (OP.has_value() && (OP->first != OP->second))
-                return false;
-
-            Finished = !advance(Arena, It);
-        }
-
-        return Finished;
-    }
-
-    [[nodiscard]] inline STORAGE_POINT next()
-    {
-        if (OP->first == OP->second)
-            fatal("PageIterator already consumed");
-
-        return *OP->first++;
-    }
-
-    inline void finalize()
-    {
-    }
-
-private:
-    [[nodiscard]] bool advance(pb::Arena &Arena, rocksdb::Iterator &It)
-    {
-        // We can not advance an invalid iterator
-        if (!It.Valid())
-            return false;
-
-        while (It.Valid())
-        {
-            // Any old pages have been consumed. Reclaim space before
-            // creating a new one to keep memory consumption low.
-            Arena.Reset();
-
-            Key K = Key(It.key());
-            if (K.mid() != AfterK.mid())
-                return false;
-
-            std::optional<Page> P = Page::deserialize(Arena, It.value());
-
-            if (P.has_value())
-            {
-                OP = P->query(K.pit(), AfterK.pit());
-                if (OP.has_value())
-                {
-                    It.Next();
-                    return true;
-                }
-            }
-
-            It.Next();
-        }
-
-        return false;
-    }
-
-private:
-    const Key &AfterK;
-    std::optional<std::pair<Page::PageIterator, Page::PageIterator>> OP;
     bool Finished;
 };
 
@@ -169,12 +102,6 @@ class CollectionQueryHandle
     friend class UniversalQuery;
 
 public:
-    CollectionQueryHandle(CollectionHandle *CH, const Key &AfterK) :
-        CH(CH),
-        OP(CH ? CH->queryLock(AfterK.pit() * USEC_PER_SEC) : std::nullopt),
-        Finished(!OP.has_value())
-    { }
-
     CollectionQueryHandle(CollectionHandle *CH, usec_t After)
         : CH(CH),
           OP(CH ? CH->queryLock(After) : std::nullopt),
@@ -217,18 +144,19 @@ private:
 class UniversalQuery
 {
 public:
-    UniversalQuery(CollectionHandle *CH, const Key &AfterK)
-        : AfterK(AfterK), FQH(this->AfterK), CQH(CH, this->AfterK) { }
+    UniversalQuery(MetricHandle *MH, CollectionHandle *CH, uint32_t After, uint32_t Before)
+        : MQH(MH, After, Before), CQH(CH, After)
+    { }
 
-    [[nodiscard]] inline bool isFinished(pb::Arena &Arena, rocksdb::Iterator &It)
+    [[nodiscard]] inline bool isFinished(pb::Arena &Arena)
     {
-        return FQH.isFinished(Arena, It) && CQH.isFinished();
+        return MQH.isFinished(Arena) && CQH.isFinished();
     }
 
     [[nodiscard]] inline STORAGE_POINT next()
     {
-        if (!FQH.Finished)
-            return FQH.next();
+        if (!MQH.Finished)
+            return MQH.next();
 
         if (!CQH.Finished)
             return CQH.next();
@@ -238,13 +166,12 @@ public:
 
     void finalize()
     {
-        FQH.finalize();
+        MQH.finalize();
         CQH.finalize();
     }
 
 private:
-    const Key AfterK;
-    FlushedQueryHandle FQH;
+    MetricHandleQuery MQH;
     CollectionQueryHandle CQH;
 };
 
