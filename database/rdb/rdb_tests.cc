@@ -766,7 +766,7 @@ TEST(Query, UniversalQuery)
         MHQ.finalize();
     }
 
-    // exact query range
+    //  query range: after LT first PIT
     {
         uint32_t After = 0;
         uint32_t Before = 3600 + 10 * PO.update_every;
@@ -781,6 +781,78 @@ TEST(Query, UniversalQuery)
             EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
             EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
             EXPECT_EQ(SP.sum, Idx);
+
+            Idx++;
+        }
+        EXPECT_EQ(Idx, 10);
+
+        MHQ.finalize();
+    }
+
+    //  query range: before GT last PIT
+    {
+        uint32_t After = 0;
+        uint32_t Before = 24 * 3600 + 10 * PO.update_every;
+        MetricHandleQuery MHQ(&MH, After, Before);
+
+        EXPECT_FALSE(MHQ.isFinished(QueryArena));
+
+        size_t Idx = 0;
+        while (!MHQ.isFinished(QueryArena)) {
+            STORAGE_POINT SP = MHQ.next();
+
+            EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
+            EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+            EXPECT_EQ(SP.sum, Idx);
+
+            Idx++;
+        }
+        EXPECT_EQ(Idx, 10);
+
+        MHQ.finalize();
+    }
+
+    //  query range: in-between first/last PIT
+    {
+        uint32_t After = 3600 + PO.update_every;
+        uint32_t Before = 3600 + 9 * PO.update_every;
+        MetricHandleQuery MHQ(&MH, After, Before);
+
+        EXPECT_FALSE(MHQ.isFinished(QueryArena));
+
+        size_t Idx = 1;
+        while (!MHQ.isFinished(QueryArena)) {
+            STORAGE_POINT SP = MHQ.next();
+
+            EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
+            EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+            EXPECT_EQ(SP.sum, Idx);
+
+            Idx++;
+        }
+        EXPECT_EQ(Idx, 10);
+
+        MHQ.finalize();
+    }
+
+    // query range: unaligned in-between first/last PIT
+    // FIXME: decide if return values for unaligned before.
+    {
+        uint32_t After = 3600 + PO.update_every + 1;
+        uint32_t Before = 3600 + 9 * PO.update_every - 1;
+        MetricHandleQuery MHQ(&MH, After, Before);
+
+        EXPECT_FALSE(MHQ.isFinished(QueryArena));
+
+        size_t Idx = 1;
+        while (!MHQ.isFinished(QueryArena)) {
+            STORAGE_POINT SP = MHQ.next();
+
+            EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
+            EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+            EXPECT_EQ(SP.sum, Idx);
+
+            netdata_log_error("Query range: [%u, %u). Point: [%ld, %ld]", After, Before, SP.start_time_s, SP.end_time_s);
 
             Idx++;
         }
