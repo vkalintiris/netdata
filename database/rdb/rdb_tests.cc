@@ -55,7 +55,6 @@ static void storage_instance_delete()
     SI = nullptr;
 }
 
-#if 0
 TEST(rdb, Key)
 {
     for (size_t i = 0; i != 128; i++)
@@ -567,6 +566,7 @@ void checkVectors(std::vector<std::pair<time_t, uint32_t>> V1,
     }
 }
 
+#if 0
 TEST(rdb, FlushedQueryHandle)
 {
     const char *TmpDir = temp_dir_new();
@@ -707,6 +707,57 @@ TEST(rdb, FlushedQueryHandle)
 }
 #endif
 
+
+TEST(Query, UniversalQuery)
+{
+    const char *TmpDir = temp_dir_new();
+    STORAGE_INSTANCE *si = storage_instance_new(TmpDir);
+    EXPECT_NE(si, nullptr);
+
+    PageOptions PO;
+    PO.initial_slots = 1024;
+    PO.update_every = 1;
+    usec_t UE = PO.update_every * USEC_PER_SEC;
+
+    pb::Arena CollectionArena;
+    pb::Arena QueryArena;
+    MetricHandle MH(1, 1);
+
+    std::optional<CollectionHandle> CH = CollectionHandle::create(CollectionArena, PO, MH.gid(), MH.mid());
+    EXPECT_TRUE(CH.has_value());
+
+    STORAGE_POINT SP = {
+        .min = 0, .max = 0, .sum = 0,
+        .start_time_s = 0, .end_time_s = 0,
+        .count = 1, .anomaly_count = 0,
+        .flags = SN_DEFAULT_FLAGS,
+    };
+
+    for (size_t Idx = 0; Idx != 24 * 3600; Idx++)
+    {
+        usec_t PIT = 3600 * USEC_PER_SEC + (Idx * USEC_PER_SEC);
+        SP.min = SP.max = SP.sum = Idx;
+
+        CH->store_next(MH, PIT, SP);
+    }
+
+    CH->flush(MH);
+
+    uint32_t After = 3600;
+    uint32_t Before = After + 24 * 3600 * PO.update_every;
+    MetricHandleQuery MHQ(&MH, After, Before);
+
+    EXPECT_FALSE(MHQ.isFinished(QueryArena));
+
+    while (!MHQ.isFinished(QueryArena)) {
+        STORAGE_POINT SP = MHQ.next();
+
+        netdata_log_error("Got point: [%ld, %ld) = %.2lf", SP.start_time_s, SP.end_time_s, SP.sum);
+    }
+
+    MHQ.finalize();
+}
+
 int rdb_tests_main(int argc, char *argv[])
 {
     // skip the `-W rdb-tests` args
@@ -716,6 +767,8 @@ int rdb_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::GTEST_FLAG(filter) = "Query.*";
+
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();
     return rc;

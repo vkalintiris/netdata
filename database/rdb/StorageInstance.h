@@ -40,7 +40,6 @@ public:
         uint32_t Cutoff = 24 * 3600;
 
         if (Diff >= Cutoff) {
-            // netdata_log_error("Dropping key: %s", K.toString(true).c_str());
             return rocksdb::CompactionFilter::Decision::kRemove;
         }
         else

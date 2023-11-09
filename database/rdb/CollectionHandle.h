@@ -167,7 +167,7 @@ private:
             fatal("Failed to put key %s (%s)", K.toString(true).c_str(), S.ToString().c_str());
         }
 
-        MH.addInterval(StartPIT, 1024, CP.updateEvery());
+        MH.addInterval(StartPIT, CP.size(), CP.updateEvery());
         S = SI->setIntervalManager(MH.gid(), MH.mid(), MH.intervalManager());
         if (!S.ok())
         {
@@ -305,43 +305,6 @@ public:
     inline void queryUnlock() const
     {
         spinlock_unlock(&Lock);
-    }
-
-    inline uint32_t oldestTime()
-    {
-        spinlock_lock(&Lock);
-
-        if (OldestKey.has_value())
-        {
-            spinlock_unlock(&Lock);
-            return OldestKey->pit();
-        }
-
-        const rdb::Key key{GID, MID, 0};
-
-        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
-        It->Seek(key.slice());
-        if (It->Valid())
-        {
-            rdb::Key K = It->key();
-            if (K.mid() == MID) {
-                OldestKey = K;
-                netdata_log_error("MID: %u, OldestPIT: %u", MID, OldestKey->pit());
-            }
-        }
-        delete It;
-
-        if (OldestKey.has_value())
-        {
-            spinlock_unlock(&Lock);
-            return OldestKey->pit();
-        }
-
-        uint32_t PIT = after_internal(false) / USEC_PER_SEC;
-
-        spinlock_unlock(&Lock);
-
-        return PIT;
     }
 
 private:

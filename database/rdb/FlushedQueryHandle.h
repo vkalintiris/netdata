@@ -64,7 +64,7 @@ private:
             Status S = SI->getMD(K.slice(), &PSV);
             if (S.ok())
             {
-                std::optional<Page> P = Page::deserialize(Arena, PSV.data());
+                std::optional<Page> P = Page::deserialize(Arena, PSV);
 
                 if (P.has_value())
                 {

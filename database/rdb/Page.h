@@ -170,7 +170,10 @@ public:
             return std::nullopt;
 
         if (!V->ParseFromArray(S.data(), S.size()))
+        {
+            fatal("Failed to parse page from raw data with size=%zu", S.size());
             return std::nullopt;
+        }
 
         return Page(V);
     }
