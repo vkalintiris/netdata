@@ -716,7 +716,7 @@ TEST(Query, UniversalQuery)
 
     PageOptions PO;
     PO.initial_slots = 1024;
-    PO.update_every = 1;
+    PO.update_every = 2;
     usec_t UE = PO.update_every * USEC_PER_SEC;
 
     pb::Arena CollectionArena;
@@ -733,9 +733,9 @@ TEST(Query, UniversalQuery)
         .flags = SN_DEFAULT_FLAGS,
     };
 
-    for (size_t Idx = 0; Idx != 24 * 3600; Idx++)
+    for (size_t Idx = 0; Idx != 10; Idx++)
     {
-        usec_t PIT = 3600 * USEC_PER_SEC + (Idx * USEC_PER_SEC);
+        usec_t PIT = (3600 + Idx * PO.update_every) * USEC_PER_SEC;
         SP.min = SP.max = SP.sum = Idx;
 
         CH->store_next(MH, PIT, SP);
@@ -744,15 +744,20 @@ TEST(Query, UniversalQuery)
     CH->flush(MH);
 
     uint32_t After = 3600;
-    uint32_t Before = After + 24 * 3600 * PO.update_every;
+    uint32_t Before = After + 10 * PO.update_every;
     MetricHandleQuery MHQ(&MH, After, Before);
 
     EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
+    size_t Idx = 0;
     while (!MHQ.isFinished(QueryArena)) {
         STORAGE_POINT SP = MHQ.next();
 
-        netdata_log_error("Got point: [%ld, %ld) = %.2lf", SP.start_time_s, SP.end_time_s, SP.sum);
+        EXPECT_EQ(SP.start_time_s, After + Idx * PO.update_every);
+        EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+        EXPECT_EQ(SP.sum, Idx);
+
+        Idx++;
     }
 
     MHQ.finalize();
