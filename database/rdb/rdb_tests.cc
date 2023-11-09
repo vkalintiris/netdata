@@ -743,24 +743,51 @@ TEST(Query, UniversalQuery)
 
     CH->flush(MH);
 
-    uint32_t After = 3600;
-    uint32_t Before = After + 10 * PO.update_every;
-    MetricHandleQuery MHQ(&MH, After, Before);
+    // exact query range
+    {
+        uint32_t After = 3600;
+        uint32_t Before = 3600 + 10 * PO.update_every;
+        MetricHandleQuery MHQ(&MH, After, Before);
 
-    EXPECT_FALSE(MHQ.isFinished(QueryArena));
+        EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
-    size_t Idx = 0;
-    while (!MHQ.isFinished(QueryArena)) {
-        STORAGE_POINT SP = MHQ.next();
+        size_t Idx = 0;
+        while (!MHQ.isFinished(QueryArena)) {
+            STORAGE_POINT SP = MHQ.next();
 
-        EXPECT_EQ(SP.start_time_s, After + Idx * PO.update_every);
-        EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
-        EXPECT_EQ(SP.sum, Idx);
+            EXPECT_EQ(SP.start_time_s, After + Idx * PO.update_every);
+            EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+            EXPECT_EQ(SP.sum, Idx);
 
-        Idx++;
+            Idx++;
+        }
+        EXPECT_EQ(Idx, 10);
+
+        MHQ.finalize();
     }
 
-    MHQ.finalize();
+    // exact query range
+    {
+        uint32_t After = 0;
+        uint32_t Before = 3600 + 10 * PO.update_every;
+        MetricHandleQuery MHQ(&MH, After, Before);
+
+        EXPECT_FALSE(MHQ.isFinished(QueryArena));
+
+        size_t Idx = 0;
+        while (!MHQ.isFinished(QueryArena)) {
+            STORAGE_POINT SP = MHQ.next();
+
+            EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
+            EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
+            EXPECT_EQ(SP.sum, Idx);
+
+            Idx++;
+        }
+        EXPECT_EQ(Idx, 10);
+
+        MHQ.finalize();
+    }
 }
 
 int rdb_tests_main(int argc, char *argv[])

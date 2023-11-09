@@ -282,8 +282,8 @@ public:
     [[nodiscard]] std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
     query(uint32_t StartPIT, uint32_t After) const
     {
-        if (After == 0)
-            return std::nullopt;
+        // if (After == 0)
+        //     return std::nullopt;
 
         if (After >= StartPIT + duration())
             return std::nullopt;
