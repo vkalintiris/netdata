@@ -566,7 +566,7 @@ void checkVectors(std::vector<std::pair<time_t, uint32_t>> V1,
     }
 }
 
-#if 0
+#if 1
 TEST(rdb, FlushedQueryHandle)
 {
     const char *TmpDir = temp_dir_new();
@@ -626,31 +626,26 @@ TEST(rdb, FlushedQueryHandle)
         std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
         uint32_t After = Hour / USEC_PER_SEC;
-        const Key StartK(MH.gid(), MH.mid(), After);
-
         pb::Arena QA;
-        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
-        It->SeekForPrev(StartK.slice());
 
-        UniversalQuery UQ(&CH.value(), StartK);
-        while (!UQ.isFinished(QA, *It))
+        UniversalQuery UQ(&MH, &CH.value(), After, 24 * 3600);
+        while (!UQ.isFinished(QA))
         {
             STORAGE_POINT SP = UQ.next();
             CollectedValues.push_back({ SP.start_time_s, static_cast<uint32_t>(SP.sum) });
         }
         UQ.finalize();
-        delete It;
 
         checkVectors(StoredValues, CollectedValues);
-
-        // EXPECT_EQ(StoredValues, CollectedValues);
+        EXPECT_EQ(StoredValues, CollectedValues);
     }
 
+    return;
+    
     // Queries for each second within the day
     {
         std::vector<std::pair<time_t, uint32_t>> CollectedValues;
 
-        rocksdb::Iterator *It = SI->getIteratorMD(rocksdb::ReadOptions());
         pb::Arena QA;
 
         std::vector<std::pair<time_t, uint32_t>> ExpectedValues;
@@ -660,14 +655,10 @@ TEST(rdb, FlushedQueryHandle)
             CollectedValues.clear();
 
             uint32_t After = i;
-
-            const Key StartK(MH.gid(), MH.mid(), After);
-            It->SeekForPrev(StartK.slice());
-
             size_t points_returned = 0;
 
-            UniversalQuery UQ(&CH.value(), StartK);
-            while (!UQ.isFinished(QA, *It))
+            UniversalQuery UQ(&MH, &CH.value(), After, Before);
+            while (!UQ.isFinished(QA))
             {
                 STORAGE_POINT SP = UQ.next();
 
@@ -698,7 +689,6 @@ TEST(rdb, FlushedQueryHandle)
                 EXPECT_EQ(points_returned, (24 - Hour) * values_per_hour);
             }
         }
-        delete It;
     }
 
     // Clean up
@@ -752,7 +742,8 @@ TEST(Query, UniversalQuery)
         EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
         size_t Idx = 0;
-        while (!MHQ.isFinished(QueryArena)) {
+        while (!MHQ.isFinished(QueryArena))
+        {
             STORAGE_POINT SP = MHQ.next();
 
             EXPECT_EQ(SP.start_time_s, After + Idx * PO.update_every);
@@ -775,7 +766,8 @@ TEST(Query, UniversalQuery)
         EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
         size_t Idx = 0;
-        while (!MHQ.isFinished(QueryArena)) {
+        while (!MHQ.isFinished(QueryArena))
+        {
             STORAGE_POINT SP = MHQ.next();
 
             EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
@@ -798,7 +790,8 @@ TEST(Query, UniversalQuery)
         EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
         size_t Idx = 0;
-        while (!MHQ.isFinished(QueryArena)) {
+        while (!MHQ.isFinished(QueryArena))
+        {
             STORAGE_POINT SP = MHQ.next();
 
             EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
@@ -821,7 +814,8 @@ TEST(Query, UniversalQuery)
         EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
         size_t Idx = 1;
-        while (!MHQ.isFinished(QueryArena)) {
+        while (!MHQ.isFinished(QueryArena))
+        {
             STORAGE_POINT SP = MHQ.next();
 
             EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
@@ -845,14 +839,13 @@ TEST(Query, UniversalQuery)
         EXPECT_FALSE(MHQ.isFinished(QueryArena));
 
         size_t Idx = 1;
-        while (!MHQ.isFinished(QueryArena)) {
+        while (!MHQ.isFinished(QueryArena))
+        {
             STORAGE_POINT SP = MHQ.next();
 
             EXPECT_EQ(SP.start_time_s, 3600 + Idx * PO.update_every);
             EXPECT_EQ(SP.end_time_s, SP.start_time_s + PO.update_every);
             EXPECT_EQ(SP.sum, Idx);
-
-            netdata_log_error("Query range: [%u, %u). Point: [%ld, %ld]", After, Before, SP.start_time_s, SP.end_time_s);
 
             Idx++;
         }
@@ -871,7 +864,7 @@ int rdb_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::GTEST_FLAG(filter) = "Query.*";
+    // ::testing::GTEST_FLAG(filter) = "Query.*";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();
