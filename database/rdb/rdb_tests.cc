@@ -566,7 +566,6 @@ void checkVectors(std::vector<std::pair<time_t, uint32_t>> V1,
     }
 }
 
-#if 1
 TEST(rdb, FlushedQueryHandle)
 {
     const char *TmpDir = temp_dir_new();
@@ -639,8 +638,6 @@ TEST(rdb, FlushedQueryHandle)
         checkVectors(StoredValues, CollectedValues);
         EXPECT_EQ(StoredValues, CollectedValues);
     }
-
-    return;
     
     // Queries for each second within the day
     {
@@ -695,8 +692,6 @@ TEST(rdb, FlushedQueryHandle)
     storage_instance_delete();
     temp_dir_delete(TmpDir);
 }
-#endif
-
 
 TEST(Query, UniversalQuery)
 {
@@ -864,7 +859,7 @@ int rdb_tests_main(int argc, char *argv[])
     argc -= 2;
 
     ::testing::InitGoogleTest(&argc, argv);
-    // ::testing::GTEST_FLAG(filter) = "Query.*";
+    // ::testing::GTEST_FLAG(filter) = "gvd.*";
 
     int rc = RUN_ALL_TESTS();
     google::protobuf::ShutdownProtobufLibrary();

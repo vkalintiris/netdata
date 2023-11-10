@@ -236,6 +236,7 @@ public:
                 return SP;
             }
             default:
+                assert(false);
                 fatal("Page: Tsimpa[2]");
         }
     }

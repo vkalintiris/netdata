@@ -296,12 +296,6 @@ public:
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
 
-    [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
-    queryLock(const Key &StartK) const
-    {
-        return queryLock(StartK.pit() * USEC_PER_SEC);
-    }
-
     inline void queryUnlock() const
     {
         spinlock_unlock(&Lock);

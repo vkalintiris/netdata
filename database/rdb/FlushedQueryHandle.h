@@ -16,7 +16,7 @@ class MetricHandleQuery
     
 public:
     MetricHandleQuery(const MetricHandle *MH, uint32_t After, uint32_t Before)
-        : MH(MH), After(After), Before(Before), Now(After),
+        : MH(MH), After(After),
           Keys(MH->intervalManager().getKeys<16>(After, Before)),
           It(Keys.begin()), OP(), Finished(false)
     { }
@@ -28,7 +28,7 @@ public:
             if (OP.has_value() && (OP->first != OP->second))
                 return false;
 
-            Finished = (Now >= Before) || !advance(Arena);
+            Finished = !advance(Arena);
         }
 
         return Finished;
@@ -39,7 +39,6 @@ public:
         if (OP->first == OP->second)
             fatal("PageIterator already consumed");
 
-        Now++;
         return *OP->first++;
     }
 
@@ -68,7 +67,7 @@ private:
 
                 if (P.has_value())
                 {
-                    OP = P->query(K.pit(), Now);
+                    OP = P->query(K.pit(), std::max(After, K.pit()));
                     if (OP.has_value())
                     {
                         It++;
@@ -86,8 +85,6 @@ private:
 private:
     const MetricHandle *MH;
     uint32_t After;
-    uint32_t Before;
-    uint32_t Now;
 
     absl::InlinedVector<uint32_t, 16> Keys;
     absl::InlinedVector<uint32_t, 16>::iterator It;
@@ -102,9 +99,11 @@ class CollectionQueryHandle
     friend class UniversalQuery;
 
 public:
-    CollectionQueryHandle(CollectionHandle *CH, usec_t After)
+    CollectionQueryHandle(CollectionHandle *CH, uint32_t After, uint32_t Before)
         : CH(CH),
-          OP(CH ? CH->queryLock(After) : std::nullopt),
+          OP((CH &&
+             (CH->after() >= (After * USEC_PER_SEC)) &&
+             (CH->after() < (Before * USEC_PER_SEC))) ? CH->queryLock(After * USEC_PER_SEC) : std::nullopt),
           Finished(!OP.has_value())
     { }
 
@@ -131,7 +130,7 @@ public:
 
     inline void finalize()
     {
-        if (CH)
+        if (OP.has_value())
             CH->queryUnlock();
     }
 
@@ -145,21 +144,33 @@ class UniversalQuery
 {
 public:
     UniversalQuery(MetricHandle *MH, CollectionHandle *CH, uint32_t After, uint32_t Before)
-        : MQH(MH, After, Before), CQH(CH, After)
+        : After(After), Before(Before), Now(After),
+          MQH(MH, After, Before), CQH(CH, After, Before)
     { }
 
     [[nodiscard]] inline bool isFinished(pb::Arena &Arena)
     {
+        if (Now >= Before)
+            return true;
+
         return MQH.isFinished(Arena) && CQH.isFinished();
     }
 
     [[nodiscard]] inline STORAGE_POINT next()
     {
-        if (!MQH.Finished)
-            return MQH.next();
+        STORAGE_POINT SP;
 
-        if (!CQH.Finished)
-            return CQH.next();
+        if (!MQH.Finished) {
+            SP = MQH.next();
+            Now = SP.end_time_s;
+            return SP;
+        }
+
+        if (!CQH.Finished) {
+            SP = CQH.next();
+            Now = SP.end_time_s;
+            return SP;
+        }
 
         fatal("Tried to get storage point from finished query.");
     }
@@ -171,6 +182,10 @@ public:
     }
 
 private:
+    uint32_t After;
+    uint32_t Before;
+    uint32_t Now;
+
     MetricHandleQuery MQH;
     CollectionQueryHandle CQH;
 };
