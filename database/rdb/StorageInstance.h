@@ -32,16 +32,15 @@ public:
         UNUSED(NewValue);
         UNUSED(SkipUntil);
 
+        // This should be a property of SI
+        uint32_t Cutoff = 7 * 24 * 3600;
+
         rdb::Key K = SK;
         uint32_t After = K.pit();
+        uint32_t Now = now_realtime_sec();
 
-        uint32_t Epoch = 0x000000FF;
-        uint32_t Diff = After - Epoch;
-        uint32_t Cutoff = 24 * 3600;
-
-        if (Diff >= Cutoff) {
+        if (Now > (After + Cutoff))
             return rocksdb::CompactionFilter::Decision::kRemove;
-        }
         else
             return rocksdb::CompactionFilter::Decision::kKeep;
     }
@@ -188,7 +187,7 @@ private:
                 CFO.min_blob_size = 64;
                 CFO.blob_compression_type = kZSTD;
 
-                // CFO.compaction_filter = new CustomCF();
+                CFO.compaction_filter = new CustomCF();
 
                 return CFO;
             }
