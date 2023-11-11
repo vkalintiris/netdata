@@ -148,33 +148,50 @@ private:
         }
 
         uint32_t StartPIT = after_internal(false) / USEC_PER_SEC;
-        const Key K{GID, MID, StartPIT};
 
-        // TODO: the max size should be 4096 + 6 bytes. is there
-        // any performance difference if the bytes array has exact size?
-        // ie. are we hitting hot vs. cold memory on serialization?
-        std::array<char, 64 * 1024> bytes;
-
-        std::optional<const Slice> OV = CP.serialize(bytes);
-        if (!OV.has_value())
+        // Write data page
         {
-            fatal("Failed to serialize page...");
+            const Key K{GID, MID, StartPIT};
+            // TODO: the max size should be 4096 + 6 bytes. is there
+            // any performance difference if the bytes array has exact size?
+            // ie. are we hitting hot vs. cold memory on serialization?
+            std::array<char, 64 * 1024> bytes;
+
+            std::optional<const Slice> OV = CP.serialize(bytes);
+            if (!OV.has_value())
+            {
+                fatal("Failed to serialize page...");
+            }
+
+            Status S = SI->putMD(K.slice(), OV.value());
+            if (!S.ok())
+            {
+                fatal("Failed to put key %s (%s)", K.toString(true).c_str(), S.ToString().c_str());
+            }
         }
 
-        Status S = SI->putMD(K.slice(), OV.value());
-        if (!S.ok())
+        // Add the new key and rotate if we have to
         {
-            fatal("Failed to put key %s (%s)", K.toString(true).c_str(), S.ToString().c_str());
+            std::optional DroppedPIT = MH.addInterval(StartPIT, CP.size(), CP.updateEvery());
+
+            Status S = SI->setIntervalManager(MH.gid(), MH.mid(), MH.intervalManager());
+            if (!S.ok())
+            {
+                fatal("Failed to set IM for MH(%u, %u) - %s", MH.gid(), MH.mid(), S.ToString().c_str());
+            }
+
+            if (DroppedPIT.has_value())
+            {
+                Key K{GID, MID, DroppedPIT.value()};
+                S = SI->deleteMD(K.slice());
+                if (!S.ok())
+                {
+                    fatal("Failed to drop metric data: %s", K.toString(true).c_str());
+                }
+            }
         }
 
-        MH.addInterval(StartPIT, CP.size(), CP.updateEvery());
-        S = SI->setIntervalManager(MH.gid(), MH.mid(), MH.intervalManager());
-        if (!S.ok())
-        {
-            fatal("Failed to set IM for MH(%u, %u) - %s", MH.gid(), MH.mid(), S.ToString().c_str());
-        }
-
-        // TODO: make 1024 an SI constant
+        // Reset the page (todo: make 1024 an SI constant)
         CP.reset(1024);
 
         if (Protect)

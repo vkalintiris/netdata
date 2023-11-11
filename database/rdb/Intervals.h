@@ -464,11 +464,6 @@ public:
 
         const uint32_t PageDuration = TierSlots * CD.updateEvery();
 
-        // PIT should be already aligned. However, we want release builds to
-        // handle any possible errors.
-        assert((PIT % PageDuration) == 0);
-        PIT -= (PIT % PageDuration);
-
         std::pair<std::optional<CompressedInterval>,
                   std::optional<CompressedInterval>> P;
 

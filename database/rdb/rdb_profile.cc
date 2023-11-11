@@ -100,26 +100,6 @@ static void gen_random_data(std::vector<dimension_t> &dimensions, size_t num_poi
 
 static Barrier *B = nullptr;
 
-
-static void print_all_values(const dimension_t &d)
-{
-    struct storage_engine_query_handle seqh;
-
-    time_t After = 0;
-    time_t Before = 24 * 3600;
-
-    storage_engine_query_init(STORAGE_ENGINE_BACKEND_RDB, d.smh, d.sch,
-                              &seqh, After, Before,
-                              STORAGE_PRIORITY_SYNCHRONOUS);
-
-    while (!storage_engine_query_is_finished(&seqh))
-    {
-        const STORAGE_POINT SP = storage_engine_query_next_metric(&seqh);
-        netdata_log_error("\t[%ld, %ld) = %.2lf", SP.start_time_s, SP.end_time_s, SP.sum);
-    }
-    storage_engine_query_finalize(&seqh);
-}
-
 static void gen_thread(size_t thread_id,
                        size_t num_threads,
                        size_t num_groups,
@@ -143,8 +123,6 @@ static void gen_thread(size_t thread_id,
 
     usec_t point_in_time = 0x000000FF * USEC_PER_SEC;
     gen_random_data(dimensions, num_points_per_dimension, point_in_time, rand_vals);
-
-    print_all_values(dimensions[0]);
 
     std::this_thread::sleep_for(std::chrono::seconds{1});
     netdata_log_error("Will free dimensions");
@@ -194,30 +172,6 @@ void rdb_flush()
     SI->RDB->Flush(rocksdb::FlushOptions());
 }
 
-static void itAllKeys(void)
-{
-    rocksdb::ReadOptions RO;
-    RO.fill_cache = false;
-    RO.pin_data = true;
-    RO.verify_checksums = false;
-
-    size_t vbytes = 0;
-
-    std::unique_ptr<rocksdb::Iterator> it(SI->RDB->NewIterator(RO, SI->CFHs[1]));
-    for (it->SeekToFirst(); true; it->Next())
-    {
-        if (!it->Valid()) {
-            rocksdb::Status S = it->status();
-            netdata_log_error("Iterator status: %s", S.ToString().c_str());
-            break;
-        }
-
-        vbytes += it->value().size();
-    }
-
-    netdata_log_error("All value bytes: %zu", vbytes);
-}
-
 int rdb_profile_main(int argc, char *argv[])
 {
     (void) argc;
@@ -231,7 +185,7 @@ int rdb_profile_main(int argc, char *argv[])
     size_t num_threads = 1;
     size_t num_groups = 1;
     size_t num_dims_per_group = 1;
-    size_t num_points_per_dimension = 24 * 3600;
+    size_t num_points_per_dimension = 8 * 24 * 3600;
 
     netdata_log_error("Test simulating %zu agents: threads=%zu, groups=%zu, dims_per_group=%zu, points_per_dimension=%zu)",
                       (num_threads * num_groups * num_dims_per_group) / 2500,
@@ -260,6 +214,7 @@ int rdb_profile_main(int argc, char *argv[])
         netdata_log_error("Time to setup metrics: %.2lf seconds (RSS: %zu MiB)", seconds, getRSS());
     }
 
+    #if 0
     {
         auto start_time = std::chrono::high_resolution_clock::now();
         while (true)
@@ -282,14 +237,14 @@ int rdb_profile_main(int argc, char *argv[])
 
             SI->RDB->Flush(rocksdb::FlushOptions());
 
-            if (PrevNumFlushedPages == NumFlushedPages)
-            {
-                break;
-            }
+            // if (PrevNumFlushedPages == NumFlushedPages)
+            // {
+            //     break;
+            // }
         }
     }
+    #endif
 
-    netdata_log_error("Collection threads finished!");
     for (std::thread& thread : threads)
         thread.join();
 

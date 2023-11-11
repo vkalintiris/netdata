@@ -44,11 +44,26 @@ public:
         return IM;
     }
 
-    inline void addInterval(uint32_t PIT, uint32_t Slots, uint32_t UpdateEvery)
+    inline std::optional<uint32_t> addInterval(uint32_t PIT, uint32_t Slots, uint32_t UpdateEvery)
     {
+        std::optional<uint32_t> DroppedPIT;
+
         spinlock_lock(&Lock);
+
         IM.addInterval(PIT, Slots, UpdateEvery);
+
+        // TODO: make this storage instance configurable
+        size_t Retention = 3600 * 24 * 7;
+        uint32_t After = IM.after().value();
+        if (PIT >= (After + Retention))
+        {
+            (void) IM.drop(After);
+            DroppedPIT = After;
+        }
+
         spinlock_unlock(&Lock);
+
+        return DroppedPIT;
     }
 
     [[nodiscard]] std::optional<uint32_t> after() const
