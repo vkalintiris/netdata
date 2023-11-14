@@ -101,11 +101,23 @@ class CollectionQueryHandle
 public:
     CollectionQueryHandle(CollectionHandle *CH, uint32_t After, uint32_t Before)
         : CH(CH),
-          OP((CH &&
-             (CH->after() >= (After * USEC_PER_SEC)) &&
-             (CH->after() < (Before * USEC_PER_SEC))) ? CH->queryLock(After * USEC_PER_SEC) : std::nullopt),
+          OP(std::nullopt),
           Finished(!OP.has_value())
-    { }
+    {
+        if (CH)
+        {
+            usec_t AfterCH = CH->after();
+            if (AfterCH >= (After * USEC_PER_SEC))
+            {
+                if (AfterCH < (Before * USEC_PER_SEC))
+                {
+                    fatal("BBBBBBBBBBBBBBBBBBBB");
+                    OP = CH->queryLock(After * USEC_PER_SEC);
+                }
+            }
+        }
+        
+    }
 
     [[nodiscard]] inline bool isFinished()
     {
@@ -145,30 +157,43 @@ class UniversalQuery
 public:
     UniversalQuery(MetricHandle *MH, CollectionHandle *CH, uint32_t After, uint32_t Before)
         : After(After), Before(Before), Now(After),
-          MQH(MH, After, Before), CQH(CH, After, Before)
+          // MQH(MH, After, Before), CQH(CH, After, Before)
+          CQH(CH, After, Before)
     { }
 
     [[nodiscard]] inline bool isFinished(pb::Arena &Arena)
     {
-        if (Now >= Before)
+        if (Now >= Before) {
+            netdata_log_error("UQ: is finished!");
             return true;
+        }
 
-        return MQH.isFinished(Arena) && CQH.isFinished();
+        // return MQH.isFinished(Arena) && CQH.isFinished();
+        bool rc = CQH.isFinished();
+        if (rc) {
+            netdata_log_error("CQH: is finished!");
+        } else {
+            netdata_log_error("CQH: is not finished!");
+        }
+
+        return rc;
     }
 
     [[nodiscard]] inline STORAGE_POINT next()
     {
         STORAGE_POINT SP;
 
-        if (!MQH.Finished) {
-            SP = MQH.next();
-            Now = SP.end_time_s;
-            return SP;
-        }
+        // if (!MQH.Finished) {
+        //     SP = MQH.next();
+        //     Now = SP.end_time_s;
+        //     return SP;
+        // }
 
         if (!CQH.Finished) {
             SP = CQH.next();
             Now = SP.end_time_s;
+
+            netdata_log_error("CQH returned next point!");
             return SP;
         }
 
@@ -177,7 +202,8 @@ public:
 
     void finalize()
     {
-        MQH.finalize();
+        // MQH.finalize();
+        netdata_log_error("CQH is being finalized!");
         CQH.finalize();
     }
 
@@ -186,7 +212,7 @@ private:
     uint32_t Before;
     uint32_t Now;
 
-    MetricHandleQuery MQH;
+    // MetricHandleQuery MQH;
     CollectionQueryHandle CQH;
 };
 

@@ -199,9 +199,9 @@ extern "C" void *profile_main(void *ptr) {
         UpdateEvery = localhost->rrd_update_every;
 
     // pick low-default values, in case this plugin is ever enabled accidentaly.
-    size_t NumThreads = config_get_number(CONFIG_SECTION_PROFILE, "number of threads", 16);
-    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 400);
-    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 5);
+    size_t NumThreads = config_get_number(CONFIG_SECTION_PROFILE, "number of threads", 1);
+    size_t NumCharts = config_get_number(CONFIG_SECTION_PROFILE, "number of charts", 1);
+    size_t NumDimsPerChart = config_get_number(CONFIG_SECTION_PROFILE, "number of dimensions per chart", 1);
     size_t SecondsToBackfill = config_get_number(CONFIG_SECTION_PROFILE, "seconds to backfill", 0);
 
     std::vector<Profiler> Profilers;

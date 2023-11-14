@@ -265,14 +265,10 @@ struct rdb_query_handle
     rdb::MetricHandle *MH;
     pb::Arena Arena;
 
-    uint32_t After;
-    uint32_t Before;
-    uint32_t Now;
     rdb::UniversalQuery UQ;
 
     rdb_query_handle(rdb::MetricHandle *MH, rdb::CollectionHandle *CH, uint32_t After, uint32_t Before) :
         MH(MH), Arena(), 
-        After(After), Before(Before), Now(After),
         UQ(MH, CH, After, Before)
     {
     }
@@ -280,13 +276,12 @@ struct rdb_query_handle
     inline STORAGE_POINT next()
     {
         STORAGE_POINT SP = UQ.next();
-        Now = SP.start_time_s;
         return SP;
     }
 
     inline bool isFinished()
     {
-        return (Now > Before) ? true : UQ.isFinished(Arena);
+        return UQ.isFinished(Arena);
     }
 
     ~rdb_query_handle()
@@ -309,16 +304,15 @@ void rdb_load_metric_init(STORAGE_METRIC_HANDLE *smh,
     MetricHandle *MH = reinterpret_cast<MetricHandle *>(rdb_metric_dup(smh));
     rdb_collect_handle *rch = reinterpret_cast<rdb_collect_handle *>(sch);
 
-    After = std::max(rdb_metric_oldest_time(smh, sch), After);
-    Before = std::min(rdb_metric_latest_time(smh, nullptr), Before);
-
     rdb_query_handle *rqh = new rdb_query_handle(MH, &rch->ch, After, Before);
+    fatal("GVD[B]");
 
-    seqh->start_time_s = After;
-    seqh->end_time_s = Before;
     seqh->backend = STORAGE_ENGINE_BACKEND_RDB;
     seqh->priority = priority;
     seqh->handle = reinterpret_cast<STORAGE_QUERY_HANDLE *>(rqh);
+
+    fatal("Initialized new query for MH(GID=%u, MID=%u) with range [%ld, %ld)",
+                      MH->gid(), MH->mid(), After, Before);
 }
 
 STORAGE_POINT rdb_load_metric_next(struct storage_engine_query_handle *seqh)

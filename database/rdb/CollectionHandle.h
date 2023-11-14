@@ -34,6 +34,7 @@ private:
 
     void store_next_internal(MetricHandle &MH, usec_t PIT, const STORAGE_POINT &SP)
     {
+        netdata_log_error("GVD[1] - lock");
         spinlock_lock(&Lock);
 
         // this might be the first time we are saving something in the collection handle.
@@ -41,6 +42,7 @@ private:
         {
             CP.appendPoint(SP);
             CurrPIT = PIT;
+            netdata_log_error("GVD[2] - unlock");
             spinlock_unlock(&Lock);
             return;
         }
@@ -86,6 +88,7 @@ private:
                          ThisPIT <= StopPIT;
                          ThisPIT = (CurrPIT + UE))
                     {
+                        netdata_log_error("GVD[3] - unlock");
                         spinlock_unlock(&Lock);
 
                         STORAGE_POINT EmptySP = {
@@ -103,11 +106,13 @@ private:
                         };
                         store_next(MH, ThisPIT, EmptySP);
 
+                        netdata_log_error("GVD[4] - lock");
                         spinlock_lock(&Lock);
                     }
                 }
             }
 
+            netdata_log_error("GVD[5] - unlock");
             spinlock_unlock(&Lock);
             store_next(MH, PIT, SP);
             return;
@@ -115,12 +120,14 @@ private:
         else if (CurrPIT > PIT)
         {
             // point_in_time is in the past, nothing to do
+            netdata_log_error("GVD[6] - unlock");
             spinlock_unlock(&Lock);
             return;
         }
         else if (CurrPIT == PIT)
         {
             // point_in_time has already been saved, nothing to do
+            netdata_log_error("GVD[7] - unlock");
             spinlock_unlock(&Lock);
             return;
         }
@@ -134,6 +141,7 @@ private:
     {
         if (Protect)
         {
+            netdata_log_error("GVD[8] - lock");
             spinlock_lock(&Lock);
         }
 
@@ -141,6 +149,7 @@ private:
         {
             if (Protect)
             {
+                netdata_log_error("GVD[9] - unlock");
                 spinlock_unlock(&Lock);
             }
 
@@ -196,6 +205,7 @@ private:
 
         if (Protect)
         {
+            netdata_log_error("GVD[10] - unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -209,6 +219,7 @@ private:
 
         if (Protect)
         {
+            netdata_log_error("GVD[11] - lock");
             spinlock_lock(&Lock);
         }
 
@@ -217,6 +228,7 @@ private:
 
         if (Protect)
         {
+            netdata_log_error("GVD[12] - unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -229,6 +241,7 @@ private:
 
         if (Protect)
         {
+            netdata_log_error("GVD[13] - lock");
             spinlock_lock(&Lock);
         }
 
@@ -237,6 +250,7 @@ private:
 
         if (Protect)
         {
+            netdata_log_error("GVD[14] - unlock");
             spinlock_unlock(&Lock);
         }
 
@@ -246,6 +260,9 @@ private:
 public:
     inline void store_next(MetricHandle &MH, usec_t PIT, const STORAGE_POINT &SP)
     {
+        netdata_log_error("Storing new value.");
+
+        netdata_log_error("GVD[140] - lock");
         spinlock_lock(&Lock);
 
         if (unlikely(CP.capacity() == 0))
@@ -257,6 +274,7 @@ public:
 
         if (unlikely(Delta != UE))
         {
+            netdata_log_error("GVD[15] - unlock");
             spinlock_unlock(&Lock);
             store_next_internal(MH, PIT, SP);
             return;
@@ -265,6 +283,7 @@ public:
         CP.appendPoint(SP);
         this->CurrPIT += UE;
 
+        netdata_log_error("GVD[16] - unlock");
         spinlock_unlock(&Lock);
     }
 
@@ -275,6 +294,7 @@ public:
 
     inline void setUpdateEvery(MetricHandle &MH, usec_t UE)
     {
+        netdata_log_error("GVD[17] - lock");
         spinlock_lock(&Lock);
 
         flush_internal(MH, false);
@@ -282,6 +302,7 @@ public:
         CP.setUpdateEvery(UE / USEC_PER_SEC);
         this->UE = UE;
 
+        netdata_log_error("GVD[18] - unlock");
         spinlock_unlock(&Lock);
     }
 
@@ -297,10 +318,12 @@ public:
 
     [[nodiscard]] inline usec_t duration() const
     {
+        netdata_log_error("GVD[19] - lock");
         spinlock_lock(&Lock);
 
         usec_t D = before_internal(false) - after_internal(false);
 
+        netdata_log_error("GVD[20] - unlock");
         spinlock_unlock(&Lock);
 
         return D;
@@ -309,12 +332,14 @@ public:
     [[nodiscard]] inline std::optional<std::pair<Page::PageIterator, Page::PageIterator>>
     queryLock(usec_t After) const
     {
+        netdata_log_error("GVD[21] - lock");
         spinlock_lock(&Lock);
         return CP.query(after_internal(false) / USEC_PER_SEC, After / USEC_PER_SEC);
     }
 
     inline void queryUnlock() const
     {
+        netdata_log_error("GVD[22] - unlock");
         spinlock_unlock(&Lock);
     }
 
