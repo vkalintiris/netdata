@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common.h"
+#include "database/engine/rrddiskprotocol.h"
 
 #define GLOBAL_STATS_RESET_WEB_USEC_MAX 0x01
 
@@ -70,6 +71,43 @@ static struct global_statistics {
     uint64_t tier0_disk_compressed_bytes;
     uint64_t tier0_disk_uncompressed_bytes;
 
+    uint64_t gorilla_buffers_1;
+    uint64_t gorilla_buffers_2;
+    uint64_t gorilla_buffers_3;
+    uint64_t gorilla_buffers_4;
+    uint64_t gorilla_buffers_5;
+    uint64_t gorilla_buffers_6;
+    uint64_t gorilla_buffers_7;
+    uint64_t gorilla_buffers_8;
+    uint64_t gorilla_buffers_9;
+    uint64_t gorilla_buffers_10;
+    uint64_t gorilla_buffers_11;
+    uint64_t gorilla_buffers_12;
+    uint64_t gorilla_buffers_13;
+    uint64_t gorilla_buffers_14;
+    uint64_t gorilla_buffers_15;
+    uint64_t gorilla_buffers_16;
+
+    uint64_t gorilla_buffers_consumed_1;
+    uint64_t gorilla_buffers_consumed_2;
+    uint64_t gorilla_buffers_consumed_3;
+    uint64_t gorilla_buffers_consumed_4;
+    uint64_t gorilla_buffers_consumed_5;
+    uint64_t gorilla_buffers_consumed_6;
+    uint64_t gorilla_buffers_consumed_7;
+    uint64_t gorilla_buffers_consumed_8;
+    uint64_t gorilla_buffers_consumed_9;
+    uint64_t gorilla_buffers_consumed_10;
+    uint64_t gorilla_buffers_consumed_11;
+    uint64_t gorilla_buffers_consumed_12;
+    uint64_t gorilla_buffers_consumed_13;
+    uint64_t gorilla_buffers_consumed_14;
+    uint64_t gorilla_buffers_consumed_15;
+    uint64_t gorilla_buffers_consumed_16;
+
+    uint64_t t0_metric_pages_with_same_value;
+    uint64_t t0_metric_pages_total;
+
     uint64_t db_points_stored_per_tier[RRD_STORAGE_TIERS];
 
 } global_statistics = {
@@ -89,6 +127,43 @@ static struct global_statistics {
         .tier0_hot_gorilla_buffers = 0,
         .tier0_disk_compressed_bytes = 0,
         .tier0_disk_uncompressed_bytes = 0,
+
+        .gorilla_buffers_1 = 0,
+        .gorilla_buffers_2 = 0,
+        .gorilla_buffers_3 = 0,
+        .gorilla_buffers_4 = 0,
+        .gorilla_buffers_5 = 0,
+        .gorilla_buffers_6 = 0,
+        .gorilla_buffers_7 = 0,
+        .gorilla_buffers_8 = 0,
+        .gorilla_buffers_9 = 0,
+        .gorilla_buffers_10 = 0,
+        .gorilla_buffers_11 = 0,
+        .gorilla_buffers_12 = 0,
+        .gorilla_buffers_13 = 0,
+        .gorilla_buffers_14 = 0,
+        .gorilla_buffers_15 = 0,
+        .gorilla_buffers_16 = 0,
+
+        .gorilla_buffers_consumed_1 = 0,
+        .gorilla_buffers_consumed_2 = 0,
+        .gorilla_buffers_consumed_3 = 0,
+        .gorilla_buffers_consumed_4 = 0,
+        .gorilla_buffers_consumed_5 = 0,
+        .gorilla_buffers_consumed_6 = 0,
+        .gorilla_buffers_consumed_7 = 0,
+        .gorilla_buffers_consumed_8 = 0,
+        .gorilla_buffers_consumed_9 = 0,
+        .gorilla_buffers_consumed_10 = 0,
+        .gorilla_buffers_consumed_11 = 0,
+        .gorilla_buffers_consumed_12 = 0,
+        .gorilla_buffers_consumed_13 = 0,
+        .gorilla_buffers_consumed_14 = 0,
+        .gorilla_buffers_consumed_15 = 0,
+        .gorilla_buffers_consumed_16 = 0,
+
+        .t0_metric_pages_with_same_value = 0,
+        .t0_metric_pages_total = 0,
 };
 
 void global_statistics_rrdset_done_chart_collection_completed(size_t *points_read_per_tier_array) {
@@ -127,6 +202,111 @@ void global_statistics_tier0_disk_compressed_bytes(uint32_t size) {
 
 void global_statistics_tier0_disk_uncompressed_bytes(uint32_t size) {
     __atomic_fetch_add(&global_statistics.tier0_disk_uncompressed_bytes, size, __ATOMIC_RELAXED);
+}
+
+void global_statistics_gorilla_buffers_1_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_1, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_2_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_2, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_3_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_3, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_4_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_4, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_5_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_5, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_6_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_6, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_7_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_7, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_8_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_8, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_9_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_9, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_10_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_10, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_11_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_11, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_12_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_12, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_13_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_13, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_14_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_14, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_15_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_15, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_16_incr() {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_16, 1, __ATOMIC_RELAXED);
+}
+
+void global_statistics_gorilla_buffers_1_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_1, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_2_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_2, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_3_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_3, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_4_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_4, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_5_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_5, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_6_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_6, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_7_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_7, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_8_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_8, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_9_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_9, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_10_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_10, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_11_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_11, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_12_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_12, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_13_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_13, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_14_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_14, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_15_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_15, n, __ATOMIC_RELAXED);
+}
+void global_statistics_gorilla_buffers_16_consumed(uint64_t n) {
+    __atomic_fetch_add(&global_statistics.gorilla_buffers_consumed_16, n, __ATOMIC_RELAXED);
+}
+
+void global_statistics_t0_metric_pages_with_same_value_incr() {
+    __atomic_fetch_add(&global_statistics.t0_metric_pages_with_same_value, 1, __ATOMIC_RELAXED);
+}
+void global_statistics_t0_metric_pages_total_incr() {
+    __atomic_fetch_add(&global_statistics.t0_metric_pages_total, 1, __ATOMIC_RELAXED);
 }
 
 void global_statistics_rrdr_query_completed(size_t queries, uint64_t db_points_read, uint64_t result_points_generated, QUERY_SOURCE query_source) {
@@ -236,6 +416,43 @@ static inline void global_statistics_copy(struct global_statistics *gs, uint8_t 
     gs->tier0_disk_compressed_bytes = __atomic_load_n(&global_statistics.tier0_disk_compressed_bytes, __ATOMIC_RELAXED);
     gs->tier0_disk_uncompressed_bytes = __atomic_load_n(&global_statistics.tier0_disk_uncompressed_bytes, __ATOMIC_RELAXED);
 
+    gs->gorilla_buffers_1     = __atomic_load_n(&global_statistics.gorilla_buffers_1, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_2     = __atomic_load_n(&global_statistics.gorilla_buffers_2, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_3     = __atomic_load_n(&global_statistics.gorilla_buffers_3, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_4     = __atomic_load_n(&global_statistics.gorilla_buffers_4, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_5     = __atomic_load_n(&global_statistics.gorilla_buffers_5, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_6     = __atomic_load_n(&global_statistics.gorilla_buffers_6, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_7     = __atomic_load_n(&global_statistics.gorilla_buffers_7, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_8     = __atomic_load_n(&global_statistics.gorilla_buffers_8, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_9     = __atomic_load_n(&global_statistics.gorilla_buffers_9, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_10    = __atomic_load_n(&global_statistics.gorilla_buffers_10, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_11    = __atomic_load_n(&global_statistics.gorilla_buffers_11, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_12    = __atomic_load_n(&global_statistics.gorilla_buffers_12, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_13    = __atomic_load_n(&global_statistics.gorilla_buffers_13, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_14    = __atomic_load_n(&global_statistics.gorilla_buffers_14, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_15    = __atomic_load_n(&global_statistics.gorilla_buffers_15, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_16    = __atomic_load_n(&global_statistics.gorilla_buffers_16, __ATOMIC_RELAXED);
+    
+    gs->gorilla_buffers_consumed_1 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_1, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_2 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_2, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_3 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_3, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_4 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_4, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_5 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_5, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_6 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_6, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_7 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_7, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_8 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_8, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_9 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_9, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_10 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_10, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_11 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_11, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_12 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_12, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_13 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_13, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_14 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_14, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_15 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_15, __ATOMIC_RELAXED);
+    gs->gorilla_buffers_consumed_16 = __atomic_load_n(&global_statistics.gorilla_buffers_consumed_16, __ATOMIC_RELAXED);
+
+    gs->t0_metric_pages_with_same_value = __atomic_load_n(&global_statistics.t0_metric_pages_with_same_value, __ATOMIC_RELAXED);
+    gs->t0_metric_pages_total = __atomic_load_n(&global_statistics.t0_metric_pages_total, __ATOMIC_RELAXED);
+    
     for(size_t tier = 0; tier < storage_tiers ;tier++)
         gs->db_points_stored_per_tier[tier] = __atomic_load_n(&global_statistics.db_points_stored_per_tier[tier], __ATOMIC_RELAXED);
 
@@ -917,6 +1134,361 @@ static void global_statistics_charts(void) {
         rrddim_set_by_pointer(st_tier0_compression_info, rd_uncompressed_bytes, (collected_number)gs.tier0_disk_uncompressed_bytes);
 
         rrdset_done(st_tier0_compression_info);
+    }
+
+    if (tier_page_type[0] == PAGE_GORILLA_METRICS)
+    {
+        static RRDSET *st = NULL;
+
+        static RRDDIM *rd_gorilla_buffers_1 = NULL;
+        static RRDDIM *rd_gorilla_buffers_2 = NULL;
+        static RRDDIM *rd_gorilla_buffers_3 = NULL;
+        static RRDDIM *rd_gorilla_buffers_4 = NULL;
+        static RRDDIM *rd_gorilla_buffers_5 = NULL;
+        static RRDDIM *rd_gorilla_buffers_6 = NULL;
+        static RRDDIM *rd_gorilla_buffers_7 = NULL;
+        static RRDDIM *rd_gorilla_buffers_8 = NULL;
+        static RRDDIM *rd_gorilla_buffers_9 = NULL;
+        static RRDDIM *rd_gorilla_buffers_10 = NULL;
+        static RRDDIM *rd_gorilla_buffers_11 = NULL;
+        static RRDDIM *rd_gorilla_buffers_12 = NULL;
+        static RRDDIM *rd_gorilla_buffers_13 = NULL;
+        static RRDDIM *rd_gorilla_buffers_14 = NULL;
+        static RRDDIM *rd_gorilla_buffers_15 = NULL;
+        static RRDDIM *rd_gorilla_buffers_16 = NULL;
+
+        static RRDDIM *rd_gorilla_buffers_total = NULL;
+
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "gorilla_buffers"
+                    , NULL
+                    , "gorilla_buffers"
+                    , NULL
+                    , "Number of gorilla buffers in pages"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131006
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_gorilla_buffers_1 = rrddim_add(st, "n1", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_2 = rrddim_add(st, "n2", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_3 = rrddim_add(st, "n3", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_4 = rrddim_add(st, "n4", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_5 = rrddim_add(st, "n5", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_6 = rrddim_add(st, "n6", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_7 = rrddim_add(st, "n7", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_8 = rrddim_add(st, "n8", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_9 = rrddim_add(st, "n9", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_10 = rrddim_add(st, "n10", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_11 = rrddim_add(st, "n11", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_12 = rrddim_add(st, "n12", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_13 = rrddim_add(st, "n13", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_14 = rrddim_add(st, "n14", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_15 = rrddim_add(st, "n15", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_gorilla_buffers_16 = rrddim_add(st, "n16", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            
+            rd_gorilla_buffers_total = rrddim_add(st, "total", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_1, (collected_number)gs.gorilla_buffers_1);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_2, (collected_number)gs.gorilla_buffers_2);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_3, (collected_number)gs.gorilla_buffers_3);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_4, (collected_number)gs.gorilla_buffers_4);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_5, (collected_number)gs.gorilla_buffers_5);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_6, (collected_number)gs.gorilla_buffers_6);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_7, (collected_number)gs.gorilla_buffers_7);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_8, (collected_number)gs.gorilla_buffers_8);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_9, (collected_number)gs.gorilla_buffers_9);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_10, (collected_number)gs.gorilla_buffers_10);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_11, (collected_number)gs.gorilla_buffers_11);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_12, (collected_number)gs.gorilla_buffers_12);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_13, (collected_number)gs.gorilla_buffers_13);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_14, (collected_number)gs.gorilla_buffers_14);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_15, (collected_number)gs.gorilla_buffers_15);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_16, (collected_number)gs.gorilla_buffers_16);
+        rrddim_set_by_pointer(st, rd_gorilla_buffers_total, (collected_number)
+            (gs.gorilla_buffers_1 + gs.gorilla_buffers_2 + gs.gorilla_buffers_3 + gs.gorilla_buffers_4 + gs.gorilla_buffers_5 +
+             gs.gorilla_buffers_6 + gs.gorilla_buffers_7 + gs.gorilla_buffers_8 + gs.gorilla_buffers_9 + gs.gorilla_buffers_10 +
+             gs.gorilla_buffers_11 + gs.gorilla_buffers_12 + gs.gorilla_buffers_13 + gs.gorilla_buffers_14 + gs.gorilla_buffers_15 +
+             gs.gorilla_buffers_16)
+        );
+
+        rrdset_done(st);
+    }
+
+    if (tier_page_type[0] == PAGE_GORILLA_METRICS)
+    {
+        static RRDSET *st = NULL;
+
+        static RRDDIM *rd_pct1 = NULL;
+        static RRDDIM *rd_pct2 = NULL;
+        static RRDDIM *rd_pct3 = NULL;
+        static RRDDIM *rd_pct4 = NULL;
+        static RRDDIM *rd_pct5 = NULL;
+        static RRDDIM *rd_pct6 = NULL;
+        static RRDDIM *rd_pct7 = NULL;
+        static RRDDIM *rd_pct8 = NULL;
+        static RRDDIM *rd_pct9 = NULL;
+        static RRDDIM *rd_pct10 = NULL;
+        static RRDDIM *rd_pct11 = NULL;
+        static RRDDIM *rd_pct12 = NULL;
+        static RRDDIM *rd_pct13 = NULL;
+        static RRDDIM *rd_pct14 = NULL;
+        static RRDDIM *rd_pct15 = NULL;
+        static RRDDIM *rd_pct16 = NULL;
+        
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "gorilla_buffers_pct"
+                    , NULL
+                    , "gorilla_buffers_pct"
+                    , NULL
+                    , "Pct of gorilla chunks in pages"
+                    , "percent"
+                    , "netdata"
+                    , "stats"
+                    , 131007
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_pct1 = rrddim_add(st, "p1", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct2 = rrddim_add(st, "p2", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct3 = rrddim_add(st, "p3", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct4 = rrddim_add(st, "p4", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct5 = rrddim_add(st, "p5", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct6 = rrddim_add(st, "p6", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct7 = rrddim_add(st, "p7", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct8 = rrddim_add(st, "p8", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct9 = rrddim_add(st, "p9", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct10 = rrddim_add(st, "p10", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct11 = rrddim_add(st, "p11", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct12 = rrddim_add(st, "p12", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct13 = rrddim_add(st, "p13", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct14 = rrddim_add(st, "p14", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct15 = rrddim_add(st, "p15", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_pct16 = rrddim_add(st, "p16", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        uint64_t total = (gs.gorilla_buffers_1 + gs.gorilla_buffers_2 + gs.gorilla_buffers_3 + gs.gorilla_buffers_4 + gs.gorilla_buffers_4 + gs.gorilla_buffers_5);
+
+        double p1 = 0;
+        double p2 = 0;
+        double p3 = 0;
+        double p4 = 0;
+        double p5 = 0;
+        double p6 = 0;
+        double p7 = 0;
+        double p8 = 0;
+        double p9 = 0;
+        double p10 = 0;
+        double p11 = 0;
+        double p12 = 0;
+        double p13 = 0;
+        double p14 = 0;
+        double p15 = 0;
+        double p16 = 0;
+        
+        if (total) {
+            p1 = 10000.0 * ((double) gs.gorilla_buffers_1) / total;
+            p2 = 10000.0 * ((double) gs.gorilla_buffers_2) / total;
+            p3 = 10000.0 * ((double) gs.gorilla_buffers_3) / total;
+            p4 = 10000.0 * ((double) gs.gorilla_buffers_4) / total;
+            p5 = 10000.0 * ((double) gs.gorilla_buffers_5) / total;
+            p6 = 10000.0 * ((double) gs.gorilla_buffers_6) / total;
+            p7 = 10000.0 * ((double) gs.gorilla_buffers_7) / total;
+            p8 = 10000.0 * ((double) gs.gorilla_buffers_8) / total;
+            p9 = 10000.0 * ((double) gs.gorilla_buffers_9) / total;
+            p10 = 10000.0 * ((double) gs.gorilla_buffers_10) / total;
+            p11 = 10000.0 * ((double) gs.gorilla_buffers_11) / total;
+            p12 = 10000.0 * ((double) gs.gorilla_buffers_12) / total;
+            p13 = 10000.0 * ((double) gs.gorilla_buffers_13) / total;
+            p14 = 10000.0 * ((double) gs.gorilla_buffers_14) / total;
+            p15 = 10000.0 * ((double) gs.gorilla_buffers_15) / total;
+            p16 = 10000.0 * ((double) gs.gorilla_buffers_16) / total;
+        }
+            
+        rrddim_set_by_pointer(st, rd_pct1, (collected_number) p1);
+        rrddim_set_by_pointer(st, rd_pct2, (collected_number) p2);
+        rrddim_set_by_pointer(st, rd_pct3, (collected_number) p3);
+        rrddim_set_by_pointer(st, rd_pct4, (collected_number) p4);
+        rrddim_set_by_pointer(st, rd_pct5, (collected_number) p5);
+        rrddim_set_by_pointer(st, rd_pct6, (collected_number) p6);
+        rrddim_set_by_pointer(st, rd_pct7, (collected_number) p7);
+        rrddim_set_by_pointer(st, rd_pct8, (collected_number) p8);
+        rrddim_set_by_pointer(st, rd_pct9, (collected_number) p9);
+        rrddim_set_by_pointer(st, rd_pct10, (collected_number) p10);
+        rrddim_set_by_pointer(st, rd_pct11, (collected_number) p11);
+        rrddim_set_by_pointer(st, rd_pct12, (collected_number) p12);
+        rrddim_set_by_pointer(st, rd_pct13, (collected_number) p13);
+        rrddim_set_by_pointer(st, rd_pct14, (collected_number) p14);
+        rrddim_set_by_pointer(st, rd_pct15, (collected_number) p15);
+        rrddim_set_by_pointer(st, rd_pct16, (collected_number) p16);
+        
+        rrdset_done(st);
+    }
+
+    if (tier_page_type[0] == PAGE_GORILLA_METRICS)
+    {
+        static RRDSET *st = NULL;
+
+        static RRDDIM *rd_utilization_1 = NULL;
+        static RRDDIM *rd_utilization_2 = NULL;
+        static RRDDIM *rd_utilization_3 = NULL;
+        static RRDDIM *rd_utilization_4 = NULL;
+        static RRDDIM *rd_utilization_5 = NULL;
+        static RRDDIM *rd_utilization_6 = NULL;
+        static RRDDIM *rd_utilization_7 = NULL;
+        static RRDDIM *rd_utilization_8 = NULL;
+        static RRDDIM *rd_utilization_9 = NULL;
+        static RRDDIM *rd_utilization_10 = NULL;
+        static RRDDIM *rd_utilization_11 = NULL;
+        static RRDDIM *rd_utilization_12 = NULL;
+        static RRDDIM *rd_utilization_13 = NULL;
+        static RRDDIM *rd_utilization_14 = NULL;
+        static RRDDIM *rd_utilization_15 = NULL;
+        static RRDDIM *rd_utilization_16 = NULL;
+        
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "gorilla_buffers_fragmentation"
+                    , NULL
+                    , "gorilla_buffers_fragmentation"
+                    , NULL
+                    , "Utilization in gorilla buffers"
+                    , "ratio"
+                    , "netdata"
+                    , "stats"
+                    , 131008
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_utilization_1 = rrddim_add(st, "r1", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_2 = rrddim_add(st, "r2", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_3 = rrddim_add(st, "r3", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_4 = rrddim_add(st, "r4", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_5 = rrddim_add(st, "r5", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_6 = rrddim_add(st, "r6", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_7 = rrddim_add(st, "r7", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_8 = rrddim_add(st, "r8", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_9 = rrddim_add(st, "r9", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_10 = rrddim_add(st, "r10", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_11 = rrddim_add(st, "r11", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_12 = rrddim_add(st, "r12", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_13 = rrddim_add(st, "r13", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_14 = rrddim_add(st, "r14", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_15 = rrddim_add(st, "r15", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+            rd_utilization_16 = rrddim_add(st, "r16", NULL, 1, 100, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        double r1 = 0.0;
+        double r2 = 0.0;
+        double r3 = 0.0;
+        double r4 = 0.0;
+        double r5 = 0.0;
+        double r6 = 0.0;
+        double r7 = 0.0;
+        double r8 = 0.0;
+        double r9 = 0.0;
+        double r10 = 0.0;
+        double r11 = 0.0;
+        double r12 = 0.0;
+        double r13 = 0.0;
+        double r14 = 0.0;
+        double r15 = 0.0;
+        double r16 = 0.0;
+
+        if (gs.gorilla_buffers_1)
+            r1 =  100.0 * gs.gorilla_buffers_consumed_1 / (1.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_1);
+        if (gs.gorilla_buffers_2)
+            r2 =  100.0 * gs.gorilla_buffers_consumed_2 / (2.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_2);
+        if (gs.gorilla_buffers_3)
+            r3 =  100.0 * gs.gorilla_buffers_consumed_3 / (3.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_3);
+        if (gs.gorilla_buffers_4)
+            r4 =  100.0 * gs.gorilla_buffers_consumed_4 / (4.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_4);
+        if (gs.gorilla_buffers_5)
+            r5 =  100.0 * gs.gorilla_buffers_consumed_5 / (5.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_5);
+        if (gs.gorilla_buffers_6)
+            r6 =  100.0 * gs.gorilla_buffers_consumed_6 / (6.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_6);
+        if (gs.gorilla_buffers_7)
+            r7 =  100.0 * gs.gorilla_buffers_consumed_7 / (7.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_7);
+        if (gs.gorilla_buffers_8)
+            r8 =  100.0 * gs.gorilla_buffers_consumed_8 / (8.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_8);
+        if (gs.gorilla_buffers_9)
+            r9 =  100.0 * gs.gorilla_buffers_consumed_9 / (9.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_9);
+        if (gs.gorilla_buffers_10)
+            r10 =  100.0 * gs.gorilla_buffers_consumed_10 / (10.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_10);
+        if (gs.gorilla_buffers_11)
+            r11 =  100.0 * gs.gorilla_buffers_consumed_11 / (11.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_11);
+        if (gs.gorilla_buffers_12)
+            r12 =  100.0 * gs.gorilla_buffers_consumed_12 / (12.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_12);
+        if (gs.gorilla_buffers_13)
+            r13 =  100.0 * gs.gorilla_buffers_consumed_13 / (13.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_13);
+        if (gs.gorilla_buffers_14)
+            r14 =  100.0 * gs.gorilla_buffers_consumed_14 / (14.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_14);
+        if (gs.gorilla_buffers_15)
+            r15 =  100.0 * gs.gorilla_buffers_consumed_15 / (15.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_15);
+        if (gs.gorilla_buffers_16)
+            r16 =  100.0 * gs.gorilla_buffers_consumed_16 / (16.0 * GORILLA_BUFFER_SIZE * gs.gorilla_buffers_16);
+        
+        rrddim_set_by_pointer(st, rd_utilization_1, (collected_number) r1);
+        rrddim_set_by_pointer(st, rd_utilization_2, (collected_number) r2);
+        rrddim_set_by_pointer(st, rd_utilization_3, (collected_number) r3);
+        rrddim_set_by_pointer(st, rd_utilization_4, (collected_number) r4);
+        rrddim_set_by_pointer(st, rd_utilization_5, (collected_number) r5);
+        rrddim_set_by_pointer(st, rd_utilization_6, (collected_number) r6);
+        rrddim_set_by_pointer(st, rd_utilization_7, (collected_number) r7);
+        rrddim_set_by_pointer(st, rd_utilization_8, (collected_number) r8);
+        rrddim_set_by_pointer(st, rd_utilization_9, (collected_number) r9);
+        rrddim_set_by_pointer(st, rd_utilization_10, (collected_number) r10);
+        rrddim_set_by_pointer(st, rd_utilization_11, (collected_number) r11);
+        rrddim_set_by_pointer(st, rd_utilization_12, (collected_number) r12);
+        rrddim_set_by_pointer(st, rd_utilization_13, (collected_number) r13);
+        rrddim_set_by_pointer(st, rd_utilization_14, (collected_number) r14);
+        rrddim_set_by_pointer(st, rd_utilization_15, (collected_number) r15);
+        rrddim_set_by_pointer(st, rd_utilization_16, (collected_number) r16);
+                
+        rrdset_done(st);
+    }
+ 
+    {
+        static RRDSET *st = NULL;
+
+        static RRDDIM *rd_same_value = NULL;
+        static RRDDIM *rd_total = NULL;
+        
+        if (unlikely(!st)) {
+            st = rrdset_create_localhost(
+                    "netdata"
+                    , "t0_metric_pages_with_same_value"
+                    , NULL
+                    , "t0_metric_pages_with_same_value"
+                    , NULL
+                    , "Pages with same value"
+                    , "count"
+                    , "netdata"
+                    , "stats"
+                    , 131009
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
+
+            rd_same_value = rrddim_add(st, "same_value", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            rd_total = rrddim_add(st, "total", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        }
+
+        rrddim_set_by_pointer(st, rd_same_value, (collected_number) gs.t0_metric_pages_with_same_value);
+        rrddim_set_by_pointer(st, rd_total, (collected_number) gs.t0_metric_pages_total);
+                
+        rrdset_done(st);
     }
 }
 

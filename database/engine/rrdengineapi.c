@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "database/engine/rrddiskprotocol.h"
+#include "rrddiskprotocol.h"
 #include "rrdengine.h"
 
 /* Default global database instance */
@@ -16,7 +17,7 @@ struct rrdengine_instance multidb_ctx_storage_tier4;
 #error RRD_STORAGE_TIERS is not 5 - you need to add allocations here
 #endif
 struct rrdengine_instance *multidb_ctx[RRD_STORAGE_TIERS];
-uint8_t tier_page_type[RRD_STORAGE_TIERS] = {PAGE_METRICS, PAGE_TIER, PAGE_TIER, PAGE_TIER, PAGE_TIER};
+uint8_t tier_page_type[RRD_STORAGE_TIERS] = {PAGE_GORILLA_METRICS, PAGE_TIER, PAGE_TIER, PAGE_TIER, PAGE_TIER};
 
 #if defined(ENV32BIT)
 size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};

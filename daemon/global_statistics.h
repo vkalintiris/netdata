@@ -50,6 +50,43 @@ void global_statistics_gorilla_buffer_add_hot();
 void global_statistics_tier0_disk_compressed_bytes(uint32_t size);
 void global_statistics_tier0_disk_uncompressed_bytes(uint32_t size);
 
+void global_statistics_gorilla_buffers_1_incr();
+void global_statistics_gorilla_buffers_2_incr();
+void global_statistics_gorilla_buffers_3_incr();
+void global_statistics_gorilla_buffers_4_incr();
+void global_statistics_gorilla_buffers_5_incr();
+void global_statistics_gorilla_buffers_6_incr();
+void global_statistics_gorilla_buffers_7_incr();
+void global_statistics_gorilla_buffers_8_incr();
+void global_statistics_gorilla_buffers_9_incr();
+void global_statistics_gorilla_buffers_10_incr();
+void global_statistics_gorilla_buffers_11_incr();
+void global_statistics_gorilla_buffers_12_incr();
+void global_statistics_gorilla_buffers_13_incr();
+void global_statistics_gorilla_buffers_14_incr();
+void global_statistics_gorilla_buffers_15_incr();
+void global_statistics_gorilla_buffers_16_incr();
+
+void global_statistics_gorilla_buffers_1_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_2_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_3_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_4_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_5_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_6_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_7_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_8_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_9_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_10_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_11_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_12_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_13_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_14_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_15_consumed(uint64_t n);
+void global_statistics_gorilla_buffers_16_consumed(uint64_t n);
+
+void global_statistics_t0_metric_pages_with_same_value_incr();
+void global_statistics_t0_metric_pages_total_incr();
+
 void global_statistics_web_request_completed(uint64_t dt,
                                              uint64_t bytes_received,
                                              uint64_t bytes_sent,

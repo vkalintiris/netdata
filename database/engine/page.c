@@ -2,7 +2,10 @@
 
 #include "page.h"
 
+#include "daemon/global_statistics.h"
+#include "libnetdata/gorilla/gorilla.h"
 #include "libnetdata/libnetdata.h"
+#include "libnetdata/log/log.h"
 
 typedef enum __attribute__((packed)) {
     PAGE_OPTION_ALL_VALUES_EMPTY    = (1 << 0),
@@ -180,7 +183,7 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
             internal_fatal(slots == 1,
                       "DBENGINE: invalid number of slots (%u) or page type (%u)", slots, type);
 
-            pg->slots = 8 * GORILLA_BUFFER_SLOTS;
+            pg->slots = 1024;
 
             // allocate new gorilla writer
             pg->gorilla.aral_index = gettid() % 4;
@@ -435,9 +438,30 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
 
     switch (pg->type) {
         case PAGE_METRICS:
-        case PAGE_TIER:
+        case PAGE_TIER: {
             memcpy(dst, pg->raw.data, dst_size);
+
+            if ((pg->type == PAGE_METRICS) && pg->raw.size) {
+                global_statistics_t0_metric_pages_total_incr();
+
+                uint32_t *data = (uint32_t *) pg->raw.data;
+                uint32_t n = pg->raw.size / sizeof(storage_number);
+
+                bool same_values = true;
+
+                for (uint32_t idx = 1; idx != n; idx++) {
+                    if (data[idx] != data[0]) {
+                        same_values = false;
+                        break;
+                    }
+                }
+
+                if (same_values)
+                    global_statistics_t0_metric_pages_with_same_value_incr();
+            }
+            
             break;
+        }
         case PAGE_GORILLA_METRICS: {
             if ((pg->states & PGD_STATE_SCHEDULED_FOR_FLUSHING) == 0)
                 fatal("Copying to extent is supported only for PGDs that are scheduled for flushing.");
@@ -448,7 +472,101 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
             internal_fatal(pg->gorilla.num_buffers == 0,
                            "pgd_copy_to_extent() gorilla writer does not have any buffers");
 
+            uint64_t consumed_bytes = gorilla_writer_nbytes(pg->gorilla.writer) + sizeof(gorilla_header_t);
+            switch (pg->gorilla.num_buffers) {
+                case 1:
+                    global_statistics_gorilla_buffers_1_incr();
+                    global_statistics_gorilla_buffers_1_consumed(consumed_bytes);
+                    break;
+                case 2:
+                    global_statistics_gorilla_buffers_2_incr();
+                    global_statistics_gorilla_buffers_2_consumed(consumed_bytes);
+                    break;
+                case 3:
+                    global_statistics_gorilla_buffers_3_incr();
+                    global_statistics_gorilla_buffers_3_consumed(consumed_bytes);
+                    break;
+                case 4:
+                    global_statistics_gorilla_buffers_4_incr();
+                    global_statistics_gorilla_buffers_4_consumed(consumed_bytes);
+                    break;
+                case 5:
+                    global_statistics_gorilla_buffers_5_incr();
+                    global_statistics_gorilla_buffers_5_consumed(consumed_bytes);
+                    break;
+                case 6:
+                    global_statistics_gorilla_buffers_6_incr();
+                    global_statistics_gorilla_buffers_6_consumed(consumed_bytes);
+                    break;
+                case 7:
+                    global_statistics_gorilla_buffers_7_incr();
+                    global_statistics_gorilla_buffers_7_consumed(consumed_bytes);
+                    break;
+                case 8:
+                    global_statistics_gorilla_buffers_8_incr();
+                    global_statistics_gorilla_buffers_8_consumed(consumed_bytes);
+                    break;
+                case 9:
+                    global_statistics_gorilla_buffers_9_incr();
+                    global_statistics_gorilla_buffers_9_consumed(consumed_bytes);
+                    break;
+                case 10:
+                    global_statistics_gorilla_buffers_10_incr();
+                    global_statistics_gorilla_buffers_10_consumed(consumed_bytes);
+                    break;
+                case 11:
+                    global_statistics_gorilla_buffers_11_incr();
+                    global_statistics_gorilla_buffers_11_consumed(consumed_bytes);
+                    break;
+                case 12:
+                    global_statistics_gorilla_buffers_12_incr();
+                    global_statistics_gorilla_buffers_12_consumed(consumed_bytes);
+                    break;
+                case 13:
+                    global_statistics_gorilla_buffers_13_incr();
+                    global_statistics_gorilla_buffers_13_consumed(consumed_bytes);
+                    break;
+                case 14:
+                    global_statistics_gorilla_buffers_14_incr();
+                    global_statistics_gorilla_buffers_14_consumed(consumed_bytes);
+                    break;
+                case 15:
+                    global_statistics_gorilla_buffers_15_incr();
+                    global_statistics_gorilla_buffers_15_consumed(consumed_bytes);
+                    break;
+                case 16:
+                    global_statistics_gorilla_buffers_16_incr();
+                    global_statistics_gorilla_buffers_16_consumed(consumed_bytes);
+                    break;
+                default:
+                    break;
+            }
+
+            PGDC pgdc;
+            pgdc_reset(&pgdc, pg, 0);
+
+            bool same_values = true;
+
+            size_t cntr = 0;
+            STORAGE_POINT FirstSP, CurrSP;
+            while (pgdc_get_next_point(&pgdc, cntr, &CurrSP)) {
+                if (cntr++ == 0) {
+                    FirstSP = CurrSP;
+                }
+                
+                if (FirstSP.sum != CurrSP.sum) {
+                    same_values = false;
+                    break;
+                }
+            }
+
+            global_statistics_t0_metric_pages_total_incr();
+            if (same_values)
+                global_statistics_t0_metric_pages_with_same_value_incr();
+
             bool ok = gorilla_writer_serialize(pg->gorilla.writer, dst, dst_size);
+            UNUSED(ok);
+
             internal_fatal(!ok,
                            "pgd_copy_to_extent() tried to serialize pg=%p, gw=%p (with dst_size=%u bytes, num_buffers=%zu)",
                            pg, pg->gorilla.writer, dst_size, pg->gorilla.num_buffers);
