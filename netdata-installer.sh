@@ -1037,6 +1037,11 @@ bundle_fluentbit() {
     return 0
   fi
 
+  if [ -f fluent-bit/build/lib/libfluent-bit.so ]; then
+    echo >&2 "Found built libfluent-bit. Remove file '${PWD}/fluent-bit/build/lib/libfluent-bit.so' to recompile."
+    return 0
+  fi
+
   patch -N -p1 fluent-bit/CMakeLists.txt -i logsmanagement/fluent_bit_build/CMakeLists.patch
   patch -N -p1 fluent-bit/src/flb_log.c -i logsmanagement/fluent_bit_build/flb-log-fmt.patch
 
