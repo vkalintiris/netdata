@@ -80,6 +80,7 @@ def netdata_installer(enable_ml=True, enable_ebpf=True):
 
 def build_image_for_platform(client, platform, image):
     repo_path = str(Path(__file__).parent.parent.parent)
+    cmake_build_release_path = os.path.join(repo_path, "cmake-build-release")
     tag = platform.replace('/', '_') + '_' + image
 
     externaldeps_cache = client.cache_volume(f"{tag}-externaldeps")
@@ -88,7 +89,7 @@ def build_image_for_platform(client, platform, image):
     source = (
         client.container(platform=dagger.Platform(platform))
         .from_("netdata/package-builders:" + image)
-        .with_directory("/netdata", client.host().directory(repo_path), exclude=["./ci/*"])
+        .with_directory("/netdata", client.host().directory(repo_path), exclude=[f"{cmake_build_release_path}/*"])
         .with_mounted_cache("/netdata/externaldeps", externaldeps_cache)
         .with_mounted_cache("/netdata/fluent-bit/build", fluent_bit_cache)
         .with_env_variable('CFLAGS', '-Wall -Wextra -g -O0')
