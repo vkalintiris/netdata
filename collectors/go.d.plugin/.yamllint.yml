@@ -1,0 +1,10 @@
+extends: default
+
+yaml-files:
+  - 'config/*.conf'
+  - 'config/go.d/*.conf'
+
+rules:
+  document-start: disable
+  line-length:
+    max: 120
