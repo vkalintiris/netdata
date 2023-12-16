@@ -348,6 +348,9 @@ struct rrddim {
     // ------------------------------------------------------------------------
     // data collection members
 
+    // file to save the values given in dbengine unit test.
+    FILE *fp;
+
     struct {
         RRDDIM_OPTIONS options;                         // permanent configuration options
 

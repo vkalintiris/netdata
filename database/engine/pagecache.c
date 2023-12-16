@@ -853,8 +853,10 @@ struct pgc_page *pg_cache_lookup_next(
 
     rrdeng_prep_wait(pdc);
 
-    if (unlikely(!pdc->page_list_JudyL))
+    if (unlikely(!pdc->page_list_JudyL)) {
+        assert(false && "PDC does not have a page list");
         return NULL;
+    }
 
     usec_t start_ut = now_monotonic_usec();
     size_t gaps = 0;
@@ -868,8 +870,10 @@ struct pgc_page *pg_cache_lookup_next(
                 pdc->page_list_JudyL, now_s, &gaps,
                 PDC_PAGE_PROCESSED, PDC_PAGE_EMPTY);
 
-        if (!pd)
+        if (!pd) {
+            assert(false && "PDC is NULL");
             break;
+        }
 
         page = pd->page;
         page_from_pd = true;

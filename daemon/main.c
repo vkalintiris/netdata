@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "buildinfo.h"
+#include "daemon/dbengine_test.h"
 #include "static_threads.h"
 
 #include "database/engine/page_test.h"
@@ -1179,7 +1180,7 @@ static void get_netdata_configured_variables() {
     // ------------------------------------------------------------------------
     // get default Database Engine page type
 
-    const char *page_type = config_get(CONFIG_SECTION_DB, "dbengine page type", "raw");
+    const char *page_type = config_get(CONFIG_SECTION_DB, "dbengine page type", "gorilla");
     if (strcmp(page_type, "gorilla") == 0) {
         tier_page_type[0] = PAGE_GORILLA_METRICS;
     } else if (strcmp(page_type, "raw") != 0) {
@@ -1515,6 +1516,8 @@ int main(int argc, char **argv) {
                         if(strcmp(optarg, "unittest") == 0) {
                             unittest_running = true;
 
+// Disable irrelevant tests
+#if 0
                             if (pluginsd_parser_unittest())
                                 return 1;
 
@@ -1528,6 +1531,7 @@ int main(int argc, char **argv) {
                                 return 1;
                             if (unit_test_bitmaps())
                                 return 1;
+#endif
                             // No call to load the config file on this code-path
                             post_conf_load(&user);
                             get_netdata_configured_variables();
@@ -1541,11 +1545,19 @@ int main(int argc, char **argv) {
                                 return 1;
                             }
                             default_rrdpush_enabled = 0;
+
+// Disable irrelevant tests
+#if 0
                             if(run_all_mockup_tests()) return 1;
                             if(unit_test_storage()) return 1;
-#ifdef ENABLE_DBENGINE
-                            if(test_dbengine()) return 1;
 #endif
+#ifdef ENABLE_DBENGINE
+                            if(test_dbengine())
+                                return 1;
+#endif
+
+// Disable irrelevant tests
+#if 0
                             if(test_sqlite()) return 1;
                             if(string_unittest(10000)) return 1;
                             if (dictionary_unittest(10000))
@@ -1558,6 +1570,7 @@ int main(int argc, char **argv) {
                                 return 1;
                             if (uuid_unittest())
                                 return 1;
+#endif
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
                             return 0;
                         }

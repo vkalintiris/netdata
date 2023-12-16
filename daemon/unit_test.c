@@ -2108,7 +2108,7 @@ void test_dbengine_charts_and_dims_are_not_collected(RRDSET *st[CHARTS], RRDDIM 
     }
 }
 
-int test_dbengine(void)
+int test_dbengine_foobar(void)
 {
     fprintf(stderr, "%s() running...\n", __FUNCTION__ );
     int i, j, errors = 0, value_errors = 0, time_errors = 0, update_every, current_region;

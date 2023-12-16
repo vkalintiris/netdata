@@ -42,6 +42,9 @@ struct pgd {
     // the total number of slots available in the page
     uint32_t slots;
 
+    // Protect every operation done on the PGD
+    pthread_mutex_t mutex;
+
     union {
         page_raw_t raw;
         page_gorilla_t gorilla;
@@ -158,6 +161,13 @@ static void pgd_data_aral_free(void *page, size_t size)
 PGD *pgd_create(uint8_t type, uint32_t slots)
 {
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
+
+    // memset to avoid uninitialized memory access
+    if (type == PAGE_GORILLA_METRICS)
+        memset(pg, 0, sizeof(PGD));
+
+    netdata_mutex_init(&pg->mutex);
+
     pg->type = type;
     pg->used = 0;
     pg->slots = slots;
@@ -205,13 +215,21 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
 
 PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
 {
-    if (!size)
+    if (!size) {
+        assert(false && "[A] tried to create an empty PGD because size == 0");
         return PGD_EMPTY;
+    }
 
-    if (size < page_type_size[type])
+    if (size < page_type_size[type]) {
+        assert(false && "[B] tried to create an empty PGD because size < page_type_size");
         return PGD_EMPTY;
+    }
 
     PGD *pg = aral_mallocz(pgd_alloc_globals.aral_pgd);
+    if (type == PAGE_GORILLA_METRICS)
+        memset(pg, 0, sizeof(PGD));
+
+    netdata_mutex_init(&pg->mutex);
 
     pg->type = type;
     pg->states = PGD_STATE_CREATED_FROM_DISK;
@@ -259,6 +277,8 @@ void pgd_free(PGD *pg)
 
     if (pg == PGD_EMPTY)
         return;
+
+    netdata_mutex_destroy(&pg->mutex);
 
     switch (pg->type)
     {
@@ -309,6 +329,7 @@ void pgd_free(PGD *pg)
             fatal("Unknown page type: %uc", pg->type);
     }
 
+
     aral_freez(pgd_alloc_globals.aral_pgd, pg);
 }
 
@@ -317,7 +338,11 @@ void pgd_free(PGD *pg)
 
 uint32_t pgd_type(PGD *pg)
 {
-    return pg->type;
+    netdata_mutex_lock(&pg->mutex);
+    uint32_t type = pg->type;
+    netdata_mutex_unlock(&pg->mutex);
+
+    return type;
 }
 
 bool pgd_is_empty(PGD *pg)
@@ -328,10 +353,15 @@ bool pgd_is_empty(PGD *pg)
     if (pg == PGD_EMPTY)
         return true;
 
-    if (pg->used == 0)
+    netdata_mutex_lock(&pg->mutex);
+    uint32_t used = pg->used;
+    PAGE_OPTIONS options = pg->options;
+    netdata_mutex_unlock(&pg->mutex);
+
+    if (used == 0)
         return true;
 
-    if (pg->options & PAGE_OPTION_ALL_VALUES_EMPTY)
+    if (options & PAGE_OPTION_ALL_VALUES_EMPTY)
         return true;
 
     return false;
@@ -345,7 +375,11 @@ uint32_t pgd_slots_used(PGD *pg)
     if (pg == PGD_EMPTY)
         return 0;
 
-    return pg->used;
+    netdata_mutex_lock(&pg->mutex);
+    uint32_t used = pg->used;
+    netdata_mutex_unlock(&pg->mutex);
+
+    return used;
 }
 
 uint32_t pgd_memory_footprint(PGD *pg)
@@ -357,6 +391,9 @@ uint32_t pgd_memory_footprint(PGD *pg)
         return 0;
 
     size_t footprint = 0;
+
+    netdata_mutex_lock(&pg->mutex);
+
     switch (pg->type) {
         case PAGE_METRICS:
         case PAGE_TIER:
@@ -374,6 +411,8 @@ uint32_t pgd_memory_footprint(PGD *pg)
             fatal("Unknown page type: %uc", pg->type);
     }
 
+    netdata_mutex_unlock(&pg->mutex);
+
     return footprint;
 }
 
@@ -383,6 +422,8 @@ uint32_t pgd_disk_footprint(PGD *pg)
         return 0;
 
     size_t size = 0;
+
+    netdata_mutex_lock(&pg->mutex);
 
     switch (pg->type) {
         case PAGE_METRICS:
@@ -425,6 +466,8 @@ uint32_t pgd_disk_footprint(PGD *pg)
     internal_fatal(pg->states & PGD_STATE_CREATED_FROM_DISK,
                    "Disk footprint asked for page created from disk.");
     pg->states = PGD_STATE_SCHEDULED_FOR_FLUSHING;
+
+    netdata_mutex_unlock(&pg->mutex);
     return size;
 }
 
@@ -432,6 +475,8 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
 {
     internal_fatal(pgd_disk_footprint(pg) != dst_size, "Wrong disk footprint size requested (need %u, available %u)",
                    pgd_disk_footprint(pg), dst_size);
+
+    netdata_mutex_lock(&pg->mutex);
 
     switch (pg->type) {
         case PAGE_METRICS:
@@ -460,6 +505,8 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
     }
 
     pg->states = PGD_STATE_FLUSHED_TO_DISK;
+
+    netdata_mutex_unlock(&pg->mutex);
 }
 
 // ----------------------------------------------------------------------------
@@ -475,6 +522,8 @@ void pgd_append_point(PGD *pg,
                       SN_FLAGS flags,
                       uint32_t expected_slot)
 {
+    netdata_mutex_lock(&pg->mutex);
+
     if (unlikely(pg->used >= pg->slots))
         fatal("DBENGINE: attempted to write beyond page size (page type %u, slots %u, used %u)",
               pg->type, pg->slots, pg->used /* FIXME:, pg->size */);
@@ -540,6 +589,8 @@ void pgd_append_point(PGD *pg,
             fatal("DBENGINE: unknown page type id %d", pg->type);
             break;
     }
+
+    netdata_mutex_unlock(&pg->mutex);
 }
 
 // ----------------------------------------------------------------------------
@@ -548,6 +599,8 @@ void pgd_append_point(PGD *pg,
 static void pgdc_seek(PGDC *pgdc, uint32_t position)
 {
     PGD *pg = pgdc->pgd;
+
+    netdata_mutex_lock(&pg->mutex);
 
     switch (pg->type) {
         case PAGE_METRICS:
@@ -591,6 +644,8 @@ static void pgdc_seek(PGDC *pgdc, uint32_t position)
             fatal("DBENGINE: unknown page type id %d", pg->type);
             break;
     }
+
+    netdata_mutex_unlock(&pg->mutex);
 }
 
 void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position)
@@ -622,6 +677,10 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
 
     internal_fatal(pgdc->position != expected_position, "Wrong expected cursor position");
 
+    netdata_mutex_lock(&pgdc->pgd->mutex);
+
+    bool ok = false;
+
     switch (pgdc->pgd->type)
     {
         case PAGE_METRICS: {
@@ -633,7 +692,8 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
             sp->count = 1;
             sp->anomaly_count = is_storage_number_anomalous(n) ? 1 : 0;
 
-            return true;
+            ok = true;
+            break;
         }
         case PAGE_TIER: {
             storage_number_tier1_t *array = (storage_number_tier1_t *) pgdc->pgd->raw.data;
@@ -646,13 +706,14 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
             sp->max = n.max_value;
             sp->sum = n.sum_value;
 
-            return true;
+            ok = true;
+            break;
         }
         case PAGE_GORILLA_METRICS: {
             pgdc->position++;
 
-            uint32_t n = 666666666;
-            bool ok = gorilla_reader_read(&pgdc->gr, &n);
+            uint32_t n = 0x66666666;
+            ok = gorilla_reader_read(&pgdc->gr, &n);
             if (ok) {
                 sp->min = sp->max = sp->sum = unpack_storage_number(n);
                 sp->flags = (SN_FLAGS)(n & SN_USER_FLAGS);
@@ -662,18 +723,22 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
                 storage_point_empty(*sp, sp->start_time_s, sp->end_time_s);
             }
 
-            return ok;
+            break;
         }
         default: {
             static bool logged = false;
             if (!logged)
             {
-                netdata_log_error("DBENGINE: unknown page type %d found. Cannot decode it. Ignoring its metrics.", pgd_type(pgdc->pgd));
+                fatal("DBENGINE: unknown page type %d found. Can only decode types (%d, %d, %d). Ignoring its metrics.",
+                      pgdc->pgd->type, PAGE_METRICS, PAGE_TIER, PAGE_GORILLA_METRICS);
                 logged = true;
             }
 
             storage_point_empty(*sp, sp->start_time_s, sp->end_time_s);
-            return false;
+            ok = false;
+            break;
         }
     }
+    netdata_mutex_unlock(&pgdc->pgd->mutex);
+    return ok;
 }

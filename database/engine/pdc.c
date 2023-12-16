@@ -1070,6 +1070,7 @@ static bool epdl_populate_pages_from_extent_data(
         PGD *pgd;
 
         if (unlikely(!vd.is_valid)) {
+            assert(false && "Trying to create an empty pgd because page validation failed.");
             pgd = PGD_EMPTY;
             stats_load_invalid_page++;
         }
@@ -1088,6 +1089,7 @@ static bool epdl_populate_pages_from_extent_data(
                                         i, count, page_offset, vd.page_length, uncompressed_payload_length);
                     epdl_extent_loading_error_log(ctx, epdl, &header->descr[i], log);
 
+                    assert(false && "Trying to create an empty pgd because page length exceeds the compressed buffer size");
                     pgd = PGD_EMPTY;
                     stats_load_invalid_page++;
                 }

@@ -792,6 +792,10 @@ static bool rrdeng_load_page_next(struct storage_engine_query_handle *rrddim_han
     size_t entries = 0;
     handle->page = pg_cache_lookup_next(ctx, handle->pdc, handle->now_s, handle->dt_s, &entries);
 
+    assert(handle->page && "query with NULL page");
+    assert((pgc_page_data(handle->page) != PGD_EMPTY) && "pgd can not be empty");
+    assert(entries && "entries can not be zero");
+
     internal_fatal(handle->page && (pgc_page_data(handle->page) == PGD_EMPTY || !entries),
                    "A page was returned, but it is empty - pg_cache_lookup_next() should be handling this case");
 

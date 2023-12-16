@@ -528,6 +528,8 @@ set(DAEMON_FILES daemon/buildinfo.c
                  daemon/commands.h
                  daemon/pipename.c
                  daemon/pipename.h
+                 daemon/dbengine_test.cc
+                 daemon/dbengine_test.h
                  daemon/unit_test.c
                  daemon/unit_test.h)
 
