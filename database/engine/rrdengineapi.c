@@ -274,7 +274,7 @@ STORAGE_COLLECT_HANDLE *rrdeng_store_metric_init(STORAGE_METRIC_HANDLE *smh, uin
     handle->update_every_ut = (usec_t)update_every * USEC_PER_SEC;
     handle->options = is_1st_metric_writer ? RRDENG_1ST_METRIC_WRITER : 0;
 
-    __atomic_add_fetch(&ctx->atomic.collectors_running, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&ctx->atomic.collectors_running, 1, __ATOMIC_RELEASE);
     if(!is_1st_metric_writer)
         __atomic_add_fetch(&ctx->atomic.collectors_running_duplicate, 1, __ATOMIC_RELAXED);
 
@@ -637,7 +637,7 @@ int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch) {
     rrdeng_store_metric_flush_current_page(sch);
     rrdeng_page_alignment_release(handle->alignment);
 
-    __atomic_sub_fetch(&ctx->atomic.collectors_running, 1, __ATOMIC_RELAXED);
+    __atomic_sub_fetch(&ctx->atomic.collectors_running, 1, __ATOMIC_RELEASE);
     if(!(handle->options & RRDENG_1ST_METRIC_WRITER))
         __atomic_sub_fetch(&ctx->atomic.collectors_running_duplicate, 1, __ATOMIC_RELAXED);
 
@@ -979,7 +979,7 @@ time_t rrdeng_global_first_time_s(STORAGE_INSTANCE *si) {
 
 size_t rrdeng_currently_collected_metrics(STORAGE_INSTANCE *si) {
     struct rrdengine_instance *ctx = (struct rrdengine_instance *)si;
-    return __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED);
+    return __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_ACQUIRE);
 }
 
 /*
@@ -993,7 +993,7 @@ void rrdeng_get_37_statistics(struct rrdengine_instance *ctx, unsigned long long
     if (ctx == NULL)
         return;
 
-    array[0] = (uint64_t)__atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED); // API producers
+    array[0] = (uint64_t)__atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_ACQUIRE);
     array[1] = (uint64_t)__atomic_load_n(&ctx->atomic.inflight_queries, __ATOMIC_RELAXED);   // API consumers
     array[2] = 0;
     array[3] = 0;
@@ -1172,7 +1172,7 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
 }
 
 size_t rrdeng_collectors_running(struct rrdengine_instance *ctx) {
-    return __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED);
+    return __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_ACQUIRE);
 }
 
 /*
@@ -1190,7 +1190,7 @@ int rrdeng_exit(struct rrdengine_instance *ctx) {
 
     bool logged = false;
     size_t count = 10;
-    while(__atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED) && count && !unittest_running) {
+    while(__atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_ACQUIRE) && count && !unittest_running) {
         if(!logged) {
             netdata_log_info("DBENGINE: waiting for collectors to finish on tier %d...", (ctx->config.legacy) ? -1 : ctx->config.tier);
             logged = true;
@@ -1307,7 +1307,7 @@ RRDENG_SIZE_STATS rrdeng_size_statistics(struct rrdengine_instance *ctx) {
     }
     uv_rwlock_rdunlock(&ctx->datafiles.rwlock);
 
-    stats.currently_collected_metrics = __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED);
+    stats.currently_collected_metrics = __atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_ACQUIRE);
 
     internal_error(stats.metrics_pages != stats.extents_pages + stats.currently_collected_metrics,
                    "DBENGINE: metrics pages is %zu, but extents pages is %zu and API consumers is %zu",
