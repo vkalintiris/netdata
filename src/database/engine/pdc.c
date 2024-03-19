@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "database/engine/rrddiskprotocol.h"
 #define NETDATA_RRD_INTERNALS
 #include "pdc.h"
 
@@ -644,6 +645,10 @@ inline VALIDATED_PAGE_DESCRIPTOR validate_extent_page_descr(const struct rrdeng_
             end_time_s = start_time_s + descr->gorilla.delta_time_s;
             entries = descr->gorilla.entries;
             break;
+        case PAGE_CONSTANT:
+            end_time_s = start_time_s + descr->constant.delta_time_s;
+            entries = descr->constant.entries;
+            break;
         default:
             // Nothing to do. Validate page will notify the user.
             break;
@@ -700,6 +705,10 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             break;
         case PAGE_GORILLA_METRICS:
             internal_fatal(entries == 0, "0 number of entries found on gorilla page");
+            vd.entries = entries;
+            break;
+        case PAGE_CONSTANT:
+            internal_fatal(entries == 0, "0 number of entries found on constant page");
             vd.entries = entries;
             break;
         default:
@@ -879,6 +888,9 @@ static void epdl_extent_loading_error_log(struct rrdengine_instance *ctx, EPDL *
                 break;
             case PAGE_GORILLA_METRICS:
                 end_time_s = (time_t) start_time_s + (descr->gorilla.delta_time_s);
+                break;
+            case PAGE_CONSTANT:
+                end_time_s = (time_t) start_time_s + (descr->constant.delta_time_s);
                 break;
         }
         uuid_unparse_lower(descr->uuid, uuid);

@@ -852,6 +852,10 @@ static struct extent_io_descriptor *datafile_extent_build(struct rrdengine_insta
                 header->descr[i].gorilla.delta_time_s = (uint32_t) ((descr->end_time_ut - descr->start_time_ut) / USEC_PER_SEC);
                 header->descr[i].gorilla.entries = pgd_slots_used(descr->pgd);
                 break;
+            case PAGE_CONSTANT:
+                header->descr[i].constant.delta_time_s = (uint32_t) ((descr->end_time_ut - descr->start_time_ut) / USEC_PER_SEC);
+                header->descr[i].constant.entries = pgd_slots_used(descr->pgd);
+                break;
             default:
                 fatal("Unknown page type: %uc", descr->type);
         }
