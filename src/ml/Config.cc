@@ -99,7 +99,7 @@ void ml_config_load(ml_config_t *cfg) {
 
     cfg->enable_anomaly_detection = enable_anomaly_detection;
 
-#if 0
+#if 1
     cfg->max_train_samples = max_train_samples;
     cfg->min_train_samples = min_train_samples;
     cfg->train_every = train_every;
@@ -141,7 +141,7 @@ void ml_config_load(ml_config_t *cfg) {
     cfg->suppression_window = suppression_window;
     cfg->suppression_threshold = suppression_threshold;
 
-#if 0
+#if 1
     cfg->enable_statistics_charts = enable_statistics_charts;
 #else
     UNUSED(enable_statistics_charts);
