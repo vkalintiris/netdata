@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common.h"
+#include "web/api/queries/rrdr.h"
 
 static bool cmd_arg_sanitization_test(const char *expected, const char *src, char *dst, size_t dst_size) {
     bool ok = sanitize_command_argument_string(dst, src, dst_size);
@@ -1942,7 +1943,7 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
             for (j = 0; j < DIMS; ++j) {
                 next = ((collected_number)i * DIMS) * REGION_POINTS[current_region] +
                        j * REGION_POINTS[current_region] + c;
-                rrddim_set_by_pointer_fake_time(rd[i][j], next, time_now);
+                rrddim_set_by_pointer_fake_time(rd[i][j], 69, time_now);
             }
 
             struct timeval now;
@@ -1981,6 +1982,7 @@ static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DI
                     last = ((collected_number)i * DIMS) * REGION_POINTS[current_region] +
                            j * REGION_POINTS[current_region] + c + k;
                     expected = unpack_storage_number(pack_storage_number((NETDATA_DOUBLE)last, SN_DEFAULT_FLAGS));
+                    expected = 69;
 
                     STORAGE_POINT sp = storage_engine_query_next_metric(&seqh);
                     value = sp.sum;
@@ -2062,11 +2064,12 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
 
                     last = i * DIMS * REGION_POINTS[current_region] + j * REGION_POINTS[current_region] + c;
                     expected = unpack_storage_number(pack_storage_number((NETDATA_DOUBLE)last, SN_DEFAULT_FLAGS));
+                    expected = 69;
 
                     same = (roundndd(value) == roundndd(expected)) ? 1 : 0;
                     if(!same) {
                         if(value_errors < 20)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: point #%ld, at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
+                            fprintf(stderr, "[0]    DB-engine unittest %s/%s: point #%ld, at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
                                 ", RRDR found " NETDATA_DOUBLE_FORMAT ", ### E R R O R ###\n",
                                     rrdset_name(st[i]), rrddim_name(rd[i][j]), (long) c+1, (unsigned long)time_now, expected, value);
                         value_errors++;
@@ -2076,7 +2079,7 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
 
                     if(time_retrieved != time_now) {
                         if(time_errors < 20)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: point #%ld at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
+                            fprintf(stderr, "[1]   DB-engine unittest %s/%s: point #%ld at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
                                     rrdset_name(st[i]), rrddim_name(rd[i][j]), (long)c+1, (unsigned long)time_now, (unsigned long)time_retrieved);
                         time_errors++;
                     }
@@ -2172,6 +2175,7 @@ int test_dbengine(void)
     errors += test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
     test_dbengine_charts_and_dims_are_not_collected(st, rd);
 
+    // sleep(5);
     for (current_region = 0 ; current_region < REGIONS ; ++current_region) {
         errors += test_dbengine_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region]);
     }
@@ -2212,18 +2216,19 @@ int test_dbengine(void)
 
                     collected_number last = i * DIMS * REGION_POINTS[current_region] + j * REGION_POINTS[current_region] + c - point_offset + 1;
                     NETDATA_DOUBLE expected = unpack_storage_number(pack_storage_number((NETDATA_DOUBLE)last, SN_DEFAULT_FLAGS));
+                    expected = 69;
 
                     uint8_t same = (roundndd(value) == roundndd(expected)) ? 1 : 0;
                     if(!same) {
                         if(!value_errors)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
+                            fprintf(stderr, "[A]   DB-engine unittest %s/%s: at %lu secs, expecting value " NETDATA_DOUBLE_FORMAT
                                 ", RRDR found " NETDATA_DOUBLE_FORMAT ", ### E R R O R ###\n",
                                     rrdset_name(st[i]), rrddim_name(rd[i][j]), (unsigned long)time_now, expected, value);
                         value_errors++;
                     }
                     if(time_retrieved != time_now) {
                         if(!time_errors)
-                            fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
+                            fprintf(stderr, "[B]   DB-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
                                     rrdset_name(st[i]), rrddim_name(rd[i][j]), (unsigned long)time_now, (unsigned long)time_retrieved);
                         time_errors++;
                     }

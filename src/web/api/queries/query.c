@@ -1660,6 +1660,9 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
                 if(likely(storage_point_is_unset(next1_point))) {
                     db_points_read_since_plan_switch++;
                     sp = storage_engine_query_next_metric(ops->seqh);
+                    // if (sp.min != 69) {
+                    //     fatal("Wrong value (got %lf)", sp.min);
+                    // }
                     ops->db_points_read_per_tier[ops->tier]++;
                     ops->db_total_points_read++;
 
@@ -1686,6 +1689,9 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
                     // B. part of the point of the previous plan overlaps with the point from the next plan
 
                     STORAGE_POINT sp2 = storage_engine_query_next_metric(ops->seqh);
+                    // if (sp2.min != 69) {
+                    //     fatal("Wrong value (got %lf)", sp2.min);
+                    // }
                     ops->db_points_read_per_tier[ops->tier]++;
                     ops->db_total_points_read++;
 
@@ -1904,6 +1910,9 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
 
             // store the group value
             NETDATA_DOUBLE group_value = time_grouping_flush(r, rrdr_value_options_ptr, add_flush);
+            // if (group_value != 69) {
+            //     netdata_log_error("[GVD] Group value is not 69... gv=%lf", group_value);
+            // }
             r->v[rrdr_o_v_index] = group_value;
 
             r->ar[rrdr_o_v_index] = storage_point_anomaly_rate(ops->group_point);

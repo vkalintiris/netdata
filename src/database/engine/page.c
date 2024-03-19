@@ -725,6 +725,10 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position __maybe_unused, 
             sp->count = 1;
             sp->anomaly_count = is_storage_number_anomalous(n) ? 1 : 0;
 
+            // if (sp->min != 69) {
+            //     fatal("Ela geia! (min=%lf)", sp->min);
+            // }
+
             return true;
         }
         case PAGE_CONSTANT: {
@@ -734,6 +738,10 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position __maybe_unused, 
             sp->flags = (SN_FLAGS)(n & SN_USER_FLAGS);
             sp->count = 1;
             sp->anomaly_count = is_storage_number_anomalous(n) ? 1 : 0;
+
+            // if (sp->min != 69) {
+            //     fatal("Ela geia! (min=%lf)", sp->min);
+            // }
 
             return true;
         }
