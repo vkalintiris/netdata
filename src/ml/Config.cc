@@ -10,7 +10,7 @@ ml_config_t Cfg;
 
 template <typename T>
 static T clamp(const T& Value, const T& Min, const T& Max) {
-  return std::max(Min, std::min(Value, Max));
+   return std::max(Min, std::min(Value, Max));
 }
 
 /*
@@ -99,9 +99,15 @@ void ml_config_load(ml_config_t *cfg) {
 
     cfg->enable_anomaly_detection = enable_anomaly_detection;
 
+#if 0
     cfg->max_train_samples = max_train_samples;
     cfg->min_train_samples = min_train_samples;
     cfg->train_every = train_every;
+#else
+    cfg->max_train_samples = 60;
+    cfg->min_train_samples = 30;
+    cfg->train_every = 30;
+#endif
 
     cfg->num_models_to_use = num_models_to_use;
     cfg->delete_models_older_than = delete_models_older_than;
@@ -135,5 +141,10 @@ void ml_config_load(ml_config_t *cfg) {
     cfg->suppression_window = suppression_window;
     cfg->suppression_threshold = suppression_threshold;
 
+#if 0
     cfg->enable_statistics_charts = enable_statistics_charts;
+#else
+    UNUSED(enable_statistics_charts);
+    cfg->enable_statistics_charts = true;
+#endif
 }
