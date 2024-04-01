@@ -1273,6 +1273,7 @@ set(NETDATA_FILES
         ${ACLK_ALWAYS_BUILD}
         ${TIMEX_PLUGIN_FILES}
         ${PROFILE_PLUGIN_FILES}
+        src/otel/otel.cc
 )
 
 if(LINUX)
