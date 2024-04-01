@@ -924,18 +924,18 @@ else()
 endif()
 
 set(PLUGINSD_PLUGIN_FILES
-        src/collectors/plugins.d/plugins_d.c
-        src/collectors/plugins.d/plugins_d.h
-        src/collectors/plugins.d/pluginsd_dyncfg.c
-        src/collectors/plugins.d/pluginsd_dyncfg.h
-        src/collectors/plugins.d/pluginsd_functions.c
-        src/collectors/plugins.d/pluginsd_functions.h
-        src/collectors/plugins.d/pluginsd_internals.c
-        src/collectors/plugins.d/pluginsd_internals.h
-        src/collectors/plugins.d/pluginsd_parser.c
-        src/collectors/plugins.d/pluginsd_parser.h
-        src/collectors/plugins.d/pluginsd_replication.c
-        src/collectors/plugins.d/pluginsd_replication.h
+        src/plugins.d/plugins_d.c
+        src/plugins.d/plugins_d.h
+        src/plugins.d/pluginsd_dyncfg.c
+        src/plugins.d/pluginsd_dyncfg.h
+        src/plugins.d/pluginsd_functions.c
+        src/plugins.d/pluginsd_functions.h
+        src/plugins.d/pluginsd_internals.c
+        src/plugins.d/pluginsd_internals.h
+        src/plugins.d/pluginsd_parser.c
+        src/plugins.d/pluginsd_parser.h
+        src/plugins.d/pluginsd_replication.c
+        src/plugins.d/pluginsd_replication.h
 )
 
 set(RRD_PLUGIN_FILES
@@ -1817,7 +1817,7 @@ if(ENABLE_PLUGIN_CUPS)
     endif()
 endif()
 
-set(NDSUDO_FILES src/collectors/plugins.d/ndsudo.c)
+set(NDSUDO_FILES src/plugins.d/ndsudo.c)
 
 add_executable(ndsudo ${NDSUDO_FILES})
 
@@ -1901,7 +1901,7 @@ endif()
 
 if(ENABLE_PLUGIN_LOCAL_LISTENERS)
         set(LOCAL_LISTENERS_FILES
-                src/collectors/plugins.d/local_listeners.c
+                src/plugins.d/local_listeners.c
                 src/libnetdata/maps/local-sockets.h
         )
 
