@@ -309,7 +309,7 @@ static size_t streaming_parser(struct receiver_state *rpt, struct plugind *cd, i
     // so, parser needs to be allocated before pushing it
     netdata_thread_cleanup_push(pluginsd_process_thread_cleanup, parser) {
         bool compressed_connection = rrdpush_decompression_initialize(rpt);
-        buffered_reader_init(&rpt->reader);
+        rpt->reader = buffered_reader_new();
 
 #ifdef NETDATA_LOG_STREAM_RECEIVE
         {
