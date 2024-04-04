@@ -204,7 +204,7 @@ function(netdata_protoc_generate_cpp INC_DIR OUT_DIR SRCS HDRS)
 
                 add_custom_command(OUTPUT ${GENERATED_PB_CC} ${GENERATED_PB_H}
                                    COMMAND ${NETDATA_PROTOBUF_PROTOC_EXECUTABLE}
-                                   ARGS "-I$<JOIN:${_PROTOC_INCLUDE_DIRS},;-I>" --cpp_out=${OUT_DIR} ${ABS_FIL}
+                                   ARGS "-I$<JOIN:${_PROTOC_INCLUDE_DIRS},;-I>" --cpp_out=${OUT_DIR} --experimental_allow_proto3_optional ${ABS_FIL}
                                    DEPENDS ${ABS_FIL} ${NETDATA_PROTOBUF_PROTOC_EXECUTABLE}
                                    COMMENT "Running C++ protocol buffer compiler on ${FIL}"
                                    COMMAND_EXPAND_LISTS)
