@@ -1,8 +1,9 @@
 #include "daemon/common.h"
 
-#include "libnetdata/completion/completion.h"
-#include "libnetdata/log/log.h"
 #include <type_traits>
+#include <vector>
+
+#include "opentelemetry/proto/metrics/v1/metrics.pb.h"
 
 enum class InitStatus : unsigned int {
     Uninitialized = 0,
@@ -130,12 +131,111 @@ static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* b
     *buf = uv_buf_init(ptr, suggested_size);
 }
 
+class BufferManager {
+public:
+    void fill(const uv_buf_t &buf) {
+        data.insert(data.end(), buf.base, buf.base + buf.len);
+    }
+
+    bool getMessages(std::vector<uv_buf_t> &messages) {
+        uv_buf_t message = readMessage();
+
+        while (message.base != nullptr) {
+            messages.push_back(message);
+            message = readMessage();
+        }
+
+        return remainingBytes() == 0;
+    }
+
+    void skip(std::vector<uv_buf_t> &messages) {
+        size_t nbytes = 0;
+        for (const uv_buf_t &m: messages)
+            nbytes += m.len + sizeof(uint32_t);
+
+        messages.clear();
+
+        if (nbytes >= data.size()) {
+            if (nbytes > data.size())
+                fatal("GVD OTEL: warning deleting more than we have");
+
+            data.clear();
+        } else {
+            data.erase(data.begin(), data.begin() + nbytes);
+        }
+
+        pos = 0;
+    }
+
+private:
+    uv_buf_t readMessage()
+    {
+        uv_buf_t dst = { .base = nullptr, .len = 0 };
+
+        if (haveAtLeastXBytes(sizeof(uint32_t))) {
+            netdata_log_error("OTEL GVD: pos = %zu", pos);
+
+            uint32_t bytes = 0;
+            memcpy(&bytes, &data[pos], sizeof(uint32_t));
+            bytes = ntohl(bytes);
+
+            netdata_log_error("Message size is %u bytes (have %zu available)", bytes, remainingBytes());
+
+            if (haveAtLeastXBytes(bytes)) {
+                pos += sizeof(uint32_t);
+                dst.base = &data[pos];
+                dst.len = bytes;
+
+                pos += bytes;
+            }
+        }
+
+        return dst;
+    }
+
+    inline size_t remainingBytes() const {
+        return data.size() - pos;
+    }
+
+    inline bool haveAtLeastXBytes(uint32_t bytes) const {
+        return remainingBytes() >= bytes;
+    }
+
+private:
+    std::vector<char> data;
+    size_t pos = { 0 };
+};
+
+class MessageReader {
+public:
+    inline void fill(const uv_buf_t &buf) { BM.fill(buf); }
+
+    bool processMessages(const uv_buf_t &Buf)
+    {
+        fill(Buf);
+
+        BM.getMessages(Messages);
+        netdata_log_error("GVD OTEL received %zu messages", Messages.size());
+        BM.skip(Messages);
+
+        return true;
+    }
+    
+private:
+    BufferManager BM;
+    std::vector<uv_buf_t> Messages;
+};
+
+static MessageReader MR;
+
 static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     UNUSED(stream);
 
     if (nread > 0)
     {
         netdata_log_error("[OTEL] Received %zu bytes...", nread);
+        const uv_buf_t data = { .base = buf->base, .len = (size_t) nread };
+        MR.processMessages(data);
     }
     else if (nread < 0)
     {
