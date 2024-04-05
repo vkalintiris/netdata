@@ -1,8 +1,5 @@
 #include "daemon/common.h"
 
-#include <type_traits>
-#include <vector>
-
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
 
 enum class InitStatus : unsigned int {
@@ -131,6 +128,7 @@ static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* b
     *buf = uv_buf_init(ptr, suggested_size);
 }
 
+template<typename T>
 class BufferManager {
 public:
     void fill(const uv_buf_t &buf)
@@ -147,19 +145,17 @@ public:
         data.insert(data.end(), buf.base, buf.base + buf.len);
     }
 
-    bool getMessages(std::vector<uv_buf_t> &messages) {
-        uv_buf_t message = readMessage();
+    bool getMessages(std::vector<T> &messages) {
+        T message;
 
-        while (message.base != nullptr) {
+        while (readMessage(message))
             messages.push_back(message);
-            message = readMessage();
-        }
 
         return remainingBytes() == 0;
     }
 
 private:
-    uv_buf_t readMessage()
+    bool readMessage(T& message)
     {
         uv_buf_t dst = { .base = nullptr, .len = 0 };
 
@@ -170,8 +166,6 @@ private:
             memcpy(&bytes, &data[pos], sizeof(uint32_t));
             bytes = ntohl(bytes);
 
-            netdata_log_error("Message size is %u bytes (have %zu available)", bytes, remainingBytes());
-
             if (haveAtLeastXBytes(bytes)) {
                 pos += sizeof(uint32_t);
                 dst.base = &data[pos];
@@ -181,7 +175,15 @@ private:
             }
         }
 
-        return dst;
+        if (dst.base == nullptr)
+            return false;
+
+        if (!message.ParseFromArray(dst.base, dst.len))
+            fatal("Failed to parse protobuf message");
+
+        netdata_log_error("Message size is %zu bytes ", dst.len);
+
+        return true;
     }
 
     inline size_t remainingBytes() const {
@@ -197,6 +199,8 @@ private:
     size_t pos = { 0 };
 };
 
+using ResourceMetrics = opentelemetry::proto::metrics::v1::ResourceMetrics;
+
 class MessageReader {
 public:
     bool processMessages(const uv_buf_t &Buf)
@@ -205,13 +209,16 @@ public:
         BM.getMessages(Messages);
         netdata_log_error("GVD OTEL received %zu messages", Messages.size());
 
+        for (const ResourceMetrics &RMs : Messages)
+            netdata_log_error("GVD OTEL: RM >>>%s<<<\n", RMs.Utf8DebugString().c_str());
+
         Messages.clear();
         return true;
     }
     
 private:
-    BufferManager BM;
-    std::vector<uv_buf_t> Messages;
+    BufferManager<ResourceMetrics> BM;
+    std::vector<ResourceMetrics> Messages;
 };
 
 static MessageReader MR;
