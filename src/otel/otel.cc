@@ -133,7 +133,17 @@ static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* b
 
 class BufferManager {
 public:
-    void fill(const uv_buf_t &buf) {
+    void fill(const uv_buf_t &buf)
+    {
+        if (pos > data.size())
+            fatal("invalid position");
+        else if (pos == data.size())
+            data.clear();
+        else if (pos != 0)
+            data.erase(data.begin(), data.begin() + pos);
+
+        pos = 0;
+
         data.insert(data.end(), buf.base, buf.base + buf.len);
     }
 
@@ -146,25 +156,6 @@ public:
         }
 
         return remainingBytes() == 0;
-    }
-
-    void skip(std::vector<uv_buf_t> &messages) {
-        size_t nbytes = 0;
-        for (const uv_buf_t &m: messages)
-            nbytes += m.len + sizeof(uint32_t);
-
-        messages.clear();
-
-        if (nbytes >= data.size()) {
-            if (nbytes > data.size())
-                fatal("GVD OTEL: warning deleting more than we have");
-
-            data.clear();
-        } else {
-            data.erase(data.begin(), data.begin() + nbytes);
-        }
-
-        pos = 0;
     }
 
 private:
@@ -208,16 +199,13 @@ private:
 
 class MessageReader {
 public:
-    inline void fill(const uv_buf_t &buf) { BM.fill(buf); }
-
     bool processMessages(const uv_buf_t &Buf)
     {
-        fill(Buf);
-
+        BM.fill(Buf);
         BM.getMessages(Messages);
         netdata_log_error("GVD OTEL received %zu messages", Messages.size());
-        BM.skip(Messages);
 
+        Messages.clear();
         return true;
     }
     
