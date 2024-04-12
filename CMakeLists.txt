@@ -1274,6 +1274,8 @@ set(NETDATA_FILES
         ${TIMEX_PLUGIN_FILES}
         ${PROFILE_PLUGIN_FILES}
         src/otel/otel.cc
+        src/otel/otel_utils.cc
+        src/otel/otel_utils.h
 )
 
 set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto

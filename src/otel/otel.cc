@@ -1,6 +1,10 @@
 #include "daemon/common.h"
 
-#include "opentelemetry/proto/metrics/v1/metrics.pb.h"
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+
+#include "otel_utils.h"
 
 enum class InitStatus : unsigned int {
     Uninitialized = 0,
@@ -71,6 +75,8 @@ typedef struct otel_state {
     uv_async_t async;
     struct completion shutdown_completion;
 
+    unsigned loop_counter;
+
     bool haveLoop() const {
         return haveInitStatus(InitStatus::HaveLoop);
     }
@@ -121,12 +127,31 @@ static otel_state_t otel_state;
 static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
     UNUSED(handle);
 
+    suggested_size = 16 * 1024 * 1024;
+
     char *ptr = static_cast<char *>(callocz(suggested_size, sizeof(char)));
     if (!ptr)
         fatal("[OTEL] Could not allocate buffer for libuv");
 
     *buf = uv_buf_init(ptr, suggested_size);
 }
+
+// Function to convert a byte to a hex string
+static std::string byteToHex(unsigned char byte) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
+    return oss.str();
+}
+
+// Function to convert binary data to a hex string
+static std::string dataToHexString(const char* data, std::size_t len) {
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < len; ++i) {
+        oss << byteToHex(data[i]);
+    }
+    return oss.str();
+}
+
 
 template<typename T>
 class BufferManager {
@@ -135,13 +160,16 @@ public:
     {
         if (pos > data.size())
             fatal("invalid position");
-        else if (pos == data.size())
+        else if (pos == data.size()) {
+            netdata_log_error("OTEL GVD: clearing data: pos = data.size() = %zu", pos);
             data.clear();
-        else if (pos != 0)
+        }
+        else if (pos != 0) {
             data.erase(data.begin(), data.begin() + pos);
+            netdata_log_error("OTEL GVD: erasing first %zu bytes", pos);
+        }
 
         pos = 0;
-
         data.insert(data.end(), buf.base, buf.base + buf.len);
     }
 
@@ -159,30 +187,48 @@ private:
     {
         uv_buf_t dst = { .base = nullptr, .len = 0 };
 
-        if (haveAtLeastXBytes(sizeof(uint32_t))) {
-            netdata_log_error("OTEL GVD: pos = %zu", pos);
+        if (!haveAtLeastXBytes(2 * sizeof(uint32_t)))
+            return false;
 
-            uint32_t bytes = 0;
-            memcpy(&bytes, &data[pos], sizeof(uint32_t));
-            bytes = ntohl(bytes);
+        uint32_t bytes = 0;
+        memcpy(&bytes, &data[pos], sizeof(uint32_t));
+        bytes = ntohl(bytes);
+        pos += sizeof(uint32_t);
 
-            if (haveAtLeastXBytes(bytes)) {
-                pos += sizeof(uint32_t);
-                dst.base = &data[pos];
-                dst.len = bytes;
+        uint32_t checksum_go = 0;
+        memcpy(&checksum_go, &data[pos], sizeof(uint32_t));
+        checksum_go = ntohl(checksum_go);
+        pos += sizeof(uint32_t);
 
-                pos += bytes;
-            }
+        if (!haveAtLeastXBytes(bytes)) {
+            pos -= 2 * sizeof(uint32_t);
+            return false;
         }
 
-        if (dst.base == nullptr)
-            return false;
+        dst.base = &data[pos];
+        dst.len = bytes;
+
+        uint32_t checksum_cpp = 0;
+        for (size_t i = 0; i != dst.len; i++)
+            checksum_cpp += (unsigned char) dst.base[i];
+
+        if (checksum_cpp != checksum_go) {
+            std::ofstream OS("/tmp/cpp.bin", std::ios::out);
+            OS << "message bytes: " << bytes << "\n";
+            OS << std::hex << "checksum (go): " << checksum_go << "\n";
+            OS << "checksum (c++): " << checksum_cpp << "\n";
+            OS << "data: " << dataToHexString(dst.base, dst.len) << "\n\n";
+            OS.close();
+
+            fatal("Checksum mismatch cpp = %u, go = %u", checksum_cpp, checksum_go);
+        } else {
+            netdata_log_error("Checksum matches sum (%u == %u). message length: %zu bytes", checksum_go, checksum_cpp, dst.len);
+        }
 
         if (!message.ParseFromArray(dst.base, dst.len))
             fatal("Failed to parse protobuf message");
 
-        netdata_log_error("Message size is %zu bytes ", dst.len);
-
+        pos += bytes;
         return true;
     }
 
@@ -199,26 +245,37 @@ private:
     size_t pos = { 0 };
 };
 
-using ResourceMetrics = opentelemetry::proto::metrics::v1::ResourceMetrics;
-
 class MessageReader {
 public:
     bool processMessages(const uv_buf_t &Buf)
     {
         BM.fill(Buf);
+
         BM.getMessages(Messages);
         netdata_log_error("GVD OTEL received %zu messages", Messages.size());
 
-        for (const ResourceMetrics &RMs : Messages)
-            netdata_log_error("GVD OTEL: RM >>>%s<<<\n", RMs.Utf8DebugString().c_str());
+        if (!Messages.empty()) {
+            const auto &MD = Messages[0];
+            std::stringstream SS;
+
+            pb::printMetricsData(SS, MD);
+
+            std::ofstream OS("/tmp/cpp.log", std::ios::app);
+            if (OS.is_open()) {
+                OS << SS.str() << "\n";
+                OS.close();
+            } else {
+                std::cerr << "Failed to open file for appending.\n";
+            }
+        }
 
         Messages.clear();
         return true;
     }
     
 private:
-    BufferManager<ResourceMetrics> BM;
-    std::vector<ResourceMetrics> Messages;
+    BufferManager<pb::MetricsData> BM;
+    std::vector<pb::MetricsData> Messages;
 };
 
 static MessageReader MR;
