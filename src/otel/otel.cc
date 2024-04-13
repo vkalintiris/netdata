@@ -1,6 +1,8 @@
 #include "daemon/common.h"
 
+#include "libnetdata/log/log.h"
 #include <fstream>
+#include <google/protobuf/repeated_field.h>
 #include <iomanip>
 #include <sstream>
 
@@ -245,6 +247,373 @@ private:
     size_t pos = { 0 };
 };
 
+
+struct OtelElement {
+    const pb::MetricsData *MD;
+    const pb::ResourceMetrics *RM;
+    const pb::ScopeMetrics *SM;
+    const pb::Metric *M;
+
+    union {
+        const pb::NumberDataPoint *NDP;
+        const pb::SummaryDataPoint *SDP;
+        const pb::HistogramDataPoint *HDP;
+        const pb::ExponentialHistogramDataPoint *EHDP;
+    };
+};
+
+enum class DataPointKind {
+    Number,
+    Sum,
+    Summary,
+    Histogram,
+    Exponential,
+
+    NotAvailable,
+};
+
+class OtelIterator {
+public:
+    using MetricsDataIterator = typename std::vector<pb::MetricsData>::const_iterator;
+    using ResourceMetricsIterator = typename pb::ConstFieldIterator<pb::ResourceMetrics>;
+    using ScopeMetricsIterator = typename pb::ConstFieldIterator<pb::ScopeMetrics>;
+    using MetricsIterator = typename pb::ConstFieldIterator<pb::Metric>;
+
+    using NumberDataPointIterator = typename pb::ConstFieldIterator<pb::NumberDataPoint>;
+    using SummaryDataPointIterator = typename pb::ConstFieldIterator<pb::SummaryDataPoint>;
+    using HistogramDataPointIterator = typename pb::ConstFieldIterator<pb::HistogramDataPoint>;
+    using ExponentialHistogramDataPointIterator = typename pb::ConstFieldIterator<pb::ExponentialHistogramDataPoint>;
+
+    union DataPointIterator {
+        NumberDataPointIterator NDPIt;
+        SummaryDataPointIterator SDPIt;
+        HistogramDataPointIterator HDPIt;
+        ExponentialHistogramDataPointIterator EHDPIt;
+
+        DataPointIterator() {}
+        ~DataPointIterator() {}
+    };
+
+    OtelIterator(MetricsDataIterator MDBegin, MetricsDataIterator MDEnd)
+        : MDIt(MDBegin), MDEnd(MDEnd), DPKind(DataPointKind::NotAvailable)
+    {
+        if (MDIt != MDEnd) {
+            RMIt = MDIt->resource_metrics().begin();
+            RMEnd = MDIt->resource_metrics().end();
+
+            if (RMIt != RMEnd) {
+                SMIt = RMIt->scope_metrics().begin();
+                SMEnd = RMIt->scope_metrics().end();
+
+                if (SMIt != SMEnd) {
+                    MIt = SMIt->metrics().begin();
+                    MEnd = SMIt->metrics().end();
+
+                    if (MIt != MEnd) {
+                        const pb::Metric &M = *MIt;
+                        initializeDataPointIterator(M);
+                    } else {
+                        netdata_log_error("OtelIterator(): m it == m end");
+                    }
+
+                } else {
+                    netdata_log_error("OtelIterator(): sm it == sm end");
+                }
+            } else {
+                netdata_log_error("OtelIterator(): rm it == rm end");
+            }
+        } else {
+            netdata_log_error("OtelIterator(): md it == md end");
+        }
+    }
+
+    ~OtelIterator()
+    {
+        destroyCurrentIterator();
+    }
+
+    inline bool hasNext() const
+    {
+        if (MDIt == MDEnd) {
+            netdata_log_error("hasNext(): md it = md end");
+            return false;
+        }
+        
+        if (RMIt == RMEnd) {
+            netdata_log_error("hasNext(): rm it = rm end");
+            return false;
+        }
+        
+        if (SMIt == SMEnd) {
+            netdata_log_error("hasNext(): sm it = sm end");
+            return false;
+        }
+
+        if (MIt == MEnd) {
+            netdata_log_error("hasNext(): m it = m end");
+            return false;
+        }
+
+        switch (DPKind) {
+            case DataPointKind::Number:
+            case DataPointKind::Sum:
+                if (DPIt.NDPIt == DPEnd.NDPIt)
+                    netdata_log_error("hasNext(): ndp it = ndp end");
+                return DPIt.NDPIt != DPEnd.NDPIt;
+            case DataPointKind::Summary:
+                if (DPIt.SDPIt == DPEnd.SDPIt)
+                    netdata_log_error("hasNext(): sdp it = sdp end");
+                return DPIt.SDPIt != DPEnd.SDPIt;
+            case DataPointKind::Histogram:
+                if (DPIt.HDPIt == DPEnd.HDPIt)
+                    netdata_log_error("hasNext(): hdp it = hdp end");
+                return DPIt.HDPIt != DPEnd.HDPIt;
+            case DataPointKind::Exponential:
+                if (DPIt.EHDPIt == DPEnd.EHDPIt)
+                    netdata_log_error("hasNext(): ehdp it = ehdp end");
+                return DPIt.EHDPIt != DPEnd.EHDPIt;
+            case DataPointKind::NotAvailable:
+                netdata_log_error("hasNext(): not available dp kind");
+                return false;
+            default:
+                throw std::out_of_range("WTF?");
+        }
+    }
+
+    OtelElement next()
+    {
+        if (!hasNext())
+            throw std::out_of_range("No more elements");
+
+        // Fill element
+        OtelElement OE;
+        {
+            OE.MD = &*MDIt;
+            OE.RM = &*RMIt;
+            OE.SM = &*SMIt;
+            OE.M = &*MIt;
+
+            switch (DPKind) {
+                case DataPointKind::Number:
+                case DataPointKind::Sum:
+                    OE.NDP = &*DPIt.NDPIt;
+                    break;
+                case DataPointKind::Summary:
+                    OE.SDP = &*DPIt.SDPIt;
+                    break;
+                case DataPointKind::Histogram:
+                    OE.HDP = &*DPIt.HDPIt;
+                    break;
+                case DataPointKind::Exponential:
+                    OE.EHDP = &*DPIt.EHDPIt;
+                    break;
+                case DataPointKind::NotAvailable:
+                default:
+                    throw std::out_of_range("No more elements");
+            }
+        }
+
+        advance();
+        return OE;
+    }
+
+private:
+    MetricsDataIterator MDIt, MDEnd;
+    ResourceMetricsIterator RMIt, RMEnd;
+    ScopeMetricsIterator SMIt, SMEnd;
+    MetricsIterator MIt, MEnd;
+
+    DataPointIterator DPIt, DPEnd;
+    DataPointKind DPKind;
+
+    inline DataPointKind dpKind(const pb::Metric &M) const
+    {
+        if (M.has_gauge())
+            return DataPointKind::Number;
+        if (M.has_sum())
+            return DataPointKind::Sum;
+        if (M.has_summary())
+            return DataPointKind::Summary;
+        else if (M.has_histogram())
+            return DataPointKind::Histogram;
+        else if (M.has_exponential_histogram())
+            return DataPointKind::Exponential;
+
+        throw std::out_of_range("Unknown data point kind");
+    }
+
+    inline void destroyCurrentIterator()
+    {
+        switch (DPKind)
+        {
+            case DataPointKind::Number:
+            case DataPointKind::Sum:
+                DPIt.NDPIt.~NumberDataPointIterator();
+                DPEnd.NDPIt.~NumberDataPointIterator();
+                break;
+            case DataPointKind::Summary:
+                DPIt.SDPIt.~SummaryDataPointIterator();
+                DPEnd.SDPIt.~SummaryDataPointIterator();
+                break;
+            case DataPointKind::Histogram:
+                DPIt.HDPIt.~HistogramDataPointIterator();
+                DPEnd.HDPIt.~HistogramDataPointIterator();
+                break;
+            case DataPointKind::Exponential:
+                DPIt.EHDPIt.~ExponentialHistogramDataPointIterator();
+                DPEnd.EHDPIt.~ExponentialHistogramDataPointIterator();
+                break;
+            case DataPointKind::NotAvailable:
+                break;
+            default:
+                throw std::out_of_range("Unknown data point kind");
+        }
+    }
+
+    void initializeDataPointIterator(const pb::Metric &M)
+    {
+        DPKind = dpKind(M);
+
+        switch (DPKind) {
+        case DataPointKind::Number:
+            DPIt.NDPIt = M.gauge().data_points().begin();
+            DPEnd.NDPIt = M.gauge().data_points().end();
+            if (DPIt.NDPIt == DPEnd.NDPIt) {
+                netdata_log_error("initializeDataPointIterator(): number - ndp it = ndp end (size: %d)\n>>>%s<<<", M.gauge().data_points().size(), M.DebugString().c_str());
+            }
+            break;
+        case DataPointKind::Sum:
+            DPIt.NDPIt = M.sum().data_points().begin();
+            DPEnd.NDPIt = M.sum().data_points().end();
+            if (DPIt.NDPIt == DPEnd.NDPIt)
+                netdata_log_error("initializeDataPointIterator(): sum - ndp it = ndp end");
+            break;
+        case DataPointKind::Summary:
+            DPIt.SDPIt = M.summary().data_points().begin();
+            DPEnd.SDPIt = M.summary().data_points().end();
+            if (DPIt.SDPIt == DPEnd.SDPIt)
+                netdata_log_error("initializeDataPointIterator(): sdp it = sdp end");
+            break;
+        case DataPointKind::Histogram:
+            DPIt.HDPIt = M.histogram().data_points().begin();
+            DPEnd.HDPIt = M.histogram().data_points().end();
+            if (DPIt.HDPIt == DPEnd.HDPIt)
+                netdata_log_error("initializeDataPointIterator(): hdp it = hdp end");
+            break;
+        case DataPointKind::Exponential:
+            DPIt.EHDPIt = M.exponential_histogram().data_points().begin();
+            DPEnd.EHDPIt = M.exponential_histogram().data_points().end();
+            if (DPIt.EHDPIt == DPEnd.EHDPIt)
+                netdata_log_error("initializeDataPointIterator(): ehdp it = ehdp end");
+            break;
+        default:
+            throw std::out_of_range("WTF?");
+        }
+    }
+
+    void advance()
+    {
+        switch (DPKind) {
+        case DataPointKind::Number:
+        case DataPointKind::Sum: {
+            if (++DPIt.NDPIt != DPEnd.NDPIt) {
+                netdata_log_error("advance(): ndp");
+                return;
+            }
+            break;
+        }
+        case DataPointKind::Summary: {
+            if (++DPIt.SDPIt != DPEnd.SDPIt) {
+                netdata_log_error("advance(): sdp");
+                return;
+            }
+            break;
+        }
+        case DataPointKind::Histogram: {
+            if (++DPIt.HDPIt != DPEnd.HDPIt) {
+                netdata_log_error("advance(): hdp");
+                return;
+            }
+            break;
+        }
+        case DataPointKind::Exponential: {
+            if (++DPIt.EHDPIt != DPEnd.EHDPIt) {
+                netdata_log_error("advance(): ehdp");
+                return;
+            }
+            break;
+        }
+        case DataPointKind::NotAvailable:
+            netdata_log_error("advance(): not available");
+            break;
+        }
+
+        if (++MIt != MEnd) {
+            netdata_log_error("advance(): m it");
+            initializeDataPointIterator(*MIt);
+            return;
+        }
+
+        if (++SMIt != SMEnd) {
+            netdata_log_error("advance(): sm it");
+
+            MIt = SMIt->metrics().begin();
+            MEnd = SMIt->metrics().end();
+
+            if (MIt != MEnd)
+                initializeDataPointIterator(*MIt);
+
+            return;
+        }
+
+        if (++RMIt != RMEnd)
+        {
+            netdata_log_error("advance(): rm it");
+
+            SMIt = RMIt->scope_metrics().begin();
+            SMEnd = RMIt->scope_metrics().end();
+
+            if (SMIt != SMEnd) {
+                MIt = SMIt->metrics().begin();
+                MEnd = SMIt->metrics().end();
+
+                if (MIt != MEnd) {
+                    initializeDataPointIterator(*MIt);
+                }
+            }
+
+            return;
+        }
+
+        if (++MDIt != MDEnd)
+        {
+            netdata_log_error("advance(): md it");
+
+            RMIt = MDIt->resource_metrics().begin();
+            RMEnd = MDIt->resource_metrics().end();
+
+            if (RMIt != RMEnd) {
+                SMIt = RMIt->scope_metrics().begin();
+                SMEnd = RMIt->scope_metrics().end();
+
+                if (SMIt != SMEnd) {
+                    MIt = SMIt->metrics().begin();
+                    MEnd = SMIt->metrics().end();
+
+                    if (MIt != MEnd) {
+                        initializeDataPointIterator(*MIt);
+                    }
+                }
+            }
+
+            return;
+        }
+    }
+};
+
+
+static std::vector<pb::MetricsData> *otelModMessages = nullptr;
+
 class MessageReader {
 public:
     bool processMessages(const uv_buf_t &Buf)
@@ -254,18 +623,21 @@ public:
         BM.getMessages(Messages);
         netdata_log_error("GVD OTEL received %zu messages", Messages.size());
 
-        if (!Messages.empty()) {
-            const auto &MD = Messages[0];
-            std::stringstream SS;
+        otelModMessages = &Messages;
 
-            pb::printMetricsData(SS, MD);
+        if (Messages.size())
+        {
+            netdata_log_error("GVD OTEL - Dumping metric names");
+            auto OtelIter = OtelIterator(Messages.begin(), Messages.end());
 
-            std::ofstream OS("/tmp/cpp.log", std::ios::app);
-            if (OS.is_open()) {
-                OS << SS.str() << "\n";
-                OS.close();
-            } else {
-                std::cerr << "Failed to open file for appending.\n";
+            while (OtelIter.hasNext()) {
+                OtelElement OE = OtelIter.next();
+                std::stringstream SS;
+
+                netdata_log_error("Metric name: %s", OE.M->name().c_str());
+                pb::printMetric(SS, *OE.M);
+
+                netdata_log_error("printed metric: >>>%s<<<", SS.str().c_str());
             }
         }
 
@@ -279,6 +651,216 @@ private:
 };
 
 static MessageReader MR;
+
+// struct OtelVTab {
+//     sqlite3_vtab vtable;
+// };
+
+// struct OtelCursor {
+//     sqlite3_vtab_cursor vtable_cursor;
+
+//     std::vector<pb::MetricsData> *Messages;
+
+//     pb::ConstIterator<const pb::ResourceMetrics> ResourceMetricsIt;
+//     pb::ConstIterator<const pb::ScopeMetrics> ScopeMetricsIt;
+
+//     int metrics_data_idx;
+//     int metrics_data_length;
+
+//     int resource_metrics_idx;
+//     int resource_metrics_length;
+
+//     int scope_metrics_idx;
+//     int scope_metrics_length;
+
+//     int metrics_idx;
+//     int metrics_length;
+
+//     int data_points_idx;
+//     int data_points_length;
+// };
+
+// static int otelModCreate(sqlite3 *db, void *pAux, int argc, const char *const *argv,
+//                   sqlite3_vtab **ppVTab, char **pzErr)
+// {
+//     UNUSED(pAux);
+//     UNUSED(argc);
+//     UNUSED(argv);
+//     UNUSED(pzErr);
+
+//     sqlite3_vtab *pVTab = static_cast<sqlite3_vtab *>(sqlite3_malloc(sizeof(OtelVTab)));
+//     if (!pVTab)
+//         return SQLITE_NOMEM;
+
+//     memset(pVTab, 0, sizeof(OtelVTab));
+//     *ppVTab = pVTab;
+
+//     sqlite3_declare_vtab(db, "CREATE TABLE x(name TEXT, id INT, email TEXT)");
+//     return SQLITE_OK;
+// }
+
+// static int otelModConnect(sqlite3 *db, void *pAux, int argc, const char *const*argv,
+//                           sqlite3_vtab **ppVTab, char **pzErr)
+// {
+//     return otelModCreate(db, pAux, argc, argv, ppVTab, pzErr);
+// }
+
+// static int otelModBestIndex(sqlite3_vtab *tab, sqlite3_index_info *pIdxInfo)
+// {
+//     UNUSED(tab);
+//     pIdxInfo->estimatedCost = 1000000;
+//     return SQLITE_OK;
+// }
+
+// static int otelModDisconnect(sqlite3_vtab *pVtab)
+// {
+//     OtelVTab *vtab = reinterpret_cast<OtelVTab *>(pVtab);
+//     UNUSED(vtab);
+//     return SQLITE_OK;
+// }
+
+// static int otelModDestroy(sqlite3_vtab *pVtab)
+// {
+//     OtelVTab *vtab = reinterpret_cast<OtelVTab *>(pVtab);
+//     sqlite3_free(vtab);
+//     return SQLITE_OK;
+// }
+
+// static int otelModOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor)
+// {
+//     OtelVTab *vtab = reinterpret_cast<OtelVTab *>(p);
+//     UNUSED(vtab);
+
+//     OtelCursor *pCur = reinterpret_cast<OtelCursor *>(sqlite3_malloc64(sizeof(OtelCursor)));
+//     if (!pCur)
+//         return SQLITE_NOMEM;
+//     memset(pCur, 0, sizeof(OtelCursor));
+
+//     *ppCursor = &pCur->vtable_cursor;
+
+//     pCur->Messages = otelModMessages;
+
+//     pCur->metrics_data_length = pCur->Messages->size();
+
+//     if (pCur->metrics_data_length)
+//         pCur->ResourceMetricsIt = (*otelModMessages)[0].resource_metrics().cbegin();
+
+//     for (const auto &MD: *pCur->Messages) {
+//         // inline typename RepeatedPtrField<Element>::const_iterator
+
+//         pCur->resource_metrics_length = MD.resource_metrics_size();
+
+//         for (const auto &RM: MD.resource_metrics()) {
+//             pCur->scope_metrics_length = RM.scope_metrics_size();
+
+//             for (const auto &SM: RM.scope_metrics()) {
+//                 pCur->metrics_length = SM.metrics_size();
+
+//                 for (const auto &M: SM.metrics()) {
+//                     if (M.has_gauge())
+//                     {
+//                         const pb::Gauge &G = M.gauge();
+//                         pCur->data_points_length = G.data_points_size();
+//                     }
+//                     else if (M.has_sum())
+//                     {
+//                         const pb::Sum &S = M.sum();
+//                         pCur->data_points_length = S.data_points_size();
+//                     }
+//                     else if (M.has_histogram())
+//                     {
+//                         const pb::Histogram &H = M.histogram();
+//                         pCur->data_points_length = H.data_points_size();
+//                     }
+//                     else if (M.has_exponential_histogram())
+//                     {
+//                         const pb::ExponentialHistogram &EH = M.exponential_histogram();
+//                         pCur->data_points_length = EH.data_points_size();
+//                     }
+//                     else if (M.has_summary())
+//                     {
+//                         const pb::Summary &S = M.summary();
+//                         pCur->data_points_length = S.data_points_size();
+//                     }
+//                 }
+//             }
+//         }
+//     }
+
+//     return SQLITE_OK;
+// }
+
+// static int otelModClose(sqlite3_vtab_cursor *cur)
+// {
+//     OtelCursor *pCur = reinterpret_cast<OtelCursor *>(cur);
+//     sqlite3_free(pCur);
+//     return SQLITE_OK;
+// }
+
+// static int otelModNext(sqlite3_vtab_cursor *cur)
+// {
+//     OtelCursor *pCur = reinterpret_cast<OtelCursor *>(cur);
+
+//     pCur->data_points_idx++;
+//     if (pCur->data_points_idx < pCur->data_points_length)
+//         return SQLITE_OK;
+//     pCur->data_points_idx = 0;
+
+//     pCur->metrics_idx++;
+//     if (pCur->metrics_idx < pCur->metrics_length)
+//         return SQLITE_OK;
+//     pCur->metrics_idx = 0;
+
+//     pCur->scope_metrics_idx++;
+//     if (pCur->scope_metrics_idx < pCur->scope_metrics_length)
+//         return SQLITE_OK;
+//     pCur->scope_metrics_idx = 0;
+
+//     pCur->resource_metrics_idx++;
+//     if (pCur->resource_metrics_idx++ < pCur->resource_metrics_length)
+//         return SQLITE_OK;
+//     pCur->resource_metrics_idx = 0;
+
+//     pCur->metrics_data_idx++;
+//     if (pCur->metrics_data_idx++ < pCur->metrics_data_length)
+//         return SQLITE_OK;
+//     pCur->metrics_data_idx = -1;
+
+//     return SQLITE_OK;
+// }
+
+// static sqlite3_module otelModule = {
+//     0,                        // iVersion
+//     otelModCreate,
+//     otelModConnect,
+//     otelModBestIndex,
+//     otelModDisconnect,
+//     otelModDestroy,
+//     otelModOpen,
+//     otelModClose,
+//     // contactFilter,
+//     // contactNext,
+//     // contactEof,
+//     // contactColumn,
+//     // contactRowid,
+//     NULL,                     // xUpdate
+//     NULL,                     // xBegin
+//     NULL,                     // xSync
+//     NULL,                     // xCommit
+//     NULL,                     // xRollback
+//     NULL,                     // xFindFunction
+//     NULL,                     // xRename
+//     NULL,                     // xSavepoint
+//     NULL,                     // xRelease
+//     NULL,                      // xRollbackTo
+//     NULL,                     // xUpdate
+//     NULL,                     // xBegin
+//     NULL,                     // xSync
+//     NULL,                     // xCommit
+//     NULL,                     // xRollback
+//     NULL,                     // xRename
+// };
+
 
 static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     UNUSED(stream);
@@ -570,6 +1152,8 @@ static void otel_main_cleanup(void *data)
 extern "C" void *otel_main(void *ptr)
 {
     netdata_thread_cleanup_push(otel_main_cleanup, ptr);
+
+    // sqlite3_create_module(db, "OtelModule", &otelModule, NULL);
 
     if (otel_state.haveSpawnedCollector()) {
         otel_state.init_status |= InitStatus::HaveRunLoop;
