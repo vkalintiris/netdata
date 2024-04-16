@@ -8,6 +8,9 @@
 
 #include "otel_utils.h"
 
+#include <yaml-cpp/yaml.h>
+#include "resource_attributes.h"
+
 enum class InitStatus : unsigned int {
     Uninitialized = 0,
     HaveLoop = 1 << 0,
@@ -22,16 +25,20 @@ enum class InitStatus : unsigned int {
 
 inline InitStatus operator|(InitStatus lhs, InitStatus rhs)
 {
-    return static_cast<InitStatus>(static_cast<std::underlying_type<InitStatus>::type>(lhs) |
-                                   static_cast<std::underlying_type<InitStatus>::type>(rhs));
+    return static_cast<InitStatus>(
+        static_cast<std::underlying_type<InitStatus>::type>(lhs) |
+        static_cast<std::underlying_type<InitStatus>::type>(rhs));
 }
 
-inline InitStatus operator&(InitStatus lhs, InitStatus rhs) {
-    return static_cast<InitStatus>(static_cast<std::underlying_type<InitStatus>::type>(lhs) &
-                                   static_cast<std::underlying_type<InitStatus>::type>(rhs));
+inline InitStatus operator&(InitStatus lhs, InitStatus rhs)
+{
+    return static_cast<InitStatus>(
+        static_cast<std::underlying_type<InitStatus>::type>(lhs) &
+        static_cast<std::underlying_type<InitStatus>::type>(rhs));
 }
 
-inline InitStatus& operator|=(InitStatus &lhs, InitStatus rhs) {
+inline InitStatus &operator|=(InitStatus &lhs, InitStatus rhs)
+{
     lhs = lhs | rhs;
     return lhs;
 }
@@ -79,54 +86,71 @@ typedef struct otel_state {
 
     unsigned loop_counter;
 
-    bool haveLoop() const {
+    bool haveLoop() const
+    {
         return haveInitStatus(InitStatus::HaveLoop);
     }
 
-    bool haveMetricsFifo() const {
+    bool haveMetricsFifo() const
+    {
         return haveInitStatus(InitStatus::HaveMetricsFifo);
-
     }
 
-    bool haveLogsFifo() const {
+    bool haveLogsFifo() const
+    {
         return haveInitStatus(InitStatus::HaveLogsFifo);
     }
 
-    bool haveTracesFifo() const {
+    bool haveTracesFifo() const
+    {
         return haveInitStatus(InitStatus::HaveTracesFifo);
     }
 
-    bool haveAllFifos() const {
+    bool haveAllFifos() const
+    {
         return haveMetricsFifo() && haveLogsFifo() && haveTracesFifo();
     }
 
-    bool haveSpawnedCollector() const {
+    bool haveSpawnedCollector() const
+    {
         return haveInitStatus(InitStatus::HaveSpawnedCollector);
     }
 
-    bool haveRunLoop() const {
+    bool haveRunLoop() const
+    {
         return haveInitStatus(InitStatus::HaveRunLoop);
     }
 
-    bool haveAsync() const {
+    bool haveAsync() const
+    {
         return haveInitStatus(InitStatus::HaveAsync);
     }
 
-    void dump() const {
-        netdata_log_error("[GVD] loop: %d, metrics: %d, logs: %d, traces: %d, spawned: %d, run: %d, async: %d (raw=%u)",
-                          haveLoop(), haveMetricsFifo(), haveLogsFifo(), haveTracesFifo(), haveSpawnedCollector(), haveRunLoop(), haveAsync(),
-                          static_cast<unsigned int>(init_status));
+    void dump() const
+    {
+        netdata_log_error(
+            "[GVD] loop: %d, metrics: %d, logs: %d, traces: %d, spawned: %d, run: %d, async: %d (raw=%u)",
+            haveLoop(),
+            haveMetricsFifo(),
+            haveLogsFifo(),
+            haveTracesFifo(),
+            haveSpawnedCollector(),
+            haveRunLoop(),
+            haveAsync(),
+            static_cast<unsigned int>(init_status));
     }
 
 private:
-    bool haveInitStatus(const InitStatus Flag) const {
+    bool haveInitStatus(const InitStatus Flag) const
+    {
         return (init_status & Flag) != InitStatus::Uninitialized;
     }
 } otel_state_t;
 
 static otel_state_t otel_state;
 
-static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
+static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
+{
     UNUSED(handle);
 
     suggested_size = 16 * 1024 * 1024;
@@ -139,14 +163,16 @@ static void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* b
 }
 
 // Function to convert a byte to a hex string
-static std::string byteToHex(unsigned char byte) {
+static std::string byteToHex(unsigned char byte)
+{
     std::ostringstream oss;
     oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
     return oss.str();
 }
 
 // Function to convert binary data to a hex string
-static std::string dataToHexString(const char* data, std::size_t len) {
+static std::string dataToHexString(const char *data, std::size_t len)
+{
     std::ostringstream oss;
     for (std::size_t i = 0; i < len; ++i) {
         oss << byteToHex(data[i]);
@@ -154,9 +180,7 @@ static std::string dataToHexString(const char* data, std::size_t len) {
     return oss.str();
 }
 
-
-template<typename T>
-class BufferManager {
+template <typename T> class BufferManager {
 public:
     void fill(const uv_buf_t &buf)
     {
@@ -165,8 +189,7 @@ public:
         else if (pos == data.size()) {
             netdata_log_error("OTEL GVD: clearing data: pos = data.size() = %zu", pos);
             data.clear();
-        }
-        else if (pos != 0) {
+        } else if (pos != 0) {
             data.erase(data.begin(), data.begin() + pos);
             netdata_log_error("OTEL GVD: erasing first %zu bytes", pos);
         }
@@ -175,7 +198,8 @@ public:
         data.insert(data.end(), buf.base, buf.base + buf.len);
     }
 
-    bool getMessages(std::vector<T> &messages) {
+    bool getMessages(std::vector<T> &messages)
+    {
         T message;
 
         while (readMessage(message))
@@ -185,9 +209,9 @@ public:
     }
 
 private:
-    bool readMessage(T& message)
+    bool readMessage(T &message)
     {
-        uv_buf_t dst = { .base = nullptr, .len = 0 };
+        uv_buf_t dst = {.base = nullptr, .len = 0};
 
         if (!haveAtLeastXBytes(2 * sizeof(uint32_t)))
             return false;
@@ -212,7 +236,7 @@ private:
 
         uint32_t checksum_cpp = 0;
         for (size_t i = 0; i != dst.len; i++)
-            checksum_cpp += (unsigned char) dst.base[i];
+            checksum_cpp += (unsigned char)dst.base[i];
 
         if (checksum_cpp != checksum_go) {
             std::ofstream OS("/tmp/cpp.bin", std::ios::out);
@@ -224,7 +248,8 @@ private:
 
             fatal("Checksum mismatch cpp = %u, go = %u", checksum_cpp, checksum_go);
         } else {
-            netdata_log_error("Checksum matches sum (%u == %u). message length: %zu bytes", checksum_go, checksum_cpp, dst.len);
+            netdata_log_error(
+                "Checksum matches sum (%u == %u). message length: %zu bytes", checksum_go, checksum_cpp, dst.len);
         }
 
         if (!message.ParseFromArray(dst.base, dst.len))
@@ -234,19 +259,20 @@ private:
         return true;
     }
 
-    inline size_t remainingBytes() const {
+    inline size_t remainingBytes() const
+    {
         return data.size() - pos;
     }
 
-    inline bool haveAtLeastXBytes(uint32_t bytes) const {
+    inline bool haveAtLeastXBytes(uint32_t bytes) const
+    {
         return remainingBytes() >= bytes;
     }
 
 private:
     std::vector<char> data;
-    size_t pos = { 0 };
+    size_t pos = {0};
 };
-
 
 struct OtelElement {
     const pb::MetricsData *MD;
@@ -290,8 +316,12 @@ public:
         HistogramDataPointIterator HDPIt;
         ExponentialHistogramDataPointIterator EHDPIt;
 
-        DataPointIterator() {}
-        ~DataPointIterator() {}
+        DataPointIterator()
+        {
+        }
+        ~DataPointIterator()
+        {
+        }
     };
 
     OtelIterator(MetricsDataIterator MDBegin, MetricsDataIterator MDEnd)
@@ -338,12 +368,12 @@ public:
             netdata_log_error("hasNext(): md it = md end");
             return false;
         }
-        
+
         if (RMIt == RMEnd) {
             netdata_log_error("hasNext(): rm it = rm end");
             return false;
         }
-        
+
         if (SMIt == SMEnd) {
             netdata_log_error("hasNext(): sm it = sm end");
             return false;
@@ -444,8 +474,7 @@ private:
 
     inline void destroyCurrentIterator()
     {
-        switch (DPKind)
-        {
+        switch (DPKind) {
             case DataPointKind::Number:
             case DataPointKind::Sum:
                 DPIt.NDPIt.~NumberDataPointIterator();
@@ -475,77 +504,80 @@ private:
         DPKind = dpKind(M);
 
         switch (DPKind) {
-        case DataPointKind::Number:
-            DPIt.NDPIt = M.gauge().data_points().begin();
-            DPEnd.NDPIt = M.gauge().data_points().end();
-            if (DPIt.NDPIt == DPEnd.NDPIt) {
-                netdata_log_error("initializeDataPointIterator(): number - ndp it = ndp end (size: %d)\n>>>%s<<<", M.gauge().data_points().size(), M.DebugString().c_str());
-            }
-            break;
-        case DataPointKind::Sum:
-            DPIt.NDPIt = M.sum().data_points().begin();
-            DPEnd.NDPIt = M.sum().data_points().end();
-            if (DPIt.NDPIt == DPEnd.NDPIt)
-                netdata_log_error("initializeDataPointIterator(): sum - ndp it = ndp end");
-            break;
-        case DataPointKind::Summary:
-            DPIt.SDPIt = M.summary().data_points().begin();
-            DPEnd.SDPIt = M.summary().data_points().end();
-            if (DPIt.SDPIt == DPEnd.SDPIt)
-                netdata_log_error("initializeDataPointIterator(): sdp it = sdp end");
-            break;
-        case DataPointKind::Histogram:
-            DPIt.HDPIt = M.histogram().data_points().begin();
-            DPEnd.HDPIt = M.histogram().data_points().end();
-            if (DPIt.HDPIt == DPEnd.HDPIt)
-                netdata_log_error("initializeDataPointIterator(): hdp it = hdp end");
-            break;
-        case DataPointKind::Exponential:
-            DPIt.EHDPIt = M.exponential_histogram().data_points().begin();
-            DPEnd.EHDPIt = M.exponential_histogram().data_points().end();
-            if (DPIt.EHDPIt == DPEnd.EHDPIt)
-                netdata_log_error("initializeDataPointIterator(): ehdp it = ehdp end");
-            break;
-        default:
-            throw std::out_of_range("WTF?");
+            case DataPointKind::Number:
+                DPIt.NDPIt = M.gauge().data_points().begin();
+                DPEnd.NDPIt = M.gauge().data_points().end();
+                if (DPIt.NDPIt == DPEnd.NDPIt) {
+                    netdata_log_error(
+                        "initializeDataPointIterator(): number - ndp it = ndp end (size: %d)\n>>>%s<<<",
+                        M.gauge().data_points().size(),
+                        M.DebugString().c_str());
+                }
+                break;
+            case DataPointKind::Sum:
+                DPIt.NDPIt = M.sum().data_points().begin();
+                DPEnd.NDPIt = M.sum().data_points().end();
+                if (DPIt.NDPIt == DPEnd.NDPIt)
+                    netdata_log_error("initializeDataPointIterator(): sum - ndp it = ndp end");
+                break;
+            case DataPointKind::Summary:
+                DPIt.SDPIt = M.summary().data_points().begin();
+                DPEnd.SDPIt = M.summary().data_points().end();
+                if (DPIt.SDPIt == DPEnd.SDPIt)
+                    netdata_log_error("initializeDataPointIterator(): sdp it = sdp end");
+                break;
+            case DataPointKind::Histogram:
+                DPIt.HDPIt = M.histogram().data_points().begin();
+                DPEnd.HDPIt = M.histogram().data_points().end();
+                if (DPIt.HDPIt == DPEnd.HDPIt)
+                    netdata_log_error("initializeDataPointIterator(): hdp it = hdp end");
+                break;
+            case DataPointKind::Exponential:
+                DPIt.EHDPIt = M.exponential_histogram().data_points().begin();
+                DPEnd.EHDPIt = M.exponential_histogram().data_points().end();
+                if (DPIt.EHDPIt == DPEnd.EHDPIt)
+                    netdata_log_error("initializeDataPointIterator(): ehdp it = ehdp end");
+                break;
+            default:
+                throw std::out_of_range("WTF?");
         }
     }
 
     void advance()
     {
         switch (DPKind) {
-        case DataPointKind::Number:
-        case DataPointKind::Sum: {
-            if (++DPIt.NDPIt != DPEnd.NDPIt) {
-                netdata_log_error("advance(): ndp");
-                return;
+            case DataPointKind::Number:
+            case DataPointKind::Sum: {
+                if (++DPIt.NDPIt != DPEnd.NDPIt) {
+                    netdata_log_error("advance(): ndp");
+                    return;
+                }
+                break;
             }
-            break;
-        }
-        case DataPointKind::Summary: {
-            if (++DPIt.SDPIt != DPEnd.SDPIt) {
-                netdata_log_error("advance(): sdp");
-                return;
+            case DataPointKind::Summary: {
+                if (++DPIt.SDPIt != DPEnd.SDPIt) {
+                    netdata_log_error("advance(): sdp");
+                    return;
+                }
+                break;
             }
-            break;
-        }
-        case DataPointKind::Histogram: {
-            if (++DPIt.HDPIt != DPEnd.HDPIt) {
-                netdata_log_error("advance(): hdp");
-                return;
+            case DataPointKind::Histogram: {
+                if (++DPIt.HDPIt != DPEnd.HDPIt) {
+                    netdata_log_error("advance(): hdp");
+                    return;
+                }
+                break;
             }
-            break;
-        }
-        case DataPointKind::Exponential: {
-            if (++DPIt.EHDPIt != DPEnd.EHDPIt) {
-                netdata_log_error("advance(): ehdp");
-                return;
+            case DataPointKind::Exponential: {
+                if (++DPIt.EHDPIt != DPEnd.EHDPIt) {
+                    netdata_log_error("advance(): ehdp");
+                    return;
+                }
+                break;
             }
-            break;
-        }
-        case DataPointKind::NotAvailable:
-            netdata_log_error("advance(): not available");
-            break;
+            case DataPointKind::NotAvailable:
+                netdata_log_error("advance(): not available");
+                break;
         }
 
         if (++MIt != MEnd) {
@@ -566,8 +598,7 @@ private:
             return;
         }
 
-        if (++RMIt != RMEnd)
-        {
+        if (++RMIt != RMEnd) {
             netdata_log_error("advance(): rm it");
 
             SMIt = RMIt->scope_metrics().begin();
@@ -585,8 +616,7 @@ private:
             return;
         }
 
-        if (++MDIt != MDEnd)
-        {
+        if (++MDIt != MDEnd) {
             netdata_log_error("advance(): md it");
 
             RMIt = MDIt->resource_metrics().begin();
@@ -611,7 +641,6 @@ private:
     }
 };
 
-
 static std::vector<pb::MetricsData> *otelModMessages = nullptr;
 
 class MessageReader {
@@ -625,8 +654,7 @@ public:
 
         otelModMessages = &Messages;
 
-        if (Messages.size())
-        {
+        if (Messages.size()) {
             netdata_log_error("GVD OTEL - Dumping metric names");
             auto OtelIter = OtelIterator(Messages.begin(), Messages.end());
 
@@ -644,7 +672,7 @@ public:
         Messages.clear();
         return true;
     }
-    
+
 private:
     BufferManager<pb::MetricsData> BM;
     std::vector<pb::MetricsData> Messages;
@@ -652,21 +680,18 @@ private:
 
 static MessageReader MR;
 
-static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
+static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
     UNUSED(stream);
 
-    if (nread > 0)
-    {
+    if (nread > 0) {
         netdata_log_error("[OTEL] Received %zu bytes...", nread);
-        const uv_buf_t data = { .base = buf->base, .len = (size_t) nread };
+        const uv_buf_t data = {.base = buf->base, .len = (size_t)nread};
         MR.processMessages(data);
-    }
-    else if (nread < 0)
-    {
+    } else if (nread < 0) {
         if (nread == UV_EOF) {
             netdata_log_error("[OTEL] Reached EOF...");
-        }
-        else {
+        } else {
             netdata_log_error("[OTEL] Read error: %s", uv_strerror(nread));
         }
     }
@@ -699,20 +724,18 @@ static otel_fifo_t create_fifo(otel_fifo_kind_t otel_fifo_kind)
 
     // create fifo
     errno = 0;
-    if (mkfifo(otel_fifo.path, 0664) != 0)
-    {
-        netdata_log_error("Could not create %s FIFO at %s: %s (errno=%d)",
-                          fifo_kind, otel_fifo.path, strerror(errno), errno);
+    if (mkfifo(otel_fifo.path, 0664) != 0) {
+        netdata_log_error(
+            "Could not create %s FIFO at %s: %s (errno=%d)", fifo_kind, otel_fifo.path, strerror(errno), errno);
         otel_fifo.path = nullptr;
         return otel_fifo;
     }
 
     // open for reading
     otel_fifo.fd = open(otel_fifo.path, O_RDONLY | O_NONBLOCK);
-    if (otel_fifo.fd == -1)
-    {
-        netdata_log_error("Could not open %s FIFO at %s: %s (errno=%d)",
-                          fifo_kind, otel_fifo.path, strerror(errno), errno);
+    if (otel_fifo.fd == -1) {
+        netdata_log_error(
+            "Could not open %s FIFO at %s: %s (errno=%d)", fifo_kind, otel_fifo.path, strerror(errno), errno);
 
         unlink(otel_fifo.path);
         otel_fifo.path = NULL;
@@ -736,7 +759,7 @@ static otel_fifo_t create_fifo(otel_fifo_kind_t otel_fifo_kind)
         goto LBL_PIPE_ERROR;
     }
 
-    err = uv_read_start((uv_stream_t*) otel_fifo.pipe, alloc_buffer, on_read);
+    err = uv_read_start((uv_stream_t *)otel_fifo.pipe, alloc_buffer, on_read);
     if (err) {
         netdata_log_error("uv_read_start(): %s", uv_strerror(err));
         goto LBL_PIPE_ERROR;
@@ -761,7 +784,7 @@ LBL_PIPE_ERROR:
     close(otel_fifo.fd);
     unlink(otel_fifo.path);
 
-    return otel_fifo_t {
+    return otel_fifo_t{
         .kind = otel_fifo_kind,
         .path = nullptr,
         .fd = -1,
@@ -785,7 +808,7 @@ static void spawn_otel_collector()
 
     options.file = "/home/vk/.local/bin/otelcontribcol";
 
-    char** args = new char*[4] { nullptr, nullptr, nullptr, nullptr};
+    char **args = new char *[4]{nullptr, nullptr, nullptr, nullptr};
     // args[0] = strdupz("otelcontribcol");
     args[0] = strdupz(options.file);
     args[1] = strdupz("--config");
@@ -794,9 +817,9 @@ static void spawn_otel_collector()
     args[3] = nullptr;
 
     options.args = args;
-    options.exit_cb = [](uv_process_t* req, int64_t exit_status, int term_signal) {
+    options.exit_cb = [](uv_process_t *req, int64_t exit_status, int term_signal) {
         netdata_log_error("GVD OTEL collector exit_status: %lu, term_signal: %d", exit_status, term_signal);
-        char** arg = (char**)req->data;
+        char **arg = (char **)req->data;
         while (*arg)
             freez(*arg++);
 
@@ -805,7 +828,7 @@ static void spawn_otel_collector()
         completion_mark_complete(&otel_state.otel_process_completion);
     };
 
-    otel_state.otel_process.data = (void*) args;
+    otel_state.otel_process.data = (void *)args;
 
     {
         // Set up stdio containers
@@ -832,7 +855,7 @@ static void spawn_otel_collector()
 
     int err = uv_spawn(otel_state.loop, &otel_state.otel_process, &options);
     if (err) {
-        char** arg = (char**) args;
+        char **arg = (char **)args;
         while (*arg)
             freez(*arg++);
         delete[] args;
@@ -859,17 +882,17 @@ static void shutdown_libuv_handles(uv_async_t *handle)
     }
 
     if (otel_state.haveMetricsFifo())
-        uv_close((uv_handle_t *) otel_state.metrics_fifo.pipe, NULL);
+        uv_close((uv_handle_t *)otel_state.metrics_fifo.pipe, NULL);
     if (otel_state.haveLogsFifo())
-        uv_close((uv_handle_t *) otel_state.logs_fifo.pipe, NULL);
+        uv_close((uv_handle_t *)otel_state.logs_fifo.pipe, NULL);
     if (otel_state.haveTracesFifo())
-        uv_close((uv_handle_t *) otel_state.traces_fifo.pipe, NULL);
+        uv_close((uv_handle_t *)otel_state.traces_fifo.pipe, NULL);
 
     if (otel_state.haveAsync())
-        uv_close((uv_handle_t *) &otel_state.async, NULL);
+        uv_close((uv_handle_t *)&otel_state.async, NULL);
 
     if (otel_state.haveSpawnedCollector())
-        uv_close((uv_handle_t *) &otel_state.otel_process, NULL);
+        uv_close((uv_handle_t *)&otel_state.otel_process, NULL);
 
     if (otel_state.haveRunLoop())
         uv_stop(otel_state.loop);
@@ -940,21 +963,43 @@ static void otel_main_cleanup(void *data)
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
+static void loadAttributesFromYaml(const std::string &filename)
+{
+    std::stringstream SS;
+
+    YAML::Node config = YAML::LoadFile(filename);
+    if (!config["resource_attributes"]) {
+        SS << absl::NotFoundError("The key 'resource_attributes' does not exist in the YAML file.");
+        netdata_log_error("Failed to load file: %s", SS.str().c_str());
+    }
+
+    auto ResAttrs = ResourceAttributes::get(config);
+    if (!ResAttrs.ok()) {
+        SS << ResAttrs.status();
+        netdata_log_error("Failed to load resource attributes: %s", SS.str().c_str());
+        return;
+    }
+
+    ResAttrs->printAttributes(SS);
+    netdata_log_error("Resource attributes loaded from %s:\n%s", filename.c_str(), SS.str().c_str());
+}
+
 extern "C" void *otel_main(void *ptr)
 {
     netdata_thread_cleanup_push(otel_main_cleanup, ptr);
 
-    // sqlite3_create_module(db, "OtelModule", &otelModule, NULL);
+    const std::string Path =
+        "/home/vk/repos/otel/opentelemetry-collector-contrib/receiver/elasticsearchreceiver/metadata.yaml";
+    loadAttributesFromYaml(Path);
+    // if (otel_state.haveSpawnedCollector()) {
+    //     otel_state.init_status |= InitStatus::HaveRunLoop;
+    //     uv_run(otel_state.loop, UV_RUN_DEFAULT);
+    //     completion_mark_complete(&otel_state.shutdown_completion);
 
-    if (otel_state.haveSpawnedCollector()) {
-        otel_state.init_status |= InitStatus::HaveRunLoop;
-        uv_run(otel_state.loop, UV_RUN_DEFAULT);
-        completion_mark_complete(&otel_state.shutdown_completion);
-
-        int ret = uv_loop_close(otel_state.loop);
-        if (ret == UV_EBUSY)
-            fatal("GVD P[OTEL] libuv loop closed with EBUSY");
-    }
+    //     int ret = uv_loop_close(otel_state.loop);
+    //     if (ret == UV_EBUSY)
+    //         fatal("GVD P[OTEL] libuv loop closed with EBUSY");
+    // }
 
     netdata_thread_cleanup_pop(1);
     return nullptr;

@@ -161,6 +161,25 @@ if(ENABLE_WEBRTC)
         FetchContent_MakeAvailable(libdatachannel)
 endif()
 
+
+#
+# Just for OTEL make this conditional
+#
+include(FetchContent)
+
+FetchContent_Declare(
+  yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG f7320141120f720aecc4c32be25586e7da9eb978 # 0.8.0
+)
+FetchContent_GetProperties(yaml-cpp)
+
+if(NOT yaml-cpp_POPULATED)
+  message(STATUS "Fetching yaml-cpp...")
+  FetchContent_Populate(yaml-cpp)
+  add_subdirectory(${yaml-cpp_SOURCE_DIR} ${yaml-cpp_BINARY_DIR})
+endif()
+
 if(NEED_PROTOBUF)
         include(NetdataProtobuf)
 
@@ -1276,6 +1295,7 @@ set(NETDATA_FILES
         src/otel/otel.cc
         src/otel/otel_utils.cc
         src/otel/otel_utils.h
+        src/otel/resource_attributes.h
 )
 
 set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto
@@ -2042,7 +2062,8 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_WEBRTC}>:LibDataChannel::LibDataChannelStatic>"
         "$<$<BOOL:${ENABLE_H2O}>:h2o>"
 )
-target_link_libraries(netdata PRIVATE absl::strings)
+
+target_link_libraries(netdata PRIVATE absl::strings yaml-cpp::yaml-cpp)
 
 if(NEED_PROTOBUF)
         netdata_add_protobuf(netdata)
