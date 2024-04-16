@@ -853,6 +853,8 @@ static void spawn_otel_collector()
         options.stdio = stdio;
     }
 
+    return;
+
     int err = uv_spawn(otel_state.loop, &otel_state.otel_process, &options);
     if (err) {
         char **arg = (char **)args;
@@ -963,25 +965,65 @@ static void otel_main_cleanup(void *data)
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }
 
+static void dumpSS(const std::stringstream &ss, const std::string &filepath)
+{
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open the file: " << filepath << std::endl;
+        return;
+    }
+
+    file << ss.str();
+    file.close();
+}
+
 static void loadAttributesFromYaml(const std::string &filename)
 {
     std::stringstream SS;
 
     YAML::Node config = YAML::LoadFile(filename);
+
+#if 0
     if (!config["resource_attributes"]) {
         SS << absl::NotFoundError("The key 'resource_attributes' does not exist in the YAML file.");
-        netdata_log_error("Failed to load file: %s", SS.str().c_str());
+        netdata_log_error("GVD: Failed to load file: %s", SS.str().c_str());
     }
 
     auto ResAttrs = ResourceAttributes::get(config);
     if (!ResAttrs.ok()) {
         SS << ResAttrs.status();
-        netdata_log_error("Failed to load resource attributes: %s", SS.str().c_str());
+        netdata_log_error("GVD: Failed to load resource attributes: %s", SS.str().c_str());
         return;
     }
 
-    ResAttrs->printAttributes(SS);
-    netdata_log_error("Resource attributes loaded from %s:\n%s", filename.c_str(), SS.str().c_str());
+    ResAttrs->dump(SS);
+#else
+    if (!config["attributes"]) {
+        SS << absl::NotFoundError("The key 'attributes' does not exist in the YAML file.");
+        netdata_log_error("GVD: Failed to load file: %s", SS.str().c_str());
+    }
+
+    auto MetricAttrs = MetricAttributes::get(config);
+    if (!MetricAttrs.ok()) {
+        SS << MetricAttrs.status();
+        netdata_log_error("GVD: Failed to load metric attributes: %s", SS.str().c_str());
+        return;
+    }
+
+    MetricAttrs->dump(SS);
+#endif
+
+    dumpSS(SS, "/tmp/log.txt");
+}
+
+std::ostream& operator<<(std::ostream& OS, const ResourceAttribute &RA) {
+    RA.dump(OS);
+    return OS;
+}
+
+std::ostream& operator<<(std::ostream& OS, const MetricAttribute &RA) {
+    RA.dump(OS);
+    return OS;
 }
 
 extern "C" void *otel_main(void *ptr)
@@ -993,7 +1035,7 @@ extern "C" void *otel_main(void *ptr)
 
 #if 1
     const std::string Path =
-        "/home/vk/repos/otel/opentelemetry-collector-contrib/receiver/elasticsearchreceiver/metadata.yaml";
+        "/home/vk/repos/otel/opentelemetry-collector-contrib/receiver/mysqlreceiver/metadata.yaml";
     loadAttributesFromYaml(Path);
 #endif
 
