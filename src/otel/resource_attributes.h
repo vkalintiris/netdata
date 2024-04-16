@@ -13,41 +13,61 @@
 
 #include <yaml-cpp/yaml.h>
 
-class ResourceAttribute {
-    /* TODO: handle enums, eg. flinkmetricsreceiver/metadata.yaml. */
+enum class ValueType { String, Bool, Integer, EnumList, None };
 
+class ResourceAttribute {
     friend class ResourceAttributes;
 
 private:
     static absl::StatusOr<ResourceAttribute> get(const YAML::Node &node)
     {
         if (!node["description"].IsScalar() || !node["enabled"].IsScalar() || !node["type"].IsScalar()) {
-            return absl::InvalidArgumentError("Missing required fields or incorrect types in attribute node.");
+            return absl::InvalidArgumentError("Missing required fields or incorrect types in resource attribute node.");
         }
 
-        std::string description = node["description"].as<std::string>();
-        bool enabled = node["enabled"].as<bool>();
-        std::string type = node["type"].as<std::string>();
-        absl::variant<std::string, int> value;
+        std::string Description = node["description"].as<std::string>();
+        bool Enabled = node["enabled"].as<bool>();
 
-        if (type == "string") {
-            value = node["value"].IsDefined() ? node["value"].as<std::string>() : std::string("");
-        } else if (type == "int") {
-            value = node["value"].IsDefined() ? node["value"].as<int>() : 0;
+        std::string Type = node["type"].as<std::string>();
+        if (Type == "string") {
+            return ResourceAttribute(Description, Enabled, ValueType::String);
+        } else if (Type == "int") {
+            return ResourceAttribute(Description, Enabled, ValueType::Integer);
         } else {
-            return absl::InvalidArgumentError("Unsupported type specified in attribute node.");
+            return absl::InvalidArgumentError("Unsupported type specified in resource attribute node.");
         }
 
-        return ResourceAttribute(description, enabled, value);
+        if (node["enum"]) {
+            if (!node["enum"].IsSequence())
+                return absl::InvalidArgumentError("Enum does not contain a sequence");
+
+            std::vector<std::string> Discriminants;
+            for (const YAML::Node &nd : node["enum"]) {
+                if (nd.IsScalar()) {
+                    Discriminants.push_back(nd.as<std::string>());
+                } else {
+                    return absl::InvalidArgumentError("Enum values must be scalar strings.");
+                }
+            }
+
+            return ResourceAttribute(Description, Enabled, Discriminants);
+        }
+
+        return absl::InvalidArgumentError("Malformed resource attribute node");
     }
 
 private:
-    ResourceAttribute() : Enabled(false)
+    ResourceAttribute() : Type(ValueType::None), Enabled(false)
     {
     }
 
-    ResourceAttribute(const std::string &desc, bool en, const absl::variant<std::string, int> &val)
-        : Description(desc), Enabled(en), Value(val)
+    ResourceAttribute(const std::string &Description, bool Enabled, ValueType Type)
+        : Type(Type), Description(Description), Enabled(Enabled)
+    {
+    }
+
+    ResourceAttribute(const std::string &Description, bool Enabled, const std::vector<std::string> &Discriminants)
+        : Type(ValueType::EnumList), Description(Description), Enabled(Enabled), Discriminants(Discriminants)
     {
     }
 
@@ -62,15 +82,113 @@ public:
         return Enabled;
     }
 
-    const absl::variant<std::string, int> &value() const
+    ValueType type() const
     {
-        return Value;
+        assert(Type == ValueType::Integer || Type == ValueType::String);
+        return Type;
+    }
+
+    const std::optional<std::vector<std::string> > &discriminants() const
+    {
+        assert(Type == ValueType::EnumList);
+        return Discriminants;
     }
 
 private:
+    ValueType Type;
     std::string Description;
     bool Enabled;
-    absl::variant<std::string, int> Value;
+    absl::optional<std::vector<std::string> > Discriminants;
+};
+
+class MetricAttribute {
+private:
+    static absl::StatusOr<MetricAttribute> get(const YAML::Node &node)
+    {
+        if (!node["description"].IsScalar() || !node["enabled"].IsScalar() || !node["type"].IsScalar()) {
+            return absl::InvalidArgumentError("Missing required fields or incorrect types in resource attribute node.");
+        }
+
+        std::string Description = node["description"].as<std::string>();
+
+        std::string Type = node["type"].as<std::string>();
+        if (Type == "string") {
+            return MetricAttribute(Description, ValueType::String);
+        } else if (Type == "int") {
+            return MetricAttribute(Description, ValueType::Integer);
+        } else if (Type == "bool") {
+            return MetricAttribute(Description, ValueType::Bool);
+        } else {
+            return absl::InvalidArgumentError("Unsupported type specified in resource attribute node.");
+        }
+
+        if (node["enum"]) {
+            if (!node["enum"].IsSequence())
+                return absl::InvalidArgumentError("Enum does not contain a sequence");
+
+            std::vector<std::string> Discriminants;
+            for (const YAML::Node &nd : node["enum"]) {
+                if (nd.IsScalar()) {
+                    Discriminants.push_back(nd.as<std::string>());
+                } else {
+                    return absl::InvalidArgumentError("Enum values must be scalar strings.");
+                }
+            }
+
+            return MetricAttribute(Description, Discriminants);
+        }
+
+        return absl::InvalidArgumentError("Malformed resource attribute node");
+    }
+
+private:
+    MetricAttribute() : Type(ValueType::None)
+    {
+    }
+
+    MetricAttribute(const std::string &Description, ValueType Type)
+        : Type(Type), Description(Description)
+    {
+    }
+
+    MetricAttribute(const std::string &Description, const std::string &NameOverride)
+        : Type(ValueType::String), Description(Description), NameOverride(NameOverride)
+    {
+    }
+
+    MetricAttribute(const std::string &Description, const std::vector<std::string> &Discriminants)
+        : Type(ValueType::EnumList), Description(Description), Discriminants(Discriminants)
+    {
+    }
+
+public:
+    const std::string &description() const
+    {
+        return Description;
+    }
+
+    ValueType type() const
+    {
+        assert(Type == ValueType::Integer || Type == ValueType::String);
+        return Type;
+    }
+
+    const std::string &nameOverride() const {
+        assert(Type == ValueType::String);
+        return NameOverride;
+    }
+
+    const std::optional<std::vector<std::string> > &discriminants() const
+    {
+        assert(Type == ValueType::EnumList);
+        return Discriminants;
+    }
+
+private:
+    ValueType Type;
+    std::string Description;
+    std::string NameOverride;
+    absl::optional<std::vector<std::string> > Discriminants;
 };
 
 class ResourceAttributes {
@@ -102,7 +220,6 @@ public:
         for (const auto &attr : M) {
             OS << "Attribute: " << attr.first << "\nDescription: " << attr.second.description()
                << "\nEnabled: " << (attr.second.enabled() ? "Yes" : "No") << "\nValue: ";
-            absl::visit([&OS](auto &&arg) { OS << arg << "\n"; }, attr.second.value());
         }
     }
 

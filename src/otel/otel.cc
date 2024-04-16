@@ -988,9 +988,15 @@ extern "C" void *otel_main(void *ptr)
 {
     netdata_thread_cleanup_push(otel_main_cleanup, ptr);
 
+    // netdata_log_error("Sizeof resource attribute: %zu bytes", sizeof(ResourceAttribute));
+    // netdata_log_error("Sizeof resource attributes: %zu bytes", sizeof(ResourceAttributes));
+
+#if 1
     const std::string Path =
         "/home/vk/repos/otel/opentelemetry-collector-contrib/receiver/elasticsearchreceiver/metadata.yaml";
     loadAttributesFromYaml(Path);
+#endif
+
     // if (otel_state.haveSpawnedCollector()) {
     //     otel_state.init_status |= InitStatus::HaveRunLoop;
     //     uv_run(otel_state.loop, UV_RUN_DEFAULT);
