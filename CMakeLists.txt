@@ -2042,6 +2042,7 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_WEBRTC}>:LibDataChannel::LibDataChannelStatic>"
         "$<$<BOOL:${ENABLE_H2O}>:h2o>"
 )
+target_link_libraries(netdata PRIVATE absl::strings)
 
 if(NEED_PROTOBUF)
         netdata_add_protobuf(netdata)
