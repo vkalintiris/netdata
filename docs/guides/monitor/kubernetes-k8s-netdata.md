@@ -95,12 +95,6 @@ Netdata and connect your cluster's nodes, you're ready to check out the visualiz
 To get started, [sign in](https://app.netdata.cloud/sign-in?cloudRoute=/spaces) to your Netdata Cloud account. Head over
 to the War Room you connected your cluster to, if not **General**.
 
-Netdata Cloud is already visualizing your Kubernetes metrics, streamed in real-time from each node, in the
-[Overview](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/overview.md):
-
-![Netdata's Kubernetes monitoring
-dashboard](https://user-images.githubusercontent.com/1153921/109037415-eafc5500-7687-11eb-8773-9b95941e3328.png)
-
 Let's walk through monitoring each layer of a Kubernetes cluster using the Overview as our framework.
 
 ## Cluster and node metrics
@@ -118,9 +112,6 @@ cluster](https://user-images.githubusercontent.com/1153921/109042169-19c8fa00-76
 For example, the chart above shows a spike in the CPU utilization from `rabbitmq` every minute or so, along with a
 baseline CPU utilization of 10-15% across the cluster.
 
-Read about the [Overview](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/overview.md) and some best practices on [viewing
-an overview of your infrastructure](https://github.com/netdata/netdata/blob/master/docs/visualize/overview-infrastructure.md) for details on using composite charts to
-drill down into per-node performance metrics.
 
 ## Pod and container metrics
 
@@ -165,7 +156,7 @@ different namespaces.
 ![Time-series Kubernetes monitoring in Netdata
 Cloud](https://user-images.githubusercontent.com/1153921/109075210-126a1680-76b6-11eb-918d-5acdcdac152d.png)
 
-Each composite chart has a [definition bar](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/overview.md#definition-bar)
+Each composite chart has a [definition bar](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/interact-new-charts.md#definition-bar)
 for complete customization. For example, grouping the top chart by `k8s_container_name` reveals new information.
 
 ![Changing time-series charts](https://user-images.githubusercontent.com/1153921/109075212-139b4380-76b6-11eb-836f-939482ae55fc.png)

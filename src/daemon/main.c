@@ -475,7 +475,7 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
     if (ret)
         abort();
     else {
-        sentry_native_fini();
+        nd_sentry_fini();
         exit(ret);
     }
 #else
@@ -795,6 +795,7 @@ int help(int exitcode) {
             "  -W sqlite-meta-recover   Run recovery on the metadata database and exit.\n\n"
             "  -W sqlite-compact        Reclaim metadata database unused space and exit.\n\n"
             "  -W sqlite-analyze        Run update statistics and exit.\n\n"
+            "  -W sqlite-alert-cleanup  Perform maintenance on the alerts table.\n\n"
 #ifdef ENABLE_DBENGINE
             "  -W createdataset=N       Create a DB engine dataset of N seconds and exit.\n\n"
             "  -W stresstest=A,B,C,D,E,F,G\n"
@@ -820,7 +821,6 @@ int help(int exitcode) {
 
     fprintf(stream, "\n Signals netdata handles:\n\n"
             "  - HUP                    Close and reopen log files.\n"
-            "  - USR1                   Save internal DB to disk.\n"
             "  - USR2                   Reload health configuration.\n"
             "\n"
     );
@@ -1054,12 +1054,6 @@ static void backwards_compatible_config() {
     config_move(CONFIG_SECTION_GLOBAL,  "cleanup orphan hosts after seconds",
                 CONFIG_SECTION_DB,      "cleanup orphan hosts after secs");
 
-    config_move(CONFIG_SECTION_GLOBAL,  "delete obsolete charts files",
-                CONFIG_SECTION_DB,      "delete obsolete charts files");
-
-    config_move(CONFIG_SECTION_GLOBAL,  "delete orphan hosts files",
-                CONFIG_SECTION_DB,      "delete orphan hosts files");
-
     config_move(CONFIG_SECTION_GLOBAL,  "enable zero metrics",
                 CONFIG_SECTION_DB,      "enable zero metrics");
 
@@ -1169,10 +1163,13 @@ static void get_netdata_configured_variables() {
     // ------------------------------------------------------------------------
     // get default Database Engine page type
 
-    const char *page_type = config_get(CONFIG_SECTION_DB, "dbengine page type", "raw");
-    if (strcmp(page_type, "gorilla") == 0) {
-        tier_page_type[0] = PAGE_GORILLA_METRICS;
-    } else if (strcmp(page_type, "raw") != 0) {
+    const char *page_type = config_get(CONFIG_SECTION_DB, "dbengine page type", "gorilla");
+    if (strcmp(page_type, "gorilla") == 0)
+        tier_page_type[0] = RRDENG_PAGE_TYPE_GORILLA_32BIT;
+    else if (strcmp(page_type, "raw") == 0)
+        tier_page_type[0] = RRDENG_PAGE_TYPE_ARRAY_32BIT;
+    else {
+        tier_page_type[0] = RRDENG_PAGE_TYPE_ARRAY_32BIT;
         netdata_log_error("Invalid dbengine page type ''%s' given. Defaulting to 'raw'.", page_type);
     }
 
@@ -1519,8 +1516,18 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 
+                        if(strcmp(optarg, "sqlite-alert-cleanup") == 0) {
+                            sql_alert_cleanup(true);
+                            return 0;
+                        }
+
                         if(strcmp(optarg, "unittest") == 0) {
                             unittest_running = true;
+
+                            // set defaults for dbegnine unittest
+                            config_set(CONFIG_SECTION_DB, "dbengine page type", "gorilla");
+                            default_rrdeng_disk_quota_mb = default_multidb_disk_quota_mb = 256;
+
                             if (sqlite_library_init())
                                 return 1;
 
@@ -1529,7 +1536,6 @@ int main(int argc, char **argv) {
                             if (unit_test_buffer()) return 1;
                             if (unit_test_str2ld()) return 1;
                             if (buffer_unittest()) return 1;
-                            if (unit_test_bitmaps()) return 1;
 
                             // No call to load the config file on this code-path
                             if (unittest_prepare_rrd(&user)) return 1;
@@ -1883,9 +1889,6 @@ int main(int argc, char **argv) {
         load_cloud_conf(0);
     }
 
-    // @stelfrag: Where is the right place to call this?
-    watcher_thread_start();
-
     // ------------------------------------------------------------------------
     // initialize netdata
     {
@@ -2022,6 +2025,9 @@ int main(int argc, char **argv) {
 
         // setup threads configs
         default_stacksize = netdata_threads_init();
+        // musl default thread stack size is 128k, let's set it to a higher value to avoid random crashes
+        if (default_stacksize < 1 * 1024 * 1024)
+            default_stacksize = 1 * 1024 * 1024;
 
 #ifdef NETDATA_INTERNAL_CHECKS
         config_set_boolean(CONFIG_SECTION_PLUGINS, "netdata monitoring", true);
@@ -2101,9 +2107,11 @@ int main(int argc, char **argv) {
     if(become_daemon(dont_fork, user) == -1)
         fatal("Cannot daemonize myself.");
 
+    watcher_thread_start();
+
     // init sentry
 #ifdef ENABLE_SENTRY
-        sentry_native_init();
+        nd_sentry_init();
 #endif
 
     // The "HOME" env var points to the root's home dir because Netdata starts as root. Can't use "HOME".
@@ -2150,7 +2158,14 @@ int main(int argc, char **argv) {
     struct rrdhost_system_info *system_info = callocz(1, sizeof(struct rrdhost_system_info));
     __atomic_sub_fetch(&netdata_buffers_statistics.rrdhost_allocations_size, sizeof(struct rrdhost_system_info), __ATOMIC_RELAXED);
     get_system_info(system_info);
-    (void) registry_get_this_machine_guid();
+
+    const char *guid = registry_get_this_machine_guid();
+#ifdef ENABLE_SENTRY
+    nd_sentry_set_user(guid);
+#else
+    UNUSED(guid);
+#endif
+
     system_info->hops = 0;
     get_install_type(&system_info->install_type, &system_info->prebuilt_arch, &system_info->prebuilt_dist);
 

@@ -103,13 +103,33 @@ check_for_curl() {
 
 get() {
   url="${1}"
+  checked=0
+  succeeded=0
 
   check_for_curl
 
   if [ -n "${curl}" ]; then
-    "${curl}" -q -o - -sSL --connect-timeout 10 --retry 3 "${url}"
-  elif command -v wget > /dev/null 2>&1; then
-    wget -T 15 -O - "${url}"
+    checked=1
+
+    if "${curl}" -q -o - -sSL --connect-timeout 10 --retry 3 "${url}"; then
+      succeeded=1
+    fi
+  fi
+
+  if [ "${succeeded}" -eq 0 ]; then
+    if command -v wget > /dev/null 2>&1; then
+      checked=1
+
+      if wget -T 15 -O - "${url}"; then
+        succeeded=1
+      fi
+    fi
+  fi
+
+  if [ "${succeeded}" -eq 1 ]; then
+    return 0
+  elif [ "${checked}" -eq 1 ]; then
+    return 1
   else
     fatal "I need curl or wget to proceed, but neither is available on this system." "L0002"
   fi
@@ -124,9 +144,29 @@ download_file() {
   check_for_curl
 
   if [ -n "${curl}" ]; then
-    run "${curl}" -q -sSL --connect-timeout 10 --retry 3 --output "${dest}" "${url}"
-  elif command -v wget > /dev/null 2>&1; then
-    run wget -T 15 -O "${dest}" "${url}"
+    checked=1
+
+    if run "${curl}" -q -sSL --connect-timeout 10 --retry 3 --output "${dest}" "${url}"; then
+      succeeded=1
+    else
+      rm -f "${dest}"
+    fi
+  fi
+
+  if [ "${succeeded}" -eq 0 ]; then
+    if command -v wget > /dev/null 2>&1; then
+      checked=1
+
+      if run wget -T 15 -O "${dest}" "${url}"; then
+        succeeded=1
+      fi
+    fi
+  fi
+
+  if [ "${succeeded}" -eq 1 ]; then
+    return 0
+  elif [ "${checked}" -eq 1 ]; then
+    return 1
   else
     echo >&2
     echo >&2 "Downloading ${name} from '${url}' failed because of missing mandatory packages."
@@ -263,7 +303,7 @@ prepare_cmake_options() {
     enable_feature PLUGIN_GO 0
   fi
 
-  if [ "${USE_SYSTEM_PROTOBUF:-1}" -eq 1 ]; then
+  if [ "${USE_SYSTEM_PROTOBUF:-0}" -eq 1 ]; then
     enable_feature BUNDLED_PROTOBUF 0
   else
     enable_feature BUNDLED_PROTOBUF 1
@@ -306,7 +346,6 @@ prepare_cmake_options() {
   enable_feature ACLK "${ENABLE_CLOUD:-1}"
   enable_feature CLOUD "${ENABLE_CLOUD:-1}"
   enable_feature BUNDLED_JSONC "${NETDATA_BUILD_JSON_C:-0}"
-  enable_feature BUNDLED_YAML "${BUNDLE_YAML:-0}"
   enable_feature DBENGINE "${ENABLE_DBENGINE:-1}"
   enable_feature H2O "${ENABLE_H2O:-1}"
   enable_feature ML "${NETDATA_ENABLE_ML:-1}"
@@ -934,6 +973,11 @@ portable_add_user() {
         echo >&2 "User '${username}' already exists."
         return 0
     fi
+  elif command -v dscl > /dev/null 2>&1; then
+    if dscl . read /Users/"${username}" >/dev/null 2>&1; then
+      echo >&2 "User '${username}' already exists."
+      return 0
+    fi
   else
     if cut -d ':' -f 1 < /etc/passwd | grep "^${username}$" 1> /dev/null 2>&1; then
         echo >&2 "User '${username}' already exists."
@@ -952,7 +996,13 @@ portable_add_user() {
   elif command -v adduser 1> /dev/null 2>&1; then
     run adduser -h "${homedir}" -s "${nologin}" -D -G "${username}" "${username}" && return 0
   elif command -v sysadminctl 1> /dev/null 2>&1; then
-    run sysadminctl -addUser "${username}" && return 0
+    gid=$(dscl . read /Groups/"${username}" 2>/dev/null | grep PrimaryGroupID | grep -Eo "[0-9]+")
+    if run sysadminctl -addUser "${username}" -shell /usr/bin/false -home /var/empty -GID "$gid"; then
+      # FIXME: I think the proper solution is to create a role account:
+      # -roleAccount + name starting with _ and UID in 200-400 range.
+      run dscl . create /Users/"${username}" IsHidden 1
+      return 0
+    fi
   fi
 
   warning "Failed to add ${username} user account!"

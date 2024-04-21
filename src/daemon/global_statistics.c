@@ -858,7 +858,7 @@ static void global_statistics_charts(void) {
     // ----------------------------------------------------------------
 
 #ifdef ENABLE_DBENGINE
-    if (tier_page_type[0] == PAGE_GORILLA_METRICS)
+    if (tier_page_type[0] == RRDENG_PAGE_TYPE_GORILLA_32BIT)
     {
         static RRDSET *st_tier0_gorilla_pages = NULL;
         static RRDDIM *rd_num_gorilla_pages = NULL;
@@ -887,7 +887,7 @@ static void global_statistics_charts(void) {
         rrdset_done(st_tier0_gorilla_pages);
     }
 
-    if (tier_page_type[0] == PAGE_GORILLA_METRICS)
+    if (tier_page_type[0] == RRDENG_PAGE_TYPE_GORILLA_32BIT)
     {
         static RRDSET *st_tier0_compression_info = NULL;
 
@@ -2562,12 +2562,10 @@ static void dbengine2_statistics_charts(void) {
                     if(host->db[tier].mode != RRD_MEMORY_MODE_DBENGINE) continue;
                     if(!host->db[tier].si) continue;
 
-                    if(is_storage_engine_shared(host->db[tier].si)) {
-                        if(counted_multihost_db[tier])
-                            continue;
-                        else
-                            counted_multihost_db[tier] = 1;
-                    }
+                    if(counted_multihost_db[tier])
+                        continue;
+                    else
+                        counted_multihost_db[tier] = 1;
 
                     ++dbengine_contexts;
                     rrdeng_get_37_statistics((struct rrdengine_instance *)host->db[tier].si, local_stats_array);

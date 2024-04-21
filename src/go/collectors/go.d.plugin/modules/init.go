@@ -4,6 +4,7 @@ package modules
 
 import (
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/activemq"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/adaptecraid"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/apache"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/bind"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/cassandra"
@@ -30,6 +31,7 @@ import (
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/haproxy"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/hdfs"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/httpcheck"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/intelgpu"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/isc_dhcpd"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/k8s_kubelet"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/k8s_kubeproxy"
@@ -37,6 +39,8 @@ import (
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/lighttpd"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/logind"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/logstash"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/lvm"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/megacli"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/mongodb"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/mysql"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/nginx"
@@ -65,6 +69,7 @@ import (
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/scaleio"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/snmp"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/squidlog"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/storcli"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/supervisord"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/systemdunits"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/tengine"
@@ -79,5 +84,6 @@ import (
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/windows"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/wireguard"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/x509check"
+	_ "github.com/netdata/netdata/go/go.d.plugin/modules/zfspool"
 	_ "github.com/netdata/netdata/go/go.d.plugin/modules/zookeeper"
 )

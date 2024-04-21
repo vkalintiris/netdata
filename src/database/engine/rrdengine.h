@@ -30,7 +30,8 @@ extern unsigned rrdeng_pages_per_extent;
 struct rrdengine_instance;
 struct rrdeng_cmd;
 
-#define MAX_PAGES_PER_EXTENT (64) /* TODO: can go higher only when journal supports bigger than 4KiB transactions */
+#define MAX_PAGES_PER_EXTENT (109) /* TODO: can go higher only when journal supports bigger than 4KiB transactions */
+#define DEFAULT_PAGES_PER_EXTENT (64)
 
 #define RRDENG_FILE_NUMBER_SCAN_TMPL "%1u-%10u"
 #define RRDENG_FILE_NUMBER_PRINT_TMPL "%1.1u-%10.10u"
@@ -350,8 +351,6 @@ extern rrdeng_stats_t global_flushing_pressure_page_deletions; /* number of dele
 
 struct rrdengine_instance {
     struct {
-        bool legacy;                                // true when the db is autonomous for a single host
-
         int tier;                                   // the tier of this ctx
         uint8_t page_type;                          // default page type for this context
 

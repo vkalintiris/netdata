@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -182,28 +185,45 @@ func (d *Discoverer) processTargets(tgts []model.Target) []model.TargetGroup {
 }
 
 func (d *Discoverer) parseLocalListeners(bs []byte) ([]model.Target, error) {
-	var tgts []model.Target
+	const (
+		local4 = "127.0.0.1"
+		local6 = "::1"
+	)
 
+	var targets []target
 	sc := bufio.NewScanner(bytes.NewReader(bs))
+
 	for sc.Scan() {
 		text := strings.TrimSpace(sc.Text())
 		if text == "" {
 			continue
 		}
 
-		// Protocol|Address|Port|Cmdline
+		// Protocol|IPAddress|Port|Cmdline
 		parts := strings.SplitN(text, "|", 4)
 		if len(parts) != 4 {
 			return nil, fmt.Errorf("unexpected data: '%s'", text)
 		}
 
 		tgt := target{
-			Protocol: parts[0],
-			Address:  parts[1],
-			Port:     parts[2],
-			Comm:     extractComm(parts[3]),
-			Cmdline:  parts[3],
+			Protocol:  parts[0],
+			IPAddress: parts[1],
+			Port:      parts[2],
+			Comm:      extractComm(parts[3]),
+			Cmdline:   parts[3],
 		}
+
+		if tgt.Comm == "docker-proxy" {
+			continue
+		}
+
+		if tgt.IPAddress == "0.0.0.0" || strings.HasPrefix(tgt.IPAddress, "127") {
+			tgt.IPAddress = local4
+		} else if tgt.IPAddress == "::" {
+			tgt.IPAddress = local6
+		}
+
+		tgt.Address = net.JoinHostPort(tgt.IPAddress, tgt.Port)
 
 		hash, err := calcHash(tgt)
 		if err != nil {
@@ -213,10 +233,49 @@ func (d *Discoverer) parseLocalListeners(bs []byte) ([]model.Target, error) {
 		tgt.hash = hash
 		tgt.Tags().Merge(d.Tags())
 
-		tgts = append(tgts, &tgt)
+		targets = append(targets, tgt)
 	}
 
-	return tgts, nil
+	// order: TCP, TCP6, UDP, UDP6
+	sort.Slice(targets, func(i, j int) bool {
+		tgt1, tgt2 := targets[i], targets[j]
+		if tgt1.Protocol != tgt2.Protocol {
+			return tgt1.Protocol < tgt2.Protocol
+		}
+
+		p1, _ := strconv.Atoi(targets[i].Port)
+		p2, _ := strconv.Atoi(targets[j].Port)
+		if p1 != p2 {
+			return p1 < p2
+		}
+
+		return tgt1.IPAddress == local4 || tgt1.IPAddress == local6
+	})
+
+	seen := make(map[string]bool)
+	tgts := make([]model.Target, len(targets))
+	var n int
+
+	for _, tgt := range targets {
+		tgt := tgt
+
+		proto := strings.TrimSuffix(tgt.Protocol, "6")
+		key := tgt.Protocol + ":" + tgt.Address
+		keyLocal4 := proto + ":" + net.JoinHostPort(local4, tgt.Port)
+		keyLocal6 := proto + "6:" + net.JoinHostPort(local6, tgt.Port)
+
+		// Filter targets that accept conns on any (0.0.0.0) and additionally on each individual network interface  (a.b.c.d).
+		// Create a target only for localhost. Assumption: any address always goes first.
+		if seen[key] || seen[keyLocal4] || seen[keyLocal6] {
+			continue
+		}
+		seen[key] = true
+
+		tgts[n] = &tgt
+		n++
+	}
+
+	return tgts[:n], nil
 }
 
 type localListenersExec struct {
@@ -228,11 +287,10 @@ func (e *localListenersExec) discover(ctx context.Context) ([]byte, error) {
 	execCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	// TCPv4 and UPDv4 sockets in LISTEN state
+	// TCPv4/6 and UPDv4 sockets in LISTEN state
 	// https://github.com/netdata/netdata/blob/master/src/collectors/plugins.d/local_listeners.c
 	args := []string{
 		"no-udp6",
-		"no-tcp6",
 		"no-local",
 		"no-inbound",
 		"no-outbound",

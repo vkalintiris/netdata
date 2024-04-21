@@ -101,7 +101,7 @@
 
       1. Create a service to receive events from your services directory page on PagerDuty
       2. At step 3, select `Events API V2` Integration or **View Webhooks** if you already have some defined
-      3. Once the service is created you will be redirected to its configuration page, where you can copy the **integration key**, that you will need need to add to your notification configuration on Netdata UI.
+      3. Once the service is created, you will be redirected to its configuration page, where you can copy the **Integration Key** and **Integration URL (Alert Events)** fields to add them to your notification configuration in the Netdata UI.
 
       ### Netdata Configuration Steps
 
@@ -116,6 +116,7 @@
           - Notification - you specify which notifications you want to be notified using this configuration: All Alerts and unreachable, All Alerts, Critical only
         * **Integration configuration** are the specific notification integration required settings, which vary by notification method. For PagerDuty:
           - Integration Key - is a 32 character key provided by PagerDuty to receive events on your service.
+          - Integration URL (Alert Events) - is the URL provided by PagerDuty where we will send notifications.
 
 - id: 'notify-cloud-slack'
   meta:
@@ -493,6 +494,45 @@
             - HTTP Event Collector URI - The URI of your HTTP event collector in Splunk
             - HTTP Event Collector Token - the token that Splunk provided to you when you created the HTTP Event Collector
 
+- id: 'notify-cloud-victorops'
+  meta:
+    name: 'Splunk VictorOps'
+    link: 'https://www.splunk.com/en_us/about-splunk/acquisitions/splunk-on-call.html'
+    categories:
+      - notify.cloud
+    icon_filename: 'victorops.svg'
+  keywords:
+    - VictorOps
+    - Splunk
+    - On-Call
+  overview:
+    notification_description: "From the Cloud interface, you can manage your space's notification settings and from there you can add a specific configuration to get notifications delivered on Splunk On-Call/VictorOps."
+    notification_limitations: ''
+  setup:
+    description: |
+      ### Prerequisites
+
+      To add Splunk VictorOps notification (also known as Splunk On-Call) you need:
+
+      - A Netdata Cloud account
+      - Access to the space as an **administrator**
+      - Space needs to be on **Business** plan or higher
+      - Destination URL for your Splunk VictorOps REST Endpoint Integration. Refer to the [VictorOps documentation](https://help.victorops.com/knowledge-base/rest-endpoint-integration-guide) for detailed instructions.
+
+      ### Steps
+
+      1. Click on the **Space settings** cog (located above your profile icon)
+      2. Click on the **Notification** tab
+      3. Click on the **+ Add configuration** button (near the top-right corner of your screen)
+      4. On the **Splunk VictorOps** card click on **+ Add**
+      5. A modal will be presented to you to enter the required details to enable the configuration:
+        - **Notification settings** are Netdata specific settings
+            - Configuration name - provide a descriptive name for your configuration to easily identify it.
+            - Rooms - select the nodes or areas of your infrastructure you want to receive notifications about.
+            - Notification - choose the type of notifications you want to receive: All Alerts and unreachable, All Alerts, Critical only.
+        - **Integration configuration** are the specific notification integration required settings, which vary by notification method. For Splunk VictorOps:
+            - Destination URL - The URL provided by VictorOps of your REST endpoint.
+
 - id: 'notify-cloud-webhook'
   meta:
     name: 'Webhook'
@@ -543,9 +583,9 @@
 
         A webhook integration is a way for one service to notify another service about events that occur within it. This is done by sending an HTTP POST request to a specified URL (known as the "webhook URL") when an event occurs.
 
-        Netdata webhook integration service will send alert notifications to the destination service as soon as they are detected.
+        Netdata webhook integration service will send alert and reachability notifications to the destination service as soon as they are detected.
 
-        The notification content sent to the destination service will be a JSON object having these properties:
+        For alert notifications, the content sent to the destination service contains a JSON object with the following properties:
 
         | field   | type   | description |
         | :--     | :--    | :--         |
@@ -564,6 +604,18 @@
         | additional_active_critical_alerts | integer | Number of additional critical alerts currently existing on the same node. |
         | additional_active_warning_alerts | integer | Number of additional warning alerts currently existing on the same node. |
         | alarm_url | string | Netdata Cloud URL for this alarm. |
+
+        For reachability notifications, the JSON object will contain the following properties:
+
+        | field        | type   | description |
+        | :--          | :--    | :--         |
+        | message      | string | A summary message of the reachability alert. |
+        | url          | string | Netdata Cloud URL for the host experiencing the reachability alert. |
+        | host         | string | the host experiencing the reachability alert. |
+        | severity     | string | severity for this notification. If host is reachable, severity will be 'info', if host is unreachable, it will be 'critical'. |
+        | status       | object | an object with the status information. |
+        | status.reachable  | boolean | true if host is reachable, false otherwise |
+        | status.text       | string  | can be 'reachable' or 'unreachable'  |
 
         #### Extra headers
 

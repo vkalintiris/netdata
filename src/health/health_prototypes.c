@@ -350,7 +350,7 @@ static char *simple_pattern_trim_around_equal(const char *src) {
     return store;
 }
 
-static struct pattern_array *trim_and_add_key_to_values(struct pattern_array *pa, const char *key, STRING *input) {
+struct pattern_array *trim_and_add_key_to_values(struct pattern_array *pa, const char *key, STRING *input) {
     char *tmp = simple_pattern_trim_around_equal(string2str(input));
     pa = health_config_add_key_to_values(pa, key, tmp);
     freez(tmp);
@@ -377,7 +377,7 @@ void health_prototype_hash_id(RRD_ALERT_PROTOTYPE *ap) {
     UUID uuid = UUID_generate_from_hash(buffer_tostring(wb), buffer_strlen(wb));
     uuid_copy(ap->config.hash_id, uuid.uuid);
 
-    (void) sql_alert_store_config(ap);
+    sql_alert_store_config(ap);
 }
 
 bool health_prototype_add(RRD_ALERT_PROTOTYPE *ap) {
@@ -483,7 +483,7 @@ static bool prototype_matches_host(RRDHOST *host, RRD_ALERT_PROTOTYPE *ap) {
         return false;
 
     if (host->rrdlabels && ap->match.host_labels_pattern &&
-        !pattern_array_label_match(ap->match.host_labels_pattern, host->rrdlabels, '=', NULL, rrdlabels_match_simple_pattern_parsed))
+        !pattern_array_label_match(ap->match.host_labels_pattern, host->rrdlabels, '=', NULL))
         return false;
 
     return true;
@@ -501,7 +501,7 @@ static bool prototype_matches_rrdset(RRDSET *st, RRD_ALERT_PROTOTYPE *ap) {
         return false;
 
     if (st->rrdlabels && ap->match.chart_labels_pattern &&
-        !pattern_array_label_match(ap->match.chart_labels_pattern, st->rrdlabels, '=', NULL, rrdlabels_match_simple_pattern_parsed))
+        !pattern_array_label_match(ap->match.chart_labels_pattern, st->rrdlabels, '=', NULL))
         return false;
 
     return true;
@@ -540,9 +540,15 @@ void health_prototype_copy_config(struct rrd_alert_config *dst, struct rrd_alert
 
     dst->update_every = src->update_every;
 
+    dst->alert_action_options = src->alert_action_options;
+
     dst->dimensions = string_dup(src->dimensions);
 
     dst->time_group = src->time_group;
+    dst->time_group_condition = src->time_group_condition;
+    dst->time_group_value = src->time_group_value;
+    dst->dims_group = src->dims_group;
+    dst->data_source = src->data_source;
     dst->before = src->before;
     dst->after = src->after;
     dst->options = src->options;
@@ -569,18 +575,27 @@ static void health_prototype_apply_to_rrdset(RRDSET *st, RRD_ALERT_PROTOTYPE *ap
         return;
 
     spinlock_lock(&ap->_internal.spinlock);
-    for(RRD_ALERT_PROTOTYPE *t = ap; t ; t = t->_internal.next) {
-        if(!t->match.enabled)
-            continue;
+    for(size_t template = 0; template < 2; template++) {
+        bool want_template = template ? true : false;
 
-        if(!prototype_matches_host(st->rrdhost, t))
-            continue;
+        for (RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next) {
+            if (!t->match.enabled)
+                continue;
 
-        if(!prototype_matches_rrdset(st, t))
-            continue;
+            bool is_template = t->match.is_template ? true : false;
 
-        if(rrdcalc_add_from_prototype(st->rrdhost, st, t))
-            ap->_internal.uses++;
+            if (is_template != want_template)
+                continue;
+
+            if (!prototype_matches_host(st->rrdhost, t))
+                continue;
+
+            if (!prototype_matches_rrdset(st, t))
+                continue;
+
+            if (rrdcalc_add_from_prototype(st->rrdhost, st, t))
+                ap->_internal.uses++;
+        }
     }
     spinlock_unlock(&ap->_internal.spinlock);
 }

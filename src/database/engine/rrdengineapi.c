@@ -2,6 +2,7 @@
 
 #include "database/engine/rrddiskprotocol.h"
 #include "rrdengine.h"
+#include "dbengine-compression.h"
 
 /* Default global database instance */
 struct rrdengine_instance multidb_ctx_storage_tier0;
@@ -16,7 +17,12 @@ struct rrdengine_instance multidb_ctx_storage_tier4;
 #error RRD_STORAGE_TIERS is not 5 - you need to add allocations here
 #endif
 struct rrdengine_instance *multidb_ctx[RRD_STORAGE_TIERS];
-uint8_t tier_page_type[RRD_STORAGE_TIERS] = {PAGE_METRICS, PAGE_TIER, PAGE_TIER, PAGE_TIER, PAGE_TIER};
+uint8_t tier_page_type[RRD_STORAGE_TIERS] = {
+    RRDENG_PAGE_TYPE_GORILLA_32BIT,
+    RRDENG_PAGE_TYPE_ARRAY_TIER1,
+    RRDENG_PAGE_TYPE_ARRAY_TIER1,
+    RRDENG_PAGE_TYPE_ARRAY_TIER1,
+    RRDENG_PAGE_TYPE_ARRAY_TIER1};
 
 #if defined(ENV32BIT)
 size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};
@@ -24,14 +30,14 @@ size_t tier_page_size[RRD_STORAGE_TIERS] = {2048, 1024, 192, 192, 192};
 size_t tier_page_size[RRD_STORAGE_TIERS] = {4096, 2048, 384, 384, 384};
 #endif
 
-#if PAGE_TYPE_MAX != 2
+#if RRDENG_PAGE_TYPE_MAX != 2
 #error PAGE_TYPE_MAX is not 2 - you need to add allocations here
 #endif
 
 size_t page_type_size[256] = {
-        [PAGE_METRICS] = sizeof(storage_number),
-        [PAGE_TIER] = sizeof(storage_number_tier1_t),
-        [PAGE_GORILLA_METRICS] = sizeof(storage_number)
+        [RRDENG_PAGE_TYPE_ARRAY_32BIT] = sizeof(storage_number),
+        [RRDENG_PAGE_TYPE_ARRAY_TIER1] = sizeof(storage_number_tier1_t),
+        [RRDENG_PAGE_TYPE_GORILLA_32BIT] = sizeof(storage_number)
 };
 
 __attribute__((constructor)) void initialize_multidb_ctx(void) {
@@ -92,26 +98,18 @@ void rrdeng_metrics_group_release(STORAGE_INSTANCE *si __maybe_unused, STORAGE_M
 // metric handle for legacy dbs
 
 /* This UUID is not unique across hosts */
-void rrdeng_generate_legacy_uuid(const char *dim_id, const char *chart_id, uuid_t *ret_uuid)
+void rrdeng_generate_unittest_uuid(const char *dim_id, const char *chart_id, uuid_t *ret_uuid)
 {
-    EVP_MD_CTX *evpctx;
-    unsigned char hash_value[EVP_MAX_MD_SIZE];
-    unsigned int hash_len;
-
-    evpctx = EVP_MD_CTX_create();
-    EVP_DigestInit_ex(evpctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(evpctx, dim_id, strlen(dim_id));
-    EVP_DigestUpdate(evpctx, chart_id, strlen(chart_id));
-    EVP_DigestFinal_ex(evpctx, hash_value, &hash_len);
-    EVP_MD_CTX_destroy(evpctx);
-    fatal_assert(hash_len > sizeof(uuid_t));
-    memcpy(ret_uuid, hash_value, sizeof(uuid_t));
+    CLEAN_BUFFER *wb = buffer_create(100, NULL);
+    buffer_sprintf(wb,"%s.%s", dim_id, chart_id);
+    UUID uuid = UUID_generate_from_hash(buffer_tostring(wb), buffer_strlen(wb));
+    uuid_copy(*ret_uuid, uuid.uuid);
 }
 
-static METRIC *rrdeng_metric_get_legacy(STORAGE_INSTANCE *si, const char *rd_id, const char *st_id) {
+static METRIC *rrdeng_metric_unittest(STORAGE_INSTANCE *si, const char *rd_id, const char *st_id) {
     struct rrdengine_instance *ctx = (struct rrdengine_instance *)si;
     uuid_t legacy_uuid;
-    rrdeng_generate_legacy_uuid(rd_id, st_id, &legacy_uuid);
+    rrdeng_generate_unittest_uuid(rd_id, st_id, &legacy_uuid);
     return mrg_metric_get_and_acquire(main_mrg, &legacy_uuid, (Word_t) ctx);
 }
 
@@ -159,11 +157,8 @@ STORAGE_METRIC_HANDLE *rrdeng_metric_get_or_create(RRDDIM *rd, STORAGE_INSTANCE 
     metric = mrg_metric_get_and_acquire(main_mrg, &rd->metric_uuid, (Word_t) ctx);
 
     if(unlikely(!metric)) {
-        if(unlikely(ctx->config.legacy)) {
-            // this is a single host database
-            // generate uuid from the chart and dimensions ids
-            // and overwrite the one supplied by rrddim
-            metric = rrdeng_metric_get_legacy(si, rrddim_id(rd), rrdset_id(rd->rrdset));
+        if(unlikely(unittest_running)) {
+            metric = rrdeng_metric_unittest(si, rrddim_id(rd), rrdset_id(rd->rrdset));
             if (metric)
                 uuid_copy(rd->metric_uuid, *mrg_metric_uuid(main_mrg, metric));
         }
@@ -320,7 +315,7 @@ void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *sch) {
             __atomic_add_fetch(&ctx->atomic.samples, add_samples, __ATOMIC_RELAXED);
         }
 
-        pgc_page_hot_to_dirty_and_release(main_cache, handle->pgc_page);
+        pgc_page_hot_to_dirty_and_release(main_cache, handle->pgc_page, false);
     }
 
     mrg_metric_set_hot_latest_time_s(main_mrg, handle->metric, 0);
@@ -457,14 +452,14 @@ static PGD *rrdeng_alloc_new_page_data(struct rrdeng_collect_handle *handle, siz
     *data_size = size;
 
     switch (ctx->config.page_type) {
-        case PAGE_METRICS:
-        case PAGE_TIER:
+        case RRDENG_PAGE_TYPE_ARRAY_32BIT:
+        case RRDENG_PAGE_TYPE_ARRAY_TIER1:
             d = pgd_create(ctx->config.page_type, slots);
             break;
-        case PAGE_GORILLA_METRICS:
+        case RRDENG_PAGE_TYPE_GORILLA_32BIT:
             // ignore slots, and use the fixed number of slots per gorilla buffer.
             // gorilla will automatically add more buffers if needed.
-            d = pgd_create(ctx->config.page_type, GORILLA_BUFFER_SLOTS);
+            d = pgd_create(ctx->config.page_type, RRDENG_GORILLA_32BIT_BUFFER_SLOTS);
             break;
         default:
             fatal("Unknown page type: %uc\n", ctx->config.page_type);
@@ -1122,11 +1117,6 @@ void rrdeng_readiness_wait(struct rrdengine_instance *ctx) {
     netdata_log_info("DBENGINE: tier %d is ready for data collection and queries", ctx->config.tier);
 }
 
-bool rrdeng_is_legacy(STORAGE_INSTANCE *si) {
-    struct rrdengine_instance *ctx = (struct rrdengine_instance *)si;
-    return ctx->config.legacy;
-}
-
 void rrdeng_exit_mode(struct rrdengine_instance *ctx) {
     __atomic_store_n(&ctx->quiesce.exit_mode, true, __ATOMIC_RELAXED);
 }
@@ -1153,19 +1143,16 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
         return UV_EMFILE;
     }
 
-    if(NULL == ctxp) {
+    if(ctxp)
+        *ctxp = ctx = callocz(1, sizeof(*ctx));
+    else {
         ctx = multidb_ctx[tier];
         memset(ctx, 0, sizeof(*ctx));
-        ctx->config.legacy = false;
-    }
-    else {
-        *ctxp = ctx = callocz(1, sizeof(*ctx));
-        ctx->config.legacy = true;
     }
 
     ctx->config.tier = (int)tier;
     ctx->config.page_type = tier_page_type[tier];
-    ctx->config.global_compress_alg = RRD_LZ4;
+    ctx->config.global_compress_alg = dbengine_default_compression();
     if (disk_space_mb < RRDENG_MIN_DISK_SPACE_MB)
         disk_space_mb = RRDENG_MIN_DISK_SPACE_MB;
     ctx->config.max_disk_space = disk_space_mb * 1048576LLU;
@@ -1186,7 +1173,7 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
         return 0;
     }
 
-    if (ctx->config.legacy) {
+    if (unittest_running) {
         freez(ctx);
         if (ctxp)
             *ctxp = NULL;
@@ -1217,17 +1204,17 @@ int rrdeng_exit(struct rrdengine_instance *ctx) {
     size_t count = 10;
     while(__atomic_load_n(&ctx->atomic.collectors_running, __ATOMIC_RELAXED) && count && !unittest_running) {
         if(!logged) {
-            netdata_log_info("DBENGINE: waiting for collectors to finish on tier %d...", (ctx->config.legacy) ? -1 : ctx->config.tier);
+            netdata_log_info("DBENGINE: waiting for collectors to finish on tier %d...", ctx->config.tier);
             logged = true;
         }
         sleep_usec(100 * USEC_PER_MS);
         count--;
     }
 
-    netdata_log_info("DBENGINE: flushing main cache for tier %d", (ctx->config.legacy) ? -1 : ctx->config.tier);
+    netdata_log_info("DBENGINE: flushing main cache for tier %d", ctx->config.tier);
     pgc_flush_all_hot_and_dirty_pages(main_cache, (Word_t)ctx);
 
-    netdata_log_info("DBENGINE: shutting down tier %d", (ctx->config.legacy) ? -1 : ctx->config.tier);
+    netdata_log_info("DBENGINE: shutting down tier %d", ctx->config.tier);
     struct completion completion = {};
     completion_init(&completion);
     rrdeng_enq_cmd(ctx, RRDENG_OPCODE_CTX_SHUTDOWN, NULL, &completion, STORAGE_PRIORITY_BEST_EFFORT, NULL, NULL);
@@ -1236,7 +1223,7 @@ int rrdeng_exit(struct rrdengine_instance *ctx) {
 
     finalize_rrd_files(ctx);
 
-    if(ctx->config.legacy)
+    if (unittest_running) //(ctx->config.unittest)
         freez(ctx);
 
     rrd_stat_atomic_add(&rrdeng_reserved_file_descriptors, -RRDENG_FD_BUDGET_PER_INSTANCE);

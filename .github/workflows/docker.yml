@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.check-run.outputs.run }}
+      skip-go: ${{ steps.check-go.outputs.skip-go }}
     steps:
       - name: Checkout
         id: checkout
@@ -39,10 +40,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-      - name: Check files
-        id: check-files
+      - name: Check source files
+        id: check-source-files
         if: github.event_name != 'workflow_dispatch'
-        uses: tj-actions/changed-files@v43
+        uses: tj-actions/changed-files@v44
         with:
           since_last_remote_commit: ${{ github.event_name != 'pull_request' }}
           files: |
@@ -52,7 +53,20 @@ jobs:
             **/*.hh
             **/*.in
             **/*.patch
-            **/*.cmake
+            src/aclk/aclk-schemas/
+            src/ml/dlib/
+            src/fluent-bit/
+            src/web/server/h2o/libh2o/
+          files_ignore: |
+            netdata.spec.in
+            **/*.md
+      - name: Check build system files
+        id: check-build-files
+        if: github.event_name != 'workflow_dispatch'
+        uses: tj-actions/changed-files@v44
+        with:
+          since_last_remote_commit: ${{ github.event_name != 'pull_request' }}
+          files: |
             .dockerignore
             CMakeLists.txt
             netdata-installer.sh
@@ -66,29 +80,39 @@ jobs:
             packaging/runtime-check.sh
             packaging/*.version
             packaging/*.checksums
-            src/aclk/aclk-schemas/
-            src/ml/dlib/
-            src/fluent-bit/
-            src/web/server/h2o/libh2o/
           files_ignore: |
-            netdata.spec.in
             **/*.md
       - name: List all changed files in pattern
         continue-on-error: true
         if: github.event_name != 'workflow_dispatch'
         env:
-          ALL_CHANGED_FILES: ${{ steps.check-files.outputs.all_changed_files }}
+          CHANGED_SOURCE_FILES: ${{ steps.check-source-files.outputs.all_changed_files }}
+          CHANGED_BUILD_FILES: ${{ steps.check-build-files.outputs.all_changed_files }}
         run: |
-          for file in ${ALL_CHANGED_FILES}; do
+          for file in ${CHANGED_SOURCE_FILES} ${CHANGED_BUILD_FILES} ; do
             echo "$file was changed"
           done
       - name: Check Run
         id: check-run
         run: |
-          if [ "${{ steps.check-files.outputs.any_modified }}" == "true" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ steps.check-source-files.outputs.any_modified }}" == "true" ] || [ "${{ steps.check-build-files.outputs.any_modified }}" == "true" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo 'run=true' >> "${GITHUB_OUTPUT}"
           else
             echo 'run=false' >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Check Go
+        id: check-go
+        env:
+          OTHER_CHANGED_FILES: ${{ steps.check-source-files.outputs.other_changed_files }}
+        run: |
+          if [ '${{ github.event_name }}' == 'pull_request' ]; then
+            if echo "${OTHER_CHANGED_FILES}" | grep -q '.*/(.*\.go|go\.mod|go\.sum)$' || [ "${{ steps.check-build-files.outputs.any_modified }}" == "true" ]; then
+              echo 'skip-go=' >> "${GITHUB_OUTPUT}"
+            else
+              echo 'skip-go=--disable-go' >> "${GITHUB_OUTPUT}"
+            fi
+          else
+            echo 'skip-go=' >> "${GITHUB_OUTPUT}"
           fi
 
   build-images:
@@ -143,7 +167,9 @@ jobs:
           tags: netdata/netdata:test
           load: true
           cache-to: type=local,dest=/tmp/build-cache,mode=max
-          build-args: OFFICIAL_IMAGE=${{ env.OFFICIAL_IMAGE }}
+          build-args: |
+            OFFICIAL_IMAGE=${{ env.OFFICIAL_IMAGE }}
+            EXTRA_INSTALL_OPTS=${{ needs.file-check.outputs.skip-go }}
       - name: Test Image
         id: test
         if: needs.file-check.outputs.run == 'true' && matrix.platform == 'linux/amd64'
@@ -257,8 +283,8 @@ jobs:
         with:
           platforms: ${{ matrix.platform }}
           cache-from: type=local,src=/tmp/build-cache
-          build-args: OFFICIAL_IMAGE=${{ env.OFFICIAL_IMAGE }}
           outputs: type=image,name=netdata/netdata,push-by-digest=true,name-canonical=true,push=true
+          build-args: OFFICIAL_IMAGE=${{ env.OFFICIAL_IMAGE }}
       - name: Export Digest
         id: export-digest
         if: github.repository == 'netdata/netdata'
@@ -333,7 +359,7 @@ jobs:
       - name: Create and Push Manifest
         id: manifest
         if: github.repository == 'netdata/netdata'
-        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests '' ${{ needs.gen-tags.outputs.tags }})
+        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests '' "${{ needs.gen-tags.outputs.tags }}")
       - name: Failure Notification
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -489,7 +515,7 @@ jobs:
       - name: Create and Push Manifest
         id: manifest
         if: github.repository == 'netdata/netdata'
-        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests 'quay.io' ${{ needs.gen-tags.outputs.tags }})
+        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests 'quay.io' "${{ needs.gen-tags.outputs.tags }}")
       - name: Failure Notification
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -617,7 +643,7 @@ jobs:
     name: Consolidate and tag images for GHCR
     if: github.event_name == 'workflow_dispatch'
     needs:
-      - build-images-quay
+      - build-images-ghcr
       - gen-tags
     runs-on: ubuntu-latest
     steps:
@@ -645,7 +671,7 @@ jobs:
       - name: Create and Push Manifest
         id: manifest
         if: github.repository == 'netdata/netdata'
-        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests 'ghcr.io' ${{ needs.gen-tags.outputs.tags }})
+        run: docker buildx imagetools create $(.github/scripts/gen-docker-imagetool-args.py /tmp/digests 'ghcr.io' "${{ needs.gen-tags.outputs.tags }}")
       - name: Failure Notification
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -665,5 +691,60 @@ jobs:
         if: >-
           ${{
             failure()
+            && github.repository == 'netdata/netdata'
+          }}
+
+  trigger-subsequent-workflows:
+    if: github.event_name == 'workflow_dispatch'
+    name: Trigger subsquent workflows for newly added versions
+    needs:
+      - publish-docker-hub
+      - gen-tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Trigger Helmchart PR
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != 'nightly' && github.repository == 'netdata/netdata'
+        id: trigger-helmchart
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          token: ${{ secrets.NETDATABOT_GITHUB_TOKEN }}
+          repo: netdata/helmchart
+          workflow: Agent Version PR
+          ref: refs/heads/master
+          inputs: '{"agent_version": "v${{ inputs.version }}"}'
+      - name: Trigger MSI build
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != 'nightly' && github.repository == 'netdata/netdata'
+        id: trigger-msi
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          token: ${{ secrets.NETDATABOT_GITHUB_TOKEN }}
+          repo: netdata/msi-installer
+          workflow: Build
+          ref: refs/heads/master
+          inputs: '{"tag": "stable", "pwd": "${{ secrets.MSI_CODE_SIGNING_PASSWORD }}"}'
+      - name: Failure Notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_COLOR: 'danger'
+          SLACK_FOOTER: ''
+          SLACK_ICON_EMOJI: ':github-actions:'
+          SLACK_TITLE: ':'
+          SLACK_USERNAME: 'GitHub Actions'
+          SLACK_MESSAGE: |-
+              ${{ github.repository }}: Version cascade failed
+              Checkout: ${{ steps.checkout.outcome }}
+              Trigger Helmchart PR: ${{ steps.trigger-helmchart.outcome }}
+              Trigger MSI build: ${{ steps.trigger-msi.outcome }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: >-
+          ${{
+            failure()
+            && github.event_name != 'pull_request'
+            && startsWith(github.ref, 'refs/heads/master')
             && github.repository == 'netdata/netdata'
           }}

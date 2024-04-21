@@ -4,7 +4,7 @@
 #include "sqlite3recover.h"
 //#include "sqlite_db_migration.h"
 
-#define DB_METADATA_VERSION 17
+#define DB_METADATA_VERSION 18
 
 const char *database_config[] = {
     "CREATE TABLE IF NOT EXISTS host(host_id BLOB PRIMARY KEY, hostname TEXT NOT NULL, "
@@ -35,7 +35,8 @@ const char *database_config[] = {
     "every text, units text, calc text, families text, plugin text, module text, charts text, green text, "
     "red text, warn text, crit text, exec text, to_key text, info text, delay text, options text, "
     "repeat text, host_labels text, p_db_lookup_dimensions text, p_db_lookup_method text, p_db_lookup_options int, "
-    "p_db_lookup_after int, p_db_lookup_before int, p_update_every int, source text, chart_labels text, summary text)",
+    "p_db_lookup_after int, p_db_lookup_before int, p_update_every int, source text, chart_labels text, "
+    "summary text, time_group_condition INT, time_group_value DOUBLE, dims_group INT, data_source INT)",
 
     "CREATE TABLE IF NOT EXISTS host_info(host_id blob, system_key text NOT NULL, system_value text NOT NULL, "
     "date_created INT, PRIMARY KEY(host_id, system_key))",
@@ -746,6 +747,7 @@ int sql_init_meta_database(db_check_action_type_t rebuild, int memory)
         return 1;
     }
 
+    errno = 0;
     netdata_log_info("SQLite database %s initialization", sqlite_database);
 
     rc = sqlite3_create_function(db_meta, "u2h", 1, SQLITE_ANY | SQLITE_DETERMINISTIC, 0, sqlite_uuid_parse, 0, 0);

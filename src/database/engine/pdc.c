@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #define NETDATA_RRD_INTERNALS
 #include "pdc.h"
+#include "dbengine-compression.h"
 
 struct extent_page_details_list {
     uv_file file;
@@ -635,12 +636,12 @@ inline VALIDATED_PAGE_DESCRIPTOR validate_extent_page_descr(const struct rrdeng_
     size_t entries = 0;
 
     switch (descr->type) {
-        case PAGE_METRICS:
-        case PAGE_TIER:
+        case RRDENG_PAGE_TYPE_ARRAY_32BIT:
+        case RRDENG_PAGE_TYPE_ARRAY_TIER1:
             end_time_s = descr->end_time_ut / USEC_PER_SEC;
             entries = 0;
             break;
-        case PAGE_GORILLA_METRICS:
+        case RRDENG_PAGE_TYPE_GORILLA_32BIT:
             end_time_s = start_time_s + descr->gorilla.delta_time_s;
             entries = descr->gorilla.entries;
             break;
@@ -689,8 +690,8 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
 
     bool known_page_type = true;
     switch (page_type) {
-        case PAGE_METRICS:
-        case PAGE_TIER:
+        case RRDENG_PAGE_TYPE_ARRAY_32BIT:
+        case RRDENG_PAGE_TYPE_ARRAY_TIER1:
             // always calculate entries by size
             vd.entries = page_entries_by_size(vd.page_length, vd.point_size);
 
@@ -698,7 +699,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
             if(!entries)
                 entries = vd.entries;
             break;
-        case PAGE_GORILLA_METRICS:
+        case RRDENG_PAGE_TYPE_GORILLA_32BIT:
             internal_fatal(entries == 0, "0 number of entries found on gorilla page");
             vd.entries = entries;
             break;
@@ -725,7 +726,7 @@ VALIDATED_PAGE_DESCRIPTOR validate_page(
     // If gorilla can not compress the data we might end up needing slightly more
     // than 4KiB. However, gorilla pages extend the page length by increments of
     // 512 bytes.
-    max_page_length += ((page_type == PAGE_GORILLA_METRICS) * GORILLA_BUFFER_SIZE);
+    max_page_length += ((page_type == RRDENG_PAGE_TYPE_GORILLA_32BIT) * RRDENG_GORILLA_32BIT_BUFFER_SIZE);
 
     if (!known_page_type                                        ||
         have_read_error                                         ||
@@ -873,11 +874,11 @@ static void epdl_extent_loading_error_log(struct rrdengine_instance *ctx, EPDL *
     if (descr) {
         start_time_s = (time_t)(descr->start_time_ut / USEC_PER_SEC);
         switch (descr->type) {
-            case PAGE_METRICS:
-            case PAGE_TIER:
+            case RRDENG_PAGE_TYPE_ARRAY_32BIT:
+            case RRDENG_PAGE_TYPE_ARRAY_TIER1:
                 end_time_s = (time_t)(descr->end_time_ut / USEC_PER_SEC);
                 break;
-            case PAGE_GORILLA_METRICS:
+            case RRDENG_PAGE_TYPE_GORILLA_32BIT:
                 end_time_s = (time_t) start_time_s + (descr->gorilla.delta_time_s);
                 break;
         }
@@ -940,7 +941,6 @@ static bool epdl_populate_pages_from_extent_data(
         PDC_PAGE_STATUS tags,
         bool cached_extent)
 {
-    int ret;
     unsigned i, count;
     void *uncompressed_buf = NULL;
     uint32_t payload_length, payload_offset, trailer_offset, uncompressed_payload_length = 0;
@@ -975,18 +975,17 @@ static bool epdl_populate_pages_from_extent_data(
     if( !can_use_data ||
         count < 1 ||
         count > MAX_PAGES_PER_EXTENT ||
-        (header->compression_algorithm != RRD_NO_COMPRESSION && header->compression_algorithm != RRD_LZ4) ||
+        !dbengine_valid_compression_algorithm(header->compression_algorithm) ||
         (payload_length != trailer_offset - payload_offset) ||
         (data_length != payload_offset + payload_length + sizeof(*trailer))
-            ) {
+        ) {
         epdl_extent_loading_error_log(ctx, epdl, NULL, "header is INVALID");
         return false;
     }
 
     crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, data, epdl->extent_size - sizeof(*trailer));
-    ret = crc32cmp(trailer->checksum, crc);
-    if (unlikely(ret)) {
+    if (unlikely(crc32cmp(trailer->checksum, crc))) {
         ctx_io_error(ctx);
         have_read_error = true;
         epdl_extent_loading_error_log(ctx, epdl, NULL, "CRC32 checksum FAILED");
@@ -995,14 +994,15 @@ static bool epdl_populate_pages_from_extent_data(
     if(worker)
         worker_is_busy(UV_EVENT_DBENGINE_EXTENT_DECOMPRESSION);
 
-    if (likely(!have_read_error && RRD_NO_COMPRESSION != header->compression_algorithm)) {
+    if (likely(!have_read_error && RRDENG_COMPRESSION_NONE != header->compression_algorithm)) {
         // find the uncompressed extent size
         uncompressed_payload_length = 0;
         for (i = 0; i < count; ++i) {
             size_t page_length = header->descr[i].page_length;
-            if (page_length > RRDENG_BLOCK_SIZE && (header->descr[i].type != PAGE_GORILLA_METRICS ||
-                                                    (header->descr[i].type == PAGE_GORILLA_METRICS &&
-                                                     (page_length - RRDENG_BLOCK_SIZE) % GORILLA_BUFFER_SIZE))) {
+            if (page_length > RRDENG_BLOCK_SIZE &&
+                (header->descr[i].type != RRDENG_PAGE_TYPE_GORILLA_32BIT ||
+                 (header->descr[i].type == RRDENG_PAGE_TYPE_GORILLA_32BIT &&
+                  (page_length - RRDENG_BLOCK_SIZE) % RRDENG_GORILLA_32BIT_BUFFER_SIZE))) {
                 have_read_error = true;
                 break;
             }
@@ -1017,11 +1017,16 @@ static bool epdl_populate_pages_from_extent_data(
             eb = extent_buffer_get(uncompressed_payload_length);
             uncompressed_buf = eb->data;
 
-            ret = LZ4_decompress_safe(data + payload_offset, uncompressed_buf,
-                                      (int) payload_length, (int) uncompressed_payload_length);
+            size_t bytes = dbengine_decompress(uncompressed_buf, data + payload_offset,
+                                               uncompressed_payload_length, payload_length,
+                                               header->compression_algorithm);
 
-            __atomic_add_fetch(&ctx->stats.before_decompress_bytes, payload_length, __ATOMIC_RELAXED);
-            __atomic_add_fetch(&ctx->stats.after_decompress_bytes, ret, __ATOMIC_RELAXED);
+            if(!bytes)
+                have_read_error = true;
+            else {
+                __atomic_add_fetch(&ctx->stats.before_decompress_bytes, payload_length, __ATOMIC_RELAXED);
+                __atomic_add_fetch(&ctx->stats.after_decompress_bytes, bytes, __ATOMIC_RELAXED);
+            }
         }
     }
 
@@ -1077,7 +1082,7 @@ static bool epdl_populate_pages_from_extent_data(
             stats_load_invalid_page++;
         }
         else {
-            if (RRD_NO_COMPRESSION == header->compression_algorithm) {
+            if (RRDENG_COMPRESSION_NONE == header->compression_algorithm) {
                 pgd = pgd_create_from_disk_data(header->descr[i].type,
                                                       data + payload_offset + page_offset,
                                                 vd.page_length);

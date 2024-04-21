@@ -1325,21 +1325,8 @@ static PGC_PAGE *page_add(PGC *cache, PGC_ENTRY *entry, bool *added) {
     return page;
 }
 
-static PGC_PAGE *page_find_and_acquire(PGC *cache, Word_t section, Word_t metric_id, time_t start_time_s, PGC_SEARCH method) {
-    __atomic_add_fetch(&cache->stats.workers_search, 1, __ATOMIC_RELAXED);
-
-    size_t *stats_hit_ptr, *stats_miss_ptr;
-
-    if(method == PGC_SEARCH_CLOSEST) {
-        __atomic_add_fetch(&cache->stats.searches_closest, 1, __ATOMIC_RELAXED);
-        stats_hit_ptr = &cache->stats.searches_closest_hits;
-        stats_miss_ptr = &cache->stats.searches_closest_misses;
-    }
-    else {
-        __atomic_add_fetch(&cache->stats.searches_exact, 1, __ATOMIC_RELAXED);
-        stats_hit_ptr = &cache->stats.searches_exact_hits;
-        stats_miss_ptr = &cache->stats.searches_exact_misses;
-    }
+static PGC_PAGE *page_find_and_acquire_once(PGC *cache, Word_t section, Word_t metric_id, time_t start_time_s, PGC_SEARCH method, bool *retry) {
+    *retry = false;
 
     PGC_PAGE *page = NULL;
     size_t partition = pgc_indexing_partition(cache, metric_id);
@@ -1462,22 +1449,13 @@ static PGC_PAGE *page_find_and_acquire(PGC *cache, Word_t section, Word_t metric
 
         if(!page_acquire(cache, page)) {
             // this page is not good to use
+            *retry = true;
             page = NULL;
         }
     }
 
 cleanup:
     pgc_index_read_unlock(cache, partition);
-
-    if(page) {
-        __atomic_add_fetch(stats_hit_ptr, 1, __ATOMIC_RELAXED);
-        page_has_been_accessed(cache, page);
-    }
-    else
-        __atomic_add_fetch(stats_miss_ptr, 1, __ATOMIC_RELAXED);
-
-    __atomic_sub_fetch(&cache->stats.workers_search, 1, __ATOMIC_RELAXED);
-
     return page;
 }
 
@@ -1882,7 +1860,7 @@ void pgc_page_release(PGC *cache, PGC_PAGE *page) {
     page_release(cache, page, is_page_clean(page));
 }
 
-void pgc_page_hot_to_dirty_and_release(PGC *cache, PGC_PAGE *page) {
+void pgc_page_hot_to_dirty_and_release(PGC *cache, PGC_PAGE *page, bool never_flush) {
     __atomic_add_fetch(&cache->stats.workers_hot2dirty, 1, __ATOMIC_RELAXED);
 
 //#ifdef NETDATA_INTERNAL_CHECKS
@@ -1901,10 +1879,8 @@ void pgc_page_hot_to_dirty_and_release(PGC *cache, PGC_PAGE *page) {
     __atomic_sub_fetch(&cache->stats.workers_hot2dirty, 1, __ATOMIC_RELAXED);
 
     // flush, if we have to
-    if((cache->config.options & PGC_OPTIONS_FLUSH_PAGES_INLINE) || flushing_critical(cache)) {
-        flush_pages(cache, cache->config.max_flushes_inline, PGC_SECTION_ALL,
-                    false, false);
-    }
+    if(!never_flush && ((cache->config.options & PGC_OPTIONS_FLUSH_PAGES_INLINE) || flushing_critical(cache)))
+        flush_pages(cache, cache->config.max_flushes_inline, PGC_SECTION_ALL, false, false);
 }
 
 bool pgc_page_to_clean_evict_or_release(PGC *cache, PGC_PAGE *page) {
@@ -2050,7 +2026,46 @@ void pgc_page_hot_set_end_time_s(PGC *cache __maybe_unused, PGC_PAGE *page, time
 }
 
 PGC_PAGE *pgc_page_get_and_acquire(PGC *cache, Word_t section, Word_t metric_id, time_t start_time_s, PGC_SEARCH method) {
-    return page_find_and_acquire(cache, section, metric_id, start_time_s, method);
+    static const struct timespec ns = { .tv_sec = 0, .tv_nsec = 1 };
+
+    PGC_PAGE *page = NULL;
+
+    __atomic_add_fetch(&cache->stats.workers_search, 1, __ATOMIC_RELAXED);
+
+    size_t *stats_hit_ptr, *stats_miss_ptr;
+
+    if(method == PGC_SEARCH_CLOSEST) {
+        __atomic_add_fetch(&cache->stats.searches_closest, 1, __ATOMIC_RELAXED);
+        stats_hit_ptr = &cache->stats.searches_closest_hits;
+        stats_miss_ptr = &cache->stats.searches_closest_misses;
+    }
+    else {
+        __atomic_add_fetch(&cache->stats.searches_exact, 1, __ATOMIC_RELAXED);
+        stats_hit_ptr = &cache->stats.searches_exact_hits;
+        stats_miss_ptr = &cache->stats.searches_exact_misses;
+    }
+
+    while(1) {
+        bool retry = false;
+
+        page = page_find_and_acquire_once(cache, section, metric_id, start_time_s, method, &retry);
+
+        if(page || !retry)
+            break;
+
+        nanosleep(&ns, NULL);
+    }
+
+    if(page) {
+        __atomic_add_fetch(stats_hit_ptr, 1, __ATOMIC_RELAXED);
+        page_has_been_accessed(cache, page);
+    }
+    else
+        __atomic_add_fetch(stats_miss_ptr, 1, __ATOMIC_RELAXED);
+
+    __atomic_sub_fetch(&cache->stats.workers_search, 1, __ATOMIC_RELAXED);
+
+    return page;
 }
 
 struct pgc_statistics pgc_get_statistics(PGC *cache) {
@@ -2224,7 +2239,7 @@ void pgc_open_cache_to_journal_v2(PGC *cache, Word_t section, unsigned datafile_
             while ((PValue2 = JudyLFirstThenNext(mi->JudyL_pages_by_start_time, &start_time, &start_time_first))) {
                 struct jv2_page_info *pi = *PValue2;
                 page_transition_unlock(cache, pi->page);
-                pgc_page_hot_to_dirty_and_release(cache, pi->page);
+                pgc_page_hot_to_dirty_and_release(cache, pi->page, true);
                 // make_acquired_page_clean_and_evict_or_page_release(cache, pi->page);
                 aral_freez(ar_pi, pi);
             }
@@ -2251,6 +2266,8 @@ void pgc_open_cache_to_journal_v2(PGC *cache, Word_t section, unsigned datafile_
     aral_by_size_release(ar_mi);
 
     __atomic_sub_fetch(&cache->stats.workers_jv2_flush, 1, __ATOMIC_RELAXED);
+
+    flush_pages(cache, cache->config.max_flushes_inline, PGC_SECTION_ALL, false, false);
 }
 
 static bool match_page_data(PGC_PAGE *page, void *data) {
@@ -2396,7 +2413,7 @@ void *unittest_stress_test_collector(void *ptr) {
                 if(i % 10 == 0)
                     pgc_page_to_clean_evict_or_release(pgc_uts.cache, pgc_uts.metrics[i]);
                 else
-                    pgc_page_hot_to_dirty_and_release(pgc_uts.cache, pgc_uts.metrics[i]);
+                    pgc_page_hot_to_dirty_and_release(pgc_uts.cache, pgc_uts.metrics[i], false);
             }
         }
 
@@ -2721,7 +2738,7 @@ int pgc_unittest(void) {
     }, NULL);
 
     pgc_page_hot_set_end_time_s(cache, page2, 2001);
-    pgc_page_hot_to_dirty_and_release(cache, page2);
+    pgc_page_hot_to_dirty_and_release(cache, page2, false);
 
     PGC_PAGE *page3 = pgc_page_add_and_acquire(cache, (PGC_ENTRY){
             .section = 3,
@@ -2734,7 +2751,7 @@ int pgc_unittest(void) {
     }, NULL);
 
     pgc_page_hot_set_end_time_s(cache, page3, 2001);
-    pgc_page_hot_to_dirty_and_release(cache, page3);
+    pgc_page_hot_to_dirty_and_release(cache, page3, false);
 
     pgc_destroy(cache);
 
