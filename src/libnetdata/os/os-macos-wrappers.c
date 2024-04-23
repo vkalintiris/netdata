@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../libnetdata.h"
+#include "os-macos-wrappers.h"
 
-#if defined(OS_MACOS)
+#if defined(COMPILED_FOR_MACOS)
+
+#include "../libnetdata.h"
 
 int getsysctl_by_name(const char *name, void *ptr, size_t len) {
     size_t nlen = len;

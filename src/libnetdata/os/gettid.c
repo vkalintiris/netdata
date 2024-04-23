@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../libnetdata.h"
+#include "config.h"
+#include "gettid.h"
 
-#if defined(OS_WINDOWS)
+#if defined(COMPILED_FOR_CYGWIN) || defined(COMPILED_FOR_MSYS)
 #include <windows.h>
+#else
+#include <pthread.h>
 #endif
 
 pid_t os_gettid(void) {
@@ -15,9 +18,9 @@ pid_t os_gettid(void) {
     uint64_t curthreadid;
     pthread_threadid_np(NULL, &curthreadid);
     return curthreadid;
-#elif defined(OS_WINDOWS)
-    return (pid_t)GetCurrentThreadId();
-#elif defined(OS_LINUX)
+#elif defined(CCOMPILED_FOR_CYGWIN) || defined(CCOMPILED_FOR_MSYS)
+    return GetCurrentThreadId();
+#elif defined(COMPILED_FOR_LINUX)
     return (pid_t)syscall(SYS_gettid);
 #else
     return (pid_t)pthread_self();

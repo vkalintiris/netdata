@@ -3,9 +3,8 @@
 #ifndef NETDATA_OS_MACOS_WRAPPERS_H
 #define NETDATA_OS_MACOS_WRAPPERS_H
 
-#include "../libnetdata.h"
+#if defined(COMPILED_FOR_MACOS)
 
-#if defined(OS_MACOS)
 #include <sys/sysctl.h>
 #include "byteorder.h"
 

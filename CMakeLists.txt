@@ -736,8 +736,6 @@ set(LIBNETDATA_FILES
         src/libnetdata/log/log.h
         src/libnetdata/os/os.c
         src/libnetdata/os/os.h
-        src/libnetdata/os/compatibility.c
-        src/libnetdata/os/compatibility.h
         src/libnetdata/simple_hashtable.h
         src/libnetdata/os/byteorder.h
         src/libnetdata/onewayalloc/onewayalloc.c
@@ -814,14 +812,6 @@ set(LIBNETDATA_FILES
         src/libnetdata/os/os-macos-wrappers.h
         src/libnetdata/os/get_system_cpus.c
         src/libnetdata/os/get_system_cpus.h
-        src/libnetdata/os/tinysleep.c
-        src/libnetdata/os/tinysleep.h
-        src/libnetdata/os/uuid_generate.c
-        src/libnetdata/os/uuid_generate.h
-        src/libnetdata/os/setenv.c
-        src/libnetdata/os/setenv.h
-        src/libnetdata/os/strndup.c
-        src/libnetdata/os/strndup.h
 )
 
 if(ENABLE_PLUGIN_EBPF)

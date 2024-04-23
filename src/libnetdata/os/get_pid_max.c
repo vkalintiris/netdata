@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "config.h"
+#include "get_pid_max.h"
 #include "../libnetdata.h"
 
 pid_t pid_max = 32768;
 pid_t os_get_system_pid_max(void) {
-#if defined(OS_MACOS)
+#if defined(COMPILED_FOR_MACOS)
 
     // As we currently do not know a solution to query pid_max from the os
     // we use the number defined in bsd/sys/proc_internal.h in XNU sources
     pid_max = 99999;
     return pid_max;
 
-#elif defined(OS_FREEBSD)
+#elif defined(COMPILED_FOR_FREEBSD)
 
     int32_t tmp_pid_max;
 
@@ -24,7 +26,7 @@ pid_t os_get_system_pid_max(void) {
 
     return pid_max;
 
-#elif defined(OS_LINUX)
+#elif defined(COMPILED_FOR_LINUX)
 
     static char read = 0;
     if(unlikely(read)) return pid_max;

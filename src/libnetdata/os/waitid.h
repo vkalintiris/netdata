@@ -3,13 +3,7 @@
 #ifndef NETDATA_WAITID_H
 #define NETDATA_WAITID_H
 
-#include "config.h"
-#include <sys/types.h>
-#include <signal.h>
-
-#ifdef HAVE_SYS_WAIT_H
 #include <sys/wait.h>
-#endif
 
 #ifndef WNOWAIT
 #define WNOWAIT 0x01000000
@@ -32,15 +26,6 @@ struct pid_status {
     pid_t pid;
     int status;
 };
-
-#if defined(OS_WINDOWS) && !defined(__CYGWIN__)
-typedef uint32_t id_t;
-typedef struct {
-    int si_code;	/* Signal code.  */
-    int si_status;	/* Exit value or signal.  */
-    pid_t si_pid;	/* Sending process ID.  */
-} siginfo_t;
-#endif
 #endif
 
 int os_waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options);

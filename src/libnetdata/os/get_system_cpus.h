@@ -3,8 +3,7 @@
 #ifndef NETDATA_GET_SYSTEM_CPUS_H
 #define NETDATA_GET_SYSTEM_CPUS_H
 
-#include "../libnetdata.h"
-
+#include <stdbool.h>
 long os_get_system_cpus_cached(bool cache, bool for_netdata);
 
 #endif //NETDATA_GET_SYSTEM_CPUS_H

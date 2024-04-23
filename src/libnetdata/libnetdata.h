@@ -470,8 +470,6 @@ extern char *netdata_configured_host_prefix;
 #include "config/dyncfg.h"
 #include "libjudy/src/Judy.h"
 #include "july/july.h"
-#include "os/compatibility.h"
-#include "os/os.h"
 #include "threads/threads.h"
 #include "buffer/buffer.h"
 #include "locks/locks.h"

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "get_system_cpus.h"
 #include "../libnetdata.h"
 
-#if defined(OS_WINDOWS)
+#if defined(COMPILED_FOR_CYGWIN) || defined(COMPILED_FOR_MSYS)
 #include <windows.h>
 #endif
 
@@ -17,8 +18,8 @@ long os_get_system_cpus_cached(bool cache, bool for_netdata) {
     if(likely(cache && processors[index] > 0))
         return processors[index];
 
-#if defined(OS_FREEBSD) || defined(OS_MACOS)
-#if defined(OS_MACOS)
+#if defined(COMPILED_FOR_FREEBSD) || defined(COMPILED_FOR_MACOS)
+#if defined(COMPILED_FOR_MACOS)
 #define HW_CPU_NAME "hw.logicalcpu"
 #else
 #define HW_CPU_NAME "hw.ncpu"
@@ -36,11 +37,11 @@ long os_get_system_cpus_cached(bool cache, bool for_netdata) {
         processors[index] = 1;
 
         if(error)
-            netdata_log_error("Assuming system has %ld processors.", processors[index]);
+            netdata_log_error("Assuming system has %d processors.", processors[index]);
     }
 
     return processors[index];
-#elif defined(OS_LINUX)
+#elif defined(COMPILED_FOR_LINUX)
 
     char filename[FILENAME_MAX + 1];
     snprintfz(filename, FILENAME_MAX, "%s/proc/stat",
@@ -78,7 +79,7 @@ long os_get_system_cpus_cached(bool cache, bool for_netdata) {
     netdata_log_debug(D_SYSTEM, "System has %ld processors.", processors[index]);
     return processors[index];
 
-#elif defined(OS_WINDOWS)
+#elif defined(COMPILED_FOR_CYGWIN) || defined(COMPILED_FOR_MSYS)
 
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);

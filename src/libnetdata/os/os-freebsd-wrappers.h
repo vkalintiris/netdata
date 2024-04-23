@@ -3,9 +3,7 @@
 #ifndef NETDATA_OS_FREEBSD_WRAPPERS_H
 #define NETDATA_OS_FREEBSD_WRAPPERS_H
 
-#include "../libnetdata.h"
-
-#if defined(OS_FREEBSD)
+#if defined(COMPILED_FOR_FREEBSD)
 #include <sys/sysctl.h>
 
 #define GETSYSCTL_BY_NAME(name, var) getsysctl_by_name(name, &(var), sizeof(var))
