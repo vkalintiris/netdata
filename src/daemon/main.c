@@ -2126,12 +2126,10 @@ int main(int argc, char **argv) {
 
     delta_startup_time("become daemon");
 
-#if defined(OS_LINUX) || defined(OS_MACOS) || defined(OS_FREEBSD)
+#if defined(COMPILED_FOR_LINUX) || defined(COMPILED_FOR_MACOS) || defined(COMPILED_FOR_FREEBSD)
     // fork, switch user, create pid file, set process priority
     if(become_daemon(dont_fork, user) == -1)
         fatal("Cannot daemonize myself.");
-#else
-    (void)dont_fork;
 #endif
 
     watcher_thread_start();

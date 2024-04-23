@@ -182,7 +182,11 @@ void nd_thread_rwspinlock_write_locked(void) { if(_nd_thread_info) _nd_thread_in
 void nd_thread_rwspinlock_write_unlocked(void) { if(_nd_thread_info) _nd_thread_info->rwspinlock_write_locks--; }
 #endif
 
-// --------------------------------------------------------------------------------------------------------------------
+        thread_name_get(true);
+    }
+}
+
+// ----------------------------------------------------------------------------
 // early initialization
 
 size_t netdata_threads_init(void) {
@@ -275,34 +279,8 @@ static void nd_thread_exit(void *pptr) {
         if(!nti) nti = _nd_thread_info;
     }
 
-    if(!nti) return;
-
-    internal_fatal(nti->rwlocks_read_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d RWLOCKS READ ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->rwlocks_read_locks);
-
-    internal_fatal(nti->rwlocks_write_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d RWLOCKS WRITE ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->rwlocks_write_locks);
-
-    internal_fatal(nti->mutex_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d MUTEXES ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->mutex_locks);
-
-    internal_fatal(nti->spinlock_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d SPINLOCKS ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->spinlock_locks);
-
-    internal_fatal(nti->rwspinlock_read_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d RWSPINLOCKS READ ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->rwspinlock_read_locks);
-
-    internal_fatal(nti->rwspinlock_write_locks != 0,
-        "THREAD '%s' WITH PID %d HAS %d RWSPINLOCKS WRITE ACQUIRED WHILE EXITING !!!",
-        (nti) ? nti->tag : "(unset)", gettid_cached(), nti->rwspinlock_write_locks);
-
-    if(nd_thread_status_check(nti, NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP) != NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP)
-        nd_log(NDLS_DAEMON, NDLP_DEBUG, "thread with task id %d finished", nti->tid);
+    if(!(netdata_thread->options & NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP))
+        nd_log(NDLS_DAEMON, NDLP_DEBUG, "thread with task id %d finished", gettid_cached());
 
     rrd_collector_finished();
     sender_thread_buffer_free();
@@ -318,10 +296,30 @@ static void nd_thread_exit(void *pptr) {
     DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(threads_globals.running.list, nti, prev, next);
     spinlock_unlock(&threads_globals.running.spinlock);
 
-    if (nd_thread_status_check(nti, NETDATA_THREAD_OPTION_JOINABLE) != NETDATA_THREAD_OPTION_JOINABLE) {
-        spinlock_lock(&threads_globals.exited.spinlock);
-        DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(threads_globals.exited.list, nti, prev, next);
-        spinlock_unlock(&threads_globals.exited.spinlock);
+void netdata_thread_set_tag(const char *tag) {
+    if(!tag || !*tag)
+        return;
+
+    int ret = 0;
+
+    char threadname[NETDATA_THREAD_NAME_MAX+1];
+    strncpyz(threadname, tag, NETDATA_THREAD_NAME_MAX);
+
+#if defined(__FreeBSD__)
+    pthread_set_name_np(pthread_self(), threadname);
+#elif defined(__APPLE__)
+    ret = pthread_setname_np(threadname);
+#else
+    ret = pthread_setname_np(pthread_self(), threadname);
+#endif
+
+    if (ret != 0)
+        nd_log(NDLS_DAEMON, NDLP_WARNING, "cannot set pthread name of %d to %s. ErrCode: %d", gettid_cached(), threadname, ret);
+    else
+        nd_log(NDLS_DAEMON, NDLP_DEBUG, "set name of thread %d to %s", gettid_cached(), threadname);
+
+    if(netdata_thread) {
+        strncpyz(netdata_thread->tag, threadname, sizeof(netdata_thread->tag) - 1);
     }
 }
 
@@ -332,7 +330,35 @@ static void *nd_thread_starting_point(void *ptr) {
     nti->tid = gettid_cached();
     nd_thread_tag_set(nti->tag);
 
-    if(nd_thread_status_check(nti, NETDATA_THREAD_OPTION_DONT_LOG_STARTUP) != NETDATA_THREAD_OPTION_DONT_LOG_STARTUP)
+#if defined(__FreeBSD__)
+    pthread_set_name_np(ut ? ut : pthread_self(), threadname);
+#elif defined(__APPLE__)
+    // Apple can only set its own name
+    UNUSED(ut);
+#else
+    ret = pthread_setname_np(ut ? ut : pthread_self(), threadname);
+#endif
+
+    thread_name_get(true);
+
+    if (ret)
+        nd_log(NDLS_DAEMON, NDLP_NOTICE, "cannot set libuv thread name to %s. Err: %d", threadname, ret);
+}
+
+void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1])
+{
+    threadname[0] = '\0';
+#if defined(__FreeBSD__)
+    pthread_get_name_np(pthread_self(), threadname, NETDATA_THREAD_NAME_MAX + 1);
+#elif defined(HAVE_PTHREAD_GETNAME_NP) /* Linux & macOS */
+    (void)pthread_getname_np(pthread_self(), threadname, NETDATA_THREAD_NAME_MAX + 1);
+#endif
+}
+
+static void *netdata_thread_init(void *ptr) {
+    netdata_thread = (NETDATA_THREAD *)ptr;
+
+    if(!(netdata_thread->options & NETDATA_THREAD_OPTION_DONT_LOG_STARTUP))
         nd_log(NDLS_DAEMON, NDLP_DEBUG, "thread created with task id %d", gettid_cached());
 
     if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)

@@ -1058,15 +1058,13 @@ __attribute__((constructor)) void initialize_build_info(void) {
     build_info_set_value(BIB_FEATURE_BUILT_FOR, "MacOS");
     build_info_set_status(BIB_PLUGIN_MACOS, true);
 #endif
-#ifdef OS_WINDOWS
+#ifdef COMPILED_FOR_CYGWIN
     build_info_set_status(BIB_FEATURE_BUILT_FOR, true);
-#if defined(__CYGWIN__) && defined(__MSYS__)
-    build_info_set_value(BIB_FEATURE_BUILT_FOR, "Windows (MSYS)");
-#elif defined(__CYGWIN__)
-    build_info_set_value(BIB_FEATURE_BUILT_FOR, "Windows (CYGWIN)");
-#else
-    build_info_set_value(BIB_FEATURE_BUILT_FOR, "Windows");
+    build_info_set_value(BIB_FEATURE_BUILT_FOR, "CYGWIN");
 #endif
+#ifdef COMPILED_FOR_MSYS
+    build_info_set_status(BIB_FEATURE_BUILT_FOR, true);
+    build_info_set_value(BIB_FEATURE_BUILT_FOR, "MSYS");
 #endif
 
 #ifdef ENABLE_ACLK

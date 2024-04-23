@@ -880,8 +880,9 @@ static void rrdpush_receiver_thread_cleanup(void *pptr) {
 
     netdata_log_info("STREAM '%s' [receive from [%s]:%s]: "
          "receive thread ended (task id %d)"
-         , rpt->hostname ? rpt->hostname : "-"
-         , rpt->client_ip ? rpt->client_ip : "-", rpt->client_port ? rpt->client_port : "-", gettid_cached());
+    , rpt->hostname ? rpt->hostname : "-"
+    , rpt->client_ip ? rpt->client_ip : "-", rpt->client_port ? rpt->client_port : "-"
+    , gettid_cached());
 
     worker_unregister();
     rrdhost_clear_receiver(rpt);
@@ -930,15 +931,8 @@ void *rrdpush_receiver_thread(void *ptr) {
     struct receiver_state *rpt = (struct receiver_state *) ptr;
     rpt->tid = gettid_cached();
 
-    ND_LOG_STACK lgs[] = {
-            ND_LOG_FIELD_TXT(NDF_SRC_IP, rpt->client_ip),
-            ND_LOG_FIELD_TXT(NDF_SRC_PORT, rpt->client_port),
-            ND_LOG_FIELD_TXT(NDF_NIDL_NODE, rpt->hostname),
-            ND_LOG_FIELD_CB(NDF_SRC_TRANSPORT, stream_receiver_log_transport, rpt),
-            ND_LOG_FIELD_CB(NDF_SRC_CAPABILITIES, stream_receiver_log_capabilities, rpt),
-            ND_LOG_FIELD_END(),
-    };
-    ND_LOG_STACK_PUSH(lgs);
+                struct receiver_state *rpt = (struct receiver_state *) ptr;
+                rpt->tid = gettid_cached();
 
     netdata_log_info("STREAM %s [%s]:%s: receive thread started", rpt->hostname, rpt->client_ip
                      , rpt->client_port);

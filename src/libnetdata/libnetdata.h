@@ -99,6 +99,10 @@ extern "C" {
 #include <limits.h>
 #include <locale.h>
 #include <signal.h>
+#include <syslog.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
@@ -466,6 +470,7 @@ extern char *netdata_configured_host_prefix;
 #include "config/dyncfg.h"
 #include "libjudy/src/Judy.h"
 #include "july/july.h"
+#include "libnetdata/os/os.h"
 #include "threads/threads.h"
 #include "buffer/buffer.h"
 #include "locks/locks.h"

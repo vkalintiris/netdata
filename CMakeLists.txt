@@ -137,9 +137,21 @@ option(ENABLE_CLOUD "Enable Netdata Cloud by default at runtime" ${DEFAULT_FEATU
 option(ENABLE_ML "Enable machine learning features" ${DEFAULT_FEATURE_STATE})
 option(ENABLE_DBENGINE "Enable dbengine metrics storage" True)
 
-# Data collection plugins
-option(ENABLE_PLUGIN_APPS "Enable per-process resource usage monitoring" ${DEFAULT_FEATURE_STATE})
-option(ENABLE_PLUGIN_GO "Enable metric collectors written in Go" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_APPS "enable apps.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_CUPS "enable cups.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_GO "enable go.d.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_LOCAL_LISTENERS "enable local-listeners" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_LOGS_MANAGEMENT "enable logs-management.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_NETWORK_VIEWER "enable network-viewer" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_NFACCT "enable nfacct.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_PERF "enable perf.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_SYSTEMD_JOURNAL "enable systemd-journal.plugin" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_XENSTAT "enable xenstat.plugin" ${DEFAULT_FEATURE_STATE})
 
 cmake_dependent_option(ENABLE_PLUGIN_CUPS "Enable CUPS monitoring" ${DEFAULT_FEATURE_STATE} "LINUX OR FREEBSD OR MACOS" False)
 
@@ -229,6 +241,87 @@ if(NEED_PROTOBUF)
         if(ENABLE_BUNDLED_PROTOBUF)
                 netdata_bundle_protobuf()
         endif()
+endif()
+
+#
+# handling of extra compiler flags
+#
+
+include(NetdataCompilerFlags)
+
+# Disable hardening for debug builds by default.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        option(DISABLE_HARDENING "disable adding extra compiler flags for hardening" TRUE)
+else()
+        option(DISABLE_HARDENING "disable adding extra compiler flags for hardening" FALSE)
+endif()
+
+set(EXTRA_HARDENING_C_FLAGS "")
+set(EXTRA_HARDENING_CXX_FLAGS "")
+
+set(EXTRA_OPT_C_FLAGS "")
+set(EXTRA_OPT_CXX_FLAGS "")
+
+if(NOT ${DISABLE_HARDENING})
+        add_double_extra_compiler_flag("stack-protector" "-fstack-protector-strong" "-fstack-protector" EXTRA_HARDENING)
+        add_double_extra_compiler_flag("_FORTIFY_SOURCE" "-D_FORTIFY_SOURCE=3" "-D_FORTIFY_SOURCE=2" EXTRA_HARDENING)
+        add_simple_extra_compiler_flag("stack-clash-protection" "-fstack-clash-protection" EXTRA_HARDENING)
+        add_simple_extra_compiler_flag("-fcf-protection" "-fcf-protection=full" EXTRA_HARDENING)
+        add_simple_extra_compiler_flag("branch-protection" "-mbranch-protection=standard" EXTRA_HARDENING)
+endif()
+
+foreach(FLAG function-sections data-sections)
+        add_simple_extra_compiler_flag("${FLAG}" "-f${FLAG}" EXTRA_OPT)
+endforeach()
+
+add_simple_extra_compiler_flag("-Wbuiltin-macro-redefined" "-Wno-builtin-macro-redefined" EXTRA_OPT)
+
+foreach(RELTYP RELEASE DEBUG RELWITHDEBINFO MINSIZEREL)
+        foreach(L C CXX)
+                set(CMAKE_${L}_FLAGS_${RELTYP} "${CMAKE_${L}_FLAGS_${RELTYP}} ${EXTRA_HARDENING_C_FLAGS} ${EXTRA_OPT_C_FLAGS}")
+        endforeach()
+endforeach()
+
+#
+# detect OS
+#
+
+set(LINUX       False)
+set(FREEBSD     False)
+set(MACOS       False)
+set(CYGWIN      False)
+set(MSYS        False)
+set(FOREIGN_OS  False)
+
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+        set(MACOS True)
+        set(COMPILED_FOR_MACOS True)
+        find_library(IOKIT IOKit)
+        find_library(FOUNDATION Foundation)
+        message(INFO " Compiling for MacOS... ")
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+        set(FREEBSD True)
+        set(COMPILED_FOR_FREEBSD True)
+        message(INFO " Compiling for FreeBSD... ")
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
+        set(LINUX True)
+        set(COMPILED_FOR_LINUX True)
+        add_definitions(-D_GNU_SOURCE)
+        message(INFO " Compiling for Linux... ")
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "CYGWIN")
+        set(CYGWIN True)
+        set(COMPILED_FOR_CYGWIN True)
+        add_definitions(-D_GNU_SOURCE)
+        message(INFO " Compiling for Cygwin... ")
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "MSYS")
+        set(MSYS True)
+        set(COMPILED_FOR_MSYS True)
+        add_definitions(-D_GNU_SOURCE)
+        message(INFO " Compiling for MSYS... ")
+else()
+        set(FOREIGN_OS True)
+        set(COMPILED_FOR_FOREIGN_OS True)
+        message(INFO " Compiling for Unknown O/S... ")
 endif()
 
 if(ENABLE_PLUGIN_EBPF)
@@ -344,7 +437,6 @@ check_symbol_exists(dlsym "dlfcn.h" HAVE_DLSYM)
 check_function_exists(pthread_getthreadid_np HAVE_PTHREAD_GETTHREADID_NP)
 check_function_exists(pthread_threadid_np HAVE_PTHREAD_THREADID_NP)
 check_function_exists(gettid HAVE_GETTID)
-check_function_exists(waitid HAVE_WAITID)
 check_function_exists(nice HAVE_NICE)
 check_function_exists(recvmmsg HAVE_RECVMMSG)
 check_function_exists(getpriority HAVE_GETPRIORITY)
@@ -643,6 +735,7 @@ set(LIBNETDATA_FILES
         src/libnetdata/log/log.h
         src/libnetdata/os/os.c
         src/libnetdata/os/os.h
+        src/libnetdata/os/compatibility.h
         src/libnetdata/simple_hashtable.h
         src/libnetdata/os/byteorder.h
         src/libnetdata/onewayalloc/onewayalloc.c
@@ -1260,22 +1353,6 @@ set(FREEBSD_PLUGIN_FILES
 )
 
 set(WINDOWS_PLUGIN_FILES
-        src/collectors/windows.plugin/windows_plugin.c
-        src/collectors/windows.plugin/windows_plugin.h
-        src/collectors/windows.plugin/GetSystemUptime.c
-        src/collectors/windows.plugin/GetSystemRAM.c
-        src/collectors/windows.plugin/GetSystemCPU.c
-        src/collectors/windows.plugin/perflib.c
-        src/collectors/windows.plugin/perflib.h
-        src/collectors/windows.plugin/perflib-rrd.c
-        src/collectors/windows.plugin/perflib-rrd.h
-        src/collectors/windows.plugin/perflib-names.c
-        src/collectors/windows.plugin/perflib-dump.c
-        src/collectors/windows.plugin/perflib-storage.c
-        src/collectors/windows.plugin/perflib-processor.c
-        src/collectors/windows.plugin/perflib-network.c
-        src/collectors/windows.plugin/perflib-memory.c
-        src/collectors/windows.plugin/perflib-processes.c
 )
 
 set(PROC_PLUGIN_FILES
@@ -1423,6 +1500,11 @@ elseif(OS_WINDOWS)
                 src/daemon/static_threads_windows.c
                 ${WINDOWS_PLUGIN_FILES}
                 ${INTERNAL_COLLECTORS_FILES}
+        )
+elseif(CYGWIN OR MSYS)
+        list(APPEND NETDATA_FILES
+                src/daemon/static_threads_windows.c
+                ${WINDOWS_PLUGIN_FILES}
         )
 endif()
 
