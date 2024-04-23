@@ -16,32 +16,13 @@ typedef struct _uuid {
         } parts;
     };
 } ND_UUID;
-
-#ifdef __GNUC__
-#define ND_UUID_DEFINE(name,u0,u1,u2,u3,u4,u5,u6,u7,u8,u9,u10,u11,u12,u13,u14,u15) \
-	static const nd_uuid_t name __attribute__ ((unused)) = {u0,u1,u2,u3,u4,u5,u6,u7,u8,u9,u10,u11,u12,u13,u14,u15}
-#else
-#define ND_UUID_DEFINE(name,u0,u1,u2,u3,u4,u5,u6,u7,u8,u9,u10,u11,u12,u13,u14,u15) \
-	static const nd_uuid_t name = {u0,u1,u2,u3,u4,u5,u6,u7,u8,u9,u10,u11,u12,u13,u14,u15}
-#endif
-
-static const ND_UUID UUID_ZERO = (ND_UUID){ { .parts = { .hig64 = 0, .low64 = 0 } }};
-ND_UUID_DEFINE(streaming_from_child_msgid, 0xed,0x4c,0xdb, 0x8f, 0x1b, 0xeb, 0x4a, 0xd3, 0xb5, 0x7c, 0xb3, 0xca, 0xe2, 0xd1, 0x62, 0xfa);
-ND_UUID_DEFINE(streaming_to_parent_msgid, 0x6e, 0x2e, 0x38, 0x39, 0x06, 0x76, 0x48, 0x96, 0x8b, 0x64, 0x60, 0x45, 0xdb, 0xf2, 0x8d, 0x66);
-ND_UUID_DEFINE(health_alert_transition_msgid, 0x9c, 0xe0, 0xcb, 0x58, 0xab, 0x8b, 0x44, 0xdf, 0x82, 0xc4, 0xbf, 0x1a, 0xd9, 0xee, 0x22, 0xde);
-
-// this is also defined in alarm-notify.sh.in
-ND_UUID_DEFINE(health_alert_notification_msgid, 0x6d, 0xb0, 0x01, 0x8e, 0x83, 0xe3, 0x43, 0x20, 0xae, 0x2a, 0x65, 0x9d, 0x78, 0x01, 0x9f, 0xb7);
-
 ND_UUID UUID_generate_from_hash(const void *payload, size_t payload_len);
 
 #define UUIDeq(a, b) ((a).parts.hig64 == (b).parts.hig64 && (a).parts.low64 == (b).parts.low64)
 
-static inline ND_UUID uuid2UUID(const nd_uuid_t uu1) {
-    // uu1 may not be aligned, so copy it to the output
-    ND_UUID copy;
-    memcpy(copy.uuid, uu1, sizeof(nd_uuid_t));
-    return copy;
+static inline ND_UUID uuid2UUID(uuid_t uu1) {
+    ND_UUID *ret = (ND_UUID *)uu1;
+    return *ret;
 }
 
 #ifndef UUID_STR_LEN
