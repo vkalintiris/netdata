@@ -1345,6 +1345,9 @@ set(FREEBSD_PLUGIN_FILES
 )
 
 set(WINDOWS_PLUGIN_FILES
+        src/collectors/windows.plugin/windows_plugin.c
+        src/collectors/windows.plugin/windows_plugin.h
+        src/collectors/windows.plugin/GetSystemTimes.c
 )
 
 set(PROC_PLUGIN_FILES
