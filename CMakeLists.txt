@@ -290,7 +290,7 @@ set(LINUX       False)
 set(FREEBSD     False)
 set(MACOS       False)
 set(CYGWIN      False)
-set(MSYS        False)
+set(WINDOWS     False)
 set(FOREIGN_OS  False)
 
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
@@ -313,15 +313,15 @@ elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "CYGWIN")
         set(COMPILED_FOR_CYGWIN True)
         add_definitions(-D_GNU_SOURCE)
         message(INFO " Compiling for Cygwin... ")
-elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "MSYS")
-        set(MSYS True)
-        set(COMPILED_FOR_MSYS True)
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "MSYS" OR "${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
+        set(WINDOWS True)
+        set(COMPILED_FOR_WINDOWS True)
         add_definitions(-D_GNU_SOURCE)
-        message(INFO " Compiling for MSYS... ")
+        message(INFO " Compiling for Windows... ")
 else()
         set(FOREIGN_OS True)
         set(COMPILED_FOR_FOREIGN_OS True)
-        message(INFO " Compiling for Unknown O/S... ")
+        message(INFO " Compiling for Unknown O/S... (${CMAKE_SYSTEM_NAME})")
 endif()
 
 if(ENABLE_PLUGIN_EBPF)
@@ -1493,7 +1493,7 @@ elseif(OS_WINDOWS)
                 ${WINDOWS_PLUGIN_FILES}
                 ${INTERNAL_COLLECTORS_FILES}
         )
-elseif(CYGWIN OR MSYS)
+elseif(CYGWIN OR WINDOWS)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_windows.c
                 ${WINDOWS_PLUGIN_FILES}
@@ -1673,7 +1673,7 @@ target_include_directories(libnetdata BEFORE PUBLIC ${CONFIG_H_DIR} ${CMAKE_SOUR
 target_link_libraries(libnetdata PUBLIC
         "$<$<NOT:$<BOOL:${HAVE_BUILTIN_ATOMICS}>>:atomic>"
         "$<$<OR:$<BOOL:${LINUX}>,$<BOOL:${FREEBSD}>>:pthread;rt>"
-        "$<$<OR:$<BOOL:${CYGWIN}>,$<BOOL:${MSYS}>>:kernel32>"
+        "$<$<OR:$<BOOL:${CYGWIN}>,$<BOOL:${WINDOWS}>>:kernel32;advapi32>"
         "$<$<BOOL:${LINK_LIBM}>:m>"
         "${SYSTEMD_LDFLAGS}")
 
