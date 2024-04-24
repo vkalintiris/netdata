@@ -58,45 +58,20 @@ endfunction()
 
 # Handle detection of Protobuf
 macro(netdata_detect_protobuf)
-        if(OS_WINDOWS)
-                set(PROTOBUF_PROTOC_EXECUTABLE "$ENV{PROTOBUF_PROTOC_EXECUTABLE}")
-                if(NOT PROTOBUF_PROTOC_EXECUTABLE)
-                        set(PROTOBUF_PROTOC_EXECUTABLE "/bin/protoc")
-                endif()
-                set(PROTOBUF_CFLAGS_OTHER "")
-                set(PROTOBUF_INCLUDE_DIRS "")
-                set(PROTOBUF_LIBRARIES "-lprotobuf")
+        if(COMPILED_FOR_CYGWIN OR COMPILED_FOR_WINDOWS)
+                set(NETDATA_PROTOBUF_PROTOC_EXECUTABLE "/bin/protoc")
+                set(NETDATA_PROTOBUF_CFLAGS_OTHER "")
+                set(NETDATA_PROTOBUF_INCLUDE_DIRS "")
+                set(NETDATA_PROTOBUF_LIBS "-lprotobuf")
 
                 set(ENABLE_PROTOBUF True)
                 set(HAVE_PROTOBUF True)
-        else()
-                if(NOT ENABLE_BUNDLED_PROTOBUF)
-                        if (NOT BUILD_SHARED_LIBS)
-                                set(Protobuf_USE_STATIC_LIBS On)
-                        endif()
+                return()
+        endif()
 
-                        # The FindProtobuf CMake module shipped by upstream CMake is
-                        # broken for Protobuf version 22.0 and newer because it does
-                        # not correctly pull in the new Abseil dependencies. Protobuf
-                        # itself sometimes ships a CMake Package Configuration module
-                        # that _does_ work correctly, so use that in preference to the
-                        # Find module shipped with CMake.
-                        #
-                        # The code below works by first attempting to use find_package
-                        # in config mode, and then checking for the existence of the
-                        # target we actually use that gets defined by the protobuf
-                        # CMake Package Configuration Module to determine if that
-                        # worked. A bit of extra logic is required in the case of the
-                        # config mode working, because some systems ship compatibility
-                        # logic for the old FindProtobuf module while others do not.
-                        #
-                        # Upstream bug reference: https://gitlab.kitware.com/cmake/cmake/-/issues/24321
-                        find_package(Protobuf CONFIG)
-
-                        if(NOT TARGET protobuf::libprotobuf)
-                                message(STATUS "Could not find Protobuf using Config mode, falling back to Module mode")
-                                find_package(Protobuf REQUIRED)
-                        endif()
+        if(NOT ENABLE_BUNDLED_PROTOBUF)
+                if (NOT BUILD_SHARED_LIBS)
+                        set(Protobuf_USE_STATIC_LIBS On)
                 endif()
 
                 # The FindProtobuf CMake module shipped by upstream CMake is
@@ -115,11 +90,11 @@ macro(netdata_detect_protobuf)
                 # logic for the old FindProtobuf module while others do not.
                 #
                 # Upstream bug reference: https://gitlab.kitware.com/cmake/cmake/-/issues/24321
-                #find_package(Protobuf CONFIG)
+                find_package(Protobuf CONFIG)
 
                 if(NOT TARGET protobuf::libprotobuf)
                         message(STATUS "Could not find Protobuf using Config mode, falling back to Module mode")
-                        #find_package(Protobuf REQUIRED)
+                        find_package(Protobuf REQUIRED)
                 endif()
         endif()
 
@@ -184,15 +159,10 @@ macro(netdata_detect_protobuf)
                         set(NETDATA_PROTOBUF_INCLUDE_DIRS "")
                 endif()
         else()
-                #set(NETDATA_PROTOBUF_PROTOC_EXECUTABLE ${PROTOBUF_PROTOC_EXECUTABLE})
-                #set(NETDATA_PROTOBUF_CFLAGS_OTHER ${PROTOBUF_CFLAGS_OTHER})
-                #set(NETDATA_PROTOBUF_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
-                #set(NETDATA_PROTOBUF_LIBS ${PROTOBUF_LIBRARIES})
-
-                set(NETDATA_PROTOBUF_PROTOC_EXECUTABLE "/bin/protoc")
-                set(NETDATA_PROTOBUF_CFLAGS_OTHER "")
-                set(NETDATA_PROTOBUF_INCLUDE_DIRS "")
-                set(NETDATA_PROTOBUF_LIBS "-lprotobuf")
+                set(NETDATA_PROTOBUF_PROTOC_EXECUTABLE ${PROTOBUF_PROTOC_EXECUTABLE})
+                set(NETDATA_PROTOBUF_CFLAGS_OTHER ${PROTOBUF_CFLAGS_OTHER})
+                set(NETDATA_PROTOBUF_INCLUDE_DIRS ${PROTOBUF_INCLUDE_DIRS})
+                set(NETDATA_PROTOBUF_LIBS ${PROTOBUF_LIBRARIES})
         endif()
 endmacro()
 
