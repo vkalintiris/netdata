@@ -1390,8 +1390,8 @@ int uuid_unittest(void);
 int progress_unittest(void);
 int dyncfg_unittest(void);
 
-#ifdef OS_WINDOWS
-int windows_perflib_dump(const char *key);
+#ifdef COMPILED_FOR_WINDOWS
+int windows_perflib_dump(void);
 #endif
 
 int unittest_prepare_rrd(char **user) {
@@ -1601,9 +1601,9 @@ int main(int argc, char **argv) {
                             unittest_running = true;
                             return uuid_unittest();
                         }
-#ifdef OS_WINDOWS
+#ifdef COMPILED_FOR_WINDOWS
                         else if(strcmp(optarg, "perflibdump") == 0) {
-                            return windows_perflib_dump(optind + 1 > argc ? NULL : argv[optind]);
+                            return windows_perflib_dump();
                         }
 #endif
 #ifdef ENABLE_DBENGINE
