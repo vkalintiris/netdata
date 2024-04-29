@@ -99,7 +99,7 @@ set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
 # This is intended to make life easier for developers who are working on one
 # specific feature.
-option(DEFAULT_FEATURE_STATE "Specify the default state for most optional features" True)
+option(DEFAULT_FEATURE_STATE "Specify the default state for most optional features" False)
 mark_as_advanced(DEFAULT_FEATURE_STATE)
 
 # High-level features
@@ -134,7 +134,7 @@ option(ENABLE_EXPORTER_MONGODB "Enable exporting to MongoDB" ${DEFAULT_FEATURE_S
 # Vendoring
 option(ENABLE_BUNDLED_JSONC "Force use of a vendored copy of JSON-C" False)
 option(ENABLE_BUNDLED_YAML "Force use of a vendored copy of libyaml" False)
-option(ENABLE_BUNDLED_PROTOBUF "Use a vendored copy of protobuf" False)
+option(ENABLE_BUNDLED_PROTOBUF "Use a vendored copy of protobuf" True)
 
 # Optional test code
 cmake_dependent_option(ENABLE_LOGS_MANAGEMENT_TESTS "Enable test code for logs-management plugin." True "NOT ENABLE_PLUGIN_LOGS_MANAGEMENT" False)
@@ -156,7 +156,7 @@ mark_as_advanced(FORCE_LEGACY_LIBBPF)
 if(ENABLE_ACLK OR ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE)
         set(NEED_PROTOBUF True)
 else()
-        set(NEED_PROTOBUF False)
+        set(NEED_PROTOBUF True)
 endif()
 
 if(ENABLE_PLUGIN_GO)

@@ -91,7 +91,7 @@ public:
         return Type;
     }
 
-    const std::optional<std::vector<std::string> > &discriminants() const
+    const absl::optional<std::vector<std::string> > &discriminants() const
     {
         assert(Type == ValueType::StringEnum);
         return Discriminants;
@@ -243,7 +243,7 @@ public:
         return NameOverride;
     }
 
-    const std::optional<std::vector<std::string> > &discriminants() const
+    const absl::optional<std::vector<std::string> > &discriminants() const
     {
         assert(Type == ValueType::StringEnum);
         return Discriminants;
