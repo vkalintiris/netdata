@@ -239,7 +239,7 @@ char *dyncfg_escape_id_for_filename(const char *id) {
     char *dest = escaped;
 
     while (*src) {
-        if (is_forbidden_char(*src)) {
+        if (*src == '/' || isspace((uint8_t)*src) || !isprint((uint8_t)*src)) {
             sprintf(dest, "%%%02X", (unsigned char)*src);
             dest += 3;
         } else {
