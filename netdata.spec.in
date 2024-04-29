@@ -315,20 +315,6 @@ happened, on your systems and applications.
 
 %prep
 %setup -q -n "%{name}-%{version}"
-%if 0%{?_have_ebpf}
-%if 0%{?centos_ver:1}
-%if %{centos_ver} < 8
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-libbpf.sh ${RPM_BUILD_DIR}/%{name}-%{version} centos7
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-ebpf-co-re.sh ${RPM_BUILD_DIR}/%{name}-%{version}
-%else
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-libbpf.sh ${RPM_BUILD_DIR}/%{name}-%{version} centos8
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-ebpf-co-re.sh ${RPM_BUILD_DIR}/%{name}-%{version}
-%endif
-%else
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-libbpf.sh ${RPM_BUILD_DIR}/%{name}-%{version} other
-export CFLAGS="${CFLAGS} -fPIC" && ${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-ebpf-co-re.sh ${RPM_BUILD_DIR}/%{name}-%{version}
-%endif
-%endif
 
 %build
 # Conf step
@@ -446,11 +432,6 @@ install -m 644 -p "%{__cmake_builddir}/system/systemd/%{name}.service.v235" "${R
 %endif
 install -m 755 -d "${RPM_BUILD_ROOT}%{_presetdir}"
 install -m 644 -p "system/systemd/50-%{name}.preset" "${RPM_BUILD_ROOT}%{_presetdir}/50-%{name}.preset"
-
-%if 0%{?_have_ebpf}
-${RPM_BUILD_DIR}/%{name}-%{version}/packaging/bundle-ebpf.sh ${RPM_BUILD_DIR}/%{name}-%{version} \
-${RPM_BUILD_ROOT}%{_libexecdir}/%{name}/plugins.d
-%endif
 
 %pre
 

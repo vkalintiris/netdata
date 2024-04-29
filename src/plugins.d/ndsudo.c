@@ -13,7 +13,63 @@ struct command {
     const char *params;
     const char *search[MAX_SEARCH];
 } allowed_commands[] = {
-        {
+    {
+        .name = "smartctl-json-scan",
+        .params = "--json --scan",
+        .search = {
+            [0] = "smartctl",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "smartctl-json-device-info",
+        .params = "--json --all {{deviceName}} --device {{deviceType}} --nocheck {{powerMode}}",
+        .search = {
+            [0] = "smartctl",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "fail2ban-client-status",
+        .params = "status",
+        .search = {
+            [0] = "fail2ban-client",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "fail2ban-client-status-jail",
+        .params = "status {{jail}}",
+        .search = {
+            [0] = "fail2ban-client",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "storcli-controllers-info",
+        .params = "/cALL show all J nolog",
+        .search = {
+            [0] = "storcli",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "storcli-drives-info",
+        .params = "/cALL/eALL/sALL show all J nolog",
+        .search = {
+            [0] = "storcli",
+            [1] = NULL,
+        },
+    },
+    {
+        .name = "lvs-report-json",
+        .params = "--reportformat json --units b --nosuffix -o {{options}}",
+        .search = {
+            [0] = "lvs",
+            [1] = NULL,
+        },
+    },
+    {
         .name = "igt-json",
         .params = "-J -s {{interval}}",
         .search = {
@@ -117,7 +173,7 @@ bool check_string(const char *str, size_t index, char *err, size_t err_size) {
         if(!((c >= 'A' && c <= 'Z') ||
              (c >= 'a' && c <= 'z') ||
              (c >= '0' && c <= '9') ||
-              c == ' ' || c == '_' || c == '-' || c == '/' || c == '.')) {
+              c == ' ' || c == '_' || c == '-' || c == '/' || c == '.' || c == ',')) {
             snprintf(err, err_size, "command line argument No %zu includes invalid character '%c'", index, c);
             return false;
         }

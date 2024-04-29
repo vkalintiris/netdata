@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-cmake_minimum_required(VERSION 3.13.0)
+cmake_minimum_required(VERSION 3.13.0...3.28)
 
 #
 # version atrocities
@@ -59,13 +59,15 @@ project(netdata
         HOMEPAGE_URL "https://www.netdata.cloud"
         LANGUAGES C CXX)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/packaging/cmake/Modules")
+include(CMakeDependentOption)
 
 find_package(PkgConfig REQUIRED)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
 
-option(USE_CXX_11 "use C++11 instead of C++14" False)
+option(USE_CXX_11 "Use C++11 instead of C++14 (should only be used on legacy systems that cannot support C++14, may disable some features)" False)
+mark_as_advanced(USE_CXX_11)
 
 if(USE_CXX_11)
     set(CMAKE_CXX_STANDARD 11)
@@ -80,7 +82,8 @@ if(NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-option(ENABLE_ADDRESS_SANITIZER "enable address sanitizer" False)
+option(ENABLE_ADDRESS_SANITIZER "Build with address sanitizer enabled" False)
+mark_as_advanced(ENABLE_ADDRESS_SANITIZER)
 
 if(ENABLE_ADDRESS_SANITIZER)
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
@@ -94,39 +97,61 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS On)
 set(CONFIG_H_DIR ${CMAKE_BINARY_DIR})
 set(CONFIG_H ${CONFIG_H_DIR}/config.h)
 
-option(ENABLE_CLOUD "enable cloud" True)
-option(ENABLE_ACLK "enable aclk" True)
-option(ENABLE_ML "enable machine learning" True)
-option(ENABLE_H2O "enable h2o" True)
-option(ENABLE_DBENGINE "enable dbengine" True)
+# This is intended to make life easier for developers who are working on one
+# specific feature.
+option(DEFAULT_FEATURE_STATE "Specify the default state for most optional features" True)
+mark_as_advanced(DEFAULT_FEATURE_STATE)
 
-option(ENABLE_PLUGIN_APPS "enable apps.plugin" True)
-option(ENABLE_PLUGIN_CGROUP_NETWORK "enable cgroup-network plugin" True)
-option(ENABLE_PLUGIN_CUPS "enable cups.plugin" True)
-option(ENABLE_PLUGIN_DEBUGFS "enable debugfs.plugin" True)
-option(ENABLE_PLUGIN_EBPF "enable ebpf.plugin" True)
-option(ENABLE_PLUGIN_FREEIPMI "enable freeipmi.plugin" True)
-option(ENABLE_PLUGIN_GO "enable go.d.plugin" True)
-option(ENABLE_PLUGIN_LOCAL_LISTENERS "enable local-listeners" True)
-option(ENABLE_PLUGIN_LOGS_MANAGEMENT "enable logs-management.plugin" True)
-option(ENABLE_PLUGIN_NETWORK_VIEWER "enable network-viewer" True)
-option(ENABLE_PLUGIN_NFACCT "enable nfacct.plugin" True)
-option(ENABLE_PLUGIN_PERF "enable perf.plugin" True)
-option(ENABLE_PLUGIN_SLABINFO "enable slabinfo.plugin" True)
-option(ENABLE_PLUGIN_SYSTEMD_JOURNAL "enable systemd-journal.plugin" True)
-option(ENABLE_PLUGIN_XENSTAT "enable xenstat.plugin" True)
+# High-level features
+option(ENABLE_ACLK "Enable Netdata Cloud support (ACLK)" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_CLOUD "Enable Netdata Cloud by default at runtime" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_ML "Enable machine learning features" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_DBENGINE "Enable dbengine metrics storage" True)
 
-option(ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE "enable prometheus remote write exporter" True)
-option(ENABLE_EXPORTER_MONGODB "enable mongodb exporter" True)
+# Data collection plugins
+option(ENABLE_PLUGIN_APPS "Enable per-process resource usage monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_CGROUP_NETWORK "Enable Linux CGroup network usage monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_CUPS "Enable CUPS monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_DEBUGFS "Enable Linux DebugFS metric collection" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_EBPF "Enable Linux eBPF metric collection" ${DEFAULT_FEATURE_STATE})
+cmake_dependent_option(ENABLE_LEGACY_EBPF_PROGRAMS "Enable eBPF programs for kernels without BTF support" True ENABLE_PLUGIN_EBPF False)
+mark_as_advanced(ENABLE_LEGACY_EBPF_PROGRAMS)
+option(ENABLE_PLUGIN_FREEIPMI "Enable IPMI monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_GO "Enable metric collectors written in Go" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_LOCAL_LISTENERS "Enable local listening socket tracking (including service auto-discovery support)" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_LOGS_MANAGEMENT "Enable log collection and monitoring based on Fluent Bit" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_NETWORK_VIEWER "Enable network viewer functionality" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_NFACCT "Enable Linux NFACCT metric collection" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_PERF "Enable Linux performance counter monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_SLABINFO "Enable Linux kernel SLAB allocator monitoring" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_SYSTEMD_JOURNAL "Enable systemd journal log collection" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_PLUGIN_XENSTAT "Enable Xen domain monitoring" ${DEFAULT_FEATURE_STATE})
 
-option(ENABLE_BUNDLED_JSONC "enable bundled json-c" False)
-option(ENABLE_BUNDLED_YAML "enable bundled yaml" False)
-option(ENABLE_BUNDLED_PROTOBUF "enable bundled protobuf" False)
+# Metrics exporters
+option(ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE "Enable exporting to Prometheus via remote write API" ${DEFAULT_FEATURE_STATE})
+option(ENABLE_EXPORTER_MONGODB "Enable exporting to MongoDB" ${DEFAULT_FEATURE_STATE})
 
-option(ENABLE_LOGS_MANAGEMENT_TESTS "enable logs management tests" True)
+# Vendoring
+option(ENABLE_BUNDLED_JSONC "Force use of a vendored copy of JSON-C" False)
+option(ENABLE_BUNDLED_YAML "Force use of a vendored copy of libyaml" False)
+option(ENABLE_BUNDLED_PROTOBUF "Use a vendored copy of protobuf" False)
 
-option(ENABLE_SENTRY "enable sentry" False)
-option(ENABLE_WEBRTC "enable webrtc" False)
+# Optional test code
+cmake_dependent_option(ENABLE_LOGS_MANAGEMENT_TESTS "Enable test code for logs-management plugin." True "NOT ENABLE_PLUGIN_LOGS_MANAGEMENT" False)
+mark_as_advanced(ENABLE_LOGS_MANAGEMENT_TESTS)
+
+# Experimental features
+option(ENABLE_WEBRTC "Enable WebRTC dashboard communications (experimental)" False)
+mark_as_advanced(ENABLE_WEBRTC)
+option(ENABLE_H2O "Enable H2O web server (experimental)" True)
+mark_as_advanced(ENABLE_H2O)
+
+# Other optional functionality
+option(ENABLE_SENTRY "Build with Sentry Native crash reporting" False)
+mark_as_advanced(ENABLE_SENTRY)
+
+cmake_dependent_option(FORCE_LEGACY_LIBBPF "Force usage of libbpf 0.0.9 instead of the latest version." False "ENABLE_PLUGIN_LIBBPF" False)
+mark_as_advanced(FORCE_LEGACY_LIBBPF)
 
 if(ENABLE_ACLK OR ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE)
         set(NEED_PROTOBUF True)
@@ -196,9 +221,9 @@ include(NetdataCompilerFlags)
 
 # Disable hardening for debug builds by default.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        option(DISABLE_HARDENING "disable adding extra compiler flags for hardening" TRUE)
+        option(DISABLE_HARDENING "Disable adding extra compiler flags for hardening" TRUE)
 else()
-        option(DISABLE_HARDENING "disable adding extra compiler flags for hardening" FALSE)
+        option(DISABLE_HARDENING "Disable adding extra compiler flags for hardening" FALSE)
 endif()
 
 set(EXTRA_HARDENING_C_FLAGS "")
@@ -250,6 +275,18 @@ else()
         add_definitions(-D_GNU_SOURCE)
 endif()
 
+if(ENABLE_PLUGIN_EBPF)
+        include(NetdataLibBPF)
+        include(NetdataEBPFCORE)
+
+        if(NOT LINUX)
+            message(FATAL_ERROR "The eBPF plugin is not supported on non-Linux systems")
+        endif()
+
+        netdata_bundle_libbpf()
+        netdata_fetch_ebpf_co_re()
+endif()
+
 #
 # Libm
 #
@@ -265,7 +302,7 @@ if(NOT HAVE_LOG10)
         list(APPEND CMAKE_REQUIRED_LIBRARIES m)
         check_function_exists(log10 HAVE_LOG10)
         if(HAVE_LOG10)
-                set(LINK_LIBM True CACHE BOOL "" FORCE)
+                set(LINK_LIBM True)
         else()
                 message(FATAL_ERROR "Can not use log10 with/without libm.")
         endif()
@@ -278,6 +315,10 @@ endif()
 include(NetdataJSONC)
 include(NetdataYAML)
 
+if(ENABLE_LEGACY_EBPF_PROGRAMS)
+        include(NetdataEBPFLegacy)
+endif()
+
 if(ENABLE_SENTRY)
         include(NetdataSentry)
 endif()
@@ -288,6 +329,10 @@ endif()
 
 netdata_detect_jsonc()
 netdata_detect_libyaml()
+
+if(ENABLE_LEGACY_EBPF_PROGRAMS)
+        netdata_fetch_legacy_ebpf_code()
+endif()
 
 if(ENABLE_SENTRY)
         netdata_bundle_sentry()
@@ -671,10 +716,10 @@ set(LIBNETDATA_FILES
 )
 
 if(ENABLE_PLUGIN_EBPF)
-    list(APPEND LIBNETDATA_FILES
-            src/libnetdata/ebpf/ebpf.c
-            src/libnetdata/ebpf/ebpf.h
-    )
+        list(APPEND LIBNETDATA_FILES
+                src/libnetdata/ebpf/ebpf.c
+                src/libnetdata/ebpf/ebpf.h
+        )
 endif()
 
 set(LIBH2O_FILES
@@ -1290,7 +1335,6 @@ set(NETDATA_FILES
         ${CLAIM_PLUGIN_FILES}
         ${SPAWN_PLUGIN_FILES}
         ${ACLK_ALWAYS_BUILD}
-        ${TIMEX_PLUGIN_FILES}
         ${PROFILE_PLUGIN_FILES}
         src/otel/otel.cc
         src/otel/otel_utils.cc
@@ -1324,6 +1368,7 @@ if(LINUX)
                 ${DISKSPACE_PLUGIN_FILES}
                 ${PROC_PLUGIN_FILES}
                 ${TC_PLUGIN_FILES}
+                ${TIMEX_PLUGIN_FILES}
         )
 
         if(ENABLE_SENTRY)
@@ -1335,11 +1380,13 @@ elseif(MACOS)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_macos.c
                 ${MACOS_PLUGIN_FILES}
+                ${TIMEX_PLUGIN_FILES}
         )
 elseif(FREEBSD)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_freebsd.c
                 ${FREEBSD_PLUGIN_FILES}
+                ${TIMEX_PLUGIN_FILES}
         )
 endif()
 
@@ -1530,16 +1577,7 @@ target_link_libraries(libnetdata PUBLIC
 
 # ebpf
 if(ENABLE_PLUGIN_EBPF)
-        target_link_libraries(libnetdata PUBLIC ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/libbpf.a)
-        target_include_directories(libnetdata BEFORE PUBLIC
-                ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include
-                ${CMAKE_SOURCE_DIR}/externaldeps/libbpf/include/uapi
-        )
-
-        pkg_check_modules(ELF REQUIRED libelf)
-        target_include_directories(libnetdata BEFORE PUBLIC ${ELF_INCLUDE_DIRS})
-        target_compile_options(libnetdata PUBLIC ${ELF_CFLAGS_OTHER})
-        target_link_libraries(libnetdata PUBLIC ${ELF_LIBRARIES})
+        netdata_add_libbpf_to_target(libnetdata)
 endif()
 
 # judy
@@ -1879,6 +1917,10 @@ if(ENABLE_PLUGIN_CGROUP_NETWORK)
 endif()
 
 if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
+        if(NOT SYSTEMD_FOUND)
+                message(FATAL_ERROR "Systemd journal plugin requires systemd, but systemd was not found.")
+        endif()
+
         add_executable(systemd-journal.plugin ${SYSTEMD_JOURNAL_PLUGIN_FILES})
         target_link_libraries(systemd-journal.plugin libnetdata)
 
@@ -1936,9 +1978,15 @@ if(ENABLE_PLUGIN_EBPF)
     add_executable(ebpf.plugin ${EBPF_PLUGIN_FILES})
     target_link_libraries(ebpf.plugin libnetdata)
 
+    netdata_add_ebpf_co_re_to_target(ebpf.plugin)
+
     install(TARGETS ebpf.plugin
             COMPONENT ebpf_plugin
             DESTINATION usr/libexec/netdata/plugins.d)
+
+    if(ENABLE_LEGACY_EBPF_PROGRAMS)
+        netdata_install_legacy_ebpf_code()
+    endif()
 endif()
 
 if(ENABLE_PLUGIN_LOCAL_LISTENERS)
@@ -2551,7 +2599,6 @@ install(FILES src/collectors/python.d.plugin/python.d.conf
 # conf files
 
 install(FILES
-        src/collectors/python.d.plugin/adaptec_raid/adaptec_raid.conf
         src/collectors/python.d.plugin/alarms/alarms.conf
         src/collectors/python.d.plugin/am2320/am2320.conf
         src/collectors/python.d.plugin/anomalies/anomalies.conf
@@ -2563,16 +2610,13 @@ install(FILES
         src/collectors/python.d.plugin/dovecot/dovecot.conf
         src/collectors/python.d.plugin/example/example.conf
         src/collectors/python.d.plugin/exim/exim.conf
-        src/collectors/python.d.plugin/fail2ban/fail2ban.conf
         src/collectors/python.d.plugin/gearman/gearman.conf
         src/collectors/python.d.plugin/go_expvar/go_expvar.conf
         src/collectors/python.d.plugin/haproxy/haproxy.conf
-        src/collectors/python.d.plugin/hddtemp/hddtemp.conf
         src/collectors/python.d.plugin/hpssa/hpssa.conf
         src/collectors/python.d.plugin/icecast/icecast.conf
         src/collectors/python.d.plugin/ipfs/ipfs.conf
         src/collectors/python.d.plugin/litespeed/litespeed.conf
-        src/collectors/python.d.plugin/megacli/megacli.conf
         src/collectors/python.d.plugin/memcached/memcached.conf
         src/collectors/python.d.plugin/monit/monit.conf
         src/collectors/python.d.plugin/nsd/nsd.conf
@@ -2586,7 +2630,6 @@ install(FILES
         src/collectors/python.d.plugin/retroshare/retroshare.conf
         src/collectors/python.d.plugin/riakkv/riakkv.conf
         src/collectors/python.d.plugin/samba/samba.conf
-        src/collectors/python.d.plugin/sensors/sensors.conf
         src/collectors/python.d.plugin/smartd_log/smartd_log.conf
         src/collectors/python.d.plugin/spigotmc/spigotmc.conf
         src/collectors/python.d.plugin/squid/squid.conf
@@ -2602,7 +2645,6 @@ install(FILES
 # scripts
 
 install(FILES
-        src/collectors/python.d.plugin/adaptec_raid/adaptec_raid.chart.py
         src/collectors/python.d.plugin/alarms/alarms.chart.py
         src/collectors/python.d.plugin/am2320/am2320.chart.py
         src/collectors/python.d.plugin/anomalies/anomalies.chart.py
@@ -2614,16 +2656,13 @@ install(FILES
         src/collectors/python.d.plugin/dovecot/dovecot.chart.py
         src/collectors/python.d.plugin/example/example.chart.py
         src/collectors/python.d.plugin/exim/exim.chart.py
-        src/collectors/python.d.plugin/fail2ban/fail2ban.chart.py
         src/collectors/python.d.plugin/gearman/gearman.chart.py
         src/collectors/python.d.plugin/go_expvar/go_expvar.chart.py
         src/collectors/python.d.plugin/haproxy/haproxy.chart.py
-        src/collectors/python.d.plugin/hddtemp/hddtemp.chart.py
         src/collectors/python.d.plugin/hpssa/hpssa.chart.py
         src/collectors/python.d.plugin/icecast/icecast.chart.py
         src/collectors/python.d.plugin/ipfs/ipfs.chart.py
         src/collectors/python.d.plugin/litespeed/litespeed.chart.py
-        src/collectors/python.d.plugin/megacli/megacli.chart.py
         src/collectors/python.d.plugin/memcached/memcached.chart.py
         src/collectors/python.d.plugin/monit/monit.chart.py
         src/collectors/python.d.plugin/nsd/nsd.chart.py
@@ -2637,7 +2676,6 @@ install(FILES
         src/collectors/python.d.plugin/retroshare/retroshare.chart.py
         src/collectors/python.d.plugin/riakkv/riakkv.chart.py
         src/collectors/python.d.plugin/samba/samba.chart.py
-        src/collectors/python.d.plugin/sensors/sensors.chart.py
         src/collectors/python.d.plugin/smartd_log/smartd_log.chart.py
         src/collectors/python.d.plugin/spigotmc/spigotmc.chart.py
         src/collectors/python.d.plugin/squid/squid.chart.py
