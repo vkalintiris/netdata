@@ -3,9 +3,6 @@
 #include "windows_plugin.h"
 #include "windows-internals.h"
 
-// --------------------------------------------------------------------------------------------------------------------
-// network protocols
-
 struct network_protocol {
     const char *protocol;
 
@@ -154,6 +151,15 @@ struct network_protocol tcp46 = {
     }
 };
 
+static void initialize(void) {
+    ;
+}
+
+static bool do_network_interface(PERF_DATA_BLOCK *pDataBlock, int update_every) {
+    ;
+    return true;
+}
+
 static void protocol_packets_chart_update(struct network_protocol *p, int update_every) {
     if(!p->packets.st) {
         p->packets.st = rrdset_create_localhost(
@@ -221,198 +227,6 @@ static bool do_network_protocol(PERF_DATA_BLOCK *pDataBlock, int update_every, s
     return true;
 }
 
-// --------------------------------------------------------------------------------------------------------------------
-// network interfaces
-
-struct network_interface {
-    bool collected_metadata;
-
-    struct {
-        COUNTER_DATA received;
-        COUNTER_DATA sent;
-
-        RRDSET *st;
-        RRDDIM *rd_received;
-        RRDDIM *rd_sent;
-    } packets;
-
-    struct {
-        COUNTER_DATA received;
-        COUNTER_DATA sent;
-
-        RRDSET *st;
-        RRDDIM *rd_received;
-        RRDDIM *rd_sent;
-    } traffic;
-};
-
-static DICTIONARY *physical_interfaces = NULL, *virtual_interfaces = NULL;
-
-static void network_interface_init(struct network_interface *ni) {
-    ni->packets.received.key = "Packets Received/sec";
-    ni->packets.sent.key = "Packets Sent/sec";
-
-    ni->traffic.received.key = "Bytes Received/sec";
-    ni->traffic.sent.key = "Bytes Sent/sec";
-}
-
-void dict_interface_insert_cb(const DICTIONARY_ITEM *item __maybe_unused, void *value, void *data __maybe_unused) {
-    struct network_interface *ni = value;
-    network_interface_init(ni);
-}
-
-static void initialize(void) {
-    physical_interfaces = dictionary_create_advanced(DICT_OPTION_DONT_OVERWRITE_VALUE |
-                                                         DICT_OPTION_FIXED_SIZE, NULL, sizeof(struct network_interface));
-
-    virtual_interfaces = dictionary_create_advanced(DICT_OPTION_DONT_OVERWRITE_VALUE |
-                                                        DICT_OPTION_FIXED_SIZE, NULL, sizeof(struct network_interface));
-
-    dictionary_register_insert_callback(physical_interfaces, dict_interface_insert_cb, NULL);
-    dictionary_register_insert_callback(virtual_interfaces, dict_interface_insert_cb, NULL);
-}
-
-static void add_interface_labels(RRDSET *st, const char *name, bool physical) {
-    rrdlabels_add(st->rrdlabels, "device", name, RRDLABEL_SRC_AUTO);
-    rrdlabels_add(st->rrdlabels, "interface_type", physical ? "real" : "virtual", RRDLABEL_SRC_AUTO);
-}
-
-static bool is_physical_interface(const char *name) {
-    void *d = dictionary_get(physical_interfaces, name);
-    return d ? true : false;
-}
-
-static bool do_network_interface(PERF_DATA_BLOCK *pDataBlock, int update_every, bool physical) {
-    DICTIONARY *dict = physical_interfaces;
-
-    PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, physical ? "Network Interface" : "Network Adapter");
-    if(!pObjectType) return false;
-
-    uint64_t total_received = 0, total_sent = 0;
-
-    PERF_INSTANCE_DEFINITION *pi = NULL;
-    for(LONG i = 0; i < pObjectType->NumInstances ; i++) {
-        pi = perflibForEachInstance(pDataBlock, pObjectType, pi);
-        if(!pi) break;
-
-        if(!getInstanceName(pDataBlock, pObjectType, pi, windows_shared_buffer, sizeof(windows_shared_buffer)))
-            strncpyz(windows_shared_buffer, "[unknown]", sizeof(windows_shared_buffer) - 1);
-
-        if(strcasecmp(windows_shared_buffer, "_Total") == 0)
-            continue;
-
-        if(!physical && is_physical_interface(windows_shared_buffer))
-            // this virtual interface is already reported as physical interface
-            continue;
-
-        struct network_interface *d = dictionary_set(dict, windows_shared_buffer, NULL, sizeof(*d));
-
-        if(!d->collected_metadata) {
-            // TODO - get metadata about the network interface
-            d->collected_metadata = true;
-        }
-
-        if(perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &d->traffic.received) ||
-            perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &d->traffic.sent)) {
-
-            if(d->traffic.received.current.Data == 0 && d->traffic.sent.current.Data == 0)
-                // this interface has not received or sent any traffic
-                continue;
-
-            if (unlikely(!d->traffic.st)) {
-                d->traffic.st = rrdset_create_localhost(
-                    "net",
-                    windows_shared_buffer,
-                    NULL,
-                    windows_shared_buffer,
-                    "net.net",
-                    "Bandwidth",
-                    "kilobits/s",
-                    PLUGIN_WINDOWS_NAME,
-                    "PerflibNetwork",
-                    NETDATA_CHART_PRIO_FIRST_NET_IFACE,
-                    update_every,
-                    RRDSET_TYPE_AREA);
-
-                rrdset_flag_set(d->traffic.st, RRDSET_FLAG_DETAIL);
-
-                add_interface_labels(d->traffic.st, windows_shared_buffer, physical);
-
-                d->traffic.rd_received = rrddim_add(d->traffic.st, "received", NULL, 8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
-                d->traffic.rd_sent = rrddim_add(d->traffic.st, "sent", NULL, -8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
-            }
-
-            total_received += d->traffic.received.current.Data;
-            total_sent += d->traffic.sent.current.Data;
-
-            rrddim_set_by_pointer(d->traffic.st, d->traffic.rd_received, (collected_number)d->traffic.received.current.Data);
-            rrddim_set_by_pointer(d->traffic.st, d->traffic.rd_sent, (collected_number)d->traffic.sent.current.Data);
-            rrdset_done(d->traffic.st);
-        }
-
-        if(perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &d->packets.received) ||
-            perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &d->packets.sent)) {
-
-            if (unlikely(!d->packets.st)) {
-                d->packets.st = rrdset_create_localhost(
-                    "net_packets",
-                    windows_shared_buffer,
-                    NULL,
-                    windows_shared_buffer,
-                    "net.packets",
-                    "Packets",
-                    "packets/s",
-                    PLUGIN_WINDOWS_NAME,
-                    "PerflibNetwork",
-                    NETDATA_CHART_PRIO_FIRST_NET_IFACE + 1,
-                    update_every,
-                    RRDSET_TYPE_LINE);
-
-                rrdset_flag_set(d->packets.st, RRDSET_FLAG_DETAIL);
-
-                add_interface_labels(d->traffic.st, windows_shared_buffer, physical);
-
-                d->packets.rd_received = rrddim_add(d->packets.st, "received", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-                d->packets.rd_sent = rrddim_add(d->packets.st, "sent", NULL, -1, 1, RRD_ALGORITHM_INCREMENTAL);
-            }
-
-            rrddim_set_by_pointer(d->packets.st, d->packets.rd_received, (collected_number)d->packets.received.current.Data);
-            rrddim_set_by_pointer(d->packets.st, d->packets.rd_sent, (collected_number)d->packets.sent.current.Data);
-            rrdset_done(d->packets.st);
-        }
-    }
-
-    if(physical) {
-        static RRDSET *st = NULL;
-        static RRDDIM *rd_received = NULL, *rd_sent = NULL;
-
-        if (unlikely(!st)) {
-            st = rrdset_create_localhost(
-                "system",
-                "net",
-                NULL,
-                "network",
-                "system.net",
-                "Physical Network Interfaces Aggregated Bandwidth",
-                "kilobits/s",
-                PLUGIN_WINDOWS_NAME,
-                "PerflibNetwork",
-                NETDATA_CHART_PRIO_SYSTEM_NET,
-                update_every,
-                RRDSET_TYPE_AREA);
-
-            rd_received = rrddim_add(st, "received", NULL, 8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
-            rd_sent = rrddim_add(st, "sent", NULL, -8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
-        }
-
-        rrddim_set_by_pointer(st, rd_received, (collected_number)total_received);
-        rrddim_set_by_pointer(st, rd_sent, (collected_number)total_sent);
-        rrdset_done(st);
-    }
-
-    return true;
-}
-
 int do_PerflibNetwork(int update_every, usec_t dt __maybe_unused) {
     static bool initialized = false;
 
@@ -422,14 +236,13 @@ int do_PerflibNetwork(int update_every, usec_t dt __maybe_unused) {
     }
 
     DWORD id = RegistryFindIDByName("Network Interface");
-    if(id == PERFLIB_REGISTRY_NAME_NOT_FOUND)
+    if(id == REGISTRY_NAME_NOT_FOUND)
         return -1;
 
     PERF_DATA_BLOCK *pDataBlock = perflibGetPerformanceData(id);
     if(!pDataBlock) return -1;
 
-    do_network_interface(pDataBlock, update_every, true);
-    do_network_interface(pDataBlock, update_every, false);
+    do_network_interface(pDataBlock, update_every);
 
     struct network_protocol *tcp4 = NULL, *tcp6 = NULL;
     for(size_t i = 0; networks[i].protocol ;i++) {
