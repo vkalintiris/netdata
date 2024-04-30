@@ -228,7 +228,7 @@ void spinlock_init(SPINLOCK *spinlock) {
     memset(spinlock, 0, sizeof(SPINLOCK));
 }
 
-static inline void spinlock_lock_internal(SPINLOCK *spinlock) {
+static inline void spinlock_lock_internal(SPINLOCK *spinlock, bool cancelable) {
 #ifdef NETDATA_INTERNAL_CHECKS
     size_t spins = 0;
 #endif
