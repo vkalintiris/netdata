@@ -51,6 +51,8 @@ static void initialize(void) {
     dictionary_register_insert_callback(processors, dict_processor_insert_cb, NULL);
 }
 
+static char buffer[4096];
+
 static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
     PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, "Processor");
     if(!pObjectType) return false;
@@ -63,22 +65,22 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
         pi = perflibForEachInstance(pDataBlock, pObjectType, pi);
         if(!pi) break;
 
-        if(!getInstanceName(pDataBlock, pObjectType, pi, windows_shared_buffer, sizeof(windows_shared_buffer)))
-            strncpyz(windows_shared_buffer, "[unknown]", sizeof(windows_shared_buffer) - 1);
+        if(!getInstanceName(pDataBlock, pObjectType, pi, buffer, sizeof(buffer)))
+            strncpyz(buffer, "[unknown]", sizeof(buffer) - 1);
 
         bool is_total = false;
         struct processor *p;
         int cpu = -1;
-        if(strcasecmp(windows_shared_buffer, "_Total") == 0) {
+        if(strcasecmp(buffer, "_Total") == 0) {
             p = &total;
             is_total = true;
             cpu = -1;
         }
         else {
-            p = dictionary_set(processors, windows_shared_buffer, NULL, sizeof(*p));
+            p = dictionary_set(processors, buffer, NULL, sizeof(*p));
             is_total = false;
-            cpu = str2i(windows_shared_buffer);
-            snprintfz(windows_shared_buffer, sizeof(windows_shared_buffer), "cpu%d", cpu);
+            cpu = str2i(buffer);
+            snprintfz(buffer, sizeof(buffer), "cpu%d", cpu);
 
             if(cpu + 1 > cores_found)
                 cores_found = cpu + 1;
@@ -99,8 +101,9 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
         if(!p->st) {
             p->st = rrdset_create_localhost(
                 is_total ? "system" : "cpu"
-                , is_total ? "cpu" : windows_shared_buffer, NULL
-                , is_total ? "cpu" : "utilization"
+                , is_total ? "cpu" : buffer
+                , NULL
+                , is_total ? "utilization" : buffer
                 , is_total ? "system.cpu" : "cpu.cpu"
                 , is_total ? "Total CPU Utilization" : "Core Utilization"
                 , "percentage"
@@ -119,22 +122,16 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
             rrddim_hide(p->st, "idle");
 
             if(!is_total)
-                rrdlabels_add(p->st->rrdlabels, "cpu", windows_shared_buffer, RRDLABEL_SRC_AUTO);
+                rrdlabels_add(p->st->rrdlabels, "cpu", buffer, RRDLABEL_SRC_AUTO);
             else
                 cpus_var = rrdvar_host_variable_add_and_acquire(localhost, "active_processors");
         }
 
-        uint64_t user = p->percentUserTime.current.Data;
-        uint64_t system = p->percentPrivilegedTime.current.Data;
-        uint64_t dpc = p->percentDPCTime.current.Data;
-        uint64_t irq = p->percentInterruptTime.current.Data;
-        uint64_t idle = p->percentIdleTime.current.Data;
-
-        rrddim_set_by_pointer(p->st, p->rd_user, (collected_number)user);
-        rrddim_set_by_pointer(p->st, p->rd_system, (collected_number)system);
-        rrddim_set_by_pointer(p->st, p->rd_irq, (collected_number)irq);
-        rrddim_set_by_pointer(p->st, p->rd_dpc, (collected_number)dpc);
-        rrddim_set_by_pointer(p->st, p->rd_idle, (collected_number)idle);
+        rrddim_set_by_pointer(p->st, p->rd_user, (collected_number)p->percentUserTime.current.Data);
+        rrddim_set_by_pointer(p->st, p->rd_system, (collected_number)(p->percentPrivilegedTime.current.Data - p->percentDPCTime.current.Data));
+        rrddim_set_by_pointer(p->st, p->rd_irq, (collected_number)p->percentInterruptTime.current.Data);
+        rrddim_set_by_pointer(p->st, p->rd_dpc, (collected_number)p->percentDPCTime.current.Data);
+        rrddim_set_by_pointer(p->st, p->rd_idle, (collected_number)p->percentIdleTime.current.Data);
         rrdset_done(p->st);
 
 //        if(!p->st2) {
@@ -179,7 +176,7 @@ int do_PerflibProcessor(int update_every, usec_t dt __maybe_unused) {
     }
 
     DWORD id = RegistryFindIDByName("Processor");
-    if(id == PERFLIB_REGISTRY_NAME_NOT_FOUND)
+    if(id == REGISTRY_NAME_NOT_FOUND)
         return -1;
 
     PERF_DATA_BLOCK *pDataBlock = perflibGetPerformanceData(id);
