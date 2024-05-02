@@ -21,7 +21,7 @@
         , RRDSET_TYPE_STACKED                   \
         )
 
-#ifdef OS_WINDOWS
+#if defined(COMPILED_FOR_WINDOWS)
 static inline void common_system_ram(uint64_t free_bytes, uint64_t used_bytes, int update_every) {
     static RRDSET *st_system_ram = NULL;
     static RRDDIM *rd_free = NULL;
@@ -33,14 +33,13 @@ static inline void common_system_ram(uint64_t free_bytes, uint64_t used_bytes, i
         rd_used    = rrddim_add(st_system_ram, "used",    NULL, 1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
     }
 
-    // this always have to be in base units, so that exporting sends base units to other time-series db
     rrddim_set_by_pointer(st_system_ram, rd_free,    (collected_number)free_bytes);
     rrddim_set_by_pointer(st_system_ram, rd_used,    (collected_number)used_bytes);
     rrdset_done(st_system_ram);
 }
 #endif
 
-#ifdef OS_LINUX
+#if defined(COMPILED_FOR_LINUX)
 static inline void common_system_ram(uint64_t free_bytes, uint64_t used_bytes, uint64_t cached_bytes, uint64_t buffers_bytes, int update_every) {
     static RRDSET *st_system_ram = NULL;
     static RRDDIM *rd_free = NULL;
@@ -56,7 +55,6 @@ static inline void common_system_ram(uint64_t free_bytes, uint64_t used_bytes, u
         rd_buffers = rrddim_add(st_system_ram, "buffers", NULL, 1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
     }
 
-    // this always have to be in base units, so that exporting sends base units to other time-series db
     rrddim_set_by_pointer(st_system_ram, rd_free,    (collected_number)free_bytes);
     rrddim_set_by_pointer(st_system_ram, rd_used,    (collected_number)used_bytes);
     rrddim_set_by_pointer(st_system_ram, rd_cached, (collected_number)cached_bytes);

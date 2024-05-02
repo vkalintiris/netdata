@@ -436,7 +436,6 @@ check_function_exists(nice HAVE_NICE)
 check_function_exists(recvmmsg HAVE_RECVMMSG)
 check_function_exists(getpriority HAVE_GETPRIORITY)
 check_function_exists(setenv HAVE_SETENV)
-check_function_exists(strndup HAVE_STRNDUP)
 
 check_function_exists(sched_getscheduler HAVE_SCHED_GETSCHEDULER)
 check_function_exists(sched_setscheduler HAVE_SCHED_SETSCHEDULER)
@@ -1088,13 +1087,8 @@ endif()
 
 set(INTERNAL_COLLECTORS_FILES
         src/collectors/common-contexts/common-contexts.h
-        src/collectors/common-contexts/disk.io.h
-        src/collectors/common-contexts/system.io.h
-        src/collectors/common-contexts/system.processes.h
-        src/collectors/common-contexts/system.ram.h
         src/collectors/common-contexts/mem.swap.h
-        src/collectors/common-contexts/mem.pgfaults.h
-        src/collectors/common-contexts/mem.available.h
+        src/collectors/common-contexts/system.ram.h
 )
 
 set(PLUGINSD_PLUGIN_FILES
@@ -1499,16 +1493,11 @@ elseif(OS_FREEBSD)
                 ${TIMEX_PLUGIN_FILES}
                 ${INTERNAL_COLLECTORS_FILES}
         )
-elseif(OS_WINDOWS)
-        list(APPEND NETDATA_FILES
-                src/daemon/static_threads_windows.c
-                ${WINDOWS_PLUGIN_FILES}
-                ${INTERNAL_COLLECTORS_FILES}
-        )
 elseif(WINDOWS)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_windows.c
                 ${WINDOWS_PLUGIN_FILES}
+                ${INTERNAL_COLLECTORS_FILES}
         )
 endif()
 
