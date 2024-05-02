@@ -76,7 +76,7 @@ extern "C" {
 #define NETDATA_OS_TYPE "freebsd"
 #elif defined(__APPLE__)
 #define NETDATA_OS_TYPE "macos"
-#elif defined(OS_WINDOWS)
+#elif defined(COMPILED_FOR_WINDOWS)
 #define NETDATA_OS_TYPE "windows"
 #else
 #define NETDATA_OS_TYPE "linux"
