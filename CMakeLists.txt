@@ -1087,8 +1087,9 @@ endif()
 
 set(INTERNAL_COLLECTORS_FILES
         src/collectors/common-contexts/common-contexts.h
-        src/collectors/common-contexts/mem.swap.h
         src/collectors/common-contexts/system.ram.h
+        src/collectors/common-contexts/mem.swap.h
+        src/collectors/common-contexts/mem.pgfaults.h
 )
 
 set(PLUGINSD_PLUGIN_FILES
@@ -1349,8 +1350,9 @@ set(WINDOWS_PLUGIN_FILES
         src/collectors/windows.plugin/perflib-names.c
         src/collectors/windows.plugin/perflib-dump.c
         src/collectors/windows.plugin/perflib-storage.c
-        src/collectors/windows.plugin/perflib-network.c
         src/collectors/windows.plugin/perflib-processor.c
+        src/collectors/windows.plugin/perflib-network.c
+        src/collectors/windows.plugin/perflib-memory.c
 )
 
 set(PROC_PLUGIN_FILES
