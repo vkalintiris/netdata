@@ -1575,14 +1575,14 @@ int do_proc_diskstats(int update_every, usec_t dt) {
                                                netdata_zero_metrics_enabled == CONFIG_BOOLEAN_YES))) {
             d->do_io = CONFIG_BOOLEAN_YES;
 
-            last_readsectors = d->disk_io.rd_io_reads ? d->disk_io.rd_io_reads->collector.last_collected_value / SECTOR_SIZE : 0;
-            last_writesectors = d->disk_io.rd_io_writes ? d->disk_io.rd_io_writes->collector.last_collected_value / SECTOR_SIZE : 0;
+            last_readsectors = d->disk_io.rd_io_reads->collector.last_collected_value;
+            last_writesectors = d->disk_io.rd_io_writes->collector.last_collected_value;
 
             common_disk_io(&d->disk_io,
                            d->chart_id,
                            d->disk,
-                           readsectors * SECTOR_SIZE,
-                           writesectors * SECTOR_SIZE,
+                           readsectors * d->sector_size,
+                           writesectors * d->sector_size,
                            update_every,
                            disk_labels_cb,
                            d);
