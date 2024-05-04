@@ -5,14 +5,16 @@
 
 #include "../libnetdata.h"
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     NETDATA_THREAD_OPTION_DEFAULT          = 0 << 0,
     NETDATA_THREAD_OPTION_JOINABLE         = 1 << 0,
     NETDATA_THREAD_OPTION_DONT_LOG_STARTUP = 1 << 1,
     NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP = 1 << 2,
     NETDATA_THREAD_STATUS_STARTED          = 1 << 3,
-    NETDATA_THREAD_STATUS_FINISHED         = 1 << 4,
-    NETDATA_THREAD_STATUS_JOINED           = 1 << 5,
+    NETDATA_THREAD_STATUS_CANCELLED        = 1 << 4,
+    NETDATA_THREAD_STATUS_FINISHED         = 1 << 5,
+    NETDATA_THREAD_STATUS_JOINED           = 1 << 6,
+    NETDATA_THREAD_STATUS_ACQUIRED         = 1 << 7,
 } NETDATA_THREAD_OPTIONS;
 
 #define NETDATA_THREAD_OPTIONS_ALL (NETDATA_THREAD_OPTION_JOINABLE | NETDATA_THREAD_OPTION_DONT_LOG_STARTUP | NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP)
@@ -74,10 +76,18 @@ void nd_thread_join(ND_THREAD * nti);
 ND_THREAD *nd_thread_self(void);
 bool nd_thread_is_me(ND_THREAD *nti);
 
-typedef void (*nd_thread_canceller)(void *data);
-void nd_thread_register_canceller(nd_thread_canceller cb, void *data);
-void nd_thread_signal_cancel(ND_THREAD *nti);
-bool nd_thread_signaled_to_cancel(void);
+#ifdef NETDATA_INTERNAL_CHECKS
+#define netdata_thread_cancel(thread) netdata_thread_cancel_with_trace(thread, __LINE__, __FILE__, __FUNCTION__)
+int netdata_thread_cancel_with_trace(netdata_thread_t thread, int line, const char *file, const char *function);
+#else
+int netdata_thread_cancel(netdata_thread_t thread);
+#endif
+
+void nd_thread_join(netdata_thread_t thread);
+
+#define NETDATA_THREAD_NAME_MAX 15
+void uv_thread_set_name_np(uv_thread_t ut, const char* name);
+void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1]);
 
 #define ND_THREAD_TAG_MAX 15
 void uv_thread_set_name_np(const char* name);

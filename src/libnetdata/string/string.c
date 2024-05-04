@@ -671,8 +671,9 @@ int string_unittest(size_t entries) {
         sleep_usec(seconds_to_run * USEC_PER_SEC);
 
         __atomic_store_n(&tu.join, 1, __ATOMIC_RELAXED);
-        for (int i = 0; i < threads_to_create; i++)
+        for (int i = 0; i < threads_to_create; i++) {
             nd_thread_join(threads[i]);
+        }
 
         size_t inserts, deletes, searches, sentries, references, memory, duplications, releases;
         string_statistics(&inserts, &deletes, &searches, &sentries, &references, &memory, &duplications, &releases);

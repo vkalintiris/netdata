@@ -902,7 +902,7 @@ int mrg_unittest(void) {
 
     usec_t started_ut = now_monotonic_usec();
 
-    ND_THREAD *th[threads];
+    netdata_thread_t th[threads];
     for(size_t i = 0; i < threads ; i++) {
         char buf[15 + 1];
         snprintfz(buf, sizeof(buf) - 1, "TH[%zu]", i);
