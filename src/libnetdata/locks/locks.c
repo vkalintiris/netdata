@@ -19,6 +19,63 @@
 #endif // NETDATA_TRACE_RWLOCKS
 
 // ----------------------------------------------------------------------------
+// automatic thread cancelability management, based on locks
+
+static __thread int netdata_thread_first_cancelability = 0;
+static __thread int netdata_thread_nested_disables = 0;
+
+static __thread size_t netdata_locks_acquired_rwlocks = 0;
+static __thread size_t netdata_locks_acquired_mutexes = 0;
+
+inline void netdata_thread_disable_cancelability(void) {
+    if(!netdata_thread_nested_disables) {
+        int old;
+        int ret = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+
+        if(ret != 0)
+            netdata_log_error("THREAD_CANCELABILITY: pthread_setcancelstate() on thread %s returned error %d", nd_thread_tag(), ret);
+
+        netdata_thread_first_cancelability = old;
+    }
+
+    netdata_thread_nested_disables++;
+}
+
+inline void netdata_thread_enable_cancelability(void) {
+    if(unlikely(netdata_thread_nested_disables < 1)) {
+        internal_fatal(true, "THREAD_CANCELABILITY: trying to enable cancelability, but it was not not disabled");
+
+        netdata_log_error("THREAD_CANCELABILITY: netdata_thread_enable_cancelability(): invalid thread cancelability count %d "
+                          "on thread %s - results will be undefined - please report this!",
+                          netdata_thread_nested_disables,
+            nd_thread_tag());
+
+        netdata_thread_nested_disables = 1;
+    }
+
+    if(netdata_thread_nested_disables == 1) {
+        int old = 1;
+        int ret = pthread_setcancelstate(netdata_thread_first_cancelability, &old);
+        if(ret != 0)
+            netdata_log_error("THREAD_CANCELABILITY: pthread_setcancelstate() on thread %s returned error %d", nd_thread_tag(),
+                              ret);
+        else {
+            if(old != PTHREAD_CANCEL_DISABLE) {
+                internal_fatal(true, "THREAD_CANCELABILITY: invalid old state cancelability");
+
+                netdata_log_error("THREAD_CANCELABILITY: netdata_thread_enable_cancelability(): old thread cancelability "
+                                  "on thread %s was changed, expected DISABLED (%d), found %s (%d) - please report this!",
+                    nd_thread_tag(), PTHREAD_CANCEL_DISABLE,
+                                  (old == PTHREAD_CANCEL_ENABLE) ? "ENABLED" : "UNKNOWN",
+                                  old);
+            }
+        }
+    }
+
+    netdata_thread_nested_disables--;
+}
+
+// ----------------------------------------------------------------------------
 // mutex
 
 int __netdata_mutex_init(netdata_mutex_t *mutex) {

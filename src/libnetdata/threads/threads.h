@@ -82,12 +82,8 @@ int nd_thread_cancel(ND_THREAD *nti);
 #endif
 void nd_thread_testcancel(void);
 
-#define NETDATA_THREAD_NAME_MAX 15
-void uv_thread_set_name_np(uv_thread_t ut, const char* name);
-void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1]);
-
 #define ND_THREAD_TAG_MAX 15
-void uv_thread_set_name_np(const char* name);
+void uv_thread_set_name_np(uv_thread_t ut, const char* name);
 void webrtc_set_thread_name(void);
 
 #endif //NETDATA_THREADS_H
