@@ -902,7 +902,7 @@ int mrg_unittest(void) {
 
     usec_t started_ut = now_monotonic_usec();
 
-    netdata_thread_t th[threads];
+    ND_THREAD *th[threads];
     for(size_t i = 0; i < threads ; i++) {
         char buf[15 + 1];
         snprintfz(buf, sizeof(buf) - 1, "TH[%zu]", i);
@@ -913,7 +913,7 @@ int mrg_unittest(void) {
     __atomic_store_n(&t.stop, true, __ATOMIC_RELAXED);
 
     for(size_t i = 0; i < threads ; i++)
-        nd_thread_signal_cancel(th[i]);
+        nd_thread_cancel(th[i]);
 
     for(size_t i = 0; i < threads ; i++)
         nd_thread_join(th[i]);

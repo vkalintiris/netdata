@@ -365,11 +365,11 @@ void functions_evloop_add_function(struct functions_evloop_globals *wg, const ch
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(wg->expectations, we, prev, next);
 }
 
-void functions_evloop_cancel_threads(struct functions_evloop_globals *wg) {
-    nd_thread_signal_cancel(wg->reader_thread);
-
+void functions_evloop_cancel_threads(struct functions_evloop_globals *wg){
     for(size_t i = 0; i < wg->workers ; i++)
-        nd_thread_signal_cancel(wg->worker_threads[i]);
+        nd_thread_cancel(wg->worker_threads[i]);
+
+    nd_thread_cancel(wg->reader_thread);
 }
 
 // ----------------------------------------------------------------------------

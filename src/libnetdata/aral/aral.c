@@ -1021,8 +1021,8 @@ int aral_stress_test(size_t threads, size_t elements, size_t seconds) {
     ND_THREAD *thread_ptrs[threads];
 
     for(size_t i = 0; i < threads ; i++) {
-        char tag[ND_THREAD_TAG_MAX + 1];
-        snprintfz(tag, ND_THREAD_TAG_MAX, "TH[%zu]", i);
+        char tag[NETDATA_THREAD_NAME_MAX + 1];
+        snprintfz(tag, NETDATA_THREAD_NAME_MAX, "TH[%zu]", i);
         thread_ptrs[i] = nd_thread_create(
             tag,
             NETDATA_THREAD_OPTION_JOINABLE | NETDATA_THREAD_OPTION_DONT_LOG,
@@ -1049,7 +1049,7 @@ int aral_stress_test(size_t threads, size_t elements, size_t seconds) {
 
 //    fprintf(stderr, "Cancelling the threads...\n");
 //    for(size_t i = 0; i < threads ; i++) {
-//        nd_thread_signal_cancel(thread_ptrs[i]);
+//        nd_thread_cancel(thread_ptrs[i]);
 //    }
 
     fprintf(stderr, "Waiting the threads to finish...\n");

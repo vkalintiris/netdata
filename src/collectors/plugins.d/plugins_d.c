@@ -227,7 +227,7 @@ static void pluginsd_main_cleanup(void *pptr) {
             netdata_log_info("PLUGINSD: 'host:%s', stopping plugin thread: %s",
                  rrdhost_hostname(cd->host), cd->id);
 
-            nd_thread_signal_cancel(cd->unsafe.thread);
+            nd_thread_cancel(cd->unsafe.thread);
         }
         spinlock_unlock(&cd->unsafe.spinlock);
     }

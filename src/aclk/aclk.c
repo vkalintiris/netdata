@@ -894,7 +894,7 @@ exit_full:
     aclk_query_threads_cleanup(&query_threads);
 
     if (aclk_stats_enabled) {
-        nd_thread_join(*stats_thread->thread);
+        nd_thread_join(stats_thread->thread);
         aclk_stats_thread_cleanup();
         freez(stats_thread);
     }

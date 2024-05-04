@@ -95,10 +95,7 @@ static void proc_main_cleanup(void *pptr)
 
     collector_info("cleaning up...");
 
-    if (netdev_thread) {
-        nd_thread_join(*netdev_thread);
-        freez(netdev_thread);
-    }
+    nd_thread_join(netdev_thread);
 
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
 }

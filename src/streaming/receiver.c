@@ -307,7 +307,9 @@ static inline bool receiver_should_stop(struct receiver_state *rpt) {
         return true;
     }
 
-    if(unlikely((counter++ % 1000) == 0))
+    if(unlikely((counter++ % 1000) == 0)) {
+        // check every 1000 lines read
+        nd_thread_testcancel();
         rpt->last_msg_t = now_monotonic_sec();
 
     return false;
@@ -511,7 +513,7 @@ bool stop_streaming_receiver(RRDHOST *host, STREAM_HANDSHAKE reason) {
             shutdown(host->receiver->fd, SHUT_RDWR);
         }
 
-        nd_thread_signal_cancel(host->receiver->thread);
+        nd_thread_cancel(host->receiver->thread);
     }
 
     int count = 2000;

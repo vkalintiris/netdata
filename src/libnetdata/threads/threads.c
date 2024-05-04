@@ -370,7 +370,7 @@ static void join_exited_detached_threads(void) {
 
         if(nti) {
             nd_log(NDLS_DAEMON, NDLP_INFO, "Joining detached thread '%s', tid %d", nti->tag, nti->tid);
-            nd_thread_join(nti->thread);
+            nd_thread_join(nti);
         }
         else
             break;
@@ -416,7 +416,6 @@ static void *netdata_thread_starting_point(void *ptr) {
     ND_THREAD *nti = _nd_thread_info = (ND_THREAD *)ptr;
     nd_thread_status_set(nti, NETDATA_THREAD_STATUS_STARTED);
 
-    nti->thread = pthread_self();
     nti->tid = gettid_cached();
     netdata_thread_set_tag(nti->tag);
 
@@ -438,7 +437,15 @@ static void *netdata_thread_starting_point(void *ptr) {
     return nti;
 }
 
-int netdata_thread_create(netdata_thread_t *thread, const char *tag, NETDATA_THREAD_OPTIONS options, void *(*start_routine) (void *), void *arg) {
+ND_THREAD *nd_thread_self(void) {
+    return _nd_thread_info;
+}
+
+bool nd_thread_is_me(ND_THREAD *nti) {
+    return nti && nti->thread == pthread_self();
+}
+
+ND_THREAD *nd_thread_create(const char *tag, NETDATA_THREAD_OPTIONS options, void *(*start_routine)(void *), void *arg) {
     join_exited_detached_threads();
 
     ND_THREAD *nti = callocz(1, sizeof(*nti));
@@ -451,33 +458,7 @@ int netdata_thread_create(netdata_thread_t *thread, const char *tag, NETDATA_THR
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(threads_globals.running.list, nti, prev, next);
     spinlock_unlock(&threads_globals.running.spinlock);
 
-    int ret = pthread_create(thread, threads_globals.attr, netdata_thread_starting_point, nti);
-    if(ret != 0) {
-        nd_log(NDLS_DAEMON, NDLP_ERR,
-               "failed to create new thread for %s. pthread_create() failed with code %d",
-               tag, ret);
-
-        spinlock_lock(&threads_globals.running.spinlock);
-        DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(threads_globals.running.list, nti, prev, next);
-        spinlock_unlock(&threads_globals.running.spinlock);
-        freez(nti);
-    }
-
-ND_THREAD *nd_thread_create(const char *tag, NETDATA_THREAD_OPTIONS options, void *(*start_routine)(void *), void *arg) {
-    nd_thread_join_exited_detached_threads();
-
-    ND_THREAD *nti = callocz(1, sizeof(*nti));
-    spinlock_init(&nti->canceller.spinlock);
-    nti->arg = arg;
-    nti->start_routine = start_routine;
-    nti->options = options & NETDATA_THREAD_OPTIONS_ALL;
-    strncpyz(nti->tag, tag, ND_THREAD_TAG_MAX);
-
-    spinlock_lock(&threads_globals.running.spinlock);
-    DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(threads_globals.running.list, nti, prev, next);
-    spinlock_unlock(&threads_globals.running.spinlock);
-
-    int ret = pthread_create(&nti->thread, threads_globals.attr, nd_thread_starting_point, nti);
+    int ret = pthread_create(&nti->thread, threads_globals.attr, netdata_thread_starting_point, nti);
     if(ret != 0) {
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "failed to create new thread for %s. pthread_create() failed with code %d",
@@ -493,32 +474,26 @@ ND_THREAD *nd_thread_create(const char *tag, NETDATA_THREAD_OPTIONS options, voi
     return nti;
 }
 
-// --------------------------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
-void nd_thread_register_canceller(nd_thread_canceller cb, void *data) {
-    ND_THREAD *nti = _nd_thread_info;
+#ifdef NETDATA_INTERNAL_CHECKS
+int nd_thread_cancel_with_trace(ND_THREAD *nti, int line, const char *file, const char *function) {
+#else
+int nd_thread_cancel(ND_THREAD * thread) {
+#endif
+    int ret = pthread_cancel(nti->thread);
+    if(ret != 0)
+#ifdef NETDATA_INTERNAL_CHECKS
+        nd_log(NDLS_DAEMON, NDLP_WARNING, "cannot cancel thread. pthread_cancel() failed with code %d at %d@%s, function %s()", ret, line, file, function);
+#else
+        nd_log(NDLS_DAEMON, NDLP_WARNING, "cannot cancel thread. pthread_cancel() failed with code %d.", ret);
+#endif
+
+void nd_thread_join(ND_THREAD *nti) {
     if(!nti) return;
 
-    spinlock_lock(&nti->canceller.spinlock);
-    nti->canceller.cb = cb;
-    nti->canceller.data = data;
-    spinlock_unlock(&nti->canceller.spinlock);
-}
-
-void nd_thread_signal_cancel(ND_THREAD *nti) {
-    if(!nti) return;
-
-    __atomic_store_n(&nti->cancel_atomic, true, __ATOMIC_RELAXED);
-
-    spinlock_lock(&nti->canceller.spinlock);
-    if(nti->canceller.cb)
-        nti->canceller.cb(nti->canceller.data);
-    spinlock_unlock(&nti->canceller.spinlock);
-}
-
-bool nd_thread_signaled_to_cancel(void) {
-    if(!_nd_thread_info) return false;
-    return __atomic_load_n(&_nd_thread_info->cancel_atomic, __ATOMIC_RELAXED);
+void nd_thread_testcancel(void) {
+    return pthread_testcancel();
 }
 
 // ----------------------------------------------------------------------------
@@ -527,16 +502,10 @@ bool nd_thread_signaled_to_cancel(void) {
 void nd_thread_join(ND_THREAD *nti) {
     if(!nti) return;
 
-// ----------------------------------------------------------------------------
-// nd_thread_join
-
-void nd_thread_join(netdata_thread_t thread) {
-    void *ptr = NULL; // will receive NETDATA_THREAD * here
-    int ret = pthread_join(thread, &ptr);
+    int ret = pthread_join(nti->thread, NULL);
     if(ret != 0)
         nd_log(NDLS_DAEMON, NDLP_WARNING, "cannot join thread. pthread_join() failed with code %d.", ret);
-    else if(ptr) {
-        ND_THREAD *nti = (ND_THREAD *)ptr;
+    else {
         nd_thread_status_set(nti, NETDATA_THREAD_STATUS_JOINED);
 
         nd_log(NDLS_DAEMON, NDLP_WARNING, "joined thread '%s', tid %d", nti->tag, nti->tid);
@@ -547,9 +516,5 @@ void nd_thread_join(netdata_thread_t thread) {
         spinlock_unlock(&threads_globals.exited.spinlock);
 
         freez(nti);
-    }
-    else {
-        internal_fatal(true, "pthread_join() returned NULL ptr.");
-        nd_log(NDLS_DAEMON, NDLP_WARNING, "pthread_join() returned NULL ptr.");
     }
 }

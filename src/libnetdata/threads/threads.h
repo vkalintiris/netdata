@@ -11,9 +11,8 @@ typedef enum __attribute__((packed)) {
     NETDATA_THREAD_OPTION_DONT_LOG_STARTUP = 1 << 1,
     NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP = 1 << 2,
     NETDATA_THREAD_STATUS_STARTED          = 1 << 3,
-    NETDATA_THREAD_STATUS_CANCELLED        = 1 << 4,
-    NETDATA_THREAD_STATUS_FINISHED         = 1 << 5,
-    NETDATA_THREAD_STATUS_JOINED           = 1 << 6,
+    NETDATA_THREAD_STATUS_FINISHED         = 1 << 4,
+    NETDATA_THREAD_STATUS_JOINED           = 1 << 5,
 } NETDATA_THREAD_OPTIONS;
 
 #define NETDATA_THREAD_OPTIONS_ALL (NETDATA_THREAD_OPTION_JOINABLE | NETDATA_THREAD_OPTION_DONT_LOG_STARTUP | NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP)
@@ -25,7 +24,6 @@ typedef enum __attribute__((packed)) {
 void nd_thread_tag_set(const char *tag);
 
 typedef struct nd_thread ND_THREAD;
-typedef pthread_t netdata_thread_t;
 
 struct netdata_static_thread {
     // the name of the thread as it should appear in the logs
@@ -77,13 +75,12 @@ ND_THREAD *nd_thread_self(void);
 bool nd_thread_is_me(ND_THREAD *nti);
 
 #ifdef NETDATA_INTERNAL_CHECKS
-#define netdata_thread_cancel(thread) netdata_thread_cancel_with_trace(thread, __LINE__, __FILE__, __FUNCTION__)
-int netdata_thread_cancel_with_trace(netdata_thread_t thread, int line, const char *file, const char *function);
+#define nd_thread_cancel(nti) nd_thread_cancel_with_trace(nti, __LINE__, __FILE__, __FUNCTION__)
+int nd_thread_cancel_with_trace(ND_THREAD *nti, int line, const char *file, const char *function);
 #else
-int netdata_thread_cancel(netdata_thread_t thread);
+int nd_thread_cancel(ND_THREAD *nti);
 #endif
-
-void nd_thread_join(netdata_thread_t thread);
+void nd_thread_testcancel(void);
 
 #define NETDATA_THREAD_NAME_MAX 15
 void uv_thread_set_name_np(uv_thread_t ut, const char* name);
@@ -92,33 +89,5 @@ void os_thread_get_current_name_np(char threadname[NETDATA_THREAD_NAME_MAX + 1])
 #define ND_THREAD_TAG_MAX 15
 void uv_thread_set_name_np(const char* name);
 void webrtc_set_thread_name(void);
-
-#ifdef NETDATA_INTERNAL_CHECKS
-void nd_thread_rwlock_read_locked(void);
-void nd_thread_rwlock_read_unlocked(void);
-void nd_thread_rwlock_write_locked(void);
-void nd_thread_rwlock_write_unlocked(void);
-void nd_thread_mutex_locked(void);
-void nd_thread_mutex_unlocked(void);
-void nd_thread_spinlock_locked(void);
-void nd_thread_spinlock_unlocked(void);
-void nd_thread_rwspinlock_read_locked(void);
-void nd_thread_rwspinlock_read_unlocked(void);
-void nd_thread_rwspinlock_write_locked(void);
-void nd_thread_rwspinlock_write_unlocked(void);
-#else
-#define nd_thread_rwlock_read_locked() debug_dummy()
-#define nd_thread_rwlock_read_unlocked() debug_dummy()
-#define nd_thread_rwlock_write_locked() debug_dummy()
-#define nd_thread_rwlock_write_unlocked() debug_dummy()
-#define nd_thread_mutex_locked() debug_dummy()
-#define nd_thread_mutex_unlocked() debug_dummy()
-#define nd_thread_spinlock_locked() debug_dummy()
-#define nd_thread_spinlock_unlocked() debug_dummy()
-#define nd_thread_rwspinlock_read_locked() debug_dummy()
-#define nd_thread_rwspinlock_read_unlocked() debug_dummy()
-#define nd_thread_rwspinlock_write_locked() debug_dummy()
-#define nd_thread_rwspinlock_write_unlocked() debug_dummy()
-#endif
 
 #endif //NETDATA_THREADS_H

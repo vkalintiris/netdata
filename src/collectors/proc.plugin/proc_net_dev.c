@@ -1738,16 +1738,15 @@ int do_proc_net_dev(int update_every, usec_t dt) {
     return 0;
 }
 
-static void netdev_main_cleanup(void *pptr) {
-    if(CLEANUP_FUNCTION_GET_PTR(pptr) != (void *)0x01)
-        return;
+static void netdev_main_cleanup(void *ptr_in_null) {
+    UNUSED(ptr_in_null);
 
     collector_info("cleaning up...");
 
     worker_unregister();
 }
 
-void *netdev_main(void *ptr_is_null __maybe_unused)
+void *netdev_main(void *ptr_is_null)
 {
     CLEANUP_FUNCTION_REGISTER(netdev_main_cleanup) cleanup_ptr = (void *)0x01;
 
@@ -1762,9 +1761,10 @@ void *netdev_main(void *ptr_is_null __maybe_unused)
                             "top", HTTP_ACCESS_ANONYMOUS_DATA,
                             netdev_function_net_interfaces);
 
-    usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
-    heartbeat_t hb;
-    heartbeat_init(&hb);
+    netdata_thread_cleanup_push(netdev_main_cleanup, ptr_is_null) {
+        usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
+        heartbeat_t hb;
+        heartbeat_init(&hb);
 
     while (service_running(SERVICE_COLLECTORS)) {
         worker_is_idle();
