@@ -25,6 +25,7 @@ typedef enum __attribute__((packed)) {
 void nd_thread_tag_set(const char *tag);
 
 typedef struct nd_thread ND_THREAD;
+typedef pthread_t netdata_thread_t;
 
 struct netdata_static_thread {
     // the name of the thread as it should appear in the logs
