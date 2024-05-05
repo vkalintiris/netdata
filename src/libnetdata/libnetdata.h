@@ -99,17 +99,68 @@ extern "C" {
 #include <limits.h>
 #include <locale.h>
 #include <signal.h>
-#include <syslog.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
-#include <spawn.h>
 #include <uv.h>
 #include <assert.h>
+
+#ifdef HAVE_ARPA_INET_H
+#include <arpa/inet.h>
+#endif
+
+#ifdef HAVE_NETINET_TCP_H
+#include <netinet/tcp.h>
+#endif
+
+#ifdef HAVE_SYS_IOCTL_H
+#include <sys/ioctl.h>
+#endif
+
+#ifdef HAVE_GRP_H
+#include <grp.h>
+#endif
+
+#ifdef HAVE_PWD_H
+#include <pwd.h>
+#endif
+
+#ifdef HAVE_NET_IF_H
+#include <net/if.h>
+#endif
+
+#ifdef HAVE_POLL_H
+#include <poll.h>
+#endif
+
+#ifdef HAVE_SYSLOG_H
+#include <syslog.h>
+#endif
+
+#ifdef HAVE_SYS_MMAN_H
+#include <sys/mman.h>
+#endif
+
+#ifdef HAVE_SYS_RESOURCE_H
+#include <sys/resource.h>
+#endif
+
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+
+#ifdef HAVE_SYS_WAIT_H
+#include <sys/wait.h>
+#endif
+
+#ifdef HAVE_SYS_UN_H
+#include <sys/un.h>
+#endif
+
+#ifdef HAVE_SPAWN_H
+#include <spawn.h>
+#endif
 
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
@@ -202,10 +253,8 @@ extern "C" {
 #define MALLOCLIKE
 #endif
 
-#if defined(HAVE_FUNC_ATTRIBUTE_FORMAT_GNU_PRINTF)
+#ifdef HAVE_FUNC_ATTRIBUTE_FORMAT
 #define PRINTFLIKE(f, a) __attribute__ ((format(gnu_printf, f, a)))
-#elif defined(HAVE_FUNC_ATTRIBUTE_FORMAT_PRINTF)
-#define PRINTFLIKE(f, a) __attribute__ ((format(printf, f, a)))
 #else
 #define PRINTFLIKE(f, a)
 #endif
