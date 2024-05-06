@@ -32,14 +32,6 @@ static inline char *os_strndup( const char *s1, size_t n)
 #define strndup(s, n) os_strndup(s, n)
 #endif
 
-#if defined(HAVE_FUNC_ATTRIBUTE_FORMAT_GNU_PRINTF)
-#define PRINTFLIKE(f, a) __attribute__ ((format(gnu_printf, f, a)))
-#elif defined(HAVE_FUNC_ATTRIBUTE_FORMAT_PRINTF)
-#define PRINTFLIKE(f, a) __attribute__ ((format(printf, f, a)))
-#else
-#define PRINTFLIKE(f, a)
-#endif
-
 // ----------------------------------------------------------------------------
 // logging
 
@@ -105,18 +97,6 @@ static inline void freez(void *ptr) {
     if (ptr)
         free(ptr);
 }
-
-#ifdef COMPILED_FOR_WINDOWS
-// strndup() is not available on Windows
-static inline char *os_strndup( const char *s1, size_t n)
-{
-    char *copy= (char*)malloc( n+1 );
-    memcpy( copy, s1, n );
-    copy[n] = 0;
-    return copy;
-};
-#define strndup(s, n) os_strndup(s, n)
-#endif
 
 // ----------------------------------------------------------------------------
 
