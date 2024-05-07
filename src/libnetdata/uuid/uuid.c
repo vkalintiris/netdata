@@ -30,7 +30,7 @@ void uuid_unparse_lower_compact(const nd_uuid_t uuid, char *out) {
     out[32] = '\0'; // Null-terminate the string
 }
 
-static inline void nd_uuid_unparse_full(const uuid_t uuid, char *out, const char *hex_chars) {
+static inline void nd_uuid_unparse_full(const nd_uuid_t uuid, char *out, const char *hex_chars) {
     int shifts = 0;
     for (int i = 0; i < 16; i++) {
         if (i == 4 || i == 6 || i == 8 || i == 10) {
@@ -44,15 +44,15 @@ static inline void nd_uuid_unparse_full(const uuid_t uuid, char *out, const char
 }
 
 // Wrapper functions for lower and upper case hexadecimal representation
-void nd_uuid_unparse_lower(const uuid_t uuid, char *out) {
+void nd_uuid_unparse_lower(const nd_uuid_t uuid, char *out) {
     nd_uuid_unparse_full(uuid, out, "0123456789abcdef");
 }
 
-void nd_uuid_unparse_upper(const uuid_t uuid, char *out) {
+void nd_uuid_unparse_upper(const nd_uuid_t uuid, char *out) {
     nd_uuid_unparse_full(uuid, out, "0123456789ABCDEF");
 }
 
-inline int uuid_parse_compact(const char *in, uuid_t uuid) {
+inline int uuid_parse_compact(const char *in, nd_uuid_t uuid) {
     if (strlen(in) != 32)
         return -1; // Invalid input length
 
