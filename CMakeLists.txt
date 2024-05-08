@@ -3089,7 +3089,7 @@ install(FILES
         COMPONENT netdata
         DESTINATION ${WEB_DEST}/.well-known/dnt)
 
-if(NOT OS_WINDOWS)
+if(NOT WINDOWS)
         # v0 dashboard
         install(FILES
                 src/web/gui/v0/index.html
