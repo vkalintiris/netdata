@@ -513,8 +513,9 @@ cleanup:
     dictionary_acquired_item_release(dict_mountpoints, item);
 }
 
-static void diskspace_slow_worker_cleanup(void *ptr) {
-    UNUSED(ptr);
+static void diskspace_slow_worker_cleanup(void *pptr) {
+    struct slow_worker_data *data = CLEANUP_FUNCTION_GET_PTR(pptr);
+    if(data) return;
 
     collector_info("cleaning up...");
 
@@ -540,8 +541,6 @@ void *diskspace_slow_worker(void *ptr)
     struct basic_mountinfo *slow_mountinfo_root = NULL;
 
     int slow_update_every = data->update_every > SLOW_UPDATE_EVERY ? data->update_every : SLOW_UPDATE_EVERY;
-
-    netdata_thread_cleanup_push(diskspace_slow_worker_cleanup, data);
 
     usec_t step = slow_update_every * USEC_PER_SEC;
     usec_t real_step = USEC_PER_SEC;
@@ -611,6 +610,9 @@ static void diskspace_main_cleanup(void *pptr) {
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
     collector_info("cleaning up...");
+
+    rrd_collector_finished();
+    worker_unregister();
 
     if (diskspace_slow_thread) {
         nd_thread_join(diskspace_slow_thread);

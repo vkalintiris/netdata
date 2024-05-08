@@ -877,7 +877,7 @@ cleanup:
 }
 
 static void rrdpush_receiver_thread_cleanup(void *pptr) {
-    struct receiver_state *rpt = CLEANUP_FUNCTION_PTR(pptr);
+    struct receiver_state *rpt = CLEANUP_FUNCTION_GET_PTR(pptr);
     if(!rpt) return;
 
     netdata_log_info("STREAM '%s' [receive from [%s]:%s]: "
@@ -914,7 +914,7 @@ static bool stream_receiver_log_transport(BUFFER *wb, void *ptr) {
 }
 
 void *rrdpush_receiver_thread(void *ptr) {
-    CLEANUP_FUNCTION(rrdpush_receiver_thread_cleanup) cleanup_ptr = ptr;
+    CLEANUP_FUNCTION_REGISTER(rrdpush_receiver_thread_cleanup) cleanup_ptr = ptr;
     worker_register("STREAMRCV");
 
     worker_register_job_custom_metric(WORKER_RECEIVER_JOB_BYTES_READ,

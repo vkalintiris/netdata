@@ -150,11 +150,11 @@ static void pluginsd_worker_thread_handle_error(struct plugind *cd, int worker_r
 #undef SERIAL_FAILURES_THRESHOLD
 
 static void *pluginsd_worker_thread(void *arg) {
-    struct plugind *cd = (struct plugind *) arg;
-    CLEANUP_FUNCTION_REGISTER(pluginsd_worker_thread_cleanup) cleanup_ptr = cd;
+    CLEANUP_FUNCTION_REGISTER(pluginsd_worker_thread_cleanup) cleanup_ptr = arg;
 
     worker_register("PLUGINSD");
 
+    struct plugind *cd = (struct plugind *) arg;
     plugin_set_running(cd);
 
     size_t count = 0;
