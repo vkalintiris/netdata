@@ -108,7 +108,7 @@ void rrddim_metric_release(STORAGE_METRIC_HANDLE *smh __maybe_unused) {
             RRDDIM *rd = mh->rd;
             netdata_rwlock_wrlock(&rrddim_JudyHS_rwlock);
             JudyHSDel(&rrddim_JudyHS_array, &rd->metric_uuid, sizeof(nd_uuid_t), PJE0);
-            netdata_rwlock_unlock(&rrddim_JudyHS_rwlock);
+            netdata_rwlock_wrunlock(&rrddim_JudyHS_rwlock);
 
             freez(mh);
             __atomic_sub_fetch(&rrddim_db_memory_size, sizeof(struct mem_metric_handle) + JUDYHS_INDEX_SIZE_ESTIMATE(sizeof(nd_uuid_t)), __ATOMIC_RELAXED);

@@ -24,9 +24,6 @@
 static __thread int netdata_thread_first_cancelability = 0;
 static __thread int netdata_thread_nested_disables = 0;
 
-static __thread size_t netdata_locks_acquired_rwlocks = 0;
-static __thread size_t netdata_locks_acquired_mutexes = 0;
-
 inline void netdata_thread_disable_cancelability(void) {
     if(!netdata_thread_nested_disables) {
         int old;
@@ -117,8 +114,10 @@ int __netdata_mutex_unlock(netdata_mutex_t *mutex) {
     int ret = pthread_mutex_unlock(mutex);
     if(unlikely(ret != 0))
         netdata_log_error("MUTEX_LOCK: failed to unlock (code %d).", ret);
-    else
+    else {
         nd_thread_mutex_unlocked();
+        netdata_thread_enable_cancelability();
+    }
 
     return ret;
 }
@@ -241,8 +240,10 @@ int __netdata_rwlock_rdunlock(netdata_rwlock_t *rwlock) {
     int ret = pthread_rwlock_unlock(&rwlock->rwlock_t);
     if(unlikely(ret != 0))
         netdata_log_error("RW_LOCK: failed to release lock (code %d)", ret);
-    else
+    else {
+        netdata_thread_enable_cancelability();
         nd_thread_rwlock_read_unlocked();
+    }
 
     return ret;
 }
@@ -251,8 +252,10 @@ int __netdata_rwlock_wrunlock(netdata_rwlock_t *rwlock) {
     int ret = pthread_rwlock_unlock(&rwlock->rwlock_t);
     if(unlikely(ret != 0))
         netdata_log_error("RW_LOCK: failed to release lock (code %d)", ret);
-    else
+    else {
+        netdata_thread_enable_cancelability();
         nd_thread_rwlock_write_unlocked();
+    }
 
     return ret;
 }
@@ -321,6 +324,9 @@ static inline void spinlock_unlock_internal(SPINLOCK *spinlock) {
 #endif
     __atomic_clear(&spinlock->locked, __ATOMIC_RELEASE);
 
+    if (!cancelable)
+        netdata_thread_enable_cancelability();
+
     nd_thread_spinlock_unlocked();
 }
 
@@ -331,6 +337,10 @@ static inline bool spinlock_trylock_internal(SPINLOCK *spinlock) {
         nd_thread_spinlock_locked();
         return true;
     }
+
+    // we didn't get the lock
+    if (!cancelable)
+        netdata_thread_enable_cancelability();
 
     return false;
 }
@@ -390,6 +400,7 @@ void rw_spinlock_read_unlock(RW_SPINLOCK *rw_spinlock) {
         fatal("RW_SPINLOCK: readers is negative %d", x);
 #endif
 
+    netdata_thread_enable_cancelability();
     nd_thread_rwspinlock_read_unlocked();
 }
 
@@ -421,6 +432,7 @@ bool rw_spinlock_tryread_lock(RW_SPINLOCK *rw_spinlock) {
     if(spinlock_trylock(&rw_spinlock->spinlock)) {
         __atomic_add_fetch(&rw_spinlock->readers, 1, __ATOMIC_RELAXED);
         spinlock_unlock(&rw_spinlock->spinlock);
+        netdata_thread_disable_cancelability();
         nd_thread_rwspinlock_read_locked();
         return true;
     }
