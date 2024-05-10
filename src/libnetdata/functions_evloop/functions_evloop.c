@@ -61,7 +61,7 @@ struct functions_evloop_globals {
     struct rrd_functions_expectation *expectations;
 };
 
-static void rrd_functions_worker_canceller(void *data) {
+static void rrd_functions_worker_cancleller(void *data) {
     struct functions_evloop_globals *wg = data;
     pthread_mutex_lock(&wg->worker_mutex);
     wg->workers_exit = true;
@@ -72,7 +72,7 @@ static void rrd_functions_worker_canceller(void *data) {
 static void *rrd_functions_worker_globals_worker_main(void *arg) {
     struct functions_evloop_globals *wg = arg;
 
-    nd_thread_register_canceller(rrd_functions_worker_canceller, wg);
+    nd_thread_register_canceller(rrd_functions_worker_cancleller, wg);
 
     bool last_acquired = true;
     while (true) {
@@ -365,11 +365,11 @@ void functions_evloop_add_function(struct functions_evloop_globals *wg, const ch
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(wg->expectations, we, prev, next);
 }
 
-void functions_evloop_cancel_threads(struct functions_evloop_globals *wg){
-    for(size_t i = 0; i < wg->workers ; i++)
-        nd_thread_cancel(wg->worker_threads[i]);
+void functions_evloop_cancel_threads(struct functions_evloop_globals *wg) {
+    nd_thread_signal_cancel(wg->reader_thread);
 
-    nd_thread_cancel(wg->reader_thread);
+    for(size_t i = 0; i < wg->workers ; i++)
+        nd_thread_signal_cancel(wg->worker_threads[i]);
 }
 
 // ----------------------------------------------------------------------------
