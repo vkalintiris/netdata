@@ -76,7 +76,7 @@ static inline int read_stream(struct receiver_state *r, char* buffer, size_t siz
 #ifdef ENABLE_HTTPS
         &r->ssl,
 #endif
-        r->fd, 0, POLLIN, NULL))
+        r->fd, 0, POLLIN))
         {
             case 0: // data are waiting
                 break;
@@ -513,7 +513,7 @@ bool stop_streaming_receiver(RRDHOST *host, STREAM_HANDSHAKE reason) {
             shutdown(host->receiver->fd, SHUT_RDWR);
         }
 
-        nd_thread_cancel(host->receiver->thread);
+        nd_thread_signal_cancel(host->receiver->thread);
     }
 
     int count = 2000;

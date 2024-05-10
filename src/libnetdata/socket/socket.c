@@ -1171,43 +1171,37 @@ int connect_to_one_of_urls(const char *destination, int default_port, struct tim
 // --------------------------------------------------------------------------------------------------------------------
 // helpers to send/receive data in one call, in blocking mode, with a timeout
 
-// returns: -1 = thread cancelled, 0 = proceed to read/write, 1 = time exceeded, 2 = error on fd
+// returns: -1 = thread cancelled, 0 = proceed, 1 = timeout, 2 = error on socket
 // timeout parameter can be zero to wait forever
 inline int wait_on_socket_or_cancel_with_timeout(
 #ifdef ENABLE_HTTPS
     NETDATA_SSL *ssl,
 #endif
-    int fd, int timeout_ms, short int poll_events, short int *revents) {
+    int fd, int timeout_s, short int poll_events) {
     struct pollfd pfd = {
         .fd = fd,
         .events = poll_events,
         .revents = 0,
     };
 
-    bool forever = (timeout_ms == 0);
+    int timeout_ms = (timeout_s) ? (timeout_s * 1000) : 100;
 
-    while (timeout_ms > 0 || forever) {
+    while (timeout_ms > 0) {
         if(nd_thread_signaled_to_cancel()) {
             errno = ECANCELED;
             return -1;
         }
 
 #ifdef ENABLE_HTTPS
-        if(poll_events == POLLIN && ssl && SSL_connection(ssl) && netdata_ssl_has_pending(ssl))
+        if(poll_events == POLLIN && SSL_connection(ssl) && netdata_ssl_has_pending(ssl))
             return 0;
 #endif
 
-        const int wait_ms = (timeout_ms >= ND_CHECK_CANCELLABILITY_WHILE_WAITING_EVERY_MS || forever) ?
-                                            ND_CHECK_CANCELLABILITY_WHILE_WAITING_EVERY_MS : timeout_ms;
-
+        const int wait_ms = (timeout_ms >= 100) ? 100 : timeout_ms;
         errno = 0;
 
-        // check every wait_ms
+        // check every 100ms
         const int ret = poll(&pfd, 1, wait_ms);
-
-        if(revents)
-            *revents = pfd.revents;
-
         if(ret == -1) {
             // poll failed
 
@@ -1219,16 +1213,16 @@ inline int wait_on_socket_or_cancel_with_timeout(
 
         if(ret == 0) {
             // timeout
-            if(!forever)
-                timeout_ms -= wait_ms;
+            timeout_ms -= wait_ms;
+
+            // if zero timeout was given, wait forever
+            if(!timeout_s) timeout_ms = 100;
+
             continue;
         }
 
         if(pfd.revents & poll_events)
             return 0;
-
-        // all other errors
-        return 2;
     }
 
     errno = ETIMEDOUT;
@@ -1245,7 +1239,7 @@ ssize_t recv_timeout(
 #ifdef ENABLE_HTTPS
     ssl,
 #endif
-        sockfd, timeout * 1000, POLLIN, NULL)) {
+        sockfd, timeout, POLLIN)) {
         case 0: // data are waiting
             break;
 
@@ -1277,7 +1271,7 @@ ssize_t send_timeout(
 #ifdef ENABLE_HTTPS
     ssl,
 #endif
-        sockfd, timeout * 1000, POLLOUT, NULL)) {
+        sockfd, timeout, POLLOUT)) {
         case 0: // data are waiting
             break;
 

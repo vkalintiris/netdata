@@ -238,12 +238,7 @@ ssize_t netdata_ssl_pending(NETDATA_SSL *ssl) {
 }
 
 bool netdata_ssl_has_pending(NETDATA_SSL *ssl) {
-    // this call was added on OpenSSL 1.1.0
-    // however, it is more accurate than SSL_pending()
-    // unfortunately it does not exists in libressl.
-    // return SSL_has_pending(ssl->conn);
-
-    return SSL_pending(ssl->conn) > 0;
+    return SSL_has_pending(ssl->conn);
 }
 
 ssize_t netdata_ssl_read(NETDATA_SSL *ssl, void *buf, size_t num) {

@@ -721,7 +721,7 @@ void rrdpush_sender_thread_stop(RRDHOST *host, STREAM_HANDSHAKE reason, bool wai
         host->sender->exit.reason = reason;
 
         // signal it to cancel
-        nd_thread_cancel(host->rrdpush_sender_thread);
+        nd_thread_signal_cancel(host->rrdpush_sender_thread);
     }
 
     sender_unlock(host->sender);
