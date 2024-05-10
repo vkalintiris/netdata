@@ -394,7 +394,7 @@ static void ebpf_swap_exit(void *ptr)
     ebpf_module_t *em = (ebpf_module_t *)ptr;
 
     if (ebpf_read_swap.thread)
-        nd_thread_cancel(ebpf_read_swap.thread);
+        nd_thread_signal_cancel(ebpf_read_swap.thread);
 
     if (em->enabled == NETDATA_THREAD_EBPF_FUNCTION_RUNNING) {
         pthread_mutex_lock(&lock);

@@ -208,7 +208,7 @@ static bool service_wait_exit(SERVICE_TYPE service, usec_t timeout_ut) {
                 switch(sth->type) {
                     default:
                     case SERVICE_THREAD_TYPE_NETDATA:
-                        nd_thread_cancel(sth->netdata_thread);
+                        nd_thread_signal_cancel(sth->netdata_thread);
                         break;
 
                     case SERVICE_THREAD_TYPE_EVENT_LOOP:
@@ -673,7 +673,7 @@ void cancel_main_threads() {
         if (static_threads[i].enabled == NETDATA_MAIN_THREAD_RUNNING) {
             if (static_threads[i].thread) {
                 netdata_log_info("EXIT: Stopping main thread: %s", static_threads[i].name);
-                nd_thread_cancel(static_threads[i].thread);
+                nd_thread_signal_cancel(static_threads[i].thread);
             } else {
                 netdata_log_info("EXIT: No thread running (marking as EXITED): %s", static_threads[i].name);
                 static_threads[i].enabled = NETDATA_MAIN_THREAD_EXITED;

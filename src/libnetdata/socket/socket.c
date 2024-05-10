@@ -1193,14 +1193,16 @@ inline int wait_on_socket_or_cancel_with_timeout(
         }
 
 #ifdef ENABLE_HTTPS
-        if(poll_events == POLLIN && SSL_connection(ssl) && netdata_ssl_has_pending(ssl))
+        if(poll_events == POLLIN && ssl && SSL_connection(ssl) && netdata_ssl_has_pending(ssl))
             return 0;
 #endif
 
-        const int wait_ms = (timeout_ms >= 100 || forever) ? 100 : timeout_ms;
+        const int wait_ms = (timeout_ms >= ND_CHECK_CANCELLABILITY_WHILE_WAITING_EVERY_MS || forever) ?
+                                            ND_CHECK_CANCELLABILITY_WHILE_WAITING_EVERY_MS : timeout_ms;
+
         errno = 0;
 
-        // check every 100ms
+        // check every wait_ms
         const int ret = poll(&pfd, 1, wait_ms);
 
         if(revents)

@@ -2407,8 +2407,8 @@ static void statsd_main_cleanup(void *pptr) {
             spinlock_lock(&statsd.collection_threads_status[i].spinlock);
 
             if(statsd.collection_threads_status[i].running) {
-                collector_info("STATSD: stopping data collection thread %d...", i + 1);
-                nd_thread_cancel(statsd.collection_threads_status[i].thread);
+                collector_info("STATSD: signalling data collection thread %d to stop...", i + 1);
+                nd_thread_signal_cancel(statsd.collection_threads_status[i].thread);
             }
             else
                 collector_info("STATSD: data collection thread %d found stopped.", i + 1);

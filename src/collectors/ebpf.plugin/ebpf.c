@@ -935,7 +935,7 @@ void ebpf_stop_threads(int sig)
     int i;
     for (i = 0; ebpf_modules[i].info.thread_name != NULL; i++) {
         if (ebpf_modules[i].enabled < NETDATA_THREAD_EBPF_STOPPING) {
-            nd_thread_cancel(ebpf_modules[i].thread->thread);
+            nd_thread_signal_cancel(ebpf_modules[i].thread->thread);
 #ifdef NETDATA_DEV_MODE
             netdata_log_info("Sending cancel for thread %s", ebpf_modules[i].info.thread_name);
 #endif
@@ -951,7 +951,7 @@ void ebpf_stop_threads(int sig)
     ebpf_plugin_exit = true;
 
     pthread_mutex_lock(&mutex_cgroup_shm);
-    nd_thread_cancel(cgroup_integration_thread.thread);
+    nd_thread_signal_cancel(cgroup_integration_thread.thread);
 #ifdef NETDATA_DEV_MODE
     netdata_log_info("Sending cancel for thread %s", cgroup_integration_thread.name);
 #endif

@@ -307,9 +307,7 @@ static inline bool receiver_should_stop(struct receiver_state *rpt) {
         return true;
     }
 
-    if(unlikely((counter++ % 1000) == 0)) {
-        // check every 1000 lines read
-        nd_thread_testcancel();
+    if(unlikely((counter++ % 1000) == 0))
         rpt->last_msg_t = now_monotonic_sec();
 
     return false;

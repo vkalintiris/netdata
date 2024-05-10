@@ -887,7 +887,7 @@ static void ebpf_vfs_exit(void *pptr)
     if(!em) return;
 
     if (ebpf_read_vfs.thread)
-        nd_thread_cancel(ebpf_read_vfs.thread);
+        nd_thread_signal_cancel(ebpf_read_vfs.thread);
 
     if (em->enabled == NETDATA_THREAD_EBPF_FUNCTION_RUNNING) {
         pthread_mutex_lock(&lock);
