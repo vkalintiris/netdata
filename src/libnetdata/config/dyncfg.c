@@ -216,12 +216,14 @@ static inline bool is_forbidden_char(char c) {
         return true;
 
     switch(c) {
-        case '`': // good not to have this in filenames
-        case '$': // good not to have this in filenames
-        case '/': // unix does not support this
-        case ':': // windows does not support this
-        case '|': // windows does not support this
+        case '/':
             return true;
+
+#ifdef COMPILED_FOR_WINDOWS
+        case ':':
+        case '|':
+            return true;
+#endif
 
         default:
             return false;
@@ -239,7 +241,7 @@ char *dyncfg_escape_id_for_filename(const char *id) {
     char *dest = escaped;
 
     while (*src) {
-        if (*src == '/' || isspace((uint8_t)*src) || !isprint((uint8_t)*src)) {
+        if (is_forbidden_char(*src)) {
             sprintf(dest, "%%%02X", (unsigned char)*src);
             dest += 3;
         } else {
