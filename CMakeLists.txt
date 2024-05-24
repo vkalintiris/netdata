@@ -2366,6 +2366,20 @@ install(TARGETS netdatacli
         DESTINATION usr/sbin)
 
 #
+# build service
+#
+set(WINSVC_FILES
+        src/daemon/winsvc.cc
+)
+
+add_executable(winsvc ${WINSVC_FILES})
+target_link_libraries(winsvc libnetdata)
+
+install(TARGETS winsvc
+        COMPONENT netdata
+        DESTINATION usr/sbin)
+
+#
 # Build go.d.plugin
 #
 
