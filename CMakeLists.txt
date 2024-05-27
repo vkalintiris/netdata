@@ -1444,6 +1444,7 @@ elseif(FREEBSD)
 elseif(WINDOWS)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_windows.c
+                src/daemon/winsvc.cc
                 ${WINDOWS_PLUGIN_FILES}
                 ${INTERNAL_COLLECTORS_FILES}
         )
@@ -2362,20 +2363,6 @@ add_executable(netdatacli ${NETDATACLI_FILES})
 target_link_libraries(netdatacli libnetdata)
 
 install(TARGETS netdatacli
-        COMPONENT netdata
-        DESTINATION usr/sbin)
-
-#
-# build service
-#
-set(WINSVC_FILES
-        src/daemon/winsvc.cc
-)
-
-add_executable(winsvc ${WINSVC_FILES})
-target_link_libraries(winsvc libnetdata)
-
-install(TARGETS winsvc
         COMPONENT netdata
         DESTINATION usr/sbin)
 
