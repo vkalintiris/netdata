@@ -1411,7 +1411,32 @@ int unittest_prepare_rrd(char **user) {
     return 0;
 }
 
+#ifdef COMPILED_FOR_WINDOWS
+
+#include <windows.h>
+
+static void WriteLog(const char* message) {
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    
+    FILE* log = fopen("/opt/netdata/service.log", "a");
+
+    if (log != NULL) {
+        fprintf(log, "%02d:%02d:%02d - %s\n", st.wHour, st.wMinute, st.wSecond, message);
+        fflush(log);
+        fclose(log);
+    }
+}
+#endif
+
+#ifdef COMPILED_FOR_WINDOWS
+int netdata_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
+#endif
+        
+    WriteLog("[1] Hi there!!!");
+        
     // initialize the system clocks
     clocks_init();
     netdata_start_time = now_realtime_sec();
@@ -1422,8 +1447,8 @@ int main(int argc, char **argv) {
 
     int i;
     int config_loaded = 0;
-    int dont_fork = 0;
-    bool close_open_fds = true;
+    int dont_fork = 1;
+    bool close_open_fds = false;
     size_t default_stacksize;
     char *user = NULL;
 
@@ -1433,6 +1458,8 @@ int main(int argc, char **argv) {
     // set the name for logging
     program_name = "netdata";
 
+    WriteLog("[2] Welp!!!");
+
     if (argc > 1 && strcmp(argv[1], SPAWN_SERVER_COMMAND_LINE_ARGUMENT) == 0) {
         // don't run netdata, this is the spawn server
         i_am_the_spawn_server = true;
@@ -1440,6 +1467,7 @@ int main(int argc, char **argv) {
         exit(0);
     }
 
+    WriteLog("[3] Welp!!!");
     // parse options
     {
         int num_opts = sizeof(option_definitions) / sizeof(struct option_def);
@@ -1458,6 +1486,7 @@ int main(int argc, char **argv) {
         optstring[string_i] ='\0';
         optstring[(num_opts *2)] ='\0';
 
+        #if 0
         int opt;
         while( (opt = getopt(argc, argv, optstring)) != -1 ) {
             switch(opt) {
@@ -1899,6 +1928,7 @@ int main(int argc, char **argv) {
                     return help(1);
             }
         }
+        #endif
     }
 
     if (close_open_fds == true) {
@@ -1911,6 +1941,8 @@ int main(int argc, char **argv) {
         load_netdata_conf(NULL, 0, &user);
         load_cloud_conf(0);
     }
+
+    WriteLog("[4] Welp!!!");
 
     // ------------------------------------------------------------------------
     // initialize netdata
@@ -1966,6 +1998,8 @@ int main(int argc, char **argv) {
         // Get execution path before switching user to avoid permission issues
         get_netdata_execution_path();
     }
+    
+    WriteLog("[5] Welp!!!");
 
     {
         // --------------------------------------------------------------------
@@ -2109,6 +2143,8 @@ int main(int argc, char **argv) {
 #endif
     }
 
+    WriteLog("[6] Welp!!!");
+    
     delta_startup_time("set resource limits");
 
 #ifdef NETDATA_INTERNAL_CHECKS
@@ -2166,6 +2202,8 @@ int main(int argc, char **argv) {
     // fork the spawn server
     delta_startup_time("fork the spawn server");
     spawn_init();
+    
+    WriteLog("[7] Welp!!!");
 
     /*
      * Libuv uv_spawn() uses SIGCHLD internally:
@@ -2255,6 +2293,8 @@ int main(int argc, char **argv) {
             netdata_log_debug(D_SYSTEM, "Not starting thread %s.", st->name);
     }
     ml_start_threads();
+    
+    WriteLog("[8] Welp!!!");
 
     // ------------------------------------------------------------------------
     // Initialize netdata agent command serving from cli and signals
