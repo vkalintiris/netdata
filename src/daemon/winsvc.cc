@@ -7,18 +7,16 @@
  *       - Call and adapt main()
 */
 #include "libnetdata/libnetdata.h"
-#include "libnetdata/required_dummies.h"
 
 #include <windows.h>
 #include <iostream>
 #include <fstream>
-#include <thread>
 #include <chrono>
+
+extern "C" int netdata_main(int argc, char *argv[]);
 
 static SERVICE_STATUS_HANDLE svc_status_handle = nullptr;
 static HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
-
-static std::thread g_WorkerThread;
 
 static void WriteLog(const std::string& message)
 {
@@ -55,7 +53,6 @@ static void WINAPI ServiceControlHandler(DWORD controlCode)
                 SetServiceStatus(svc_status_handle, &svc_status);
             
                 SetEvent(g_ServiceStopEvent);
-                g_WorkerThread.join();
             
                 svc_status.dwCurrentState = SERVICE_STOPPED;
                 SetServiceStatus(svc_status_handle, &svc_status);
@@ -109,17 +106,17 @@ void WINAPI ServiceMain(DWORD argc, LPSTR* argv)
         return;
     }
     
-    g_WorkerThread = std::thread(WorkerThread);
-    
     svc_status.dwCurrentState = SERVICE_RUNNING;
     if (!SetServiceStatus(svc_status_handle, &svc_status)) {
         WriteLog("ServiceMain() failed to set service status to SERVICE_RUNNING.");
         return;
     }
 
-    WriteLog("Sleeping for 1000 seconds");
-    sleep(1000);
-    WriteLog("Woke up");
+    int nd_argc = 3;
+    char *nd_argv[] = {strdupz("/usr/bin/netdata"), strdupz("-D"), NULL};
+    netdata_main(nd_argc, nd_argv);
+
+    WriteLog("[LosAlamos] WTF!!!");
     
 #if 0
     WaitForSingleObject(g_ServiceStopEvent, INFINITE);
@@ -140,8 +137,13 @@ int main() {
     };
     
     if (!StartServiceCtrlDispatcher(serviceTable)) {
-        WriteLog("Failed to start service control dispatcher.");
-        return GetLastError();
+        DWORD ret = GetLastError();
+        
+        char Buf[1024];
+        snprintf(Buf, 1024, "Failed to start service control dispatcher: %u", ret);
+        WriteLog(Buf);
+        
+        return ret;
     }
     
     return 0;
