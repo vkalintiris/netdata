@@ -1423,6 +1423,7 @@ elseif(OS_FREEBSD)
 elseif(OS_WINDOWS)
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_windows.c
+                src/daemon/winsvc.cc
                 ${WINDOWS_PLUGIN_FILES}
                 ${INTERNAL_COLLECTORS_FILES}
         )
