@@ -492,6 +492,10 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
     watcher_shutdown_end();
     watcher_thread_stop();
 
+#ifdef OS_WINDOWS
+    return;
+#endif
+
 #ifdef ENABLE_SENTRY
     if (ret)
         abort();
@@ -1458,6 +1462,8 @@ int netdata_main(int argc, char **argv)
 int main(int argc, char **argv)
 #endif
 {
+    string_init();
+
     // initialize the system clocks
     clocks_init();
     netdata_start_time = now_realtime_sec();
