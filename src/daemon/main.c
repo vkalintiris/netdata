@@ -1450,6 +1450,7 @@ int netdata_main(int argc, char **argv)
 int main(int argc, char **argv)
 #endif
 {
+    analytics_init();
     string_init();
 
     // initialize the system clocks
