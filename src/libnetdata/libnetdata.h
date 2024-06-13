@@ -700,6 +700,40 @@ static inline void *CLEANUP_FUNCTION_GET_PTR(void *pptr) {
 
 // --------------------------------------------------------------------------------------------------------------------
 
+ __attribute__((format(printf, 1, 2))) static inline void pluginsd_log(const char *format, ...)
+{
+    // Define the file path
+    char file_path[FILENAME_MAX + 1];
+    snprintfz(file_path, FILENAME_MAX, "%s/pluginsd.log", LOG_DIR);
+
+    // Open the file in append mode
+    FILE *fp = fopen(file_path, "a");
+    if (fp == NULL) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize the va_list and write to the file using vfprintf
+    va_list args;
+    va_start(args, format);
+    if (vfprintf(fp, format, args) < 0) {
+        perror("Error writing to file");
+        va_end(args);
+        fclose(fp);
+        exit(EXIT_FAILURE);
+    }
+    va_end(args);
+
+    fprintf(fp, "\n");
+    fflush(fp);
+
+    // Close the file
+    if (fclose(fp) != 0) {
+        perror("Error closing file");
+        exit(EXIT_FAILURE);
+    }
+}
+
 # ifdef __cplusplus
 }
 # endif
