@@ -1498,7 +1498,6 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    #if 1
     // parse options
     {
         int num_opts = sizeof(option_definitions) / sizeof(struct option_def);
@@ -1959,7 +1958,6 @@ int main(int argc, char **argv)
             }
         }
     }
-    #endif
 
     if (close_open_fds == true) {
         // close all open file descriptors, except the standard ones
@@ -2226,7 +2224,7 @@ int main(int argc, char **argv)
     // fork the spawn server
     delta_startup_time("fork the spawn server");
 
-#if 0
+#ifndef OS_WINDOWS
     spawn_init();
 #endif
 
@@ -2371,22 +2369,14 @@ int main(int argc, char **argv)
     }
 #endif
 
-    // ------------------------------------------------------------------------
-    // initialize WebRTC
-
     webrtc_initialize();
-
-    // ------------------------------------------------------------------------
-    // unblock signals
 
     signals_unblock();
 
-    // ------------------------------------------------------------------------
-    // Handle signals
-
+#ifdef OS_WINDOWS
+    return 0;
+#else
     signals_handle();
-
-    // should never reach this point
-    // but we need it for rpmlint #2752
     return 1;
+#endif
 }
