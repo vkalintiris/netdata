@@ -1456,11 +1456,7 @@ int unittest_prepare_rrd(char **user) {
     return 0;
 }
 
-#ifdef OS_WINDOWS
 int netdata_main(int argc, char **argv)
-#else
-int main(int argc, char **argv)
-#endif
 {
     analytics_init();
     string_init();
@@ -2372,11 +2368,16 @@ int main(int argc, char **argv)
     webrtc_initialize();
 
     signals_unblock();
-
-#ifdef OS_WINDOWS
-    return 0;
-#else
-    signals_handle();
-    return 1;
-#endif
 }
+
+#ifndef OS_WINDOWS
+int main(int argc, char *argv[])
+{
+    int rc = netdata_main();
+    if (rc)
+        return rc;
+    
+    signals_block();
+    return 1;
+}
+#endif

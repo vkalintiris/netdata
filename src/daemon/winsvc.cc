@@ -192,6 +192,20 @@ void WINAPI ServiceMain(DWORD argc, LPSTR* argv)
     netdata_service_log("Agent has been started...");
 }
 
+#ifdef RUN_FROM_CLI
+int main() {
+    int nd_argc = 2;
+    char *nd_argv[] = {strdupz("/usr/sbin/netdata"), strdupz("-D"), NULL};
+    
+    int rc = netdata_main(nd_argc, nd_argv);
+    if (rc)
+        return rc;
+
+    while (true) {
+        sleep(1);
+    }
+}
+#else
 int main()
 {
     SERVICE_TABLE_ENTRY serviceTable[] = {
@@ -207,3 +221,4 @@ int main()
 
     return 0;
 }
+#endif
