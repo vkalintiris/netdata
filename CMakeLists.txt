@@ -1442,26 +1442,26 @@ set(NETDATA_FILES
         src/otel/otel_utils.h
 )
 
+set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto
+                              src/otel/opentelemetry/proto/collector/metrics/v1/metrics_service.proto
+                              src/otel/opentelemetry/proto/collector/trace/v1/trace_service.proto
+                              src/otel/opentelemetry/proto/common/v1/common.proto
+                              src/otel/opentelemetry/proto/logs/v1/logs.proto
+                              src/otel/opentelemetry/proto/metrics/v1/metrics.proto
+                              src/otel/opentelemetry/proto/resource/v1/resource.proto
+                              src/otel/opentelemetry/proto/trace/v1/trace.proto
+)
+
+netdata_protoc_generate_cpp("${CMAKE_SOURCE_DIR}/src/otel"
+                            "${CMAKE_SOURCE_DIR}/src/otel"
+                            OTEL_BUILT_SRCS
+                            OTEL_BUILT_HDRS
+                            ${OPENTELEMETRY_PROTO_FILES})
+
+
+list(APPEND NETDATA_FILES ${OTEL_BUILT_SRCS} ${OTEL_BUILT_HDRS})
+
 if(OS_LINUX)
-        set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto
-                                      src/otel/opentelemetry/proto/collector/metrics/v1/metrics_service.proto
-                                      src/otel/opentelemetry/proto/collector/trace/v1/trace_service.proto
-                                      src/otel/opentelemetry/proto/common/v1/common.proto
-                                      src/otel/opentelemetry/proto/logs/v1/logs.proto
-                                      src/otel/opentelemetry/proto/metrics/v1/metrics.proto
-                                      src/otel/opentelemetry/proto/resource/v1/resource.proto
-                                      src/otel/opentelemetry/proto/trace/v1/trace.proto
-        )
-
-        netdata_protoc_generate_cpp("${CMAKE_SOURCE_DIR}/src/otel"
-                                    "${CMAKE_SOURCE_DIR}/src/otel"
-                                    OTEL_BUILT_SRCS
-                                    OTEL_BUILT_HDRS
-                                    ${OPENTELEMETRY_PROTO_FILES})
-
-
-        list(APPEND NETDATA_FILES ${OTEL_BUILT_SRCS} ${OTEL_BUILT_HDRS})
-
         list(APPEND NETDATA_FILES
                 src/daemon/static_threads_linux.c
                 ${CGROUPS_PLUGIN_FILES}
