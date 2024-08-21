@@ -33,10 +33,13 @@ using ExponentialHistogram = opentelemetry::proto::metrics::v1::ExponentialHisto
 using Summary = opentelemetry::proto::metrics::v1::Summary;
 
 template <typename Element>
-using ConstFieldIterator = typename ::google::protobuf::RepeatedPtrField<Element>::const_iterator;
+using RepeatedPtrField = google::protobuf::RepeatedPtrField<Element>;
 
 template <typename Element>
-using FieldIterator = typename ::google::protobuf::RepeatedPtrField<Element>::const_iterator;
+using ConstFieldIterator = typename RepeatedPtrField<Element>::const_iterator;
+
+template <typename Element>
+using FieldIterator = typename RepeatedPtrField<Element>::const_iterator;
 
 void printAnyValue(std::ostream &OS, const AnyValue &Value);
 void printArrayValue(std::ostream &OS, const ArrayValue &Value);
@@ -62,6 +65,7 @@ void printResourceMetrics(std::ostream &OS, const ResourceMetrics &RM);
 void printMetricsData(std::ostream &OS, const MetricsData &MD);
 
 void restructureOTELMetrics(pb::MetricsData &MD);
+void sortMetricsDataAttributes(pb::MetricsData &MD);
 
 } // namespace pb
 

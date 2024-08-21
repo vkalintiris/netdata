@@ -214,6 +214,17 @@ private:
 #else
     void processMetricsData(pb::MetricsData &MD) {
         pb::restructureOTELMetrics(MD);
+        pb::sortMetricsDataAttributes(MD);
+
+        const std::string S = MD.Utf8DebugString();
+        std::ofstream OS("/tmp/after.txt", std::ios_base::app);
+        if (OS.is_open()) {
+            OS << S << std::endl;
+            OS.close();
+        } else {
+            std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
+        }
+
     }
 #endif
 

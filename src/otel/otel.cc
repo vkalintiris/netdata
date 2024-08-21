@@ -160,8 +160,6 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 
 static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
-    fatal("WTF?");
-
     if (nread > 0) {
         ingestor::Otel *OT = reinterpret_cast<ingestor::Otel *>(stream->data);
         const uv_buf_t data = {.base = buf->base, .len = (size_t) nread};

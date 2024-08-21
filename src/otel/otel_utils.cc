@@ -1,7 +1,7 @@
 #include "otel_utils.h"
 
 #include <fstream>
-#include <iostream>
+#include <ostream>
 
 using Buckets = opentelemetry::proto::metrics::v1::ExponentialHistogramDataPoint::Buckets;
 
@@ -431,17 +431,13 @@ void pb::printMetricsData(std::ostream &OS, const pb::MetricsData &MD)
     }
 }
 
-#include <vector>
-#include <unordered_map>
-#include <string>
-#include <algorithm>
-#include <functional>
-#include "opentelemetry/proto/metrics/v1/metrics.pb.h"
+/*
+ * Transform utils
+*/
 
 class OTELMetricsRestructurer {
 public:
-    OTELMetricsRestructurer(const std::vector<std::string> &GroupingKeys)
-        : GroupingKeys(GroupingKeys)
+    OTELMetricsRestructurer(const std::vector<std::string> &GroupingKeys) : GroupingKeys(GroupingKeys)
     {
     }
 
@@ -482,8 +478,8 @@ private:
 
     std::vector<pb::Metric> restructureSum(const pb::Metric &M)
     {
-        auto DPs = groupDataPoints(M.sum().data_points());
-        return createNewMetrics(M, DPs, [&](pb::Metric &NewMetric, const auto &DPs) {
+        auto GDPs = groupDataPoints(M.sum().data_points());
+        return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *S = NewMetric.mutable_sum();
             *S->mutable_data_points() = {DPs.begin(), DPs.end()};
             S->set_aggregation_temporality(M.sum().aggregation_temporality());
@@ -493,8 +489,8 @@ private:
 
     std::vector<pb::Metric> restructureHistogram(const pb::Metric &M)
     {
-        auto DPs = groupDataPoints(M.histogram().data_points());
-        return createNewMetrics(M, DPs, [&](pb::Metric &NewMetric, const auto &DPs) {
+        auto GDPs = groupDataPoints(M.histogram().data_points());
+        return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *H = NewMetric.mutable_histogram();
             *H->mutable_data_points() = {DPs.begin(), DPs.end()};
             H->set_aggregation_temporality(M.histogram().aggregation_temporality());
@@ -503,8 +499,8 @@ private:
 
     std::vector<pb::Metric> restructureSummary(const pb::Metric &M)
     {
-        auto DPs = groupDataPoints(M.summary().data_points());
-        return createNewMetrics(M, DPs, [&](pb::Metric &NewMetric, const auto &DPs) {
+        auto GDPs = groupDataPoints(M.summary().data_points());
+        return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *S = NewMetric.mutable_summary();
             *S->mutable_data_points() = {DPs.begin(), DPs.end()};
         });
@@ -514,10 +510,15 @@ private:
     {
         std::string Key;
 
-        for (const auto &GroupingKey : GroupingKeys) {
+        for (size_t Idx = 0; Idx != GroupingKeys.size(); Idx++) {
             for (const auto &Attr : DP.attributes()) {
-                if (Attr.key() == GroupingKey) {
-                    Key += Attr.value().string_value() + "_";
+                if (Attr.key() == GroupingKeys[Idx]) {
+                    Key += Attr.value().string_value();
+
+                    if (Idx != (GroupingKeys.size() - 1)) {
+                        Key += "_";
+                    }
+
                     break;
                 }
             }
@@ -527,7 +528,7 @@ private:
     }
 
     template <typename T>
-    std::unordered_map<std::string, std::vector<T> > groupDataPoints(const google::protobuf::RepeatedPtrField<T> &DPs)
+    std::unordered_map<std::string, std::vector<T> > groupDataPoints(const pb::RepeatedPtrField<T> &DPs)
     {
         std::unordered_map<std::string, std::vector<T> > Groups;
 
@@ -547,13 +548,13 @@ private:
     {
         std::vector<pb::Metric> NewMetrics;
 
-        for (const auto &DP : GDPs) {
+        for (const auto &P : GDPs) {
             pb::Metric NewMetric;
-            NewMetric.set_name(OrigMetric.name() + "_" + DP.first);
+            NewMetric.set_name(OrigMetric.name() + "_" + P.first);
             NewMetric.set_description(OrigMetric.description());
             NewMetric.set_unit(OrigMetric.unit());
 
-            setDataPoints(NewMetric, DP.second);
+            setDataPoints(NewMetric, P.second);
 
             NewMetrics.push_back(NewMetric);
         }
@@ -562,10 +563,9 @@ private:
     }
 };
 
-// Example usage
 void pb::restructureOTELMetrics(pb::MetricsData &MD)
 {
-    std::vector<std::string> groupingKeys = {"protocol"};
+    std::vector<std::string> groupingKeys = {"cpu"};
 
     OTELMetricsRestructurer Restructurer(groupingKeys);
 
@@ -578,14 +578,173 @@ void pb::restructureOTELMetrics(pb::MetricsData &MD)
             *SMs.mutable_metrics() = {NewMetrics.begin(), NewMetrics.end()};
         }
     }
+}
 
-    const std::string S = MD.Utf8DebugString();
-    std::ofstream OS("/tmp/foo.txt", std::ios_base::app);
-    if (OS.is_open()) {
-        OS << S << std::endl;
-        OS.close();
-        std::cout << "Debug string appended to /tmp/foo.txt" << std::endl;
-    } else {
-        std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
+/*
+ * Attributes sorting utils
+*/
+
+static void sortKeyValueList(pb::KeyValueList *KVL);
+
+struct KeyValueComparator {
+    bool operator()(const pb::KeyValue &LHS, const pb::KeyValue &RHS) const
+    {
+        return LHS.key() < RHS.key();
+    }
+};
+
+static void sortArrayValue(pb::ArrayValue *AV)
+{
+    auto *Values = AV->mutable_values();
+
+    for (auto &Value : *Values) {
+        if (Value.has_array_value()) {
+            sortArrayValue(Value.mutable_array_value());
+        } else if (Value.has_kvlist_value()) {
+            sortKeyValueList(Value.mutable_kvlist_value());
+        }
+    }
+}
+
+static void sortKeyValueList(pb::KeyValueList *KVL)
+{
+    auto *Values = KVL->mutable_values();
+
+    std::sort(Values->begin(), Values->end(), KeyValueComparator());
+
+    for (auto &KV : *Values) {
+        if (KV.value().has_array_value()) {
+            sortArrayValue(KV.mutable_value()->mutable_array_value());
+        } else if (KV.value().has_kvlist_value()) {
+            sortKeyValueList(KV.mutable_value()->mutable_kvlist_value());
+        }
+    }
+}
+
+static void sortRepeatedAttributes(pb::RepeatedPtrField<pb::KeyValue> *Attrs)
+{
+    std::sort(Attrs->begin(), Attrs->end(), KeyValueComparator());
+
+    for (auto &Attr : *Attrs) {
+        if (Attr.value().has_array_value()) {
+            sortArrayValue(Attr.mutable_value()->mutable_array_value());
+        } else if (Attr.value().has_kvlist_value()) {
+            sortKeyValueList(Attr.mutable_value()->mutable_kvlist_value());
+        }
+    }
+}
+
+static void sortResourceAttributes(pb::Resource *R)
+{
+    sortRepeatedAttributes(R->mutable_attributes());
+}
+
+static void sortInstrumentationScopeAttributes(pb::InstrumentationScope *S)
+{
+    sortRepeatedAttributes(S->mutable_attributes());
+}
+
+void pb::sortMetricsDataAttributes(pb::MetricsData &MD)
+{
+    for (auto &RMs : *MD.mutable_resource_metrics()) {
+        sortResourceAttributes(RMs.mutable_resource());
+
+        for (auto &scopeMetrics : *RMs.mutable_scope_metrics()) {
+            sortInstrumentationScopeAttributes(scopeMetrics.mutable_scope());
+        }
+    }
+}
+
+/*
+ * Flatten attributes
+*/
+
+#include <algorithm>
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include "opentelemetry/proto/common/v1/common.pb.h"
+#include "opentelemetry/proto/resource/v1/resource.pb.h"
+#include "opentelemetry/proto/metrics/v1/metrics.pb.h"
+
+std::string anyValueToString(const pb::AnyValue &AV) {
+    switch (AV.value_case()) {
+        case pb::AnyValue::kStringValue:
+            return AV.string_value();
+        case pb::AnyValue::kBoolValue:
+            return AV.bool_value() ? "true" : "false";
+        case pb::AnyValue::kIntValue:
+            return std::to_string(AV.int_value());
+        case pb::AnyValue::kDoubleValue:
+            return std::to_string(AV.double_value());
+        case pb::AnyValue::kArrayValue:
+            // Placeholder for array values
+            return "[array]";
+        case pb::AnyValue::kKvlistValue:
+            // Placeholder for nested key-value lists
+            return "{kvlist}";
+        case pb::AnyValue::kBytesValue:
+            // Placeholder for byte arrays
+            return "[bytes]";
+        default:
+            return "[unknown]";
+    }
+}
+
+void extractFlattenedAttributes(const pb::RepeatedPtrField<pb::KeyValue>& Attrs,
+                                std::unordered_map<std::string, std::string>& Result,
+                                const std::string& Prefix = "") {
+    for (const auto &Attr : Attrs) {
+        std::string Key = Prefix + Attr.key();
+        const auto &Value = Attr.value();
+
+        if (Value.has_array_value()) {
+            const auto &Arr = Value.array_value().values();
+            for (int i = 0; i < Arr.size(); ++i) {
+                Result[Key + "_" + std::to_string(i)] = anyValueToString(Arr[i]);
+            }
+        } else if (Value.has_kvlist_value()) {
+            extractFlattenedAttributes(Value.kvlist_value().values(), Result, Key + "_");
+        } else {
+            Result[Key] = anyValueToString(Value);
+        }
+    }
+}
+
+std::unordered_map<std::string, std::string> extractResourceAttributes(const pb::Resource &R) {
+    std::unordered_map<std::string, std::string> Result;
+    extractFlattenedAttributes(R.attributes(), Result, "r_");
+    return Result;
+}
+
+std::unordered_map<std::string, std::string> extractInstrumentationScopeAttributes(const pb::InstrumentationScope& IS) {
+    std::unordered_map<std::string, std::string> Result;
+    extractFlattenedAttributes(IS.attributes(), Result, "s_");
+    return Result;
+}
+
+std::unordered_map<std::string, std::string> extractAllAttributes(const pb::MetricsData &MD) {
+    std::unordered_map<std::string, std::string> allAttributes;
+
+    for (const auto& resourceMetrics : MD.resource_metrics()) {
+        auto resourceAttrs = extractResourceAttributes(resourceMetrics.resource());
+        allAttributes.insert(resourceAttrs.begin(), resourceAttrs.end());
+
+        for (const auto& scopeMetrics : resourceMetrics.scope_metrics()) {
+            auto scopeAttrs = extractInstrumentationScopeAttributes(scopeMetrics.scope());
+            allAttributes.insert(scopeAttrs.begin(), scopeAttrs.end());
+        }
+    }
+
+    return allAttributes;
+}
+
+// Example usage
+void processMetricsDataAttributes(const pb::MetricsData &MD) {
+    auto flattenedAttributes = extractAllAttributes(MD);
+
+    // Use the flattened attributes
+    for (const auto& pair : flattenedAttributes) {
+        std::cout << pair.first << ": " << pair.second << std::endl;
     }
 }

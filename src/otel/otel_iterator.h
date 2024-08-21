@@ -167,7 +167,7 @@ public:
     }
 
 private:
-    const google::protobuf::RepeatedPtrField<pb::KeyValue> &getAttrs() const
+    const pb::RepeatedPtrField<pb::KeyValue> &getAttrs() const
     {
         switch (DpKind) {
             case DataPointKind::Number:
