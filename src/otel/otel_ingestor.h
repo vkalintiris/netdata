@@ -187,6 +187,7 @@ public:
     }
 
 private:
+#if 0
     void processMetricsData(const pb::MetricsData &MD) {
         std::vector<pb::MetricsData> V = { MD };
 
@@ -210,6 +211,11 @@ private:
             P.second.flush(P.first);
         }
     }
+#else
+    void processMetricsData(pb::MetricsData &MD) {
+        pb::restructureOTELMetrics(MD);
+    }
+#endif
 
 private:
     Otel(const otel::config::Config *Cfg) : Cfg(Cfg) { }

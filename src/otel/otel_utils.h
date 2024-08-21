@@ -61,6 +61,8 @@ void printScopeMetrics(std::ostream &OS, const ScopeMetrics &SM);
 void printResourceMetrics(std::ostream &OS, const ResourceMetrics &RM);
 void printMetricsData(std::ostream &OS, const MetricsData &MD);
 
+void restructureOTELMetrics(pb::MetricsData &MD);
+
 } // namespace pb
 
 #endif /* OTEL_UTILS_HPP */
