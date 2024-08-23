@@ -639,6 +639,11 @@ set(LIBNETDATA_FILES
         src/libnetdata/aral/aral.h
         src/libnetdata/avl/avl.c
         src/libnetdata/avl/avl.h
+        src/libnetdata/blake3/blake3.c
+        src/libnetdata/blake3/blake3.h
+        src/libnetdata/blake3/blake3_portable.c
+        src/libnetdata/blake3/blake3_dispatch.c
+        src/libnetdata/blake3/blake3_impl.h
         src/libnetdata/buffer/buffer.c
         src/libnetdata/buffer/buffer.h
         src/libnetdata/circular_buffer/circular_buffer.c
