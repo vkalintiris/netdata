@@ -213,8 +213,15 @@ private:
     }
 #else
     void processMetricsData(pb::MetricsData &MD) {
-        pb::restructureOTELMetrics(MD);
+        // needs configuration
+        pb::restructureOTELMetrics(Cfg, MD);
+
+        // all good
         pb::sortMetricsDataAttributes(MD);
+
+        // - lookup charts
+        // - create missing ones and extract labels
+        // - update existing ones
 
         const std::string S = MD.Utf8DebugString();
         std::ofstream OS("/tmp/after.txt", std::ios_base::app);

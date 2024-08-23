@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
+#include "metadata.h"
 
 namespace pb
 {
@@ -64,7 +65,7 @@ void printScopeMetrics(std::ostream &OS, const ScopeMetrics &SM);
 void printResourceMetrics(std::ostream &OS, const ResourceMetrics &RM);
 void printMetricsData(std::ostream &OS, const MetricsData &MD);
 
-void restructureOTELMetrics(pb::MetricsData &MD);
+void restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData &MD);
 void sortMetricsDataAttributes(pb::MetricsData &MD);
 
 } // namespace pb

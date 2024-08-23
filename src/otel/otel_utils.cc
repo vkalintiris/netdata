@@ -1,5 +1,6 @@
 #include "otel_utils.h"
 
+#include "metadata.h"
 #include <fstream>
 #include <ostream>
 
@@ -437,48 +438,51 @@ void pb::printMetricsData(std::ostream &OS, const pb::MetricsData &MD)
 
 class OTELMetricsRestructurer {
 public:
-    OTELMetricsRestructurer(const std::vector<std::string> &GroupingKeys) : GroupingKeys(GroupingKeys)
+    OTELMetricsRestructurer(const otel::config::Config *Cfg) : Cfg(Cfg)
     {
     }
 
-    std::vector<pb::Metric> restructureMetrics(const std::vector<pb::Metric> &InputMetrics)
+    std::vector<pb::Metric> restructureMetrics(const pb::InstrumentationScope &IS, const std::vector<pb::Metric> &InputMetrics)
     {
+        auto *CfgScope = Cfg->getScope(IS.name());
+
         std::vector<pb::Metric> RestructuredMetrics;
 
+        std::vector<pb::Metric> NewMetrics;
         for (const auto &M : InputMetrics) {
-            std::vector<pb::Metric> NewMetrics;
+            auto *CfgMetric = CfgScope->getMetric(M.name());
 
             if (M.has_gauge()) {
-                NewMetrics = restructureGauge(M);
+                NewMetrics = restructureGauge(CfgMetric, M);
             } else if (M.has_sum()) {
-                NewMetrics = restructureSum(M);
+                NewMetrics = restructureSum(CfgMetric, M);
             } else if (M.has_histogram()) {
-                NewMetrics = restructureHistogram(M);
+                NewMetrics = restructureHistogram(CfgMetric, M);
             } else if (M.has_summary()) {
-                NewMetrics = restructureSummary(M);
+                NewMetrics = restructureSummary(CfgMetric, M);
             }
 
             RestructuredMetrics.insert(RestructuredMetrics.end(), NewMetrics.begin(), NewMetrics.end());
+
+            NewMetrics.clear();
         }
 
         return RestructuredMetrics;
     }
 
 private:
-    std::vector<std::string> GroupingKeys;
-
-    std::vector<pb::Metric> restructureGauge(const pb::Metric &M)
+    std::vector<pb::Metric> restructureGauge(const otel::config::Metric *CfgMetric, const pb::Metric &M)
     {
-        auto GDPs = groupDataPoints(M.gauge().data_points());
+        auto GDPs = groupDataPoints(CfgMetric->getInstanceAttributes(), M.gauge().data_points());
         return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *G = NewMetric.mutable_gauge();
             *G->mutable_data_points() = {DPs.begin(), DPs.end()};
         });
     }
 
-    std::vector<pb::Metric> restructureSum(const pb::Metric &M)
+    std::vector<pb::Metric> restructureSum(const otel::config::Metric *CfgMetric, const pb::Metric &M)
     {
-        auto GDPs = groupDataPoints(M.sum().data_points());
+        auto GDPs = groupDataPoints(CfgMetric->getInstanceAttributes(), M.sum().data_points());
         return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *S = NewMetric.mutable_sum();
             *S->mutable_data_points() = {DPs.begin(), DPs.end()};
@@ -487,9 +491,9 @@ private:
         });
     }
 
-    std::vector<pb::Metric> restructureHistogram(const pb::Metric &M)
+    std::vector<pb::Metric> restructureHistogram(const otel::config::Metric *CfgMetric, const pb::Metric &M)
     {
-        auto GDPs = groupDataPoints(M.histogram().data_points());
+        auto GDPs = groupDataPoints(CfgMetric->getInstanceAttributes(), M.histogram().data_points());
         return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *H = NewMetric.mutable_histogram();
             *H->mutable_data_points() = {DPs.begin(), DPs.end()};
@@ -497,43 +501,43 @@ private:
         });
     }
 
-    std::vector<pb::Metric> restructureSummary(const pb::Metric &M)
+    std::vector<pb::Metric> restructureSummary(const otel::config::Metric *CfgMetric, const pb::Metric &M)
     {
-        auto GDPs = groupDataPoints(M.summary().data_points());
+        auto GDPs = groupDataPoints(CfgMetric->getInstanceAttributes(), M.summary().data_points());
         return createNewMetrics(M, GDPs, [&](pb::Metric &NewMetric, const auto &DPs) {
             auto *S = NewMetric.mutable_summary();
             *S->mutable_data_points() = {DPs.begin(), DPs.end()};
         });
     }
 
-    template <typename T> std::string createGroupKey(const T &DP)
+    template <typename T> std::string createGroupKey(const std::set<std::string> *InstanceAttributes, const T &DP)
     {
         std::string Key;
 
-        for (size_t Idx = 0; Idx != GroupingKeys.size(); Idx++) {
+        for (const auto &IA: *InstanceAttributes) {
             for (const auto &Attr : DP.attributes()) {
-                if (Attr.key() == GroupingKeys[Idx]) {
-                    Key += Attr.value().string_value();
-
-                    if (Idx != (GroupingKeys.size() - 1)) {
-                        Key += "_";
-                    }
-
+                if (Attr.key() == IA) {
+                    Key += Attr.value().string_value() + "_";
                     break;
                 }
             }
+        }
+
+        // Remove trailing underscore
+        if (!Key.empty()) {
+            Key.pop_back();
         }
 
         return Key;
     }
 
     template <typename T>
-    std::unordered_map<std::string, std::vector<T> > groupDataPoints(const pb::RepeatedPtrField<T> &DPs)
+    std::unordered_map<std::string, std::vector<T> > groupDataPoints(const std::set<std::string> *InstanceAttributes, const pb::RepeatedPtrField<T> &DPs)
     {
         std::unordered_map<std::string, std::vector<T> > Groups;
 
         for (const auto &DP : DPs) {
-            std::string GroupKey = createGroupKey(DP);
+            std::string GroupKey = createGroupKey(InstanceAttributes, DP);
             Groups[GroupKey].push_back(DP);
         }
 
@@ -561,18 +565,23 @@ private:
 
         return NewMetrics;
     }
+
+private:
+    const otel::config::Config *Cfg;
 };
 
-void pb::restructureOTELMetrics(pb::MetricsData &MD)
+void pb::restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData &MD)
 {
-    std::vector<std::string> groupingKeys = {"cpu"};
-
-    OTELMetricsRestructurer Restructurer(groupingKeys);
+    OTELMetricsRestructurer Restructurer(Cfg);
 
     for (auto &RMs : *MD.mutable_resource_metrics()) {
         for (auto &SMs : *RMs.mutable_scope_metrics()) {
+            if (!SMs.has_scope()) {
+                // TODO: log this somewhere
+            }
+
             std::vector<pb::Metric> NewMetrics =
-                Restructurer.restructureMetrics({SMs.metrics().begin(), SMs.metrics().end()});
+                Restructurer.restructureMetrics(SMs.scope(), {SMs.metrics().begin(), SMs.metrics().end()});
 
             SMs.clear_metrics();
             *SMs.mutable_metrics() = {NewMetrics.begin(), NewMetrics.end()};
