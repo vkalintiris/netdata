@@ -25,19 +25,6 @@ namespace config
             }
         }
 
-        void dump(std::ostream &OS, int Indent = 0) const
-        {
-            std::string ind(Indent, ' ');
-            OS << ind << "<metric>\n";
-            OS << ind << "  dimensions_attribute: " << DimensionsAttribute << "\n";
-
-            OS << ind << "  instance_attributes: [";
-            for (const auto &IA: InstanceAttributes) {
-                OS << IA << " ";
-            }
-            OS << "]\n";
-        }
-
         const std::string *getDimensionsAttribute() const
         {
             return &DimensionsAttribute;
@@ -68,16 +55,6 @@ namespace config
             return (It != Metrics.end()) ? &(It->second) : nullptr;
         }
 
-        void dump(std::ostream &OS, int Indent = 0) const
-        {
-            std::string ind(Indent, ' ');
-            OS << ind << "<scope>:\n";
-            for (const auto &P : Metrics) {
-                OS << ind << "  " << P.first << ":\n";
-                P.second.dump(OS, Indent + 4);
-            }
-        }
-
     private:
         std::unordered_map<std::string, Metric> Metrics;
     };
@@ -95,8 +72,8 @@ namespace config
 
         const Scope *getScope(const std::string &Name) const
         {
-            auto it = Scopes.find(Name);
-            return (it != Scopes.end()) ? &(it->second) : nullptr;
+            auto It = Scopes.find(Name);
+            return (It != Scopes.end()) ? &(It->second) : nullptr;
         }
 
         const Metric *getMetric(const std::string &ScopeName, const std::string &MetricName) const
@@ -125,16 +102,6 @@ namespace config
                 return nullptr;
 
             return M->getInstanceAttributes();
-        }
-
-        void dump(std::ostream &OS) const
-        {
-            OS << "ConfigParser:\n";
-
-            for (const auto &P : Scopes) {
-                OS << "  " << P.first << ":\n";
-                P.second.dump(OS, 4);
-            }
         }
 
     private:

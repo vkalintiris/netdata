@@ -212,26 +212,55 @@ private:
         }
     }
 #else
-    void processMetricsData(pb::MetricsData &MD) {
-        // needs configuration
-        pb::restructureOTELMetrics(Cfg, MD);
-
-        // all good
-        pb::sortMetricsDataAttributes(MD);
-
-        // - lookup charts
-        // - create missing ones and extract labels
-        // - update existing ones
-
-        const std::string S = MD.Utf8DebugString();
-        std::ofstream OS("/tmp/after.txt", std::ios_base::app);
+    void dump(const std::string &Path, const pb::MetricsData &MD) {
+        std::ofstream OS(Path, std::ios_base::app);
         if (OS.is_open()) {
-            OS << S << std::endl;
+            OS << MD.Utf8DebugString() << std::endl;
             OS.close();
         } else {
             std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
         }
+    }
 
+    void processMetric(const std::string BlakeId, const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs, const pb::Metric &M) {
+        UNUSED(RMs);
+        UNUSED(SMs);
+
+        const std::string S = M.Utf8DebugString();
+        std::ofstream OS("/tmp/hash.txt", std::ios_base::app);
+        if (OS.is_open()) {
+            OS << BlakeId << ", " << M.name() << std::endl;
+            OS.close();
+        } else {
+            std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
+        }
+    }
+
+    void processMetricsData(pb::MetricsData &MD) {
+        dump("/tmp/before.txt", MD);
+
+        pb::restructureOTELMetrics(Cfg, MD);
+        pb::sortMetricsData(MD);
+
+        dump("/tmp/after.txt", MD);
+
+
+
+        // TODO: create stacked blake3_hasher
+        pb::ResourceMetricsHasher RMH;
+        for (const auto &RMs : MD.resource_metrics())
+        {
+            pb::ScopeMetricsHasher SMH = RMH.hash(RMs);
+            for (const auto &SMs : RMs.scope_metrics())
+            {
+                pb::MetricHasher MH = SMH.hash(SMs);
+                for (const auto &M : SMs.metrics())
+                {
+                    std::string BlakeId = MH.hash(M);
+                    processMetric(BlakeId, RMs, SMs, M);
+                }
+            }
+        }
     }
 #endif
 

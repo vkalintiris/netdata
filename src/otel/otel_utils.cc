@@ -1,8 +1,10 @@
 #include "otel_utils.h"
 
+#include "libnetdata/blake3/blake3.h"
 #include "metadata.h"
 #include <fstream>
 #include <ostream>
+#include <iomanip>
 
 using Buckets = opentelemetry::proto::metrics::v1::ExponentialHistogramDataPoint::Buckets;
 
@@ -444,13 +446,20 @@ public:
 
     std::vector<pb::Metric> restructureMetrics(const pb::InstrumentationScope &IS, const std::vector<pb::Metric> &InputMetrics)
     {
-        auto *CfgScope = Cfg->getScope(IS.name());
-
         std::vector<pb::Metric> RestructuredMetrics;
+
+        auto *CfgScope = Cfg->getScope(IS.name());
+        if (!CfgScope) {
+            return InputMetrics;
+        }
 
         std::vector<pb::Metric> NewMetrics;
         for (const auto &M : InputMetrics) {
             auto *CfgMetric = CfgScope->getMetric(M.name());
+            if (!CfgMetric || CfgMetric->getInstanceAttributes()->empty()) {
+                RestructuredMetrics.push_back(M);
+                continue;
+            }
 
             if (M.has_gauge()) {
                 NewMetrics = restructureGauge(CfgMetric, M);
@@ -463,7 +472,6 @@ public:
             }
 
             RestructuredMetrics.insert(RestructuredMetrics.end(), NewMetrics.begin(), NewMetrics.end());
-
             NewMetrics.clear();
         }
 
@@ -590,81 +598,6 @@ void pb::restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData
 }
 
 /*
- * Attributes sorting utils
-*/
-
-static void sortKeyValueList(pb::KeyValueList *KVL);
-
-struct KeyValueComparator {
-    bool operator()(const pb::KeyValue &LHS, const pb::KeyValue &RHS) const
-    {
-        return LHS.key() < RHS.key();
-    }
-};
-
-static void sortArrayValue(pb::ArrayValue *AV)
-{
-    auto *Values = AV->mutable_values();
-
-    for (auto &Value : *Values) {
-        if (Value.has_array_value()) {
-            sortArrayValue(Value.mutable_array_value());
-        } else if (Value.has_kvlist_value()) {
-            sortKeyValueList(Value.mutable_kvlist_value());
-        }
-    }
-}
-
-static void sortKeyValueList(pb::KeyValueList *KVL)
-{
-    auto *Values = KVL->mutable_values();
-
-    std::sort(Values->begin(), Values->end(), KeyValueComparator());
-
-    for (auto &KV : *Values) {
-        if (KV.value().has_array_value()) {
-            sortArrayValue(KV.mutable_value()->mutable_array_value());
-        } else if (KV.value().has_kvlist_value()) {
-            sortKeyValueList(KV.mutable_value()->mutable_kvlist_value());
-        }
-    }
-}
-
-static void sortRepeatedAttributes(pb::RepeatedPtrField<pb::KeyValue> *Attrs)
-{
-    std::sort(Attrs->begin(), Attrs->end(), KeyValueComparator());
-
-    for (auto &Attr : *Attrs) {
-        if (Attr.value().has_array_value()) {
-            sortArrayValue(Attr.mutable_value()->mutable_array_value());
-        } else if (Attr.value().has_kvlist_value()) {
-            sortKeyValueList(Attr.mutable_value()->mutable_kvlist_value());
-        }
-    }
-}
-
-static void sortResourceAttributes(pb::Resource *R)
-{
-    sortRepeatedAttributes(R->mutable_attributes());
-}
-
-static void sortInstrumentationScopeAttributes(pb::InstrumentationScope *S)
-{
-    sortRepeatedAttributes(S->mutable_attributes());
-}
-
-void pb::sortMetricsDataAttributes(pb::MetricsData &MD)
-{
-    for (auto &RMs : *MD.mutable_resource_metrics()) {
-        sortResourceAttributes(RMs.mutable_resource());
-
-        for (auto &scopeMetrics : *RMs.mutable_scope_metrics()) {
-            sortInstrumentationScopeAttributes(scopeMetrics.mutable_scope());
-        }
-    }
-}
-
-/*
  * Flatten attributes
 */
 
@@ -756,4 +689,76 @@ void processMetricsDataAttributes(const pb::MetricsData &MD) {
     for (const auto& pair : flattenedAttributes) {
         std::cout << pair.first << ": " << pair.second << std::endl;
     }
+}
+
+/*
+ * Hasher
+*/
+
+void digestAttributes(blake3_hasher &BH, const pb::RepeatedPtrField<pb::KeyValue> KVs)
+{
+    for (const auto &Attr : KVs) {
+        blake3_hasher_update(&BH, Attr.key().data(), Attr.key().size());
+
+        std::string AVS = anyValueToString(Attr.value());
+        blake3_hasher_update(&BH, AVS.data(), AVS.size());
+    }
+}
+
+pb::ScopeMetricsHasher pb::ResourceMetricsHasher::hash(const ResourceMetrics &RMs)
+{
+    blake3_hasher BH;
+    blake3_hasher_init(&BH);
+    blake3_hasher_update(&BH, RMs.schema_url().data(), RMs.schema_url().size());
+    return ScopeMetricsHasher(BH);
+}
+
+pb::MetricHasher pb::ScopeMetricsHasher::hash(const ScopeMetrics &SMs)
+{
+    blake3_hasher TmpBH = BH;
+
+    blake3_hasher_update(&TmpBH, SMs.schema_url().data(), SMs.schema_url().size());
+    blake3_hasher_update(&TmpBH, SMs.scope().name().data(), SMs.scope().name().size());
+    blake3_hasher_update(&TmpBH, SMs.scope().version().data(), SMs.scope().version().size());
+
+    digestAttributes(TmpBH, SMs.scope().attributes());
+
+    return MetricHasher(TmpBH);
+}
+
+std::string pb::MetricHasher::hash(const pb::Metric &M)
+{
+    blake3_hasher TmpBH = BH;
+
+    blake3_hasher_update(&TmpBH, M.name().data(), M.name().size());
+    blake3_hasher_update(&TmpBH, M.description().data(), M.description().size());
+    blake3_hasher_update(&TmpBH, M.unit().data(), M.unit().size());
+
+    digestAttributes(TmpBH, M.metadata());
+
+    switch (M.data_case()) {
+        case pb::Metric::kGauge: {
+            const auto &G = M.gauge();
+            for (const auto &DP: G.data_points())
+                digestAttributes(TmpBH, DP.attributes());
+            break;
+        }
+        case pb::Metric::kSum: {
+            const auto &S = M.gauge();
+            for (const auto &DP: S.data_points())
+                digestAttributes(TmpBH, DP.attributes());
+            break;
+        }
+        default:
+            std::abort();
+            break;
+    }
+
+    uint8_t Output[BLAKE3_OUT_LEN];
+    blake3_hasher_finalize(&TmpBH, Output, BLAKE3_OUT_LEN);
+
+    std::stringstream SS;
+    for (int Idx = 0; Idx < BLAKE3_OUT_LEN; Idx++)
+        SS << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(Output[Idx]);
+    return SS.str();
 }

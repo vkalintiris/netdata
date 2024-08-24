@@ -1445,6 +1445,7 @@ set(NETDATA_FILES
         src/otel/otel_ingestor.h
         src/otel/otel_utils.cc
         src/otel/otel_utils.h
+        src/otel/otel_sort.cc
 )
 
 set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto
@@ -1674,6 +1675,9 @@ target_include_directories(libnetdata BEFORE PUBLIC ${CONFIG_H_DIR} ${CMAKE_SOUR
 
 # add_executable(test test.cpp)
 # target_link_libraries(test Threads::Threads)
+
+target_compile_options(libnetdata PRIVATE
+        -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512)
 
 target_link_libraries(libnetdata PUBLIC
         "$<$<NOT:$<BOOL:${HAVE_BUILTIN_ATOMICS}>>:atomic>"
