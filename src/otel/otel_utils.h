@@ -43,29 +43,6 @@ template <typename Element> using ConstFieldIterator = typename RepeatedPtrField
 
 template <typename Element> using FieldIterator = typename RepeatedPtrField<Element>::const_iterator;
 
-void printAnyValue(std::ostream &OS, const AnyValue &Value);
-void printArrayValue(std::ostream &OS, const ArrayValue &Value);
-void printKeyValueList(std::ostream &OS, const KeyValueList &Value);
-void printInstrumentationScope(std::ostream &OS, const InstrumentationScope &IS);
-
-void printResource(std::ostream &OS, const Resource &Res);
-void printExemplar(std::ostream &OS, const Exemplar &Ex);
-void printNumberDataPoint(std::ostream &OS, const NumberDataPoint &NDP);
-void printSummaryDataPoint(std::ostream &OS, const SummaryDataPoint &SDP);
-void printHistogramDataPoint(std::ostream &OS, const HistogramDataPoint &HDP);
-void printExponentialHistogramDataPoint(std::ostream &OS, const ExponentialHistogramDataPoint &EHDP);
-
-void printGauge(std::ostream &OS, const Gauge &G);
-void printSum(std::ostream &OS, const Sum &S);
-void printHistogram(std::ostream &OS, const Histogram &H);
-void printExponentialHistogram(std::ostream &OS, const ExponentialHistogram &EH);
-void printSummary(std::ostream &OS, const Summary &S);
-
-void printMetric(std::ostream &OS, const Metric &M);
-void printScopeMetrics(std::ostream &OS, const ScopeMetrics &SM);
-void printResourceMetrics(std::ostream &OS, const ResourceMetrics &RM);
-void printMetricsData(std::ostream &OS, const MetricsData &MD);
-
 void restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData &MD);
 
 void sortMetricsData(pb::MetricsData &MD);

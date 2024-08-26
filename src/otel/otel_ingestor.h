@@ -13,13 +13,15 @@
 #include <vector>
 #include <fstream>
 
-static inline struct tm *convertTimevalToTm(const struct timeval &tv) {
+static inline struct tm *convertTimevalToTm(const struct timeval &tv)
+{
     time_t rawtime = tv.tv_sec;
     struct tm *timeinfo = localtime(&rawtime);
     return timeinfo;
 }
 
-static inline std::string getHourAndMinutes(const struct timeval &tv) {
+static inline std::string getHourAndMinutes(const struct timeval &tv)
+{
     struct tm *timeinfo = convertTimevalToTm(tv);
 
     // Use strftime to format the time as HH:MM
@@ -28,11 +30,9 @@ static inline std::string getHourAndMinutes(const struct timeval &tv) {
     return buffer;
 }
 
-namespace ingestor {
-  
-template <typename T>
-class BufferManager
+namespace ingestor
 {
+template <typename T> class BufferManager {
 public:
     void fill(const uv_buf_t &Buf);
 
@@ -41,11 +41,13 @@ public:
     absl::StatusOr<T> readMessage(uint32_t MessageLength);
 
 private:
-    inline size_t remainingBytes() const {
+    inline size_t remainingBytes() const
+    {
         return Data.size() - Pos;
     }
 
-    inline bool haveAtLeastXBytes(uint32_t Bytes) const {
+    inline bool haveAtLeastXBytes(uint32_t Bytes) const
+    {
         return remainingBytes() >= Bytes;
     }
 
@@ -54,15 +56,20 @@ private:
     size_t Pos = {0};
 };
 
+#if 0
 class MetricInstance {
 public:
-    MetricInstance() : RS(nullptr), Dimensions(), OEV(), LastCollectionTime(0) {}
+    MetricInstance() : RS(nullptr), Dimensions(), OEV(), LastCollectionTime(0)
+    {
+    }
 
-    inline void addOtelElement(const OtelElement &OE) {
+    inline void addOtelElement(const OtelElement &OE)
+    {
         OEV.push_back(OE);
     }
 
-    void flush(const std::string &Name) {
+    void flush(const std::string &Name)
+    {
         if (OEV.empty()) {
             LastCollectionTime = 0;
             return;
@@ -81,15 +88,15 @@ public:
         if (!OS)
             fatal("Failed to oppen out file");
 
-        for (const auto &OE : OEV)
-        {
+        for (const auto &OE : OEV) {
             RRDDIM *RD = getOrCreateRD(OE);
 
             struct timeval PIT;
             PIT.tv_sec = OEV[0].time() / NSEC_PER_SEC;
             PIT.tv_usec = 0;
 
-            OS << "RS: " << string2str(RS->id) << ", RD: " << string2str(RD->id) << ", PIT: " << getHourAndMinutes(PIT) << ", V: " << OE.value(1000) << std::endl;
+            OS << "RS: " << string2str(RS->id) << ", RD: " << string2str(RD->id) << ", PIT: " << getHourAndMinutes(PIT)
+               << ", V: " << OE.value(1000) << std::endl;
             rrddim_timed_set_by_pointer(RS, RD, PIT, OE.value(1000));
         }
         rrdset_done(RS);
@@ -98,13 +105,14 @@ public:
     }
 
 private:
-    bool homogeneousCollectionTime() const {
+    bool homogeneousCollectionTime() const
+    {
         std::pair<usec_t, usec_t> P = {
             std::numeric_limits<usec_t>::max(),
             std::numeric_limits<usec_t>::min(),
         };
 
-        for (const auto &OE: OEV) {
+        for (const auto &OE : OEV) {
             if (P.first > OE.time())
                 P.first = OE.time();
 
@@ -137,7 +145,8 @@ private:
             RRDSET_TYPE_LINE);
     }
 
-    RRDDIM *getOrCreateRD(const OtelElement &OE) {
+    RRDDIM *getOrCreateRD(const OtelElement &OE)
+    {
         const auto &DimensionName = OE.dimensionName();
         if (!DimensionName.ok())
             fatal("Failed to get dimension name");
@@ -160,11 +169,11 @@ private:
 
     uint64_t LastCollectionTime;
 };
+#endif
 
-class Otel
-{
+class Otel {
 public:
-    static Otel* get(const std::string &Path)
+    static Otel *get(const std::string &Path)
     {
         otel::config::Config *Cfg = new otel::config::Config(Path);
         return new Otel(Cfg);
@@ -187,32 +196,8 @@ public:
     }
 
 private:
-#if 0
-    void processMetricsData(const pb::MetricsData &MD) {
-        std::vector<pb::MetricsData> V = { MD };
-
-        auto OD = OtelData(Cfg, V);
-        for (const auto &OE: OD) {
-            const auto &InstanceName = OE.instanceName();
-            if (!InstanceName.ok()) {
-                fatal("instance name not found");
-                continue; // :trollface
-            }
-            std::ofstream OS("/tmp/output.txt", std::ios::app);
-            if (!OS)
-                fatal("Failed to oppen out file");
-
-            OS << "Handling instance name " << *InstanceName << std::endl;
-
-            MetricInstances[*InstanceName].addOtelElement(OE);
-        }
-
-        for (auto &P : MetricInstances) {
-            P.second.flush(P.first);
-        }
-    }
-#else
-    void dump(const std::string &Path, const pb::MetricsData &MD) {
+    void dump(const std::string &Path, const pb::MetricsData &MD)
+    {
         std::ofstream OS(Path, std::ios_base::app);
         if (OS.is_open()) {
             OS << MD.Utf8DebugString() << std::endl;
@@ -222,7 +207,12 @@ private:
         }
     }
 
-    void processMetric(const std::string BlakeId, const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs, const pb::Metric &M) {
+    void processMetric(
+        const std::string BlakeId,
+        const pb::ResourceMetrics &RMs,
+        const pb::ScopeMetrics &SMs,
+        const pb::Metric &M)
+    {
         UNUSED(RMs);
         UNUSED(SMs);
 
@@ -236,7 +226,8 @@ private:
         }
     }
 
-    void processMetricsData(pb::MetricsData &MD) {
+    void processMetricsData(pb::MetricsData &MD)
+    {
         dump("/tmp/before.txt", MD);
 
         pb::restructureOTELMetrics(Cfg, MD);
@@ -244,33 +235,30 @@ private:
 
         dump("/tmp/after.txt", MD);
 
-
-
-        // TODO: create stacked blake3_hasher
         pb::ResourceMetricsHasher RMH;
-        for (const auto &RMs : MD.resource_metrics())
-        {
+        for (const auto &RMs : MD.resource_metrics()) {
             pb::ScopeMetricsHasher SMH = RMH.hash(RMs);
-            for (const auto &SMs : RMs.scope_metrics())
-            {
+
+            for (const auto &SMs : RMs.scope_metrics()) {
                 pb::MetricHasher MH = SMH.hash(SMs);
-                for (const auto &M : SMs.metrics())
-                {
+
+                for (const auto &M : SMs.metrics()) {
                     std::string BlakeId = MH.hash(M);
                     processMetric(BlakeId, RMs, SMs, M);
                 }
             }
         }
     }
-#endif
 
 private:
-    Otel(const otel::config::Config *Cfg) : Cfg(Cfg) { }
+    Otel(const otel::config::Config *Cfg) : Cfg(Cfg)
+    {
+    }
 
 private:
     const otel::config::Config *Cfg;
     ingestor::BufferManager<pb::MetricsData> BM;
-    std::unordered_map<std::string, MetricInstance> MetricInstances;
+    // std::unordered_map<std::string, MetricInstance> MetricInstances;
 };
 
 } // namespace ingestor
