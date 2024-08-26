@@ -1,15 +1,8 @@
-#include "otel_utils.h"
+#include "otel_sort.hpp"
 
-#include <algorithm>
-#include <vector>
-#include <string>
+namespace otel {
 
-// Forward declarations
-static int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS);
-static int compareAnyValue(const pb::AnyValue &LHS, const pb::AnyValue &RHS);
-
-// Compare two ArrayValues
-static int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RHS)
+int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RHS)
 {
     if (LHS.values_size() != RHS.values_size())
         return LHS.values_size() - RHS.values_size();
@@ -23,8 +16,7 @@ static int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RH
     return 0;
 }
 
-// Compare two KeyValueLists
-static int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueList &RHS)
+int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueList &RHS)
 {
     if (LHS.values_size() != RHS.values_size())
         return LHS.values_size() - RHS.values_size();
@@ -38,8 +30,7 @@ static int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueLi
     return 0;
 }
 
-// Compare two AnyValues
-static int compareAnyValue(const pb::AnyValue &LHS, const pb::AnyValue &RHS)
+int compareAnyValue(const pb::AnyValue &LHS, const pb::AnyValue &RHS)
 {
     if (LHS.value_case() != RHS.value_case())
         return LHS.value_case() - RHS.value_case();
@@ -64,8 +55,7 @@ static int compareAnyValue(const pb::AnyValue &LHS, const pb::AnyValue &RHS)
     }
 }
 
-// Compare two KeyValues
-static int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS)
+int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS)
 {
     int Result = LHS.key().compare(RHS.key());
     if (Result != 0)
@@ -74,8 +64,7 @@ static int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS)
     return compareAnyValue(LHS.value(), RHS.value());
 }
 
-// Compare two NumberDataPoints
-static int compareNumberDataPoint(const pb::NumberDataPoint &LHS, const pb::NumberDataPoint &RHS)
+int compareNumberDataPoint(const pb::NumberDataPoint &LHS, const pb::NumberDataPoint &RHS)
 {
     // Compare attributes first
     if (LHS.attributes_size() != RHS.attributes_size())
@@ -105,8 +94,7 @@ static int compareNumberDataPoint(const pb::NumberDataPoint &LHS, const pb::Numb
     return 0;
 }
 
-// Compare two Metrics
-static int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
+int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
 {
     int Result = LHS.name().compare(RHS.name());
     if (Result != 0)
@@ -169,8 +157,7 @@ static int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
     return 0;
 }
 
-// Compare two ScopeMetrics
-static int compareScopeMetrics(const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS)
+int compareScopeMetrics(const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS)
 {
     int Result = LHS.scope().name().compare(RHS.scope().name());
     if (Result != 0)
@@ -192,8 +179,7 @@ static int compareScopeMetrics(const pb::ScopeMetrics &LHS, const pb::ScopeMetri
     return 0;
 }
 
-// Compare two ResourceMetrics
-static int compareResourceMetrics(const pb::ResourceMetrics &LHS, const pb::ResourceMetrics &RHS)
+int compareResourceMetrics(const pb::ResourceMetrics &LHS, const pb::ResourceMetrics &RHS)
 {
     // Compare resource attributes
     {
@@ -222,14 +208,14 @@ static int compareResourceMetrics(const pb::ResourceMetrics &LHS, const pb::Reso
     return 0;
 }
 
-static void sortAttributes(pb::RepeatedPtrField<pb::KeyValue> *Attrs)
+void sortAttributes(pb::RepeatedPtrField<pb::KeyValue> *Attrs)
 {
     std::sort(Attrs->begin(), Attrs->end(), [](const auto &LHS, const auto &RHS) {
         return compareKeyValue(LHS, RHS) < 0;
     });
 }
 
-static void sortDataPoints(pb::Metric &M)
+void sortDataPoints(pb::Metric &M)
 {
     switch (M.data_case()) {
         case pb::Metric::kGauge: {
@@ -274,7 +260,7 @@ static void sortDataPoints(pb::Metric &M)
     }
 }
 
-static void sortMetrics(pb::RepeatedPtrField<pb::Metric> *Arr)
+void sortMetrics(pb::RepeatedPtrField<pb::Metric> *Arr)
 {
     for (auto &M : *Arr) {
         sortAttributes(M.mutable_metadata());
@@ -287,7 +273,7 @@ static void sortMetrics(pb::RepeatedPtrField<pb::Metric> *Arr)
         });
 }
 
-static void sortScopeMetrics(pb::RepeatedPtrField<pb::ScopeMetrics> *Arr) {
+void sortScopeMetrics(pb::RepeatedPtrField<pb::ScopeMetrics> *Arr) {
     for (auto &SMs : *Arr) {
         sortAttributes(SMs.mutable_scope()->mutable_attributes());
         sortMetrics(SMs.mutable_metrics());
@@ -299,7 +285,7 @@ static void sortScopeMetrics(pb::RepeatedPtrField<pb::ScopeMetrics> *Arr) {
         [](const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS) { return compareScopeMetrics(LHS, RHS) < 0; });
 }
 
-static void sortResourceMetrics(pb::RepeatedPtrField<pb::ResourceMetrics> *Arr) {
+void sortResourceMetrics(pb::RepeatedPtrField<pb::ResourceMetrics> *Arr) {
     for (auto &RMs : *Arr) {
         sortAttributes(RMs.mutable_resource()->mutable_attributes());
         sortScopeMetrics(RMs.mutable_scope_metrics());
@@ -313,7 +299,9 @@ static void sortResourceMetrics(pb::RepeatedPtrField<pb::ResourceMetrics> *Arr) 
         });
 }
 
-void pb::sortMetricsData(pb::MetricsData &MD)
+void sortMetricsData(pb::MetricsData &MD)
 {
     sortResourceMetrics(MD.mutable_resource_metrics());
 }
+
+} // namespace otel

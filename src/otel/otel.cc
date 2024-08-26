@@ -1,6 +1,5 @@
-#include "otel_utils.h"
-#include "otel_iterator.h"
-#include "metadata.h"
+#include "otel_utils.hpp"
+#include "otel_config.hpp"
 
 #include "daemon/common.h"
 #include <fstream>

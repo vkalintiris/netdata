@@ -2,9 +2,8 @@
 #define NETDATA_OTEL_INGESTOR_H
 
 #include "database/rrd.h"
-#include "metadata.h"
-#include "otel_iterator.h"
-#include "otel_utils.h"
+#include "otel_config.hpp"
+#include "otel_utils.hpp"
 
 #include "libnetdata/libnetdata.h"
 #include <absl/status/statusor.h>
@@ -175,12 +174,13 @@ class Otel {
 public:
     static Otel *get(const std::string &Path)
     {
-        otel::config::Config *Cfg = new otel::config::Config(Path);
+        otel::Config *Cfg = new otel::Config(Path);
         return new Otel(Cfg);
     }
 
     bool processMessages(const uv_buf_t &Buf)
     {
+#if 0
         pb::testFlattenResourceAttributes();
         std::abort();
 
@@ -196,9 +196,11 @@ public:
 
         processMetricsData(*MD);
         return true;
+#endif
     }
 
 private:
+#if 0
     void dump(const std::string &Path, const pb::MetricsData &MD)
     {
         std::ofstream OS(Path, std::ios_base::app);
@@ -228,9 +230,11 @@ private:
             std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
         }
     }
+#endif
 
     void processMetricsData(pb::MetricsData &MD)
     {
+#if 0
         dump("/tmp/before.txt", MD);
 
         pb::restructureOTELMetrics(Cfg, MD);
@@ -251,16 +255,17 @@ private:
                 }
             }
         }
+#endif
     }
 
 private:
-    Otel(const otel::config::Config *Cfg) : Cfg(Cfg)
+    Otel(const otel::Config *Cfg) : Cfg(Cfg)
     {
     }
 
 private:
-    const otel::config::Config *Cfg;
-    ingestor::BufferManager<pb::MetricsData> BM;
+    const otel::Config *Cfg;
+    // ingestor::BufferManager<pb::MetricsData> BM;
     // std::unordered_map<std::string, MetricInstance> MetricInstances;
 };
 

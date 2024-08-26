@@ -1,19 +1,14 @@
-#ifndef NETDATA_OTEL_METADATA_H
-#define NETDATA_OTEL_METADATA_H
+#ifndef NETDATA_OTEL_CONFIG_HPP
+#define NETDATA_OTEL_CONFIG_HPP
 
 #include <set>
-#include <absl/types/optional.h>
-#include <absl/status/status.h>
-#include <absl/status/statusor.h>
 #include <yaml-cpp/yaml.h>
 
 namespace otel
 {
-namespace config
-{
-    class Metric {
+    class MetricConfig {
     public:
-        Metric(const YAML::Node &Node)
+        MetricConfig(const YAML::Node &Node)
         {
             if (Node["dimensions_attribute"]) {
                 DimensionsAttribute = Node["dimensions_attribute"].as<std::string>();
@@ -40,23 +35,23 @@ namespace config
         std::set<std::string> InstanceAttributes;
     };
 
-    class Scope {
+    class ScopeConfig {
     public:
-        Scope(const YAML::Node &node)
+        ScopeConfig(const YAML::Node &node)
         {
             for (const auto &M : node["metrics"]) {
-                Metrics.emplace(M.first.as<std::string>(), Metric(M.second));
+                Metrics.emplace(M.first.as<std::string>(), MetricConfig(M.second));
             }
         }
 
-        const Metric *getMetric(const std::string &Name) const
+        const MetricConfig *getMetric(const std::string &Name) const
         {
             auto It = Metrics.find(Name);
             return (It != Metrics.end()) ? &(It->second) : nullptr;
         }
 
     private:
-        std::unordered_map<std::string, Metric> Metrics;
+        std::unordered_map<std::string, MetricConfig> Metrics;
     };
 
     class Config {
@@ -66,19 +61,19 @@ namespace config
             YAML::Node config = YAML::LoadFile(Path);
 
             for (const auto &scope : config["scopes"]) {
-                Scopes.emplace(scope.first.as<std::string>(), Scope(scope.second));
+                Scopes.emplace(scope.first.as<std::string>(), ScopeConfig(scope.second));
             }
         }
 
-        const Scope *getScope(const std::string &Name) const
+        const ScopeConfig *getScope(const std::string &Name) const
         {
             auto It = Scopes.find(Name);
             return (It != Scopes.end()) ? &(It->second) : nullptr;
         }
 
-        const Metric *getMetric(const std::string &ScopeName, const std::string &MetricName) const
+        const MetricConfig *getMetric(const std::string &ScopeName, const std::string &MetricName) const
         {
-            const Scope *S = getScope(ScopeName);
+            const ScopeConfig *S = getScope(ScopeName);
             if (!S)
                 return nullptr;
 
@@ -87,7 +82,7 @@ namespace config
 
         const std::string *getDimensionsAttribute(const std::string &ScopeName, const std::string &MetricName) const
         {
-            const Metric *M = getMetric(ScopeName, MetricName);
+            const MetricConfig *M = getMetric(ScopeName, MetricName);
             if (!M)
                 return nullptr;
 
@@ -97,7 +92,7 @@ namespace config
         const std::set<std::string> *
         getInstanceAttribute(const std::string &ScopeName, const std::string &MetricName) const
         {
-            const Metric *M = getMetric(ScopeName, MetricName);
+            const MetricConfig *M = getMetric(ScopeName, MetricName);
             if (!M)
                 return nullptr;
 
@@ -105,10 +100,9 @@ namespace config
         }
 
     private:
-        std::unordered_map<std::string, Scope> Scopes;
+        std::unordered_map<std::string, ScopeConfig> Scopes;
     };
 
-} // namespace config
 } // namespace otel
 
-#endif /* NETDATA_OTEL_METADATA_H */
+#endif /* NETDATA_OTEL_CONFIG_HPP */

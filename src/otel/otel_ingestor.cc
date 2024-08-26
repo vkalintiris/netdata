@@ -1,5 +1,5 @@
 #include "otel_ingestor.h"
-#include "otel_utils.h"
+#include "otel_utils.hpp"
 
 using namespace ingestor;
   

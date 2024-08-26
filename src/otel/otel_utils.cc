@@ -1,10 +1,37 @@
-#include "otel_utils.h"
+#include "otel_utils.hpp"
 
+std::string pb::anyValueToString(const pb::AnyValue &AV)
+{
+    switch (AV.value_case()) {
+        case pb::AnyValue::kStringValue:
+            return AV.string_value();
+        case pb::AnyValue::kBoolValue:
+            return AV.bool_value() ? "true" : "false";
+        case pb::AnyValue::kIntValue:
+            return std::to_string(AV.int_value());
+        case pb::AnyValue::kDoubleValue:
+            return std::to_string(AV.double_value());
+        case pb::AnyValue::kArrayValue:
+            // Placeholder for array values
+            return "[array]";
+        case pb::AnyValue::kKvlistValue:
+            // Placeholder for nested key-value lists
+            return "{kvlist}";
+        case pb::AnyValue::kBytesValue:
+            // Placeholder for byte arrays
+            return "[bytes]";
+        default:
+            return "[unknown]";
+    }
+}
+
+#if 0
 #include "libnetdata/blake3/blake3.h"
 #include "metadata.h"
 #include <fstream>
 #include <ostream>
 #include <iomanip>
+
 
 using Buckets = opentelemetry::proto::metrics::v1::ExponentialHistogramDataPoint::Buckets;
 
@@ -185,31 +212,6 @@ void pb::restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData
 #include "opentelemetry/proto/common/v1/common.pb.h"
 #include "opentelemetry/proto/resource/v1/resource.pb.h"
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
-
-std::string anyValueToString(const pb::AnyValue &AV)
-{
-    switch (AV.value_case()) {
-        case pb::AnyValue::kStringValue:
-            return AV.string_value();
-        case pb::AnyValue::kBoolValue:
-            return AV.bool_value() ? "true" : "false";
-        case pb::AnyValue::kIntValue:
-            return std::to_string(AV.int_value());
-        case pb::AnyValue::kDoubleValue:
-            return std::to_string(AV.double_value());
-        case pb::AnyValue::kArrayValue:
-            // Placeholder for array values
-            return "[array]";
-        case pb::AnyValue::kKvlistValue:
-            // Placeholder for nested key-value lists
-            return "{kvlist}";
-        case pb::AnyValue::kBytesValue:
-            // Placeholder for byte arrays
-            return "[bytes]";
-        default:
-            return "[unknown]";
-    }
-}
 
 void extractFlattenedAttributes(
     const pb::RepeatedPtrField<pb::KeyValue> &Attrs,
@@ -411,74 +413,4 @@ void pb::testFlattenResourceAttributes()
     dump("/tmp/after.txt", R);
 }
 
-/*
- * Hasher
-*/
-
-void digestAttributes(blake3_hasher &BH, const pb::RepeatedPtrField<pb::KeyValue> KVs)
-{
-    for (const auto &Attr : KVs) {
-        blake3_hasher_update(&BH, Attr.key().data(), Attr.key().size());
-
-        std::string AVS = anyValueToString(Attr.value());
-        blake3_hasher_update(&BH, AVS.data(), AVS.size());
-    }
-}
-
-pb::ScopeMetricsHasher pb::ResourceMetricsHasher::hash(const ResourceMetrics &RMs)
-{
-    blake3_hasher BH;
-    blake3_hasher_init(&BH);
-    blake3_hasher_update(&BH, RMs.schema_url().data(), RMs.schema_url().size());
-    return ScopeMetricsHasher(BH);
-}
-
-pb::MetricHasher pb::ScopeMetricsHasher::hash(const ScopeMetrics &SMs)
-{
-    blake3_hasher TmpBH = BH;
-
-    blake3_hasher_update(&TmpBH, SMs.schema_url().data(), SMs.schema_url().size());
-    blake3_hasher_update(&TmpBH, SMs.scope().name().data(), SMs.scope().name().size());
-    blake3_hasher_update(&TmpBH, SMs.scope().version().data(), SMs.scope().version().size());
-
-    digestAttributes(TmpBH, SMs.scope().attributes());
-
-    return MetricHasher(TmpBH);
-}
-
-std::string pb::MetricHasher::hash(const pb::Metric &M)
-{
-    blake3_hasher TmpBH = BH;
-
-    blake3_hasher_update(&TmpBH, M.name().data(), M.name().size());
-    blake3_hasher_update(&TmpBH, M.description().data(), M.description().size());
-    blake3_hasher_update(&TmpBH, M.unit().data(), M.unit().size());
-
-    digestAttributes(TmpBH, M.metadata());
-
-    switch (M.data_case()) {
-        case pb::Metric::kGauge: {
-            const auto &G = M.gauge();
-            for (const auto &DP : G.data_points())
-                digestAttributes(TmpBH, DP.attributes());
-            break;
-        }
-        case pb::Metric::kSum: {
-            const auto &S = M.gauge();
-            for (const auto &DP : S.data_points())
-                digestAttributes(TmpBH, DP.attributes());
-            break;
-        }
-        default:
-            std::abort();
-            break;
-    }
-
-    uint8_t Output[BLAKE3_OUT_LEN];
-    blake3_hasher_finalize(&TmpBH, Output, BLAKE3_OUT_LEN);
-
-    std::stringstream SS;
-    for (int Idx = 0; Idx < BLAKE3_OUT_LEN; Idx++)
-        SS << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(Output[Idx]);
-    return SS.str();
-}
+#endif
