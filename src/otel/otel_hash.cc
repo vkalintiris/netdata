@@ -1,6 +1,10 @@
-#include "otel_utils.hpp"
 #include "otel_hash.hpp"
+
 #include <iomanip>
+
+using otel::ResourceMetricsHasher;
+using otel::ScopeMetricsHasher;
+using otel::MetricHasher;
 
 void digestAttributes(blake3_hasher &BH, const pb::RepeatedPtrField<pb::KeyValue> KVs)
 {
@@ -12,9 +16,7 @@ void digestAttributes(blake3_hasher &BH, const pb::RepeatedPtrField<pb::KeyValue
     }
 }
 
-namespace otel {
-
-ScopeMetricsHasher ResourceMetricsHasher::hash(const pb::ResourceMetrics &RMs)
+ScopeMetricsHasher otel::ResourceMetricsHasher::hash(const pb::ResourceMetrics &RMs)
 {
     blake3_hasher BH;
     blake3_hasher_init(&BH);
@@ -22,7 +24,7 @@ ScopeMetricsHasher ResourceMetricsHasher::hash(const pb::ResourceMetrics &RMs)
     return ScopeMetricsHasher(BH);
 }
 
-MetricHasher ScopeMetricsHasher::hash(const pb::ScopeMetrics &SMs)
+MetricHasher otel::ScopeMetricsHasher::hash(const pb::ScopeMetrics &SMs)
 {
     blake3_hasher TmpBH = BH;
 
@@ -35,7 +37,7 @@ MetricHasher ScopeMetricsHasher::hash(const pb::ScopeMetrics &SMs)
     return MetricHasher(TmpBH);
 }
 
-std::string MetricHasher::hash(const pb::Metric &M)
+std::string otel::MetricHasher::hash(const pb::Metric &M)
 {
     blake3_hasher TmpBH = BH;
 
@@ -71,5 +73,3 @@ std::string MetricHasher::hash(const pb::Metric &M)
         SS << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(Output[Idx]);
     return SS.str();
 }
-
-} // namespace otel

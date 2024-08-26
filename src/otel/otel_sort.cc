@@ -1,8 +1,6 @@
 #include "otel_sort.hpp"
 
-namespace otel {
-
-int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RHS)
+int pb::compareArrayValue(const ArrayValue &LHS, const ArrayValue &RHS)
 {
     if (LHS.values_size() != RHS.values_size())
         return LHS.values_size() - RHS.values_size();
@@ -16,7 +14,7 @@ int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RHS)
     return 0;
 }
 
-int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueList &RHS)
+int pb::compareKeyValueList(const KeyValueList &LHS, const KeyValueList &RHS)
 {
     if (LHS.values_size() != RHS.values_size())
         return LHS.values_size() - RHS.values_size();
@@ -30,32 +28,32 @@ int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueList &RHS
     return 0;
 }
 
-int compareAnyValue(const pb::AnyValue &LHS, const pb::AnyValue &RHS)
+int pb::compareAnyValue(const AnyValue &LHS, const AnyValue &RHS)
 {
     if (LHS.value_case() != RHS.value_case())
         return LHS.value_case() - RHS.value_case();
 
     switch (LHS.value_case()) {
-        case pb::AnyValue::kStringValue:
+        case AnyValue::kStringValue:
             return LHS.string_value().compare(RHS.string_value());
-        case pb::AnyValue::kBoolValue:
+        case AnyValue::kBoolValue:
             return LHS.bool_value() - RHS.bool_value();
-        case pb::AnyValue::kIntValue:
+        case AnyValue::kIntValue:
             return (LHS.int_value() < RHS.int_value()) ? -1 : (LHS.int_value() > RHS.int_value()) ? 1 : 0;
-        case pb::AnyValue::kDoubleValue:
+        case AnyValue::kDoubleValue:
             return (LHS.double_value() < RHS.double_value()) ? -1 : (LHS.double_value() > RHS.double_value()) ? 1 : 0;
-        case pb::AnyValue::kArrayValue:
+        case AnyValue::kArrayValue:
             return compareArrayValue(LHS.array_value(), RHS.array_value());
-        case pb::AnyValue::kKvlistValue:
+        case AnyValue::kKvlistValue:
             return compareKeyValueList(LHS.kvlist_value(), RHS.kvlist_value());
-        case pb::AnyValue::kBytesValue:
+        case AnyValue::kBytesValue:
             return LHS.bytes_value().compare(RHS.bytes_value());
         default:
             return 0;
     }
 }
 
-int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS)
+int pb::compareKeyValue(const KeyValue &LHS, const KeyValue &RHS)
 {
     int Result = LHS.key().compare(RHS.key());
     if (Result != 0)
@@ -64,7 +62,7 @@ int compareKeyValue(const pb::KeyValue &LHS, const pb::KeyValue &RHS)
     return compareAnyValue(LHS.value(), RHS.value());
 }
 
-int compareNumberDataPoint(const pb::NumberDataPoint &LHS, const pb::NumberDataPoint &RHS)
+int pb::compareNumberDataPoint(const NumberDataPoint &LHS, const NumberDataPoint &RHS)
 {
     // Compare attributes first
     if (LHS.attributes_size() != RHS.attributes_size())
@@ -85,16 +83,16 @@ int compareNumberDataPoint(const pb::NumberDataPoint &LHS, const pb::NumberDataP
     if (LHS.value_case() != RHS.value_case())
         return LHS.value_case() - RHS.value_case();
 
-    if (LHS.value_case() == pb::NumberDataPoint::kAsDouble)
+    if (LHS.value_case() == NumberDataPoint::kAsDouble)
         return (LHS.as_double() < RHS.as_double()) ? -1 : (LHS.as_double() > RHS.as_double()) ? 1 : 0;
 
-    if (LHS.value_case() == pb::NumberDataPoint::kAsInt)
+    if (LHS.value_case() == NumberDataPoint::kAsInt)
         return (LHS.as_int() < RHS.as_int()) ? -1 : (LHS.as_int() > RHS.as_int()) ? 1 : 0;
 
     return 0;
 }
 
-int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
+int pb::compareMetric(const Metric &LHS, const Metric &RHS)
 {
     int Result = LHS.name().compare(RHS.name());
     if (Result != 0)
@@ -114,7 +112,7 @@ int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
 
     // Compare data points based on the type of metric
     switch (LHS.data_case()) {
-        case pb::Metric::kGauge: {
+        case Metric::kGauge: {
             const auto &G1 = LHS.gauge();
             const auto &G2 = RHS.gauge();
 
@@ -129,7 +127,7 @@ int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
 
             break;
         }
-        case pb::Metric::kSum: {
+        case Metric::kSum: {
             const auto &S1 = LHS.sum();
             const auto &S2 = RHS.sum();
 
@@ -157,7 +155,7 @@ int compareMetric(const pb::Metric &LHS, const pb::Metric &RHS)
     return 0;
 }
 
-int compareScopeMetrics(const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS)
+int pb::compareScopeMetrics(const ScopeMetrics &LHS, const ScopeMetrics &RHS)
 {
     int Result = LHS.scope().name().compare(RHS.scope().name());
     if (Result != 0)
@@ -179,7 +177,7 @@ int compareScopeMetrics(const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS
     return 0;
 }
 
-int compareResourceMetrics(const pb::ResourceMetrics &LHS, const pb::ResourceMetrics &RHS)
+int pb::compareResourceMetrics(const ResourceMetrics &LHS, const ResourceMetrics &RHS)
 {
     // Compare resource attributes
     {
@@ -208,23 +206,23 @@ int compareResourceMetrics(const pb::ResourceMetrics &LHS, const pb::ResourceMet
     return 0;
 }
 
-void sortAttributes(pb::RepeatedPtrField<pb::KeyValue> *Attrs)
+void pb::sortAttributes(RepeatedPtrField<KeyValue> *Attrs)
 {
     std::sort(Attrs->begin(), Attrs->end(), [](const auto &LHS, const auto &RHS) {
         return compareKeyValue(LHS, RHS) < 0;
     });
 }
 
-void sortDataPoints(pb::Metric &M)
+void pb::sortDataPoints(Metric &M)
 {
     switch (M.data_case()) {
-        case pb::Metric::kGauge: {
+        case Metric::kGauge: {
             auto *G = M.mutable_gauge();
             for (auto &DP : *G->mutable_data_points())
                 sortAttributes(DP.mutable_attributes());
             break;
         }
-        case pb::Metric::kSum: {
+        case Metric::kSum: {
             auto *S = M.mutable_sum();
             for (auto &DP : *S->mutable_data_points())
                 sortAttributes(DP.mutable_attributes());
@@ -235,22 +233,22 @@ void sortDataPoints(pb::Metric &M)
     }
 
     switch (M.data_case()) {
-        case pb::Metric::kGauge: {
+        case Metric::kGauge: {
             auto *G = M.mutable_gauge();
             std::sort(
                 G->mutable_data_points()->begin(),
                 G->mutable_data_points()->end(),
-                [](const pb::NumberDataPoint &LHS, const pb::NumberDataPoint &RHS) {
+                [](const NumberDataPoint &LHS, const NumberDataPoint &RHS) {
                     return compareNumberDataPoint(LHS, RHS) < 0;
                 });
             break;
         }
-        case pb::Metric::kSum: {
+        case Metric::kSum: {
             auto *S = M.mutable_sum();
             std::sort(
                 S->mutable_data_points()->begin(),
                 S->mutable_data_points()->end(),
-                [](const pb::NumberDataPoint &LHS, const pb::NumberDataPoint &RHS) {
+                [](const NumberDataPoint &LHS, const NumberDataPoint &RHS) {
                     return compareNumberDataPoint(LHS, RHS) < 0;
                 });
             break;
@@ -260,48 +258,43 @@ void sortDataPoints(pb::Metric &M)
     }
 }
 
-void sortMetrics(pb::RepeatedPtrField<pb::Metric> *Arr)
+void pb::sortMetrics(RepeatedPtrField<Metric> *Arr)
 {
     for (auto &M : *Arr) {
         sortAttributes(M.mutable_metadata());
         sortDataPoints(M);
     }
 
-    std::sort(
-        Arr->begin(), Arr->end(), [](const pb::Metric &LHS, const pb::Metric &RHS) {
-            return compareMetric(LHS, RHS) < 0;
-        });
+    std::sort(Arr->begin(), Arr->end(), [](const Metric &LHS, const Metric &RHS) {
+        return compareMetric(LHS, RHS) < 0;
+    });
 }
 
-void sortScopeMetrics(pb::RepeatedPtrField<pb::ScopeMetrics> *Arr) {
+void pb::sortScopeMetrics(RepeatedPtrField<ScopeMetrics> *Arr)
+{
     for (auto &SMs : *Arr) {
         sortAttributes(SMs.mutable_scope()->mutable_attributes());
         sortMetrics(SMs.mutable_metrics());
     }
 
-    std::sort(
-        Arr->begin(),
-        Arr->end(),
-        [](const pb::ScopeMetrics &LHS, const pb::ScopeMetrics &RHS) { return compareScopeMetrics(LHS, RHS) < 0; });
+    std::sort(Arr->begin(), Arr->end(), [](const ScopeMetrics &LHS, const ScopeMetrics &RHS) {
+        return compareScopeMetrics(LHS, RHS) < 0;
+    });
 }
 
-void sortResourceMetrics(pb::RepeatedPtrField<pb::ResourceMetrics> *Arr) {
+void pb::sortResourceMetrics(RepeatedPtrField<ResourceMetrics> *Arr)
+{
     for (auto &RMs : *Arr) {
         sortAttributes(RMs.mutable_resource()->mutable_attributes());
         sortScopeMetrics(RMs.mutable_scope_metrics());
     }
 
-    std::sort(
-        Arr->begin(),
-        Arr->end(),
-        [](const pb::ResourceMetrics &LHS, const pb::ResourceMetrics &RHS) {
-            return compareResourceMetrics(LHS, RHS) < 0;
-        });
+    std::sort(Arr->begin(), Arr->end(), [](const ResourceMetrics &LHS, const ResourceMetrics &RHS) {
+        return compareResourceMetrics(LHS, RHS) < 0;
+    });
 }
 
-void sortMetricsData(pb::MetricsData &MD)
+void pb::sortMetricsData(MetricsData &MD)
 {
     sortResourceMetrics(MD.mutable_resource_metrics());
 }
-
-} // namespace otel

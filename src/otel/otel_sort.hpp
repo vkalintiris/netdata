@@ -3,7 +3,7 @@
 
 #include "otel_utils.hpp"
 
-namespace otel {
+namespace pb {
     
 int compareArrayValue(const pb::ArrayValue &LHS, const pb::ArrayValue &RHS);
 int compareKeyValueList(const pb::KeyValueList &LHS, const pb::KeyValueList &RHS);
@@ -21,6 +21,6 @@ void sortScopeMetrics(pb::RepeatedPtrField<pb::ScopeMetrics> *Arr);
 void sortResourceMetrics(pb::RepeatedPtrField<pb::ResourceMetrics> *Arr);
 void sortMetricsData(pb::MetricsData &MD);
 
-} // namespace otel
+} // namespace pb
 
 #endif /* NETDATA_OTEL_SORT_HPP */
