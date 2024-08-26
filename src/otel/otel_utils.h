@@ -37,6 +37,9 @@ using Histogram = opentelemetry::proto::metrics::v1::Histogram;
 using ExponentialHistogram = opentelemetry::proto::metrics::v1::ExponentialHistogram;
 using Summary = opentelemetry::proto::metrics::v1::Summary;
 
+using Arena = google::protobuf::Arena;
+
+template <typename Element> using RepeatedPtrField = google::protobuf::RepeatedPtrField<Element>;
 template <typename Element> using RepeatedPtrField = google::protobuf::RepeatedPtrField<Element>;
 
 template <typename Element> using ConstFieldIterator = typename RepeatedPtrField<Element>::const_iterator;
@@ -44,6 +47,8 @@ template <typename Element> using ConstFieldIterator = typename RepeatedPtrField
 template <typename Element> using FieldIterator = typename RepeatedPtrField<Element>::const_iterator;
 
 void restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData &MD);
+
+void testFlattenResourceAttributes();
 
 void sortMetricsData(pb::MetricsData &MD);
 

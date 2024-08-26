@@ -181,6 +181,9 @@ public:
 
     bool processMessages(const uv_buf_t &Buf)
     {
+        pb::testFlattenResourceAttributes();
+        std::abort();
+
         BM.fill(Buf);
 
         uint32_t MessageLength = BM.messageLength();

@@ -18,7 +18,8 @@ public:
     {
     }
 
-    std::vector<pb::Metric> restructureMetrics(const pb::InstrumentationScope &IS, const std::vector<pb::Metric> &InputMetrics)
+    std::vector<pb::Metric>
+    restructureMetrics(const pb::InstrumentationScope &IS, const std::vector<pb::Metric> &InputMetrics)
     {
         std::vector<pb::Metric> RestructuredMetrics;
 
@@ -96,7 +97,7 @@ private:
     {
         std::string Key;
 
-        for (const auto &IA: *InstanceAttributes) {
+        for (const auto &IA : *InstanceAttributes) {
             for (const auto &Attr : DP.attributes()) {
                 if (Attr.key() == IA) {
                     Key += Attr.value().string_value() + "_";
@@ -114,7 +115,8 @@ private:
     }
 
     template <typename T>
-    std::unordered_map<std::string, std::vector<T> > groupDataPoints(const std::set<std::string> *InstanceAttributes, const pb::RepeatedPtrField<T> &DPs)
+    std::unordered_map<std::string, std::vector<T> >
+    groupDataPoints(const std::set<std::string> *InstanceAttributes, const pb::RepeatedPtrField<T> &DPs)
     {
         std::unordered_map<std::string, std::vector<T> > Groups;
 
@@ -184,7 +186,8 @@ void pb::restructureOTELMetrics(const otel::config::Config *Cfg, pb::MetricsData
 #include "opentelemetry/proto/resource/v1/resource.pb.h"
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
 
-std::string anyValueToString(const pb::AnyValue &AV) {
+std::string anyValueToString(const pb::AnyValue &AV)
+{
     switch (AV.value_case()) {
         case pb::AnyValue::kStringValue:
             return AV.string_value();
@@ -208,9 +211,11 @@ std::string anyValueToString(const pb::AnyValue &AV) {
     }
 }
 
-void extractFlattenedAttributes(const pb::RepeatedPtrField<pb::KeyValue>& Attrs,
-                                std::unordered_map<std::string, std::string>& Result,
-                                const std::string& Prefix = "") {
+void extractFlattenedAttributes(
+    const pb::RepeatedPtrField<pb::KeyValue> &Attrs,
+    std::unordered_map<std::string, std::string> &Result,
+    const std::string &Prefix = "")
+{
     for (const auto &Attr : Attrs) {
         std::string Key = Prefix + Attr.key();
         const auto &Value = Attr.value();
@@ -228,26 +233,29 @@ void extractFlattenedAttributes(const pb::RepeatedPtrField<pb::KeyValue>& Attrs,
     }
 }
 
-std::unordered_map<std::string, std::string> extractResourceAttributes(const pb::Resource &R) {
+std::unordered_map<std::string, std::string> extractResourceAttributes(const pb::Resource &R)
+{
     std::unordered_map<std::string, std::string> Result;
-    extractFlattenedAttributes(R.attributes(), Result, "r_");
+    extractFlattenedAttributes(R.attributes(), Result, "r");
     return Result;
 }
 
-std::unordered_map<std::string, std::string> extractInstrumentationScopeAttributes(const pb::InstrumentationScope& IS) {
+std::unordered_map<std::string, std::string> extractInstrumentationScopeAttributes(const pb::InstrumentationScope &IS)
+{
     std::unordered_map<std::string, std::string> Result;
     extractFlattenedAttributes(IS.attributes(), Result, "s_");
     return Result;
 }
 
-std::unordered_map<std::string, std::string> extractAllAttributes(const pb::MetricsData &MD) {
+std::unordered_map<std::string, std::string> extractAllAttributes(const pb::MetricsData &MD)
+{
     std::unordered_map<std::string, std::string> allAttributes;
 
-    for (const auto& resourceMetrics : MD.resource_metrics()) {
+    for (const auto &resourceMetrics : MD.resource_metrics()) {
         auto resourceAttrs = extractResourceAttributes(resourceMetrics.resource());
         allAttributes.insert(resourceAttrs.begin(), resourceAttrs.end());
 
-        for (const auto& scopeMetrics : resourceMetrics.scope_metrics()) {
+        for (const auto &scopeMetrics : resourceMetrics.scope_metrics()) {
             auto scopeAttrs = extractInstrumentationScopeAttributes(scopeMetrics.scope());
             allAttributes.insert(scopeAttrs.begin(), scopeAttrs.end());
         }
@@ -256,14 +264,151 @@ std::unordered_map<std::string, std::string> extractAllAttributes(const pb::Metr
     return allAttributes;
 }
 
-// Example usage
-void processMetricsDataAttributes(const pb::MetricsData &MD) {
-    auto flattenedAttributes = extractAllAttributes(MD);
-
-    // Use the flattened attributes
-    for (const auto& pair : flattenedAttributes) {
-        std::cout << pair.first << ": " << pair.second << std::endl;
+static std::string *createPrefixKey(pb::Arena *A, const std::string &P, const std::string &K)
+{
+    std::string *NP = google::protobuf::Arena::Create<std::string>(A);
+    if (P.empty()) {
+        *NP = K;
+    } else {
+        NP->reserve(P.size() + 1 + K.size());
+        *NP = P;
+        NP->append(".");
+        NP->append(K);
     }
+
+    return NP;
+}
+
+// Forward declaration
+void flattenAttributes(
+    pb::Arena *A,
+    const std::string &Prefix,
+    const pb::KeyValue &KV,
+    pb::RepeatedPtrField<pb::KeyValue> *RPF);
+
+void flattenResourceAttributes(pb::Arena *A, pb::Resource *R)
+{
+    pb::RepeatedPtrField<pb::KeyValue> *RPF =
+        google::protobuf::Arena::CreateMessage<pb::RepeatedPtrField<pb::KeyValue> >(A);
+
+    for (const auto &Attr : R->attributes())
+        flattenAttributes(A, "r_", Attr, RPF);
+
+    R->clear_attributes();
+    R->mutable_attributes()->Swap(RPF);
+}
+
+void flattenAttributes(
+    pb::Arena *A,
+    const std::string &Prefix,
+    const pb::KeyValue &KV,
+    pb::RepeatedPtrField<pb::KeyValue> *RPF)
+{
+    std::string *NewPrefix = createPrefixKey(A, Prefix, KV.key());
+
+    switch (KV.value().value_case()) {
+        case pb::AnyValue::kKvlistValue: {
+            for (const auto &NestedKV : KV.value().kvlist_value().values())
+                flattenAttributes(A, *NewPrefix, NestedKV, RPF);
+            break;
+        }
+        case pb::AnyValue::kArrayValue: {
+            for (int Idx = 0; Idx < KV.value().array_value().values_size(); ++Idx) {
+                const std::string Position = std::to_string(Idx);
+
+                std::string *AK = pb::Arena::Create<std::string>(A);
+                AK->reserve(NewPrefix->size() + 3 + Position.size());
+                *AK = *NewPrefix;
+                AK->append("[");
+                AK->append(Position);
+                AK->append("]");
+
+                pb::KeyValue *FlattenedKV = RPF->Add();
+                FlattenedKV->set_key(*AK);
+                *FlattenedKV->mutable_value() = KV.value().array_value().values(Idx);
+            }
+            break;
+        }
+        default:
+            pb::KeyValue *FlattenedKV = RPF->Add();
+            FlattenedKV->set_key(*NewPrefix);
+            *FlattenedKV->mutable_value() = KV.value();
+            break;
+    }
+}
+
+#include <iostream>
+#include <cassert>
+#include <google/protobuf/util/message_differencer.h>
+#include "opentelemetry/proto/resource/v1/resource.pb.h"
+#include "opentelemetry/proto/common/v1/common.pb.h"
+
+// Function declaration (implementation in the previous artifact)
+void flattenResourceAttributes(google::protobuf::Arena *arena, pb::Resource *resource);
+
+// Helper function to add a nested key-value pair
+void addNestedKeyValue(pb::AnyValue *Parent, const std::string &Key, const pb::AnyValue &AV)
+{
+    auto *KV = Parent->mutable_kvlist_value()->add_values();
+    KV->set_key(Key);
+    *KV->mutable_value() = AV;
+}
+
+// Helper function to create a complex nested structure
+void createComplexResource(pb::Resource *resource)
+{
+    // Add some top-level attributes
+    auto attrs = resource->mutable_attributes();
+
+    {
+        auto KV = attrs->Add();
+        KV->set_key("service.name");
+        KV->mutable_value()->set_string_value("test_service");
+    }
+
+    {
+        auto KV = attrs->Add();
+        KV->set_key("container");
+
+        auto *Container = KV->mutable_value()->mutable_kvlist_value();
+        addNestedKeyValue(KV->mutable_value(), "id", pb::AnyValue());
+        Container->mutable_values(0)->mutable_value()->set_string_value("abc123");
+        addNestedKeyValue(KV->mutable_value(), "image", pb::AnyValue());
+        Container->mutable_values(1)->mutable_value()->set_string_value("test_image:v1");
+
+        addNestedKeyValue(KV->mutable_value(), "command", pb::AnyValue());
+        auto *Command = Container->mutable_values(2)->mutable_value()->mutable_array_value();
+        Command->add_values()->set_string_value("./app");
+        Command->add_values()->set_string_value("--config");
+        Command->add_values()->set_string_value("/etc/app/config.yaml");
+    }
+}
+
+void dump(const std::string &Path, const pb::Resource *R)
+{
+    std::ofstream OS(Path);
+    if (OS.is_open()) {
+        OS << R->Utf8DebugString() << std::endl;
+        OS.close();
+    } else {
+        std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
+    }
+}
+
+void pb::testFlattenResourceAttributes()
+{
+    pb::Arena A;
+
+    // Create a complex resource
+    pb::Resource *R = pb::Arena::CreateMessage<pb::Resource>(&A);
+    createComplexResource(R);
+
+    dump("/tmp/before.txt", R);
+
+    // Flatten the resource attributes
+    flattenResourceAttributes(&A, R);
+
+    dump("/tmp/after.txt", R);
 }
 
 /*
@@ -314,13 +459,13 @@ std::string pb::MetricHasher::hash(const pb::Metric &M)
     switch (M.data_case()) {
         case pb::Metric::kGauge: {
             const auto &G = M.gauge();
-            for (const auto &DP: G.data_points())
+            for (const auto &DP : G.data_points())
                 digestAttributes(TmpBH, DP.attributes());
             break;
         }
         case pb::Metric::kSum: {
             const auto &S = M.gauge();
-            for (const auto &DP: S.data_points())
+            for (const auto &DP : S.data_points())
                 digestAttributes(TmpBH, DP.attributes());
             break;
         }
