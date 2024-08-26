@@ -13,13 +13,14 @@
 
 namespace otel
 {
-template <typename T> class BufferManager {
+
+class BufferManager {
 public:
     void fill(const uv_buf_t &Buf);
 
     uint32_t messageLength() const;
 
-    absl::StatusOr<T> readMessage(uint32_t MessageLength);
+    absl::StatusOr<pb::MetricsData *> readMetricData(pb::Arena *A, uint32_t N);
 
 private:
     inline size_t remainingBytes() const
@@ -53,7 +54,8 @@ public:
         if (MessageLength == 0)
             return true;
 
-        auto MD = BM.readMessage(MessageLength);
+
+        auto MD = BM.readMetricData(&A, MessageLength);
         if (!MD.ok())
             return true;
 
@@ -74,12 +76,13 @@ private:
     }
 
 private:
-    Otel(const otel::Config *Cfg) : Cfg(Cfg)
+    Otel(const otel::Config *Cfg) : A(), Cfg(Cfg)
     {
     }
 
 private:
-    BufferManager<pb::MetricsData> BM;
+    pb::Arena A;
+    BufferManager BM;
     const otel::Config *Cfg;
 };
 

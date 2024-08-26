@@ -1436,16 +1436,19 @@ set(NETDATA_FILES
         ${SPAWN_PLUGIN_FILES}
         ${ACLK_ALWAYS_BUILD}
         ${PROFILE_PLUGIN_FILES}
-        src/otel/metadata.cc
-        src/otel/metadata.h
         src/otel/otel.cc
-        src/otel/otel_iterator.h
-        src/otel/otel_iterator.cc
+        src/otel/otel_config.cc
+        src/otel/otel_config.hpp
+        src/otel/otel_flatten.cc
+        src/otel/otel_flatten.hpp
+        src/otel/otel_hash.cc
+        src/otel/otel_hash.hpp
         src/otel/otel_ingestor.cc
-        src/otel/otel_ingestor.h
-        src/otel/otel_utils.cc
-        src/otel/otel_utils.h
+        src/otel/otel_ingestor.hpp
         src/otel/otel_sort.cc
+        src/otel/otel_sort.hpp
+        src/otel/otel_utils.cc
+        src/otel/otel_utils.hpp
 )
 
 set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto

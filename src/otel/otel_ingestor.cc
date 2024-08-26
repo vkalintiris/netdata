@@ -1,7 +1,6 @@
 #include "otel_ingestor.hpp"
 
-template<typename T>
-void otel::BufferManager<T>::fill(const uv_buf_t &buf)
+void otel::BufferManager::fill(const uv_buf_t &buf)
 {
     if (Pos > Data.size())
         fatal("invalid position");
@@ -15,8 +14,7 @@ void otel::BufferManager<T>::fill(const uv_buf_t &buf)
     Data.insert(Data.end(), buf.base, buf.base + buf.len);
 }
 
-template<typename T>
-uint32_t otel::BufferManager<T>::messageLength() const {
+uint32_t otel::BufferManager::messageLength() const {
     if (!haveAtLeastXBytes(sizeof(uint32_t)))
         return 0;
 
@@ -30,21 +28,18 @@ uint32_t otel::BufferManager<T>::messageLength() const {
     return MessageBytes;
 }
 
-template<typename T>
-absl::StatusOr<T> otel::BufferManager<T>::readMessage(uint32_t MessageLength)
+absl::StatusOr<pb::MetricsData *> otel::BufferManager::readMetricData(pb::Arena *A, uint32_t N)
 {
     uv_buf_t Dst = {.base = nullptr, .len = 0};
 
     Pos += sizeof(uint32_t);
     Dst.base = &Data[Pos];
-    Dst.len = MessageLength;
+    Dst.len = N;
 
-    T Msg;
-    if (!Msg.ParseFromArray(Dst.base, Dst.len))
+    pb::MetricsData *MD = pb::Arena::CreateMessage<pb::MetricsData>(A);
+    if (!MD->ParseFromArray(Dst.base, Dst.len))
         return absl::InternalError("failed to parse protobuf message");
 
-    Pos += MessageLength;
-    return Msg;
+    Pos += N;
+    return MD;
 }
-
-template class otel::BufferManager<pb::MetricsData>;
