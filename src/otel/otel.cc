@@ -1,10 +1,8 @@
-#include "otel_utils.hpp"
 #include "otel_config.hpp"
+#include "otel_ingestor.hpp"
 
 #include "daemon/common.h"
 #include <fstream>
-
-#include "otel_ingestor.h"
 
 enum class InitStatus : unsigned int {
     Uninitialized = 0,
@@ -160,7 +158,7 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
     if (nread > 0) {
-        ingestor::Otel *OT = reinterpret_cast<ingestor::Otel *>(stream->data);
+        otel::Otel *OT = reinterpret_cast<otel::Otel *>(stream->data);
         const uv_buf_t data = {.base = buf->base, .len = (size_t) nread};
 
         OT->processMessages(data);
@@ -412,7 +410,7 @@ extern "C" void otel_init(void)
         snprintfz(path, FILENAME_MAX, "%s/otel-receivers-config.yaml", netdata_configured_user_config_dir);
 
         const char *cfg_path = config_get("otel", "otel receivers configuration file", path);
-        void *OT = ingestor::Otel::get(cfg_path);
+        void *OT = otel::Otel::get(cfg_path);
 
         otel_state.metrics_fifo = create_fifo(OTEL_FIFO_KIND_METRICS, OT);
         otel_state.logs_fifo = create_fifo(OTEL_FIFO_KIND_LOGS, nullptr);

@@ -1,10 +1,7 @@
-#include "otel_ingestor.h"
-#include "otel_utils.hpp"
+#include "otel_ingestor.hpp"
 
-using namespace ingestor;
-  
 template<typename T>
-void BufferManager<T>::fill(const uv_buf_t &buf)
+void otel::BufferManager<T>::fill(const uv_buf_t &buf)
 {
     if (Pos > Data.size())
         fatal("invalid position");
@@ -19,7 +16,7 @@ void BufferManager<T>::fill(const uv_buf_t &buf)
 }
 
 template<typename T>
-uint32_t BufferManager<T>::messageLength() const {
+uint32_t otel::BufferManager<T>::messageLength() const {
     if (!haveAtLeastXBytes(sizeof(uint32_t)))
         return 0;
 
@@ -34,7 +31,7 @@ uint32_t BufferManager<T>::messageLength() const {
 }
 
 template<typename T>
-absl::StatusOr<T> BufferManager<T>::readMessage(uint32_t MessageLength)
+absl::StatusOr<T> otel::BufferManager<T>::readMessage(uint32_t MessageLength)
 {
     uv_buf_t Dst = {.base = nullptr, .len = 0};
 
@@ -50,4 +47,4 @@ absl::StatusOr<T> BufferManager<T>::readMessage(uint32_t MessageLength)
     return Msg;
 }
 
-template class ingestor::BufferManager<pb::MetricsData>;
+template class otel::BufferManager<pb::MetricsData>;
