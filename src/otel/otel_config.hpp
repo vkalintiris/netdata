@@ -3,6 +3,7 @@
 
 #include "libnetdata/libnetdata.h"
 
+#include "libnetdata/simple_pattern/simple_pattern.h"
 #include <yaml-cpp/yaml.h>
 
 namespace otel
@@ -106,6 +107,11 @@ public:
             return nullptr;
 
         return M->getInstanceAttributes();
+    }
+
+    ~Config() {
+        for (auto &P : Patterns)
+            simple_pattern_free(P.first);
     }
 
 private:
