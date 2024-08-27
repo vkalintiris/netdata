@@ -4,9 +4,9 @@
 #include "otel_utils.hpp"
 #include "otel_config.hpp"
 
-namespace otel
+namespace pb
 {
-void transformMetricData(const Config *Cfg, pb::MetricsData &MD);
+void transformMetricData(const otel::Config *Cfg, pb::MetricsData &MD);
 } // namespace otel
 
 #endif /* NETDATA_OTEL_TRANSFORM_HPP */

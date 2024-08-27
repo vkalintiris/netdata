@@ -3,6 +3,7 @@
 
 #include "otel_config.hpp"
 #include "otel_flatten.hpp"
+#include "otel_sort.hpp"
 #include "otel_transform.hpp"
 
 #include "database/rrd.h"
@@ -91,7 +92,8 @@ public:
         auto *MD = Result.value();
 
         dump("/tmp/before.txt", MD);
-        transformMetricData(Cfg, *MD);
+        pb::transformMetricData(Cfg, *MD);
+        pb::sortMetricsData(*MD);
         dump("/tmp/after.txt", MD);
 
         return true;

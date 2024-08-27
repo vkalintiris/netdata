@@ -113,7 +113,7 @@ static void transformMetrics(const otel::ScopeConfig *ScopeCfg, pb::RepeatedPtrF
     RPF->Swap(RestructuredMetrics);
 }
 
-void otel::transformMetricData(const Config *Cfg, pb::MetricsData &MD) {
+void pb::transformMetricData(const otel::Config *Cfg, MetricsData &MD) {
     for (auto &RMs : *MD.mutable_resource_metrics()) {
         for (auto &SMs : *RMs.mutable_scope_metrics()) {
             if (SMs.has_scope()) {
