@@ -1,4 +1,4 @@
-#include "otel_ingestor.hpp"
+#include "otel_ingest.hpp"
 
 void otel::BufferManager::fill(const uv_buf_t &buf)
 {

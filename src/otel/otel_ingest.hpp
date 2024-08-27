@@ -1,10 +1,12 @@
-#ifndef NETDATA_OTEL_INGESTOR_HPP
-#define NETDATA_OTEL_INGESTOR_HPP
+#ifndef NETDATA_OTEL_INGEST_HPP
+#define NETDATA_OTEL_INGEST_HPP
 
 #include "otel_config.hpp"
 #include "otel_flatten.hpp"
+#include "otel_hash.hpp"
 #include "otel_sort.hpp"
 #include "otel_transform.hpp"
+#include "otel_process.hpp"
 
 #include "database/rrd.h"
 
@@ -96,6 +98,8 @@ public:
         pb::sortMetricsData(*MD);
         dump("/tmp/after.txt", MD);
 
+        MP.processMetrics(Cfg, MD);
+
         return true;
     }
 
@@ -120,8 +124,9 @@ private:
     pb::Arena A;
     BufferManager BM;
     const Config *Cfg;
+    otel::MetricProcessor MP;
 };
 
 } // namespace otel
 
-#endif /* NETDATA_OTEL_INGESTOR_HPP */
+#endif /* NETDATA_OTEL_INGEST_HPP */

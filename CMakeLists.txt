@@ -1443,8 +1443,10 @@ set(NETDATA_FILES
         src/otel/otel_flatten.hpp
         src/otel/otel_hash.cc
         src/otel/otel_hash.hpp
-        src/otel/otel_ingestor.cc
-        src/otel/otel_ingestor.hpp
+        src/otel/otel_ingest.cc
+        src/otel/otel_ingest.hpp
+        src/otel/otel_process.cc
+        src/otel/otel_process.hpp
         src/otel/otel_sort.cc
         src/otel/otel_sort.hpp
         src/otel/otel_utils.cc

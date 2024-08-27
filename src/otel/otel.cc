@@ -1,5 +1,5 @@
 #include "otel_config.hpp"
-#include "otel_ingestor.hpp"
+#include "otel_ingest.hpp"
 
 #include "daemon/common.h"
 #include <fstream>

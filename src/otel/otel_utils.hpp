@@ -38,6 +38,7 @@ using ExponentialHistogram = opentelemetry::proto::metrics::v1::ExponentialHisto
 using Summary = opentelemetry::proto::metrics::v1::Summary;
 
 std::string anyValueToString(const AnyValue &AV);
+uint64_t findOldestCollectionTime(const pb::Metric &M);
 
 } // namespace pb
 
