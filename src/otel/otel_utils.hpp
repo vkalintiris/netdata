@@ -5,6 +5,13 @@
 
 namespace pb
 {
+using Arena = google::protobuf::Arena;
+template <typename Element> using RepeatedPtrField = google::protobuf::RepeatedPtrField<Element>;
+template <typename Element> using ConstFieldIterator = typename RepeatedPtrField<Element>::const_iterator;
+template <typename Element> using FieldIterator = typename RepeatedPtrField<Element>::const_iterator;
+
+void dumpArenaStats(const std::string &Path, const std::string &Label, const pb::Arena &A);
+
 using AnyValue = opentelemetry::proto::common::v1::AnyValue;
 using ArrayValue = opentelemetry::proto::common::v1::ArrayValue;
 using KeyValue = opentelemetry::proto::common::v1::KeyValue;
@@ -30,13 +37,8 @@ using Histogram = opentelemetry::proto::metrics::v1::Histogram;
 using ExponentialHistogram = opentelemetry::proto::metrics::v1::ExponentialHistogram;
 using Summary = opentelemetry::proto::metrics::v1::Summary;
 
-using Arena = google::protobuf::Arena;
-
-template <typename Element> using RepeatedPtrField = google::protobuf::RepeatedPtrField<Element>;
-template <typename Element> using ConstFieldIterator = typename RepeatedPtrField<Element>::const_iterator;
-template <typename Element> using FieldIterator = typename RepeatedPtrField<Element>::const_iterator;
-
 std::string anyValueToString(const AnyValue &AV);
+
 } // namespace pb
 
 #endif /* OTEL_UTILS_HPP */

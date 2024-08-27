@@ -91,19 +91,7 @@ public:
         auto *MD = Result.value();
 
         dump("/tmp/before.txt", MD);
-            
-        for (auto &RMs : *MD->mutable_resource_metrics()) {
-            for (auto &SMs : *RMs.mutable_scope_metrics()) {
-                if (!SMs.has_scope()) {
-                    // TODO: log this somewhere
-                    continue;
-                }
-
-                const auto *ScopeCfg = Cfg->getScope(SMs.scope().name());
-                transformMetrics(ScopeCfg, SMs.mutable_metrics());
-            }
-        }
-
+        transformMetricData(Cfg, *MD);
         dump("/tmp/after.txt", MD);
 
         return true;

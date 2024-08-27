@@ -1,5 +1,8 @@
 #include "otel_utils.hpp"
 
+#include <fstream>
+#include <iomanip>
+
 std::string pb::anyValueToString(const pb::AnyValue &AV)
 {
     switch (AV.value_case()) {
@@ -23,6 +26,27 @@ std::string pb::anyValueToString(const pb::AnyValue &AV)
         default:
             return "[unknown]";
     }
+}
+
+void pb::dumpArenaStats(const std::string &Path, const std::string &Label, const pb::Arena &A)
+{
+    std::ofstream OS(Path, std::ios_base::app);
+    if (!OS) {
+        std::cerr << "Failed to open file: " << Path << std::endl;
+        return;
+    }
+
+    OS << "=== Arena Statistics " << Label << " ===" << std::endl;
+
+    OS << "SpaceUsed: " << A.SpaceUsed() << " bytes" << std::endl;
+    OS << "SpaceAllocated: " << A.SpaceAllocated() << " bytes" << std::endl;
+
+    double UsedPct = (A.SpaceUsed() * 100.0) / A.SpaceAllocated();
+    OS << std::fixed << std::setprecision(2);
+    OS << "Used Percentage: " << UsedPct << "%" << std::endl;
+
+    OS << std::endl;
+    OS.close();
 }
 
 #if 0

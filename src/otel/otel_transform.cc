@@ -1,3 +1,4 @@
+#include "otel_utils.hpp"
 #include <otel_transform.hpp>
 
 #include <fstream>
@@ -58,28 +59,6 @@ static pb::RepeatedPtrField<pb::Metric> createNewMetrics(
     return NewMetrics;
 }
 
-static void dumpArenaStats(const google::protobuf::Arena &arena, const std::string &filename, const std::string &label)
-{
-    std::ofstream OS(filename, std::ios_base::app);
-    if (!OS) {
-        std::cerr << "Failed to open file: " << filename << std::endl;
-        return;
-    }
-
-    OS << "=== Arena Statistics " << label << " ===" << std::endl;
-    OS << "SpaceUsed: " << arena.SpaceUsed() << " bytes" << std::endl;
-    OS << "SpaceAllocated: " << arena.SpaceAllocated() << " bytes" << std::endl;
-
-    // Calculate and output percentages
-    double usedPercentage = (arena.SpaceUsed() * 100.0) / arena.SpaceAllocated();
-
-    OS << std::fixed << std::setprecision(2);
-    OS << "Used Percentage: " << usedPercentage << "%" << std::endl;
-
-    OS << std::endl;
-    OS.close();
-}
-
 static pb::RepeatedPtrField<pb::Metric> restructureGauge(const otel::MetricConfig *CfgMetric, const pb::Metric &M)
 {
     auto GDPs = groupDataPoints(CfgMetric->getInstanceAttributes(), M.gauge().data_points());
@@ -100,15 +79,10 @@ static pb::RepeatedPtrField<pb::Metric> restructureSum(const otel::MetricConfig 
     });
 }
 
-void otel::transformMetrics(const ScopeConfig *ScopeCfg, pb::RepeatedPtrField<pb::Metric> *RPF)
+static void transformMetrics(const otel::ScopeConfig *ScopeCfg, pb::RepeatedPtrField<pb::Metric> *RPF)
 {
     if (!ScopeCfg)
         return;
-
-    pb::Arena *A = RPF->GetArena();
-    if (A) {
-        dumpArenaStats(*A, "arena_stats.txt", "After Restructuring");
-    }
 
     pb::RepeatedPtrField<pb::Metric> *RestructuredMetrics =
         pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::Metric> >(RPF->GetArena());
@@ -137,8 +111,15 @@ void otel::transformMetrics(const ScopeConfig *ScopeCfg, pb::RepeatedPtrField<pb
 
     RPF->Clear();
     RPF->Swap(RestructuredMetrics);
+}
 
-    if (A) {
-        dumpArenaStats(*A, "arena_stats.txt", "Swapping");
+void otel::transformMetricData(const Config *Cfg, pb::MetricsData &MD) {
+    for (auto &RMs : *MD.mutable_resource_metrics()) {
+        for (auto &SMs : *RMs.mutable_scope_metrics()) {
+            if (SMs.has_scope()) {
+                const auto *ScopeCfg = Cfg->getScope(SMs.scope().name());
+                transformMetrics(ScopeCfg, SMs.mutable_metrics());
+            }
+        }
     }
 }

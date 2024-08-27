@@ -6,7 +6,7 @@
 
 namespace otel
 {
-void transformMetrics(const ScopeConfig *ScopeCfg, pb::RepeatedPtrField<pb::Metric> *RPF);
+void transformMetricData(const Config *Cfg, pb::MetricsData &MD);
 } // namespace otel
 
 #endif /* NETDATA_OTEL_TRANSFORM_HPP */
