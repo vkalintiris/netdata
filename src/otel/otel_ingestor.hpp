@@ -42,7 +42,7 @@ class Otel {
 public:
     static Otel *get(const std::string &Path)
     {
-        otel::Config *Cfg = new otel::Config(Path);
+        const Config *Cfg = new Config(Path);
         return new Otel(Cfg);
     }
 
@@ -110,14 +110,14 @@ private:
     }
 
 private:
-    Otel(const otel::Config *Cfg) : A(), Cfg(Cfg)
+    Otel(const Config *Cfg) : A(), Cfg(Cfg)
     {
     }
 
 private:
     pb::Arena A;
     BufferManager BM;
-    const otel::Config *Cfg;
+    const Config *Cfg;
 };
 
 } // namespace otel
