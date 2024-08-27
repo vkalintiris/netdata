@@ -3,7 +3,7 @@
 
 #include "otel_config.hpp"
 #include "otel_flatten.hpp"
-#include "otel_restructure.hpp"
+#include "otel_transform.hpp"
 
 #include "database/rrd.h"
 
