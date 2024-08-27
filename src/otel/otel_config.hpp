@@ -1,7 +1,6 @@
 #ifndef NETDATA_OTEL_CONFIG_HPP
 #define NETDATA_OTEL_CONFIG_HPP
 
-#include <set>
 #include <yaml-cpp/yaml.h>
 
 namespace otel
@@ -15,8 +14,7 @@ namespace otel
             }
 
             if (Node["instance_attributes"]) {
-                const auto &V = Node["instance_attributes"].as<std::vector<std::string> >();
-                InstanceAttributes.insert(V.begin(), V.end());
+                InstanceAttributes = Node["instance_attributes"].as<std::vector<std::string> >();
             }
         }
 
@@ -25,14 +23,14 @@ namespace otel
             return &DimensionsAttribute;
         }
 
-        const std::set<std::string> *getInstanceAttributes() const
+        const std::vector<std::string> *getInstanceAttributes() const
         {
             return &InstanceAttributes;
         }
 
     private:
         std::string DimensionsAttribute;
-        std::set<std::string> InstanceAttributes;
+        std::vector<std::string> InstanceAttributes;
     };
 
     class ScopeConfig {
@@ -89,7 +87,7 @@ namespace otel
             return M->getDimensionsAttribute();
         }
 
-        const std::set<std::string> *
+        const std::vector<std::string> *
         getInstanceAttribute(const std::string &ScopeName, const std::string &MetricName) const
         {
             const MetricConfig *M = getMetric(ScopeName, MetricName);

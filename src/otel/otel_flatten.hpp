@@ -6,11 +6,10 @@
 namespace pb
 {
 
-void flattenAttributes(
-    pb::Arena *A,
-    const std::string &Prefix,
-    const pb::KeyValue &KV,
-    pb::RepeatedPtrField<pb::KeyValue> *RPF);
+void flattenAttributes(Arena *A, const std::string &Prefix, const KeyValue &KV, RepeatedPtrField<KeyValue> *RPF);
+
+void flattenResource(RepeatedPtrField<KeyValue> *RPF, const Resource &R);
+void flattenInstrumentationScope(RepeatedPtrField<KeyValue> *RPF, const InstrumentationScope &IS);
 
 } // namespace pb
 

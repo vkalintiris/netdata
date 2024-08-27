@@ -1449,6 +1449,8 @@ set(NETDATA_FILES
         src/otel/otel_sort.hpp
         src/otel/otel_utils.cc
         src/otel/otel_utils.hpp
+        src/otel/otel_transform.cc
+        src/otel/otel_transform.hpp
 )
 
 set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto

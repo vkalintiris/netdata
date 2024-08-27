@@ -2,7 +2,8 @@
 #define NETDATA_OTEL_INGESTOR_HPP
 
 #include "otel_config.hpp"
-#include "otel_utils.hpp"
+#include "otel_flatten.hpp"
+#include "otel_restructure.hpp"
 
 #include "database/rrd.h"
 
@@ -13,7 +14,6 @@
 
 namespace otel
 {
-
 class BufferManager {
 public:
     void fill(const uv_buf_t &Buf);
@@ -46,6 +46,36 @@ public:
         return new Otel(Cfg);
     }
 
+    void processMessage(pb::MetricsData *MD)
+    {
+        UNUSED(MD);
+
+#if 0
+        for (pb::ResourceMetrics &RMs : *MD->mutable_resource_metrics()) {
+            pb::RepeatedPtrField<pb::KeyValue> *ResourceAttrs =
+                pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::KeyValue> >(&A);
+            if (RMs.has_resource())
+                pb::flattenResource(ResourceAttrs, RMs.resource());
+
+            for (pb::ScopeMetrics &SMs : *RMs.mutable_scope_metrics()) {
+                const ScopeConfig *ScopeCfg = nullptr; 
+                pb::RepeatedPtrField<pb::KeyValue> *ScopeAttrs =
+                    pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::KeyValue> >(&A);
+
+                if (SMs.has_scope()) {
+                    ScopeCfg = Cfg->getScope(SMs.scope().name());
+                    pb::flattenInstrumentationScope(ScopeAttrs, SMs.scope());
+                }
+
+                for (pb::Metric &M : *SMs.mutable_metrics()) {
+                    const MetricConfig *MetricCfg = ScopeCfg->getMetric(M.name());
+                    pb::RepeatedPtrField<pb::Metric> *NormalizedMetrics = pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::Metric> >(&A);
+                }
+            }
+        }
+#endif
+    }
+
     bool processMessages(const uv_buf_t &Buf)
     {
         BM.fill(Buf);
@@ -54,21 +84,37 @@ public:
         if (MessageLength == 0)
             return true;
 
-
-        auto MD = BM.readMetricData(&A, MessageLength);
-        if (!MD.ok())
+        auto Result = BM.readMetricData(&A, MessageLength);
+        if (!Result.ok())
             return true;
+
+        auto *MD = Result.value();
+
+        dump("/tmp/before.txt", MD);
+            
+        for (auto &RMs : *MD->mutable_resource_metrics()) {
+            for (auto &SMs : *RMs.mutable_scope_metrics()) {
+                if (!SMs.has_scope()) {
+                    // TODO: log this somewhere
+                    continue;
+                }
+
+                const auto *ScopeCfg = Cfg->getScope(SMs.scope().name());
+                transformMetrics(ScopeCfg, SMs.mutable_metrics());
+            }
+        }
+
+        dump("/tmp/after.txt", MD);
 
         return true;
     }
 
 private:
-    template<typename T>
-    void dump(const std::string &Path, const T &PB)
+    template <typename T> void dump(const std::string &Path, const T *PB)
     {
         std::ofstream OS(Path, std::ios_base::app);
         if (OS.is_open()) {
-            OS << PB.Utf8DebugString() << std::endl;
+            OS << PB->Utf8DebugString() << std::endl;
             OS.close();
         } else {
             std::cerr << "Unable to open /tmp/foo.txt for appending" << std::endl;
