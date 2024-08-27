@@ -18,7 +18,6 @@ public:
     ScopeMetricsHasher hash(const pb::ResourceMetrics &RMs);
 };
 
-
 class ScopeMetricsHasher {
     friend void digestAttributes(const pb::RepeatedPtrField<pb::KeyValue> &KVs);
 
