@@ -64,6 +64,7 @@ public:
         const ScopeConfig *ScopeCfg,
         const pb::Metric &M,
         const std::string &BlakeId,
+        const pb::RepeatedPtrField<pb::KeyValue> &Labels,
         const pb::Resource *R,
         const std::unordered_map<std::string, Chart> *Charts)
     {
@@ -78,6 +79,7 @@ public:
 
         if (!RS) {
             createRS(ScopeCfg, M, BlakeId);
+            setLabels(Labels);
         }
 
         updateRDs(M);
@@ -85,6 +87,23 @@ public:
         ActiveResource = nullptr;
         ActiveMetric = nullptr;
         ActiveCharts = nullptr;
+    }
+
+    void setLabels(const pb::RepeatedPtrField<pb::KeyValue> &RPF)
+    {
+        if (RPF.empty())
+            return;
+
+        RRDLABELS *Labels = rrdlabels_create();
+
+        for (const auto &KV: RPF) {
+            const auto &K = KV.key();
+            const auto &V = KV.value().string_value();
+
+            rrdlabels_add(Labels, K.c_str(), V.c_str(), RRDLABEL_SRC_AUTO);
+        }
+
+        rrdset_update_rrdlabels(RS, Labels);
     }
 
 private:

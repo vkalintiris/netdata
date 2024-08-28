@@ -1,4 +1,5 @@
 #include "otel_process.hpp"
+#include "otel_flatten.hpp"
 
 static std::string origMetricName(const pb::Metric &M) {
     for (const auto &Attr: M.metadata()) {
@@ -17,7 +18,15 @@ void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::Metr
     for (const auto &RMs : MD->resource_metrics()) {
         ScopeMetricsHasher SMH = RMH.hash(RMs);
 
-        const auto *Resource = RMs.has_resource() ? &RMs.resource() : nullptr;
+
+        pb::RepeatedPtrField<pb::KeyValue> RPF;
+
+        const pb::Resource *Resource = nullptr;
+        if (RMs.has_resource()) {
+            Resource = &RMs.resource();
+            pb::flattenResource(&RPF, *Resource);
+        }
+
         for (const auto &SMs : RMs.scope_metrics()) {
             if (!SMs.has_scope()) {
                 fatal("No scope in scope metrics");
@@ -31,11 +40,12 @@ void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::Metr
                 std::string ChartId = M.name() + "_" + BlakeId;
 
                 auto It = Charts.find(ChartId);
-                if (It == Charts.end())
+                if (It == Charts.end()) {
                     It = Charts.emplace(ChartId, Chart()).first;
+                }
 
                 std::string OrigMetricName = origMetricName(M);
-                It->second.update(ScopeCfg, M, BlakeId, Resource, &Charts);
+                It->second.update(ScopeCfg, M, BlakeId, RPF, Resource, &Charts);
             }
         }
     }
