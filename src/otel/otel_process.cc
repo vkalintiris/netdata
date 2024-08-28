@@ -34,7 +34,7 @@ void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::Metr
                     It = Charts.emplace(ChartId, Chart()).first;
 
                 std::string OrigMetricName = origMetricName(M);
-                It->second.update(ScopeCfg, M, BlakeId);
+                It->second.update(ScopeCfg, M, BlakeId, &Charts);
             }
         }
     }
@@ -56,13 +56,13 @@ std::string otel::Chart::findDimensionName(const MetricConfig *MetricCfg, const 
     return "value";
 }
 
-template <typename T> void otel::Chart::createRDs(const MetricConfig *MetricCfg, const T &DPs)
+template <typename T> void otel::Chart::createRDs(const MetricConfig *MetricCfg, bool Monotonic, const T &DPs)
 {
     for (const auto &DP : DPs) {
         std::string Name = findDimensionName(MetricCfg, DP);
 
-        // TODO: real implementation here
-        RRDDIM *RD = rrddim_add(RS, Name.c_str(), nullptr, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        auto Algorithm = Monotonic ? RRD_ALGORITHM_INCREMENTAL : RRD_ALGORITHM_ABSOLUTE;
+        RRDDIM *RD = rrddim_add(RS, Name.c_str(), nullptr, 1, 1000, Algorithm);
 
         RDs.push_back(RD);
     }
@@ -71,9 +71,9 @@ template <typename T> void otel::Chart::createRDs(const MetricConfig *MetricCfg,
 void otel::Chart::createRDs(const MetricConfig *MetricCfg, const pb::Metric &M)
 {
     if (M.has_gauge()) {
-        createRDs(MetricCfg, M.gauge().data_points());
+        createRDs(MetricCfg, false, M.gauge().data_points());
     } else if (M.has_sum()) {
-        createRDs(MetricCfg, M.sum().data_points());
+        createRDs(MetricCfg, M.sum().is_monotonic(), M.sum().data_points());
     } else {
         std::abort();
     }
@@ -120,6 +120,7 @@ void otel::Chart::updateRDs(const pb::Metric &M)
 template <typename T> void otel::Chart::updateRDs(const pb::RepeatedPtrField<T> &DPs)
 {
     if (DPs.size() != static_cast<int>(RDs.size())) {
+        debug();
         std::abort();
     }
 
@@ -131,11 +132,16 @@ template <typename T> void otel::Chart::updateRDs(const pb::RepeatedPtrField<T> 
         if (DP.value_case() == pb::NumberDataPoint::kAsDouble) {
             Value = DP.as_double() * 1000;
         } else if (DP.value_case() == pb::NumberDataPoint::kAsInt) {
-            Value = DP.as_int();
+            Value = DP.as_int() * 1000;
+        } else {
+            std::abort();
         }
 
-        // TODO: used timed set
-        rrddim_set_by_pointer(RS, RD, Value);
+        struct timeval PIT;
+        PIT.tv_sec = pb::collectionTime(DP) / NSEC_PER_SEC;
+        PIT.tv_usec = 0;
+
+        rrddim_timed_set_by_pointer(RS, RD, PIT, Value);
     }
 
     rrdset_done(RS);

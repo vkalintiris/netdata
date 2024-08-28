@@ -7,6 +7,8 @@
 
 #include "database/rrd.h"
 
+#include <fstream>
+
 namespace otel {
 
 class Chart {
@@ -15,8 +17,46 @@ public:
     {
     }
 
-    void update(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId)
+    void debug() const {
+        std::ofstream OS("/tmp/debug.txt", std::ios_base::app);
+        if (!OS) {
+            fatal("Failed to open debug file");
+            return;
+        }
+
+        if (RS) {
+            OS << "LastCollectionTime: " << LastCollectionTime << "\n";
+
+            OS << "RS: " << rrdset_id(RS) << "\n";
+
+            for (size_t Idx = 0; Idx != RDs.size(); Idx++)
+                OS << "\tRD[" << Idx << "]: " << rrddim_id(RDs[Idx]) << "\n";
+
+            if (ActiveMetric)
+                OS << "M: " << ActiveMetric->Utf8DebugString() << "\n";
+
+            if (ActiveCharts) {
+                OS << "Existing charts:" << "\n";
+                for (const auto &P: *ActiveCharts) {
+                    OS << "\tChart ID: " << P.first << "\n";
+
+                    const Chart &C = P.second;
+                    for (size_t Idx = 0; Idx != C.RDs.size(); Idx++) {
+                        OS << "\tRS: " << rrdset_id(RS) << "\n";
+                        OS << "\t\tRD[" << Idx << "]: " << rrddim_id(C.RDs[Idx]) << "\n";
+                    }
+                }
+            }
+        }
+
+        OS.close();
+    }
+
+    void update(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId, const std::unordered_map<std::string, Chart> *Charts)
     {
+        ActiveMetric = &M;
+        ActiveCharts = Charts;
+
         if (!LastCollectionTime) {
             LastCollectionTime = pb::findOldestCollectionTime(M) / NSEC_PER_SEC;
             return;
@@ -26,15 +66,16 @@ public:
             createRS(ScopeCfg, M, BlakeId);
         }
 
-        return;
-
         updateRDs(M);
+
+        ActiveMetric = nullptr;
+        ActiveCharts = nullptr;
     }
 
 private:
     std::string findDimensionName(const MetricConfig *MetricCfg, const pb::NumberDataPoint &DP);
 
-    template <typename T> void createRDs(const MetricConfig *MetricCfg, const T &DPs);
+    template <typename T> void createRDs(const MetricConfig *MetricCfg, bool Monotonic, const T &DPs);
     void createRDs(const MetricConfig *MetricCfg, const pb::Metric &M);
 
     void createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId);
@@ -46,6 +87,9 @@ private:
     RRDSET *RS;
     std::vector<RRDDIM *> RDs;
     uint64_t LastCollectionTime;
+
+    const pb::Metric *ActiveMetric = nullptr;
+    const std::unordered_map<std::string, Chart> *ActiveCharts = nullptr;
 };
 
 class MetricProcessor {

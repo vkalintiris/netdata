@@ -61,7 +61,7 @@ scopes:
         instance_attributes: [device]
 
       system.disk.io_time:
-        dimensions_attribute: device
+        instance_attributes: [device]
 
       system.disk.merged:
         dimensions_attribute: direction
@@ -76,20 +76,21 @@ scopes:
         instance_attributes: [device]
 
       system.disk.pending_operations:
-        dimensions_attribute: device
+        instance_attributes: [device]
 
       system.disk.weighted_io_time:
-        dimensions_attribute: device
+        instance_attributes: [device]
 
   "*hostmetricsreceiver*filesystem*":
     metrics:
       system.filesystem.inodes.usage:
         dimensions_attribute: state
-        instance_attributes: [device]
+        instance_attributes: [mountpoint]
 
       system.filesystem.usage:
         dimensions_attribute: state
-        instance_attributes: [device]
+        instance_attributes: [mountpoint]
 
       system.filesystem.utilization:
-        dimensions_attribute: device
+        instance_attributes: [mountpoint]
+        dimensions_attribute: state

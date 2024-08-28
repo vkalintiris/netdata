@@ -3,6 +3,10 @@
 #include <fstream>
 #include <iomanip>
 
+template <typename DataPoint> uint64_t pb::collectionTime(const DataPoint &DP)
+{
+    return DP.time_unix_nano();
+}
 
 uint64_t pb::findOldestCollectionTime(const pb::Metric &M)
 {
@@ -10,24 +14,24 @@ uint64_t pb::findOldestCollectionTime(const pb::Metric &M)
 
     switch (M.data_case()) {
         case pb::Metric::kGauge:
-            for (const auto &dp : M.gauge().data_points())
-                oldestTime = std::min(oldestTime, dp.time_unix_nano());
+            for (const auto &DP : M.gauge().data_points())
+                oldestTime = std::min(oldestTime, collectionTime(DP));
             break;
         case pb::Metric::kSum:
-            for (const auto &dp : M.sum().data_points())
-                oldestTime = std::min(oldestTime, dp.time_unix_nano());
+            for (const auto &DP : M.sum().data_points())
+                oldestTime = std::min(oldestTime, collectionTime(DP));
             break;
         case pb::Metric::kHistogram:
-            for (const auto &dp : M.histogram().data_points())
-                oldestTime = std::min(oldestTime, dp.time_unix_nano());
+            for (const auto &DP : M.histogram().data_points())
+                oldestTime = std::min(oldestTime, collectionTime(DP));
             break;
         case pb::Metric::kExponentialHistogram:
-            for (const auto &dp : M.exponential_histogram().data_points())
-                oldestTime = std::min(oldestTime, dp.time_unix_nano());
+            for (const auto &DP : M.exponential_histogram().data_points())
+                oldestTime = std::min(oldestTime, collectionTime(DP));
             break;
         case pb::Metric::kSummary:
-            for (const auto &dp : M.summary().data_points())
-                oldestTime = std::min(oldestTime, dp.time_unix_nano());
+            for (const auto &DP : M.summary().data_points())
+                oldestTime = std::min(oldestTime, collectionTime(DP));
             break;
         default:
             std::abort();

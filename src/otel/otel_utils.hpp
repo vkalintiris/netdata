@@ -40,6 +40,8 @@ using Summary = opentelemetry::proto::metrics::v1::Summary;
 std::string anyValueToString(const AnyValue &AV);
 uint64_t findOldestCollectionTime(const pb::Metric &M);
 
+template<typename DataPoint> uint64_t collectionTime(const DataPoint &DP);
+
 } // namespace pb
 
 #endif /* OTEL_UTILS_HPP */
