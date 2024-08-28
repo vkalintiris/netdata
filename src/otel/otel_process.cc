@@ -91,7 +91,7 @@ void otel::Chart::createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, con
     RS = rrdset_create_localhost(
         "otel", // type
         ChartId.c_str(), // id
-        NULL, // name
+        M.name().c_str(), // name
         ContextName.c_str(), // family
         ContextName.c_str(), // context
         M.description().c_str(), // title

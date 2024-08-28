@@ -7,13 +7,6 @@
 
 #include "database/rrd.h"
 
-#include <unordered_map>
-#include <string>
-#include <memory>
-
-#include <limits>
-#include <algorithm>
-
 namespace otel {
 
 class Chart {
