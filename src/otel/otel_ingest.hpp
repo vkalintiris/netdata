@@ -98,7 +98,7 @@ public:
         pb::sortMetricsData(*MD);
         dump("/tmp/after.txt", MD);
 
-        MP.processMetrics(Cfg, MD);
+        MP.processMetricsData(Cfg, MD);
 
         return true;
     }

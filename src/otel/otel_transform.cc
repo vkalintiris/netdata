@@ -53,6 +53,10 @@ static pb::RepeatedPtrField<pb::Metric> createNewMetrics(
         NewMetric->set_description(OrigMetric.description());
         NewMetric->set_unit(OrigMetric.unit());
 
+        auto *KV = NewMetric->add_metadata();
+        KV->set_key("_nd_orig_metric_name");
+        KV->mutable_value()->set_string_value(OrigMetric.name());
+
         setDataPoints(*NewMetric, P.second);
     }
 

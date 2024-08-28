@@ -22,27 +22,29 @@ public:
     {
     }
 
-    void update(const otel::MetricConfig *MetricCfg, const pb::Metric &M, const std::string &BlakeId)
+    void update(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId)
     {
         if (!LastCollectionTime) {
-            LastCollectionTime = pb::findOldestCollectionTime(M);
+            LastCollectionTime = pb::findOldestCollectionTime(M) / NSEC_PER_SEC;
             return;
         }
 
         if (!RS) {
-            createRS(MetricCfg, M, BlakeId);
+            createRS(ScopeCfg, M, BlakeId);
         }
+
+        return;
 
         updateRDs(M);
     }
 
 private:
-    std::string findDimensionName(const otel::MetricConfig *MetricCfg, const pb::NumberDataPoint &DP);
+    std::string findDimensionName(const MetricConfig *MetricCfg, const pb::NumberDataPoint &DP);
 
-    template <typename T> void createRDs(const otel::MetricConfig *MetricCfg, const T &DPs);
-    void createRDs(const otel::MetricConfig *MetricCfg, const pb::Metric &M);
+    template <typename T> void createRDs(const MetricConfig *MetricCfg, const T &DPs);
+    void createRDs(const MetricConfig *MetricCfg, const pb::Metric &M);
 
-    void createRS(const otel::MetricConfig *MetricCfg, const pb::Metric &M, const std::string &BlakeId);
+    void createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId);
 
     void updateRDs(const pb::Metric &M);
     template <typename T> void updateRDs(const pb::RepeatedPtrField<T> &DPs);
@@ -55,7 +57,7 @@ private:
 
 class MetricProcessor {
 public:
-    void processMetrics(const otel::Config *Cfg, const pb::MetricsData *MD);
+    void processMetricsData(const Config *Cfg, const pb::MetricsData *MD);
 
 private:
     std::unordered_map<std::string, Chart> Charts;
