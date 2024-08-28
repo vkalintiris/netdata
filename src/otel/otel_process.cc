@@ -16,13 +16,14 @@ void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::Metr
 
     for (const auto &RMs : MD->resource_metrics()) {
         ScopeMetricsHasher SMH = RMH.hash(RMs);
+
+        const auto *Resource = RMs.has_resource() ? &RMs.resource() : nullptr;
         for (const auto &SMs : RMs.scope_metrics()) {
-            if (!SMs.has_scope())
-                continue;
+            if (!SMs.has_scope()) {
+                fatal("No scope in scope metrics");
+            }
 
             const ScopeConfig *ScopeCfg = Cfg->getScope(SMs.scope().name());
-            if (!ScopeCfg)
-                fatal("[GVD] No scope...");
 
             MetricHasher MH = SMH.hash(SMs);
             for (const auto &M : SMs.metrics()) {
@@ -34,7 +35,7 @@ void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::Metr
                     It = Charts.emplace(ChartId, Chart()).first;
 
                 std::string OrigMetricName = origMetricName(M);
-                It->second.update(ScopeCfg, M, BlakeId, &Charts);
+                It->second.update(ScopeCfg, M, BlakeId, Resource, &Charts);
             }
         }
     }
@@ -81,8 +82,10 @@ void otel::Chart::createRDs(const MetricConfig *MetricCfg, const pb::Metric &M)
 
 void otel::Chart::createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId)
 {
-    // TODO: sec/msec/usec?
     uint64_t UpdateEvery = (pb::findOldestCollectionTime(M) / NSEC_PER_SEC) - LastCollectionTime;
+    if (UpdateEvery == 0) {
+        fatal("[GVD] WTF!? alfkjalkrjwoi");
+    }
 
     const std::string ChartId = M.name() + "_" + BlakeId;
     const std::string OrigMetricName = origMetricName(M);
@@ -103,7 +106,8 @@ void otel::Chart::createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, con
         RRDSET_TYPE_LINE // chart_type
     );
 
-    createRDs(ScopeCfg->getMetric(OrigMetricName), M);
+    const auto *MetricCfg = ScopeCfg ? ScopeCfg->getMetric(OrigMetricName) : nullptr;
+    createRDs(MetricCfg, M);
 }
 
 void otel::Chart::updateRDs(const pb::Metric &M)
@@ -120,7 +124,6 @@ void otel::Chart::updateRDs(const pb::Metric &M)
 template <typename T> void otel::Chart::updateRDs(const pb::RepeatedPtrField<T> &DPs)
 {
     if (DPs.size() != static_cast<int>(RDs.size())) {
-        debug();
         std::abort();
     }
 

@@ -9,20 +9,27 @@
 
 #include <fstream>
 
-namespace otel {
-
+namespace otel
+{
 class Chart {
 public:
     Chart() : RS(nullptr), RDs(), LastCollectionTime(0)
     {
     }
 
-    void debug() const {
+    void debug() const
+    {
         std::ofstream OS("/tmp/debug.txt", std::ios_base::app);
         if (!OS) {
             fatal("Failed to open debug file");
             return;
         }
+
+        if (ActiveResource)
+            OS << "R: " << ActiveResource->Utf8DebugString() << "\n";
+
+        if (ActiveMetric)
+            OS << "M: " << ActiveMetric->Utf8DebugString() << "\n";
 
         if (RS) {
             OS << "LastCollectionTime: " << LastCollectionTime << "\n";
@@ -32,18 +39,19 @@ public:
             for (size_t Idx = 0; Idx != RDs.size(); Idx++)
                 OS << "\tRD[" << Idx << "]: " << rrddim_id(RDs[Idx]) << "\n";
 
-            if (ActiveMetric)
-                OS << "M: " << ActiveMetric->Utf8DebugString() << "\n";
-
             if (ActiveCharts) {
-                OS << "Existing charts:" << "\n";
-                for (const auto &P: *ActiveCharts) {
-                    OS << "\tChart ID: " << P.first << "\n";
-
+                OS << "Existing charts:"
+                   << "\n";
+                for (const auto &P : *ActiveCharts) {
                     const Chart &C = P.second;
-                    for (size_t Idx = 0; Idx != C.RDs.size(); Idx++) {
-                        OS << "\tRS: " << rrdset_id(RS) << "\n";
-                        OS << "\t\tRD[" << Idx << "]: " << rrddim_id(C.RDs[Idx]) << "\n";
+
+                    if (C.RS) {
+                        OS << "\tChart ID: " << P.first << "\n";
+                        OS << "\tRS: " << rrdset_id(C.RS) << "\n";
+
+                        for (size_t Idx = 0; Idx != C.RDs.size(); Idx++) {
+                            OS << "\t\tRD[" << Idx << "]: " << rrddim_id(C.RDs[Idx]) << "\n";
+                        }
                     }
                 }
             }
@@ -52,8 +60,14 @@ public:
         OS.close();
     }
 
-    void update(const ScopeConfig *ScopeCfg, const pb::Metric &M, const std::string &BlakeId, const std::unordered_map<std::string, Chart> *Charts)
+    void update(
+        const ScopeConfig *ScopeCfg,
+        const pb::Metric &M,
+        const std::string &BlakeId,
+        const pb::Resource *R,
+        const std::unordered_map<std::string, Chart> *Charts)
     {
+        ActiveResource = R;
         ActiveMetric = &M;
         ActiveCharts = Charts;
 
@@ -68,6 +82,7 @@ public:
 
         updateRDs(M);
 
+        ActiveResource = nullptr;
         ActiveMetric = nullptr;
         ActiveCharts = nullptr;
     }
@@ -88,6 +103,7 @@ private:
     std::vector<RRDDIM *> RDs;
     uint64_t LastCollectionTime;
 
+    const pb::Resource *ActiveResource = nullptr;
     const pb::Metric *ActiveMetric = nullptr;
     const std::unordered_map<std::string, Chart> *ActiveCharts = nullptr;
 };

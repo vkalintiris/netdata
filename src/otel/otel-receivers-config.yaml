@@ -54,6 +54,11 @@ scopes:
       system.processes.count:
         dimensions_attribute: status
 
+  "*hostmetricsreceiver*processscraper*":
+    metrics:
+      process.cpu.time:
+        dimensions_attribute: state
+
   "*hostmetricsreceiver*disk*":
     metrics:
       system.disk.io:

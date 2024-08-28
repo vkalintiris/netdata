@@ -19,8 +19,13 @@ void digestAttributes(blake3_hasher &BH, const pb::RepeatedPtrField<pb::KeyValue
 ScopeMetricsHasher otel::ResourceMetricsHasher::hash(const pb::ResourceMetrics &RMs)
 {
     blake3_hasher BH;
+
     blake3_hasher_init(&BH);
     blake3_hasher_update(&BH, RMs.schema_url().data(), RMs.schema_url().size());
+
+    if (RMs.has_resource())
+        digestAttributes(BH, RMs.resource().attributes());
+
     return ScopeMetricsHasher(BH);
 }
 
