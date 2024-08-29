@@ -21,7 +21,7 @@ static std::string *createPrefixKey(pb::Arena *A, const std::string &P, const st
 }
 
 // TODO: verify correctness
-void pb::flattenAttributes(Arena *A, const std::string &Prefix, const KeyValue &KV, RepeatedPtrField<KeyValue> *RPF)
+void pb::flattenAttributes(Arena *A, const std::string &Prefix, const KeyValue &KV, RepeatedPtrField<KeyValue> &RPF)
 {
     std::string *NewPrefix = createPrefixKey(A, Prefix, KV.key());
 
@@ -42,14 +42,14 @@ void pb::flattenAttributes(Arena *A, const std::string &Prefix, const KeyValue &
                 AK->append(Position);
                 AK->append("]");
 
-                KeyValue *FlattenedKV = RPF->Add();
+                KeyValue *FlattenedKV = RPF.Add();
                 FlattenedKV->set_key(*AK);
                 *FlattenedKV->mutable_value() = KV.value().array_value().values(Idx);
             }
             break;
         }
         default:
-            KeyValue *FlattenedKV = RPF->Add();
+            KeyValue *FlattenedKV = RPF.Add();
             FlattenedKV->set_key(*NewPrefix);
             *FlattenedKV->mutable_value() = KV.value();
             break;
@@ -57,23 +57,23 @@ void pb::flattenAttributes(Arena *A, const std::string &Prefix, const KeyValue &
 }
 
 // TODO: How should we handle dropped_attributes_count?
-void pb::flattenResource(RepeatedPtrField<KeyValue> *RPF, const Resource &R)
+void pb::flattenResource(RepeatedPtrField<KeyValue> &RPF, const Resource &R)
 {
     for (const auto &Attr : R.attributes())
         flattenAttributes(R.GetArena(), "r", Attr, RPF);
 }
 
 // TODO: How should we handle dropped_attributes_count?
-void pb::flattenInstrumentationScope(RepeatedPtrField<KeyValue> *RPF, const InstrumentationScope &IS)
+void pb::flattenInstrumentationScope(RepeatedPtrField<KeyValue> &RPF, const InstrumentationScope &IS)
 {
-    KeyValue *NameKV = RPF->Add();
+    KeyValue *NameKV = RPF.Add();
     NameKV->set_key("is.name");
     NameKV->mutable_value()->set_string_value(IS.name());
 
-    KeyValue* VersionKV = RPF->Add();
+    KeyValue* VersionKV = RPF.Add();
     VersionKV->set_key("is.version");
     VersionKV->mutable_value()->set_string_value(IS.version());
 
     for (const auto &Attr : IS.attributes())
-        flattenAttributes(RPF->GetArena(), "is", Attr, RPF);
+        flattenAttributes(RPF.GetArena(), "is", Attr, RPF);
 }

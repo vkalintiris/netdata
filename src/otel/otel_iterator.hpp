@@ -26,45 +26,10 @@ public:
 class Processor {
 public:
     virtual void onResourceMetrics(const pb::ResourceMetrics &RMs) = 0;
-    virtual void onScopeMetrics(const pb::ScopeMetrics &SMs) = 0;
-    virtual void onMetric(const pb::Metric &M) = 0;
+    virtual void onScopeMetrics(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs) = 0;
+    virtual void onMetric(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs, const pb::Metric &M) = 0;
     virtual ~Processor() = default;
 };
-
-class FileProcessor : public Processor {
-public:
-    FileProcessor(const std::string &Path) : OS(Path) {}
-
-    void onResourceMetrics(const pb::ResourceMetrics &RMs) override {
-        if (!OS)
-            return;
-
-        OS << "RMs with " << RMs.scope_metrics_size() << " SMs\n";
-    }
-
-    void onScopeMetrics(const pb::ScopeMetrics &SMs) override {
-        if (!OS)
-            return;
-
-        OS << "SMs with " << SMs.metrics_size() << " Ms\n";
-    }
-
-    void onMetric(const pb::Metric &M) override {
-        if (!OS)
-            return;
-
-        OS << "------\n";
-        OS << M.Utf8DebugString();
-    }
-
-    virtual ~FileProcessor() {
-        OS.close();
-    }
-
-private:
-    std::ofstream OS;
-};
-
 
 class Data {
     class Iterator {
@@ -163,11 +128,11 @@ class Data {
             }
 
             if (NewElem.SM != CurrElem.SM) {
-                P.onScopeMetrics(*NewElem.SM);
+                P.onScopeMetrics(*NewElem.RM, *NewElem.SM);
             }
 
             if (NewElem.M != CurrElem.M) {
-                P.onMetric(*NewElem.M);
+                P.onMetric(*NewElem.RM, *NewElem.SM, *NewElem.M);
             }
 
             advanceIterators();

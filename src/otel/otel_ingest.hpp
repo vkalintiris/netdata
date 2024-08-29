@@ -98,7 +98,12 @@ public:
         pb::sortMetricsData(*MD);
         dump("/tmp/after.txt", MD);
 
-        MP.processMetricsData(Cfg, MD);
+        MetricsDataProcessor MDP(Cfg, Charts);
+
+        Data D(*MD, MDP);
+        for (Element E : D) {
+            UNUSED(E);
+        }
 
         return true;
     }
@@ -116,7 +121,7 @@ private:
     }
 
 private:
-    Otel(const Config *Cfg) : A(), Cfg(Cfg)
+    Otel(const Config *Cfg) : A(), Cfg(Cfg), Charts()
     {
     }
 
@@ -124,7 +129,8 @@ private:
     pb::Arena A;
     BufferManager BM;
     const Config *Cfg;
-    otel::MetricProcessor MP;
+
+    std::unordered_map<std::string, Chart> Charts;
 };
 
 } // namespace otel

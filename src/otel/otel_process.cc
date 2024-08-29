@@ -13,55 +13,47 @@ static std::string origMetricName(const pb::Metric &M) {
     return M.name();
 }
 
-void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::MetricsData *MD)
+void otel::MetricsDataProcessor::onResourceMetrics(const pb::ResourceMetrics &RMs)
 {
-    {
-        FileProcessor FP("/tmp/oe.txt");
-        Data D(*MD, FP);
+    SMH = RMH.hash(RMs);
 
-        for (Element E: D) {
-            UNUSED(E);
-        }
+    Labels.Clear();
+    if (RMs.has_resource()) {
+        pb::flattenResource(Labels, RMs.resource());
+    }
+}
 
-        return;
+void otel::MetricsDataProcessor::onScopeMetrics(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs)
+{
+    UNUSED(RMs);
+
+    MH = SMH.hash(SMs);
+
+    if (SMs.has_scope()) {
+        ScopeCfg = Cfg->getScope(SMs.scope().name());
+    } else {
+        ScopeCfg = nullptr;
+    }
+}
+
+void otel::MetricsDataProcessor::onMetric(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs, const pb::Metric &M)
+{
+    UNUSED(RMs);
+    UNUSED(SMs);
+
+    const std::string BlakeId = MH.hash(M);
+
+    std::string ChartId = M.name() + "_" + BlakeId;
+
+    auto It = Charts.find(ChartId);
+    if (It == Charts.end()) {
+        It = Charts.emplace(ChartId, Chart()).first;
     }
 
-    ResourceMetricsHasher RMH;
+    std::string OrigMetricName = origMetricName(M);
 
-    for (const auto &RMs : MD->resource_metrics()) {
-        ScopeMetricsHasher SMH = RMH.hash(RMs);
-
-
-        pb::RepeatedPtrField<pb::KeyValue> RPF;
-
-        const pb::Resource *Resource = nullptr;
-        if (RMs.has_resource()) {
-            Resource = &RMs.resource();
-            pb::flattenResource(&RPF, *Resource);
-        }
-
-        for (const auto &SMs : RMs.scope_metrics()) {
-            if (!SMs.has_scope()) {
-                fatal("No scope in scope metrics");
-            }
-
-            const ScopeConfig *ScopeCfg = Cfg->getScope(SMs.scope().name());
-
-            MetricHasher MH = SMH.hash(SMs);
-            for (const auto &M : SMs.metrics()) {
-                std::string BlakeId = MH.hash(M);
-                std::string ChartId = M.name() + "_" + BlakeId;
-
-                auto It = Charts.find(ChartId);
-                if (It == Charts.end()) {
-                    It = Charts.emplace(ChartId, Chart()).first;
-                }
-
-                std::string OrigMetricName = origMetricName(M);
-                It->second.update(ScopeCfg, M, BlakeId, RPF, Resource, &Charts);
-            }
-        }
-    }
+    const auto *Resource = RMs.has_resource() ? &RMs.resource() : nullptr;
+    It->second.update(ScopeCfg, M, BlakeId, Labels, Resource, &Charts);
 }
 
 std::string otel::Chart::findDimensionName(const MetricConfig *MetricCfg, const pb::NumberDataPoint &DP)

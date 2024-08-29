@@ -1,9 +1,11 @@
 #ifndef NETDATA_OTEL_PROCESS_HPP
 #define NETDATA_OTEL_PROCESS_HPP
 
+#include "otel_flatten.hpp"
 #include "otel_utils.hpp"
 #include "otel_config.hpp"
 #include "otel_hash.hpp"
+#include "otel_iterator.hpp"
 
 #include "database/rrd.h"
 
@@ -96,7 +98,7 @@ public:
 
         RRDLABELS *Labels = rrdlabels_create();
 
-        for (const auto &KV: RPF) {
+        for (const auto &KV : RPF) {
             const auto &K = KV.key();
             const auto &V = KV.value().string_value();
 
@@ -127,12 +129,31 @@ private:
     const std::unordered_map<std::string, Chart> *ActiveCharts = nullptr;
 };
 
-class MetricProcessor {
+class MetricsDataProcessor : public Processor {
 public:
-    void processMetricsData(const Config *Cfg, const pb::MetricsData *MD);
+    MetricsDataProcessor(const Config *Cfg, std::unordered_map<std::string, Chart> &Charts) : Cfg(Cfg), Charts(Charts)
+    {
+    }
+
+    void onResourceMetrics(const pb::ResourceMetrics &RMs) override;
+    void onScopeMetrics(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs) override;
+    void onMetric(const pb::ResourceMetrics &RMs, const pb::ScopeMetrics &SMs, const pb::Metric &M) override;
+
+    virtual ~MetricsDataProcessor()
+    {
+    }
 
 private:
-    std::unordered_map<std::string, Chart> Charts;
+    const Config *Cfg;
+    std::unordered_map<std::string, Chart> &Charts;
+
+    ResourceMetricsHasher RMH;
+    ScopeMetricsHasher SMH;
+    MetricHasher MH;
+
+    const ScopeConfig *ScopeCfg = nullptr;
+
+    pb::RepeatedPtrField<pb::KeyValue> Labels;
 };
 
 } // namespace otel

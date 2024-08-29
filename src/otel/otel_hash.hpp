@@ -22,11 +22,13 @@ class ScopeMetricsHasher {
     friend void digestAttributes(const pb::RepeatedPtrField<pb::KeyValue> &KVs);
 
 public:
+    ScopeMetricsHasher() = default;
+        
     ScopeMetricsHasher(blake3_hasher &BH) {
         this->BH = BH;
     }
 
-    MetricHasher hash(const pb::ScopeMetrics &RMs);
+    MetricHasher hash(const pb::ScopeMetrics &SMs);
 
 private:
     blake3_hasher BH;
@@ -36,6 +38,8 @@ class MetricHasher {
     friend void digestAttributes(const pb::RepeatedPtrField<pb::KeyValue> &KVs);
 
 public:
+    MetricHasher() = default;
+
     MetricHasher(blake3_hasher &BH) {
         this->BH = BH;
     }
