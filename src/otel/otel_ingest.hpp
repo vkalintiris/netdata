@@ -49,36 +49,6 @@ public:
         return new Otel(Cfg);
     }
 
-    void processMessage(pb::MetricsData *MD)
-    {
-        UNUSED(MD);
-
-#if 0
-        for (pb::ResourceMetrics &RMs : *MD->mutable_resource_metrics()) {
-            pb::RepeatedPtrField<pb::KeyValue> *ResourceAttrs =
-                pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::KeyValue> >(&A);
-            if (RMs.has_resource())
-                pb::flattenResource(ResourceAttrs, RMs.resource());
-
-            for (pb::ScopeMetrics &SMs : *RMs.mutable_scope_metrics()) {
-                const ScopeConfig *ScopeCfg = nullptr; 
-                pb::RepeatedPtrField<pb::KeyValue> *ScopeAttrs =
-                    pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::KeyValue> >(&A);
-
-                if (SMs.has_scope()) {
-                    ScopeCfg = Cfg->getScope(SMs.scope().name());
-                    pb::flattenInstrumentationScope(ScopeAttrs, SMs.scope());
-                }
-
-                for (pb::Metric &M : *SMs.mutable_metrics()) {
-                    const MetricConfig *MetricCfg = ScopeCfg->getMetric(M.name());
-                    pb::RepeatedPtrField<pb::Metric> *NormalizedMetrics = pb::Arena::CreateMessage<pb::RepeatedPtrField<pb::Metric> >(&A);
-                }
-            }
-        }
-#endif
-    }
-
     bool processMessages(const uv_buf_t &Buf)
     {
         BM.fill(Buf);
@@ -93,16 +63,17 @@ public:
 
         auto *MD = Result.value();
 
-        dump("/tmp/before.txt", MD);
-        pb::transformMetricData(Cfg, *MD);
-        pb::sortMetricsData(*MD);
-        dump("/tmp/after.txt", MD);
+        {
+            dump("/tmp/before.txt", MD);
+            pb::transformMetricData(Ctx.config(), *MD);
+            pb::sortMetricsData(*MD);
+            dump("/tmp/after.txt", MD);
 
-        MetricsDataProcessor MDP(Cfg, Charts);
-
-        Data D(*MD, MDP);
-        for (Element E : D) {
-            UNUSED(E);
+            MetricsDataProcessor MDP(Ctx);
+            Data D(*MD, MDP);
+            for (Element E : D) {
+                UNUSED(E);
+            }
         }
 
         return true;
@@ -121,16 +92,15 @@ private:
     }
 
 private:
-    Otel(const Config *Cfg) : A(), Cfg(Cfg), Charts()
+    Otel(const Config *Cfg) : Ctx(Cfg)
     {
     }
 
 private:
+    ProcessorContext Ctx;
+
     pb::Arena A;
     BufferManager BM;
-    const Config *Cfg;
-
-    std::unordered_map<std::string, Chart> Charts;
 };
 
 } // namespace otel

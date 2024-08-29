@@ -5,7 +5,7 @@ scopes:
         dimensions_attribute: state
         instance_attributes: [cpu]
       system.cpu.frequency:
-        dimensions_attribute: cpu
+        instance_attributes: [cpu]
       system.cpu.utilization:
         dimensions_attribute: state
         instance_attributes: [cpu]

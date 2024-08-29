@@ -2,7 +2,6 @@
 #define NETDATA_OTEL_ITERATOR_HPP
 
 #include "otel_utils.hpp"
-#include <fstream>
 
 namespace otel
 {

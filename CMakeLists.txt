@@ -1437,6 +1437,8 @@ set(NETDATA_FILES
         ${ACLK_ALWAYS_BUILD}
         ${PROFILE_PLUGIN_FILES}
         src/otel/otel.cc
+        src/otel/otel_chart.cc
+        src/otel/otel_chart.hpp
         src/otel/otel_config.cc
         src/otel/otel_config.hpp
         src/otel/otel_flatten.cc
