@@ -1,16 +1,5 @@
 #include "otel_process.hpp"
 
-static std::string origMetricName(const pb::Metric &M)
-{
-    for (const auto &Attr : M.metadata()) {
-        if (Attr.key() == "_nd_orig_metric_name") {
-            return Attr.value().string_value();
-        }
-    }
-
-    return M.name();
-}
-
 void otel::MetricsDataProcessor::onResourceMetrics(const pb::ResourceMetrics &RMs)
 {
     SMH = RMH.hash(RMs);
@@ -41,6 +30,7 @@ void otel::MetricsDataProcessor::onMetric(
 {
     UNUSED(RMs);
     UNUSED(SMs);
+
     auto &Charts = Ctx.charts();
 
     const std::string BlakeId = MH.hash(M);
@@ -51,8 +41,5 @@ void otel::MetricsDataProcessor::onMetric(
         It = Charts.emplace(ChartId, Chart()).first;
     }
 
-    std::string OrigMetricName = origMetricName(M);
-
-    const auto *Resource = RMs.has_resource() ? &RMs.resource() : nullptr;
-    It->second.update(ScopeCfg, M, BlakeId, Labels, Resource, &Charts);
+    It->second.update(ScopeCfg, M, BlakeId, Labels);
 }
