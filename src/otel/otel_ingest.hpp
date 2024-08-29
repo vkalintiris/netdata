@@ -74,6 +74,8 @@ public:
             for (Element E : D) {
                 UNUSED(E);
             }
+
+            A.Reset();
         }
 
         return true;
