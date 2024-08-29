@@ -31,9 +31,9 @@ void otel::MetricsDataProcessor::onMetric(
     UNUSED(RMs);
     UNUSED(SMs);
 
-    auto &Charts = Ctx.charts();
-
     const std::string &Id = MH.hash(M);
+
+    auto &Charts = Ctx.charts();
 
     auto It = Charts.find(Id);
     if (It == Charts.end()) {

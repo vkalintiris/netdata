@@ -1,7 +1,5 @@
 #include "otel_hash.hpp"
 
-#include <iomanip>
-
 using otel::ResourceMetricsHasher;
 using otel::ScopeMetricsHasher;
 using otel::MetricHasher;
@@ -75,8 +73,13 @@ const std::string &otel::MetricHasher::hash(const pb::Metric &M)
 
     MetricId.clear();
     MetricId += M.name();
-    for (int Idx = 0; Idx < BLAKE3_OUT_LEN; Idx++)
-        MetricId += Output[Idx];
+    MetricId += "-";
+
+    for (int Idx = 0; Idx < BLAKE3_OUT_LEN; Idx++) {
+        char HexValue[3];
+        std::snprintf(HexValue, sizeof(HexValue), "%02x", static_cast<unsigned int>(Output[Idx]));
+        MetricId.append(HexValue);
+    }
 
     return MetricId;
 }
