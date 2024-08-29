@@ -66,7 +66,7 @@ void otel::Chart::createRS(const ScopeConfig *ScopeCfg, const pb::Metric &M, con
     RS = rrdset_create_localhost(
         "otel", // type
         Id.c_str(), // id
-        M.name().c_str(), // name
+        Id.c_str(), // name
         ContextName.c_str(), // family
         ContextName.c_str(), // context
         M.description().c_str(), // title
@@ -96,6 +96,7 @@ void otel::Chart::updateRDs(const pb::Metric &M)
 template <typename T> void otel::Chart::updateRDs(const pb::RepeatedPtrField<T> &DPs)
 {
     if (DPs.size() != static_cast<int>(RDs.size())) {
+        netdata_log_error("[GVD] %s", rrdset_id(RS));
         std::abort();
     }
 

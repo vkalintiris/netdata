@@ -47,7 +47,7 @@ public:
 
         for (const auto &KV : RPF) {
             const auto &K = KV.key();
-            const auto &V = KV.value().string_value();
+            const auto &V = pb::anyValueToString(KV.value());
 
             rrdlabels_add(Labels, K.c_str(), V.c_str(), RRDLABEL_SRC_AUTO);
         }

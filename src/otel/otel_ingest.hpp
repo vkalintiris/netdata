@@ -64,10 +64,10 @@ public:
         auto *MD = Result.value();
 
         {
-            dump("/tmp/before.txt", MD);
+            // dump("/tmp/before.txt", MD);
             pb::transformMetricData(Ctx.config(), *MD);
             pb::sortMetricsData(*MD);
-            dump("/tmp/after.txt", MD);
+            // dump("/tmp/after.txt", MD);
 
             MetricsDataProcessor MDP(Ctx);
             Data D(*MD, MDP);

@@ -8,6 +8,8 @@ template <typename DataPoint> uint64_t pb::collectionTime(const DataPoint &DP)
     return DP.time_unix_nano();
 }
 
+template uint64_t pb::collectionTime<pb::NumberDataPoint>(const pb::NumberDataPoint &DP);
+
 uint64_t pb::findOldestCollectionTime(const pb::Metric &M)
 {
     uint64_t oldestTime = std::numeric_limits<uint64_t>::max();
