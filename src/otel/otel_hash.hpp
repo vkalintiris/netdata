@@ -44,10 +44,11 @@ public:
         this->BH = BH;
     }
 
-    std::string hash(const pb::Metric &M);
+    const std::string &hash(const pb::Metric &M);
 
 private:
     blake3_hasher BH;
+    std::string MetricId;
 };
 
 } // namespace otel

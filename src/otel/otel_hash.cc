@@ -42,7 +42,7 @@ MetricHasher otel::ScopeMetricsHasher::hash(const pb::ScopeMetrics &SMs)
     return MetricHasher(TmpBH);
 }
 
-std::string otel::MetricHasher::hash(const pb::Metric &M)
+const std::string &otel::MetricHasher::hash(const pb::Metric &M)
 {
     blake3_hasher TmpBH = BH;
 
@@ -73,8 +73,10 @@ std::string otel::MetricHasher::hash(const pb::Metric &M)
     uint8_t Output[BLAKE3_OUT_LEN];
     blake3_hasher_finalize(&TmpBH, Output, BLAKE3_OUT_LEN);
 
-    std::stringstream SS;
+    MetricId.clear();
+    MetricId += M.name();
     for (int Idx = 0; Idx < BLAKE3_OUT_LEN; Idx++)
-        SS << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(Output[Idx]);
-    return SS.str();
+        MetricId += Output[Idx];
+
+    return MetricId;
 }

@@ -33,13 +33,12 @@ void otel::MetricsDataProcessor::onMetric(
 
     auto &Charts = Ctx.charts();
 
-    const std::string BlakeId = MH.hash(M);
-    std::string ChartId = M.name() + "_" + BlakeId;
+    const std::string &Id = MH.hash(M);
 
-    auto It = Charts.find(ChartId);
+    auto It = Charts.find(Id);
     if (It == Charts.end()) {
-        It = Charts.emplace(ChartId, Chart()).first;
+        It = Charts.emplace(Id, Chart()).first;
     }
 
-    It->second.update(ScopeCfg, M, BlakeId, Labels);
+    It->second.update(ScopeCfg, M, Id, Labels);
 }

@@ -22,7 +22,7 @@ public:
     void update(
         const ScopeConfig *ScopeCfg,
         const pb::Metric &M,
-        const std::string &BlakeId,
+        const std::string &Id,
         const pb::RepeatedPtrField<pb::KeyValue> &Labels)
     {
         if (!LastCollectionTime) {
@@ -31,7 +31,7 @@ public:
         }
 
         if (!RS) {
-            createRS(ScopeCfg, M, BlakeId);
+            createRS(ScopeCfg, M, Id);
             setLabels(Labels);
         }
 
