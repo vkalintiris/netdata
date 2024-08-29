@@ -1445,6 +1445,7 @@ set(NETDATA_FILES
         src/otel/otel_hash.hpp
         src/otel/otel_ingest.cc
         src/otel/otel_ingest.hpp
+        src/otel/otel_iterator.hpp
         src/otel/otel_process.cc
         src/otel/otel_process.hpp
         src/otel/otel_sort.cc
