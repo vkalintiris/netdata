@@ -1,5 +1,7 @@
 #include "otel_process.hpp"
 #include "otel_flatten.hpp"
+#include "otel_iterator.hpp"
+#include "otel_utils.hpp"
 
 static std::string origMetricName(const pb::Metric &M) {
     for (const auto &Attr: M.metadata()) {
@@ -13,6 +15,17 @@ static std::string origMetricName(const pb::Metric &M) {
 
 void otel::MetricProcessor::processMetricsData(const Config *Cfg, const pb::MetricsData *MD)
 {
+    {
+        FileProcessor FP("/tmp/oe.txt");
+        Data D(*MD, FP);
+
+        for (Element E: D) {
+            UNUSED(E);
+        }
+
+        return;
+    }
+
     ResourceMetricsHasher RMH;
 
     for (const auto &RMs : MD->resource_metrics()) {
