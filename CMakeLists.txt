@@ -31,7 +31,7 @@ if(STATIC_BUILD)
 endif()
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "netdata")
 
 option(USE_CXX_11 "Use C++11 instead of C++14 (should only be used on legacy systems that cannot support C++14, may disable some features)" False)
@@ -1518,6 +1518,8 @@ set(TC_PLUGIN_FILES
 )
 
 set(OTEL_PLUGIN_FILES
+        src/otel/CLI11.hpp
+        src/otel/cli.h
         src/otel/otel.h
         src/otel/otel.cc
         src/otel/otel_chart.h
@@ -1923,6 +1925,10 @@ if(ENABLE_PLUGIN_OTEL)
                 absl::strings
                 yaml-cpp::yaml-cpp
         )
+
+        install(TARGETS otel.plugin
+                COMPONENT plugin-otel
+                DESTINATION usr/libexec/netdata/plugins.d)
 endif()
 
 if(ENABLE_PLUGIN_DEBUGFS)

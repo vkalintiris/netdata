@@ -16,6 +16,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 
+#include "cli.h"
+
 static absl::StatusOr<POPEN_INSTANCE *> runCommand(std::string Command)
 {
     // FIXME: needs status report
@@ -213,9 +215,31 @@ private:
     std::vector<char> Message;
 };
 
+void writeEnvToFile() {
+    const char* Path = "/tmp/env.txt";
+    std::ofstream OS(Path);
+
+    if (!OS.is_open()) {
+        std::cerr << "Error: Unable to open file " << Path << " for writing." << std::endl;
+        return;
+    }
+
+    extern char **environ;
+    for (char **env = environ; *env != nullptr; ++env) {
+        OS << *env << std::endl;
+    }
+
+    OS.close();
+}
+
+#if 0
 int main(int argc, char *argv[]) {
     UNUSED(argc);
     UNUSED(argv);
+
+    writeEnvToFile();
+    sleep(1);
+    return 0;
     
     const NetdataOtelOptions NetdataOtelOpts;
 
@@ -238,3 +262,19 @@ int main(int argc, char *argv[]) {
 
     exit(EXIT_FAILURE);
 }
+#else
+int main(int argc, char *argv[]) {
+    CLI::App app{"Netdata Configuration"};
+    NetdataConfig config;
+
+    config.set_defaults_from_env();
+    config.add_options(app);
+
+    CLI11_PARSE(app, argc, argv);
+
+    // Access configuration values
+    std::cout << "Cache Dir: " << config.get("NETDATA_CACHE_DIR") << std::endl;
+    std::cout << "Hostname: " << config.get("NETDATA_HOSTNAME") << std::endl;
+    return 0;
+}
+#endif
