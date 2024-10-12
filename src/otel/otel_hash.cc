@@ -132,7 +132,7 @@ void otel::hashAnyValue(blake3_hasher &H, const pb::AnyValue &AV)
 void otel::hashKeyValue(blake3_hasher &H, const pb::KeyValue &KV)
 {
     blake3_hasher_update(&H, KV.key().data(), KV.key().size());
-
+    hashAnyValue(H, KV.value());
 }
 
 void otel::hashKeyValues(

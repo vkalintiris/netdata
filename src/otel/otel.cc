@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "circular_buffer.h"
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "google/protobuf/arena.h"
@@ -17,7 +19,9 @@
 #include "opentelemetry/proto/collector/metrics/v1/metrics_service.grpc.pb.h"
 #include "grpcpp/grpcpp.h"
 
+#include <chrono>
 #include <iostream>
+#include <limits>
 #include <memory>
 
 using grpc::Server;
@@ -41,55 +45,212 @@ static void printClientMetadata(const grpc::ServerContext *context)
 }
 
 struct Sample {
-    time_t TimePoint;
     uint64_t Value;
+    uint32_t TimePoint;
+};
+
+template <> struct fmt::formatter<Sample> {
+    constexpr auto parse(format_parse_context &Ctx) -> decltype(Ctx.begin())
+    {
+        return Ctx.end();
+    }
+
+    template <typename FormatContext> auto format(const Sample &S, FormatContext &Ctx) const -> decltype(Ctx.out())
+    {
+        return fmt::format_to(Ctx.out(), "[{}]={}", S.TimePoint, static_cast<double>(S.Value) / 1000);
+    }
+};
+
+class DataPoints {
+public:
+    uint32_t startTime() const {
+        return CB.head().TimePoint;
+    }
+
+    uint32_t endTime() const {
+        return CB.tail().TimePoint;
+    }
+
+    uint32_t updateEvery() const {
+        uint32_t MinDelta = std::numeric_limits<uint32_t>::max();
+
+        for (size_t Idx = 1; Idx < CB.size(); ++Idx) {
+            uint32_t Delta = CB[Idx].TimePoint - CB[Idx - 1].TimePoint;
+            if (Delta < MinDelta) {
+                MinDelta = Delta;
+            }
+        }
+
+        return MinDelta;
+    }
+
+    void add(const Sample &S) {
+        CB.push(S);
+    }
+
+    bool empty() const {
+        return CB.empty();
+    }
+
+private:
+    CircularBuffer<Sample> CB;
 };
 
 struct Dimension {
+    uint32_t startTime() const
+    {
+        return DPs.startTime();
+    }
+
+    uint32_t endTime() const
+    {
+        return DPs.endTime();
+    }
+
+    uint32_t updateEvery() const
+    {
+        return DPs.updateEvery();
+    }
+
+    void addSample(const Sample &S) {
+        DPs.add(S);
+    }
+
     std::string Name;
-    std::vector<Sample> Samples;
+    mutable DataPoints DPs;
+};
+
+template <> struct fmt::formatter<Dimension> {
+    constexpr auto parse(format_parse_context &Ctx) -> decltype(Ctx.begin())
+    {
+        return Ctx.end();
+    }
+
+    template <typename FormatContext> auto format(const Dimension &D, FormatContext &Ctx) const -> decltype(Ctx.out())
+    {
+        return fmt::format_to(Ctx.out(), "{}", D.DPs);
+    }
 };
 
 class Chart {
 public:
-    void initialize(BlakeId &BID, const pb::ResourceMetrics *RM, const pb::ScopeMetrics *SM, const pb::Metric *M)
+    void initialize(BlakeId &Id, const pb::ResourceMetrics *RM, const pb::ScopeMetrics *SM, const pb::Metric *M)
     {
         UNUSED(RM);
         UNUSED(SM);
 
-        this->BID = BID;
+        this->BID = Id;
         Name = M->name();
-
         Committed = false;
     }
 
-    inline void add(const OtelElement &OE)
+    void add(const OtelElement &OE)
     {
         absl::string_view DimName = "value";
         if (auto Result = OE.name(); Result.ok()) {
             DimName = *Result.value();
         }
 
-        auto [It, Emplaced] = Dimensions.try_emplace({DimName.data()});
+        auto [It, Emplaced] = Dimensions.try_emplace(DimName.data());
         auto &ND = It->second;
 
         if (Emplaced) {
+            ND.Name = DimName;
             Committed = false;
-            ND.Name = DimName.data();
         }
 
-        // Add to sample
-        //
+        uint32_t TP = static_cast<uint32_t>(OE.time() / std::chrono::nanoseconds::period::den);
+        Sample S{OE.value(1000), TP};
+        ND.addSample(S);
+    }
+
+    void process(size_t RampUpThreshold, size_t GapThreshold)
+    {
+        assert(RampUpThreshold >= 2);
+        assert(!Dimensions.empty());
+        assert(!Dimensions.begin()->second.DPs.empty());
+
+        if (!UpdateEvery.has_value()) {
+            const auto &ND = Dimensions.begin()->second;
+            if (ND.Samples.size() < RampUpThreshold) {
+                return;
+            }
+
+            UpdateEvery = ND.updateEvery();
+            LastCollectedTime = ND.startTime() - UpdateEvery.value();
+        }
+
+        auto [StartTime, EndTime] = timeRange();
+
+    }
+
+    const std::string &name() const
+    {
+        return Name;
+    }
+
+    const absl::flat_hash_map<std::string, Dimension> &dimensions() const
+    {
+        return Dimensions;
+    }
+
+private:
+    std::pair<uint32_t, uint32_t> timeRange() const {
+        uint32_t StartTime = std::numeric_limits<uint32_t>::max();
+        uint32_t EndTime = std::numeric_limits<uint32_t>::min();
+
+        for (const auto &[Name, Dim]: Dimensions) {
+            StartTime = std::min(StartTime, Dim.startTime());
+            EndTime = std::max(EndTime, Dim.endTime());
+        }
+
+        return { StartTime, EndTime };
+    }
+
+    uint32_t updateEvery() const {
+        uint32_t UE = std::numeric_limits<uint32_t>::max();
+
+        for (const auto &[Name, Dim]: Dimensions) {
+            UE = std::min(UE, Dim.updateEvery());
+        }
+
+        return UE;
+    }
+
+    absl::StatusOr<uint32_t> numSamplesPerDimension() const {
+        uint32_t NumSamples = 0;
+
+        for (const auto &[Name, Dim]: Dimensions) {
+            if (NumSamples == 0) {
+                NumSamples = Dim.Samples.size();
+            } else if (NumSamples != Dim.Samples.size()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
 private:
     BlakeId BID;
     std::string Name;
-    absl::flat_hash_map<std::string, Dimension> Dimensions;
 
+    absl::flat_hash_map<std::string, Dimension> Dimensions;
     std::optional<uint32_t> UpdateEvery;
-    std::optional<uint32_t> CurrentSlot;
-    bool Committed;
+    std::optional<uint32_t> LastCollectedTime;
+    bool Committed = false;
+};
+
+template <> struct fmt::formatter<Chart> {
+    constexpr auto parse(format_parse_context &Ctx) -> decltype(Ctx.begin())
+    {
+        return Ctx.end();
+    }
+
+    template <typename FormatContext> auto format(const Chart &C, FormatContext &Ctx) const -> decltype(Ctx.out())
+    {
+        return fmt::format_to(Ctx.out(), "{}: {}", C.name(), C.dimensions());
+    }
 };
 
 class MetricsServiceImpl final : public opentelemetry::proto::collector::metrics::v1::MetricsService::Service {
@@ -115,10 +276,10 @@ public:
             Request->resource_metrics_size(),
             Request->ByteSizeLong() / 1024);
 
+        // Fill data
         OtelData OD(Cfg, &Request->resource_metrics());
         std::vector<OtelElement> Elements(OD.begin(), OD.end());
         std::sort(Elements.begin(), Elements.end());
-
         for (const OtelElement &OE : Elements) {
             BlakeId BID = OE.chartHash();
 
@@ -130,6 +291,10 @@ public:
             }
 
             NC.add(OE);
+        }
+
+        for (auto &[BID, NC] : PendingCharts) {
+            NC.process(10, 100);
         }
 
         return Status::OK;

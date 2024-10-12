@@ -1554,6 +1554,7 @@ set(TC_PLUGIN_FILES
 )
 
 set(OTEL_PLUGIN_FILES
+        src/otel/circular_buffer.h
         src/otel/netdata.cc
         src/otel/netdata.h
         src/otel/otel.h
