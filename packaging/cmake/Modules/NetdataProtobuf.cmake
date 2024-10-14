@@ -166,12 +166,7 @@ function(netdata_protoc_generate_cpp INC_DIR OUT_DIR SRCS HDRS)
                 list(APPEND ${HDRS} ${GENERATED_PB_H})
 
                 list(APPEND _PROTOC_INCLUDE_DIRS ${INC_DIR})
-
-                if(ENABLE_BUNDLED_PROTOBUF)
-                        list(APPEND _PROTOC_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/_deps/protobuf-src/src/)
-                else()
-                        list(APPEND _PROTOC_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/_deps/grpc-src/third_party/protobuf/src/)
-                endif()
+                list(APPEND _PROTOC_INCLUDE_DIRS ${FETCHCONTENT_SOURCE_DIR_GRPC}/third_party/protobuf/src)
 
                 add_custom_command(OUTPUT ${GENERATED_PB_CC} ${GENERATED_PB_H}
                                    COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}

@@ -258,6 +258,10 @@ if(ENABLE_PLUGIN_OTEL)
                 # add_subdirectory(${yaml-cpp_SOURCE_DIR})
         endif()
 
+        set(FETCHCONTENT_SOURCE_DIR_GRPC "/home/vk/repos/grpc")
+        set(FETCHCONTENT_SOURCE_DIR_CLI11 "/home/vk/repos/CLI11")
+        set(FETCHCONTENT_SOURCE_DIR_FMT "/home/vk/repos/fmt")
+
         set(ABSL_ENABLE_INSTALL ON)
         set(gRPC_BUILD_GRPC_CSHARP_PLUGIN OFF CACHE BOOL "")
         set(gRPC_BUILD_GRPC_NODE_PLUGIN OFF CACHE BOOL "")
@@ -269,8 +273,7 @@ if(ENABLE_PLUGIN_OTEL)
         include(FetchContent)
         FetchContent_Declare(
                 gRPC
-                # GIT_REPOSITORY https://github.com/grpc/grpc
-                GIT_REPOSITORY /home/vk/repos/grpc
+                GIT_REPOSITORY https://github.com/grpc/grpc
                 GIT_TAG        v1.66.2
         )
 
