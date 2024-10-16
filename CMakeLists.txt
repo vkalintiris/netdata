@@ -255,7 +255,6 @@ if(ENABLE_PLUGIN_OTEL)
         if(NOT yaml-cpp_POPULATED)
                 message(STATUS "Fetching yaml-cpp...")
                 FetchContent_MakeAvailable(yaml-cpp)
-                # add_subdirectory(${yaml-cpp_SOURCE_DIR})
         endif()
 
         set(FETCHCONTENT_SOURCE_DIR_GRPC "/home/vk/repos/grpc")
@@ -263,6 +262,8 @@ if(ENABLE_PLUGIN_OTEL)
         set(FETCHCONTENT_SOURCE_DIR_FMT "/home/vk/repos/fmt")
 
         set(ABSL_ENABLE_INSTALL ON)
+        set(ABSL_PROPAGATE_CXX_STD ON)
+
         set(gRPC_BUILD_GRPC_CSHARP_PLUGIN OFF CACHE BOOL "")
         set(gRPC_BUILD_GRPC_NODE_PLUGIN OFF CACHE BOOL "")
         set(gRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN OFF CACHE BOOL "")
@@ -270,28 +271,34 @@ if(ENABLE_PLUGIN_OTEL)
         set(gRPC_BUILD_GRPC_PYTHON_PLUGIN OFF CACHE BOOL "")
         set(gRPC_BUILD_GRPC_RUBY_PLUGIN OFF CACHE BOOL "")
 
-        include(FetchContent)
-        FetchContent_Declare(
-                gRPC
-                GIT_REPOSITORY https://github.com/grpc/grpc
-                GIT_TAG        v1.66.2
-        )
-
         set(FETCHCONTENT_QUIET OFF)
-        FetchContent_MakeAvailable(gRPC)
+
+        include(FetchContent)
 
         FetchContent_Declare(
                 CLI11
                 GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
                 GIT_TAG        v2.4.2
         )
-        FetchContent_MakeAvailable(CLI11)
 
         FetchContent_Declare(
                 fmt
                 GIT_REPOSITORY https://github.com/fmtlib/fmt
                 GIT_TAG        0c9fce2ffefecfdce794e1859584e25877b7b592) # 11.0.2
-        FetchContent_MakeAvailable(fmt)
+
+        FetchContent_Declare(
+                googletest
+                GIT_REPOSITORY https://github.com/google/googletest.git
+                GIT_TAG        v1.15.2
+        )
+
+        FetchContent_Declare(
+                gRPC
+                GIT_REPOSITORY https://github.com/grpc/grpc
+                GIT_TAG        v1.66.2
+        )
+
+        FetchContent_MakeAvailable(CLI11 fmt googletest gRPC)
 endif()
 
 if(NEED_PROTOBUF)
@@ -1663,6 +1670,7 @@ if(ENABLE_PLUGIN_OTEL)
                 grpc++
                 CLI11
                 fmt::fmt
+                GTest::gtest
         )
 
         # install(TARGETS otel.plugin

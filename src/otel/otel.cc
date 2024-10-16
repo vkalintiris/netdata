@@ -18,6 +18,7 @@
 #include "CLI/CLI.hpp"
 #include "opentelemetry/proto/collector/metrics/v1/metrics_service.grpc.pb.h"
 #include "grpcpp/grpcpp.h"
+#include "gtest/gtest.h"
 
 #include <chrono>
 #include <iostream>
@@ -61,63 +62,59 @@ template <> struct fmt::formatter<Sample> {
     }
 };
 
-class DataPoints {
-public:
-    uint32_t startTime() const {
+struct Dimension {
+    std::string Name;
+    CircularBuffer<Sample> CB;
+
+    void pushSample(const Sample &S)
+    {
+        CB.push(S);
+    }
+
+    Sample popSample()
+    {
+        return CB.pop();
+    }
+
+    size_t numSamples() const
+    {
+        return CB.size();
+    }
+
+    uint32_t startTime() const
+    {
         return CB.head().TimePoint;
     }
 
-    uint32_t endTime() const {
-        return CB.tail().TimePoint;
-    }
-
-    uint32_t updateEvery() const {
+    uint32_t updateEvery() const
+    {
         uint32_t MinDelta = std::numeric_limits<uint32_t>::max();
 
-        for (size_t Idx = 1; Idx < CB.size(); ++Idx) {
+        for (size_t Idx = 1; Idx < CB.size(); Idx++) {
             uint32_t Delta = CB[Idx].TimePoint - CB[Idx - 1].TimePoint;
-            if (Delta < MinDelta) {
-                MinDelta = Delta;
-            }
+            MinDelta = std::min(MinDelta, Delta);
         }
 
         return MinDelta;
     }
 
-    void add(const Sample &S) {
-        CB.push(S);
-    }
-
-    bool empty() const {
+    bool empty() const
+    {
         return CB.empty();
     }
 
-private:
-    CircularBuffer<Sample> CB;
-};
-
-struct Dimension {
-    uint32_t startTime() const
+    int compareCollectionTime(uint32_t LCT, uint32_t UpdateEvery) const
     {
-        return DPs.startTime();
-    }
+        double StartTP = LCT + UpdateEvery - (UpdateEvery / 2.0);
+        double EndTP = LCT + UpdateEvery + (UpdateEvery / 2.0);
 
-    uint32_t endTime() const
-    {
-        return DPs.endTime();
+        if (startTime() < StartTP)
+            return -1;
+        else if (startTime() >= EndTP)
+            return 1;
+        else
+            return 0;
     }
-
-    uint32_t updateEvery() const
-    {
-        return DPs.updateEvery();
-    }
-
-    void addSample(const Sample &S) {
-        DPs.add(S);
-    }
-
-    std::string Name;
-    mutable DataPoints DPs;
 };
 
 template <> struct fmt::formatter<Dimension> {
@@ -128,7 +125,7 @@ template <> struct fmt::formatter<Dimension> {
 
     template <typename FormatContext> auto format(const Dimension &D, FormatContext &Ctx) const -> decltype(Ctx.out())
     {
-        return fmt::format_to(Ctx.out(), "{}", D.DPs);
+        return fmt::format_to(Ctx.out(), "{}", D.CB);
     }
 };
 
@@ -141,6 +138,13 @@ public:
 
         this->BID = Id;
         Name = M->name();
+        Committed = false;
+    }
+
+    void initialize(BlakeId &Id, const std::string &Name)
+    {
+        this->BID = Id;
+        this->Name = Name;
         Committed = false;
     }
 
@@ -161,27 +165,77 @@ public:
 
         uint32_t TP = static_cast<uint32_t>(OE.time() / std::chrono::nanoseconds::period::den);
         Sample S{OE.value(1000), TP};
-        ND.addSample(S);
+        ND.pushSample(S);
     }
 
     void process(size_t RampUpThreshold, size_t GapThreshold)
     {
+        bool Processed = false;
+
+        if (UpdateEvery.has_value()) {
+            Processed = processFastPath();
+        }
+
+        if (!Processed)
+            processSlowPath(RampUpThreshold, GapThreshold);
+    }
+
+    bool processFastPath()
+    {
+        assert(
+            UpdateEvery.has_value() && UpdateEvery.value() && LastCollectedTime.has_value() &&
+            LastCollectedTime.value());
+
+        absl::InlinedVector<std::pair<std::string, Sample>, 4> IV;
+
+        bool Ok = false;
+        while (true) {
+            for (auto &[Name, Dim] : Dimensions) {
+                if (Dim.empty()) {
+                    return Ok;
+                }
+
+                if (Dim.compareCollectionTime(LastCollectedTime.value(), UpdateEvery.value())) {
+                    return Ok;
+                }
+
+                IV.emplace_back(Name, Dim.popSample());
+
+                IV.clear();
+                Ok = true;
+            }
+        };
+    }
+
+    void processSlowPath(size_t RampUpThreshold, size_t GapThreshold)
+    {
+        UNUSED(GapThreshold);
+
         assert(RampUpThreshold >= 2);
         assert(!Dimensions.empty());
-        assert(!Dimensions.begin()->second.DPs.empty());
+        assert(!Dimensions.begin()->second.empty());
 
         if (!UpdateEvery.has_value()) {
-            const auto &ND = Dimensions.begin()->second;
-            if (ND.Samples.size() < RampUpThreshold) {
+            if (maxDataPointsInDimensions() < RampUpThreshold) {
                 return;
             }
 
-            UpdateEvery = ND.updateEvery();
-            LastCollectedTime = ND.startTime() - UpdateEvery.value();
+            UpdateEvery = minUpdateEveryInDimensions();
+            assert(UpdateEvery != 0);
+            LastCollectedTime = minStartTimeInDimensions() - UpdateEvery.value();
+            assert(LastCollectedTime != 0);
         }
 
-        auto [StartTime, EndTime] = timeRange();
+        dropPastCollectionTimes();
 
+        if (maxDataPointsInDimensions() < GapThreshold) {
+            return;
+        }
+
+        UpdateEvery = minUpdateEveryInDimensions();
+        assert(UpdateEvery != 0);
+        LastCollectedTime = minStartTimeInDimensions() - UpdateEvery.value();
+        assert(LastCollectedTime != 0);
     }
 
     const std::string &name() const
@@ -195,40 +249,55 @@ public:
     }
 
 private:
-    std::pair<uint32_t, uint32_t> timeRange() const {
-        uint32_t StartTime = std::numeric_limits<uint32_t>::max();
-        uint32_t EndTime = std::numeric_limits<uint32_t>::min();
+    size_t maxDataPointsInDimensions() const
+    {
+        size_t N = std::numeric_limits<size_t>::min();
 
-        for (const auto &[Name, Dim]: Dimensions) {
-            StartTime = std::min(StartTime, Dim.startTime());
-            EndTime = std::max(EndTime, Dim.endTime());
+        for (const auto &[Name, Dim] : Dimensions) {
+            N = std::max(N, Dim.numSamples());
         }
 
-        return { StartTime, EndTime };
+        return N;
     }
 
-    uint32_t updateEvery() const {
+    uint32_t minUpdateEveryInDimensions() const
+    {
         uint32_t UE = std::numeric_limits<uint32_t>::max();
 
-        for (const auto &[Name, Dim]: Dimensions) {
+        for (const auto &[Name, Dim] : Dimensions) {
             UE = std::min(UE, Dim.updateEvery());
         }
 
         return UE;
     }
 
-    absl::StatusOr<uint32_t> numSamplesPerDimension() const {
-        uint32_t NumSamples = 0;
+    uint32_t minStartTimeInDimensions() const
+    {
+        uint32_t TP = std::numeric_limits<uint32_t>::max();
 
-        for (const auto &[Name, Dim]: Dimensions) {
-            if (NumSamples == 0) {
-                NumSamples = Dim.Samples.size();
-            } else if (NumSamples != Dim.Samples.size()) {
-                return false;
-            }
+        for (const auto &[Name, Dim] : Dimensions) {
+            TP = std::min(TP, Dim.startTime());
         }
 
-        return true;
+        return TP;
+    }
+
+    void dropPastCollectionTimes()
+    {
+        assert(
+            UpdateEvery.has_value() && UpdateEvery.value() && LastCollectedTime.has_value() &&
+            LastCollectedTime.value());
+
+        double UE = UpdateEvery.value();
+        double LCT = LastCollectedTime.value();
+
+        double StartTP = LCT + UE / 2.0;
+
+        for (auto &[Name, Dim] : Dimensions) {
+            while (Dim.startTime() < StartTP) {
+                Dim.popSample();
+            }
+        }
     }
 
 private:
@@ -321,7 +390,7 @@ static void RunServer(otel::Config *Cfg)
     Srv->Wait();
 }
 
-#if 1
+#if 0
 int main(int argc, char **argv)
 {
     CLI::App App{"OTEL plugin"};
@@ -341,164 +410,45 @@ int main(int argc, char **argv)
     return 0;
 }
 #else
-int main()
+class ChartTest : public ::testing::Test {
+protected:
+    Chart chart;
+
+    void SetUp() override
+    {
+        // Initialize the chart with a test configuration
+        BlakeId testId = {0}; // Assume BlakeId is an array or similar
+        chart.initialize(testId, "TestMetric");
+    }
+};
+
+TEST_F(ChartTest, AddDataPoints)
 {
-    // String value
-    pb::AnyValue string_value;
-    string_value.set_string_value("Hello, OpenTelemetry!");
-    std::cout << fmt::format("String value: {}\n", string_value);
+    Chart C;
+    BlakeId BID = { 0 };
+    C.initialize(BID, "foo");
 
-    // Boolean value
-    pb::AnyValue bool_value;
-    bool_value.set_bool_value(true);
-    std::cout << fmt::format("Boolean value: {}\n", bool_value);
-
-    // Integer value
-    pb::AnyValue int_value;
-    int_value.set_int_value(42);
-    std::cout << fmt::format("Integer value: {}\n", int_value);
-
-    // Double value
-    pb::AnyValue double_value;
-    double_value.set_double_value(3.14159);
-    std::cout << fmt::format("Double value: {}\n", double_value);
-
-    // Array value
-    pb::AnyValue array_value;
-    auto *array = array_value.mutable_array_value();
-    array->add_values()->set_string_value("one");
-    array->add_values()->set_int_value(2);
-    array->add_values()->set_bool_value(true);
-    std::cout << fmt::format("Array value: {}\n", array_value);
-
-    // KeyValueList value
     {
-        pb::AnyValue kvlist_value;
-        auto *kvlist = kvlist_value.mutable_kvlist_value();
+        std::vector<pb::NumberDataPoint> V;
 
-        auto *kv1 = kvlist->add_values();
-        kv1->set_key("key1");
-        kv1->mutable_value()->set_string_value("value1");
+        for (size_t Idx = 0; Idx != 10; Idx++) {
+            pb::NumberDataPoint NDP;
+            NDP.set_time_unix_nano(Idx * 1000000000);
+            NDP.set_as_int(Idx);
+            V.push_back(NDP);
 
-        auto *kv2 = kvlist->add_values();
-        kv2->set_key("key2");
-        kv2->mutable_value()->set_int_value(42);
+            OtelElement OE;
+            OE.DP = DataPoint(&V.back());
+            C.add(OE);
+        }
 
-        auto *kv3 = kvlist->add_values();
-        kv3->set_key("key3");
-        auto *nested_kvlist = kv3->mutable_value()->mutable_kvlist_value();
-
-        // Adding values to the nested KeyValueList
-        auto *nested_kv1 = nested_kvlist->add_values();
-        nested_kv1->set_key("nested_key1");
-        nested_kv1->mutable_value()->set_string_value("nested_value1");
-
-        auto *nested_kv2 = nested_kvlist->add_values();
-        nested_kv2->set_key("nested_key2");
-        nested_kv2->mutable_value()->set_double_value(3.14);
-
-        std::cout << fmt::format("KVList value: {}\n", kvlist_value);
+        C.process(3, 5);
     }
+}
 
-    // Bytes value
-    pb::AnyValue bytes_value;
-    bytes_value.set_bytes_value("\x00\x01\x02\x03\x04");
-    std::cout << fmt::format("Bytes value: {}\n", bytes_value);
-
-    // Unknown value
-    pb::AnyValue unknown_value;
-    std::cout << fmt::format("Unknown value: {}\n", unknown_value);
-
-    // Instrumentation scope
-    {
-        pb::InstrumentationScope IS;
-        IS.set_name("example_scope");
-        IS.set_version("1.0.0");
-        auto *attr = IS.add_attributes();
-        attr->set_key("example_key");
-        attr->mutable_value()->set_string_value("example_value");
-        IS.set_dropped_attributes_count(2);
-
-        std::cout << fmt::format("{}\n", IS);
-    }
-
-    // Resource
-    {
-        pb::Resource Res;
-
-        auto *A1 = Res.add_attributes();
-        A1->set_key("example_key");
-        A1->mutable_value()->set_string_value("example_value");
-
-        Res.set_dropped_attributes_count(2);
-
-        std::cout << fmt::format("{}\n", Res);
-    }
-
-    // Exemplar
-    {
-        opentelemetry::proto::metrics::v1::Exemplar E;
-        E.set_time_unix_nano(1234567890);
-        E.set_as_double(42.0);
-        auto *Attr = E.add_filtered_attributes();
-        Attr->set_key("example_key");
-        Attr->mutable_value()->set_string_value("example_value");
-        E.set_span_id(std::string("\x01\x02\x03\x04\x05\x06\x07\x08", 8));
-        E.set_trace_id(std::string("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10", 16));
-
-        std::cout << fmt::format("{}\n", E);
-    }
-
-    // NumberDataPoint
-    {
-        unsigned long long TS = (unsigned long long)1635724810000000000;
-        pb::NumberDataPoint NDP;
-        NDP.set_start_time_unix_nano(TS);
-        NDP.set_time_unix_nano(TS);
-        NDP.set_as_double(42.0);
-        auto *attr = NDP.add_attributes();
-        attr->set_key("example_key");
-        attr->mutable_value()->set_string_value("example_value");
-        NDP.set_flags(1);
-
-        // Add an exemplar
-        auto *E = NDP.add_exemplars();
-        E->set_time_unix_nano(1234567890);
-        E->set_as_double(42.0);
-
-        auto *Attr = E->add_filtered_attributes();
-        Attr->set_key("example_key");
-        Attr->mutable_value()->set_string_value("example_value");
-        E->set_span_id(std::string("\x01\x02\x03\x04\x05\x06\x07\x08", 8));
-        E->set_trace_id(std::string("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10", 16));
-
-        std::cout << fmt::format("{}\n", NDP);
-    }
-
-    // Gauge/Sum
-    {
-        unsigned long long TS = (unsigned long long)1635724810000000000;
-
-        opentelemetry::proto::metrics::v1::Gauge gauge;
-        auto dataPoint = gauge.add_data_points();
-        dataPoint->set_start_time_unix_nano(TS);
-        dataPoint->set_time_unix_nano(TS);
-        dataPoint->set_as_double(42.0);
-
-        std::cout << fmt::format("{}\n", gauge);
-
-        opentelemetry::proto::metrics::v1::Sum sum;
-        sum.set_aggregation_temporality(
-            opentelemetry::proto::metrics::v1::AggregationTemporality::AGGREGATION_TEMPORALITY_CUMULATIVE);
-        sum.set_is_monotonic(true);
-        auto sumDataPoint = sum.add_data_points();
-        sumDataPoint->set_start_time_unix_nano(TS);
-        sumDataPoint->set_time_unix_nano(TS);
-        sumDataPoint->set_as_double(100.0);
-
-        std::cout << fmt::format("{}\n", sum);
-    }
-
-    return 0;
+int main(int argc, char *argv[])
+{
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
 #endif

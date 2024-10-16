@@ -14,7 +14,7 @@ public:
     void push(const T &item)
     {
         if (Full) {
-            throw std::out_of_range("Buffer is empty");
+            grow();
         }
 
         Buffer[Tail] = item;
@@ -36,6 +36,7 @@ public:
         if (empty()) {
             throw std::out_of_range("Buffer is empty");
         }
+
         return Buffer[Head];
     }
 
@@ -43,6 +44,7 @@ public:
         if (empty()) {
             throw std::out_of_range("Buffer is empty");
         }
+
         return Buffer[Head];
     }
 
@@ -129,7 +131,14 @@ public:
     }
 
 private:
-    void makeContiguous() const
+    void grow() {
+        makeContiguous();
+        MaxSize = Buffer.size() * 2;
+        Buffer.resize(MaxSize);
+        Full = false;
+    }
+
+    void makeContiguous() 
     {
         if (empty() || Head == 0) {
             return;
@@ -138,8 +147,8 @@ private:
         std::rotate(Buffer.begin(), Buffer.begin() + Head, Buffer.end());
 
         size_t Size = size();
-        const_cast<CircularBuffer *>(this)->head = 0;
-        const_cast<CircularBuffer *>(this)->tail = Size;
+        Head = 0;
+        Tail = Size;
     }
 
     void advanceTail()
