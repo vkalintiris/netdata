@@ -17,6 +17,16 @@ struct Dimension {
     std::string Name;
     CircularBuffer<Sample> CB;
 
+    bool empty() const
+    {
+        return CB.empty();
+    }
+
+    size_t numSamples() const
+    {
+        return CB.size();
+    }
+
     void pushSample(const Sample &S)
     {
         CB.push(S);
@@ -25,11 +35,6 @@ struct Dimension {
     Sample popSample()
     {
         return CB.pop();
-    }
-
-    size_t numSamples() const
-    {
-        return CB.size();
     }
 
     uint32_t startTime() const
@@ -42,16 +47,14 @@ struct Dimension {
         uint32_t MinDelta = std::numeric_limits<uint32_t>::max();
 
         for (size_t Idx = 1; Idx < CB.size(); Idx++) {
+            assert(CB[Idx - 1].TimePoint < CB[Idx].TimePoint &&
+                   "expected samples sorted by time");
+
             uint32_t Delta = CB[Idx].TimePoint - CB[Idx - 1].TimePoint;
             MinDelta = std::min(MinDelta, Delta);
         }
 
         return MinDelta;
-    }
-
-    bool empty() const
-    {
-        return CB.empty();
     }
 
     int compareCollectionTime(uint32_t LCT, uint32_t UpdateEvery) const

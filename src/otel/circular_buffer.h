@@ -1,9 +1,10 @@
 #ifndef ND_CIRCULAR_BUFFER_H
 #define ND_CIRCULAR_BUFFER_H
 
-#include <algorithm>
 
 #include "absl/container/inlined_vector.h"
+
+#include <algorithm>
 
 template <typename T, size_t N = 4> class CircularBuffer {
 public:
