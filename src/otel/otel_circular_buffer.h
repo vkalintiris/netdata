@@ -1,7 +1,6 @@
 #ifndef ND_CIRCULAR_BUFFER_H
 #define ND_CIRCULAR_BUFFER_H
 
-
 #include "absl/container/inlined_vector.h"
 
 #include <algorithm>
@@ -105,14 +104,14 @@ public:
 
     typename std::vector<T>::const_iterator begin() const
     {
-        makeContiguous();
-        return Buffer.begin();
+        assert(std::is_sorted(Buffer.begin(), Buffer.begin() + size()));
+        return Buffer.cbegin();
     }
 
     typename std::vector<T>::const_iterator end() const
     {
-        makeContiguous();
-        return Buffer.begin() + size();
+        assert(std::is_sorted(Buffer.begin(), Buffer.begin() + size()));
+        return Buffer.cbegin() + size();
     }
 
     T& operator[](size_t Index) {

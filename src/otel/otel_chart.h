@@ -3,7 +3,7 @@
 #ifndef ND_OTEL_CHART_H
 #define ND_OTEL_CHART_H
 
-#include "circular_buffer.h"
+#include "otel_circular_buffer.h"
 #include "otel_iterator.h"
 #include "otel_utils.h"
 #include "otel_hash.h"
