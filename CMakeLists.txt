@@ -271,6 +271,8 @@ if(ENABLE_PLUGIN_OTEL)
         set(gRPC_BUILD_GRPC_PYTHON_PLUGIN OFF CACHE BOOL "")
         set(gRPC_BUILD_GRPC_RUBY_PLUGIN OFF CACHE BOOL "")
 
+        set(gRPC_SSL_PROVIDER "package")
+
         set(FETCHCONTENT_QUIET OFF)
 
         include(FetchContent)
@@ -1587,47 +1589,49 @@ set(OTEL_PLUGIN_FILES
         src/otel/otel_utils.cc
 )
 
-
-function(netdata_grpc_generate_cpp INC_DIR OUT_DIR SRCS HDRS)
+function(netdata_grpc_generate_cpp SRC_DIR SRCS HDRS)
         if(NOT ARGN)
                 message(SEND_ERROR "Error: netdata_grpc_generate_cpp() called without any proto files")
                 return()
         endif()
 
-        set(${INC_DIR})
-        set(${OUT_DIR})
+        set(${SRC_DIR})
         set(${SRCS})
         set(${HDRS})
 
-        set(PROTOBUF_PROTOC_EXECUTABLE $<TARGET_FILE:protoc>)
-        set(GRPC_CPP_PLUGIN $<TARGET_FILE:grpc_cpp_plugin>)
+        set(OUT_DIR "${CMAKE_BINARY_DIR}/${SRC_DIR}")
+        file(MAKE_DIRECTORY "${OUT_DIR}")
 
-        list(APPEND _PROTOC_INCLUDE_DIRS ${INC_DIR})
-        list(APPEND _PROTOC_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/_deps/grpc-src/third_party/protobuf/src/)
+        if(DEFINED FETCHCONTENT_SOURCE_DIR_GRPC)
+            set(GRPC_SOURCE_DIR ${FETCHCONTENT_SOURCE_DIR_GRPC})
+        else()
+            set(GRPC_SOURCE_DIR ${FETCHCONTENT_BASE_DIR}/grpc-src)
+        endif()
+
+        set(_PROTOC_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/${SRC_DIR};${GRPC_SOURCE_DIR}/third_party/protobuf/src")
 
         foreach(FIL ${ARGN})
-                get_filename_component(ABS_FIL ${FIL} ABSOLUTE)
-                get_filename_component(DIR ${ABS_FIL} DIRECTORY)
+                get_filename_component(DIR ${FIL} DIRECTORY)
                 get_filename_component(FIL_WE ${FIL} NAME_WE)
 
-                set(GENERATED_PB_CC "${DIR}/${FIL_WE}.pb.cc")
-                set(GENERATED_GRPC_PB_CC "${DIR}/${FIL_WE}.grpc.pb.cc")
+                set(GENERATED_PB_CC "${CMAKE_BINARY_DIR}/${DIR}/${FIL_WE}.pb.cc")
+                set(GENERATED_PB_H "${CMAKE_BINARY_DIR}/${DIR}/${FIL_WE}.pb.h")
+
+                set(GENERATED_GRPC_PB_CC "${CMAKE_BINARY_DIR}/${DIR}/${FIL_WE}.grpc.pb.cc")
+                set(GENERATED_GRPC_PB_H "${CMAKE_BINARY_DIR}/${DIR}/${FIL_WE}.grpc.pb.h")
+
                 list(APPEND ${SRCS} ${GENERATED_PB_CC} ${GENERATED_GRPC_PB_CC})
-
-                set(GENERATED_PB_H "${DIR}/${FIL_WE}.pb.h")
-                set(GENERATED_GRPC_PB_H "${DIR}/${FIL_WE}.grpc.pb.h")
                 list(APPEND ${HDRS} ${GENERATED_PB_H} ${GENERATED_GRPC_PB_H})
-
 
                 add_custom_command(OUTPUT ${GENERATED_PB_CC} ${GENERATED_GRPC_PB_CC}
                                           ${GENERATED_PB_H} ${GENERATED_GRPC_PB_H}
-                                   COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}
+                                   COMMAND $<TARGET_FILE:protoc>
                                    ARGS --grpc_out "${OUT_DIR}"
-                                        --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
+                                        --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
                                         "-I$<JOIN:${_PROTOC_INCLUDE_DIRS},;-I>" 
-                                        --cpp_out=${OUT_DIR} ${ABS_FIL}
-                                   DEPENDS ${ABS_FIL} ${PROTOBUF_PROTOC_EXECUTABLE}
-                                   COMMENT "Running C++ protocol buffer compiler on ${FIL}"
+                                        --cpp_out=${OUT_DIR} "${CMAKE_SOURCE_DIR}/${FIL}"
+                                   DEPENDS ${FIL} $<TARGET_FILE:protoc>
+                                   COMMENT "Running C++/gRPC protoc compiler on ${FIL}"
                                    COMMAND_EXPAND_LISTS)
         endforeach()
 
@@ -1638,20 +1642,18 @@ function(netdata_grpc_generate_cpp INC_DIR OUT_DIR SRCS HDRS)
         set(${HDRS} ${${HDRS}} PARENT_SCOPE)
 endfunction()
 
-
 if(ENABLE_PLUGIN_OTEL)
-        set(OPENTELEMETRY_PROTO_FILES "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/collector/metrics/v1/metrics_service.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/collector/trace/v1/trace_service.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/common/v1/common.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/logs/v1/logs.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/metrics/v1/metrics.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/resource/v1/resource.proto"
-                                      "${CMAKE_SOURCE_DIR}/src/otel/opentelemetry/proto/trace/v1/trace.proto"
+        set(OPENTELEMETRY_PROTO_FILES src/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto
+                                      src/otel/opentelemetry/proto/collector/metrics/v1/metrics_service.proto
+                                      src/otel/opentelemetry/proto/collector/trace/v1/trace_service.proto
+                                      src/otel/opentelemetry/proto/common/v1/common.proto
+                                      src/otel/opentelemetry/proto/logs/v1/logs.proto
+                                      src/otel/opentelemetry/proto/metrics/v1/metrics.proto
+                                      src/otel/opentelemetry/proto/resource/v1/resource.proto
+                                      src/otel/opentelemetry/proto/trace/v1/trace.proto
         )
 
-        netdata_grpc_generate_cpp("${CMAKE_SOURCE_DIR}/src/otel"
-                                  "${CMAKE_SOURCE_DIR}/src/otel"
+        netdata_grpc_generate_cpp("src/otel"
                                   OTEL_PROTO_BUILT_SRCS
                                   OTEL_PROTO_BUILT_HDRS
                                   ${OPENTELEMETRY_PROTO_FILES})
@@ -1659,7 +1661,7 @@ if(ENABLE_PLUGIN_OTEL)
         add_executable(otel.plugin ${OTEL_PLUGIN_FILES} ${OTEL_PROTO_BUILT_SRCS} ${OTEL_PROTO_BUILT_HDRS})
 
         target_include_directories(otel.plugin PUBLIC
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/otel
+                "${CMAKE_BINARY_DIR}/src/otel"
         )
         
         target_link_libraries(otel.plugin PRIVATE
