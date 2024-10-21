@@ -18,7 +18,6 @@
 #include "CLI/CLI.hpp"
 #include "opentelemetry/proto/collector/metrics/v1/metrics_service.grpc.pb.h"
 #include "grpcpp/grpcpp.h"
-#include "gtest/gtest.h"
 
 #include <chrono>
 #include <iostream>
@@ -99,7 +98,7 @@ private:
     absl::flat_hash_map<BlakeId, Chart> PendingCharts;
 };
 
-static void RunServer(otel::Config *Cfg)
+static int RunServer(otel::Config *Cfg)
 {
     std::string Address("localhost:21212");
     MetricsServiceImpl MS(Cfg);
@@ -111,67 +110,45 @@ static void RunServer(otel::Config *Cfg)
     std::unique_ptr<Server> Srv(Builder.BuildAndStart());
     std::cout << "Server listening on " << Address << std::endl;
     Srv->Wait();
-}
-
-#if 0
-int main(int argc, char **argv)
-{
-    CLI::App App{"OTEL plugin"};
-
-    std::string Path = "/home/vk/repos/nd/otel/src/otel/otel-receivers-config.yaml";
-    App.add_option("--config", Path, "Path to the receivers configuration file");
-
-    CLI11_PARSE(App, argc, argv);
-
-    absl::StatusOr<otel::Config *> Cfg = otel::Config::load(Path);
-    if (!Cfg.ok()) {
-        fmt::print(stderr, "{}\n", Cfg.status().ToString());
-        return 1;
-    }
-
-    RunServer(*Cfg);
     return 0;
 }
-#else
-class ChartTest : public ::testing::Test {
-protected:
-    Chart chart;
 
-    void SetUp() override
-    {
-        // Initialize the chart with a test configuration
-        BlakeId testId = {0}; // Assume BlakeId is an array or similar
-        chart.initialize(testId, "TestMetric");
-    }
-};
-
-TEST_F(ChartTest, AddDataPoints)
-{
-    Chart C;
-    BlakeId BID = { 0 };
-    C.initialize(BID, "foo");
-
-    {
-        std::vector<pb::NumberDataPoint> V;
-
-        for (size_t Idx = 0; Idx != 10; Idx++) {
-            pb::NumberDataPoint NDP;
-            NDP.set_time_unix_nano(Idx * 1000000000);
-            NDP.set_as_int(Idx);
-            V.push_back(NDP);
-
-            OtelElement OE;
-            OE.DP = DataPoint(&V.back());
-            C.add(OE);
-        }
-
-        C.process(3, 5);
-    }
-}
-
-int main(int argc, char *argv[])
-{
+#ifdef HAVE_GTEST
+int otel_gtests_main(int argc, char *argv[]) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+#else
+static int otel_gtests_main(int argc, char *argv[]) {
+    (void) argc;
+    (void) argv;
+    return 0;
+}
 #endif
+
+int main(int argc, char **argv)
+{
+    CLI::App app{"OTEL plugin"};
+
+    std::string path = "/home/vk/repos/nd/otel/src/otel/otel-receivers-config.yaml";
+    app.add_option("--config", path, "Path to the receivers configuration file");
+
+    bool run_tests = false;
+#ifdef HAVE_GTEST
+    app.add_flag("--test", run_tests, "Run tests");
+#endif
+
+    CLI11_PARSE(app, argc, argv);
+
+    if (run_tests) {
+        return otel_gtests_main(argc, argv);
+    }
+    
+    absl::StatusOr<otel::Config *> cfg = otel::Config::load(path);
+    if (!cfg.ok()) {
+        fmt::print(stderr, "{}\n", cfg.status().ToString());
+        return 1;
+    }
+
+    return RunServer(*cfg);
+}

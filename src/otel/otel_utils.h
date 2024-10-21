@@ -3,11 +3,15 @@
 #ifndef ND_OTEL_UTILS_H
 #define ND_OTEL_UTILS_H
 
+#include "config.h"
+#ifdef HAVE_GTEST
+#include <gtest/gtest.h>
+#endif
+
 #include "fmt/core.h"
 #include "fmt/color.h"
 #include <fmt/format.h>
 #include <fmt/ranges.h>
-
 
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
 

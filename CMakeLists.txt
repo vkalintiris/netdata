@@ -303,6 +303,12 @@ if(ENABLE_PLUGIN_OTEL)
         FetchContent_MakeAvailable(CLI11 fmt googletest gRPC)
 endif()
 
+FetchContent_GetProperties(googletest)
+if(googletest_POPULATED)
+    message(STATUS "enabling google tests")
+    set(HAVE_GTEST On)
+endif()
+
 if(NEED_PROTOBUF)
         include(NetdataProtobuf)
 
@@ -1305,7 +1311,6 @@ if(ENABLE_DBENGINE)
             src/database/engine/rrdengineapi.h
             src/database/engine/pagecache.c
             src/database/engine/pagecache.h
-            src/database/engine/page_test.cc
             src/database/engine/page.c
             src/database/engine/page.h
             src/database/engine/cache.c
@@ -1588,6 +1593,10 @@ set(OTEL_PLUGIN_FILES
         src/otel/otel_utils.h
         src/otel/otel_utils.cc
 )
+
+if(googletest_POPULATED)
+        list(APPEND OTEL_PLUGIN_FILES src/otel/otel_chart_tests.cc)
+endif()
 
 function(netdata_grpc_generate_cpp SRC_DIR SRCS HDRS)
         if(NOT ARGN)
