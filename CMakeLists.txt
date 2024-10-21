@@ -1668,7 +1668,7 @@ if(ENABLE_PLUGIN_OTEL)
                 libnetdata
                 absl::strings
                 yaml-cpp::yaml-cpp
-                protobuf::libprotobuf
+                libprotobuf
                 grpc++
                 CLI11
                 fmt::fmt
