@@ -2,6 +2,7 @@
 #include "otel_chart.h"
 
 #include <gtest/gtest.h>
+#include <limits>
 
 TEST(DimensionTest, DefaultConstructor)
 {
@@ -102,29 +103,70 @@ TEST(DimensionTest, UpdateEveryWithIrregularIntervals)
 TEST(DimensionContainer, BasicOperations) {
     DimensionContainer DC;
     
-    DC.add("user", { 1, 10});
-    DC.add("system", { 2, 10});
+    DC.add("user", { 1, 1 });
+    DC.add("user", { 10, 2 });
 
-    const auto& Dimensions = DC.dimensions();
-    ASSERT_EQ(Dimensions.size(), 2);
+    DC.add("system", { 2, 1 });
+    DC.add("system", { 20, 2 });
+    DC.add("system", { 20, 5 });
+
+    DC.add("nice", { 3, 2 });
+    DC.add("nice", { 30, 4 });
+
+    const auto& Dims = DC.dimensions();
+    ASSERT_EQ(Dims.size(), 3);
+
+    ASSERT_TRUE(Dims.contains("user"));
+    const Dimension &User = Dims.at("user");
+    ASSERT_FALSE(User.empty());
+    ASSERT_EQ(User.numSamples(), 2);
+    ASSERT_EQ(User.startTime(), 1);
+    ASSERT_EQ(User.updateEvery(), 1);
     
-    // // Check user dimension
-    // auto userIt = Dimensions.find("user");
-    // ASSERT_NE(userIt, Dimensions.end()) << "User dimension not found";
-    // EXPECT_EQ(userIt->second.numSamples(), 2) << "Expected 2 samples in user dimension";
+    ASSERT_TRUE(Dims.contains("system"));
+    const Dimension &System = Dims.at("system");
+    ASSERT_FALSE(System.empty());
+    ASSERT_EQ(System.numSamples(), 3);
+    ASSERT_EQ(System.startTime(), 1);
+    ASSERT_EQ(System.updateEvery(), 1);
+
+    ASSERT_TRUE(Dims.contains("nice"));
+    const Dimension &Nice = Dims.at("nice");
+    ASSERT_FALSE(Nice.empty());
+    ASSERT_EQ(Nice.startTime(), 2);
+    ASSERT_EQ(Nice.updateEvery(), 2);
+
+    DC.add("nice", { 3, 1 });
+    ASSERT_EQ(Nice.startTime(), 1);
+    ASSERT_EQ(Nice.updateEvery(), 1);
+
+    ASSERT_EQ(DC.startTime(), 1);
+    ASSERT_EQ(DC.updateEvery(), 1);
+
+    ASSERT_FALSE(Dims.contains("foo"));
+}
+
+TEST(DimensionContainer, StartTimeAndUpdateEvery) {
+    DimensionContainer DC;
     
-    // // Check system dimension
-    // auto systemIt = Dimensions.find("system");
-    // ASSERT_NE(systemIt, Dimensions.end()) << "System dimension not found";
-    // EXPECT_EQ(systemIt->second.numSamples(), 1) << "Expected 1 sample in system dimension";
-    
-    // // Process the container
-    // DC.process(2, 100);  // RampUpThreshold=2, GapThreshold=100
-    
-    // // Verify container is not committed initially
-    // EXPECT_FALSE(DC.isCommitted()) << "Container should not be committed initially";
-    
-    // // Set committed state
-    // DC.setCommitted(true);
-    // EXPECT_TRUE(DC.isCommitted()) << "Container should be committed after setting";
+    DC.add("user", { 1, 50 });
+    DC.add("system", { 1, 100 });
+    ASSERT_EQ(DC.startTime(), 50);
+    ASSERT_EQ(DC.updateEvery(), std::numeric_limits<std::uint32_t>::max());
+
+    DC.add("user", { 1, 25 });
+    ASSERT_EQ(DC.startTime(), 25);
+    ASSERT_EQ(DC.updateEvery(), 25);
+
+    DC.add("system", { 1, 90 });
+    ASSERT_EQ(DC.startTime(), 25);
+    ASSERT_EQ(DC.updateEvery(), 10);
+
+    DC.add("system", { 1, 95 });
+    ASSERT_EQ(DC.startTime(), 25);
+    ASSERT_EQ(DC.updateEvery(), 5);
+
+    DC.add("user", { 1, 49 });
+    ASSERT_EQ(DC.startTime(), 25);
+    ASSERT_EQ(DC.updateEvery(), 1);
 }

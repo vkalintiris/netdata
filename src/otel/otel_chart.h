@@ -51,9 +51,7 @@ struct Dimension {
 
     uint32_t updateEvery() const
     {
-        assert(Samples.size() >= 2 && "expected 2 >= samples");
         assert(std::is_sorted(Samples.begin(), Samples.end()) && "expected sorted samples");
-
         uint32_t UE = std::numeric_limits<uint32_t>::max();
 
         for (size_t Idx = 1; Idx < Samples.size(); Idx++) {
@@ -125,6 +123,14 @@ public:
         Committed = committed;
     }
 
+    uint64_t startTime() const {
+        return minStartTimeInDimensions();
+    }
+
+    uint64_t updateEvery() const {
+        return minUpdateEveryInDimensions();
+    }
+
 private:
     bool processFastPath(absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
     {
@@ -192,19 +198,25 @@ private:
 
     uint32_t minUpdateEveryInDimensions() const
     {
+        assert(!Dimensions.empty());
+
         uint32_t UE = std::numeric_limits<uint32_t>::max();
         for (const auto &[Name, Dim] : Dimensions) {
             UE = std::min(UE, Dim.updateEvery());
         }
+
         return UE;
     }
 
     uint32_t minStartTimeInDimensions() const
     {
+        assert(!Dimensions.empty());
+
         uint32_t TP = std::numeric_limits<uint32_t>::max();
         for (const auto &[Name, Dim] : Dimensions) {
             TP = std::min(TP, Dim.startTime());
         }
+
         return TP;
     }
 
