@@ -3,175 +3,103 @@
 
 #include "absl/container/inlined_vector.h"
 
-#include <algorithm>
+template <typename T, size_t N = 4> class SortedContainer {
+    static_assert(std::is_copy_constructible_v<T>, "Type T must be copy constructible");
 
-template <typename T, size_t N = 4> class CircularBuffer {
 public:
-    explicit CircularBuffer(size_t Size = N) : Buffer(Size), MaxSize(Size)
+    SortedContainer() = default;
+
+    void push(const T &Item)
     {
+        auto It = std::lower_bound(IV.begin(), IV.end(), Item);
+        IV.insert(It, Item);
     }
 
-    void push(const T &item)
+    // Emplace construct a new item in-place
+    template <typename... Args> void emplace(Args &&...args)
     {
-        if (Full) {
-            grow();
-        }
-
-        Buffer[Tail] = item;
-        advanceTail();
+        T Item(std::forward<Args>(args)...);
+        push(Item);
     }
 
     T pop()
     {
-        if (empty()) {
-            throw std::out_of_range("Buffer is empty");
-        }
+        assert(!empty() && "Container is empty");
 
-        T item = Buffer[Head];
-        advanceHead();
+        T item = IV.front();
+        IV.erase(IV.begin());
         return item;
     }
 
-    const T& head() const {
-        if (empty()) {
-            throw std::out_of_range("Buffer is empty");
-        }
-
-        return Buffer[Head];
-    }
-
-    T& head() {
-        if (empty()) {
-            throw std::out_of_range("Buffer is empty");
-        }
-
-        return Buffer[Head];
-    }
-
-    const T& tail() const {
-        if (empty()) {
-            throw std::out_of_range("Buffer is empty");
-        }
-
-        return Full ? Buffer[Tail - 1] : Buffer[(Tail - 1 + MaxSize) % MaxSize];
-    }
-
-    T& tail() {
-        if (empty()) {
-            throw std::out_of_range("Buffer is empty");
-        }
-
-        return Full ? Buffer[Tail - 1] : Buffer[(Tail - 1 + MaxSize) % MaxSize];
-    }
-
-    void sort()
+    const T& peek() const
     {
-        if (empty()) {
-            return;
-        }
+        assert(!empty() && "Container is empty");
 
-        makeContiguous();
-        std::sort(Buffer.begin() + Head, Buffer.begin() + Tail);
+        return IV.front();
     }
 
-    bool empty() const
+    size_t size() const noexcept
     {
-        return (!Full && (Head == Tail));
+        return IV.size();
     }
 
-    bool full() const
+    bool empty() const noexcept
     {
-        return Full;
+        return IV.empty();
     }
 
-    size_t size() const
+    void clear() noexcept
     {
-        if (Full) {
-            return MaxSize;
-        }
-
-        if (Tail >= Head) {
-            return Tail - Head;
-        }
-
-        return MaxSize - (Head - Tail);
+        IV.clear();
     }
 
-    size_t capacity() const
+    const T &operator[](size_t index) const
     {
-        return MaxSize;
+        return IV[index];
     }
 
-    typename std::vector<T>::const_iterator begin() const
+    const T &at(size_t index) const
     {
-        assert(std::is_sorted(Buffer.begin(), Buffer.begin() + size()));
-        return Buffer.cbegin();
+        return IV.at(index);
     }
 
-    typename std::vector<T>::const_iterator end() const
+    auto begin() const noexcept
     {
-        assert(std::is_sorted(Buffer.begin(), Buffer.begin() + size()));
-        return Buffer.cbegin() + size();
+        return IV.begin();
     }
 
-    T& operator[](size_t Index) {
-        if (Index >= size()) {
-            throw std::out_of_range("Index out of range");
-        }
-
-        return Buffer[(Head + Index) % MaxSize];
+    auto end() const noexcept
+    {
+        return IV.end();
     }
 
-    const T& operator[](size_t Index) const {
-        if (Index >= size()) {
-            throw std::out_of_range("Index out of range");
-        }
+    auto cbegin() const noexcept
+    {
+        return IV.cbegin();
+    }
 
-        return Buffer[(Head + Index) % MaxSize];
+    auto cend() const noexcept
+    {
+        return IV.cend();
+    }
+
+    size_t capacity() const noexcept
+    {
+        return IV.capacity();
+    }
+
+    void reserve(size_t n)
+    {
+        IV.reserve(n);
+    }
+
+    void shrink_to_fit()
+    {
+        IV.shrink_to_fit();
     }
 
 private:
-    void grow() {
-        makeContiguous();
-        MaxSize = Buffer.size() * 2;
-        Buffer.resize(MaxSize);
-        Full = false;
-    }
-
-    void makeContiguous() 
-    {
-        if (empty() || Head == 0) {
-            return;
-        }
-
-        std::rotate(Buffer.begin(), Buffer.begin() + Head, Buffer.end());
-
-        size_t Size = size();
-        Head = 0;
-        Tail = Size;
-    }
-
-    void advanceTail()
-    {
-        if (Full) {
-            Head = (Head + 1) % MaxSize;
-        }
-        Tail = (Tail + 1) % MaxSize;
-        Full = (Head == Tail);
-    }
-
-    void advanceHead()
-    {
-        Head = (Head + 1) % MaxSize;
-        Full = false;
-    }
-
-private:
-    absl::InlinedVector<T, N> Buffer;
-    size_t MaxSize;
-    size_t Head = 0;
-    size_t Tail = 0;
-    bool Full = false;
+    absl::InlinedVector<T, N> IV;
 };
 
 #endif /* ND_CIRCULAR_BUFFER_H */

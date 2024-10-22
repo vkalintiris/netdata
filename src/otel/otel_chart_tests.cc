@@ -2,8 +2,6 @@
 #include "otel_chart.h"
 
 #include <gtest/gtest.h>
-#include "otel_chart.h"
-#include <chrono>
 
 TEST(DimensionTest, DefaultConstructor)
 {
@@ -32,6 +30,11 @@ TEST(DimensionTest, PushAndPopSample)
     EXPECT_EQ(S.Value, SV[0].Value);
     EXPECT_EQ(S.TimePoint, SV[0].TimePoint);
     EXPECT_EQ(D.numSamples(), 1);
+
+    D.popSample();
+    EXPECT_TRUE(D.empty());
+
+    ASSERT_DEATH(D.popSample(), "expected non-empty samples");
 }
 
 TEST(DimensionTest, StartTime)
@@ -78,21 +81,6 @@ TEST(DimensionTest, CompareCollectionTime)
     }
 }
 
-TEST(DimensionTest, EmptyAfterPoppingAllSamples)
-{
-    Dimension D;
-
-    D.pushSample({100, 1000});
-    D.pushSample({200, 2000});
-
-    D.popSample();
-    EXPECT_FALSE(D.empty());
-
-    D.popSample();
-    EXPECT_TRUE(D.empty());
-}
-
-#if 0
 TEST(DimensionTest, UpdateEveryWithIrregularIntervals)
 {
     Dimension D;
@@ -108,6 +96,5 @@ TEST(DimensionTest, UpdateEveryWithIrregularIntervals)
     EXPECT_EQ(D.updateEvery(), 5);
 
     D.pushSample({200, 10});
-    ASSERT_DEATH(D.updateEvery(), "expected samples sorted by time");
+    ASSERT_DEATH(D.updateEvery(), "expected unique timestamps");
 }
-#endif

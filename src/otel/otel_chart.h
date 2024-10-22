@@ -11,50 +11,59 @@
 struct Sample {
     uint64_t Value;
     uint32_t TimePoint;
+
+    bool operator<(const Sample &RHS) const
+    {
+        return TimePoint < RHS.TimePoint;
+    }
 };
 
 struct Dimension {
     std::string Name;
-    CircularBuffer<Sample> CB;
+    SortedContainer<Sample> Samples;
 
     bool empty() const
     {
-        return CB.empty();
+        return Samples.empty();
     }
 
     size_t numSamples() const
     {
-        return CB.size();
+        return Samples.size();
     }
 
     void pushSample(const Sample &S)
     {
-        CB.push(S);
+        Samples.push(S);
     }
 
     Sample popSample()
     {
-        return CB.pop();
+        assert(!Samples.empty() && "expected non-empty samples");
+        return Samples.pop();
     }
 
     uint32_t startTime() const
     {
-        return CB.head().TimePoint;
+        const Sample &S = Samples.peek();
+        return S.TimePoint;
     }
 
     uint32_t updateEvery() const
     {
-        uint32_t MinDelta = std::numeric_limits<uint32_t>::max();
+        assert(Samples.size() >= 2 && "expected 2 >= samples");
+        assert(std::is_sorted(Samples.begin(), Samples.end()) && "expected sorted samples");
 
-        for (size_t Idx = 1; Idx < CB.size(); Idx++) {
-            assert(CB[Idx - 1].TimePoint < CB[Idx].TimePoint &&
-                   "expected samples sorted by time");
+        uint32_t UE = std::numeric_limits<uint32_t>::max();
 
-            uint32_t Delta = CB[Idx].TimePoint - CB[Idx - 1].TimePoint;
-            MinDelta = std::min(MinDelta, Delta);
+        for (size_t Idx = 1; Idx < Samples.size(); Idx++) {
+            uint32_t Delta = Samples[Idx].TimePoint - Samples[Idx - 1].TimePoint;
+            assert(Delta != 0 && "expected unique timestamps");
+
+            UE = std::min(UE, Delta);
         }
 
-        return MinDelta;
+        return UE;
     }
 
     int compareCollectionTime(uint32_t LCT, uint32_t UpdateEvery) const
@@ -272,7 +281,7 @@ template <> struct fmt::formatter<Dimension> {
 
     template <typename FormatContext> auto format(const Dimension &D, FormatContext &Ctx) const -> decltype(Ctx.out())
     {
-        return fmt::format_to(Ctx.out(), "{}", D.CB);
+        return fmt::format_to(Ctx.out(), "{}", D.Samples);
     }
 };
 
