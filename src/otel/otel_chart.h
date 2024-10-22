@@ -7,6 +7,7 @@
 #include "otel_iterator.h"
 #include "otel_utils.h"
 #include "otel_hash.h"
+#include <limits>
 
 struct Sample {
     uint64_t Value;
@@ -93,7 +94,8 @@ public:
         D.pushSample(S);
     }
 
-    void process(size_t RampUpThreshold, size_t GapThreshold, absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
+    void
+    process(size_t RampUpThreshold, size_t GapThreshold, absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
     {
         assert(RampUpThreshold >= 2);
 
@@ -123,11 +125,13 @@ public:
         Committed = committed;
     }
 
-    uint64_t startTime() const {
+    uint64_t startTime() const
+    {
         return minStartTimeInDimensions();
     }
 
-    uint64_t updateEvery() const {
+    uint64_t updateEvery() const
+    {
         return minUpdateEveryInDimensions();
     }
 
@@ -135,8 +139,11 @@ private:
     bool processFastPath(absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
     {
         assert(
-            UpdateEvery.has_value() && UpdateEvery.value() && LastCollectedTime.has_value() &&
-            LastCollectedTime.value());
+            UpdateEvery.has_value() && UpdateEvery.value() &&
+            UpdateEvery.value() != std::numeric_limits<uint32_t>::max());
+        assert(
+            LastCollectedTime.has_value() && LastCollectedTime.value() &&
+            LastCollectedTime.value() != std::numeric_limits<uint32_t>::max());
 
         bool Ok = false;
         while (true) {
@@ -157,10 +164,13 @@ private:
         };
     }
 
-    void processSlowPath(size_t RampUpThreshold, size_t GapThreshold, absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
+    void processSlowPath(
+        size_t RampUpThreshold,
+        size_t GapThreshold,
+        absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
     {
         UNUSED(IV);
-        
+
         assert(!Dimensions.empty());
         assert(!Dimensions.begin()->second.empty());
 
