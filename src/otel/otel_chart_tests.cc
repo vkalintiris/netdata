@@ -20,19 +20,19 @@ TEST(DimensionTest, PushAndPopSample)
     };
 
     D.pushSample(SV[0]);
-    EXPECT_FALSE(D.empty());
-    EXPECT_EQ(D.numSamples(), 1);
+    ASSERT_FALSE(D.empty());
+    ASSERT_EQ(D.numSamples(), 1);
 
     D.pushSample(SV[1]);
-    EXPECT_EQ(D.numSamples(), 2);
+    ASSERT_EQ(D.numSamples(), 2);
 
     Sample S = D.popSample();
-    EXPECT_EQ(S.Value, SV[0].Value);
-    EXPECT_EQ(S.TimePoint, SV[0].TimePoint);
-    EXPECT_EQ(D.numSamples(), 1);
+    ASSERT_EQ(S.Value, SV[0].Value);
+    ASSERT_EQ(S.TimePoint, SV[0].TimePoint);
+    ASSERT_EQ(D.numSamples(), 1);
 
     D.popSample();
-    EXPECT_TRUE(D.empty());
+    ASSERT_TRUE(D.empty());
 
     ASSERT_DEATH(D.popSample(), "expected non-empty samples");
 }
@@ -44,7 +44,7 @@ TEST(DimensionTest, StartTime)
     D.pushSample({100, 1000});
     D.pushSample({200, 2000});
 
-    EXPECT_EQ(D.startTime(), 1000);
+    ASSERT_EQ(D.startTime(), 1000);
 }
 
 TEST(DimensionTest, UpdateEvery)
@@ -55,7 +55,7 @@ TEST(DimensionTest, UpdateEvery)
     D.pushSample({200, 2000});
     D.pushSample({300, 3000});
 
-    EXPECT_EQ(D.updateEvery(), 1000);
+    ASSERT_EQ(D.updateEvery(), 1000);
 }
 
 TEST(DimensionTest, CompareCollectionTime)
@@ -77,7 +77,7 @@ TEST(DimensionTest, CompareCollectionTime)
 
         Dimension D;
         D.pushSample({1, TP});
-        EXPECT_EQ(D.compareCollectionTime(LCT, UpdateEvery), ExpectedValue);
+        ASSERT_EQ(D.compareCollectionTime(LCT, UpdateEvery), ExpectedValue);
     }
 }
 
@@ -87,14 +87,44 @@ TEST(DimensionTest, UpdateEveryWithIrregularIntervals)
 
     D.pushSample({1, 10});
     D.pushSample({1, 20});
-    EXPECT_EQ(D.updateEvery(), 10);
+    ASSERT_EQ(D.updateEvery(), 10);
 
     D.pushSample({1, 25});
-    EXPECT_EQ(D.updateEvery(), 5);
+    ASSERT_EQ(D.updateEvery(), 5);
 
     D.pushSample({1, 100});
-    EXPECT_EQ(D.updateEvery(), 5);
+    ASSERT_EQ(D.updateEvery(), 5);
 
     D.pushSample({200, 10});
     ASSERT_DEATH(D.updateEvery(), "expected unique timestamps");
+}
+
+TEST(DimensionContainer, BasicOperations) {
+    DimensionContainer DC;
+    
+    DC.add("user", { 1, 10});
+    DC.add("system", { 2, 10});
+
+    const auto& Dimensions = DC.dimensions();
+    ASSERT_EQ(Dimensions.size(), 2);
+    
+    // // Check user dimension
+    // auto userIt = Dimensions.find("user");
+    // ASSERT_NE(userIt, Dimensions.end()) << "User dimension not found";
+    // EXPECT_EQ(userIt->second.numSamples(), 2) << "Expected 2 samples in user dimension";
+    
+    // // Check system dimension
+    // auto systemIt = Dimensions.find("system");
+    // ASSERT_NE(systemIt, Dimensions.end()) << "System dimension not found";
+    // EXPECT_EQ(systemIt->second.numSamples(), 1) << "Expected 1 sample in system dimension";
+    
+    // // Process the container
+    // DC.process(2, 100);  // RampUpThreshold=2, GapThreshold=100
+    
+    // // Verify container is not committed initially
+    // EXPECT_FALSE(DC.isCommitted()) << "Container should not be committed initially";
+    
+    // // Set committed state
+    // DC.setCommitted(true);
+    // EXPECT_TRUE(DC.isCommitted()) << "Container should be committed after setting";
 }
