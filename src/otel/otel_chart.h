@@ -3,14 +3,19 @@
 #ifndef ND_OTEL_CHART_H
 #define ND_OTEL_CHART_H
 
+#include "absl/types/optional.h"
 #include "otel_circular_buffer.h"
 #include "otel_iterator.h"
 #include "otel_utils.h"
 #include "otel_hash.h"
 #include <limits>
 
+// Holds the value of a dimension at specific point in time.
 struct Sample {
+    // The 64-bit value we collected at this specific time point.
     uint64_t Value;
+
+    // The time point at which we collected the value of the sample.
     uint32_t TimePoint;
 
     bool operator<(const Sample &RHS) const
@@ -19,8 +24,12 @@ struct Sample {
     }
 };
 
+// Maintains a vector of sorted samples along with the name of the dimension.
 struct Dimension {
+    // The name of the dimension.
     std::string Name;
+
+    // The samples of the dimension sorted by their time point.
     SortedContainer<Sample> Samples;
 
     bool empty() const
@@ -44,12 +53,18 @@ struct Dimension {
         return Samples.pop();
     }
 
+    // The start time of the dimension is the time point of the first
+    // sample in the sorted container
     uint32_t startTime() const
     {
         const Sample &S = Samples.peek();
         return S.TimePoint;
     }
 
+    // A dimension should be collected at regular intervals. It is possible
+    // to ingest OTEL data out-of-order (with respect to the collection time
+    // point of the samples), whenever we push/pop samples to a dimension
+    // the estimated collection interval might change.
     uint32_t updateEvery() const
     {
         assert(std::is_sorted(Samples.begin(), Samples.end()) && "expected sorted samples");
@@ -65,17 +80,25 @@ struct Dimension {
         return UE;
     }
 
+    // While a dimension has its own colection interval (based on the time
+    // points of its samples), a chart groups multiple dimensions together
+    // and a separate logic is used to calculate a chart's collection
+    // frequency.
+    // We use this function to figure out if the start time of a dimension
+    // is on the left-side (-1), in-side (0), right-side (+1) of
+    // the expected collection interval.
     int compareCollectionTime(uint32_t LCT, uint32_t UpdateEvery) const
     {
         double StartTP = LCT + UpdateEvery - (UpdateEvery / 2.0);
         double EndTP = LCT + UpdateEvery + (UpdateEvery / 2.0);
 
-        if (startTime() < StartTP)
+        if (startTime() < StartTP) {
             return -1;
-        else if (startTime() >= EndTP)
+        } else if (startTime() >= EndTP) {
             return 1;
-        else
+        } else {
             return 0;
+        }
     }
 };
 
@@ -94,22 +117,6 @@ public:
         D.pushSample(S);
     }
 
-    void
-    process(size_t RampUpThreshold, size_t GapThreshold, absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
-    {
-        assert(RampUpThreshold >= 2);
-
-        bool Processed = false;
-
-        if (UpdateEvery.has_value()) {
-            Processed = processFastPath(IV);
-        }
-
-        if (!Processed) {
-            processSlowPath(RampUpThreshold, GapThreshold, IV);
-        }
-    }
-
     const absl::flat_hash_map<std::string, Dimension> &dimensions() const
     {
         return Dimensions;
@@ -125,25 +132,53 @@ public:
         Committed = committed;
     }
 
-    uint64_t startTime() const
+    absl::optional<uint64_t> startTime() const
     {
         return minStartTimeInDimensions();
     }
 
-    uint64_t updateEvery() const
+    absl::optional<uint32_t> updateEvery() const
     {
         return minUpdateEveryInDimensions();
+    }
+
+    absl::optional<uint32_t> lastCollectedTime(uint32_t UE) const {
+        absl::optional<uint32_t> StartTime = startTime();
+        if (StartTime.has_value()) {
+            return absl::nullopt;
+        }
+
+        return StartTime.value() - UE;
+    }
+
+    void
+    process(size_t RampUpThreshold, size_t GapThreshold, absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
+    {
+        assert(RampUpThreshold >= 2);
+
+        bool Processed = false;
+
+        // If we already have an update every, then we have a last collection
+        // time, which means that it might be possible to process the 
+        // oldest samples of all dimensions if they have the expected start
+        // time.
+        if (UpdateEvery.has_value()) {
+            Processed = processFastPath(IV);
+        }
+
+        // If we didn't manage to process any samples, we follow the slow
+        // path that recalculates the update every and the last collected
+        // time
+        if (!Processed) {
+            processSlowPath(RampUpThreshold, GapThreshold, IV);
+        }
     }
 
 private:
     bool processFastPath(absl::InlinedVector<std::pair<std::string, Sample>, 4> &IV)
     {
-        assert(
-            UpdateEvery.has_value() && UpdateEvery.value() &&
-            UpdateEvery.value() != std::numeric_limits<uint32_t>::max());
-        assert(
-            LastCollectedTime.has_value() && LastCollectedTime.value() &&
-            LastCollectedTime.value() != std::numeric_limits<uint32_t>::max());
+        assert(UpdateEvery.has_value());
+        assert(LastCollectedTime.has_value());
 
         bool Ok = false;
         while (true) {
@@ -175,28 +210,43 @@ private:
         assert(!Dimensions.begin()->second.empty());
 
         if (!UpdateEvery.has_value()) {
-            if (maxDataPointsInDimensions() < RampUpThreshold) {
+            // We don't have an update every and we have less than
+            // `RampUpThreshold` number of samples across all dimensions.
+            // This is a newly created chart and we are still buffering
+            // incoming data.
+            if (maxDataPointsInDimensions() >= RampUpThreshold) {
+                UpdateEvery = updateEvery();
+                assert(UpdateEvery.has_value());
+
+                if (UpdateEvery.has_value()) {
+                    LastCollectedTime = lastCollectedTime(UpdateEvery.value());
+                    assert(LastCollectedTime.has_value());
+                }
+
                 return;
             }
+        } else {
+            // We have an update every and the last collected time. Use these
+            // to drop any samples from our dimensions that we might have
+            // received and belong in the past.
 
-            UpdateEvery = minUpdateEveryInDimensions();
-            assert(UpdateEvery != 0);
-            LastCollectedTime = minStartTimeInDimensions() - UpdateEvery.value();
-            assert(LastCollectedTime != 0);
+            (void) dropPastCollectionTimes();
+
+            // Keep buffering if we don't have at least `GapThreshold` samples
+            // across all the dimensions of the container.
+            if (maxDataPointsInDimensions() >= GapThreshold) {
+                UpdateEvery = updateEvery();
+                assert(UpdateEvery.has_value());
+
+                if (UpdateEvery.has_value()) {
+                    LastCollectedTime = lastCollectedTime(UpdateEvery.value());
+                    assert(LastCollectedTime.has_value());
+                }
+            }
         }
-
-        dropPastCollectionTimes();
-
-        if (maxDataPointsInDimensions() < GapThreshold) {
-            return;
-        }
-
-        UpdateEvery = minUpdateEveryInDimensions();
-        assert(UpdateEvery != 0);
-        LastCollectedTime = minStartTimeInDimensions() - UpdateEvery.value();
-        assert(LastCollectedTime != 0);
     }
 
+    // Find the number of maximum samples across all dimensions.
     size_t maxDataPointsInDimensions() const
     {
         size_t N = std::numeric_limits<size_t>::min();
@@ -206,7 +256,8 @@ private:
         return N;
     }
 
-    uint32_t minUpdateEveryInDimensions() const
+    // Find the minimum update interval of all dimensions.
+    absl::optional<uint32_t> minUpdateEveryInDimensions() const
     {
         assert(!Dimensions.empty());
 
@@ -215,10 +266,15 @@ private:
             UE = std::min(UE, Dim.updateEvery());
         }
 
+        if (UE == std::numeric_limits<uint32_t>::max()) {
+            return absl::nullopt;
+        }
+
         return UE;
     }
 
-    uint32_t minStartTimeInDimensions() const
+    // Find the minimum start time of all dimensions.
+    absl::optional<uint32_t> minStartTimeInDimensions() const
     {
         assert(!Dimensions.empty());
 
@@ -227,10 +283,16 @@ private:
             TP = std::min(TP, Dim.startTime());
         }
 
+        if (TP == std::numeric_limits<uint32_t>::max()) {
+            return absl::nullopt;
+        }
+
         return TP;
     }
 
-    void dropPastCollectionTimes()
+    // Drop the samples of all dimensions that have a start time that is
+    // older than the minimum time of the next collection interval.
+    bool dropPastCollectionTimes()
     {
         assert(
             UpdateEvery.has_value() && UpdateEvery.value() && LastCollectedTime.has_value() &&
@@ -240,11 +302,15 @@ private:
         double LCT = LastCollectedTime.value();
         double StartTP = LCT + UE / 2.0;
 
+        bool Dropped = false;
         for (auto &[Name, Dim] : Dimensions) {
             while (Dim.startTime() < StartTP) {
                 Dim.popSample();
+                Dropped = true;
             }
         }
+
+        return Dropped;
     }
 
 private:
