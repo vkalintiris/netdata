@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ndag"
+version = "0.1.0"
+description = "Netdata Dagger tools"
+requires-python = ">=3.8"
+dependencies = [
+  "click>=8.1.7",
+  "dagger-io>=0.9.7",
+  "Jinja2>=3.1.4",
+  "docker>=6.1.0",
+]
+
+[project.scripts]
+ndag = "ndag.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ndag"]
