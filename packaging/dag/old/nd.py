@@ -226,22 +226,13 @@ class NetdataInstaller:
         self, client: dagger.Client, ctr: dagger.Container, repo_root: pathlib.Path
     ) -> dagger.Container:
         host_repo_root = pathlib.Path(__file__).parent.parent.parent.as_posix()
-        exclude_dirs = ["build", "fluent-bit/build", "packaging/dag"]
-
-        # The installer builds/stores intermediate artifacts under externaldeps/
-        # We add a volume to speed up rebuilds. The volume has to be unique
-        # per platform/distro in order to avoid mixing unrelated artifacts
-        # together.
-        externaldeps = self.distro._cache_volume(client, self.platform, "externaldeps")
+        exclude_dirs = ["build", "packaging/dag"]
 
         ctr = (
             ctr.with_directory(
                 self.repo_root.as_posix(), client.host().directory(host_repo_root)
             )
             .with_workdir(self.repo_root.as_posix())
-            .with_mounted_cache(
-                os.path.join(self.repo_root, "externaldeps"), externaldeps
-            )
         )
 
         return ctr
