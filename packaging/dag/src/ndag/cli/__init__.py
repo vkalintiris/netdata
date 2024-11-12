@@ -3,6 +3,7 @@
 import click
 
 from .build_distribution import build_distribution
+from ndag.config import cmake
 
 
 @click.group()
@@ -14,4 +15,6 @@ cli.add_command(build_distribution)
 
 
 def main():
-    cli()
+    cfg = cmake.CMakeConfig()
+    print('cmake ' + ' '.join(cfg.args()))
+    # cli()
