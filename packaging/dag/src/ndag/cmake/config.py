@@ -16,7 +16,7 @@ class Config:
     build_dir: str = "/src/netdata/build"
     install_prefix: str = "/opt/netdata"
 
-    build_type: BuildType = BuildType.DEBUG
+    build_type: str = "Debug"
     build_shared_libs: Optional[bool] = None
     static_build: bool = False
     build_for_packaging: bool = False
@@ -38,7 +38,7 @@ class Config:
     enable_plugin_xenstat: bool = True
 
     enable_plugin_cgroup_network: bool = True
-    enable_plugin_debugfs: bool = True
+    enable_plugin_debugfs: bool = False
     enable_plugin_ebpf: bool = True
     enable_legacy_ebpf_programs: bool = True
     enable_plugin_local_listeners: bool = True
@@ -66,7 +66,7 @@ class Config:
         l = ["-G", "Ninja", "-DCMAKE_EXPORT_COMPILE_COMMANDS=On"]
 
         l.extend([
-            f"-DCMAKE_BUILD_TYPE={self.build_type.value}",
+            f"-DCMAKE_BUILD_TYPE={self.build_type}",
             f"-DCMAKE_INSTALL_PREFIX={self.install_prefix}",
         ])
 
@@ -136,7 +136,7 @@ class CMake:
         return ctr
     
     def build(self, ctr: dagger.Container) -> dagger.Container:
-        cmd = ["cmake", "-B", self.cfg.build_dir]
+        cmd = ["cmake", "--build", self.cfg.build_dir]
         ctr = (
             ctr.with_exec(cmd)
         )
