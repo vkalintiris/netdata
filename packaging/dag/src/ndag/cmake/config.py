@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 
+import dagger
 
 class BuildType(Enum):
     DEBUG = "Debug"
@@ -10,9 +11,12 @@ class BuildType(Enum):
 
 
 @dataclass
-class CMakeConfig:
-    build_type: BuildType = BuildType.DEBUG
+class Config:
+    source_dir: str = "/src/netdata"
+    build_dir: str = "/src/netdata/build"
     install_prefix: str = "/opt/netdata"
+
+    build_type: BuildType = BuildType.DEBUG
     build_shared_libs: Optional[bool] = None
     static_build: bool = False
     build_for_packaging: bool = False
@@ -58,7 +62,7 @@ class CMakeConfig:
 
     netdata_user: str = "netdata"
 
-    def args(self, source_dir, build_dir) -> list[str]:
+    def args(self) -> list[str]:
         l = ["-G", "Ninja", "-DCMAKE_EXPORT_COMPILE_COMMANDS=On"]
 
         l.extend([
@@ -115,6 +119,32 @@ class CMakeConfig:
         if self.netdata_user:
             l.append(f"-DNETDATA_USER={self.netdata_user}")
 
-        l.extend(["-S", source_dir, "-B", build_dir])
+        l.extend(["-S", self.source_dir, "-B", self.build_dir])
 
         return l
+
+class CMake:
+    def __init__(self, client: dagger.Client, cfg: Config):
+        self.client = client
+        self.cfg = cfg
+
+    def configure(self, ctr: dagger.Container) -> dagger.Container:
+        cmd = ["cmake"] + self.cfg.args()
+        ctr = (
+            ctr.with_exec(cmd)
+        )
+        return ctr
+    
+    def build(self, ctr: dagger.Container) -> dagger.Container:
+        cmd = ["cmake", "-B", self.cfg.build_dir]
+        ctr = (
+            ctr.with_exec(cmd)
+        )
+        return ctr
+
+    def install(self, ctr: dagger.Container) -> dagger.Container:
+        cmd = ["cmake", "--install", self.cfg.build_dir]
+        ctr = (
+            ctr.with_exec(cmd)
+        )
+        return ctr

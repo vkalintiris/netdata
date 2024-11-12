@@ -15,7 +15,7 @@ def run_async(func):
 
 
 @run_async
-async def simple_build(platform, distribution):
+async def simple_install(platform, distribution):
     config = dagger.Config(log_output=sys.stdout)
 
     async with dagger.Connection(config) as client:
@@ -38,5 +38,5 @@ async def simple_build(platform, distribution):
     default="debian12",
     help="Specify the distribution.",
 )
-def build_distribution(platform, distribution):
-    simple_build(platform, distribution)
+def install_netdata(platform, distribution):
+    simple_install(platform, distribution)
