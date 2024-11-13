@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "ml-private.h"
+#include "ml_config.h"
 
 /*
  * Global configuration instance to be shared between training and
@@ -45,7 +45,7 @@ void ml_config_load(ml_config_t *cfg) {
     std::string anomaly_detection_grouping_method = config_get(config_section_ml, "anomaly detection grouping method", "average");
     time_t anomaly_detection_query_duration = config_get_duration_seconds(config_section_ml, "anomaly detection grouping duration", 5 * 60);
 
-    size_t num_training_threads = config_get_number(config_section_ml, "num training threads", 4);
+    size_t num_worker_threads = config_get_number(config_section_ml, "num training threads", 4);
     size_t flush_models_batch_size = config_get_number(config_section_ml, "flush models batch size", 128);
 
     size_t suppression_window =
@@ -79,7 +79,7 @@ void ml_config_load(ml_config_t *cfg) {
     host_anomaly_rate_threshold = clamp(host_anomaly_rate_threshold, 0.1, 10.0);
     anomaly_detection_query_duration = clamp<time_t>(anomaly_detection_query_duration, 60, 15 * 60);
 
-    num_training_threads = clamp<size_t>(num_training_threads, 1, 128);
+    num_worker_threads = clamp<size_t>(num_worker_threads, 1, 128);
     flush_models_batch_size = clamp<size_t>(flush_models_batch_size, 8, 512);
 
     suppression_window = clamp<size_t>(suppression_window, 1, max_train_samples);
@@ -102,9 +102,15 @@ void ml_config_load(ml_config_t *cfg) {
 
     cfg->enable_anomaly_detection = enable_anomaly_detection;
 
+    #if 0
     cfg->max_train_samples = max_train_samples;
     cfg->min_train_samples = min_train_samples;
     cfg->train_every = train_every;
+    #else
+    cfg->max_train_samples = 60;
+    cfg->min_train_samples = 60;
+    cfg->train_every = 60;
+    #endif
 
     cfg->num_models_to_use = num_models_to_use;
     cfg->delete_models_older_than = delete_models_older_than;
@@ -132,13 +138,17 @@ void ml_config_load(ml_config_t *cfg) {
 
     cfg->stream_anomaly_detection_charts = config_get_boolean(config_section_ml, "stream anomaly detection charts", true);
 
-    cfg->num_training_threads = num_training_threads;
+    cfg->num_worker_threads = num_worker_threads;
     cfg->flush_models_batch_size = flush_models_batch_size;
 
     cfg->suppression_window = suppression_window;
     cfg->suppression_threshold = suppression_threshold;
 
+    #if 0
     cfg->enable_statistics_charts = enable_statistics_charts;
+    #else
+    cfg->enable_statistics_charts = true;
+    #endif
 
     if (cfg->enable_anomaly_detection == CONFIG_BOOLEAN_AUTO && default_rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE) {
         Cfg.enable_anomaly_detection = 0;

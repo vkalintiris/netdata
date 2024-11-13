@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef NETDATA_ML_H
-#define NETDATA_ML_H
+#ifndef NETDATA_ML_PUBLIC_H
+#define NETDATA_ML_PUBLIC_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,10 +49,10 @@ bool ml_host_get_host_status(RRDHOST *rh, struct ml_metrics_statistics *mlm);
 bool ml_host_running(RRDHOST *rh);
 uint64_t sqlite_get_ml_space(void);
 
-void ml_model_received_from_child(RRDHOST *host, const char *json);
+bool ml_model_received_from_child(RRDHOST *host, const char *json);
 
 #ifdef __cplusplus
 };
 #endif
 
-#endif /* NETDATA_ML_H */
+#endif /* NETDATA_ML_PUBLIC_H */
