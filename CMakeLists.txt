@@ -1659,6 +1659,23 @@ set(STREAMING_PLUGIN_FILES
         src/streaming/protocol/command-begin-set-end-init.c
 )
 
+set(STREAMING_PBSER_PROTO_DEFS
+        src/streaming/pbser/proto/netdata/v1/netdata.proto
+)
+
+netdata_protoc_generate_cpp("${CMAKE_SOURCE_DIR}/src/streaming/pbser/proto"
+                            "${CMAKE_BINARY_DIR}/src/streaming/pbser/proto"
+                            STREAMING_PBSER_PROTO_BUILT_SRCS
+                            STREAMING_PBSER_PROTO_BUILT_HDRS
+                            ${STREAMING_PBSER_PROTO_DEFS})
+
+list(APPEND STREAMING_PLUGIN_FILES ${STREAMING_PBSER_PROTO_BUILT_SRCS}
+                                   ${STREAMING_PBSER_PROTO_BUILT_HDRS})
+
+list(APPEND STREAMING_PLUGIN_FILES
+     src/streaming/pbser/pbser.h
+     src/streaming/pbser/pbser.cc)
+
 set(WEB_PLUGIN_FILES
         src/web/server/web_client.c
         src/web/server/web_client.h
@@ -2841,6 +2858,7 @@ target_compile_options(netdata PRIVATE
 
 target_include_directories(netdata PRIVATE
         "${CMAKE_BINARY_DIR}/src/aclk/aclk-schemas"
+        "${CMAKE_BINARY_DIR}/src/streaming/pbser/proto"
         "$<$<BOOL:${ENABLE_EXPORTER_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
 )

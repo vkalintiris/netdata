@@ -1,0 +1,13 @@
+[package]
+name = "gorilla"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+error = { path = "../error" }
+bitvec = { workspace = true }
+zerocopy = { workspace = true }
+zerocopy-derive = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

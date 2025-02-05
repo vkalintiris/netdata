@@ -14,6 +14,8 @@ typedef struct rrdhost RRDHOST;
 typedef struct ml_host rrd_ml_host_t;
 typedef struct rrdhost_acquired RRDHOST_ACQUIRED;
 
+typedef struct pbser_context pbser_context_t;
+
 //#include "streaming/stream-traffic-types.h"
 #include "streaming/stream-sender-commit.h"
 #include "rrd-database-mode.h"
@@ -281,6 +283,8 @@ struct rrdhost {
     // ------------------------------------------------------------------------
     // ML handle
     rrd_ml_host_t *ml_host;
+
+    pbser_context_t *pbser_context;
 
     // ------------------------------------------------------------------------
     // Support for host-level labels

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "database/rrdhost.h"
 #include "rrd.h"
+
+#include "streaming/pbser/pbser.h"
 
 #if RRD_STORAGE_TIERS != 5
 #error RRD_STORAGE_TIERS is not 5 - you need to update the grouping iterations per tier
@@ -507,6 +510,7 @@ RRDHOST *rrdhost_create(
         }
         rrdhost_load_rrdcontext_data(host);
         ml_host_new(host);
+        pbser_rrdhost_init(host);
     } else
         rrdhost_flag_set(host, RRDHOST_FLAG_PENDING_CONTEXT_LOAD | RRDHOST_FLAG_ARCHIVED | RRDHOST_FLAG_ORPHAN);
 
@@ -639,6 +643,7 @@ static void rrdhost_update(RRDHOST *host
         rrdhost_set_replication_parameters(host, host->rrd_memory_mode, replication_period, replication_step);
 
         ml_host_new(host);
+        pbser_rrdhost_init(host);
 
         rrdhost_load_rrdcontext_data(host);
         nd_log(NDLS_DAEMON, NDLP_DEBUG,
@@ -793,6 +798,9 @@ void rrdhost_cleanup_data_collection_and_health(RRDHOST *host) {
     health_alarm_log_free(host);
 
     ml_host_delete(host);
+
+    // cleanup protobuf serialization resources
+    pbser_rrdhost_fini(host);
 
     freez(host->exporting_flags);
     host->exporting_flags = NULL;

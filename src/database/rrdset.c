@@ -6,6 +6,7 @@
 void rrdset_metadata_updated(RRDSET *st) {
     __atomic_add_fetch(&st->version, 1, __ATOMIC_RELAXED);
     rrdcontext_updated_rrdset(st);
+    rrdset_flag_set(st, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
 }
 
 // ----------------------------------------------------------------------------

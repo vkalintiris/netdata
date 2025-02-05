@@ -62,6 +62,8 @@ typedef enum __attribute__ ((__packed__)) rrdset_flags {
     RRDSET_FLAG_COLLECTION_FINISHED              = (1 << 25), // when set, data collection is not available for this chart
 
     RRDSET_FLAG_HAS_RRDCALC_LINKED               = (1 << 26), // this chart has at least one rrdcal linked
+
+    RRDSET_FLAG_NEEDS_PBSER_DEFINITION           = (1 << 27), // needs protobuf serialization of definition
 } RRDSET_FLAGS;
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -117,6 +119,7 @@ struct rrdset {
     DICTIONARY *rrddim_root_index;                  // dimensions index
 
     rrd_ml_chart_t *ml_chart;
+    uint32_t pbser_id;
 
     struct storage_alignment *smg[RRD_STORAGE_TIERS];
 

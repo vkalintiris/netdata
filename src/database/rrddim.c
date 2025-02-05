@@ -6,6 +6,7 @@
 void rrddim_metadata_updated(RRDDIM *rd) {
     rrdcontext_updated_rrddim(rd);
     rrdset_metadata_updated(rd->rrdset);
+    rrdset_flag_set(rd->rrdset, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
 }
 
 // ----------------------------------------------------------------------------
@@ -282,6 +283,7 @@ static void rrddim_react_callback(const DICTIONARY_ITEM *item __maybe_unused, vo
     }
 
     rrddim_metadata_updated(rd);
+    rrdset_flag_set(st, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
 }
 
 size_t rrddim_size(void) {

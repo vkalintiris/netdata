@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package netdata;
+
+message DimensionDefinition {
+    string name = 1;
+}
+
+message ChartDefinition {
+    uint32 id = 1;
+    string name = 2;
+    string family = 3;
+    string context = 4;
+    string units = 5;
+    uint32 update_every = 7;
+    repeated DimensionDefinition dimension_definition = 6;
+}
+
+message DimensionCollection {
+    int64 time = 3;
+    double value = 2;
+}
+
+message ChartCollection {
+    uint32 id = 1;
+    repeated DimensionCollection dimension_collection = 2;
+}
+
+message Host {
+    string hostname = 1;
+
+    repeated ChartDefinition chart_definition = 2;
+    repeated ChartCollection chart_collection = 3;
+}

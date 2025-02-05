@@ -61,6 +61,7 @@ int rrdset_reset_name(RRDSET *st, const char *name) {
     rrdset_flag_clear(st, RRDSET_FLAG_EXPORTING_IGNORE);
     rrdset_flag_clear(st, RRDSET_FLAG_UPSTREAM_SEND);
     rrdset_flag_clear(st, RRDSET_FLAG_UPSTREAM_IGNORE);
+    rrdset_flag_set(st, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
     rrdset_metadata_updated(st);
 
     rrdcontext_updated_rrdset_name(st);

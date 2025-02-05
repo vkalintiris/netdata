@@ -3,6 +3,7 @@
 #include "rrdset-index-id.h"
 #include "rrdset-index-name.h"
 #include "rrdset-slots.h"
+#include "streaming/pbser/pbser.h"
 
 static inline void rrdset_update_permanent_labels(RRDSET *st) {
     if(!st->rrdlabels) return;
@@ -115,6 +116,8 @@ static void rrdset_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     ctr->react_action = RRDSET_REACT_NEW;
 
     ml_chart_new(st);
+
+    pbser_rrdhost_new_chart_id(host, st);
 }
 
 // the destructor - the dictionary is write locked while this runs
@@ -279,6 +282,7 @@ static void rrdset_react_callback(const DICTIONARY_ITEM *item __maybe_unused, vo
     }
 
     rrdset_metadata_updated(st);
+    rrdset_flag_set(st, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
 }
 
 void rrdset_index_init(RRDHOST *host) {

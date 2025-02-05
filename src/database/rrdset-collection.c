@@ -2,6 +2,7 @@
 
 #include "rrdset-collection.h"
 #include "rrddim-collection.h"
+#include "streaming/pbser/pbser.h"
 
 time_t rrdset_set_update_every_s(RRDSET *st, time_t update_every_s) {
     if(unlikely(update_every_s == st->update_every))
@@ -24,6 +25,8 @@ time_t rrdset_set_update_every_s(RRDSET *st, time_t update_every_s) {
         }
     }
     rrddim_foreach_done(rd);
+
+    rrdset_flag_set(st, RRDSET_FLAG_NEEDS_PBSER_DEFINITION);
 
     return prev_update_every_s;
 }
@@ -350,6 +353,7 @@ static inline size_t rrdset_done_interpolate(
         last_ut = next_store_ut;
 
         ml_chart_update_begin(st);
+        pbser_chart_update_start(st);
 
         struct rda_item *rda;
         size_t dim_id;
@@ -444,6 +448,7 @@ static inline size_t rrdset_done_interpolate(
                     stream_send_rrddim_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
 
                 rrddim_store_metric(rd, next_store_ut, NAN, SN_FLAG_NONE);
+                pbser_chart_update_metric(rd, next_store_ut, NAN);
                 continue;
             }
 
@@ -459,6 +464,8 @@ static inline size_t rrdset_done_interpolate(
                     stream_send_rrddim_metrics_v2(rsb, rd, next_store_ut, new_value, dim_storage_flags);
 
                 rrddim_store_metric(rd, next_store_ut, new_value, dim_storage_flags);
+                pbser_chart_update_metric(rd, next_store_ut, new_value);
+
                 rd->collector.last_stored_value = new_value;
             }
             else {
@@ -470,12 +477,14 @@ static inline size_t rrdset_done_interpolate(
                     stream_send_rrddim_metrics_v2(rsb, rd, next_store_ut, NAN, SN_FLAG_NONE);
 
                 rrddim_store_metric(rd, next_store_ut, NAN, SN_FLAG_NONE);
+                pbser_chart_update_metric(rd, next_store_ut, NAN);
                 rd->collector.last_stored_value = NAN;
             }
 
             stored_entries++;
         }
 
+        pbser_chart_update_end(st);
         ml_chart_update_end(st);
 
         st->counter = ++counter;
