@@ -731,23 +731,23 @@ mod tests {
 
     #[test]
     fn test_fixup_inorder_random() {
-        // let mut rng = rand::rng();
+        let mut rng = rand::rng();
         let mut written_values = Vec::new();
 
-        let mut buffer = create_test_buffer::<2, 32>(&[2], &[0]);
+        let mut buffer = create_test_buffer::<3, 4096>(&[2], &[1000]);
 
         let mut writer = GorillaWriter::new(&mut buffer);
-        for i in 0..2 {
-            let curr_values = &[i];
+        for _ in 0..100 {
+            let curr_values = &[rng.random()];
             writer.add_samples(curr_values).unwrap();
-            written_values.push([0, curr_values[0]]);
+            written_values.push([0, curr_values[0], 0]);
         }
 
-        let series_ids = SeriesIdSlice::new(&[1]).unwrap();
-        assert!(writer.add_series_ids(series_ids.clone()).is_ok());
+        let series_ids = SeriesIdSlice::new(&[1, 3]).unwrap();
+        assert!(writer.add_series_ids(series_ids).is_ok());
 
-        for i in 0..1 {
-            let curr_values = [i, i + 1];
+        for _ in 0..100 {
+            let curr_values = [rng.random(), rng.random(), rng.random()];
             writer.add_samples(&curr_values).unwrap();
             written_values.push(curr_values);
         }
@@ -759,37 +759,6 @@ mod tests {
         }
         assert!(reader.read_samples().is_none());
     }
-
-    // #[test]
-    // fn test_fixup_inorder_random() {
-    //     // let mut rng = rand::rng();
-    //     let mut written_values = Vec::new();
-
-    //     let mut buffer = create_test_buffer::<3, 4096>(&[2], &[1000]);
-
-    //     let mut writer = GorillaWriter::new(&mut buffer);
-    //     for i in 0..2 {
-    //         let curr_values = &[i];
-    //         writer.add_samples(curr_values).unwrap();
-    //         written_values.push([0, curr_values[0], 0]);
-    //     }
-
-    //     let series_ids = SeriesIdSlice::new(&[1, 3]).unwrap();
-    //     assert!(writer.add_series_ids(series_ids).is_ok());
-
-    //     for i in 0..1 {
-    //         let curr_values = [i, i + 1, i + 2];
-    //         writer.add_samples(&curr_values).unwrap();
-    //         written_values.push(curr_values);
-    //     }
-
-    //     let mut reader = GorillaReader::new(&buffer);
-    //     for expected in written_values {
-    //         let samples = reader.read_samples().unwrap();
-    //         // assert_eq!(samples, expected);
-    //     }
-    //     assert!(reader.read_samples().is_none());
-    // }
 
     #[test]
     fn test_fixup_postorder() {
