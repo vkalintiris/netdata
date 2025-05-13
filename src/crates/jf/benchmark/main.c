@@ -252,5 +252,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    fprintf(stdout, "Size of all logs: %zu MiB", total_size / (1024 * 1024));
+    fprintf(stdout, "Size of all logs: %zu MiB\n", total_size / (1024 * 1024));
 }
