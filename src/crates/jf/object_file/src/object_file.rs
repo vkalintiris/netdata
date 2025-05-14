@@ -298,8 +298,8 @@ impl<M: MemoryMap> ObjectFile<M> {
         if entry_array_offset != 0 {
             let list = offset_array::List::new(self, entry_array_offset, n_entries as usize - 1)?;
 
-            if let Some(cursor) = list.directed_partition_point(&predicate, direction)? {
-                best_match = Some(cursor.value()?);
+            if let Some(cursor) = list.directed_partition_point(self, &predicate, direction)? {
+                best_match = Some(cursor.value(self)?);
             }
         }
 

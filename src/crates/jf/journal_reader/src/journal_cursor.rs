@@ -58,14 +58,14 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
             self.resolve_filter_location(object_file, direction)?
         } else {
             self.array_cursor = match (self.array_cursor.as_ref(), direction) {
-                (Some(cursor), Direction::Forward) => cursor.next()?,
+                (Some(cursor), Direction::Forward) => cursor.next(object_file)?,
                 (Some(cursor), Direction::Backward) => cursor.previous()?,
                 (None, _) => self.resolve_array_cursor(object_file, direction)?,
             };
 
             self.array_cursor
                 .as_ref()
-                .map(|c| c.value())
+                .map(|c| c.value(object_file))
                 .transpose()?
                 .map(Location::Entry)
         };
@@ -93,20 +93,24 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
         let entry_list = object_file.entry_list()?;
 
         match (self.location, direction) {
-            (Location::Head, Direction::Forward) => Some(entry_list.cursor_head()).transpose(),
+            (Location::Head, Direction::Forward) => {
+                Some(entry_list.cursor_head(object_file)).transpose()
+            }
             (Location::Head, Direction::Backward) => Ok(None),
             (Location::Tail, Direction::Forward) => Ok(None),
-            (Location::Tail, Direction::Backward) => Some(entry_list.cursor_tail()).transpose(),
+            (Location::Tail, Direction::Backward) => {
+                Some(entry_list.cursor_tail(object_file)).transpose()
+            }
             (Location::Realtime(realtime), _) => {
                 let predicate = |entry_offset| {
                     let entry_object = object_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
-                entry_list.directed_partition_point(predicate, direction)
+                entry_list.directed_partition_point(object_file, predicate, direction)
             }
             (Location::Entry(location_offset), _) => {
                 let predicate = |entry_offset| Ok(entry_offset < location_offset);
-                entry_list.directed_partition_point(predicate, direction)
+                entry_list.directed_partition_point(object_file, predicate, direction)
             }
             _ => {
                 unimplemented!();
@@ -142,8 +146,8 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
 
                 let entry_list = object_file.entry_list()?;
                 entry_list
-                    .directed_partition_point(predicate, direction)?
-                    .map(|c| c.value())
+                    .directed_partition_point(object_file, predicate, direction)?
+                    .map(|c| c.value(object_file))
                     .transpose()?
                     .map(Location::Entry)
             }
