@@ -540,11 +540,11 @@ fn main() {
         Ok(object_file) => {
             if true {
                 if let Err(e) = test_cursor(&object_file) {
-                    eprintln!("Cursor tests failed: {:?}", e);
+                    panic!("Cursor tests failed: {:?}", e);
                 }
             }
 
-            if false {
+            if true {
                 let mut items_accessed = 0;
                 let v = vec![
                     b"PRIORITY=6".as_slice(),
@@ -573,6 +573,6 @@ fn main() {
                 );
             }
         }
-        Err(e) => eprintln!("Failed to open journal file: {:?}", e),
+        Err(e) => panic!("Failed to open journal file: {:?}", e),
     }
 }
