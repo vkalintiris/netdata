@@ -21,13 +21,13 @@ impl Default for Location {
 }
 
 #[derive(Debug)]
-pub struct JournalCursor<'a, M: MemoryMap> {
+pub struct JournalCursor {
     pub location: Location,
     pub filter_expr: Option<FilterExpr>,
-    pub array_cursor: Option<offset_array::Cursor<'a, M>>,
+    pub array_cursor: Option<offset_array::Cursor>,
 }
 
-impl<'a, M: MemoryMap> JournalCursor<'a, M> {
+impl JournalCursor {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
@@ -53,13 +53,17 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
         self.set_location(Location::Head);
     }
 
-    pub fn step(&mut self, object_file: &'a ObjectFile<M>, direction: Direction) -> Result<bool> {
+    pub fn step<M: MemoryMap>(
+        &mut self,
+        object_file: &ObjectFile<M>,
+        direction: Direction,
+    ) -> Result<bool> {
         let new_location = if self.filter_expr.is_some() {
             self.resolve_filter_location(object_file, direction)?
         } else {
             self.array_cursor = match (self.array_cursor.as_ref(), direction) {
                 (Some(cursor), Direction::Forward) => cursor.next(object_file)?,
-                (Some(cursor), Direction::Backward) => cursor.previous()?,
+                (Some(cursor), Direction::Backward) => cursor.previous(object_file)?,
                 (None, _) => self.resolve_array_cursor(object_file, direction)?,
             };
 
@@ -85,11 +89,11 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
         }
     }
 
-    fn resolve_array_cursor(
+    fn resolve_array_cursor<M: MemoryMap>(
         &self,
-        object_file: &'a ObjectFile<M>,
+        object_file: &ObjectFile<M>,
         direction: Direction,
-    ) -> Result<Option<offset_array::Cursor<'a, M>>> {
+    ) -> Result<Option<offset_array::Cursor>> {
         let entry_list = object_file.entry_list()?;
 
         match (self.location, direction) {
@@ -118,7 +122,7 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
         }
     }
 
-    fn resolve_filter_location(
+    fn resolve_filter_location<M: MemoryMap>(
         &self,
         object_file: &ObjectFile<M>,
         direction: Direction,

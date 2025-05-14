@@ -15,7 +15,7 @@ pub use offset_array::Direction;
 use tracing::{error, instrument};
 
 pub struct JournalReader<'a, M: MemoryMap> {
-    cursor: JournalCursor<'a, M>,
+    cursor: JournalCursor,
 
     filter: Option<JournalFilter>,
     field_iterator: Option<FieldIterator<'a, M>>,
