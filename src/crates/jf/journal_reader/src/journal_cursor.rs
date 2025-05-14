@@ -65,7 +65,7 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
 
             self.array_cursor
                 .as_ref()
-                .map(|c| c.position())
+                .map(|c| c.value())
                 .transpose()?
                 .map(Location::Entry)
         };
@@ -143,7 +143,7 @@ impl<'a, M: MemoryMap> JournalCursor<'a, M> {
                 let entry_list = object_file.entry_list()?;
                 entry_list
                     .directed_partition_point(predicate, direction)?
-                    .map(|c| c.position())
+                    .map(|c| c.value())
                     .transpose()?
                     .map(Location::Entry)
             }

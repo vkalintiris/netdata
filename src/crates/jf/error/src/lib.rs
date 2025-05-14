@@ -45,6 +45,9 @@ pub enum JournalError {
     #[error("empty offset array node")]
     EmptyOffsetArrayNode,
 
+    #[error("empty inline cursor")]
+    EmptyInlineCursor,
+
     #[error("unset cursor")]
     UnsetCursor,
 

@@ -1,3 +1,4 @@
+use crate::offset_array::InlinedCursor;
 use error::{JournalError, Result};
 use std::fs::File;
 use window_manager::MemoryMap;
@@ -552,6 +553,16 @@ pub struct DataObjectHeader {
     pub n_entries: u64,
 }
 
+impl DataObjectHeader {
+    pub fn inlined_cursor(&self) -> Result<InlinedCursor> {
+        InlinedCursor::at_head(
+            self.entry_offset,
+            self.entry_array_offset,
+            self.n_entries as usize,
+        )
+    }
+}
+
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable, PartialEq, Eq)]
 #[repr(C)]
 pub struct CompactDataFields {
@@ -643,6 +654,10 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> DataObject<B> {
     // Get field value from payload (everything after the '=')
     pub fn field_value(&self) -> Option<&[u8]> {
         extract_field_value(self.payload_bytes(), true)
+    }
+
+    pub fn inlined_cursor(&self) -> Result<InlinedCursor> {
+        self.header.inlined_cursor()
     }
 }
 
