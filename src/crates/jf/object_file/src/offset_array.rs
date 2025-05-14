@@ -86,12 +86,15 @@ impl<'a, M: MemoryMap> Node<'a, M> {
 
     /// Returns the first index where the predicate returns false, or array length if
     /// the predicate is true for all elements
-    pub fn partition_point<F>(&self, predicate: F) -> Result<usize>
+    pub fn partition_point<F>(&self, left: usize, right: usize, predicate: F) -> Result<usize>
     where
         F: Fn(u64) -> Result<bool>,
     {
-        let mut left = 0;
-        let mut right = self.len();
+        let mut left = left;
+        let mut right = right;
+
+        debug_assert!(left <= right);
+        debug_assert!(right <= self.len());
 
         while left != right {
             let mid = left.midpoint(right);
@@ -110,13 +113,15 @@ impl<'a, M: MemoryMap> Node<'a, M> {
     /// Find the forward or backward (depending on direction) position that matches the predicate.
     pub fn directed_partition_point<F>(
         &self,
+        left: usize,
+        right: usize,
         predicate: F,
         direction: Direction,
     ) -> Result<Option<usize>>
     where
         F: Fn(u64) -> Result<bool>,
     {
-        let index = self.partition_point(predicate)?;
+        let index = self.partition_point(left, right, predicate)?;
 
         Ok(match direction {
             Direction::Forward => {
@@ -245,7 +250,12 @@ impl<'a, M: MemoryMap> List<'a, M> {
         let mut last_cursor: Option<Cursor<M>> = None;
 
         for node in self.nodes().flatten() {
-            if let Some(index) = node.directed_partition_point(&predicate, direction)? {
+            let left = 0;
+            let right = node.len();
+
+            if let Some(index) =
+                node.directed_partition_point(left, right, &predicate, direction)?
+            {
                 let cursor =
                     Cursor::at_position(self.clone(), node.offset, index, node.remaining_items)?;
 

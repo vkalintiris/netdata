@@ -538,13 +538,13 @@ fn main() {
     const WINDOW_SIZE: u64 = 4096;
     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
         Ok(object_file) => {
-            if false {
+            if true {
                 if let Err(e) = test_cursor(&object_file) {
                     eprintln!("Cursor tests failed: {:?}", e);
                 }
             }
 
-            if true {
+            if false {
                 let mut items_accessed = 0;
                 let v = vec![
                     b"PRIORITY=6".as_slice(),
