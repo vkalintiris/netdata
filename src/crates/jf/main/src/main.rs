@@ -476,52 +476,51 @@ fn test_cursor<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
     Ok(())
 }
 
-// fn test_inlined_cursor<M: MemoryMap>(object_file: &ObjectFile<M>, data: &[u8]) -> Result<u64> {
-//     let offset = object_file.find_data_offset_by_payload(data)?;
-//     println!("Offset: {:#x?}", offset);
+fn test_inlined_cursor<M: MemoryMap>(object_file: &ObjectFile<M>, data: &[u8]) -> Result<u64> {
+    let offset = object_file.find_data_offset_by_payload(data)?;
+    println!("Offset: {:#x?}", offset);
 
-//     let mut ic = {
-//         let data_object = object_file.data_object(offset)?;
-//         data_object.inlined_cursor()
-//     };
-//     println!("ic: {:#x?}", ic);
+    let mut ic = {
+        let data_object = object_file.data_object(offset)?;
+        data_object.inlined_cursor()
+    }
+    .unwrap();
+    println!("ic: {:#x?}", ic);
 
-//     let n = {
-//         let mut i = 0;
-//         loop {
-//             let v = ic.value(object_file)?;
-//             println!("v[{}] = {}", i, v);
+    let n = {
+        let mut i = 0;
+        loop {
+            let v = ic.value(object_file)?;
+            println!("v[{}] = {}", i, v);
 
-//             i += 1;
+            i += 1;
 
-//             if let Some(next_ic) = ic.next(object_file)? {
-//                 ic = next_ic;
-//             } else {
-//                 break;
-//             }
-//         }
+            if let Some(next_ic) = ic.next(object_file)? {
+                ic = next_ic;
+            } else {
+                break;
+            }
+        }
 
-//         i
-//     };
+        i
+    };
 
-//     return Ok(n);
+    let mut i = 0;
+    loop {
+        let v = ic.value(object_file)?;
+        println!("v[{}] = {}", n - (i + 1), v);
 
-//     // let mut i = 0;
-//     // loop {
-//     //     let v = ic.value(object_file)?;
-//     //     println!("v[{}] = {}", n - (i + 1), v);
+        i += 1;
 
-//     //     i += 1;
+        if let Some(next_ic) = ic.previous(object_file)? {
+            ic = next_ic;
+        } else {
+            break;
+        }
+    }
 
-//     //     if let Some(next_ic) = ic.previous(object_file)? {
-//     //         ic = next_ic;
-//     //     } else {
-//     //         break;
-//     //     }
-//     // }
-
-//     // Ok(i)
-// }
+    Ok(i)
+}
 
 // Example usage
 fn main() {
@@ -540,40 +539,40 @@ fn main() {
     const WINDOW_SIZE: u64 = 4096;
     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
         Ok(object_file) => {
-            if true {
+            if false {
                 if let Err(e) = test_cursor(&object_file) {
                     panic!("Cursor tests failed: {:?}", e);
                 }
             }
 
-            // if false {
-            //     let mut items_accessed = 0;
-            //     let v = vec![
-            //         b"PRIORITY=6".as_slice(),
-            //         b"_UID=1000".as_slice(),
-            //         b"_GID=1000".as_slice(),
-            //         b"_TRANSPORT=journal".as_slice(),
-            //         b"_RUNTIME_SCOPE=system".as_slice(),
-            //         b"_BOOT_ID=634e7837a1aa41daa9e948803f7cc742".as_slice(),
-            //         b"SYSLOG_FACILITY=3".as_slice(),
-            //         b"MESSAGE=Listening on pk-debconf-helper.socket - debconf communication socket.",
-            //     ];
+            if true {
+                let mut items_accessed = 0;
+                let v = vec![
+                    b"PRIORITY=6".as_slice(),
+                    b"_UID=1000".as_slice(),
+                    b"_GID=1000".as_slice(),
+                    b"_TRANSPORT=journal".as_slice(),
+                    b"_RUNTIME_SCOPE=system".as_slice(),
+                    b"_BOOT_ID=634e7837a1aa41daa9e948803f7cc742".as_slice(),
+                    b"SYSLOG_FACILITY=3".as_slice(),
+                    b"MESSAGE=Listening on pk-debconf-helper.socket - debconf communication socket.",
+                ];
 
-            //     for data in v {
-            //         match test_inlined_cursor(&object_file, data) {
-            //             Ok(i) => items_accessed += i,
-            //             Err(e) => {
-            //                 panic!("InlinedCursor tests failed: {:?}", e);
-            //             }
-            //         };
-            //     }
+                for data in v {
+                    match test_inlined_cursor(&object_file, data) {
+                        Ok(i) => items_accessed += i,
+                        Err(e) => {
+                            panic!("InlinedCursor tests failed: {:?}", e);
+                        }
+                    };
+                }
 
-            //     println!(
-            //         "items_accessed: {:?}, windows manager stats: {:?}",
-            //         items_accessed,
-            //         object_file.stats()
-            //     );
-            // }
+                println!(
+                    "items_accessed: {:?}, windows manager stats: {:?}",
+                    items_accessed,
+                    object_file.stats()
+                );
+            }
         }
         Err(e) => panic!("Failed to open journal file: {:?}", e),
     }

@@ -206,7 +206,7 @@ impl List {
     }
 
     /// Get a cursor at the first position in the chain
-    pub fn cursor_head(self) -> Result<Cursor> {
+    pub fn cursor_head(self) -> Cursor {
         Cursor::at_head(self)
     }
 
@@ -310,13 +310,13 @@ impl Cursor {
     }
 
     /// Create a cursor at the head of the chain
-    pub fn at_head(list: List) -> Result<Self> {
-        Ok(Self {
+    pub fn at_head(list: List) -> Self {
+        Self {
             list,
             array_offset: list.head_offset,
             array_index: 0,
             remaining_items: list.total_items,
-        })
+        }
     }
 
     /// Create a cursor at the tail of the chain
@@ -451,36 +451,94 @@ impl std::fmt::Debug for Cursor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct InlinedCursor {
-    // cursor: Option<Cursor>,
-    // inlined_offset: Option<NonZeroU64>,
-    // index: usize,
+    inlined_offset: NonZeroU64,
+    cursor: Option<Cursor>,
+    at_inlined_offset: bool,
 }
 
 impl InlinedCursor {
-    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Self {
-        todo!();
-        // let cursor = List::new(head_offset, total_items).map(Cursor::from_list);
-
-        // Self {
-        //     cursor,
-        //     inlined_offset: NonZeroU64::new(inlined_offset),
-        //     index: 0,
-        // }
+    pub fn at_head(inlined_offset: NonZeroU64, cursor: Option<Cursor>) -> Self {
+        Self {
+            inlined_offset,
+            cursor,
+            at_inlined_offset: true,
+        }
     }
 
-    pub fn at_tail<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Self> {
-        todo!();
+    pub fn at_tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Self> {
+        // Start with a copy of the current cursor
+        let mut result = *self;
+
+        // If we have an entry array list cursor, move it to the tail
+        if let Some(cursor) = self.cursor {
+            result.cursor = Some(cursor.list.cursor_tail(object_file)?);
+            result.at_inlined_offset = false;
+        }
+
+        Ok(result)
     }
 
-    pub fn next<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Option<Self>> {
-        todo!();
+    pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+        // Case 1: We're at the inlined entry, move to the first array entry
+        if self.at_inlined_offset {
+            let mut next_cursor = *self;
+
+            if self.cursor.is_some() {
+                next_cursor.at_inlined_offset = false;
+                return Ok(Some(next_cursor));
+            } else {
+                return Ok(None);
+            }
+        }
+
+        // Case 2: We're already in the entry array
+        if let Some(current_cursor) = self.cursor {
+            // Try to move to the next position in the array
+            if let Some(next_cursor) = current_cursor.next(object_file)? {
+                let mut result = *self;
+                result.cursor = Some(next_cursor);
+                return Ok(Some(result));
+            }
+        }
+
+        // No more entries
+        Ok(None)
     }
 
-    pub fn previous<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Option<Self>> {
-        todo!();
+    pub fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+        if self.at_inlined_offset {
+            return Ok(None);
+        }
+
+        if let Some(current_cursor) = self.cursor {
+            // Try to move to the previous position in the array
+            if let Some(prev_cursor) = current_cursor.previous(object_file)? {
+                // We can move back within the array
+                let mut ic = *self;
+                ic.cursor = Some(prev_cursor);
+                return Ok(Some(ic));
+            } else {
+                // We're at the first array position, move to the inlined entry
+                let mut ic = *self;
+                ic.at_inlined_offset = true;
+                return Ok(Some(ic));
+            }
+        }
+
+        unreachable!();
     }
 
-    pub fn value<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<u64> {
-        todo!();
+    pub fn value<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<u64> {
+        // Case 1: We're at the inlined entry
+        if self.at_inlined_offset {
+            return Ok(self.inlined_offset.get());
+        }
+
+        // Case 2: We're in the entry array
+        if let Some(cursor) = self.cursor {
+            return cursor.value(object_file);
+        }
+
+        unreachable!();
     }
 }

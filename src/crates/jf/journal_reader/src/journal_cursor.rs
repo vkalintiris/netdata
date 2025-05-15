@@ -99,7 +99,7 @@ impl JournalCursor {
             .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
         match (self.location, direction) {
-            (Location::Head, Direction::Forward) => Some(entry_list.cursor_head()).transpose(),
+            (Location::Head, Direction::Forward) => Ok(Some(entry_list.cursor_head())),
             (Location::Head, Direction::Backward) => Ok(None),
             (Location::Tail, Direction::Forward) => Ok(None),
             (Location::Tail, Direction::Backward) => {

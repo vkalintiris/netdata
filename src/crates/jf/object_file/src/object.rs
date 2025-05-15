@@ -1,4 +1,4 @@
-use crate::offset_array::{InlinedCursor, List};
+use crate::offset_array::{Cursor, InlinedCursor, List};
 use error::{JournalError, Result};
 use std::fs::File;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -556,11 +556,13 @@ pub struct DataObjectHeader {
 
 impl DataObjectHeader {
     pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
-        Some(InlinedCursor::at_head(
-            self.entry_offset,
-            self.entry_array_offset,
-            self.n_entries as usize,
-        ))
+        if self.n_entries == 0 {
+            return None;
+        }
+
+        let inlined_offset = NonZeroU64::new(self.entry_offset)?;
+        let cursor = self.entry_array_offset_list().map(Cursor::at_head);
+        Some(InlinedCursor::at_head(inlined_offset, cursor))
     }
 
     pub fn entry_array_offset_list(&self) -> Option<List> {
