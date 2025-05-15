@@ -1,10 +1,13 @@
 use error::{JournalError, Result};
-use object_file::{offset_array::Direction, ObjectFile};
+use object_file::{
+    offset_array::{Direction, InlinedCursor},
+    ObjectFile,
+};
 use window_manager::MemoryMap;
 
 #[derive(Clone, Debug)]
 pub enum FilterExpr {
-    DataOffset(u64),
+    Match(u64, Option<InlinedCursor>),
     Conjunction(Vec<FilterExpr>),
     Disjunction(Vec<FilterExpr>),
 }
@@ -20,7 +23,7 @@ impl FilterExpr {
             move |entry_offset: u64| -> Result<bool> { Ok(entry_offset < needle_offset) };
 
         match self {
-            FilterExpr::DataOffset(data_offset) => {
+            FilterExpr::Match(data_offset, _) => {
                 let entry_offset = object_file.data_object_directed_partition_point(
                     *data_offset,
                     predicate,
@@ -131,14 +134,16 @@ impl JournalFilter {
                     let offset = object_file
                         .find_data_offset_by_payload(self.current_matches[idx].as_slice())?;
 
-                    matches.push(FilterExpr::DataOffset(offset));
+                    let ic = object_file.data_object(offset)?.inlined_cursor();
+                    matches.push(FilterExpr::Match(offset, ic));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
                 let offset = object_file
                     .find_data_offset_by_payload(self.current_matches[start].as_slice())?;
 
-                elements.push(FilterExpr::DataOffset(offset));
+                let ic = object_file.data_object(offset)?.inlined_cursor();
+                elements.push(FilterExpr::Match(offset, ic));
             }
         }
 
