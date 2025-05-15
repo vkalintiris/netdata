@@ -277,42 +277,14 @@ impl<M: MemoryMap> ObjectFile<M> {
     where
         F: Fn(u64) -> Result<bool>,
     {
-        let (n_entries, inline_entry_offset, list) = {
-            let data_object = self.data_object(data_offset)?;
-
-            (
-                data_object.header.n_entries,
-                data_object.header.entry_offset,
-                data_object.header.entry_array_offset_list(),
-            )
+        let Some(cursor) = self.data_object(data_offset)?.inlined_cursor() else {
+            return Ok(None);
         };
 
-        if n_entries == 0 {
-            return Ok(None);
-        }
+        let best_match = cursor.directed_partition_point(self, predicate, direction)?;
 
-        let mut best_match: Option<u64> = None;
-
-        if let Some(list) = list {
-            if let Some(cursor) = list.directed_partition_point(self, &predicate, direction)? {
-                best_match = Some(cursor.value(self)?);
-            }
-        }
-
-        match direction {
-            offset_array::Direction::Forward => {
-                if !predicate(inline_entry_offset)? {
-                    best_match = Some(inline_entry_offset);
-                }
-            }
-            offset_array::Direction::Backward => {
-                if best_match.is_none() && predicate(inline_entry_offset)? {
-                    best_match = Some(inline_entry_offset);
-                }
-            }
-        }
-
-        Ok(best_match)
+        // Convert the result to an entry offset
+        best_match.map(|c| c.value(self)).transpose()
     }
 
     /// Creates an iterator over all offsets of an offset array list

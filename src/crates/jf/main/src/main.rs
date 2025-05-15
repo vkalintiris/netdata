@@ -539,12 +539,6 @@ fn main() {
     const WINDOW_SIZE: u64 = 4096;
     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
         Ok(object_file) => {
-            if false {
-                if let Err(e) = test_cursor(&object_file) {
-                    panic!("Cursor tests failed: {:?}", e);
-                }
-            }
-
             if true {
                 let mut items_accessed = 0;
                 let v = vec![
@@ -572,6 +566,12 @@ fn main() {
                     items_accessed,
                     object_file.stats()
                 );
+            }
+
+            if true {
+                if let Err(e) = test_cursor(&object_file) {
+                    panic!("Cursor tests failed: {:?}", e);
+                }
             }
         }
         Err(e) => panic!("Failed to open journal file: {:?}", e),

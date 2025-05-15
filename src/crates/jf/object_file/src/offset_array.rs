@@ -541,4 +541,77 @@ impl InlinedCursor {
 
         unreachable!();
     }
+
+    pub fn directed_partition_point<M, F>(
+        &self,
+        object_file: &ObjectFile<M>,
+        predicate: F,
+        direction: Direction,
+    ) -> Result<Option<Self>>
+    where
+        M: MemoryMap,
+        F: Fn(u64) -> Result<bool>,
+    {
+        // Variables to track our best match
+        let mut best_match: Option<Self> = None;
+
+        // Handle the inlined entry based on direction
+        match direction {
+            Direction::Forward => {
+                if !predicate(self.inlined_offset.get())? {
+                    // If predicate is false for inlined entry and we're going forward,
+                    // this is potentially our best match
+                    best_match = Some(*self);
+                }
+            }
+            Direction::Backward => {
+                if predicate(self.inlined_offset.get())? {
+                    // If predicate is true for inlined entry and we're going backward,
+                    // this is potentially our best match
+                    best_match = Some(*self);
+                }
+            }
+        }
+
+        // If we have an array cursor, check it too using binary search
+        if let Some(cursor) = self.cursor {
+            // Use the list's efficient directed_partition_point
+            if let Some(array_cursor) =
+                cursor
+                    .list
+                    .directed_partition_point(object_file, predicate, direction)?
+            {
+                // Create a new InlinedCursor with this array cursor
+                let array_match = Self {
+                    inlined_offset: self.inlined_offset,
+                    cursor: Some(array_cursor),
+                    at_inlined_offset: false, // Mark as using the array entry
+                };
+
+                // Compare with our current best match
+                if best_match.is_none() {
+                    best_match = Some(array_match);
+                } else {
+                    // Choose the better match based on direction
+                    let best_offset = best_match.as_ref().unwrap().value(object_file)?;
+                    let array_offset = array_match.value(object_file)?;
+
+                    match direction {
+                        Direction::Forward => {
+                            if array_offset < best_offset {
+                                best_match = Some(array_match);
+                            }
+                        }
+                        Direction::Backward => {
+                            if array_offset > best_offset {
+                                best_match = Some(array_match);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(best_match)
+    }
 }
