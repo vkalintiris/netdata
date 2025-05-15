@@ -88,7 +88,7 @@ impl<M: MemoryMap> ObjectFile<M> {
         })
     }
 
-    pub fn entry_list(&self) -> Result<offset_array::List> {
+    pub fn entry_list(&self) -> Option<offset_array::List> {
         offset_array::List::new(
             self.journal_header().entry_array_offset,
             self.journal_header().n_entries as usize,
@@ -295,7 +295,8 @@ impl<M: MemoryMap> ObjectFile<M> {
         let mut best_match: Option<u64> = None;
 
         if entry_array_offset != 0 {
-            let list = offset_array::List::new(entry_array_offset, n_entries as usize - 1)?;
+            let list = offset_array::List::new(entry_array_offset, n_entries as usize - 1)
+                .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
             if let Some(cursor) = list.directed_partition_point(self, &predicate, direction)? {
                 best_match = Some(cursor.value(self)?);

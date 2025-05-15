@@ -182,11 +182,8 @@ impl std::fmt::Debug for List {
 
 impl List {
     /// Create a new list from head offset and total items
-    pub fn new(head_offset: u64, total_items: usize) -> Result<Self> {
-        let head_offset =
-            NonZeroU64::new(head_offset).ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
-        Ok(Self {
+    pub fn new(head_offset: u64, total_items: usize) -> Option<Self> {
+        NonZeroU64::new(head_offset).map(|head_offset| Self {
             head_offset,
             total_items,
         })
@@ -296,25 +293,31 @@ impl List {
 /// A cursor pointing to a specific position within an offset array chain
 #[derive(Clone, Copy)]
 pub struct Cursor {
-    offset_array_list: List,
+    list: List,
     array_offset: NonZeroU64,
     array_index: usize,
     remaining_items: usize,
 }
 
 impl Cursor {
+    pub fn from_list(list: List) -> Cursor {
+        Self {
+            list,
+            array_offset: list.head_offset,
+            array_index: 0,
+            remaining_items: list.total_items,
+        }
+    }
+
     /// Create a cursor at the head of the chain
-    pub fn at_head<M: MemoryMap>(
-        object_file: &ObjectFile<M>,
-        offset_array_list: List,
-    ) -> Result<Self> {
-        let head = offset_array_list.head(object_file)?;
+    pub fn at_head<M: MemoryMap>(object_file: &ObjectFile<M>, list: List) -> Result<Self> {
+        let head = list.head(object_file)?;
         if head.is_empty() {
             return Err(JournalError::EmptyOffsetArrayList);
         }
 
         Ok(Self {
-            offset_array_list,
+            list,
             array_offset: head.offset,
             array_index: 0,
             remaining_items: head.remaining_items,
@@ -339,7 +342,7 @@ impl Cursor {
         }
 
         Ok(Self {
-            offset_array_list,
+            list: offset_array_list,
             array_offset: current_array.offset,
             array_index: len - 1,
             remaining_items: current_array.len(),
@@ -365,7 +368,7 @@ impl Cursor {
         }
 
         Ok(Self {
-            offset_array_list,
+            list: offset_array_list,
             array_offset,
             array_index,
             remaining_items,
@@ -388,7 +391,7 @@ impl Cursor {
         if self.array_index + 1 < array_node.len() {
             // Next item is in the same array
             return Ok(Some(Self {
-                offset_array_list: self.offset_array_list,
+                list: self.list,
                 array_offset: self.array_offset,
                 array_index: self.array_index + 1,
                 remaining_items: self.remaining_items,
@@ -402,7 +405,7 @@ impl Cursor {
         let next_array = array_node.next(object_file)?.unwrap();
 
         Ok(Some(Self {
-            offset_array_list: self.offset_array_list,
+            list: self.list,
             array_offset: next_array.offset,
             array_index: 0,
             remaining_items: self.remaining_items.saturating_sub(array_node.len()),
@@ -414,22 +417,22 @@ impl Cursor {
         if self.array_index > 0 {
             // Previous item is in the same array
             return Ok(Some(Self {
-                offset_array_list: self.offset_array_list,
+                list: self.list,
                 array_offset: self.array_offset,
                 array_index: self.array_index - 1,
                 remaining_items: self.remaining_items,
             }));
         }
 
-        if self.array_offset == self.offset_array_list.head_offset {
+        if self.array_offset == self.list.head_offset {
             return Ok(None);
         }
 
-        let mut node = self.offset_array_list.head(object_file)?;
+        let mut node = self.list.head(object_file)?;
         while node.has_next() {
             if node.next_offset == Some(self.array_offset) {
                 return Ok(Some(Self {
-                    offset_array_list: self.offset_array_list,
+                    list: self.list,
                     array_offset: node.offset,
                     array_index: node.len() - 1,
                     remaining_items: node.remaining_items,
@@ -455,13 +458,13 @@ impl std::fmt::Debug for Cursor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct InlinedCursor {
-    // cursor: Cursor,
-    // inlined_offset: u64,
-    // index: usize,
+    cursor: Option<Cursor>,
+    inlined_offset: Option<NonZeroU64>,
+    index: usize,
 }
 
 impl InlinedCursor {
-    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Result<Self> {
+    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Option<Self> {
         todo!();
     }
 

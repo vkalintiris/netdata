@@ -554,7 +554,7 @@ pub struct DataObjectHeader {
 }
 
 impl DataObjectHeader {
-    pub fn inlined_cursor(&self) -> Result<InlinedCursor> {
+    pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
         InlinedCursor::at_head(
             self.entry_offset,
             self.entry_array_offset,
@@ -656,7 +656,7 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> DataObject<B> {
         extract_field_value(self.payload_bytes(), true)
     }
 
-    pub fn inlined_cursor(&self) -> Result<InlinedCursor> {
+    pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
         self.header.inlined_cursor()
     }
 }

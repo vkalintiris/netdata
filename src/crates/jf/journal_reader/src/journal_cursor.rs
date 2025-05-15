@@ -94,7 +94,9 @@ impl JournalCursor {
         object_file: &ObjectFile<M>,
         direction: Direction,
     ) -> Result<Option<offset_array::Cursor>> {
-        let entry_list = object_file.entry_list()?;
+        let entry_list = object_file
+            .entry_list()
+            .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
         match (self.location, direction) {
             (Location::Head, Direction::Forward) => {
@@ -148,7 +150,10 @@ impl JournalCursor {
                     Ok(entry_object.header.realtime < realtime)
                 };
 
-                let entry_list = object_file.entry_list()?;
+                let entry_list = object_file
+                    .entry_list()
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+
                 entry_list
                     .directed_partition_point(object_file, predicate, direction)?
                     .map(|c| c.value(object_file))
