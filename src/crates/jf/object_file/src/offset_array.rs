@@ -1,5 +1,6 @@
 use crate::object_file::ObjectFile;
 use error::{JournalError, Result};
+use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,8 +11,8 @@ pub enum Direction {
 
 /// A reference to a single array of offsets in the journal file
 pub struct Node {
-    offset: u64,
-    next_offset: u64,
+    offset: NonZeroU64,
+    next_offset: Option<NonZeroU64>,
     capacity: usize,
     // Number of items remaining in this array and subsequent arrays
     remaining_items: usize,
@@ -21,18 +22,14 @@ impl Node {
     /// Create a new offset array reference
     fn new<M: MemoryMap>(
         object_file: &ObjectFile<M>,
-        offset: u64,
+        offset: NonZeroU64,
         remaining_items: usize,
     ) -> Result<Self> {
-        if offset == 0 {
-            return Err(JournalError::InvalidOffsetArrayOffset);
-        }
-
-        let array = object_file.offset_array_object(offset)?;
+        let array = object_file.offset_array_object(offset.get())?;
 
         Ok(Self {
             offset,
-            next_offset: array.header.next_offset_array,
+            next_offset: NonZeroU64::new(array.header.next_offset_array),
             capacity: array.capacity(),
             remaining_items,
         })
@@ -40,7 +37,7 @@ impl Node {
 
     /// Get the offset of this array in the file
     pub fn offset(&self) -> u64 {
-        self.offset
+        self.offset.get()
     }
 
     /// Get the maximum number of items this array can hold
@@ -60,7 +57,7 @@ impl Node {
 
     /// Check if this array has a next array in the chain
     pub fn has_next(&self) -> bool {
-        self.next_offset != 0 && self.remaining_items > self.len()
+        self.next_offset.is_some() && self.remaining_items > self.len()
     }
 
     /// Get the next array in the chain, if any
@@ -69,11 +66,11 @@ impl Node {
             return Ok(None);
         }
 
-        Ok(Some(Self::new(
-            object_file,
-            self.next_offset,
-            self.remaining_items - self.len(),
-        )?))
+        let next_offset = self.next_offset.unwrap();
+        let remaining_items = self.remaining_items - self.len();
+        let node = Self::new(object_file, next_offset, remaining_items);
+
+        Some(node).transpose()
     }
 
     /// Get an item at the specified index
@@ -82,7 +79,7 @@ impl Node {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        let array = object_file.offset_array_object(self.offset)?;
+        let array = object_file.offset_array_object(self.offset.get())?;
         array.get(index, self.remaining_items)
     }
 
@@ -155,9 +152,11 @@ impl Node {
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let next_offset = self.next_offset.map(|x| x.get()).unwrap_or(0);
+
         f.debug_struct("Node")
             .field("offset", &format!("0x{:x}", self.offset))
-            .field("next_offset", &format!("0x{:x}", self.next_offset))
+            .field("next_offset", &format!("0x{:x}", next_offset))
             .field("capacity", &self.capacity)
             .field("len", &self.len())
             .field("remaining_items", &self.remaining_items)
@@ -168,7 +167,7 @@ impl std::fmt::Debug for Node {
 /// A linked list of offset arrays
 #[derive(Copy, Clone)]
 pub struct List {
-    head_offset: u64,
+    head_offset: NonZeroU64,
     total_items: usize,
 }
 
@@ -184,9 +183,8 @@ impl std::fmt::Debug for List {
 impl List {
     /// Create a new list from head offset and total items
     pub fn new(head_offset: u64, total_items: usize) -> Result<Self> {
-        if head_offset == 0 {
-            return Err(JournalError::InvalidOffsetArrayOffset);
-        }
+        let head_offset =
+            NonZeroU64::new(head_offset).ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
         Ok(Self {
             head_offset,
@@ -299,34 +297,12 @@ impl List {
 #[derive(Clone, Copy)]
 pub struct Cursor {
     offset_array_list: List,
-    array_offset: u64,
+    array_offset: NonZeroU64,
     array_index: usize,
     remaining_items: usize,
 }
 
 impl Cursor {
-    pub fn get_metadata(&self) -> CursorMetadata {
-        CursorMetadata {
-            head_offset: self.offset_array_list.head_offset,
-            total_items: self.offset_array_list.total_items,
-            array_offset: self.array_offset,
-            array_index: self.array_index,
-            remaining_items: self.remaining_items,
-        }
-    }
-
-    pub fn from_metadata(cursor_metadata: &CursorMetadata) -> Result<Self> {
-        let offset_array_list =
-            List::new(cursor_metadata.head_offset, cursor_metadata.total_items)?;
-
-        Ok(Self {
-            offset_array_list,
-            array_offset: cursor_metadata.array_offset,
-            array_index: cursor_metadata.array_index,
-            remaining_items: cursor_metadata.remaining_items,
-        })
-    }
-
     /// Create a cursor at the head of the chain
     pub fn at_head<M: MemoryMap>(
         object_file: &ObjectFile<M>,
@@ -374,7 +350,7 @@ impl Cursor {
     pub fn at_position<M: MemoryMap>(
         object_file: &ObjectFile<M>,
         offset_array_list: List,
-        array_offset: u64,
+        array_offset: NonZeroU64,
         array_index: usize,
         remaining_items: usize,
     ) -> Result<Self> {
@@ -451,7 +427,7 @@ impl Cursor {
 
         let mut node = self.offset_array_list.head(object_file)?;
         while node.has_next() {
-            if node.next_offset == self.array_offset {
+            if node.next_offset == Some(self.array_offset) {
                 return Ok(Some(Self {
                     offset_array_list: self.offset_array_list,
                     array_offset: node.offset,
@@ -477,130 +453,31 @@ impl std::fmt::Debug for Cursor {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
-pub struct CursorMetadata {
-    // from `List` type
-    head_offset: u64,
-    total_items: usize,
-
-    // from `Cursor` type
-    array_offset: u64,
-    array_index: usize,
-    remaining_items: usize,
-}
-
-impl CursorMetadata {
-    pub fn new(head_offset: u64, total_items: usize) -> Self {
-        Self {
-            head_offset,
-            total_items,
-            array_offset: head_offset,
-            array_index: 0,
-            remaining_items: total_items,
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone)]
 pub struct InlinedCursor {
-    cursor_metadata: CursorMetadata,
-    inlined_offset: u64,
-    index: usize,
+    // cursor: Cursor,
+    // inlined_offset: u64,
+    // index: usize,
 }
 
 impl InlinedCursor {
-    pub fn at_head(inlined_offset: u64, head_offset: u64, total_items: usize) -> Result<Self> {
-        if total_items == 0 || inlined_offset == 0 {
-            return Err(JournalError::EmptyInlineCursor);
-        } else if total_items > 1 && head_offset == 0 {
-            return Err(JournalError::EmptyOffsetArrayList);
-        }
-
-        let cursor_metadata = CursorMetadata::new(head_offset, total_items.saturating_sub(1));
-
-        Ok(Self {
-            cursor_metadata,
-            inlined_offset,
-            index: 0,
-        })
+    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Result<Self> {
+        todo!();
     }
 
-    pub fn at_tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Self> {
-        if self.cursor_metadata.total_items == 0 {
-            // We don't have an offset array list, `self` should be positioned
-            // at the inlined_offset
-            debug_assert_eq!(self.index, 0);
-            return Ok(*self);
-        }
-
-        // get the offset array list
-        let offset_array_list = List::new(
-            self.cursor_metadata.head_offset,
-            self.cursor_metadata.total_items,
-        )?;
-        // construct a cursor at the tail
-        let cursor = Cursor::at_tail(object_file, offset_array_list)?;
-        let cursor_metadata = cursor.get_metadata();
-
-        // Advance the index
-        let mut ic = *self;
-        ic.index = cursor_metadata.total_items + 1;
-        Ok(ic)
+    pub fn at_tail<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Self> {
+        todo!();
     }
 
-    pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
-        if self.index == 0 {
-            if self.cursor_metadata.total_items == 0 {
-                return Ok(None);
-            } else {
-                let mut ic = *self;
-                ic.index += 1;
-                return Ok(Some(ic));
-            }
-        } else if self.index == (self.cursor_metadata.total_items + 1) {
-            return Ok(None);
-        }
-
-        let cursor = Cursor::from_metadata(&self.cursor_metadata)?;
-        if let Some(cursor) = cursor.next(object_file)?.as_ref() {
-            let mut ic = *self;
-            ic.cursor_metadata = cursor.get_metadata();
-            ic.index += 1;
-            Ok(Some(ic))
-        } else {
-            Ok(None)
-        }
+    pub fn next<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+        todo!();
     }
 
-    pub fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
-        if self.index == 0 {
-            // Already at the first item (inlined offset)
-            return Ok(None);
-        } else if self.index == 1 {
-            // We're at the first item in the offset array list, go back to inlined offset
-            let mut ic = *self;
-            ic.index = 0;
-            return Ok(Some(ic));
-        }
-
-        // We're in the offset array list
-        let cursor = Cursor::from_metadata(&self.cursor_metadata)?;
-        if let Some(cursor) = cursor.previous(object_file)?.as_ref() {
-            let mut ic = *self;
-            ic.cursor_metadata = cursor.get_metadata();
-            ic.index -= 1;
-            Ok(Some(ic))
-        } else {
-            Ok(None)
-        }
+    pub fn previous<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+        todo!();
     }
 
-    pub fn value<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<u64> {
-        if self.index == 0 {
-            Ok(self.inlined_offset)
-        } else {
-            let cursor = Cursor::from_metadata(&self.cursor_metadata)?;
-            cursor.value(object_file)
-        }
+    pub fn value<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<u64> {
+        todo!();
     }
 }
