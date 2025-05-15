@@ -555,11 +555,11 @@ pub struct DataObjectHeader {
 
 impl DataObjectHeader {
     pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
-        InlinedCursor::at_head(
+        Some(InlinedCursor::at_head(
             self.entry_offset,
             self.entry_array_offset,
             self.n_entries as usize,
-        )
+        ))
     }
 }
 

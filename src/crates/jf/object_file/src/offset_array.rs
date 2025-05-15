@@ -464,8 +464,14 @@ pub struct InlinedCursor {
 }
 
 impl InlinedCursor {
-    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Option<Self> {
-        todo!();
+    pub fn at_head(inlined_offset: u64, head_offset: u64, total_items: usize) -> Self {
+        let cursor = List::new(head_offset, total_items).map(Cursor::from_list);
+
+        Self {
+            cursor,
+            inlined_offset: NonZeroU64::new(inlined_offset),
+            index: 0,
+        }
     }
 
     pub fn at_tail<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Self> {
