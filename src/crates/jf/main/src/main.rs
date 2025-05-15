@@ -547,12 +547,16 @@ fn main() {
                     b"_GID=1000".as_slice(),
                     b"_TRANSPORT=journal".as_slice(),
                     b"_RUNTIME_SCOPE=system".as_slice(),
-                    b"_BOOT_ID=634e7837a1aa41daa9e948803f7cc742".as_slice(),
+                    b"_BOOT_ID=4afd2bd1bbb34cb3850cc5d75fdef5f7".as_slice(),
                     b"SYSLOG_FACILITY=3".as_slice(),
                     b"MESSAGE=Listening on pk-debconf-helper.socket - debconf communication socket.",
                 ];
 
                 for data in v {
+                    println!(
+                        "Running inline cursor test for >>>{}<<<",
+                        String::from_utf8_lossy(data)
+                    );
                     match test_inlined_cursor(&object_file, data) {
                         Ok(i) => items_accessed += i,
                         Err(e) => {

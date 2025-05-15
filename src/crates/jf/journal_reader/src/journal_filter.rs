@@ -4,7 +4,7 @@ use window_manager::MemoryMap;
 
 #[derive(Clone, Debug)]
 pub enum FilterExpr {
-    Match(u64),
+    DataOffset(u64),
     Conjunction(Vec<FilterExpr>),
     Disjunction(Vec<FilterExpr>),
 }
@@ -20,7 +20,7 @@ impl FilterExpr {
             move |entry_offset: u64| -> Result<bool> { Ok(entry_offset < needle_offset) };
 
         match self {
-            FilterExpr::Match(data_offset) => {
+            FilterExpr::DataOffset(data_offset) => {
                 let entry_offset = object_file.data_object_directed_partition_point(
                     *data_offset,
                     predicate,
@@ -131,14 +131,14 @@ impl JournalFilter {
                     let offset = object_file
                         .find_data_offset_by_payload(self.current_matches[idx].as_slice())?;
 
-                    matches.push(FilterExpr::Match(offset));
+                    matches.push(FilterExpr::DataOffset(offset));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
                 let offset = object_file
                     .find_data_offset_by_payload(self.current_matches[start].as_slice())?;
 
-                elements.push(FilterExpr::Match(offset));
+                elements.push(FilterExpr::DataOffset(offset));
             }
         }
 
