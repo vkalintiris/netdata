@@ -206,8 +206,8 @@ impl List {
     }
 
     /// Get a cursor at the first position in the chain
-    pub fn cursor_head<M: MemoryMap>(self, object_file: &ObjectFile<M>) -> Result<Cursor> {
-        Cursor::at_head(object_file, self)
+    pub fn cursor_head(self) -> Result<Cursor> {
+        Cursor::at_head(self)
     }
 
     /// Get a cursor at the last position in the chain
@@ -310,14 +310,12 @@ impl Cursor {
     }
 
     /// Create a cursor at the head of the chain
-    pub fn at_head<M: MemoryMap>(object_file: &ObjectFile<M>, list: List) -> Result<Self> {
-        let head = list.head(object_file)?;
-
+    pub fn at_head(list: List) -> Result<Self> {
         Ok(Self {
             list,
-            array_offset: head.offset,
+            array_offset: list.head_offset,
             array_index: 0,
-            remaining_items: head.remaining_items,
+            remaining_items: list.total_items,
         })
     }
 
