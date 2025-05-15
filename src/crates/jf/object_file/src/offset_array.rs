@@ -1,6 +1,6 @@
 use crate::object_file::ObjectFile;
 use error::{JournalError, Result};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,9 +13,9 @@ pub enum Direction {
 pub struct Node {
     offset: NonZeroU64,
     next_offset: Option<NonZeroU64>,
-    capacity: usize,
+    capacity: NonZeroUsize,
     // Number of items remaining in this array and subsequent arrays
-    remaining_items: usize,
+    remaining_items: NonZeroUsize,
 }
 
 impl Node {
@@ -23,14 +23,16 @@ impl Node {
     fn new<M: MemoryMap>(
         object_file: &ObjectFile<M>,
         offset: NonZeroU64,
-        remaining_items: usize,
+        remaining_items: NonZeroUsize,
     ) -> Result<Self> {
         let array = object_file.offset_array_object(offset.get())?;
+        let capacity =
+            NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
 
         Ok(Self {
             offset,
             next_offset: NonZeroU64::new(array.header.next_offset_array),
-            capacity: array.capacity(),
+            capacity,
             remaining_items,
         })
     }
@@ -41,18 +43,13 @@ impl Node {
     }
 
     /// Get the maximum number of items this array can hold
-    pub fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> NonZeroUsize {
         self.capacity
     }
 
     /// Get the number of items available in this array
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> NonZeroUsize {
         self.capacity.min(self.remaining_items)
-    }
-
-    /// Check if this array is empty
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Check if this array has a next array in the chain
@@ -67,7 +64,10 @@ impl Node {
         }
 
         let next_offset = self.next_offset.unwrap();
-        let remaining_items = self.remaining_items - self.len();
+        let remaining_items = {
+            let n = self.remaining_items.get().saturating_sub(self.len().get());
+            NonZeroUsize::new(n).ok_or(JournalError::EmptyOffsetArrayNode)?
+        };
         let node = Self::new(object_file, next_offset, remaining_items);
 
         Some(node).transpose()
@@ -75,12 +75,12 @@ impl Node {
 
     /// Get an item at the specified index
     pub fn get<M: MemoryMap>(&self, object_file: &ObjectFile<M>, index: usize) -> Result<u64> {
-        if index >= self.len() {
+        if index >= self.len().get() {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
         let array = object_file.offset_array_object(self.offset.get())?;
-        array.get(index, self.remaining_items)
+        array.get(index, self.remaining_items.get())
     }
 
     /// Returns the first index where the predicate returns false, or array length if
@@ -100,7 +100,7 @@ impl Node {
         let mut right = right;
 
         debug_assert!(left <= right);
-        debug_assert!(right <= self.len());
+        debug_assert!(right <= self.len().get());
 
         while left != right {
             let mid = left.midpoint(right);
@@ -133,7 +133,7 @@ impl Node {
 
         Ok(match direction {
             Direction::Forward => {
-                if index < self.len() {
+                if index < self.len().get() {
                     Some(index)
                 } else {
                     None
@@ -168,7 +168,7 @@ impl std::fmt::Debug for Node {
 #[derive(Copy, Clone)]
 pub struct List {
     head_offset: NonZeroU64,
-    total_items: usize,
+    total_items: NonZeroUsize,
 }
 
 impl std::fmt::Debug for List {
@@ -182,11 +182,11 @@ impl std::fmt::Debug for List {
 
 impl List {
     /// Create a new list from head offset and total items
-    pub fn new(head_offset: u64, total_items: usize) -> Option<Self> {
-        NonZeroU64::new(head_offset).map(|head_offset| Self {
+    pub fn new(head_offset: NonZeroU64, total_items: NonZeroUsize) -> Self {
+        Self {
             head_offset,
             total_items,
-        })
+        }
     }
 
     /// Get the head array of this chain
@@ -237,7 +237,7 @@ impl List {
 
         loop {
             let left = 0;
-            let right = node.len();
+            let right = node.len().get();
 
             if let Some(index) =
                 node.directed_partition_point(object_file, left, right, &predicate, direction)?
@@ -261,7 +261,7 @@ impl List {
 
                         // If this match is at the end of the array and there's a next array,
                         // we should check the next array as well
-                        if index == node.len() - 1 && node.has_next() {
+                        if index == node.len().get() - 1 && node.has_next() {
                             // continue;
                         } else {
                             return Ok(last_cursor);
@@ -296,7 +296,7 @@ pub struct Cursor {
     list: List,
     array_offset: NonZeroU64,
     array_index: usize,
-    remaining_items: usize,
+    remaining_items: NonZeroUsize,
 }
 
 impl Cursor {
@@ -312,9 +312,6 @@ impl Cursor {
     /// Create a cursor at the head of the chain
     pub fn at_head<M: MemoryMap>(object_file: &ObjectFile<M>, list: List) -> Result<Self> {
         let head = list.head(object_file)?;
-        if head.is_empty() {
-            return Err(JournalError::EmptyOffsetArrayList);
-        }
 
         Ok(Self {
             list,
@@ -325,26 +322,17 @@ impl Cursor {
     }
 
     /// Create a cursor at the tail of the chain
-    pub fn at_tail<M: MemoryMap>(
-        object_file: &ObjectFile<M>,
-        offset_array_list: List,
-    ) -> Result<Self> {
-        let mut current_array = offset_array_list.head(object_file)?;
+    pub fn at_tail<M: MemoryMap>(object_file: &ObjectFile<M>, list: List) -> Result<Self> {
+        let mut current_array = list.head(object_file)?;
 
         while let Some(next_array) = current_array.next(object_file)? {
             current_array = next_array;
         }
 
-        let len = current_array.len();
-
-        if len == 0 {
-            return Err(JournalError::EmptyOffsetArrayNode);
-        }
-
         Ok(Self {
-            list: offset_array_list,
+            list,
             array_offset: current_array.offset,
-            array_index: len - 1,
+            array_index: current_array.len().get() - 1,
             remaining_items: current_array.len(),
         })
     }
@@ -355,7 +343,7 @@ impl Cursor {
         offset_array_list: List,
         array_offset: NonZeroU64,
         array_index: usize,
-        remaining_items: usize,
+        remaining_items: NonZeroUsize,
     ) -> Result<Self> {
         debug_assert!(offset_array_list.total_items >= remaining_items);
 
@@ -363,7 +351,7 @@ impl Cursor {
         let array = Node::new(object_file, array_offset, remaining_items)?;
 
         // Verify the index is valid
-        if array_index >= array.len() {
+        if array_index >= array.len().get() {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
@@ -388,7 +376,7 @@ impl Cursor {
     pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         let array_node = self.node(object_file)?;
 
-        if self.array_index + 1 < array_node.len() {
+        if self.array_index + 1 < array_node.len().get() {
             // Next item is in the same array
             return Ok(Some(Self {
                 list: self.list,
@@ -404,12 +392,19 @@ impl Cursor {
 
         let next_array = array_node.next(object_file)?.unwrap();
 
-        Ok(Some(Self {
-            list: self.list,
-            array_offset: next_array.offset,
-            array_index: 0,
-            remaining_items: self.remaining_items.saturating_sub(array_node.len()),
-        }))
+        match NonZeroUsize::new(
+            self.remaining_items
+                .get()
+                .saturating_sub(array_node.len().get()),
+        ) {
+            None => Ok(None),
+            Some(remaining_items) => Ok(Some(Self {
+                list: self.list,
+                array_offset: next_array.offset,
+                array_index: 0,
+                remaining_items,
+            })),
+        }
     }
 
     /// Move to the previous position
@@ -434,7 +429,7 @@ impl Cursor {
                 return Ok(Some(Self {
                     list: self.list,
                     array_offset: node.offset,
-                    array_index: node.len() - 1,
+                    array_index: node.len().get() - 1,
                     remaining_items: node.remaining_items,
                 }));
             }
@@ -458,20 +453,21 @@ impl std::fmt::Debug for Cursor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct InlinedCursor {
-    cursor: Option<Cursor>,
-    inlined_offset: Option<NonZeroU64>,
-    index: usize,
+    // cursor: Option<Cursor>,
+    // inlined_offset: Option<NonZeroU64>,
+    // index: usize,
 }
 
 impl InlinedCursor {
-    pub fn at_head(inlined_offset: u64, head_offset: u64, total_items: usize) -> Self {
-        let cursor = List::new(head_offset, total_items).map(Cursor::from_list);
+    pub fn at_head(_inlined_offset: u64, _head_offset: u64, _total_items: usize) -> Self {
+        todo!();
+        // let cursor = List::new(head_offset, total_items).map(Cursor::from_list);
 
-        Self {
-            cursor,
-            inlined_offset: NonZeroU64::new(inlined_offset),
-            index: 0,
-        }
+        // Self {
+        //     cursor,
+        //     inlined_offset: NonZeroU64::new(inlined_offset),
+        //     index: 0,
+        // }
     }
 
     pub fn at_tail<M: MemoryMap>(&self, _object_file: &ObjectFile<M>) -> Result<Self> {

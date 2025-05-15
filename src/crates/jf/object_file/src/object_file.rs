@@ -2,6 +2,7 @@ use crate::hash;
 use crate::object::*;
 use crate::offset_array;
 use error::{JournalError, Result};
+use std::num::{NonZeroU64, NonZeroUsize};
 // use std::backtrace::Backtrace;
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
@@ -89,10 +90,9 @@ impl<M: MemoryMap> ObjectFile<M> {
     }
 
     pub fn entry_list(&self) -> Option<offset_array::List> {
-        offset_array::List::new(
-            self.journal_header().entry_array_offset,
-            self.journal_header().n_entries as usize,
-        )
+        let head_offset = std::num::NonZeroU64::new(self.journal_header().entry_array_offset)?;
+        let total_items = std::num::NonZeroUsize::new(self.journal_header().n_entries as usize)?;
+        Some(offset_array::List::new(head_offset, total_items))
     }
 
     pub fn journal_header(&self) -> &JournalHeader {
@@ -278,13 +278,13 @@ impl<M: MemoryMap> ObjectFile<M> {
     where
         F: Fn(u64) -> Result<bool>,
     {
-        let (inline_entry_offset, entry_array_offset, n_entries) = {
+        let (n_entries, inline_entry_offset, list) = {
             let data_object = self.data_object(data_offset)?;
 
             (
-                data_object.header.entry_offset,
-                data_object.header.entry_array_offset,
                 data_object.header.n_entries,
+                data_object.header.entry_offset,
+                data_object.header.entry_array_offset_list(),
             )
         };
 
@@ -294,10 +294,7 @@ impl<M: MemoryMap> ObjectFile<M> {
 
         let mut best_match: Option<u64> = None;
 
-        if entry_array_offset != 0 {
-            let list = offset_array::List::new(entry_array_offset, n_entries as usize - 1)
-                .ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
+        if let Some(list) = list {
             if let Some(cursor) = list.directed_partition_point(self, &predicate, direction)? {
                 best_match = Some(cursor.value(self)?);
             }

@@ -1,6 +1,7 @@
-use crate::offset_array::InlinedCursor;
+use crate::offset_array::{InlinedCursor, List};
 use error::{JournalError, Result};
 use std::fs::File;
+use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
 use zerocopy::{ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
@@ -560,6 +561,13 @@ impl DataObjectHeader {
             self.entry_array_offset,
             self.n_entries as usize,
         ))
+    }
+
+    pub fn entry_array_offset_list(&self) -> Option<List> {
+        let total_items = NonZeroUsize::new(self.n_entries.saturating_sub(1) as usize)?;
+        let head_offset = NonZeroU64::new(self.entry_array_offset)?;
+
+        Some(List::new(head_offset, total_items))
     }
 }
 
