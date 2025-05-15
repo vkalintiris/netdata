@@ -2,7 +2,6 @@ use crate::hash;
 use crate::object::*;
 use crate::offset_array;
 use error::{JournalError, Result};
-use std::num::{NonZeroU64, NonZeroUsize};
 // use std::backtrace::Backtrace;
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
