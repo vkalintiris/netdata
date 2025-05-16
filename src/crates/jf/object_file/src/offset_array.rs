@@ -559,33 +559,32 @@ impl InlinedCursor {
         match direction {
             Direction::Forward => {
                 if !predicate(self.inlined_offset.get())? {
-                    // If predicate is false for inlined entry and we're going forward,
-                    // this is potentially our best match
-                    best_match = Some(*self);
+                    let ic = InlinedCursor::at_head(self.inlined_offset, self.cursor);
+                    return Ok(Some(ic));
                 }
             }
             Direction::Backward => {
                 if predicate(self.inlined_offset.get())? {
                     // If predicate is true for inlined entry and we're going backward,
                     // this is potentially our best match
-                    best_match = Some(*self);
+                    let ic = InlinedCursor::at_head(self.inlined_offset, self.cursor);
+                    best_match = Some(ic);
                 }
             }
         }
 
         // If we have an array cursor, check it too using binary search
         if let Some(cursor) = self.cursor {
-            // Use the list's efficient directed_partition_point
-            if let Some(array_cursor) =
-                cursor
-                    .list
-                    .directed_partition_point(object_file, predicate, direction)?
-            {
+            let ic = cursor
+                .list
+                .directed_partition_point(object_file, predicate, direction)?;
+
+            if let Some(ic) = ic {
                 // Create a new InlinedCursor with this array cursor
                 let array_match = Self {
                     inlined_offset: self.inlined_offset,
-                    cursor: Some(array_cursor),
-                    at_inlined_offset: false, // Mark as using the array entry
+                    cursor: Some(ic),
+                    at_inlined_offset: false,
                 };
 
                 // Compare with our current best match

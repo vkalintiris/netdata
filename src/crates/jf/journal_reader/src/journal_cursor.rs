@@ -12,7 +12,6 @@ pub enum Location {
     Seqnum(u64, Option<[u8; 16]>),
     XorHash(u64),
     Entry(u64),
-    ResolvedEntry(u64),
 }
 
 impl Default for Location {
@@ -85,9 +84,7 @@ impl JournalCursor {
 
     pub fn position(&self) -> Result<u64> {
         match self.location {
-            Location::Entry(entry_offset) | Location::ResolvedEntry(entry_offset) => {
-                Ok(entry_offset)
-            }
+            Location::Entry(entry_offset) => Ok(entry_offset),
             _ => Err(JournalError::UnsetCursor),
         }
     }
@@ -136,7 +133,7 @@ impl JournalCursor {
                 .as_ref()
                 .unwrap()
                 .lookup(object_file, u64::MIN, Direction::Forward)?
-                .map(Location::ResolvedEntry),
+                .map(Location::Entry),
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
             (Location::Tail, Direction::Backward) => self
@@ -144,7 +141,7 @@ impl JournalCursor {
                 .as_ref()
                 .unwrap()
                 .lookup(object_file, u64::MAX, Direction::Backward)?
-                .map(Location::ResolvedEntry),
+                .map(Location::Entry),
             (Location::Realtime(realtime), _) => {
                 let predicate = |entry_offset| {
                     let entry_object = object_file.entry_object(entry_offset)?;
@@ -159,26 +156,20 @@ impl JournalCursor {
                     .directed_partition_point(object_file, predicate, direction)?
                     .map(|c| c.value(object_file))
                     .transpose()?
-                    .map(Location::ResolvedEntry)
+                    .map(Location::Entry)
             }
             (Location::Entry(location_offset), Direction::Forward) => self
                 .filter_expr
                 .as_ref()
                 .unwrap()
                 .lookup(object_file, location_offset.saturating_add(1), direction)?
-                .map(Location::ResolvedEntry),
+                .map(Location::Entry),
             (Location::Entry(location_offset), Direction::Backward) => self
                 .filter_expr
                 .as_ref()
                 .unwrap()
                 .lookup(object_file, location_offset.saturating_sub(1), direction)?
-                .map(Location::ResolvedEntry),
-            (Location::ResolvedEntry(_), Direction::Forward) => self
-                .filter_expr
-                .as_mut()
-                .unwrap()
-                .next(object_file)?
-                .map(Location::ResolvedEntry),
+                .map(Location::Entry),
             _ => {
                 panic!();
             }
