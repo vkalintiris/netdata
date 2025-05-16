@@ -457,6 +457,20 @@ pub struct InlinedCursor {
 }
 
 impl InlinedCursor {
+    pub fn head(&self) -> Self {
+        let mut ic = *self;
+
+        ic.at_inlined_offset = true;
+
+        if let Some(cursor) = ic.cursor.as_mut() {
+            cursor.array_offset = cursor.list.head_offset;
+            cursor.array_index = 0;
+            cursor.remaining_items = cursor.list.total_items;
+        }
+
+        ic
+    }
+
     pub fn at_head(inlined_offset: NonZeroU64, cursor: Option<Cursor>) -> Self {
         Self {
             inlined_offset,
@@ -559,16 +573,14 @@ impl InlinedCursor {
         match direction {
             Direction::Forward => {
                 if !predicate(self.inlined_offset.get())? {
-                    let ic = InlinedCursor::at_head(self.inlined_offset, self.cursor);
-                    return Ok(Some(ic));
+                    return Ok(Some(self.head()));
                 }
             }
             Direction::Backward => {
                 if predicate(self.inlined_offset.get())? {
                     // If predicate is true for inlined entry and we're going backward,
                     // this is potentially our best match
-                    let ic = InlinedCursor::at_head(self.inlined_offset, self.cursor);
-                    best_match = Some(ic);
+                    best_match = Some(self.head());
                 }
             }
         }
