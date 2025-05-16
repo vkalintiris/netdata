@@ -484,23 +484,29 @@ impl InlinedCursor {
     pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         // Case 1: We're at the inlined entry, move to the first array entry
         if self.at_inlined_offset {
-            let mut next_cursor = *self;
-
             if self.cursor.is_some() {
-                next_cursor.at_inlined_offset = false;
-                return Ok(Some(next_cursor));
+                return Ok(Some(Self {
+                    inlined_offset: self.inlined_offset,
+                    cursor: self.cursor,
+                    at_inlined_offset: false,
+                }));
             } else {
                 return Ok(None);
             }
         }
 
         // Case 2: We're already in the entry array
-        if let Some(current_cursor) = self.cursor {
-            // Try to move to the next position in the array
-            if let Some(next_cursor) = current_cursor.next(object_file)? {
-                let mut result = *self;
-                result.cursor = Some(next_cursor);
-                return Ok(Some(result));
+        if let Some(current_cursor) = self.cursor.as_ref() {
+            let next_cursor = current_cursor.next(object_file)?;
+
+            if next_cursor.is_some() {
+                return Ok(Some(Self {
+                    inlined_offset: self.inlined_offset,
+                    cursor: next_cursor,
+                    at_inlined_offset: false,
+                }));
+            } else {
+                return Ok(None);
             }
         }
 
