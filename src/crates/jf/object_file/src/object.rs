@@ -562,7 +562,7 @@ impl DataObjectHeader {
 
         let inlined_offset = NonZeroU64::new(self.entry_offset)?;
         let cursor = self.entry_array_offset_list().map(Cursor::at_head);
-        Some(InlinedCursor::at_head(inlined_offset, cursor))
+        Some(InlinedCursor::new(inlined_offset, cursor))
     }
 
     pub fn entry_array_offset_list(&self) -> Option<List> {

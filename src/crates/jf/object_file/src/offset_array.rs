@@ -300,13 +300,8 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    pub fn from_list(list: List) -> Cursor {
-        Self {
-            list,
-            array_offset: list.head_offset,
-            array_index: 0,
-            remaining_items: list.total_items,
-        }
+    pub fn head(&self) -> Self {
+        Self::at_head(self.list)
     }
 
     /// Create a cursor at the head of the chain
@@ -457,24 +452,18 @@ pub struct InlinedCursor {
 }
 
 impl InlinedCursor {
-    pub fn head(&self) -> Self {
-        let mut ic = *self;
-
-        ic.at_inlined_offset = true;
-
-        if let Some(cursor) = ic.cursor.as_mut() {
-            cursor.array_offset = cursor.list.head_offset;
-            cursor.array_index = 0;
-            cursor.remaining_items = cursor.list.total_items;
-        }
-
-        ic
-    }
-
-    pub fn at_head(inlined_offset: NonZeroU64, cursor: Option<Cursor>) -> Self {
+    pub fn new(inlined_offset: NonZeroU64, cursor: Option<Cursor>) -> Self {
         Self {
             inlined_offset,
             cursor,
+            at_inlined_offset: true,
+        }
+    }
+
+    pub fn head(&self) -> Self {
+        Self {
+            inlined_offset: self.inlined_offset,
+            cursor: self.cursor.as_ref().map(|c| c.head()),
             at_inlined_offset: true,
         }
     }
