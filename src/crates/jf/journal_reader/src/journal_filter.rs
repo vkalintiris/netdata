@@ -1,5 +1,3 @@
-use std::iter::Filter;
-
 use error::{JournalError, Result};
 use object_file::{
     offset_array::{Direction, InlinedCursor},
@@ -74,7 +72,7 @@ impl FilterExpr {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub fn head(&mut self) {
         match self {
             FilterExpr::Match(_, None) => (),
             FilterExpr::Match(_, Some(ic)) => {
@@ -82,17 +80,19 @@ impl FilterExpr {
             }
             FilterExpr::Conjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.reset();
+                    filter_expr.head();
                 }
             }
             FilterExpr::Disjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.reset();
+                    filter_expr.head();
                 }
             }
         }
     }
 
+    // Returns the offset of the next matching entry, if any, with an offset
+    // greater or equal to the needle offset.
     pub fn next<M: MemoryMap>(
         &mut self,
         object_file: &ObjectFile<M>,
@@ -100,7 +100,7 @@ impl FilterExpr {
     ) -> Result<Option<u64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(ic)) => ic.skip_until(object_file, needle_offset),
+            FilterExpr::Match(_, Some(ic)) => ic.next_until(object_file, needle_offset),
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -132,203 +132,55 @@ impl FilterExpr {
                     }
                 }
 
-                todo!()
+                Ok(best_offset)
             }
         }
     }
 
-    // Moves to the next entry that matches this filter expression after the current position
-    // Returns the offset of the next matching entry, if any
-    // pub fn next<M: MemoryMap>(&mut self, _object_file: &ObjectFile<M>) -> Result<Option<u64>> {
-    // match self {
-    //     FilterExpr::Match(data_offset, cursor_opt) => {
-    //         // If we have a cursor, advance it to the next position
-    //         if let Some(cursor) = cursor_opt {
-    //             // Try to move to the next position
-    //             if let Some(next_cursor) = cursor.next(object_file)? {
-    //                 // Update the cursor and return the new position
-    //                 *cursor = next_cursor;
-    //                 cursor.value(object_file).map(Some)
-    //             } else {
-    //                 // No more entries for this match
-    //                 Ok(None)
-    //             }
-    //         } else {
-    //             // If we don't have a cursor yet, initialize one
-    //             let data_obj = object_file.data_object(*data_offset)?;
-    //             if let Some(ic) = data_obj.inlined_cursor() {
-    //                 *cursor_opt = Some(ic);
-    //                 ic.value(object_file).map(Some)
-    //             } else {
-    //                 // No entries for this match
-    //                 Ok(None)
-    //             }
-    //         }
-    //     }
-    //     FilterExpr::Conjunction(exprs) => {
-    //         // For a conjunction (AND), we need to find positions that satisfy all expressions
-    //         let mut current_position: Option<u64> = None;
+    // Returns the offset of the previous matching entry, if any, with an offset
+    // less or equal to the needle offset.
+    pub fn previous<M: MemoryMap>(
+        &mut self,
+        object_file: &ObjectFile<M>,
+        needle_offset: u64,
+    ) -> Result<Option<u64>> {
+        match self {
+            FilterExpr::Match(_, None) => Ok(None),
+            FilterExpr::Match(_, Some(ic)) => ic.previous_until(object_file, needle_offset),
+            FilterExpr::Conjunction(filter_exprs) => {
+                let mut needle_offset = needle_offset;
 
-    //         // Try to advance each expression and find the maximum position
-    //         loop {
-    //             let mut max_position: Option<u64> = None;
+                loop {
+                    let previous_offset = needle_offset;
 
-    //             // First, advance all expressions to at least the current position
-    //             for expr in exprs.iter_mut() {
-    //                 // If we have a current position, look for positions >= current
-    //                 if let Some(curr_pos) = current_position {
-    //                     let expr_pos =
-    //                         match expr.lookup(object_file, curr_pos, Direction::Forward)? {
-    //                             Some(pos) => pos,
-    //                             None => return Ok(None), // If any expression has no matches, the conjunction fails
-    //                         };
+                    for fe in filter_exprs.iter_mut().rev() {
+                        if let Some(new_offset) = fe.previous(object_file, needle_offset)? {
+                            needle_offset = new_offset;
+                        } else {
+                            return Ok(None);
+                        }
+                    }
 
-    //                     // Keep track of the maximum position
-    //                     max_position = Some(max_position.map_or(expr_pos, |p| p.max(expr_pos)));
-    //                 } else {
-    //                     // First iteration, just get the next position for each expression
-    //                     let expr_pos = match expr.next(object_file)? {
-    //                         Some(pos) => pos,
-    //                         None => return Ok(None), // If any expression has no matches, the conjunction fails
-    //                     };
+                    if needle_offset == previous_offset {
+                        return Ok(Some(needle_offset));
+                    }
+                }
+            }
+            FilterExpr::Disjunction(filter_exprs) => {
+                let mut best_offset: Option<u64> = None;
 
-    //                     // Keep track of the maximum position
-    //                     max_position = Some(max_position.map_or(expr_pos, |p| p.max(expr_pos)));
-    //                 }
-    //             }
+                for fe in filter_exprs.iter_mut() {
+                    if let Some(fe_offset) = fe.previous(object_file, needle_offset)? {
+                        best_offset = match best_offset {
+                            Some(offset) => Some(fe_offset.max(offset)),
+                            None => Some(fe_offset),
+                        };
+                    }
+                }
 
-    //             // If all expressions returned the same position, we've found a match
-    //             let max_pos = max_position.unwrap();
-    //             if exprs.iter_mut().all(|expr| {
-    //                 match expr.lookup(object_file, max_pos, Direction::Forward) {
-    //                     Ok(Some(pos)) => pos == max_pos,
-    //                     _ => false,
-    //                 }
-    //             }) {
-    //                 return Ok(Some(max_pos));
-    //             }
-
-    //             // Not all expressions match this position, try again with a higher position
-    //             current_position = Some(max_pos);
-
-    //             // Safety check to avoid infinite loops
-    //             if current_position == max_position {
-    //                 current_position = Some(max_pos + 1);
-    //             }
-    //         }
-    //     }
-    //     FilterExpr::Disjunction(exprs) => {
-    //         // For a disjunction (OR), find the minimum next position from all expressions
-    //         let mut min_position: Option<u64> = None;
-
-    //         // Try to advance each expression and find the minimum valid position
-    //         for expr in exprs.iter_mut() {
-    //             if let Some(pos) = expr.next(object_file)? {
-    //                 min_position = Some(min_position.map_or(pos, |p| p.min(pos)));
-    //             }
-    //         }
-
-    //         Ok(min_position)
-    //     }
-    // }
-    // }
-
-    /// Moves to the previous entry that matches this filter expression before the current position
-    /// Returns the offset of the previous matching entry, if any
-    pub fn prev<M: MemoryMap>(&mut self, _object_file: &ObjectFile<M>) -> Result<Option<u64>> {
-        todo!()
-        // match self {
-        //     FilterExpr::Match(data_offset, cursor_opt) => {
-        //         // If we have a cursor, move it to the previous position
-        //         if let Some(cursor) = cursor_opt {
-        //             // Try to move to the previous position
-        //             if let Some(prev_cursor) = cursor.previous(object_file)? {
-        //                 // Update the cursor and return the new position
-        //                 *cursor = prev_cursor;
-        //                 prev_cursor.value(object_file).map(Some)
-        //             } else {
-        //                 // No more entries for this match
-        //                 Ok(None)
-        //             }
-        //         } else {
-        //             // If we don't have a cursor yet, initialize one from the tail
-        //             let data_obj = object_file.data_object(*data_offset)?;
-        //             if let Some(ic) = data_obj.inlined_cursor() {
-        //                 let tail_cursor = ic.at_tail(object_file)?;
-        //                 *cursor_opt = Some(tail_cursor);
-        //                 tail_cursor.value(object_file).map(Some)
-        //             } else {
-        //                 // No entries for this match
-        //                 Ok(None)
-        //             }
-        //         }
-        //     }
-        //     FilterExpr::Conjunction(exprs) => {
-        //         // For a conjunction (AND), we need to find positions that satisfy all expressions
-        //         let mut current_position: Option<u64> = None;
-
-        //         // Try to move each expression backward and find the minimum position
-        //         loop {
-        //             let mut min_position: Option<u64> = None;
-
-        //             // First, move all expressions to positions <= current
-        //             for expr in exprs.iter_mut() {
-        //                 // If we have a current position, look for positions <= current
-        //                 if let Some(curr_pos) = current_position {
-        //                     let expr_pos =
-        //                         match expr.lookup(object_file, curr_pos, Direction::Backward)? {
-        //                             Some(pos) => pos,
-        //                             None => return Ok(None), // If any expression has no matches, the conjunction fails
-        //                         };
-
-        //                     // Keep track of the minimum position
-        //                     min_position = Some(min_position.map_or(expr_pos, |p| p.min(expr_pos)));
-        //                 } else {
-        //                     // First iteration, just get the previous position for each expression
-        //                     let expr_pos = match expr.prev(object_file)? {
-        //                         Some(pos) => pos,
-        //                         None => return Ok(None), // If any expression has no matches, the conjunction fails
-        //                     };
-
-        //                     // Keep track of the minimum position
-        //                     min_position = Some(min_position.map_or(expr_pos, |p| p.min(expr_pos)));
-        //                 }
-        //             }
-
-        //             // If all expressions returned the same position, we've found a match
-        //             let min_pos = min_position.unwrap();
-        //             if exprs.iter_mut().all(|expr| {
-        //                 match expr.lookup(object_file, min_pos, Direction::Backward) {
-        //                     Ok(Some(pos)) => pos == min_pos,
-        //                     _ => false,
-        //                 }
-        //             }) {
-        //                 return Ok(Some(min_pos));
-        //             }
-
-        //             // Not all expressions match this position, try again with a lower position
-        //             current_position = Some(min_pos);
-
-        //             // Safety check to avoid infinite loops
-        //             if current_position == min_position {
-        //                 current_position = Some(min_pos.saturating_sub(1));
-        //             }
-        //         }
-        //     }
-        //     FilterExpr::Disjunction(exprs) => {
-        //         // For a disjunction (OR), find the maximum previous position from all expressions
-        //         let mut max_position: Option<u64> = None;
-
-        //         // Try to move each expression backward and find the maximum valid position
-        //         for expr in exprs.iter_mut() {
-        //             if let Some(pos) = expr.prev(object_file)? {
-        //                 max_position = Some(max_position.map_or(pos, |p| p.max(pos)));
-        //             }
-        //         }
-
-        //         Ok(max_position)
-        //     }
-        // }
+                Ok(best_offset)
+            }
+        }
     }
 }
 

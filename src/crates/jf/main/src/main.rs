@@ -528,8 +528,8 @@ fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
         let mut jr = JournalReader::default();
 
         jr.add_match(b"SVD_1=svd-1");
-        jr.add_conjunction(object_file)?;
-        jr.add_match(b"SVD_2=svd-2");
+        // jr.add_conjunction(object_file)?;
+        // jr.add_match(b"SVD_2=svd-2");
 
         jr.set_location(Location::Head);
         while jr.step(object_file, Direction::Forward).unwrap() {
@@ -545,8 +545,8 @@ fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
         println!("Journal filter:");
         let mut jf = journal_filter::JournalFilter::default();
         jf.add_match(b"SVD_1=svd-1");
-        jf.set_operation(object_file, journal_filter::LogicalOp::Conjunction)?;
-        jf.add_match(b"SVD_2=svd-2");
+        // jf.set_operation(object_file, journal_filter::LogicalOp::Conjunction)?;
+        // jf.add_match(b"SVD_2=svd-2");
 
         let mut fe = jf.build(object_file)?;
         let mut needle_offset = 0;
@@ -581,7 +581,7 @@ fn main() {
     const WINDOW_SIZE: u64 = 4096;
     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
         Ok(object_file) => {
-            if false {
+            if true {
                 let mut items_accessed = 0;
                 let v = vec![
                     b"PRIORITY=6".as_slice(),
@@ -614,7 +614,7 @@ fn main() {
                 );
             }
 
-            if false {
+            if true {
                 if let Err(e) = test_cursor(&object_file) {
                     panic!("Cursor tests failed: {:?}", e);
                 }
