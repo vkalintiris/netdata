@@ -482,7 +482,7 @@ impl InlinedCursor {
         Ok(result)
     }
 
-    pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         // Case 1: We're at the inlined entry, move to the first array entry
         if self.at_inlined_offset {
             if self.cursor.is_some() {
@@ -515,7 +515,7 @@ impl InlinedCursor {
         Ok(None)
     }
 
-    pub fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         if self.at_inlined_offset {
             return Ok(None);
         }
