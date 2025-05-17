@@ -1,3 +1,5 @@
+use std::iter::Filter;
+
 use error::{JournalError, Result};
 use object_file::{
     offset_array::{Direction, InlinedCursor},
@@ -72,23 +74,66 @@ impl FilterExpr {
         }
     }
 
+    pub fn reset(&mut self) {
+        match self {
+            FilterExpr::Match(_, None) => (),
+            FilterExpr::Match(_, Some(ic)) => {
+                *ic = ic.head();
+            }
+            FilterExpr::Conjunction(filter_exprs) => {
+                for filter_expr in filter_exprs.iter_mut() {
+                    filter_expr.reset();
+                }
+            }
+            FilterExpr::Disjunction(filter_exprs) => {
+                for filter_expr in filter_exprs.iter_mut() {
+                    filter_expr.reset();
+                }
+            }
+        }
+    }
+
     pub fn next<M: MemoryMap>(
         &mut self,
         object_file: &ObjectFile<M>,
         needle_offset: u64,
-    ) -> Result<Option<InlinedCursor>> {
-        let _predicate = |ic: &InlinedCursor| -> Result<bool> {
-            ic.value(object_file)
-                .map(|entry_offset| entry_offset >= needle_offset)
-        };
-
+    ) -> Result<Option<u64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(_ic)) => todo!(),
-            FilterExpr::Conjunction(_filter_exprs) => {
+            FilterExpr::Match(_, Some(ic)) => ic.skip_until(object_file, needle_offset),
+            FilterExpr::Conjunction(filter_exprs) => {
+                let mut needle_offset = needle_offset;
+
+                loop {
+                    let previous_offset = needle_offset;
+
+                    for fe in filter_exprs.iter_mut() {
+                        if let Some(new_offset) = fe.next(object_file, needle_offset)? {
+                            needle_offset = new_offset;
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+
+                    if needle_offset == previous_offset {
+                        return Ok(Some(needle_offset));
+                    }
+                }
+            }
+            FilterExpr::Disjunction(filter_exprs) => {
+                let mut best_offset: Option<u64> = None;
+
+                for fe in filter_exprs.iter_mut() {
+                    if let Some(fe_offset) = fe.next(object_file, needle_offset)? {
+                        best_offset = match best_offset {
+                            Some(offset) => Some(fe_offset.min(offset)),
+                            None => Some(fe_offset),
+                        };
+                    }
+                }
+
                 todo!()
             }
-            FilterExpr::Disjunction(_exprs) => todo!(),
         }
     }
 

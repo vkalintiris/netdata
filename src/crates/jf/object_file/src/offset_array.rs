@@ -515,6 +515,28 @@ impl InlinedCursor {
         Ok(None)
     }
 
+    pub fn skip_until<M: MemoryMap>(
+        &mut self,
+        object_file: &ObjectFile<M>,
+        offset: u64,
+    ) -> Result<Option<u64>> {
+        let current_offset = self.value(object_file)?;
+        if current_offset >= offset {
+            return Ok(Some(current_offset));
+        }
+
+        while let Some(ic) = self.next(object_file)? {
+            let current_offset = ic.value(object_file)?;
+
+            if current_offset >= offset {
+                *self = ic;
+                return Ok(Some(current_offset));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         if self.at_inlined_offset {
             return Ok(None);

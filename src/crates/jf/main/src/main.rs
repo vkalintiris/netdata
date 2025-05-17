@@ -1,6 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use error::{JournalError, Result};
-use journal_reader::{Direction, JournalReader, Location};
+use journal_reader::{journal_filter, Direction, JournalReader, Location};
 use object_file::*;
 use window_manager::MemoryMap;
 
@@ -61,9 +61,9 @@ impl EntryData {
                 let field = String::from_utf8_lossy(&payload[0..equals_pos]).to_string();
                 let value = String::from_utf8_lossy(&payload[equals_pos + 1..]).to_string();
 
-                // if field.starts_with("_") {
-                //     continue;
-                // }
+                if field.starts_with("_") {
+                    continue;
+                }
 
                 fields.push((field, value));
             }
@@ -522,6 +522,48 @@ fn test_inlined_cursor<M: MemoryMap>(object_file: &ObjectFile<M>, data: &[u8]) -
     Ok(2 * i)
 }
 
+fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
+    {
+        println!("Journal reader:");
+        let mut jr = JournalReader::default();
+
+        jr.add_match(b"SVD_1=svd-1");
+        jr.add_conjunction(object_file)?;
+        jr.add_match(b"SVD_2=svd-2");
+
+        jr.set_location(Location::Head);
+        while jr.step(object_file, Direction::Forward).unwrap() {
+            let entry_offset = jr.get_entry_offset()?;
+            let entry_data = EntryData::from_offset(object_file, entry_offset)?;
+            println!("\ted[{}] = {:?}", entry_offset, entry_data);
+        }
+    }
+
+    let jr_lookups = object_file.stats().direct_lookups;
+
+    {
+        println!("Journal filter:");
+        let mut jf = journal_filter::JournalFilter::default();
+        jf.add_match(b"SVD_1=svd-1");
+        jf.set_operation(object_file, journal_filter::LogicalOp::Conjunction)?;
+        jf.add_match(b"SVD_2=svd-2");
+
+        let mut fe = jf.build(object_file)?;
+        let mut needle_offset = 0;
+
+        while let Some(entry_offset) = fe.next(object_file, needle_offset)? {
+            let entry_data = EntryData::from_offset(object_file, entry_offset)?;
+            println!("\ted[{}] = {:?}", entry_offset, entry_data);
+            needle_offset = entry_offset + 1;
+        }
+    }
+
+    let jf_lookups = object_file.stats().direct_lookups - jr_lookups;
+    println!("lookups: jr={}, jf={}", jr_lookups, jf_lookups);
+
+    Ok(())
+}
+
 // Example usage
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -539,7 +581,7 @@ fn main() {
     const WINDOW_SIZE: u64 = 4096;
     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
         Ok(object_file) => {
-            if true {
+            if false {
                 let mut items_accessed = 0;
                 let v = vec![
                     b"PRIORITY=6".as_slice(),
@@ -572,10 +614,18 @@ fn main() {
                 );
             }
 
-            if true {
+            if false {
                 if let Err(e) = test_cursor(&object_file) {
                     panic!("Cursor tests failed: {:?}", e);
                 }
+            }
+
+            if true {
+                if let Err(e) = test_filter_expr(&object_file) {
+                    panic!("Filter expression tests failed: {:?}", e);
+                }
+
+                println!("Overall stat: {:?}", object_file.stats());
             }
         }
         Err(e) => panic!("Failed to open journal file: {:?}", e),

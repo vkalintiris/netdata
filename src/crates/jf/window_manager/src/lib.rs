@@ -64,7 +64,7 @@ impl<T: MemoryMap> Window<T> {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WindowManagerStatistics {
-    direct_lookups: usize,
+    pub direct_lookups: usize,
     indirect_lookups: usize,
     missed_lookups: usize,
 }
