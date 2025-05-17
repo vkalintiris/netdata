@@ -91,6 +91,27 @@ impl FilterExpr {
         }
     }
 
+    pub fn tail<M: MemoryMap>(&mut self, object_file: &ObjectFile<M>) -> Result<()> {
+        match self {
+            FilterExpr::Match(_, None) => (),
+            FilterExpr::Match(_, Some(ic)) => {
+                *ic = ic.tail(object_file)?;
+            }
+            FilterExpr::Conjunction(filter_exprs) => {
+                for filter_expr in filter_exprs.iter_mut() {
+                    filter_expr.tail(object_file)?;
+                }
+            }
+            FilterExpr::Disjunction(filter_exprs) => {
+                for filter_expr in filter_exprs.iter_mut() {
+                    filter_expr.tail(object_file)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     // Returns the offset of the next matching entry, if any, with an offset
     // greater or equal to the needle offset.
     pub fn next<M: MemoryMap>(

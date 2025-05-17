@@ -563,10 +563,10 @@ impl InlinedCursor {
         }
 
         while let Some(ic) = self.next(object_file)? {
-            let current_offset = ic.value(object_file)?;
+            *self = ic;
 
+            let current_offset = self.value(object_file)?;
             if current_offset >= offset {
-                *self = ic;
                 return Ok(Some(current_offset));
             }
         }
@@ -584,11 +584,11 @@ impl InlinedCursor {
             return Ok(Some(current_offset));
         }
 
-        while let Some(ic) = self.next(object_file)? {
-            let current_offset = ic.value(object_file)?;
+        while let Some(ic) = self.previous(object_file)? {
+            *self = ic;
 
+            let current_offset = ic.value(object_file)?;
             if current_offset <= offset {
-                *self = ic;
                 return Ok(Some(current_offset));
             }
         }
