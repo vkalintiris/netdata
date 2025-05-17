@@ -519,7 +519,7 @@ fn test_inlined_cursor<M: MemoryMap>(object_file: &ObjectFile<M>, data: &[u8]) -
         }
     }
 
-    Ok(i)
+    Ok(2 * i)
 }
 
 // Example usage

@@ -369,6 +369,7 @@ impl Cursor {
     pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
         let array_node = self.node(object_file)?;
 
+        // FIXME: overtly defensive/expensive...
         if self.array_index + 1 < array_node.len().get() {
             // Next item is in the same array
             return Ok(Some(Self {
@@ -468,7 +469,7 @@ impl InlinedCursor {
         }
     }
 
-    pub fn at_tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Self> {
+    pub fn tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Self> {
         // Start with a copy of the current cursor
         let mut result = *self;
 
