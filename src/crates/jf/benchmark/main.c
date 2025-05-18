@@ -154,7 +154,7 @@ static int process_filtered(const char *path)
     }
 
     // Move to the first entry
-    r = sd_journal_seek_head(j);
+    r = sd_journal_seek_tail(j);
     if (r < 0) {
         fprintf(stderr, "Failed to seek to head: %s\n", strerror(-r));
         sd_journal_close(j);
@@ -163,7 +163,7 @@ static int process_filtered(const char *path)
 
     // Iterate through all entries
     size_t entry_count = 0;
-    while ((r = sd_journal_next(j)) > 0) {
+    while ((r = sd_journal_previous(j)) > 0) {
         entry_count++;
 
         // Get all data fields
