@@ -528,37 +528,67 @@ fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
     Ok(())
 }
 
+fn foo() -> Result<()> {
+    let path = "/var/log/journal/ec2ce35ddef16e80b43d6cd9f008dcba.agent-events/system@67fcfeba8339461c9a8dc77363c2c739-00000000002b725a-0006314cd7a5cefd.journal";
+    let window_size = 1024 * 1024;
+
+    let object_file = ObjectFile::<Mmap>::open(path, window_size)?;
+
+    let mut buf = Vec::new();
+
+    for fd in object_file.field_data_objects(b"AE_FATAL_STACK_TRACE")? {
+        let data_object = fd.unwrap();
+
+        if data_object.is_compressed() {
+            data_object.decompress(&mut buf)?;
+            let s = String::from_utf8_lossy(buf.as_slice());
+            println!("s: >>>{}<<<", s);
+        } else {
+            println!("Ela geia...");
+            continue;
+        }
+
+        println!(">>>{:?}<<<", data_object);
+    }
+
+    Ok(())
+}
+
 // Example usage
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <journal_file_path>", args[0]);
-        std::process::exit(1);
-    }
+    foo().unwrap();
 
     if false {
-        create_logs();
-        return;
-    }
-
-    // Add the journal reader demonstration
-    const WINDOW_SIZE: u64 = 4096;
-    match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
-        Ok(object_file) => {
-            if true {
-                if let Err(e) = test_cursor(&object_file) {
-                    panic!("Cursor tests failed: {:?}", e);
-                }
-            }
-
-            if true {
-                if let Err(e) = test_filter_expr(&object_file) {
-                    panic!("Filter expression tests failed: {:?}", e);
-                }
-
-                println!("Overall stat: {:?}", object_file.stats());
-            }
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() != 2 {
+            eprintln!("Usage: {} <journal_file_path>", args[0]);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to open journal file: {:?}", e),
+
+        if false {
+            create_logs();
+            return;
+        }
+
+        // Add the journal reader demonstration
+        const WINDOW_SIZE: u64 = 4096;
+        match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
+            Ok(object_file) => {
+                if true {
+                    if let Err(e) = test_cursor(&object_file) {
+                        panic!("Cursor tests failed: {:?}", e);
+                    }
+                }
+
+                if true {
+                    if let Err(e) = test_filter_expr(&object_file) {
+                        panic!("Filter expression tests failed: {:?}", e);
+                    }
+
+                    println!("Overall stat: {:?}", object_file.stats());
+                }
+            }
+            Err(e) => panic!("Failed to open journal file: {:?}", e),
+        }
     }
 }

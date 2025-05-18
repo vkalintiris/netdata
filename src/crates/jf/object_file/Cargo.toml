@@ -10,3 +10,4 @@ error = { path = "../error" }
 window_manager = { path = "../window_manager" }
 siphasher = { workspace = true }
 twox-hash = { workspace = true }
+ruzstd = { workspace = true }

@@ -56,6 +56,9 @@ pub enum JournalError {
 
     #[error("Invalid field")]
     InvalidField,
+
+    #[error("Decompressor error")]
+    DecompressorError,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);

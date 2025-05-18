@@ -55,83 +55,6 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> HashableObject for DataObj
     }
 }
 
-/// Validates if a field name conforms to systemd's journal specification
-///
-/// This enforces POSIX-like syntax requirements for environment variables with additional constraints:
-/// - Field names must not be empty
-/// - Field names must not be longer than 64 characters
-/// - Field names with leading underscore are considered protected and optionally allowed
-/// - First character must not be a digit
-/// - Only uppercase A-Z, digits 0-9, and underscore are allowed
-pub fn is_field_name_valid(field: &[u8], allow_protected: bool) -> bool {
-    // Check for empty field names
-    if field.is_empty() {
-        return false;
-    }
-
-    // Don't allow names longer than 64 chars
-    if field.len() > 64 {
-        return false;
-    }
-
-    // Variables starting with an underscore are protected
-    if !allow_protected && field[0] == b'_' {
-        return false;
-    }
-
-    // Don't allow digits as first character
-    if field[0].is_ascii_digit() {
-        return false;
-    }
-
-    // Only allow A-Z, 0-9, and '_'
-    for byte in field {
-        if !byte.is_ascii_uppercase() && !byte.is_ascii_digit() && *byte != b'_' {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Returns the field name part of a DATA object payload (everything before the '=')
-/// and validates that it conforms to systemd's field name requirements.
-///
-/// Returns None if:
-/// - The payload doesn't contain an '=' character
-/// - The part before '=' isn't a valid field name
-pub fn extract_valid_field_name(payload: &[u8], allow_protected: bool) -> Option<&[u8]> {
-    // Find the first '=' character
-    let equals_pos = payload.iter().position(|&b| b == b'=')?;
-
-    // Get the part before the '='
-    let field_name = &payload[0..equals_pos];
-
-    // Validate the field name
-    if is_field_name_valid(field_name, allow_protected) {
-        Some(field_name)
-    } else {
-        None
-    }
-}
-
-/// Returns the field value part of a DATA object payload (everything after the '=')
-/// but only if the field name part is valid.
-pub fn extract_field_value(payload: &[u8], allow_protected: bool) -> Option<&[u8]> {
-    // Find the first '=' character
-    let equals_pos = payload.iter().position(|&b| b == b'=')?;
-
-    // Get the part before the '=' to validate it
-    let field_name = &payload[0..equals_pos];
-
-    // Only return the value if the field name is valid
-    if is_field_name_valid(field_name, allow_protected) {
-        Some(&payload[equals_pos + 1..])
-    } else {
-        None
-    }
-}
-
 /// Trait to standardize creation of journal objects from byte slices
 pub trait JournalObject<B: SplitByteSlice>: Sized {
     /// Create a new journal object from a byte slice
@@ -256,6 +179,12 @@ impl JournalHeader {
     }
 }
 
+pub enum ObjectFlags {
+    CompressedXz = 1 << 0,
+    CompressedLz4 = 1 << 1,
+    CompressedZstd = 1 << 2,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ObjectType {
@@ -294,6 +223,24 @@ pub struct ObjectHeader {
     pub flags: u8,
     pub reserved: [u8; 6],
     pub size: u64,
+}
+
+impl ObjectHeader {
+    pub fn xz_compressed(&self) -> bool {
+        (self.flags & ObjectFlags::CompressedXz as u8) != 0
+    }
+
+    pub fn lz4_compressed(&self) -> bool {
+        (self.flags & ObjectFlags::CompressedLz4 as u8) != 0
+    }
+
+    pub fn zstd_compressed(&self) -> bool {
+        (self.flags & ObjectFlags::CompressedZstd as u8) != 0
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.zstd_compressed() | self.lz4_compressed() | self.xz_compressed()
+    }
 }
 
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -555,6 +502,22 @@ pub struct DataObjectHeader {
 }
 
 impl DataObjectHeader {
+    pub fn xz_compressed(&self) -> bool {
+        self.object_header.xz_compressed()
+    }
+
+    pub fn lz4_compressed(&self) -> bool {
+        self.object_header.lz4_compressed()
+    }
+
+    pub fn zstd_compressed(&self) -> bool {
+        self.object_header.zstd_compressed()
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.object_header.is_compressed()
+    }
+
     pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
         if self.n_entries == 0 {
             return None;
@@ -656,18 +619,40 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> DataObject<B> {
         }
     }
 
-    // Get field name from payload (everything before the '=')
-    pub fn field_name(&self) -> Option<&[u8]> {
-        extract_valid_field_name(self.payload_bytes(), true)
-    }
-
-    // Get field value from payload (everything after the '=')
-    pub fn field_value(&self) -> Option<&[u8]> {
-        extract_field_value(self.payload_bytes(), true)
-    }
-
     pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
         self.header.inlined_cursor()
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.header.is_compressed()
+    }
+
+    pub fn xz_compressed(&self) -> bool {
+        self.header.xz_compressed()
+    }
+
+    pub fn lz4_compressed(&self) -> bool {
+        self.header.lz4_compressed()
+    }
+
+    pub fn zstd_compressed(&self) -> bool {
+        self.header.zstd_compressed()
+    }
+
+    pub fn decompress(&self, buf: &mut Vec<u8>) -> Result<usize> {
+        debug_assert!(self.is_compressed());
+
+        use ruzstd::decoding::StreamingDecoder;
+        use ruzstd::io::Read;
+
+        let payload = self.payload_bytes();
+        let mut decoder =
+            StreamingDecoder::new(payload).map_err(|_| JournalError::DecompressorError)?;
+
+        buf.clear();
+        decoder
+            .read_to_end(buf)
+            .map_err(|_| JournalError::DecompressorError)
     }
 }
 

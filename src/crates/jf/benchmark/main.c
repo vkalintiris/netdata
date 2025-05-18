@@ -8,6 +8,27 @@
 #include <systemd/sd-journal.h>
 #endif
 
+void format_entry(sd_journal *j, size_t entry_id) {
+    size_t data_count = 0;
+    char buf[4096];
+
+    const void *data;
+    size_t length;
+    SD_JOURNAL_FOREACH_DATA(j, data, length) {
+        if (length > 4095) {
+            fprintf(stderr, "length is more than 4KiB\n");
+            sd_journal_close(j);
+            exit(EXIT_FAILURE);
+        }
+
+        memcpy(buf, data, length);
+        buf[length] = '\0';
+
+        fprintf(stdout, "E[%zu] D[%zu] %s\n", entry_id, data_count, buf);
+        data_count += 1;
+    }
+}
+
 static int process_unfiltered(const char *path)
 {
     sd_journal *j;
@@ -153,7 +174,6 @@ static int process_filtered(const char *path)
         }
     }
 
-    // Move to the first entry
     r = sd_journal_seek_tail(j);
     if (r < 0) {
         fprintf(stderr, "Failed to seek to head: %s\n", strerror(-r));
@@ -161,18 +181,11 @@ static int process_filtered(const char *path)
         return 1;
     }
 
-    // Iterate through all entries
     size_t entry_count = 0;
     while ((r = sd_journal_previous(j)) > 0) {
-        entry_count++;
+        format_entry(j, entry_count);
 
-        // Get all data fields
-        const void *data;
-        size_t length;
-        SD_JOURNAL_FOREACH_DATA(j, data, length) {
-            // Count the bytes
-            total_bytes += length;
-        }
+        entry_count++;
     }
 
     if (r < 0) {

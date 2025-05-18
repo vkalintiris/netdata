@@ -147,6 +147,7 @@ struct SdJournal<'a> {
     reader: JournalReader<'a, Mmap>,
     path: String,
     field_buffer: Vec<u8>,
+    decompressed_payload: Vec<u8>,
 }
 
 #[no_mangle]
@@ -194,6 +195,7 @@ unsafe extern "C" fn sd_journal_open_files(
         object_file,
         path: String::from(path),
         field_buffer: Vec::with_capacity(256),
+        decompressed_payload: Vec::new(),
     });
     info!(path);
 
@@ -366,11 +368,24 @@ unsafe extern "C" fn sd_journal_enumerate_available_data(
 
     match journal.reader.entry_data_enumerate(&journal.object_file) {
         Ok(Some(data_guard)) => {
-            let payload = data_guard.payload_bytes();
+            if data_guard.is_compressed() {
+                return match data_guard.decompress(&mut journal.decompressed_payload) {
+                    Ok(n) => {
+                        *l = n;
+                        *data = journal.decompressed_payload.as_ptr() as *const c_void;
+                        1
+                    }
+                    Err(_) => {
+                        error!("failed to decompress payload");
+                        -1
+                    }
+                };
+            } else {
+                let payload = data_guard.payload_bytes();
 
-            *l = payload.len();
-            *data = payload.as_ptr() as *const c_void;
-
+                *l = payload.len();
+                *data = payload.as_ptr() as *const c_void;
+            }
             1
         }
         Ok(None) => 0,
