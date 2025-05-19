@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int, c_void, CStr};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct SdId128 {
+pub struct RsdId128 {
     pub bytes: [u8; 16],
 }
 
@@ -19,9 +19,9 @@ fn unhexchar(c: u8) -> Result<u8, i32> {
     }
 }
 
-/// Parse a string into an sd_id128_t
+/// Parse a string into an rsd_id128_t
 #[no_mangle]
-unsafe extern "C" fn sd_id128_from_string(s: *const c_char, ret: *mut SdId128) -> i32 {
+unsafe extern "C" fn rsd_id128_from_string(s: *const c_char, ret: *mut RsdId128) -> i32 {
     if s.is_null() || ret.is_null() {
         return -1;
     }
@@ -86,22 +86,22 @@ unsafe extern "C" fn sd_id128_from_string(s: *const c_char, ret: *mut SdId128) -
     0
 }
 
-/// Compare two sd_id128_t values for equality
+/// Compare two rsd_id128_t values for equality
 #[no_mangle]
-pub extern "C" fn sd_id128_equal(a: SdId128, b: SdId128) -> i32 {
+pub extern "C" fn rsd_id128_equal(a: RsdId128, b: RsdId128) -> i32 {
     (a.bytes == b.bytes) as i32
 }
 
 /// For better Rust integration, also implement the PartialEq trait
-impl PartialEq for SdId128 {
+impl PartialEq for RsdId128 {
     fn eq(&self, other: &Self) -> bool {
         self.bytes == other.bytes
     }
 }
 
-impl Eq for SdId128 {}
+impl Eq for RsdId128 {}
 
-struct SdJournal<'a> {
+struct RsdJournal<'a> {
     object_file: Box<ObjectFile<Mmap>>,
     reader: JournalReader<'a, Mmap>,
     path: String,
@@ -110,8 +110,8 @@ struct SdJournal<'a> {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_open_files(
-    ret: *mut *mut SdJournal,
+unsafe extern "C" fn rsd_journal_open_files(
+    ret: *mut *mut RsdJournal,
     paths: *const *const c_char,
     _flags: c_int,
 ) -> c_int {
@@ -142,7 +142,7 @@ unsafe extern "C" fn sd_journal_open_files(
         }
     };
 
-    let journal = Box::new(SdJournal {
+    let journal = Box::new(RsdJournal {
         reader: JournalReader::default(),
         object_file,
         path: String::from(path),
@@ -157,33 +157,33 @@ unsafe extern "C" fn sd_journal_open_files(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_close(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_close(j: *mut RsdJournal) {
     let _ = Box::from_raw(j);
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_seek_head(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_seek_head(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Head);
     0
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_seek_tail(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_seek_tail(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Tail);
     0
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_seek_realtime_usec(j: *mut SdJournal, usec: u64) -> c_int {
+unsafe extern "C" fn rsd_journal_seek_realtime_usec(j: *mut RsdJournal, usec: u64) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Realtime(usec));
     0
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_next(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
 
     match journal
@@ -202,7 +202,7 @@ unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_previous(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_previous(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
@@ -225,10 +225,10 @@ unsafe extern "C" fn sd_journal_previous(j: *mut SdJournal) -> c_int {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_get_seqnum(
-    j: *mut SdJournal,
+unsafe extern "C" fn rsd_journal_get_seqnum(
+    j: *mut RsdJournal,
     ret_seqnum: *mut u64,
-    ret_seqnum_id: *mut SdId128,
+    ret_seqnum_id: *mut RsdId128,
 ) -> c_int {
     if j.is_null() || ret_seqnum.is_null() {
         return -1;
@@ -241,7 +241,7 @@ unsafe extern "C" fn sd_journal_get_seqnum(
             *ret_seqnum = seqnum;
 
             if !ret_seqnum_id.is_null() {
-                *ret_seqnum_id = SdId128 { bytes: boot_id };
+                *ret_seqnum_id = RsdId128 { bytes: boot_id };
             }
 
             0
@@ -251,7 +251,7 @@ unsafe extern "C" fn sd_journal_get_seqnum(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_get_realtime_usec(j: *mut SdJournal, ret: *mut u64) -> c_int {
+unsafe extern "C" fn rsd_journal_get_realtime_usec(j: *mut RsdJournal, ret: *mut u64) -> c_int {
     if j.is_null() || ret.is_null() {
         return -1;
     }
@@ -268,7 +268,7 @@ unsafe extern "C" fn sd_journal_get_realtime_usec(j: *mut SdJournal, ret: *mut u
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_restart_data(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_restart_data(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
@@ -278,8 +278,8 @@ unsafe extern "C" fn sd_journal_restart_data(j: *mut SdJournal) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_enumerate_available_data(
-    j: *mut SdJournal,
+unsafe extern "C" fn rsd_journal_enumerate_available_data(
+    j: *mut RsdJournal,
     data: *mut *const c_void,
     l: *mut usize,
 ) -> c_int {
@@ -313,7 +313,7 @@ unsafe extern "C" fn sd_journal_enumerate_available_data(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_restart_fields(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_restart_fields(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
@@ -323,8 +323,8 @@ unsafe extern "C" fn sd_journal_restart_fields(j: *mut SdJournal) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_enumerate_fields(
-    j: *mut SdJournal,
+unsafe extern "C" fn rsd_journal_enumerate_fields(
+    j: *mut RsdJournal,
     field: *mut *const c_char,
 ) -> c_int {
     if j.is_null() || field.is_null() {
@@ -350,7 +350,7 @@ unsafe extern "C" fn sd_journal_enumerate_fields(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_query_unique(j: *mut SdJournal, field: *const c_char) -> c_int {
+unsafe extern "C" fn rsd_journal_query_unique(j: *mut RsdJournal, field: *const c_char) -> c_int {
     if j.is_null() || field.is_null() {
         return -1;
     }
@@ -369,7 +369,7 @@ unsafe extern "C" fn sd_journal_query_unique(j: *mut SdJournal, field: *const c_
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_restart_unique(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_restart_unique(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
@@ -379,8 +379,8 @@ unsafe extern "C" fn sd_journal_restart_unique(j: *mut SdJournal) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_enumerate_available_unique(
-    j: *mut SdJournal,
+unsafe extern "C" fn rsd_journal_enumerate_available_unique(
+    j: *mut RsdJournal,
     data: *mut *const c_void,
     l: *mut usize,
 ) -> c_int {
@@ -404,8 +404,8 @@ unsafe extern "C" fn sd_journal_enumerate_available_unique(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_add_match(
-    j: *mut SdJournal,
+unsafe extern "C" fn rsd_journal_add_match(
+    j: *mut RsdJournal,
     data: *const c_void,
     size: usize,
 ) -> c_int {
@@ -435,7 +435,7 @@ unsafe extern "C" fn sd_journal_add_match(
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_add_conjunction(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_add_conjunction(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
@@ -449,7 +449,7 @@ unsafe extern "C" fn sd_journal_add_conjunction(j: *mut SdJournal) -> c_int {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_add_disjunction(j: *mut SdJournal) -> c_int {
+unsafe extern "C" fn rsd_journal_add_disjunction(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
@@ -463,7 +463,7 @@ unsafe extern "C" fn sd_journal_add_disjunction(j: *mut SdJournal) -> c_int {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_flush_matches(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_flush_matches(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
@@ -473,7 +473,7 @@ unsafe extern "C" fn sd_journal_flush_matches(j: *mut SdJournal) {
 }
 
 #[no_mangle]
-unsafe extern "C" fn sd_journal_log(j: *mut SdJournal) {
+unsafe extern "C" fn rsd_journal_log(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
