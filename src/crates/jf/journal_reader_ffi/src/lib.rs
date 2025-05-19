@@ -3,47 +3,6 @@ use memmap2::Mmap;
 use object_file::{HashableObject, ObjectFile};
 use std::ffi::{c_char, c_int, c_void, CStr};
 
-use std::sync::Once;
-use tracing::{debug, instrument};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-// Initialize tracing once
-static INIT_TRACING: Once = Once::new();
-
-// Initialize tracing with file output
-fn init_tracing() {
-    INIT_TRACING.call_once(|| {
-        let log_path = "/home/vk/repos/tmp/logs/ffi.log";
-
-        let file = match std::fs::File::create(log_path) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("Failed to create log file: {}", e);
-                return;
-            }
-        };
-
-        let json_layer = fmt::layer()
-            .with_writer(file)
-            .json()
-            .with_current_span(false)
-            .with_span_list(false)
-            .with_target(false)
-            .with_file(false)
-            .without_time()
-            .with_level(false)
-            .with_line_number(false);
-
-        tracing_subscriber::registry()
-            .with(json_layer)
-            .with(
-                EnvFilter::from_default_env()
-                    .add_directive("journal_reader_ffi=debug".parse().unwrap()),
-            )
-            .init();
-    });
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SdId128 {
@@ -62,7 +21,6 @@ fn unhexchar(c: u8) -> Result<u8, i32> {
 
 /// Parse a string into an sd_id128_t
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_id128_from_string(s: *const c_char, ret: *mut SdId128) -> i32 {
     if s.is_null() || ret.is_null() {
         return -1;
@@ -152,14 +110,11 @@ struct SdJournal<'a> {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_open_files(
     ret: *mut *mut SdJournal,
     paths: *const *const c_char,
     _flags: c_int,
 ) -> c_int {
-    init_tracing();
-
     if ret.is_null() || paths.is_null() {
         return -1;
     }
@@ -194,7 +149,6 @@ unsafe extern "C" fn sd_journal_open_files(
         field_buffer: Vec::with_capacity(256),
         decompressed_payload: Vec::new(),
     });
-    debug!(path, function = "sd_journal_open_files");
 
     // Pass ownership to the caller
     *ret = Box::into_raw(journal);
@@ -203,53 +157,32 @@ unsafe extern "C" fn sd_journal_open_files(
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_close(j: *mut SdJournal) {
-    {
-        let journal = &mut *j;
-        debug!(path = journal.path, function = "sd_journal_close");
-    }
     let _ = Box::from_raw(j);
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_head(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
-    debug!(path = journal.path, function = "sd_journal_seek_head");
-
     journal.reader.set_location(Location::Head);
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_tail(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
-
-    debug!(path = journal.path, function = "sd_journal_seek_tail");
-
     journal.reader.set_location(Location::Tail);
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_realtime_usec(j: *mut SdJournal, usec: u64) -> c_int {
     let journal = &mut *j;
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_seek_realtime_usec",
-        realtime = usec,
-    );
-
     journal.reader.set_location(Location::Realtime(usec));
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
 
@@ -267,16 +200,18 @@ unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
         Err(_) => -1,
     };
 
-    debug!(path = journal.path, function = "sd_journal_next", rc = rc,);
     rc
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_previous(j: *mut SdJournal) -> c_int {
+    if j.is_null() {
+        return -1;
+    }
+
     let journal = &mut *j;
 
-    let rc = match journal
+    match journal
         .reader
         .step(&journal.object_file, Direction::Backward)
     {
@@ -288,18 +223,10 @@ unsafe extern "C" fn sd_journal_previous(j: *mut SdJournal) -> c_int {
             }
         }
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_previous",
-        rc = rc,
-    );
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_get_seqnum(
     j: *mut SdJournal,
     ret_seqnum: *mut u64,
@@ -311,7 +238,7 @@ unsafe extern "C" fn sd_journal_get_seqnum(
 
     let journal = &mut *j;
 
-    let rc = match journal.reader.get_seqnum(&journal.object_file) {
+    match journal.reader.get_seqnum(&journal.object_file) {
         Ok((seqnum, boot_id)) => {
             *ret_seqnum = seqnum;
 
@@ -322,20 +249,10 @@ unsafe extern "C" fn sd_journal_get_seqnum(
             0
         }
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_get_seqnum",
-        ret_seqnum = *ret_seqnum,
-        ret_seqnum_id = format!("{:?}", ret_seqnum_id),
-        rc = rc,
-    );
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_get_realtime_usec(j: *mut SdJournal, ret: *mut u64) -> c_int {
     if j.is_null() || ret.is_null() {
         return -1;
@@ -343,25 +260,16 @@ unsafe extern "C" fn sd_journal_get_realtime_usec(j: *mut SdJournal, ret: *mut u
 
     let journal = &mut *j;
 
-    let rc = match journal.reader.get_realtime_usec(&journal.object_file) {
+    match journal.reader.get_realtime_usec(&journal.object_file) {
         Ok(realtime) => {
             *ret = realtime;
             0
         }
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_get_realtime_usec",
-        realtime = *ret,
-        rc = rc,
-    );
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_restart_data(j: *mut SdJournal) {
     if j.is_null() {
         return;
@@ -369,12 +277,9 @@ unsafe extern "C" fn sd_journal_restart_data(j: *mut SdJournal) {
 
     let journal = &mut *j;
     journal.reader.entry_data_restart();
-
-    debug!(path = journal.path, function = "sd_journal_restart_data");
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_enumerate_available_data(
     j: *mut SdJournal,
     data: *mut *const c_void,
@@ -393,76 +298,33 @@ unsafe extern "C" fn sd_journal_enumerate_available_data(
                     Ok(n) => {
                         *l = n;
                         *data = journal.decompressed_payload.as_ptr() as *const c_void;
-                        debug!(
-                            path = journal.path,
-                            function = "sd_journal_enumerate_available_data",
-                            payload = format!(
-                                "{}",
-                                String::from_utf8_lossy(&journal.decompressed_payload)
-                            ),
-                            rc = 1,
-                        );
                         1
                     }
-                    Err(_) => {
-                        debug!(
-                            path = journal.path,
-                            function = "sd_journal_enumerate_available_data",
-                            rc = -1,
-                        );
-                        -1
-                    }
+                    Err(_) => -1,
                 };
             } else {
                 let payload = data_guard.payload_bytes();
-
-                debug!(
-                    path = journal.path,
-                    function = "sd_journal_enumerate_available_data",
-                    payload = format!("{}", String::from_utf8_lossy(payload)),
-                    rc = 1,
-                );
-
                 *l = payload.len();
                 *data = payload.as_ptr() as *const c_void;
             }
             1
         }
-        Ok(None) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_enumerate_available_data",
-                rc = 0,
-            );
-
-            0
-        }
-        Err(_) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_enumerate_available_data",
-                rc = -1,
-            );
-
-            -1
-        }
+        Ok(None) => 0,
+        Err(_) => -1,
     }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_restart_fields(j: *mut SdJournal) {
     if j.is_null() {
         return;
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path, function = "sd_journal_restart_fields");
     journal.reader.fields_restart();
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_enumerate_fields(
     j: *mut SdJournal,
     field: *mut *const c_char,
@@ -473,7 +335,7 @@ unsafe extern "C" fn sd_journal_enumerate_fields(
 
     let journal = &mut *j;
 
-    let rc = match journal.reader.fields_enumerate(&journal.object_file) {
+    match journal.reader.fields_enumerate(&journal.object_file) {
         Ok(Some(field_guard)) => {
             let field_name = field_guard.get_payload();
 
@@ -486,19 +348,10 @@ unsafe extern "C" fn sd_journal_enumerate_fields(
         }
         Ok(None) => 0,
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_enumerate_fields",
-        field = format!("{}", String::from_utf8_lossy(&journal.field_buffer))
-    );
-
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_query_unique(j: *mut SdJournal, field: *const c_char) -> c_int {
     if j.is_null() || field.is_null() {
         return -1;
@@ -512,30 +365,12 @@ unsafe extern "C" fn sd_journal_query_unique(j: *mut SdJournal, field: *const c_
         .reader
         .field_data_query_unique(&journal.object_file, field_name)
     {
-        Ok(_) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_query_unique",
-                field = format!("{}", String::from_utf8_lossy(field_name)),
-                rc = 0,
-            );
-
-            0
-        }
-        Err(_) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_query_unique",
-                rc = -1,
-            );
-
-            -1
-        }
+        Ok(_) => 0,
+        Err(_) => -1,
     }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_restart_unique(j: *mut SdJournal) {
     if j.is_null() {
         return;
@@ -543,12 +378,9 @@ unsafe extern "C" fn sd_journal_restart_unique(j: *mut SdJournal) {
 
     let journal = &mut *j;
     journal.reader.field_data_restart();
-
-    debug!(path = journal.path, function = "sd_journal_restart_unique",);
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_enumerate_available_unique(
     j: *mut SdJournal,
     data: *mut *const c_void,
@@ -563,35 +395,17 @@ unsafe extern "C" fn sd_journal_enumerate_available_unique(
     match journal.reader.field_data_enumerate(&journal.object_file) {
         Ok(Some(data_guard)) => {
             let payload = data_guard.get_payload();
-
             *data = payload.as_ptr() as *const c_void;
             *l = payload.len();
 
-            debug!(path = journal.path, function = "sd_journal_enumerate_available_unique", payload= ?String::from_utf8_lossy(payload), rc = 1);
             1
         }
-        Ok(None) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_enumerate_available_unique",
-                rc = 0
-            );
-            0
-        }
-        Err(_) => {
-            debug!(
-                path = journal.path,
-                function = "sd_journal_enumerate_available_unique",
-                rc = -1
-            );
-
-            -1
-        }
+        Ok(None) => 0,
+        Err(_) => -1,
     }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_add_match(
     j: *mut SdJournal,
     data: *const c_void,
@@ -618,18 +432,11 @@ unsafe extern "C" fn sd_journal_add_match(
         std::slice::from_raw_parts(data as *const u8, size)
     };
 
-    debug!(
-        path = journal.path,
-        function = "sd_journal_add_match",
-        data = format!("{}", String::from_utf8_lossy(data_slice))
-    );
-
     journal.reader.add_match(data_slice);
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_add_conjunction(j: *mut SdJournal) -> c_int {
     if j.is_null() {
         return -1;
@@ -637,21 +444,13 @@ unsafe extern "C" fn sd_journal_add_conjunction(j: *mut SdJournal) -> c_int {
 
     let journal = &mut *j;
 
-    let rc = match journal.reader.add_conjunction(&journal.object_file) {
+    match journal.reader.add_conjunction(&journal.object_file) {
         Ok(_) => 0,
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_add_conjunction",
-        rc = rc
-    );
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_add_disjunction(j: *mut SdJournal) -> c_int {
     if j.is_null() {
         return -1;
@@ -659,21 +458,13 @@ unsafe extern "C" fn sd_journal_add_disjunction(j: *mut SdJournal) -> c_int {
 
     let journal = &mut *j;
 
-    let rc = match journal.reader.add_disjunction(&journal.object_file) {
+    match journal.reader.add_disjunction(&journal.object_file) {
         Ok(_) => 0,
         Err(_) => -1,
-    };
-
-    debug!(
-        path = journal.path,
-        function = "sd_journal_add_disjunction",
-        rc = rc
-    );
-    rc
+    }
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_flush_matches(j: *mut SdJournal) {
     if j.is_null() {
         return;
@@ -681,11 +472,9 @@ unsafe extern "C" fn sd_journal_flush_matches(j: *mut SdJournal) {
 
     let journal = &mut *j;
     journal.reader.flush_matches();
-    debug!(path = journal.path, function = "sd_journal_flush_matches");
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_log(j: *mut SdJournal) {
     if j.is_null() {
         return;
