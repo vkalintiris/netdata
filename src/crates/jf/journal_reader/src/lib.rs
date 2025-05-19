@@ -24,8 +24,6 @@ pub struct JournalReader<'a, M: MemoryMap> {
 
     field_guard: Option<ValueGuard<'a, FieldObject<&'a [u8]>>>,
     data_guard: Option<ValueGuard<'a, DataObject<&'a [u8]>>>,
-
-    decompressed_data: Vec<u8>,
 }
 
 impl<M: MemoryMap> std::fmt::Debug for JournalReader<'_, M> {
@@ -48,7 +46,6 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
             entry_data_iterator: None,
             field_guard: None,
             data_guard: None,
-            decompressed_data: Vec::new(),
         }
     }
 }

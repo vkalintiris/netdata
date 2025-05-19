@@ -4,7 +4,7 @@ use object_file::{HashableObject, ObjectFile};
 use std::ffi::{c_char, c_int, c_void, CStr};
 
 use std::sync::Once;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, instrument};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 // Initialize tracing once
@@ -13,12 +13,9 @@ static INIT_TRACING: Once = Once::new();
 // Initialize tracing with file output
 fn init_tracing() {
     INIT_TRACING.call_once(|| {
-        // Create log directory if it doesn't exist
-        let log_dir = std::env::temp_dir();
-        let log_path = log_dir.join("ffi.log");
+        let log_path = "/home/vk/repos/tmp/logs/ffi.log";
 
-        // Open the file with truncate option
-        let file = match std::fs::File::create(&log_path) {
+        let file = match std::fs::File::create(log_path) {
             Ok(file) => file,
             Err(e) => {
                 eprintln!("Failed to create log file: {}", e);
@@ -26,18 +23,24 @@ fn init_tracing() {
             }
         };
 
+        let json_layer = fmt::layer()
+            .with_writer(file)
+            .json()
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_target(false)
+            .with_file(false)
+            .without_time()
+            .with_level(false)
+            .with_line_number(false);
+
         tracing_subscriber::registry()
-            .with(fmt::layer().with_writer(file))
+            .with(json_layer)
             .with(
                 EnvFilter::from_default_env()
-                    .add_directive("journal_reader_ffi=error".parse().unwrap()),
+                    .add_directive("journal_reader_ffi=debug".parse().unwrap()),
             )
             .init();
-
-        info!(
-            "Tracing initialized for journal_reader_ffi to {}",
-            log_path.display()
-        );
     });
 }
 
@@ -61,8 +64,6 @@ fn unhexchar(c: u8) -> Result<u8, i32> {
 #[no_mangle]
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_id128_from_string(s: *const c_char, ret: *mut SdId128) -> i32 {
-    debug!("sd_id128_from_string called");
-
     if s.is_null() || ret.is_null() {
         return -1;
     }
@@ -160,22 +161,19 @@ unsafe extern "C" fn sd_journal_open_files(
     init_tracing();
 
     if ret.is_null() || paths.is_null() {
-        error!("wrong arguments");
         return -1;
     }
 
     // Get the first path
     let path_ptr = *paths;
     if path_ptr.is_null() {
-        error!("wrong arguments");
         return -1;
     }
 
     // Convert C string to Rust string
     let path = match CStr::from_ptr(path_ptr).to_str() {
         Ok(s) => s,
-        Err(e) => {
-            error!("failed to convert path: {:?}", e);
+        Err(_) => {
             return -1;
         }
     };
@@ -184,8 +182,7 @@ unsafe extern "C" fn sd_journal_open_files(
     let window_size = 128 * 1024 * 1024;
     let object_file = match ObjectFile::<Mmap>::open(path, window_size) {
         Ok(f) => Box::new(f),
-        Err(e) => {
-            error!("failed to create object file: {:?}", e);
+        Err(_) => {
             return -1;
         }
     };
@@ -197,7 +194,7 @@ unsafe extern "C" fn sd_journal_open_files(
         field_buffer: Vec::with_capacity(256),
         decompressed_payload: Vec::new(),
     });
-    info!(path);
+    debug!(path, function = "sd_journal_open_files");
 
     // Pass ownership to the caller
     *ret = Box::into_raw(journal);
@@ -208,15 +205,18 @@ unsafe extern "C" fn sd_journal_open_files(
 #[no_mangle]
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_close(j: *mut SdJournal) {
-    let j = Box::from_raw(j);
-    info!(path = j.path);
+    {
+        let journal = &mut *j;
+        debug!(path = journal.path, function = "sd_journal_close");
+    }
+    let _ = Box::from_raw(j);
 }
 
 #[no_mangle]
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_head(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
-    debug!(path = journal.path);
+    debug!(path = journal.path, function = "sd_journal_seek_head");
 
     journal.reader.set_location(Location::Head);
     0
@@ -226,7 +226,9 @@ unsafe extern "C" fn sd_journal_seek_head(j: *mut SdJournal) -> c_int {
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_tail(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
-    debug!(path = journal.path);
+
+    debug!(path = journal.path, function = "sd_journal_seek_tail");
+
     journal.reader.set_location(Location::Tail);
     0
 }
@@ -235,7 +237,13 @@ unsafe extern "C" fn sd_journal_seek_tail(j: *mut SdJournal) -> c_int {
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_seek_realtime_usec(j: *mut SdJournal, usec: u64) -> c_int {
     let journal = &mut *j;
-    debug!(path = journal.path, usec = usec);
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_seek_realtime_usec",
+        realtime = usec,
+    );
+
     journal.reader.set_location(Location::Realtime(usec));
     0
 }
@@ -245,51 +253,49 @@ unsafe extern "C" fn sd_journal_seek_realtime_usec(j: *mut SdJournal, usec: u64)
 unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
 
-    match journal
+    let rc = match journal
         .reader
         .step(&journal.object_file, Direction::Forward)
     {
         Ok(has_entry) => {
             if has_entry {
-                debug!(path = journal.path, rc = 1);
                 1
             } else {
-                debug!(path = journal.path, rc = 0);
                 0
             }
         }
-        Err(e) => {
-            println!("{:?}", e);
-            // debug!(path = journal.path, error = format!("{:?}", e));
-            -1
-        }
-    }
+        Err(_) => -1,
+    };
+
+    debug!(path = journal.path, function = "sd_journal_next", rc = rc,);
+    rc
 }
 
 #[no_mangle]
 #[instrument(skip_all)]
 unsafe extern "C" fn sd_journal_previous(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
-    debug!(path = journal.path);
 
-    match journal
+    let rc = match journal
         .reader
         .step(&journal.object_file, Direction::Backward)
     {
         Ok(has_entry) => {
             if has_entry {
-                debug!(path = journal.path, rc = 1);
                 1
             } else {
-                debug!(path = journal.path, rc = 0);
                 0
             }
         }
-        Err(e) => {
-            debug!(path = journal.path, error = format!("{:?}", e));
-            -1
-        }
-    }
+        Err(_) => -1,
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_previous",
+        rc = rc,
+    );
+    rc
 }
 
 #[no_mangle]
@@ -304,11 +310,9 @@ unsafe extern "C" fn sd_journal_get_seqnum(
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
 
-    match journal.reader.get_seqnum(&journal.object_file) {
+    let rc = match journal.reader.get_seqnum(&journal.object_file) {
         Ok((seqnum, boot_id)) => {
-            debug!(path = journal.path, seqnum, "_boot_id={:?}", boot_id);
             *ret_seqnum = seqnum;
 
             if !ret_seqnum_id.is_null() {
@@ -318,7 +322,16 @@ unsafe extern "C" fn sd_journal_get_seqnum(
             0
         }
         Err(_) => -1,
-    }
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_get_seqnum",
+        ret_seqnum = *ret_seqnum,
+        ret_seqnum_id = format!("{:?}", ret_seqnum_id),
+        rc = rc,
+    );
+    rc
 }
 
 #[no_mangle]
@@ -330,14 +343,21 @@ unsafe extern "C" fn sd_journal_get_realtime_usec(j: *mut SdJournal, ret: *mut u
 
     let journal = &mut *j;
 
-    match journal.reader.get_realtime_usec(&journal.object_file) {
+    let rc = match journal.reader.get_realtime_usec(&journal.object_file) {
         Ok(realtime) => {
-            debug!(path = journal.path, ret = realtime);
             *ret = realtime;
             0
         }
         Err(_) => -1,
-    }
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_get_realtime_usec",
+        realtime = *ret,
+        rc = rc,
+    );
+    rc
 }
 
 #[no_mangle]
@@ -348,8 +368,9 @@ unsafe extern "C" fn sd_journal_restart_data(j: *mut SdJournal) {
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
     journal.reader.entry_data_restart();
+
+    debug!(path = journal.path, function = "sd_journal_restart_data");
 }
 
 #[no_mangle]
@@ -364,7 +385,6 @@ unsafe extern "C" fn sd_journal_enumerate_available_data(
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
 
     match journal.reader.entry_data_enumerate(&journal.object_file) {
         Ok(Some(data_guard)) => {
@@ -373,23 +393,59 @@ unsafe extern "C" fn sd_journal_enumerate_available_data(
                     Ok(n) => {
                         *l = n;
                         *data = journal.decompressed_payload.as_ptr() as *const c_void;
+                        debug!(
+                            path = journal.path,
+                            function = "sd_journal_enumerate_available_data",
+                            payload = format!(
+                                "{}",
+                                String::from_utf8_lossy(&journal.decompressed_payload)
+                            ),
+                            rc = 1,
+                        );
                         1
                     }
                     Err(_) => {
-                        error!("failed to decompress payload");
+                        debug!(
+                            path = journal.path,
+                            function = "sd_journal_enumerate_available_data",
+                            rc = -1,
+                        );
                         -1
                     }
                 };
             } else {
                 let payload = data_guard.payload_bytes();
 
+                debug!(
+                    path = journal.path,
+                    function = "sd_journal_enumerate_available_data",
+                    payload = format!("{}", String::from_utf8_lossy(payload)),
+                    rc = 1,
+                );
+
                 *l = payload.len();
                 *data = payload.as_ptr() as *const c_void;
             }
             1
         }
-        Ok(None) => 0,
-        Err(_) => -1,
+        Ok(None) => {
+            debug!(
+                path = journal.path,
+                function = "sd_journal_enumerate_available_data",
+                rc = 0,
+            );
+
+            0
+        }
+        Err(_) => {
+            debug!(
+                path = journal.path,
+                function = "sd_journal_enumerate_available_data",
+                rc = -1,
+            );
+
+            -1
+        }
     }
 }
 
@@ -401,7 +457,7 @@ unsafe extern "C" fn sd_journal_restart_fields(j: *mut SdJournal) {
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
+    debug!(path = journal.path, function = "sd_journal_restart_fields");
     journal.reader.fields_restart();
 }
 
@@ -417,7 +473,7 @@ unsafe extern "C" fn sd_journal_enumerate_fields(
 
     let journal = &mut *j;
 
-    match journal.reader.fields_enumerate(&journal.object_file) {
+    let rc = match journal.reader.fields_enumerate(&journal.object_file) {
         Ok(Some(field_guard)) => {
             let field_name = field_guard.get_payload();
 
@@ -425,13 +481,20 @@ unsafe extern "C" fn sd_journal_enumerate_fields(
             journal.field_buffer.extend_from_slice(field_name);
             journal.field_buffer.push(0);
             *field = journal.field_buffer.as_ptr() as *const c_char;
-            debug!(path = journal.path, field = ?String::from_utf8_lossy(field_name));
 
             1
         }
         Ok(None) => 0,
         Err(_) => -1,
-    }
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_enumerate_fields",
+        field = format!("{}", String::from_utf8_lossy(&journal.field_buffer))
+    );
+
+    rc
 }
 
 #[no_mangle]
@@ -452,13 +515,20 @@ unsafe extern "C" fn sd_journal_query_unique(j: *mut SdJournal, field: *const c_
         Ok(_) => {
             debug!(
                 path = journal.path,
-                field = ?field_cstr.to_string_lossy()
+                function = "sd_journal_query_unique",
+                field = format!("{}", String::from_utf8_lossy(field_name)),
+                rc = 0,
             );
 
             0
         }
-        Err(e) => {
-            error!(error=?e);
+        Err(_) => {
+            debug!(
+                path = journal.path,
+                function = "sd_journal_query_unique",
+                rc = -1,
+            );
+
             -1
         }
     }
@@ -473,6 +543,8 @@ unsafe extern "C" fn sd_journal_restart_unique(j: *mut SdJournal) {
 
     let journal = &mut *j;
     journal.reader.field_data_restart();
+
+    debug!(path = journal.path, function = "sd_journal_restart_unique",);
 }
 
 #[no_mangle]
@@ -491,19 +563,27 @@ unsafe extern "C" fn sd_journal_enumerate_available_unique(
     match journal.reader.field_data_enumerate(&journal.object_file) {
         Ok(Some(data_guard)) => {
             let payload = data_guard.get_payload();
-            debug!(path = journal.path, payload= ?String::from_utf8_lossy(payload));
 
             *data = payload.as_ptr() as *const c_void;
             *l = payload.len();
 
+            debug!(path = journal.path, function = "sd_journal_enumerate_available_unique", payload= ?String::from_utf8_lossy(payload), rc = 1);
             1
         }
         Ok(None) => {
-            debug!(path = journal.path, "No more data entries for field");
+            debug!(
+                path = journal.path,
+                function = "sd_journal_enumerate_available_unique",
+                rc = 0
+            );
             0
         }
-        Err(e) => {
-            error!(path = journal.path, error = ?e);
+        Err(_) => {
+            debug!(
+                path = journal.path,
+                function = "sd_journal_enumerate_available_unique",
+                rc = -1
+            );
 
             -1
         }
@@ -540,6 +620,7 @@ unsafe extern "C" fn sd_journal_add_match(
 
     debug!(
         path = journal.path,
+        function = "sd_journal_add_match",
         data = format!("{}", String::from_utf8_lossy(data_slice))
     );
 
@@ -555,15 +636,18 @@ unsafe extern "C" fn sd_journal_add_conjunction(j: *mut SdJournal) -> c_int {
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
 
-    match journal.reader.add_conjunction(&journal.object_file) {
+    let rc = match journal.reader.add_conjunction(&journal.object_file) {
         Ok(_) => 0,
-        Err(e) => {
-            error!(path = journal.path, error = ?e, "Failed to add conjunction");
-            -1
-        }
-    }
+        Err(_) => -1,
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_add_conjunction",
+        rc = rc
+    );
+    rc
 }
 
 #[no_mangle]
@@ -574,15 +658,18 @@ unsafe extern "C" fn sd_journal_add_disjunction(j: *mut SdJournal) -> c_int {
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
 
-    match journal.reader.add_disjunction(&journal.object_file) {
+    let rc = match journal.reader.add_disjunction(&journal.object_file) {
         Ok(_) => 0,
-        Err(e) => {
-            error!(path = journal.path, error = ?e, "Failed to add disjunction");
-            -1
-        }
-    }
+        Err(_) => -1,
+    };
+
+    debug!(
+        path = journal.path,
+        function = "sd_journal_add_disjunction",
+        rc = rc
+    );
+    rc
 }
 
 #[no_mangle]
@@ -593,9 +680,8 @@ unsafe extern "C" fn sd_journal_flush_matches(j: *mut SdJournal) {
     }
 
     let journal = &mut *j;
-    debug!(path = journal.path);
-
     journal.reader.flush_matches();
+    debug!(path = journal.path, function = "sd_journal_flush_matches");
 }
 
 #[no_mangle]
