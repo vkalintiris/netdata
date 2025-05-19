@@ -2806,20 +2806,6 @@ if(ENABLE_PLUGIN_CGROUP_NETWORK)
             DESTINATION usr/libexec/netdata/plugins.d)
 endif()
 
-# set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
-#                        src/collectors/systemd-journal.plugin/provider/netdata_provider.c
-#                        src/collectors/systemd-journal.plugin/provider/netdata_provider.h
-# )
-
-# add_executable(jfr.bench ${JF_BENCHMARK_FILES})
-# target_compile_definitions(jfr.bench PRIVATE HAVE_RUST_PROVIDER)
-# target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-# target_link_libraries(jfr.bench journal_reader_ffi)
-
-# add_executable(jfc.bench ${JF_BENCHMARK_FILES})
-# target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-# target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
-
 # Enable rust implementation if we don't have systemd and we want the journal plugin
 if(ENABLE_PLUGIN_SYSTEMD_JOURNAL AND NOT SYSTEMD_FOUND)
         if (NOT ENABLE_NETDATA_JOURNAL_FILE_READER True)
@@ -2847,6 +2833,28 @@ if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
                 endif()
                 target_link_libraries(systemd-journal.plugin journal_reader_ffi)
 
+                #
+                # TODO: remove these
+                #
+
+                set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
+                                       src/collectors/systemd-journal.plugin/provider/netdata_provider.c
+                                       src/collectors/systemd-journal.plugin/provider/netdata_provider.h
+                )
+
+                add_executable(jfr.bench ${JF_BENCHMARK_FILES})
+                target_compile_definitions(jfr.bench PRIVATE HAVE_RUST_PROVIDER)
+                target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+                target_link_libraries(jfr.bench journal_reader_ffi)
+
+                # if(SYSTEMD_FOUND)
+                #         target_compile_definitions(jfr.bench PRIVATE HAVE_BOTH_PROVIDERS)
+                #         target_link_libraries(jfr.bench systemd)
+                # endif()
+
+                add_executable(jfc.bench ${JF_BENCHMARK_FILES})
+                target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+                target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
         endif()
 
         target_link_libraries(systemd-journal.plugin libnetdata)

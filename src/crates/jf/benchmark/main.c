@@ -45,6 +45,16 @@ static int process_unfiltered(const char *path)
 
     printf("Successfully opened journal file: %s\n", path);
 
+    {
+        const char *field = NULL;
+        nsd_journal_restart_fields(j);
+
+        // Enumerate all field names in the journal
+        while (nsd_journal_enumerate_fields(j, &field) > 0) {
+            printf("Field name: %s\n", field);
+        }
+    }
+
     // Move to the first entry
     r = nsd_journal_seek_head(j);
     if (r < 0) {
