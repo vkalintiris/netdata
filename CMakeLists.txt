@@ -1763,7 +1763,8 @@ set(SYSTEMD_JOURNAL_PLUGIN_FILES
         src/collectors/systemd-journal.plugin/systemd-journal-fstat.c
         src/collectors/systemd-journal.plugin/systemd-journal-watcher.c
         src/collectors/systemd-journal.plugin/systemd-journal-dyncfg.c
-        src/collectors/systemd-journal.plugin/provider/sd-journal-provider.h
+        src/collectors/systemd-journal.plugin/provider/netdata_provider.c
+        src/collectors/systemd-journal.plugin/provider/netdata_provider.h
         src/libnetdata/os/system-maps/system-services.h
         src/collectors/systemd-journal.plugin/systemd-journal-sampling.h
 )
@@ -2812,8 +2813,7 @@ if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
                 endif()
 
                 list(APPEND SYSTEMD_JOURNAL_PLUGIN_FILES
-                     "src/collectors/systemd-journal.plugin/provider/netdata_provider.c"
-                     "src/collectors/systemd-journal.plugin/provider/netdata_provider.h")
+                     "src/collectors/systemd-journal.plugin/provider/rust_provider.h")
 
                 include(FetchContent)
                 FetchContent_Declare(
@@ -2827,18 +2827,22 @@ if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
                 corrosion_import_crate(MANIFEST_PATH src/crates/jf/Cargo.toml)
 
                 add_executable(systemd-journal.plugin ${SYSTEMD_JOURNAL_PLUGIN_FILES})
-                target_compile_definitions(systemd-journal.plugin PRIVATE NETDATA_PROVIDER)
+                target_compile_definitions(systemd-journal.plugin PRIVATE RUST_PROVIDER)
                 target_link_libraries(systemd-journal.plugin journal_reader_ffi libnetdata)
 
                 if(ENABLE_JF_BENCHMARKS)
-                        set(JF_BENCHMARK_FILES "src/crates/jf/benchmark/main.c")
+                        set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
+                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.c
+                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.h
+                        )
 
                         add_executable(jfr.bench ${JF_BENCHMARK_FILES})
-                        target_compile_definitions(jfr.bench PRIVATE BENCH_JF)
+                        target_compile_definitions(jfr.bench PRIVATE RUST_PROVIDER)
                         target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
                         target_link_libraries(jfr.bench journal_reader_ffi)
 
                         add_executable(jfc.bench ${JF_BENCHMARK_FILES})
+                        target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
                         target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
                 endif()
         else()

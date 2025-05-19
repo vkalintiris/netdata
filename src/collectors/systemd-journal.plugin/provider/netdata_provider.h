@@ -1,25 +1,73 @@
 #ifndef ND_SD_JOURNAL_PROVIDER_NETDATA_H
 #define ND_SD_JOURNAL_PROVIDER_NETDATA_H
 
-#include "crates/jf/journal_reader_ffi/journal_reader_ffi.h"
+#ifdef RUST_PROVIDER
+#include "rust_provider.h"
+#else
+#include <systemd/sd-journal.h>
+#endif
 
-#define SD_ID128_NULL ((const sd_id128_t){.bytes = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}})
-#define SD_ID128_STRING_MAX 33U
-#define SD_ID128_UUID_STRING_MAX 37U
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
 
-#define SD_JOURNAL_FOREACH_DATA(j, data, l)                                                                            \
-    for (sd_journal_restart_data(j); sd_journal_enumerate_available_data((j), &(data), &(l)) > 0;)
+#ifdef RUST_PROVIDER
+    typedef struct RsdJournal NsdJournal;
+    typedef struct RsdId128 NsdId128;
 
-#define SD_JOURNAL_FOREACH_UNIQUE(j, data, l)                                                                          \
-    for (sd_journal_restart_unique(j); sd_journal_enumerate_available_unique((j), &(data), &(l)) > 0;)
+    #define NSD_ID128_NULL RSD_ID128_NULL
+    #define NSD_ID128_STRING_MAX RSD_ID128_STRING_MAX
+    #define NSD_ID128_UUID_STRING_MAX RSD_ID128_UUID_STRING_MAX
 
-#define SD_JOURNAL_FOREACH_FIELD(j, field)                                                                             \
-    for (sd_journal_restart_fields(j); sd_journal_enumerate_fields((j), &(field)) > 0;)
+    #define NSD_JOURNAL_FOREACH_DATA(j, data, l) RSD_JOURNAL_FOREACH_DATA(j, data, l)
+    #define NSD_JOURNAL_FOREACH_UNIQUE(j, data, l) RSD_JOURNAL_FOREACH_UNIQUE(j, data, l)
+    #define NSD_JOURNAL_FOREACH_FIELD(j, field) RSD_JOURNAL_FOREACH_FIELD(j, field)
+#else
+    typedef struct sd_journal NsdJournal;
+    typedef sd_id128_t NsdId128;
 
-#undef HAVE_SD_JOURNAL_RESTART_FIELDS
-#define HAVE_SD_JOURNAL_RESTART_FIELDS 1
+    #define NSD_ID128_NULL SD_ID128_NULL
+    #define NSD_ID128_STRING_MAX SD_ID128_STRING_MAX
+    #define NSD_ID128_UUID_STRING_MAX SD_ID128_UUID_STRING_MAX
 
-#undef HAVE_SD_JOURNAL_GET_SEQNUM
-#define HAVE_SD_JOURNAL_GET_SEQNUM 1
+    #define NSD_JOURNAL_FOREACH_DATA(j, data, l) SD_JOURNAL_FOREACH_DATA(j, data, l)
+    #define NSD_JOURNAL_FOREACH_UNIQUE(j, data, l) SD_JOURNAL_FOREACH_UNIQUE(j, data, l)
+    #define NSD_JOURNAL_FOREACH_FIELD(j, field) SD_JOURNAL_FOREACH_FIELD(j, field)
+#endif
+
+int32_t nsd_id128_from_string(const char *s, NsdId128 *ret);
+int32_t nsd_id128_equal(NsdId128 a, NsdId128 b);
+
+int nsd_journal_open_files(NsdJournal **ret, const char *const *paths, int flags);
+void nsd_journal_close(NsdJournal *j);
+
+int nsd_journal_seek_head(NsdJournal *j);
+int nsd_journal_seek_tail(NsdJournal *j);
+int nsd_journal_seek_realtime_usec(NsdJournal *j, uint64_t usec);
+
+int nsd_journal_next(NsdJournal *j);
+int nsd_journal_previous(NsdJournal *j);
+
+int nsd_journal_get_seqnum(NsdJournal *j, uint64_t *ret_seqnum, NsdId128 *ret_seqnum_id);
+int nsd_journal_get_realtime_usec(NsdJournal *j, uint64_t *ret);
+
+void nsd_journal_restart_data(NsdJournal *j);
+int nsd_journal_enumerate_available_data(NsdJournal *j, const void **data, uintptr_t *l);
+
+void nsd_journal_restart_fields(NsdJournal *j);
+int nsd_journal_enumerate_fields(NsdJournal *j, const char **field);
+
+int nsd_journal_query_unique(NsdJournal *j, const char *field);
+void nsd_journal_restart_unique(NsdJournal *j);
+int nsd_journal_enumerate_available_unique(NsdJournal *j, const void **data, uintptr_t *l);
+
+int nsd_journal_add_match(NsdJournal *j, const void *data, uintptr_t size);
+int nsd_journal_add_conjunction(NsdJournal *j);
+int nsd_journal_add_disjunction(NsdJournal *j);
+void nsd_journal_flush_matches(NsdJournal *j);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif /* ND_SD_JOURNAL_PROVIDER_NETDATA_H */

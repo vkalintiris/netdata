@@ -5,7 +5,7 @@
 
 #include "collectors/all.h"
 #include "libnetdata/libnetdata.h"
-#include "provider/sd-journal-provider.h"
+#include "provider/netdata_provider.h"
 
 #include <linux/capability.h>
 #include <syslog.h>
@@ -63,8 +63,8 @@ struct nd_journal_file {
 
     uint64_t first_seqnum;
     uint64_t last_seqnum;
-    sd_id128_t first_writer_id;
-    sd_id128_t last_writer_id;
+    NsdId128 first_writer_id;
+    NsdId128 last_writer_id;
 
     uint64_t messages_in_file;
 };
@@ -111,7 +111,7 @@ void nd_sd_journal_transform_gid(FACETS *facets, BUFFER *wb, FACETS_TRANSFORMATI
 void nd_sd_journal_transform_cap_effective(FACETS *facets, BUFFER *wb, FACETS_TRANSFORMATION_SCOPE scope, void *data);
 void nd_sd_journal_transform_timestamp_usec(FACETS *facets, BUFFER *wb, FACETS_TRANSFORMATION_SCOPE scope, void *data);
 
-usec_t nd_journal_file_update_annotation_boot_id(sd_journal *j, struct nd_journal_file *njf, const char *boot_id);
+usec_t nd_journal_file_update_annotation_boot_id(NsdJournal *j, struct nd_journal_file *njf, const char *boot_id);
 
 #define MAX_JOURNAL_DIRECTORIES 100
 struct journal_directory {

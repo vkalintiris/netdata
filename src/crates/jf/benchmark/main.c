@@ -2,22 +2,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef BENCH_JF
 #include "collectors/systemd-journal.plugin/provider/netdata_provider.h"
-#else
-#include <systemd/sd-journal.h>
-#endif
 
-void format_entry(sd_journal *j, size_t entry_id) {
+void format_entry(NsdJournal *j, size_t entry_id) {
     size_t data_count = 0;
     char buf[4096];
 
     const void *data;
     size_t length;
-    SD_JOURNAL_FOREACH_DATA(j, data, length) {
+    NSD_JOURNAL_FOREACH_DATA(j, data, length) {
         if (length > 4095) {
             fprintf(stderr, "length is more than 4KiB\n");
-            sd_journal_close(j);
+            nsd_journal_close(j);
             exit(EXIT_FAILURE);
         }
 
@@ -31,7 +27,7 @@ void format_entry(sd_journal *j, size_t entry_id) {
 
 static int process_unfiltered(const char *path)
 {
-    sd_journal *j;
+    NsdJournal *j;
     size_t total_bytes = 0;
 
     const char *paths[2] = {
@@ -40,7 +36,7 @@ static int process_unfiltered(const char *path)
     };
 
     // Open the specific journal file
-    int r = sd_journal_open_files(&j, &paths[0], 0);
+    int r = nsd_journal_open_files(&j, &paths[0], 0);
     if (r < 0) {
         fprintf(stderr, "Failed to open journal file %s: %s\n",
                 path, strerror(-r));
@@ -50,22 +46,22 @@ static int process_unfiltered(const char *path)
     printf("Successfully opened journal file: %s\n", path);
 
     // Move to the first entry
-    r = sd_journal_seek_head(j);
+    r = nsd_journal_seek_head(j);
     if (r < 0) {
         fprintf(stderr, "Failed to seek to head: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
 
     // Iterate through all entries
     size_t entry_count = 0;
-    while ((r = sd_journal_next(j)) > 0) {
+    while ((r = nsd_journal_next(j)) > 0) {
         entry_count++;
 
         // Get all data fields
         const void *data;
         size_t length;
-        SD_JOURNAL_FOREACH_DATA(j, data, length) {
+        NSD_JOURNAL_FOREACH_DATA(j, data, length) {
             // Count the bytes
             total_bytes += length;
         }
@@ -73,7 +69,7 @@ static int process_unfiltered(const char *path)
 
     if (r < 0) {
         fprintf(stderr, "Failed to iterate journal: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
 
@@ -84,13 +80,13 @@ static int process_unfiltered(const char *path)
     printf("Total entries processed: %zu\n", entry_count);
 
     // Close the journal
-    sd_journal_close(j);
+    nsd_journal_close(j);
     return 0;
 }
 
 static int process_filtered(const char *path)
 {
-    sd_journal *j;
+    NsdJournal *j;
     size_t total_bytes = 0;
 
     const char *paths[2] = {
@@ -99,7 +95,7 @@ static int process_filtered(const char *path)
     };
 
     // Open the specific journal file
-    int r = sd_journal_open_files(&j, &paths[0], 0);
+    int r = nsd_journal_open_files(&j, &paths[0], 0);
     if (r < 0) {
         fprintf(stderr, "Failed to open journal file %s: %s\n",
                 path, strerror(-r));
@@ -111,78 +107,78 @@ static int process_filtered(const char *path)
     // Apply filters
     // Platform filters (OR condition)
     {
-        r = sd_journal_add_match(j, "AE_OS_PLATFORM=debian", strlen("AE_OS_PLATFORM=debian"));
+        r = nsd_journal_add_match(j, "AE_OS_PLATFORM=debian", strlen("AE_OS_PLATFORM=debian"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
 
-        r = sd_journal_add_match(j, "AE_OS_PLATFORM=fedora", strlen("AE_OS_PLATFORM=fedora"));
+        r = nsd_journal_add_match(j, "AE_OS_PLATFORM=fedora", strlen("AE_OS_PLATFORM=fedora"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
     }
     
-    r = sd_journal_add_conjunction(j);  // AND
+    r = nsd_journal_add_conjunction(j);  // AND
     if (r < 0) {
         fprintf(stderr, "Failed to add conjunction: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
     
     {
         // Version filters (OR condition)
-        r = sd_journal_add_match(j, "AE_VERSION=17", strlen("AE_VERSION=17"));
+        r = nsd_journal_add_match(j, "AE_VERSION=17", strlen("AE_VERSION=17"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
 
-        r = sd_journal_add_match(j, "AE_VERSION=22", strlen("AE_VERSION=22"));
+        r = nsd_journal_add_match(j, "AE_VERSION=22", strlen("AE_VERSION=22"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
     }
     
-    r = sd_journal_add_conjunction(j);  // AND
+    r = nsd_journal_add_conjunction(j);  // AND
     if (r < 0) {
         fprintf(stderr, "Failed to add conjunction: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
     
     // Priority filters (OR condition)
     {
-        r = sd_journal_add_match(j, "PRIORITY=7", strlen("PRIORITY=7"));
+        r = nsd_journal_add_match(j, "PRIORITY=7", strlen("PRIORITY=7"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
     
-        r = sd_journal_add_match(j, "PRIORITY=6", strlen("PRIORITY=6"));
+        r = nsd_journal_add_match(j, "PRIORITY=6", strlen("PRIORITY=6"));
         if (r < 0) {
             fprintf(stderr, "Failed to add match: %s\n", strerror(-r));
-            sd_journal_close(j);
+            nsd_journal_close(j);
             return 1;
         }
     }
 
-    r = sd_journal_seek_tail(j);
+    r = nsd_journal_seek_tail(j);
     if (r < 0) {
         fprintf(stderr, "Failed to seek to head: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
 
     size_t entry_count = 0;
-    while ((r = sd_journal_previous(j)) > 0) {
+    while ((r = nsd_journal_previous(j)) > 0) {
         format_entry(j, entry_count);
 
         entry_count++;
@@ -190,7 +186,7 @@ static int process_filtered(const char *path)
 
     if (r < 0) {
         fprintf(stderr, "Failed to iterate journal: %s\n", strerror(-r));
-        sd_journal_close(j);
+        nsd_journal_close(j);
         return 1;
     }
 
@@ -201,7 +197,7 @@ static int process_filtered(const char *path)
     printf("Total entries processed: %zu\n\n", entry_count);
 
     // Close the journal
-    sd_journal_close(j);
+    nsd_journal_close(j);
     return 0;
 }
 
