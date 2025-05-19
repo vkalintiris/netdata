@@ -228,11 +228,10 @@ mark_as_advanced(ENABLE_LIBUNWIND)
 cmake_dependent_option(FORCE_LEGACY_LIBBPF "Force usage of libbpf 0.0.9 instead of the latest version." False "ENABLE_PLUGIN_EBPF" False)
 mark_as_advanced(FORCE_LEGACY_LIBBPF)
 
-option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" True)
+option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" False)
+option(ENABLE_LIBSYSTEMD_JOURNAL_FILE_READER "Enable libsystemd's journal file reader implementation" True)
 
 option(ENABLE_MIMALLOC "Enable mimalloc allocator" OFF)
-
-option(ENABLE_JF_BENCHMARKS "Enable journal file benchmarks" True)
 
 if(ENABLE_MIMALLOC)
     if(CMAKE_MINOR_VERSION LESS 18)
@@ -1765,6 +1764,7 @@ set(SYSTEMD_JOURNAL_PLUGIN_FILES
         src/collectors/systemd-journal.plugin/systemd-journal-dyncfg.c
         src/collectors/systemd-journal.plugin/provider/netdata_provider.c
         src/collectors/systemd-journal.plugin/provider/netdata_provider.h
+        src/collectors/systemd-journal.plugin/provider/rust_provider.h
         src/libnetdata/os/system-maps/system-services.h
         src/collectors/systemd-journal.plugin/systemd-journal-sampling.h
 )
@@ -2806,15 +2806,32 @@ if(ENABLE_PLUGIN_CGROUP_NETWORK)
             DESTINATION usr/libexec/netdata/plugins.d)
 endif()
 
+# set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
+#                        src/collectors/systemd-journal.plugin/provider/netdata_provider.c
+#                        src/collectors/systemd-journal.plugin/provider/netdata_provider.h
+# )
+
+# add_executable(jfr.bench ${JF_BENCHMARK_FILES})
+# target_compile_definitions(jfr.bench PRIVATE HAVE_RUST_PROVIDER)
+# target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+# target_link_libraries(jfr.bench journal_reader_ffi)
+
+# add_executable(jfc.bench ${JF_BENCHMARK_FILES})
+# target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+# target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
+
+# Enable rust implementation if we don't have systemd and we want the journal plugin
+if(ENABLE_PLUGIN_SYSTEMD_JOURNAL AND NOT SYSTEMD_FOUND)
+        if (NOT ENABLE_NETDATA_JOURNAL_FILE_READER True)
+                message(WARNING "Systemd journal package not found, will try netdata's journal reader which requires cargo.")
+                set(ENABLE_NETDATA_JOURNAL_FILE_READER True)
+        endif()
+endif()
+
 if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
-        if(ENABLE_NETDATA_JOURNAL_FILE_READER OR NOT SYSTEMD_FOUND)
-                if(NOT ENABLE_NETDATA_JOURNAL_FILE_READER)
-                        message(WARNING "Systemd journal package not found will try own journal reader.")
-                endif()
+        add_executable(systemd-journal.plugin ${SYSTEMD_JOURNAL_PLUGIN_FILES})
 
-                list(APPEND SYSTEMD_JOURNAL_PLUGIN_FILES
-                     "src/collectors/systemd-journal.plugin/provider/rust_provider.h")
-
+        if(ENABLE_NETDATA_JOURNAL_FILE_READER)
                 include(FetchContent)
                 FetchContent_Declare(
                     Corrosion
@@ -2823,32 +2840,16 @@ if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
                 )
                 FetchContent_MakeAvailable(Corrosion)
 
-                # Import targets defined in a package or workspace manifest `Cargo.toml` file
                 corrosion_import_crate(MANIFEST_PATH src/crates/jf/Cargo.toml)
-
-                add_executable(systemd-journal.plugin ${SYSTEMD_JOURNAL_PLUGIN_FILES})
-                target_compile_definitions(systemd-journal.plugin PRIVATE RUST_PROVIDER)
-                target_link_libraries(systemd-journal.plugin journal_reader_ffi libnetdata)
-
-                if(ENABLE_JF_BENCHMARKS)
-                        set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
-                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.c
-                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.h
-                        )
-
-                        add_executable(jfr.bench ${JF_BENCHMARK_FILES})
-                        target_compile_definitions(jfr.bench PRIVATE RUST_PROVIDER)
-                        target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-                        target_link_libraries(jfr.bench journal_reader_ffi)
-
-                        add_executable(jfc.bench ${JF_BENCHMARK_FILES})
-                        target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-                        target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
+                target_compile_definitions(systemd-journal.plugin PRIVATE HAVE_RUST_PROVIDER)
+                if(SYSTEMD_FOUND)
+                        target_compile_definitions(systemd-journal.plugin PRIVATE HAVE_BOTH_PROVIDERS)
                 endif()
-        else()
-                add_executable(systemd-journal.plugin ${SYSTEMD_JOURNAL_PLUGIN_FILES})
-                target_link_libraries(systemd-journal.plugin libnetdata)
+                target_link_libraries(systemd-journal.plugin journal_reader_ffi)
+
         endif()
+
+        target_link_libraries(systemd-journal.plugin libnetdata)
 
         install(TARGETS systemd-journal.plugin
                 COMPONENT plugin-systemd-journal

@@ -1,17 +1,20 @@
 #ifndef ND_SD_JOURNAL_PROVIDER_NETDATA_H
 #define ND_SD_JOURNAL_PROVIDER_NETDATA_H
 
-#ifdef RUST_PROVIDER
-#include "rust_provider.h"
-#else
-#include <systemd/sd-journal.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
-#endif // __cplusplus
+#endif /* __cplusplus */
 
-#ifdef RUST_PROVIDER
+#if defined(HAVE_BOTH_PROVIDERS)
+    #include "rust_provider.h"
+    #include <systemd/sd-journal.h>
+#elif defined(HAVE_RUST_PROVIDER)
+    #include "rust_provider.h"
+#else
+    #include <systemd/sd-journal.h>
+#endif
+
+#if defined(HAVE_RUST_PROVIDER)
     typedef struct RsdJournal NsdJournal;
     typedef struct RsdId128 NsdId128;
 
@@ -67,7 +70,7 @@ int nsd_journal_add_disjunction(NsdJournal *j);
 void nsd_journal_flush_matches(NsdJournal *j);
 
 #ifdef __cplusplus
-}  // extern "C"
-#endif  // __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* ND_SD_JOURNAL_PROVIDER_NETDATA_H */
