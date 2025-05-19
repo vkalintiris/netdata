@@ -186,7 +186,7 @@ unsafe extern "C" fn sd_journal_seek_realtime_usec(j: *mut SdJournal, usec: u64)
 unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
     let journal = &mut *j;
 
-    let rc = match journal
+    match journal
         .reader
         .step(&journal.object_file, Direction::Forward)
     {
@@ -198,9 +198,7 @@ unsafe extern "C" fn sd_journal_next(j: *mut SdJournal) -> c_int {
             }
         }
         Err(_) => -1,
-    };
-
-    rc
+    }
 }
 
 #[no_mangle]
