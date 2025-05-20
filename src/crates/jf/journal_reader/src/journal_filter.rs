@@ -203,6 +203,60 @@ impl FilterExpr {
             }
         }
     }
+
+    pub fn dump<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<String> {
+        let mut output = String::new();
+        self.dump_internal(object_file, 0, &mut output)?;
+        Ok(output)
+    }
+
+    /// Helper function for format_data_objects that handles nested expressions and indentation
+    fn dump_internal<M: MemoryMap>(
+        &self,
+        object_file: &ObjectFile<M>,
+        indent_level: usize,
+        output: &mut String,
+    ) -> Result<()> {
+        let indent = "  ".repeat(indent_level);
+
+        match self {
+            FilterExpr::Match(data_offset, inlined_cursor) => {
+                // Load the data object
+                let data_object = object_file.data_object(*data_offset)?;
+
+                // Get the payload as a string if possible
+                let payload_bytes = data_object.payload_bytes();
+                let payload_str = String::from_utf8_lossy(payload_bytes);
+
+                // Format the data offset and payload
+                output.push_str(&format!(
+                    "{}Match[offset=0x{:x}]: {}\n",
+                    indent, data_offset, payload_str
+                ));
+
+                // Format cursor information if available
+                if let Some(ic) = inlined_cursor {
+                    output.push_str(&format!("{}  Cursor: {:?}\n", indent, ic));
+                }
+            }
+            FilterExpr::Conjunction(filter_exprs) => {
+                output.push_str(&format!("{}Conjunction (AND) {{\n", indent));
+                for expr in filter_exprs {
+                    expr.dump_internal(object_file, indent_level + 1, output)?;
+                }
+                output.push_str(&format!("{}}}\n", indent));
+            }
+            FilterExpr::Disjunction(filter_exprs) => {
+                output.push_str(&format!("{}Disjunction (OR) {{\n", indent));
+                for expr in filter_exprs {
+                    expr.dump_internal(object_file, indent_level + 1, output)?;
+                }
+                output.push_str(&format!("{}}}\n", indent));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

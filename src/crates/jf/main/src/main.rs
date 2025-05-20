@@ -533,50 +533,52 @@ fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
 fn altime() {
     // _BOOT_ID=4afd2bd1bbb34cb3850cc5d75fdef5f7
 
-    let path = "/var/log/journal/ec94ba22c03d4e27bc6c1709269525cb/system@3a632569a39146a4946c36537979b479-000000000019149e-000635048a5f9a7f.journal";
+    let path = "/tmp/system.journal";
     let object_file = ObjectFile::<Mmap>::open(path, 256 * 1024 * 1024).unwrap();
 
     let mut jr = JournalReader::default();
-    jr.add_match(b"_BOOT_ID=4afd2bd1bbb34cb3850cc5d75fdef5f7");
+    jr.add_match(b"PRIORITY=6");
+    jr.set_location(Location::Realtime(1747739709999999));
 
-    jr.set_location(Location::Head);
-
-    jr.step(&object_file, Direction::Forward).unwrap();
-    let usec = jr.get_realtime_usec(&object_file).unwrap();
-
-    println!("usec: {:?}", usec);
+    let mut counter = 0;
+    while jr.step(&object_file, Direction::Backward).unwrap() {
+        let eo = jr.get_entry_offset().unwrap();
+        let usec = jr.get_realtime_usec(&object_file).unwrap();
+        println!("[{}] eo: {:?}, usec: {:?}", counter, eo, usec);
+        counter += 1;
+    }
 }
 fn main() {
     altime();
 
-    // let args: Vec<String> = std::env::args().collect();
-    // if args.len() != 2 {
-    //     eprintln!("Usage: {} <journal_file_path>", args[0]);
-    //     std::process::exit(1);
-    // }
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <journal_file_path>", args[0]);
+        std::process::exit(1);
+    }
 
-    // if false {
-    //     create_logs();
-    //     return;
-    // }
+    if false {
+        create_logs();
+        return;
+    }
 
-    // const WINDOW_SIZE: u64 = 4096;
-    // match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
-    //     Ok(object_file) => {
-    //         if true {
-    //             if let Err(e) = test_cursor(&object_file) {
-    //                 panic!("Cursor tests failed: {:?}", e);
-    //             }
-    //         }
+    const WINDOW_SIZE: u64 = 4096;
+    match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
+        Ok(object_file) => {
+            if true {
+                if let Err(e) = test_cursor(&object_file) {
+                    panic!("Cursor tests failed: {:?}", e);
+                }
+            }
 
-    //         if true {
-    //             if let Err(e) = test_filter_expr(&object_file) {
-    //                 panic!("Filter expression tests failed: {:?}", e);
-    //             }
+            if true {
+                if let Err(e) = test_filter_expr(&object_file) {
+                    panic!("Filter expression tests failed: {:?}", e);
+                }
 
-    //             println!("Overall stat: {:?}", object_file.stats());
-    //         }
-    //     }
-    //     Err(e) => panic!("Failed to open journal file: {:?}", e),
-    // }
+                println!("Overall stat: {:?}", object_file.stats());
+            }
+        }
+        Err(e) => panic!("Failed to open journal file: {:?}", e),
+    }
 }

@@ -134,9 +134,9 @@ impl JournalCursor {
                 self.filter_expr.as_mut().unwrap().head();
 
                 self.filter_expr
-                    .as_ref()
+                    .as_mut()
                     .unwrap()
-                    .lookup(object_file, u64::MIN, Direction::Forward)?
+                    .next(object_file, u64::MIN)?
                     .map(Location::ResolvedEntry)
             }
             (Location::Head, Direction::Backward) => None,
@@ -145,14 +145,12 @@ impl JournalCursor {
                 self.filter_expr.as_mut().unwrap().tail(object_file)?;
 
                 self.filter_expr
-                    .as_ref()
+                    .as_mut()
                     .unwrap()
-                    .lookup(object_file, u64::MAX, Direction::Backward)?
+                    .previous(object_file, u64::MAX)?
                     .map(Location::ResolvedEntry)
             }
-            (Location::Realtime(realtime), _) => {
-                self.filter_expr.as_mut().unwrap().head();
-
+            (Location::Realtime(realtime), direction) => {
                 let predicate = |entry_offset| {
                     let entry_object = object_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
@@ -162,28 +160,38 @@ impl JournalCursor {
                     .entry_list()
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
-                entry_list
+                let entry_offset = entry_list
                     .directed_partition_point(object_file, predicate, direction)?
                     .map(|c| c.value(object_file))
-                    .transpose()?
-                    .map(Location::Entry)
+                    .transpose()?;
+
+                if let Some(location_offset) = entry_offset {
+                    let needle_offset = match direction {
+                        Direction::Forward => location_offset - 1,
+                        Direction::Backward => location_offset + 1,
+                    };
+                    self.location = Location::Entry(needle_offset);
+                    self.resolve_filter_location(object_file, direction)?
+                } else {
+                    None
+                }
             }
             (Location::Entry(location_offset), Direction::Forward) => {
                 self.filter_expr.as_mut().unwrap().head();
 
                 self.filter_expr
-                    .as_ref()
+                    .as_mut()
                     .unwrap()
-                    .lookup(object_file, location_offset.saturating_add(1), direction)?
+                    .next(object_file, location_offset)?
                     .map(Location::ResolvedEntry)
             }
             (Location::Entry(location_offset), Direction::Backward) => {
-                self.filter_expr.as_mut().unwrap().head();
+                self.filter_expr.as_mut().unwrap().tail(object_file)?;
 
                 self.filter_expr
-                    .as_ref()
+                    .as_mut()
                     .unwrap()
-                    .lookup(object_file, location_offset.saturating_sub(1), direction)?
+                    .previous(object_file, location_offset)?
                     .map(Location::ResolvedEntry)
             }
             (Location::ResolvedEntry(location_offset), Direction::Forward) => self

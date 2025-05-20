@@ -12,7 +12,46 @@ use journal_cursor::JournalCursor;
 pub use journal_cursor::Location;
 
 pub use offset_array::Direction;
+
+use std::sync::Once;
 use tracing::{error, instrument};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+// Initialize tracing once
+static INIT_TRACING: Once = Once::new();
+
+fn init_tracing() {
+    INIT_TRACING.call_once(|| {
+        let log_path = "/home/vk/repos/tmp/logs/ffi.log";
+
+        let file = match std::fs::File::create(log_path) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("Failed to create log file: {}", e);
+                return;
+            }
+        };
+
+        let json_layer = fmt::layer()
+            .with_writer(file)
+            .json()
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_target(false)
+            .with_file(false)
+            .without_time()
+            .with_level(false)
+            .with_line_number(false);
+
+        tracing_subscriber::registry()
+            .with(json_layer)
+            .with(
+                EnvFilter::from_default_env()
+                    .add_directive("journal_reader_ffi=debug".parse().unwrap()),
+            )
+            .init();
+    });
+}
 
 pub struct JournalReader<'a, M: MemoryMap> {
     cursor: JournalCursor,
@@ -38,6 +77,7 @@ impl<M: MemoryMap> std::fmt::Debug for JournalReader<'_, M> {
 
 impl<M: MemoryMap> Default for JournalReader<'_, M> {
     fn default() -> Self {
+        init_tracing();
         Self {
             cursor: JournalCursor::new(),
             filter: None,
@@ -51,6 +91,14 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
 }
 
 impl<'a, M: MemoryMap> JournalReader<'a, M> {
+    pub fn dump(&self, object_file: &'a ObjectFile<M>) -> Result<String> {
+        if let Some(filter_expr) = self.cursor.filter_expr.as_ref() {
+            filter_expr.dump(object_file)
+        } else {
+            Ok(String::from("no filter expr"))
+        }
+    }
+
     pub fn set_location(&mut self, location: Location) {
         self.cursor.set_location(location)
     }
