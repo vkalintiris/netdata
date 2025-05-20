@@ -2,7 +2,7 @@ use crate::hash;
 use crate::object::*;
 use crate::offset_array;
 use error::{JournalError, Result};
-// use std::backtrace::Backtrace;
+use std::backtrace::Backtrace;
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -45,8 +45,8 @@ pub struct ObjectFile<M: MemoryMap> {
     // Window manager for other objects
     window_manager: UnsafeCell<WindowManager<M>>,
 
-    // prev_backtrace: std::cell::RefCell<std::backtrace::Backtrace>,
-    // backtrace: std::cell::RefCell<std::backtrace::Backtrace>,
+    prev_backtrace: std::cell::RefCell<std::backtrace::Backtrace>,
+    backtrace: std::cell::RefCell<std::backtrace::Backtrace>,
 
     // Flag to track if any object is in use
     object_in_use: RefCell<bool>,
@@ -82,8 +82,8 @@ impl<M: MemoryMap> ObjectFile<M> {
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
-            // prev_backtrace: RefCell::new(std::backtrace::Backtrace::capture()),
-            // backtrace: RefCell::new(std::backtrace::Backtrace::capture()),
+            prev_backtrace: RefCell::new(std::backtrace::Backtrace::capture()),
+            backtrace: RefCell::new(std::backtrace::Backtrace::capture()),
             object_in_use: RefCell::new(false),
         })
     }
@@ -140,16 +140,16 @@ impl<M: MemoryMap> ObjectFile<M> {
         // Check if any object is already in use
         let mut is_in_use = self.object_in_use.borrow_mut();
         if *is_in_use {
-            // eprintln!(
-            //     "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
-            //     self.backtrace.borrow().to_string(),
-            //     self.prev_backtrace.borrow().to_string()
-            // );
+            eprintln!(
+                "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
+                self.backtrace.borrow().to_string(),
+                self.prev_backtrace.borrow().to_string()
+            );
             return Err(JournalError::ValueGuardInUse);
         }
 
-        // self.backtrace.swap(&self.prev_backtrace);
-        // let _ = self.backtrace.replace(Backtrace::force_capture());
+        self.backtrace.swap(&self.prev_backtrace);
+        let _ = self.backtrace.replace(Backtrace::force_capture());
 
         let is_compact = self
             .journal_header()

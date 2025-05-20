@@ -235,7 +235,7 @@ nd_sd_journal_process_row(NsdJournal *j, FACETS *facets, struct nd_journal_file 
     facets_add_key_value_length(
         facets, JOURNAL_KEY_ND_JOURNAL_FILE, sizeof(JOURNAL_KEY_ND_JOURNAL_FILE) - 1, njf->filename, njf->filename_len);
 
-    RSD_JOURNAL_FOREACH_DATA(j, data, length)
+    NSD_JOURNAL_FOREACH_DATA(j, data, length)
     {
         const char *key, *value;
         size_t key_length, value_length;

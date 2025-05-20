@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use chrono::{DateTime, TimeZone, Utc};
 use error::{JournalError, Result};
 use journal_reader::{journal_filter, Direction, JournalReader, Location};
@@ -528,35 +530,53 @@ fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
     Ok(())
 }
 
+fn altime() {
+    // _BOOT_ID=4afd2bd1bbb34cb3850cc5d75fdef5f7
+
+    let path = "/var/log/journal/ec94ba22c03d4e27bc6c1709269525cb/system@3a632569a39146a4946c36537979b479-000000000019149e-000635048a5f9a7f.journal";
+    let object_file = ObjectFile::<Mmap>::open(path, 256 * 1024 * 1024).unwrap();
+
+    let mut jr = JournalReader::default();
+    jr.add_match(b"_BOOT_ID=4afd2bd1bbb34cb3850cc5d75fdef5f7");
+
+    jr.set_location(Location::Head);
+
+    jr.step(&object_file, Direction::Forward).unwrap();
+    let usec = jr.get_realtime_usec(&object_file).unwrap();
+
+    println!("usec: {:?}", usec);
+}
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: {} <journal_file_path>", args[0]);
-        std::process::exit(1);
-    }
+    altime();
 
-    if false {
-        create_logs();
-        return;
-    }
+    // let args: Vec<String> = std::env::args().collect();
+    // if args.len() != 2 {
+    //     eprintln!("Usage: {} <journal_file_path>", args[0]);
+    //     std::process::exit(1);
+    // }
 
-    const WINDOW_SIZE: u64 = 4096;
-    match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
-        Ok(object_file) => {
-            if true {
-                if let Err(e) = test_cursor(&object_file) {
-                    panic!("Cursor tests failed: {:?}", e);
-                }
-            }
+    // if false {
+    //     create_logs();
+    //     return;
+    // }
 
-            if true {
-                if let Err(e) = test_filter_expr(&object_file) {
-                    panic!("Filter expression tests failed: {:?}", e);
-                }
+    // const WINDOW_SIZE: u64 = 4096;
+    // match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
+    //     Ok(object_file) => {
+    //         if true {
+    //             if let Err(e) = test_cursor(&object_file) {
+    //                 panic!("Cursor tests failed: {:?}", e);
+    //             }
+    //         }
 
-                println!("Overall stat: {:?}", object_file.stats());
-            }
-        }
-        Err(e) => panic!("Failed to open journal file: {:?}", e),
-    }
+    //         if true {
+    //             if let Err(e) = test_filter_expr(&object_file) {
+    //                 panic!("Filter expression tests failed: {:?}", e);
+    //             }
+
+    //             println!("Overall stat: {:?}", object_file.stats());
+    //         }
+    //     }
+    //     Err(e) => panic!("Failed to open journal file: {:?}", e),
+    // }
 }

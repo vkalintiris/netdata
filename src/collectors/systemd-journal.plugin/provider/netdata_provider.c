@@ -1,4 +1,37 @@
+#include <stdio.h>
 #include "netdata_provider.h"
+
+static int format_bytes_to_hex(const unsigned char *src, size_t src_len,
+                               char *dst, size_t dst_size) {
+    // Calculate required destination size: 3 chars per byte (2 hex + 1 space)
+    // minus 1 space after the last byte, plus 1 for null terminator
+    size_t required_size = src_len * 3 - 1 + 1;
+
+    // Check if destination buffer is large enough
+    if (dst_size < required_size) {
+        return -1;
+    }
+
+    // Reset destination buffer
+    dst[0] = '\0';
+
+    // Current position in the destination buffer
+    size_t pos = 0;
+
+    // Format each byte
+    for (size_t i = 0; i < src_len; i++) {
+        // Format current byte as hex
+        pos += sprintf(dst + pos, "%02X", src[i]);
+
+        // Add space after each byte except the last one
+        if (i < src_len - 1) {
+            dst[pos++] = ' ';
+            dst[pos] = '\0';
+        }
+    }
+
+    return pos;
+}
 
 int32_t nsd_id128_from_string(const char *s, NsdId128 *ret)
 {
@@ -23,6 +56,7 @@ int nsd_journal_open_files(NsdJournal **ret, const char *const *paths, int flags
 #if defined(HAVE_BOTH_PROVIDERS)
     *ret = calloc(1, sizeof(NsdJournal));
     if (!ret) {
+        fprintf(stderr, "[1] nsd_journal_open_files\n");
         abort();
     }
 
@@ -30,6 +64,7 @@ int nsd_journal_open_files(NsdJournal **ret, const char *const *paths, int flags
     int rsd_rc = rsd_journal_open_files(&(*ret)->rsdj, paths, flags);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[2] nsd_journal_open_files\n");
         abort();
     }
 
@@ -60,6 +95,7 @@ int nsd_journal_seek_head(NsdJournal *j)
     int rsd_rc = rsd_journal_seek_head(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_seek_head\n");
         abort();
     }
 
@@ -78,6 +114,7 @@ int nsd_journal_seek_tail(NsdJournal *j)
     int rsd_rc = rsd_journal_seek_tail(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_seek_tail\n");
         abort();
     }
 
@@ -96,6 +133,7 @@ int nsd_journal_seek_realtime_usec(NsdJournal *j, uint64_t usec)
     int rsd_rc = rsd_journal_seek_realtime_usec(j->rsdj, usec);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_seek_realtime_usec\n");
         abort();
     }
 
@@ -114,6 +152,7 @@ int nsd_journal_next(NsdJournal *j)
     int rsd_rc = rsd_journal_next(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_next\n");
         abort();
     }
 
@@ -132,6 +171,7 @@ int nsd_journal_previous(NsdJournal *j)
     int rsd_rc = rsd_journal_previous(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_previous\n");
         abort();
     }
 
@@ -151,7 +191,7 @@ int nsd_journal_get_seqnum(NsdJournal *j, uint64_t *ret_seqnum, NsdId128 *ret_se
     int rc = sd_journal_get_seqnum(j->sdj, &sd_ret_seqnum, &sd_ret_seqnum_id);
     if (rc == 0) {
         *ret_seqnum = sd_ret_seqnum;
-        memcpy(ret_seqnum_id, sd_ret_seqnum_id.bytes, 16);
+        memcpy(ret_seqnum_id->bytes, sd_ret_seqnum_id.bytes, 16);
     }
 
     uint64_t rsd_ret_seqnum;
@@ -159,11 +199,28 @@ int nsd_journal_get_seqnum(NsdJournal *j, uint64_t *ret_seqnum, NsdId128 *ret_se
     int rsd_rc = rsd_journal_get_seqnum(j->rsdj, &rsd_ret_seqnum, &rsd_ret_seqnum_id);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_get_seqnum\n");
         abort();
     }
 
     if (rc == 0) {
+        if (sd_ret_seqnum != rsd_ret_seqnum) {
+            fprintf(stderr, "[2] nsd_journal_get_seqnum\n");
+            abort();
+        }
+
         if (memcmp(ret_seqnum_id->bytes, rsd_ret_seqnum_id.bytes, 16) != 0) {
+            char sd_bytes[128];
+            {
+                format_bytes_to_hex(ret_seqnum_id->bytes, 16, sd_bytes, 100);
+            }
+
+            char rsd_bytes[128];
+            {
+                format_bytes_to_hex(rsd_ret_seqnum_id.bytes, 16, rsd_bytes, 100);
+            }
+
+            fprintf(stderr, "[3] nsd_journal_get_seqnum: sd=%lu>>>%s<<<, rsd=%lu>>>%s<<<\n", sd_ret_seqnum, sd_bytes, rsd_ret_seqnum, rsd_bytes);
             abort();
         }
     }
@@ -185,11 +242,13 @@ int nsd_journal_get_realtime_usec(NsdJournal *j, uint64_t *ret)
     int rsd_rc = rsd_journal_get_realtime_usec(j->rsdj, &rsd_ret);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_get_realtime_usec: rc=%d, rsd_rc=%d, ret=%zu, rsd_ret=%zu\n", rc, rsd_rc, *ret, rsd_ret);
         abort();
     }
 
     if (rc == 0) {
         if (*ret != rsd_ret) {
+            fprintf(stderr, "[2] nsd_journal_get_realtime_usec\n");
             abort();
         }
     }
@@ -224,15 +283,18 @@ int nsd_journal_enumerate_available_data(NsdJournal *j, const void **data, uintp
     int rsd_rc = rsd_journal_enumerate_available_data(j->rsdj, &rsd_data, &rsd_l);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_enumerate_available_data\n");
         abort();
     }
 
     if (rc > 0) {
         if (*l != rsd_l) {
+            fprintf(stderr, "[2] nsd_journal_enumerate_available_data\n");
             abort();
         }
 
         if (memcmp(*data, rsd_data, rsd_l)) {
+            fprintf(stderr, "[3] nsd_journal_enumerate_available_data\n");
             abort();
         }
     }
@@ -266,11 +328,13 @@ int nsd_journal_enumerate_fields(NsdJournal *j, const char **field)
     int rsd_rc = rsd_journal_enumerate_fields(j->rsdj, &rsd_field);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_enumerate_fields\n");
         abort();
     }
 
     if (rc > 0) {
         if (strcmp(*field, rsd_field)) {
+            fprintf(stderr, "[2] nsd_journal_enumerate_fields\n");
             abort();
         }
     }
@@ -290,6 +354,7 @@ int nsd_journal_query_unique(NsdJournal *j, const char *field)
     int sd_rc = rsd_journal_query_unique(j->rsdj, field);
 
     if (rc != sd_rc) {
+        fprintf(stderr, "[1] nsd_journal_query_unique\n");
         abort();
     }
 
@@ -323,15 +388,18 @@ int nsd_journal_enumerate_available_unique(NsdJournal *j, const void **data, uin
     int rsd_rc = rsd_journal_enumerate_available_unique(j->rsdj, &rsd_data, &rsd_l);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_enumerate_available_unique\n");
         abort();
     }
 
     if (rc > 0) {
         if (*l != rsd_l) {
+            fprintf(stderr, "[2] nsd_journal_enumerate_available_unique\n");
             abort();
         }
 
         if (memcmp(*data, rsd_data, *l)) {
+            fprintf(stderr, "[3] nsd_journal_enumerate_available_unique\n");
             abort();
         }
     }
@@ -351,6 +419,7 @@ int nsd_journal_add_match(NsdJournal *j, const void *data, uintptr_t size)
     int rsd_rc = rsd_journal_add_match(j->rsdj, data, size);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_add_match\n");
         abort();
     }
 
@@ -369,6 +438,7 @@ int nsd_journal_add_conjunction(NsdJournal *j)
     int rsd_rc = rsd_journal_add_conjunction(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_add_conjunction\n");
         abort();
     }
 
@@ -387,6 +457,7 @@ int nsd_journal_add_disjunction(NsdJournal *j)
     int rsd_rc = rsd_journal_add_disjunction(j->rsdj);
 
     if (rc != rsd_rc) {
+        fprintf(stderr, "[1] nsd_journal_add_disjunction\n");
         abort();
     }
 

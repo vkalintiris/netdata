@@ -97,7 +97,10 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     pub fn get_seqnum(&self, object_file: &'a ObjectFile<M>) -> Result<(u64, [u8; 16])> {
         let entry_offset = self.cursor.position()?;
         let entry_object = object_file.entry_object(entry_offset)?;
-        Ok((entry_object.header.seqnum, entry_object.header.boot_id))
+        Ok((
+            entry_object.header.seqnum,
+            object_file.journal_header().seqnum_id,
+        ))
     }
 
     pub fn get_entry_offset(&self) -> Result<u64> {
@@ -105,13 +108,8 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     }
 
     fn drop_guards(&mut self) {
-        if let Some(field_guard) = self.field_guard.take() {
-            drop(field_guard);
-        }
-
-        if let Some(data_guard) = self.data_guard.take() {
-            drop(data_guard);
-        }
+        self.field_guard.take();
+        self.data_guard.take();
     }
 
     pub fn fields_restart(&mut self) {

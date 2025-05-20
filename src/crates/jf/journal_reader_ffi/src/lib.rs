@@ -134,7 +134,7 @@ unsafe extern "C" fn rsd_journal_open_files(
     };
 
     // Create the ObjectFile
-    let window_size = 128 * 1024 * 1024;
+    let window_size = 512 * 1024 * 1024;
     let object_file = match ObjectFile::<Mmap>::open(path, window_size) {
         Ok(f) => Box::new(f),
         Err(_) => {

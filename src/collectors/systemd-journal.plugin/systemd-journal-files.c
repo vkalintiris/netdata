@@ -91,6 +91,15 @@ nd_journal_file_update_annotation_boot_id(NsdJournal *j, struct nd_journal_file 
             njf->filename,
             r);
         return UINT64_MAX;
+    } else if (r == 0) {
+        internal_error(
+            true,
+            "GVD: while looking for the first timestamp of boot_id '%s', "
+            "sd_journal_next() on file '%s' returned %d",
+            boot_id,
+            njf->filename,
+            r);
+        return UINT64_MAX;
     }
 
     r = nsd_journal_get_realtime_usec(j, &ut);
