@@ -851,7 +851,7 @@ fn select_match_expression(rng: &mut ThreadRng, terms: &HashMap<String, Vec<Stri
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum IterationOperation {
     Next,
     Previous,
@@ -900,9 +900,8 @@ fn tester() {
         // println!("seek: {:?}", seek_operation);
         apply_seek_operation(seek_operation, &mut jw);
 
-        for _ in 0..rng.random_range(0..10) {
+        for _ in 0..rng.random_range(0..2 * timings.len()) {
             let iteration_operation = select_iteration_operation(&mut rng);
-            // println!("direction: {:?}", iteration_operation);
             let found = apply_iteration_operation(iteration_operation, &mut jw, &object_file);
 
             if found {
