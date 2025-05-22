@@ -62,17 +62,7 @@ impl JournalCursor {
         let new_location = if self.filter_expr.is_some() {
             self.resolve_filter_location(object_file, direction)?
         } else {
-            self.array_cursor = match (self.array_cursor.as_ref(), direction) {
-                (Some(cursor), Direction::Forward) => cursor.next(object_file)?,
-                (Some(cursor), Direction::Backward) => cursor.previous(object_file)?,
-                (None, _) => self.resolve_array_cursor(object_file, direction)?,
-            };
-
-            self.array_cursor
-                .as_ref()
-                .map(|c| c.value(object_file))
-                .transpose()?
-                .map(Location::Entry)
+            self.resolve_array_cursor(object_file, direction)?
         };
 
         if let Some(location) = new_location {
@@ -92,36 +82,80 @@ impl JournalCursor {
     }
 
     fn resolve_array_cursor<M: MemoryMap>(
-        &self,
+        &mut self,
         object_file: &ObjectFile<M>,
         direction: Direction,
-    ) -> Result<Option<offset_array::Cursor>> {
-        let entry_list = object_file
-            .entry_list()
-            .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+    ) -> Result<Option<Location>> {
+        let new_location = match (self.location, direction) {
+            (Location::Head, Direction::Forward) => {
+                let entry_list = object_file
+                    .entry_list()
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
-        match (self.location, direction) {
-            (Location::Head, Direction::Forward) => Ok(Some(entry_list.cursor_head())),
-            (Location::Head, Direction::Backward) => Ok(None),
-            (Location::Tail, Direction::Forward) => Ok(None),
+                let cursor = entry_list.cursor_head();
+                let offset = cursor.value(object_file)?;
+                self.array_cursor = Some(cursor);
+                Some(Location::ResolvedEntry(offset))
+            }
+            (Location::Head, Direction::Backward) => None,
+            (Location::Tail, Direction::Forward) => None,
             (Location::Tail, Direction::Backward) => {
-                Some(entry_list.cursor_tail(object_file)).transpose()
+                let entry_list = object_file
+                    .entry_list()
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+
+                let cursor = entry_list.cursor_tail(object_file)?;
+                let offset = cursor.value(object_file)?;
+                self.array_cursor = Some(cursor);
+                Some(Location::ResolvedEntry(offset))
             }
             (Location::Realtime(realtime), _) => {
+                let entry_list = object_file
+                    .entry_list()
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+
                 let predicate = |entry_offset| {
                     let entry_object = object_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
-                entry_list.directed_partition_point(object_file, predicate, direction)
+
+                let Some(cursor) = entry_list.directed_partition_point(
+                    object_file,
+                    predicate,
+                    Direction::Forward,
+                )?
+                else {
+                    return Ok(None);
+                };
+
+                let offset = cursor.value(object_file)?;
+                self.array_cursor = Some(cursor);
+                Some(Location::ResolvedEntry(offset))
             }
-            (Location::Entry(location_offset), _) => {
-                let predicate = |entry_offset| Ok(entry_offset < location_offset);
-                entry_list.directed_partition_point(object_file, predicate, direction)
+            (Location::ResolvedEntry(_), Direction::Forward) => {
+                let Some(cursor) = self.array_cursor.unwrap().next(object_file)? else {
+                    return Ok(None);
+                };
+
+                let offset = cursor.value(object_file)?;
+                self.array_cursor = Some(cursor);
+                Some(Location::ResolvedEntry(offset))
+            }
+            (Location::ResolvedEntry(_), Direction::Backward) => {
+                let Some(cursor) = self.array_cursor.unwrap().previous(object_file)? else {
+                    return Ok(None);
+                };
+
+                let offset = cursor.value(object_file)?;
+                self.array_cursor = Some(cursor);
+                Some(Location::ResolvedEntry(offset))
             }
             _ => {
-                unimplemented!();
+                unimplemented!()
             }
-        }
+        };
+
+        Ok(new_location)
     }
 
     fn resolve_filter_location<M: MemoryMap>(

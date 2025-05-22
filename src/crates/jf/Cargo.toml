@@ -29,6 +29,7 @@ duct = "0.13"
 serde_json = "1.0"
 walkdir = "2"
 ruzstd = "0.8"
+systemd = { path = "/home/vk/repos/crates/rust-systemd"}
 
 [profile.release]
 lto = true
