@@ -11,7 +11,6 @@ pub enum Location {
     Monotonic(u64, [u8; 16]),
     Seqnum(u64, Option<[u8; 16]>),
     XorHash(u64),
-    Entry(u64),
     ResolvedEntry(u64),
 }
 
@@ -75,7 +74,6 @@ impl JournalCursor {
 
     pub fn position(&self) -> Result<u64> {
         match self.location {
-            Location::Entry(entry_offset) => Ok(entry_offset),
             Location::ResolvedEntry(entry_offset) => Ok(entry_offset),
             _ => Err(JournalError::UnsetCursor),
         }
@@ -186,35 +184,28 @@ impl JournalCursor {
                     Ok(entry_object.header.realtime < realtime)
                 };
 
-                let cursor =
-                    entry_list.directed_partition_point(object_file, predicate, direction)?;
+                let Some(cursor) = entry_list.directed_partition_point(
+                    object_file,
+                    predicate,
+                    Direction::Forward,
+                )?
+                else {
+                    return Ok(None);
+                };
 
-                match cursor {
-                    Some(c) => {
-                        let entry_offset = c.value(object_file)?;
+                let entry_offset = cursor.value(object_file)?;
 
-                        match direction {
-                            Direction::Forward => filter_expr
-                                .head()
-                                .next(object_file, entry_offset)?
-                                .map(Location::ResolvedEntry),
-                            Direction::Backward => filter_expr
-                                .tail(object_file)?
-                                .previous(object_file, entry_offset)?
-                                .map(Location::ResolvedEntry),
-                        }
-                    }
-                    None => None,
+                match direction {
+                    Direction::Forward => filter_expr
+                        .head()
+                        .next(object_file, entry_offset)?
+                        .map(Location::ResolvedEntry),
+                    Direction::Backward => filter_expr
+                        .tail(object_file)?
+                        .previous(object_file, entry_offset)?
+                        .map(Location::ResolvedEntry),
                 }
             }
-            (Location::Entry(location_offset), Direction::Forward) => filter_expr
-                .head()
-                .next(object_file, location_offset)?
-                .map(Location::ResolvedEntry),
-            (Location::Entry(location_offset), Direction::Backward) => filter_expr
-                .tail(object_file)?
-                .previous(object_file, location_offset)?
-                .map(Location::ResolvedEntry),
             (Location::ResolvedEntry(location_offset), Direction::Forward) => filter_expr
                 .next(object_file, location_offset + 1)?
                 .map(Location::ResolvedEntry),

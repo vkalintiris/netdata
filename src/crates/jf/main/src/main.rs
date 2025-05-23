@@ -710,38 +710,30 @@ enum SeekOperation {
 }
 
 fn select_seek_operation(rng: &mut ThreadRng, timings: &[u64]) -> SeekOperation {
-    match rng.random_range(0..2) {
+    let duplicate_timestamps = [
+        1747729025279631,
+        1747729025280143,
+        1747729025280247,
+        1747729025358451,
+        1747729025387355,
+        1747729025387415,
+    ];
+
+    match rng.random_range(0..3) {
         0 => SeekOperation::Head,
         1 => SeekOperation::Tail,
-        _ => {
-            panic!();
+        2 => {
+            let rt_idx = rng.random_range(0..timings.len());
+
+            let usec = timings[rt_idx];
+            if duplicate_timestamps.contains(&usec) {
+                return SeekOperation::Head;
+            }
+
+            SeekOperation::Realtime(timings[rt_idx])
         }
+        _ => unreachable!(),
     }
-
-    // let duplicate_timestamps = [
-    //     1747729025279631,
-    //     1747729025280143,
-    //     1747729025280247,
-    //     1747729025358451,
-    //     1747729025387355,
-    //     1747729025387415,
-    // ];
-
-    // match rng.random_range(0..3) {
-    //     0 => SeekOperation::Head,
-    //     1 => SeekOperation::Tail,
-    //     2 => {
-    //         let rt_idx = rng.random_range(0..timings.len());
-
-    //         let usec = timings[rt_idx];
-    //         if duplicate_timestamps.contains(&usec) {
-    //             return SeekOperation::Head;
-    //         }
-
-    //         SeekOperation::Realtime(timings[rt_idx])
-    //     }
-    //     _ => unreachable!(),
-    // }
 }
 
 #[derive(Debug)]
@@ -951,40 +943,6 @@ fn apply_match_expression<'a>(
             return true;
         }
     };
-
-    unreachable!();
-}
-
-fn unfiltered_test() {
-    let path = "/tmp/user-1000.journal";
-    let window_size = 8 * 1024 * 1024;
-    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
-    let mut jw = JournalWrapper::open(path).unwrap();
-
-    let timings = get_timings(path);
-
-    let mut rng = rand::rng();
-
-    let mut counter = 0;
-    loop {
-        let seek_operation = select_seek_operation(&mut rng, &timings);
-        apply_seek_operation(seek_operation, &mut jw);
-
-        for _ in 0..rng.random_range(0..2 * timings.len()) {
-            let iteration_operation = select_iteration_operation(&mut rng);
-            let found = apply_iteration_operation(iteration_operation, &mut jw, &object_file);
-
-            if found {
-                jw.get_realtime_usec(&object_file);
-            }
-
-            if counter % 1000 == 0 {
-                println!("counter = {}", counter);
-            }
-
-            counter += 1;
-        }
-    }
 }
 
 fn filtered_test() {
@@ -1002,7 +960,11 @@ fn filtered_test() {
     let mut counter = 0;
     loop {
         let match_expr = select_match_expression(&mut rng, &terms);
-        let _applied = apply_match_expression(match_expr.clone(), &mut jw, &object_file);
+        let applied = apply_match_expression(match_expr.clone(), &mut jw, &object_file);
+        if !applied {
+            continue;
+        }
+
         println!("[{}] match_expr: {:?}", counter, match_expr);
 
         let seek_operation = select_seek_operation(&mut rng, &timings);
@@ -1058,7 +1020,6 @@ fn test_case() {
 }
 
 fn main() {
-    // unfiltered_test();
     filtered_test();
     // test_case()
 
