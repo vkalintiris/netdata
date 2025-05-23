@@ -905,28 +905,25 @@ fn apply_match_expression<'a>(
     jw.match_flush();
 
     match match_expr.clone() {
-        MatchExpr::None => {}
+        MatchExpr::None => {
+            return true;
+        }
         MatchExpr::OrOne(d) => {
-            return false;
-            println!("match_expr: {:?}", match_expr);
             jw.match_add(&d);
+            return true;
         }
         MatchExpr::OrTwo(d1, d2) => {
-            return false;
-            println!("match_expr: {:?}", match_expr);
             jw.match_add(&d1);
             jw.match_add(&d2);
+            return true;
         }
         MatchExpr::And1(d1, d2) => {
-            return false;
-            println!("match_expr: {:?}", match_expr);
             jw.match_add(&d1);
             jw.match_and(object_file);
             jw.match_add(&d2);
             return true;
         }
         MatchExpr::And2(d1, (d2, d3)) => {
-            return false;
             jw.match_add(&d1);
             jw.match_and(object_file);
             jw.match_add(&d2);
@@ -940,10 +937,22 @@ fn apply_match_expression<'a>(
             jw.match_add(&d3);
             return true;
         }
-        _ => {}
+        MatchExpr::And4((d1, d2), (d3, d4)) => {
+            jw.match_add(&d1);
+            jw.match_add(&d2);
+            jw.match_or(object_file);
+
+            jw.match_add(&d3);
+            jw.match_add(&d4);
+            jw.match_or(object_file);
+
+            jw.match_and(object_file);
+
+            return true;
+        }
     };
 
-    return false;
+    unreachable!();
 }
 
 fn unfiltered_test() {
@@ -990,18 +999,20 @@ fn filtered_test() {
 
     let mut rng = rand::rng();
 
+    let mut counter = 0;
     loop {
         let match_expr = select_match_expression(&mut rng, &terms);
-        let applied = apply_match_expression(match_expr.clone(), &mut jw, &object_file);
-        if !applied {
-            continue;
-        }
+        let _applied = apply_match_expression(match_expr.clone(), &mut jw, &object_file);
+        println!("[{}] match_expr: {:?}", counter, match_expr);
 
         let seek_operation = select_seek_operation(&mut rng, &timings);
+        println!("[{}] seek: {:?}", counter, seek_operation);
         apply_seek_operation(seek_operation, &mut jw);
 
         let mut num_matches = 0;
         let iteration_operation = select_iteration_operation(&mut rng);
+        println!("[{}] iteration: {:?}", counter, iteration_operation);
+
         for _ in 0..rng.random_range(0..2 * timings.len()) {
             let found = apply_iteration_operation(iteration_operation, &mut jw, &object_file);
             if found {
@@ -1010,11 +1021,8 @@ fn filtered_test() {
             }
         }
 
-        if num_matches > 0 {
-            println!("{:?}", match_expr);
-            println!("seek: {:?}", seek_operation);
-            println!("\tNum matches: {:?}\n", num_matches);
-        }
+        println!("[{}] num matches: {:?}\n", counter, num_matches);
+        counter += 1;
     }
 }
 
