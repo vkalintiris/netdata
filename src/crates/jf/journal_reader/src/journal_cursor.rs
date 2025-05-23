@@ -163,85 +163,66 @@ impl JournalCursor {
         object_file: &ObjectFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
-        let resolved_location = match (self.location, direction) {
-            (Location::Head, Direction::Forward) => {
-                self.filter_expr.as_mut().unwrap().head();
+        let filter_expr = self.filter_expr.as_mut().unwrap();
 
-                self.filter_expr
-                    .as_mut()
-                    .unwrap()
-                    .next(object_file, u64::MIN)?
-                    .map(Location::ResolvedEntry)
-            }
+        let resolved_location = match (self.location, direction) {
+            (Location::Head, Direction::Forward) => filter_expr
+                .head()
+                .next(object_file, u64::MIN)?
+                .map(Location::ResolvedEntry),
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
-            (Location::Tail, Direction::Backward) => {
-                self.filter_expr.as_mut().unwrap().tail(object_file)?;
-
-                self.filter_expr
-                    .as_mut()
-                    .unwrap()
-                    .previous(object_file, u64::MAX)?
-                    .map(Location::ResolvedEntry)
-            }
+            (Location::Tail, Direction::Backward) => filter_expr
+                .tail(object_file)?
+                .previous(object_file, u64::MAX)?
+                .map(Location::ResolvedEntry),
             (Location::Realtime(realtime), direction) => {
+                let entry_list = object_file
+                    .entry_list()
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+
                 let predicate = |entry_offset| {
                     let entry_object = object_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
 
-                let entry_list = object_file
-                    .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                let cursor =
+                    entry_list.directed_partition_point(object_file, predicate, direction)?;
 
-                let entry_offset = entry_list
-                    .directed_partition_point(object_file, predicate, direction)?
-                    .map(|c| c.value(object_file))
-                    .transpose()?;
+                match cursor {
+                    Some(c) => {
+                        let entry_offset = c.value(object_file)?;
 
-                if let Some(location_offset) = entry_offset {
-                    let needle_offset = match direction {
-                        Direction::Forward => location_offset - 1,
-                        Direction::Backward => location_offset + 1,
-                    };
-                    self.location = Location::Entry(needle_offset);
-                    self.resolve_filter_location(object_file, direction)?
-                } else {
-                    None
+                        match direction {
+                            Direction::Forward => filter_expr
+                                .head()
+                                .next(object_file, entry_offset)?
+                                .map(Location::ResolvedEntry),
+                            Direction::Backward => filter_expr
+                                .tail(object_file)?
+                                .previous(object_file, entry_offset)?
+                                .map(Location::ResolvedEntry),
+                        }
+                    }
+                    None => None,
                 }
             }
-            (Location::Entry(location_offset), Direction::Forward) => {
-                self.filter_expr.as_mut().unwrap().head();
-
-                self.filter_expr
-                    .as_mut()
-                    .unwrap()
-                    .next(object_file, location_offset)?
-                    .map(Location::ResolvedEntry)
-            }
-            (Location::Entry(location_offset), Direction::Backward) => {
-                self.filter_expr.as_mut().unwrap().tail(object_file)?;
-
-                self.filter_expr
-                    .as_mut()
-                    .unwrap()
-                    .previous(object_file, location_offset)?
-                    .map(Location::ResolvedEntry)
-            }
-            (Location::ResolvedEntry(location_offset), Direction::Forward) => self
-                .filter_expr
-                .as_mut()
-                .unwrap()
+            (Location::Entry(location_offset), Direction::Forward) => filter_expr
+                .head()
+                .next(object_file, location_offset)?
+                .map(Location::ResolvedEntry),
+            (Location::Entry(location_offset), Direction::Backward) => filter_expr
+                .tail(object_file)?
+                .previous(object_file, location_offset)?
+                .map(Location::ResolvedEntry),
+            (Location::ResolvedEntry(location_offset), Direction::Forward) => filter_expr
                 .next(object_file, location_offset + 1)?
                 .map(Location::ResolvedEntry),
-            (Location::ResolvedEntry(location_offset), Direction::Backward) => self
-                .filter_expr
-                .as_mut()
-                .unwrap()
+            (Location::ResolvedEntry(location_offset), Direction::Backward) => filter_expr
                 .previous(object_file, location_offset - 1)?
                 .map(Location::ResolvedEntry),
             _ => {
-                panic!();
+                unimplemented!();
             }
         };
 

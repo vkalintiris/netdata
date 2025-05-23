@@ -563,6 +563,11 @@ impl<'a> JournalWrapper<'a> {
         self.jr.add_disjunction(object_file).unwrap();
     }
 
+    pub fn match_flush(&mut self) {
+        self.j.match_flush().unwrap();
+        self.jr.flush_matches();
+    }
+
     pub fn seek_head(&mut self) {
         self.j.seek_head().unwrap();
         self.jr.set_location(Location::Head);
@@ -715,9 +720,9 @@ fn select_seek_operation(rng: &mut ThreadRng, timings: &[u64]) -> SeekOperation 
     ];
 
     match rng.random_range(0..3) {
-        0 => SeekOperation::Head,
+        0 | 2 => SeekOperation::Head,
         1 => SeekOperation::Tail,
-        2 => {
+        20 => {
             let rt_idx = rng.random_range(0..timings.len());
 
             let usec = timings[rt_idx];
@@ -884,16 +889,37 @@ fn apply_iteration_operation<'a>(
     }
 }
 
-fn tester() {
+fn apply_match_expression(match_expr: MatchExpr, jw: &mut JournalWrapper) -> bool {
+    jw.match_flush();
+
+    match match_expr.clone() {
+        MatchExpr::None => {}
+        MatchExpr::OrOne(d) => {
+            println!("match_expr: {:?}", match_expr);
+            jw.match_add(&d);
+        }
+        MatchExpr::OrTwo(d1, d2) => {
+            println!("match_expr: {:?}", match_expr);
+            jw.match_add(&d1);
+            jw.match_add(&d2);
+            return true;
+        }
+        _ => {}
+    };
+
+    return false;
+}
+
+fn unfiltered_test() {
     let path = "/tmp/user-1000.journal";
     let window_size = 8 * 1024 * 1024;
     let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
     let mut jw = JournalWrapper::open(path).unwrap();
 
-    let terms = get_terms(path);
     let timings = get_timings(path);
 
     let mut rng = rand::rng();
+
     let mut counter = 0;
     loop {
         let seek_operation = select_seek_operation(&mut rng, &timings);
@@ -914,6 +940,50 @@ fn tester() {
 
             counter += 1;
         }
+    }
+}
+
+fn filtered_test() {
+    let path = "/tmp/user-1000.journal";
+    let window_size = 8 * 1024 * 1024;
+    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
+    let mut jw = JournalWrapper::open(path).unwrap();
+
+    let terms = get_terms(path);
+    let timings = get_timings(path);
+
+    let mut rng = rand::rng();
+
+    let mut counter = 0;
+    loop {
+        let match_expr = select_match_expression(&mut rng, &terms);
+        let applied = apply_match_expression(match_expr.clone(), &mut jw);
+        if !applied {
+            continue;
+        }
+
+        let seek_operation = select_seek_operation(&mut rng, &timings);
+        println!("seek: {:?}", seek_operation);
+        apply_seek_operation(seek_operation, &mut jw);
+
+        let mut num_matches = 0;
+        for _ in 0..rng.random_range(0..2 * timings.len()) {
+            let iteration_operation = select_iteration_operation(&mut rng);
+            let found = apply_iteration_operation(iteration_operation, &mut jw, &object_file);
+
+            if found {
+                jw.get_realtime_usec(&object_file);
+                num_matches += 1;
+            }
+
+            if counter % 1000 == 0 {
+                println!("counter = {}", counter);
+            }
+
+            counter += 1;
+        }
+
+        println!("\tNum matches: {:?}\n", num_matches);
     }
 }
 
@@ -949,7 +1019,8 @@ fn test_case() {
 }
 
 fn main() {
-    tester();
+    // unfiltered_test();
+    filtered_test();
     // test_case()
 
     //     altime();

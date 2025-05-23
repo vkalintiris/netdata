@@ -72,7 +72,7 @@ impl FilterExpr {
         }
     }
 
-    pub fn head(&mut self) {
+    pub fn head(&mut self) -> &mut Self {
         match self {
             FilterExpr::Match(_, None) => (),
             FilterExpr::Match(_, Some(ic)) => {
@@ -89,9 +89,11 @@ impl FilterExpr {
                 }
             }
         }
+
+        self
     }
 
-    pub fn tail<M: MemoryMap>(&mut self, object_file: &ObjectFile<M>) -> Result<()> {
+    pub fn tail<M: MemoryMap>(&mut self, object_file: &ObjectFile<M>) -> Result<&mut Self> {
         match self {
             FilterExpr::Match(_, None) => (),
             FilterExpr::Match(_, Some(ic)) => {
@@ -109,7 +111,7 @@ impl FilterExpr {
             }
         }
 
-        Ok(())
+        Ok(self)
     }
 
     // Returns the offset of the next matching entry, if any, with an offset
