@@ -995,22 +995,13 @@ fn test_case() {
     let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
     let mut jw = JournalWrapper::open(path).unwrap();
 
-    // let timings = get_timings(path);
-    // let p = timings.iter().position(|x| *x == 1747729025444423).unwrap();
-    // println!("p[{}]={}", p - 1, timings[p - 1]);
-    // println!("p[{}]={}", p, timings[p]);
-    // println!("p[{}]={}", p + 1, timings[p + 1]);
+    let timings = get_timings(path);
+    println!("timings: {:#?}", timings);
 
-    println!("Seeking realtime....");
-    jw.seek_realtime(1747729025358451);
+    jw.seek_realtime(u64::MAX);
     if jw.previous(&object_file) {
         let value = jw.get_realtime_usec(&object_file);
         println!("first value: {:?}", value);
-
-        if jw.previous(&object_file) {
-            let value = jw.get_realtime_usec(&object_file);
-            println!("first value: {:?}", value);
-        }
     }
     return;
 
@@ -1020,8 +1011,8 @@ fn test_case() {
 }
 
 fn main() {
-    filtered_test();
-    // test_case()
+    // filtered_test();
+    test_case()
 
     //     altime();
 

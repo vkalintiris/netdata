@@ -117,14 +117,10 @@ impl JournalCursor {
                     Ok(entry_object.header.realtime < realtime)
                 };
 
-                let Some(cursor) = entry_list.directed_partition_point(
-                    object_file,
-                    predicate,
-                    Direction::Forward,
-                )?
-                else {
-                    return Ok(None);
-                };
+                let cursor = entry_list
+                    .directed_partition_point(object_file, predicate, Direction::Forward)?
+                    .map(Ok)
+                    .unwrap_or_else(|| entry_list.cursor_tail(object_file))?;
 
                 let offset = cursor.value(object_file)?;
                 self.array_cursor = Some(cursor);
@@ -184,14 +180,10 @@ impl JournalCursor {
                     Ok(entry_object.header.realtime < realtime)
                 };
 
-                let Some(cursor) = entry_list.directed_partition_point(
-                    object_file,
-                    predicate,
-                    Direction::Forward,
-                )?
-                else {
-                    return Ok(None);
-                };
+                let cursor = entry_list
+                    .directed_partition_point(object_file, predicate, Direction::Forward)?
+                    .map(Ok)
+                    .unwrap_or_else(|| entry_list.cursor_tail(object_file))?;
 
                 let entry_offset = cursor.value(object_file)?;
 
