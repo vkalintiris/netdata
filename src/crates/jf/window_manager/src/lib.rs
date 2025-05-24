@@ -161,7 +161,7 @@ impl<M: MemoryMap> WindowManager<M> {
     }
 
     /// Ensures a window exists that covers the given position and size, and returns its index
-    pub fn get_window(
+    fn get_window(
         &mut self,
         file: &File,
         position: u64,
@@ -215,6 +215,11 @@ impl<M: MemoryMap> WindowManager<M> {
             // Return the new window
             Ok(self.windows.last_mut().unwrap())
         }
+    }
+
+    pub fn get_slice(&mut self, file: &File, position: u64, size: u64) -> Result<&[u8]> {
+        let window = self.get_window(file, position, size)?;
+        Ok(window.get_slice(position, size))
     }
 
     pub fn stats(&self) -> WindowManagerStatistics {

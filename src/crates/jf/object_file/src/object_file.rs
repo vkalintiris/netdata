@@ -122,11 +122,8 @@ impl<M: MemoryMap> ObjectFile<M> {
         debug_assert_eq!(position % OBJECT_ALIGNMENT, 0);
 
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-
         let window_manager = unsafe { &mut *self.window_manager.get() };
-        let window = window_manager.get_window(&self.file, position, size_needed)?;
-
-        let header_slice = window.get_slice(position, size_needed);
+        let header_slice = window_manager.get_slice(&self.file, position, size_needed)?;
         Ok(ObjectHeader::ref_from_bytes(header_slice).unwrap())
     }
 
@@ -134,10 +131,8 @@ impl<M: MemoryMap> ObjectFile<M> {
         debug_assert!(position < self.file_size);
 
         let window_manager = unsafe { &mut *self.window_manager.get() };
-        let window = window_manager.get_window(&self.file, position, size_needed)?;
-
-        let window_slice = window.get_slice(position, size_needed);
-        Ok(window_slice)
+        let object_slice = window_manager.get_slice(&self.file, position, size_needed)?;
+        Ok(object_slice)
     }
 
     fn read_journal_object<'a, T>(&'a self, position: u64) -> Result<ValueGuard<'a, T>>
