@@ -36,7 +36,6 @@ impl<T: MemoryMap> std::fmt::Debug for Window<T> {
         f.debug_struct("Window")
             .field("offset", &self.offset)
             .field("size", &self.size)
-            // mmap field is intentionally omitted
             .finish()
     }
 }
@@ -105,7 +104,7 @@ impl<M: MemoryMap> WindowManager<M> {
         debug_assert_ne!(chunk_count, 0);
 
         let size = chunk_count * self.chunk_size;
-        let mmap = M::create(file, window_start, size).expect("memory map to succeed");
+        let mmap = M::create(file, window_start, size)?;
         Ok(Window {
             offset: window_start,
             size,
@@ -168,13 +167,12 @@ impl<M: MemoryMap> WindowManager<M> {
         position: u64,
         size_needed: u64,
     ) -> Result<&mut Window<M>> {
-        // Check if we already have a window that covers this range
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
+            // Use the existing window
             self.statistics.direct_lookups += 1;
             Ok(&mut self.windows[idx])
-        }
-        // Check if we already have a window that we can remap/resize
-        else if let Some(idx) = self.lookup_window_by_position(position) {
+        } else if let Some(idx) = self.lookup_window_by_position(position) {
+            // Remap the window
             self.statistics.indirect_lookups += 1;
 
             let window = self.windows.remove(idx);
@@ -188,9 +186,8 @@ impl<M: MemoryMap> WindowManager<M> {
             self.windows.push(new_window);
             self.active_window_idx = Some(self.windows.len() - 1);
             Ok(self.windows.last_mut().unwrap())
-        }
-        // We have to create a new window
-        else {
+        } else {
+            // Create a brand new window
             self.statistics.missed_lookups += 1;
 
             // Check if we have to evict a window prior to creating a new one
@@ -198,15 +195,19 @@ impl<M: MemoryMap> WindowManager<M> {
                 self.windows.remove(self.find_window_to_evict());
             }
 
-            // Calculate window start for this position
-            let window_start = self.get_chunk_aligned_start(position);
-            let window_end = self.get_chunk_aligned_end(position + size_needed);
-            let num_chunks = (window_end - window_start) / self.chunk_size;
+            // NOTE: the active window index might have been invalidated, we
+            // should not use code that relies on it, in the following scope
+            {
+                // Calculate window start for this position
+                let window_start = self.get_chunk_aligned_start(position);
+                let window_end = self.get_chunk_aligned_end(position + size_needed);
+                let num_chunks = (window_end - window_start) / self.chunk_size;
 
-            let new_window = self.create_window(file, window_start, num_chunks)?;
+                let new_window = self.create_window(file, window_start, num_chunks)?;
 
-            // Add the new window to the end of the vector
-            self.windows.push(new_window);
+                // Add the new window to the end of the vector
+                self.windows.push(new_window);
+            }
 
             // Update active window index to the new window
             self.active_window_idx = Some(self.windows.len() - 1);
