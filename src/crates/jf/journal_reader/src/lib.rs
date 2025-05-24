@@ -1,7 +1,7 @@
 use error::Result;
-use object_file::{
+use journal_file::{
     offset_array, DataObject, EntryDataIterator, FieldDataIterator, FieldIterator, FieldObject,
-    ObjectFile, ValueGuard,
+    JournalFile, ValueGuard,
 };
 use window_manager::MemoryMap;
 
@@ -50,9 +50,9 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
 }
 
 impl<'a, M: MemoryMap> JournalReader<'a, M> {
-    pub fn dump(&self, object_file: &'a ObjectFile<M>) -> Result<String> {
+    pub fn dump(&self, journal_file: &'a JournalFile<M>) -> Result<String> {
         if let Some(filter_expr) = self.cursor.filter_expr.as_ref() {
-            filter_expr.dump(object_file)
+            filter_expr.dump(journal_file)
         } else {
             Ok(String::from("no filter expr"))
         }
@@ -62,32 +62,32 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         self.cursor.set_location(location)
     }
 
-    pub fn step(&mut self, object_file: &'a ObjectFile<M>, direction: Direction) -> Result<bool> {
+    pub fn step(&mut self, journal_file: &'a JournalFile<M>, direction: Direction) -> Result<bool> {
         self.drop_guards();
 
         if let Some(filter) = self.filter.as_mut() {
-            let filter_expr = filter.build(object_file)?;
+            let filter_expr = filter.build(journal_file)?;
             self.cursor.set_filter(filter_expr);
             self.filter = None;
         }
 
-        self.cursor.step(object_file, direction)
+        self.cursor.step(journal_file, direction)
     }
 
     pub fn add_match(&mut self, data: &[u8]) {
         self.filter.get_or_insert_default().add_match(data);
     }
 
-    pub fn add_conjunction(&mut self, object_file: &'a ObjectFile<M>) -> Result<()> {
+    pub fn add_conjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
         self.filter
             .get_or_insert_default()
-            .set_operation(object_file, LogicalOp::Conjunction)
+            .set_operation(journal_file, LogicalOp::Conjunction)
     }
 
-    pub fn add_disjunction(&mut self, object_file: &'a ObjectFile<M>) -> Result<()> {
+    pub fn add_disjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
         self.filter
             .get_or_insert_default()
-            .set_operation(object_file, LogicalOp::Disjunction)
+            .set_operation(journal_file, LogicalOp::Disjunction)
     }
 
     pub fn flush_matches(&mut self) {
@@ -95,18 +95,18 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         self.filter = None;
     }
 
-    pub fn get_realtime_usec(&self, object_file: &'a ObjectFile<M>) -> Result<u64> {
+    pub fn get_realtime_usec(&self, journal_file: &'a JournalFile<M>) -> Result<u64> {
         let entry_offset = self.cursor.position()?;
-        let entry_object = object_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_object(entry_offset)?;
         Ok(entry_object.header.realtime)
     }
 
-    pub fn get_seqnum(&self, object_file: &'a ObjectFile<M>) -> Result<(u64, [u8; 16])> {
+    pub fn get_seqnum(&self, journal_file: &'a JournalFile<M>) -> Result<(u64, [u8; 16])> {
         let entry_offset = self.cursor.position()?;
-        let entry_object = object_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_object(entry_offset)?;
         Ok((
             entry_object.header.seqnum,
-            object_file.journal_header().seqnum_id,
+            journal_file.journal_header().seqnum_id,
         ))
     }
 
@@ -126,12 +126,12 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn fields_enumerate(
         &mut self,
-        object_file: &'a ObjectFile<M>,
+        journal_file: &'a JournalFile<M>,
     ) -> Result<Option<&ValueGuard<FieldObject<&'a [u8]>>>> {
         self.drop_guards();
 
         if self.field_iterator.is_none() {
-            self.field_iterator = Some(object_file.fields());
+            self.field_iterator = Some(journal_file.fields());
         }
 
         if let Some(iter) = &mut self.field_iterator {
@@ -144,12 +144,12 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn field_data_query_unique(
         &mut self,
-        object_file: &'a ObjectFile<M>,
+        journal_file: &'a JournalFile<M>,
         field_name: &'a [u8],
     ) -> Result<()> {
         self.drop_guards();
 
-        self.field_data_iterator = Some(object_file.field_data_objects(field_name)?);
+        self.field_data_iterator = Some(journal_file.field_data_objects(field_name)?);
         Ok(())
     }
 
@@ -159,7 +159,7 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn field_data_enumerate(
         &mut self,
-        _: &'a ObjectFile<M>,
+        _: &'a JournalFile<M>,
     ) -> Result<Option<&ValueGuard<DataObject<&'a [u8]>>>> {
         self.drop_guards();
 
@@ -178,13 +178,13 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn entry_data_enumerate(
         &mut self,
-        object_file: &'a ObjectFile<M>,
+        journal_file: &'a JournalFile<M>,
     ) -> Result<Option<&ValueGuard<DataObject<&'a [u8]>>>> {
         self.drop_guards();
 
         if self.entry_data_iterator.is_none() {
             let entry_offset = self.cursor.position()?;
-            self.entry_data_iterator = Some(object_file.entry_data_objects(entry_offset)?);
+            self.entry_data_iterator = Some(journal_file.entry_data_objects(entry_offset)?);
         }
 
         if let Some(iter) = &mut self.entry_data_iterator {

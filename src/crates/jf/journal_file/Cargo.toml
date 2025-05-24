@@ -1,5 +1,5 @@
 [package]
-name = "object_file"
+name = "journal_file"
 version.workspace = true
 edition.workspace = true
 

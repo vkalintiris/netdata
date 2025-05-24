@@ -2,7 +2,7 @@ use error::Result;
 use journal_logger::JournalLogger;
 use journal_reader::JournalReader;
 use memmap2::Mmap;
-use object_file::ObjectFile;
+use journal_file::JournalFile;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -25,10 +25,10 @@ fn process_one_cycle() -> Result<()> {
     println!("Selected journal file: {}", random_file.display());
 
     // Open the selected journal file
-    let object_file = ObjectFile::<Mmap>::open(random_file, 4096)?;
+    let journal_file = JournalFile::<Mmap>::open(random_file, 4096)?;
 
     // Choose random entries
-    let entries = select_random_entries(&object_file, 50)?;
+    let entries = select_random_entries(&journal_file, 50)?;
     println!("Selected {} entries", entries.len());
 
     // Split entries into batches
@@ -83,13 +83,13 @@ fn is_journal_file(path: &Path) -> bool {
 }
 
 fn select_random_entries(
-    object_file: &ObjectFile<Mmap>,
+    journal_file: &JournalFile<Mmap>,
     max_entries: usize,
 ) -> Result<Vec<EntryData>> {
     let mut rng = rand::rng();
 
     // Get total number of entries in the journal
-    let total_entries = object_file.journal_header().n_entries as usize;
+    let total_entries = journal_file.journal_header().n_entries as usize;
     if total_entries == 0 {
         return Ok(Vec::new());
     }
@@ -113,14 +113,14 @@ fn select_random_entries(
 
         // Skip forward to the random index
         for _ in 0..idx {
-            if !reader.step(object_file, journal_reader::Direction::Forward)? {
+            if !reader.step(journal_file, journal_reader::Direction::Forward)? {
                 break;
             }
         }
 
         // Get the entry at the current position
         if let Ok(entry_offset) = reader.get_entry_offset() {
-            if let Ok(entry_data) = extract_entry_data(object_file, entry_offset) {
+            if let Ok(entry_data) = extract_entry_data(journal_file, entry_offset) {
                 entries.push(entry_data);
             }
         }
@@ -134,11 +134,11 @@ struct EntryData {
     fields: Vec<(String, String)>,
 }
 
-fn extract_entry_data(object_file: &ObjectFile<Mmap>, entry_offset: u64) -> Result<EntryData> {
+fn extract_entry_data(journal_file: &JournalFile<Mmap>, entry_offset: u64) -> Result<EntryData> {
     let mut fields = Vec::new();
 
     // Iterate through all data objects for this entry
-    for data_result in object_file.entry_data_objects(entry_offset)? {
+    for data_result in journal_file.entry_data_objects(entry_offset)? {
         let data_object = data_result?;
         let payload = data_object.payload_bytes();
 

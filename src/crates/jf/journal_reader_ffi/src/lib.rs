@@ -1,6 +1,6 @@
 use journal_reader::{Direction, JournalReader, Location};
 use memmap2::Mmap;
-use object_file::{HashableObject, ObjectFile};
+use journal_file::{HashableObject, JournalFile};
 use std::ffi::{c_char, c_int, c_void, CStr};
 
 #[repr(C)]
@@ -97,7 +97,7 @@ impl PartialEq for RsdId128 {
 impl Eq for RsdId128 {}
 
 struct RsdJournal<'a> {
-    object_file: Box<ObjectFile<Mmap>>,
+    journal_file: Box<JournalFile<Mmap>>,
     reader: JournalReader<'a, Mmap>,
     field_buffer: Vec<u8>,
     decompressed_payload: Vec<u8>,
@@ -128,7 +128,7 @@ unsafe extern "C" fn rsd_journal_open_files(
 
     // Create the ObjectFile
     let window_size = 512 * 1024 * 1024;
-    let object_file = match ObjectFile::<Mmap>::open(path, window_size) {
+    let journal_file = match JournalFile::<Mmap>::open(path, window_size) {
         Ok(f) => Box::new(f),
         Err(_) => {
             return -1;
@@ -137,7 +137,7 @@ unsafe extern "C" fn rsd_journal_open_files(
 
     let journal = Box::new(RsdJournal {
         reader: JournalReader::default(),
-        object_file,
+        journal_file,
         field_buffer: Vec::with_capacity(256),
         decompressed_payload: Vec::new(),
     });
@@ -185,7 +185,7 @@ unsafe extern "C" fn rsd_journal_next(j: *mut RsdJournal) -> c_int {
 
     match journal
         .reader
-        .step(&journal.object_file, Direction::Forward)
+        .step(&journal.journal_file, Direction::Forward)
     {
         Ok(has_entry) => {
             if has_entry {
@@ -205,7 +205,7 @@ unsafe extern "C" fn rsd_journal_previous(j: *mut RsdJournal) -> c_int {
 
     match journal
         .reader
-        .step(&journal.object_file, Direction::Backward)
+        .step(&journal.journal_file, Direction::Backward)
     {
         Ok(has_entry) => {
             if has_entry {
@@ -229,7 +229,7 @@ unsafe extern "C" fn rsd_journal_get_seqnum(
     debug_assert!(!ret_seqnum_id.is_null());
 
     let journal = &mut *j;
-    match journal.reader.get_seqnum(&journal.object_file) {
+    match journal.reader.get_seqnum(&journal.journal_file) {
         Ok((seqnum, boot_id)) => {
             *ret_seqnum = seqnum;
 
@@ -250,7 +250,7 @@ unsafe extern "C" fn rsd_journal_get_realtime_usec(j: *mut RsdJournal, ret: *mut
 
     let journal = &mut *j;
 
-    match journal.reader.get_realtime_usec(&journal.object_file) {
+    match journal.reader.get_realtime_usec(&journal.journal_file) {
         Ok(realtime) => {
             *ret = realtime;
             0
@@ -279,7 +279,7 @@ unsafe extern "C" fn rsd_journal_enumerate_available_data(
 
     let journal = &mut *j;
 
-    match journal.reader.entry_data_enumerate(&journal.object_file) {
+    match journal.reader.entry_data_enumerate(&journal.journal_file) {
         Ok(Some(data_guard)) => {
             if data_guard.is_compressed() {
                 return match data_guard.decompress(&mut journal.decompressed_payload) {
@@ -320,7 +320,7 @@ unsafe extern "C" fn rsd_journal_enumerate_fields(
 
     let journal = &mut *j;
 
-    match journal.reader.fields_enumerate(&journal.object_file) {
+    match journal.reader.fields_enumerate(&journal.journal_file) {
         Ok(Some(field_guard)) => {
             let field_name = field_guard.get_payload();
 
@@ -347,7 +347,7 @@ unsafe extern "C" fn rsd_journal_query_unique(j: *mut RsdJournal, field: *const 
 
     match journal
         .reader
-        .field_data_query_unique(&journal.object_file, field_name)
+        .field_data_query_unique(&journal.journal_file, field_name)
     {
         Ok(_) => 0,
         Err(_) => -1,
@@ -373,7 +373,7 @@ unsafe extern "C" fn rsd_journal_enumerate_available_unique(
 
     let journal = &mut *j;
 
-    match journal.reader.field_data_enumerate(&journal.object_file) {
+    match journal.reader.field_data_enumerate(&journal.journal_file) {
         Ok(Some(data_guard)) => {
             let payload = data_guard.get_payload();
             *data = payload.as_ptr() as *const c_void;
@@ -420,7 +420,7 @@ unsafe extern "C" fn rsd_journal_add_match(
 unsafe extern "C" fn rsd_journal_add_conjunction(j: *mut RsdJournal) -> c_int {
     debug_assert!(!j.is_null());
     let journal = &mut *j;
-    match journal.reader.add_conjunction(&journal.object_file) {
+    match journal.reader.add_conjunction(&journal.journal_file) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -431,7 +431,7 @@ unsafe extern "C" fn rsd_journal_add_disjunction(j: *mut RsdJournal) -> c_int {
     debug_assert!(!j.is_null());
 
     let journal = &mut *j;
-    match journal.reader.add_disjunction(&journal.object_file) {
+    match journal.reader.add_disjunction(&journal.journal_file) {
         Ok(_) => 0,
         Err(_) => -1,
     }

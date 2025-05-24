@@ -26,7 +26,7 @@ const OBJECT_ALIGNMENT: u64 = 8;
 ///
 /// # Concurrency and Safety
 ///
-/// `ObjectFile` uses interior mutability to provide a safe API with the following characteristics:
+/// `JournalFile` uses interior mutability to provide a safe API with the following characteristics:
 ///
 /// - The window manager is wrapped in an `UnsafeCell` to allow mutation through a shared reference.
 /// - A single `RefCell<bool>` guards access to ensure only one object can be active at a time.
@@ -35,7 +35,7 @@ const OBJECT_ALIGNMENT: u64 = 8;
 ///
 /// This design ensures that memory safety is maintained even though references to memory-mapped
 /// regions could be invalidated when new objects are created.
-pub struct ObjectFile<M: MemoryMap> {
+pub struct JournalFile<M: MemoryMap> {
     // Persistent memory maps for journal header and data/field hash tables
     header_map: M,
     data_hash_table_map: Option<M>,
@@ -53,7 +53,7 @@ pub struct ObjectFile<M: MemoryMap> {
     backtrace: RefCell<Backtrace>,
 }
 
-impl<M: MemoryMap> ObjectFile<M> {
+impl<M: MemoryMap> JournalFile<M> {
     pub fn open(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
@@ -75,7 +75,7 @@ impl<M: MemoryMap> ObjectFile<M> {
         // Create window manager for the rest of the objects
         let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
 
-        Ok(ObjectFile {
+        Ok(JournalFile {
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -368,7 +368,7 @@ impl<M: MemoryMap> ObjectFile<M> {
 
 /// Iterator that returns all offsets in an offset array list
 pub struct OffsetArrayListIterator<'a, M: MemoryMap> {
-    journal: &'a ObjectFile<M>,
+    journal: &'a JournalFile<M>,
     offset: u64,
     capacity: usize,
     index: usize,
@@ -444,7 +444,7 @@ impl<M: MemoryMap> Iterator for OffsetArrayListIterator<'_, M> {
 
 /// Iterator that walks through all field objects in the field hash table
 pub struct FieldIterator<'a, M: MemoryMap> {
-    journal: &'a ObjectFile<M>,
+    journal: &'a JournalFile<M>,
     field_hash_table: Option<HashTableObject<&'a [u8]>>,
     current_bucket_index: usize,
     next_field_offset: u64,
@@ -514,7 +514,7 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
 
 /// Iterator that walks through all DATA objects for a specific field
 pub struct FieldDataIterator<'a, M: MemoryMap> {
-    journal: &'a ObjectFile<M>,
+    journal: &'a JournalFile<M>,
     current_data_offset: u64,
 }
 
@@ -548,7 +548,7 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
 
 /// Iterator that walks through all DATA objects for a specific entry
 pub struct EntryDataIterator<'a, M: MemoryMap> {
-    journal: &'a ObjectFile<M>,
+    journal: &'a JournalFile<M>,
     entry_offset: u64,
     current_index: usize,
     total_items: usize,

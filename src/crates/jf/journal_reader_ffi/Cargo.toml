@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 error = { path = "../error" }
 journal_reader = { path = "../journal_reader" }
-object_file = { path = "../object_file" }
+journal_file = { path = "../journal_file" }
 memmap2 = { workspace = true }
 serde_json = { workspace = true }
 

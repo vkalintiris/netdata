@@ -1,4 +1,4 @@
-use crate::object_file::ObjectFile;
+use crate::journal_file::JournalFile;
 use error::{JournalError, Result};
 use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
@@ -21,11 +21,11 @@ pub struct Node {
 impl Node {
     /// Create a new offset array reference
     fn new<M: MemoryMap>(
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         offset: NonZeroU64,
         remaining_items: NonZeroUsize,
     ) -> Result<Self> {
-        let array = object_file.offset_array_object(offset.get())?;
+        let array = journal_file.offset_array_object(offset.get())?;
         let capacity =
             NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
 
@@ -58,7 +58,7 @@ impl Node {
     }
 
     /// Get the next array in the chain, if any
-    pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    pub fn next<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         if !self.has_next() {
             return Ok(None);
         }
@@ -68,18 +68,18 @@ impl Node {
             let n = self.remaining_items.get().saturating_sub(self.len().get());
             NonZeroUsize::new(n).ok_or(JournalError::EmptyOffsetArrayNode)?
         };
-        let node = Self::new(object_file, next_offset, remaining_items);
+        let node = Self::new(journal_file, next_offset, remaining_items);
 
         Some(node).transpose()
     }
 
     /// Get an item at the specified index
-    pub fn get<M: MemoryMap>(&self, object_file: &ObjectFile<M>, index: usize) -> Result<u64> {
+    pub fn get<M: MemoryMap>(&self, journal_file: &JournalFile<M>, index: usize) -> Result<u64> {
         if index >= self.len().get() {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        let array = object_file.offset_array_object(self.offset.get())?;
+        let array = journal_file.offset_array_object(self.offset.get())?;
         array.get(index, self.remaining_items.get())
     }
 
@@ -87,7 +87,7 @@ impl Node {
     /// the predicate is true for all elements
     pub fn partition_point<M, F>(
         &self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         left: usize,
         right: usize,
         predicate: F,
@@ -104,7 +104,7 @@ impl Node {
 
         while left != right {
             let mid = left.midpoint(right);
-            let offset = self.get(object_file, mid)?;
+            let offset = self.get(journal_file, mid)?;
 
             if predicate(offset)? {
                 left = mid + 1;
@@ -119,7 +119,7 @@ impl Node {
     /// Find the forward or backward (depending on direction) position that matches the predicate.
     pub fn directed_partition_point<M, F>(
         &self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         left: usize,
         right: usize,
         predicate: F,
@@ -129,7 +129,7 @@ impl Node {
         M: MemoryMap,
         F: Fn(u64) -> Result<bool>,
     {
-        let index = self.partition_point(object_file, left, right, predicate)?;
+        let index = self.partition_point(journal_file, left, right, predicate)?;
 
         Ok(match direction {
             Direction::Forward => {
@@ -190,15 +190,15 @@ impl List {
     }
 
     /// Get the head array of this chain
-    pub fn head<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Node> {
-        Node::new(object_file, self.head_offset, self.total_items)
+    pub fn head<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Node> {
+        Node::new(journal_file, self.head_offset, self.total_items)
     }
 
     /// Get the tail array of this list by traversing from head to tail
-    pub fn tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Node> {
-        let mut current = self.head(object_file)?;
+    pub fn tail<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Node> {
+        let mut current = self.head(journal_file)?;
 
-        while let Some(next) = current.next(object_file)? {
+        while let Some(next) = current.next(journal_file)? {
             current = next;
         }
 
@@ -211,8 +211,8 @@ impl List {
     }
 
     /// Get a cursor at the last position in the chain
-    pub fn cursor_tail<M: MemoryMap>(self, object_file: &ObjectFile<M>) -> Result<Cursor> {
-        Cursor::at_tail(object_file, self)
+    pub fn cursor_tail<M: MemoryMap>(self, journal_file: &JournalFile<M>) -> Result<Cursor> {
+        Cursor::at_tail(journal_file, self)
     }
 
     /// Finds the first/last array item position where the predicate function becomes false
@@ -223,7 +223,7 @@ impl List {
     /// * `direction` - Direction of the search (Forward or Backward)
     pub fn directed_partition_point<M, F>(
         self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         predicate: F,
         direction: Direction,
     ) -> Result<Option<Cursor>>
@@ -233,17 +233,17 @@ impl List {
     {
         let mut last_cursor: Option<Cursor> = None;
 
-        let mut node = self.head(object_file)?;
+        let mut node = self.head(journal_file)?;
 
         loop {
             let left = 0;
             let right = node.len().get();
 
             if let Some(index) =
-                node.directed_partition_point(object_file, left, right, &predicate, direction)?
+                node.directed_partition_point(journal_file, left, right, &predicate, direction)?
             {
                 let cursor = Cursor::at_position(
-                    object_file,
+                    journal_file,
                     self,
                     node.offset,
                     index,
@@ -273,7 +273,7 @@ impl List {
                 return Ok(last_cursor);
             }
 
-            if let Some(nd) = node.next(object_file)? {
+            if let Some(nd) = node.next(journal_file)? {
                 node = nd;
             } else {
                 break;
@@ -315,10 +315,10 @@ impl Cursor {
     }
 
     /// Create a cursor at the tail of the chain
-    pub fn at_tail<M: MemoryMap>(object_file: &ObjectFile<M>, list: List) -> Result<Self> {
-        let mut current_array = list.head(object_file)?;
+    pub fn at_tail<M: MemoryMap>(journal_file: &JournalFile<M>, list: List) -> Result<Self> {
+        let mut current_array = list.head(journal_file)?;
 
-        while let Some(next_array) = current_array.next(object_file)? {
+        while let Some(next_array) = current_array.next(journal_file)? {
             current_array = next_array;
         }
 
@@ -332,7 +332,7 @@ impl Cursor {
 
     /// Create a cursor at a specific position
     pub fn at_position<M: MemoryMap>(
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         offset_array_list: List,
         array_offset: NonZeroU64,
         array_index: usize,
@@ -341,7 +341,7 @@ impl Cursor {
         debug_assert!(offset_array_list.total_items >= remaining_items);
 
         // Verify the array exists
-        let array = Node::new(object_file, array_offset, remaining_items)?;
+        let array = Node::new(journal_file, array_offset, remaining_items)?;
 
         // Verify the index is valid
         if array_index >= array.len().get() {
@@ -357,17 +357,17 @@ impl Cursor {
     }
 
     /// Get the current array this cursor points to
-    pub fn node<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Node> {
-        Node::new(object_file, self.array_offset, self.remaining_items)
+    pub fn node<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Node> {
+        Node::new(journal_file, self.array_offset, self.remaining_items)
     }
 
-    pub fn value<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<u64> {
-        self.node(object_file)?.get(object_file, self.array_index)
+    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<u64> {
+        self.node(journal_file)?.get(journal_file, self.array_index)
     }
 
     /// Move to the next position
-    pub fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
-        let array_node = self.node(object_file)?;
+    pub fn next<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
+        let array_node = self.node(journal_file)?;
 
         // FIXME: overtly defensive/expensive...
         if self.array_index + 1 < array_node.len().get() {
@@ -384,7 +384,7 @@ impl Cursor {
             return Ok(None);
         }
 
-        let next_array = array_node.next(object_file)?.unwrap();
+        let next_array = array_node.next(journal_file)?.unwrap();
 
         match NonZeroUsize::new(
             self.remaining_items
@@ -402,7 +402,7 @@ impl Cursor {
     }
 
     /// Move to the previous position
-    pub fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    pub fn previous<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         if self.array_index > 0 {
             // Previous item is in the same array
             return Ok(Some(Self {
@@ -417,7 +417,7 @@ impl Cursor {
             return Ok(None);
         }
 
-        let mut node = self.list.head(object_file)?;
+        let mut node = self.list.head(journal_file)?;
         while node.has_next() {
             if node.next_offset == Some(self.array_offset) {
                 return Ok(Some(Self {
@@ -428,7 +428,7 @@ impl Cursor {
                 }));
             }
 
-            node = node.next(object_file)?.unwrap();
+            node = node.next(journal_file)?.unwrap();
         }
 
         Err(JournalError::InvalidOffsetArrayOffset)
@@ -469,20 +469,20 @@ impl InlinedCursor {
         }
     }
 
-    pub fn tail<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Self> {
+    pub fn tail<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Self> {
         // Start with a copy of the current cursor
         let mut result = *self;
 
         // If we have an entry array list cursor, move it to the tail
         if let Some(cursor) = self.cursor {
-            result.cursor = Some(cursor.list.cursor_tail(object_file)?);
+            result.cursor = Some(cursor.list.cursor_tail(journal_file)?);
             result.at_inlined_offset = false;
         }
 
         Ok(result)
     }
 
-    fn next<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    fn next<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         // Case 1: We're at the inlined entry, move to the first array entry
         if self.at_inlined_offset {
             if self.cursor.is_some() {
@@ -498,7 +498,7 @@ impl InlinedCursor {
 
         // Case 2: We're already in the entry array
         if let Some(current_cursor) = self.cursor.as_ref() {
-            let next_cursor = current_cursor.next(object_file)?;
+            let next_cursor = current_cursor.next(journal_file)?;
 
             if next_cursor.is_some() {
                 return Ok(Some(Self {
@@ -515,14 +515,14 @@ impl InlinedCursor {
         Ok(None)
     }
 
-    fn previous<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<Option<Self>> {
+    fn previous<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         if self.at_inlined_offset {
             return Ok(None);
         }
 
         if let Some(current_cursor) = self.cursor {
             // Try to move to the previous position in the array
-            if let Some(prev_cursor) = current_cursor.previous(object_file)? {
+            if let Some(prev_cursor) = current_cursor.previous(journal_file)? {
                 // We can move back within the array
                 let mut ic = *self;
                 ic.cursor = Some(prev_cursor);
@@ -538,7 +538,7 @@ impl InlinedCursor {
         unreachable!();
     }
 
-    pub fn value<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<u64> {
+    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<u64> {
         // Case 1: We're at the inlined entry
         if self.at_inlined_offset {
             return Ok(self.inlined_offset.get());
@@ -546,7 +546,7 @@ impl InlinedCursor {
 
         // Case 2: We're in the entry array
         if let Some(cursor) = self.cursor {
-            return cursor.value(object_file);
+            return cursor.value(journal_file);
         }
 
         unreachable!();
@@ -554,18 +554,18 @@ impl InlinedCursor {
 
     pub fn next_until<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         offset: u64,
     ) -> Result<Option<u64>> {
-        let current_offset = self.value(object_file)?;
+        let current_offset = self.value(journal_file)?;
         if current_offset >= offset {
             return Ok(Some(current_offset));
         }
 
-        while let Some(ic) = self.next(object_file)? {
+        while let Some(ic) = self.next(journal_file)? {
             *self = ic;
 
-            let current_offset = self.value(object_file)?;
+            let current_offset = self.value(journal_file)?;
             if current_offset >= offset {
                 return Ok(Some(current_offset));
             }
@@ -576,18 +576,18 @@ impl InlinedCursor {
 
     pub fn previous_until<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         offset: u64,
     ) -> Result<Option<u64>> {
-        let current_offset = self.value(object_file)?;
+        let current_offset = self.value(journal_file)?;
         if current_offset <= offset {
             return Ok(Some(current_offset));
         }
 
-        while let Some(ic) = self.previous(object_file)? {
+        while let Some(ic) = self.previous(journal_file)? {
             *self = ic;
 
-            let current_offset = ic.value(object_file)?;
+            let current_offset = ic.value(journal_file)?;
             if current_offset <= offset {
                 return Ok(Some(current_offset));
             }
@@ -598,7 +598,7 @@ impl InlinedCursor {
 
     pub fn directed_partition_point<M, F>(
         &self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         predicate: F,
         direction: Direction,
     ) -> Result<Option<Self>>
@@ -629,7 +629,7 @@ impl InlinedCursor {
         if let Some(cursor) = self.cursor {
             let ic = cursor
                 .list
-                .directed_partition_point(object_file, predicate, direction)?;
+                .directed_partition_point(journal_file, predicate, direction)?;
 
             if let Some(ic) = ic {
                 // Create a new InlinedCursor with this array cursor
@@ -644,8 +644,8 @@ impl InlinedCursor {
                     best_match = Some(array_match);
                 } else {
                     // Choose the better match based on direction
-                    let best_offset = best_match.as_ref().unwrap().value(object_file)?;
-                    let array_offset = array_match.value(object_file)?;
+                    let best_offset = best_match.as_ref().unwrap().value(journal_file)?;
+                    let array_offset = array_match.value(journal_file)?;
 
                     match direction {
                         Direction::Forward => {

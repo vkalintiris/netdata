@@ -1,7 +1,7 @@
 use error::{JournalError, Result};
-use object_file::{
+use journal_file::{
     offset_array::{Direction, InlinedCursor},
-    ObjectFile,
+    JournalFile,
 };
 use window_manager::MemoryMap;
 
@@ -15,7 +15,7 @@ pub enum FilterExpr {
 impl FilterExpr {
     pub fn lookup<M: MemoryMap>(
         &self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         needle_offset: u64,
         direction: Direction,
     ) -> Result<Option<u64>> {
@@ -24,7 +24,7 @@ impl FilterExpr {
 
         match self {
             FilterExpr::Match(data_offset, _) => {
-                let entry_offset = object_file.data_object_directed_partition_point(
+                let entry_offset = journal_file.data_object_directed_partition_point(
                     *data_offset,
                     predicate,
                     direction,
@@ -42,7 +42,7 @@ impl FilterExpr {
                             current_offset = current_offset.saturating_add(1);
                         }
 
-                        match filter_expr.lookup(object_file, current_offset, direction)? {
+                        match filter_expr.lookup(journal_file, current_offset, direction)? {
                             Some(new_offset) => current_offset = new_offset,
                             None => return Ok(None),
                         }
@@ -60,7 +60,7 @@ impl FilterExpr {
                 };
 
                 filter_exprs.iter().try_fold(None, |acc, expr| {
-                    let result = expr.lookup(object_file, needle_offset, direction)?;
+                    let result = expr.lookup(journal_file, needle_offset, direction)?;
 
                     Ok(match (acc, result) {
                         (None, Some(offset)) => Some(offset),
@@ -93,20 +93,20 @@ impl FilterExpr {
         self
     }
 
-    pub fn tail<M: MemoryMap>(&mut self, object_file: &ObjectFile<M>) -> Result<&mut Self> {
+    pub fn tail<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<&mut Self> {
         match self {
             FilterExpr::Match(_, None) => (),
             FilterExpr::Match(_, Some(ic)) => {
-                *ic = ic.tail(object_file)?;
+                *ic = ic.tail(journal_file)?;
             }
             FilterExpr::Conjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.tail(object_file)?;
+                    filter_expr.tail(journal_file)?;
                 }
             }
             FilterExpr::Disjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.tail(object_file)?;
+                    filter_expr.tail(journal_file)?;
                 }
             }
         }
@@ -118,12 +118,12 @@ impl FilterExpr {
     // greater or equal to the needle offset.
     pub fn next<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         needle_offset: u64,
     ) -> Result<Option<u64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(ic)) => ic.next_until(object_file, needle_offset),
+            FilterExpr::Match(_, Some(ic)) => ic.next_until(journal_file, needle_offset),
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -131,7 +131,7 @@ impl FilterExpr {
                     let previous_offset = needle_offset;
 
                     for fe in filter_exprs.iter_mut() {
-                        if let Some(new_offset) = fe.next(object_file, needle_offset)? {
+                        if let Some(new_offset) = fe.next(journal_file, needle_offset)? {
                             needle_offset = new_offset;
                         } else {
                             return Ok(None);
@@ -147,7 +147,7 @@ impl FilterExpr {
                 let mut best_offset: Option<u64> = None;
 
                 for fe in filter_exprs.iter_mut() {
-                    if let Some(fe_offset) = fe.next(object_file, needle_offset)? {
+                    if let Some(fe_offset) = fe.next(journal_file, needle_offset)? {
                         best_offset = match best_offset {
                             Some(offset) => Some(fe_offset.min(offset)),
                             None => Some(fe_offset),
@@ -164,12 +164,12 @@ impl FilterExpr {
     // less or equal to the needle offset.
     pub fn previous<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         needle_offset: u64,
     ) -> Result<Option<u64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(ic)) => ic.previous_until(object_file, needle_offset),
+            FilterExpr::Match(_, Some(ic)) => ic.previous_until(journal_file, needle_offset),
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -177,7 +177,7 @@ impl FilterExpr {
                     let previous_offset = needle_offset;
 
                     for fe in filter_exprs.iter_mut().rev() {
-                        if let Some(new_offset) = fe.previous(object_file, needle_offset)? {
+                        if let Some(new_offset) = fe.previous(journal_file, needle_offset)? {
                             needle_offset = new_offset;
                         } else {
                             return Ok(None);
@@ -193,7 +193,7 @@ impl FilterExpr {
                 let mut best_offset: Option<u64> = None;
 
                 for fe in filter_exprs.iter_mut() {
-                    if let Some(fe_offset) = fe.previous(object_file, needle_offset)? {
+                    if let Some(fe_offset) = fe.previous(journal_file, needle_offset)? {
                         best_offset = match best_offset {
                             Some(offset) => Some(fe_offset.max(offset)),
                             None => Some(fe_offset),
@@ -206,16 +206,16 @@ impl FilterExpr {
         }
     }
 
-    pub fn dump<M: MemoryMap>(&self, object_file: &ObjectFile<M>) -> Result<String> {
+    pub fn dump<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<String> {
         let mut output = String::new();
-        self.dump_internal(object_file, 0, &mut output)?;
+        self.dump_internal(journal_file, 0, &mut output)?;
         Ok(output)
     }
 
     /// Helper function for format_data_objects that handles nested expressions and indentation
     fn dump_internal<M: MemoryMap>(
         &self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         indent_level: usize,
         output: &mut String,
     ) -> Result<()> {
@@ -224,7 +224,7 @@ impl FilterExpr {
         match self {
             FilterExpr::Match(data_offset, inlined_cursor) => {
                 // Load the data object
-                let data_object = object_file.data_object(*data_offset)?;
+                let data_object = journal_file.data_object(*data_offset)?;
 
                 // Get the payload as a string if possible
                 let payload_bytes = data_object.payload_bytes();
@@ -244,14 +244,14 @@ impl FilterExpr {
             FilterExpr::Conjunction(filter_exprs) => {
                 output.push_str(&format!("{}Conjunction (AND) {{\n", indent));
                 for expr in filter_exprs {
-                    expr.dump_internal(object_file, indent_level + 1, output)?;
+                    expr.dump_internal(journal_file, indent_level + 1, output)?;
                 }
                 output.push_str(&format!("{}}}\n", indent));
             }
             FilterExpr::Disjunction(filter_exprs) => {
                 output.push_str(&format!("{}Disjunction (OR) {{\n", indent));
                 for expr in filter_exprs {
-                    expr.dump_internal(object_file, indent_level + 1, output)?;
+                    expr.dump_internal(journal_file, indent_level + 1, output)?;
                 }
                 output.push_str(&format!("{}}}\n", indent));
             }
@@ -295,7 +295,7 @@ impl JournalFilter {
 
     fn convert_current_matches<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
     ) -> Result<Option<FilterExpr>> {
         if self.current_matches.is_empty() {
             return Ok(None);
@@ -319,18 +319,18 @@ impl JournalFilter {
             if i - start > 1 {
                 let mut matches = Vec::with_capacity(i - start);
                 for idx in start..i {
-                    let offset = object_file
+                    let offset = journal_file
                         .find_data_offset_by_payload(self.current_matches[idx].as_slice())?;
 
-                    let ic = object_file.data_object(offset)?.inlined_cursor();
+                    let ic = journal_file.data_object(offset)?.inlined_cursor();
                     matches.push(FilterExpr::Match(offset, ic));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
-                let offset = object_file
+                let offset = journal_file
                     .find_data_offset_by_payload(self.current_matches[start].as_slice())?;
 
-                let ic = object_file.data_object(offset)?.inlined_cursor();
+                let ic = journal_file.data_object(offset)?.inlined_cursor();
                 elements.push(FilterExpr::Match(offset, ic));
             }
         }
@@ -365,10 +365,10 @@ impl JournalFilter {
 
     pub fn set_operation<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         op: LogicalOp,
     ) -> Result<()> {
-        let new_expr = self.convert_current_matches(object_file)?;
+        let new_expr = self.convert_current_matches(journal_file)?;
         if new_expr.is_none() {
             self.current_op = op;
             return Ok(());
@@ -404,8 +404,8 @@ impl JournalFilter {
         Ok(())
     }
 
-    pub fn build<M: MemoryMap>(&mut self, object_file: &ObjectFile<M>) -> Result<FilterExpr> {
-        self.set_operation(object_file, self.current_op)?;
+    pub fn build<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<FilterExpr> {
+        self.set_operation(journal_file, self.current_op)?;
 
         self.current_matches.clear();
         self.current_op = LogicalOp::Conjunction;

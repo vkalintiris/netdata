@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use error::Result;
+use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
-use object_file::*;
 use std::collections::HashMap;
 use window_manager::MemoryMap;
 
@@ -37,11 +37,11 @@ impl std::fmt::Debug for EntryData {
 impl EntryData {
     /// Extract all data from an entry into an owned structure
     pub fn from_offset<M: MemoryMap>(
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         entry_offset: u64,
     ) -> Result<EntryData> {
         // Get the entry object
-        let entry_object = object_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_object(entry_offset)?;
 
         // Extract basic information from the entry header
         let realtime = entry_object.header.realtime;
@@ -55,7 +55,7 @@ impl EntryData {
         let mut fields = Vec::new();
 
         // Iterate through all data objects for this entry
-        for data_result in object_file.entry_data_objects(entry_offset)? {
+        for data_result in journal_file.entry_data_objects(entry_offset)? {
             let data_object = data_result?;
             let payload = data_object.payload_bytes();
 
@@ -164,84 +164,84 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //     }
 // }
 
-// fn test_head<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
+// fn test_head<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
 //     let mut jr = JournalReader::default();
-//     assert!(!jr.step(object_file, Direction::Backward)?);
+//     assert!(!jr.step(journal_file, Direction::Backward)?);
 
-//     match jr.get_realtime_usec(object_file).expect_err("unset cursor") {
+//     match jr.get_realtime_usec(journal_file).expect_err("unset cursor") {
 //         JournalError::UnsetCursor => {}
 //         _ => {
 //             panic!("unexpected journal error");
 //         }
 //     };
 
-//     assert!(jr.step(object_file, Direction::Forward)?);
-//     let rt1a = jr.get_realtime_usec(object_file).expect("head's realtime");
-//     assert_eq!(rt1a, object_file.journal_header().head_entry_realtime);
+//     assert!(jr.step(journal_file, Direction::Forward)?);
+//     let rt1a = jr.get_realtime_usec(journal_file).expect("head's realtime");
+//     assert_eq!(rt1a, journal_file.journal_header().head_entry_realtime);
 
-//     assert!(jr.step(object_file, Direction::Forward)?);
-//     let rt2 = jr.get_realtime_usec(object_file).expect("2nd realtime");
+//     assert!(jr.step(journal_file, Direction::Forward)?);
+//     let rt2 = jr.get_realtime_usec(journal_file).expect("2nd realtime");
 //     assert_ne!(rt2, rt1a);
 
-//     assert!(jr.step(object_file, Direction::Backward)?);
-//     let rt1b = jr.get_realtime_usec(object_file).expect("head's realtime");
+//     assert!(jr.step(journal_file, Direction::Backward)?);
+//     let rt1b = jr.get_realtime_usec(journal_file).expect("head's realtime");
 //     assert_eq!(rt1a, rt1b);
 
-//     assert!(!jr.step(object_file, Direction::Backward).unwrap());
-//     let rt1c = jr.get_realtime_usec(object_file).expect("head's realtime");
+//     assert!(!jr.step(journal_file, Direction::Backward).unwrap());
+//     let rt1c = jr.get_realtime_usec(journal_file).expect("head's realtime");
 //     assert_eq!(rt1a, rt1c);
 
-//     while jr.step(object_file, Direction::Forward).unwrap() {}
-//     while jr.step(object_file, Direction::Backward).unwrap() {}
+//     while jr.step(journal_file, Direction::Forward).unwrap() {}
+//     while jr.step(journal_file, Direction::Backward).unwrap() {}
 
-//     let rt1d = jr.get_realtime_usec(object_file).expect("head's realtime");
+//     let rt1d = jr.get_realtime_usec(journal_file).expect("head's realtime");
 //     assert_eq!(rt1a, rt1d);
 
 //     Ok(())
 // }
 
-// fn test_tail<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
+// fn test_tail<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
 //     let mut jr = JournalReader::default();
 
-//     jr.set_location(object_file, Location::Tail);
-//     assert!(!jr.step(object_file, Direction::Forward)?);
+//     jr.set_location(journal_file, Location::Tail);
+//     assert!(!jr.step(journal_file, Direction::Forward)?);
 
-//     match jr.get_realtime_usec(object_file).expect_err("unset cursor") {
+//     match jr.get_realtime_usec(journal_file).expect_err("unset cursor") {
 //         JournalError::UnsetCursor => {}
 //         _ => {
 //             panic!("unexpected journal error");
 //         }
 //     };
 
-//     assert!(jr.step(object_file, Direction::Backward)?);
-//     let rt1a = jr.get_realtime_usec(object_file).expect("tails's realtime");
-//     assert_eq!(rt1a, object_file.journal_header().tail_entry_realtime);
+//     assert!(jr.step(journal_file, Direction::Backward)?);
+//     let rt1a = jr.get_realtime_usec(journal_file).expect("tails's realtime");
+//     assert_eq!(rt1a, journal_file.journal_header().tail_entry_realtime);
 
-//     assert!(jr.step(object_file, Direction::Backward)?);
+//     assert!(jr.step(journal_file, Direction::Backward)?);
 //     let rt2 = jr
-//         .get_realtime_usec(object_file)
+//         .get_realtime_usec(journal_file)
 //         .expect("realtime before tail");
 //     assert_ne!(rt2, rt1a);
 
-//     assert!(jr.step(object_file, Direction::Forward)?);
-//     let rt1b = jr.get_realtime_usec(object_file).expect("tails's realtime");
+//     assert!(jr.step(journal_file, Direction::Forward)?);
+//     let rt1b = jr.get_realtime_usec(journal_file).expect("tails's realtime");
 //     assert_eq!(rt1a, rt1b);
 
-//     assert!(!jr.step(object_file, Direction::Forward).unwrap());
-//     let rt1c = jr.get_realtime_usec(object_file).expect("tails's realtime");
+//     assert!(!jr.step(journal_file, Direction::Forward).unwrap());
+//     let rt1c = jr.get_realtime_usec(journal_file).expect("tails's realtime");
 //     assert_eq!(rt1a, rt1c);
 
-//     while jr.step(object_file, Direction::Backward).unwrap() {}
-//     while jr.step(object_file, Direction::Forward).unwrap() {}
+//     while jr.step(journal_file, Direction::Backward).unwrap() {}
+//     while jr.step(journal_file, Direction::Forward).unwrap() {}
 
-//     let rt1d = jr.get_realtime_usec(object_file).expect("tail's realtime");
+//     let rt1d = jr.get_realtime_usec(journal_file).expect("tail's realtime");
 //     assert_eq!(rt1a, rt1d);
 
 //     Ok(())
 // }
 
-// fn test_midpoint_entry<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
-//     let header = object_file.journal_header();
+// fn test_midpoint_entry<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
+//     let header = journal_file.journal_header();
 //     let total_entries = header.n_entries;
 
 //     let midpoint_idx = total_entries / 2;
@@ -250,77 +250,77 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 
 //     for _ in 0..midpoint_idx {
 //         assert!(jr
-//             .step(object_file, Direction::Forward)
+//             .step(journal_file, Direction::Forward)
 //             .expect("step to succeed"));
 //     }
 
 //     let midpoint_entry_offset = jr.get_entry_offset().expect("A valid entry offset");
-//     let midpoint_entry_realtime = jr.get_realtime_usec(object_file)?;
+//     let midpoint_entry_realtime = jr.get_realtime_usec(journal_file)?;
 
-//     jr.set_location(object_file, Location::Head);
-//     assert!(jr.step(object_file, Direction::Forward).expect("no error"));
+//     jr.set_location(journal_file, Location::Head);
+//     assert!(jr.step(journal_file, Direction::Forward).expect("no error"));
 //     assert_eq!(
-//         jr.get_realtime_usec(object_file)
+//         jr.get_realtime_usec(journal_file)
 //             .expect("realtime of head entry"),
-//         object_file.journal_header().head_entry_realtime,
+//         journal_file.journal_header().head_entry_realtime,
 //     );
 
 //     // By offset
 //     {
-//         jr.set_location(object_file, Location::Entry(midpoint_entry_offset));
-//         assert!(jr.step(object_file, Direction::Forward).expect("no error"));
+//         jr.set_location(journal_file, Location::Entry(midpoint_entry_offset));
+//         assert!(jr.step(journal_file, Direction::Forward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert_eq!(entry_offset, midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert_eq!(entry_realtime, midpoint_entry_realtime);
 
-//         jr.set_location(object_file, Location::Entry(midpoint_entry_offset));
-//         assert!(jr.step(object_file, Direction::Backward).expect("no error"));
+//         jr.set_location(journal_file, Location::Entry(midpoint_entry_offset));
+//         assert!(jr.step(journal_file, Direction::Backward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert!(entry_offset < midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert!(entry_realtime < midpoint_entry_realtime);
 
-//         assert!(jr.step(object_file, Direction::Forward).expect("no error"));
+//         assert!(jr.step(journal_file, Direction::Forward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert_eq!(entry_offset, midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert_eq!(entry_realtime, midpoint_entry_realtime);
 //     }
 
 //     // By realtime
 //     {
-//         jr.set_location(object_file, Location::Realtime(midpoint_entry_realtime));
-//         assert!(jr.step(object_file, Direction::Forward).expect("no error"));
+//         jr.set_location(journal_file, Location::Realtime(midpoint_entry_realtime));
+//         assert!(jr.step(journal_file, Direction::Forward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert_eq!(entry_offset, midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert_eq!(entry_realtime, midpoint_entry_realtime);
 
-//         jr.set_location(object_file, Location::Realtime(midpoint_entry_realtime));
-//         assert!(jr.step(object_file, Direction::Backward).expect("no error"));
+//         jr.set_location(journal_file, Location::Realtime(midpoint_entry_realtime));
+//         assert!(jr.step(journal_file, Direction::Backward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert!(entry_offset < midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert!(entry_realtime < midpoint_entry_realtime);
 
-//         assert!(jr.step(object_file, Direction::Forward).expect("no error"));
+//         assert!(jr.step(journal_file, Direction::Forward).expect("no error"));
 
 //         let entry_offset = jr.get_entry_offset().expect("A valid entry offset");
 //         assert_eq!(entry_offset, midpoint_entry_offset);
-//         let entry_realtime = jr.get_realtime_usec(object_file)?;
+//         let entry_realtime = jr.get_realtime_usec(journal_file)?;
 //         assert_eq!(entry_realtime, midpoint_entry_realtime);
 //     }
 
 //     Ok(())
 // }
 
-// fn test_filter<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
+// fn test_filter<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
 //     let mut jr = JournalReader::default();
 
 //     for i in 1..4 {
@@ -331,10 +331,10 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         let data = format!("{key}={value}");
 //         jr.add_match(data.as_bytes());
 
-//         jr.set_location(object_file, Location::Head);
-//         while jr.step(object_file, Direction::Forward).unwrap() {
+//         jr.set_location(journal_file, Location::Head);
+//         while jr.step(journal_file, Direction::Forward).unwrap() {
 //             entry_offsets.push(jr.get_entry_offset().unwrap());
-//             let ed = EntryData::from_offset(object_file, *entry_offsets.last().unwrap()).unwrap();
+//             let ed = EntryData::from_offset(journal_file, *entry_offsets.last().unwrap()).unwrap();
 //             assert_eq!(ed.get_field(key.as_str()), Some(value.as_str()));
 //         }
 
@@ -350,10 +350,10 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         let data = format!("{key}={value}");
 //         jr.add_match(data.as_bytes());
 
-//         jr.set_location(object_file, Location::Tail);
-//         while jr.step(object_file, Direction::Backward).unwrap() {
+//         jr.set_location(journal_file, Location::Tail);
+//         while jr.step(journal_file, Direction::Backward).unwrap() {
 //             entry_offsets.push(jr.get_entry_offset().unwrap());
-//             let ed = EntryData::from_offset(object_file, *entry_offsets.last().unwrap()).unwrap();
+//             let ed = EntryData::from_offset(journal_file, *entry_offsets.last().unwrap()).unwrap();
 //             assert_eq!(ed.get_field(key.as_str()), Some(value.as_str()));
 //         }
 
@@ -364,11 +364,11 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //     {
 //         jr.add_match(b"SVD_1=svd-1");
 
-//         jr.set_location(object_file, Location::Tail);
-//         assert!(!jr.step(object_file, Direction::Forward).unwrap());
+//         jr.set_location(journal_file, Location::Tail);
+//         assert!(!jr.step(journal_file, Direction::Forward).unwrap());
 
-//         jr.set_location(object_file, Location::Head);
-//         assert!(!jr.step(object_file, Direction::Backward).unwrap());
+//         jr.set_location(journal_file, Location::Head);
+//         assert!(!jr.step(journal_file, Direction::Backward).unwrap());
 //     }
 
 //     {
@@ -381,9 +381,9 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         let mut num_svd_a = 0;
 
 //         jr.set_location(Location::Head);
-//         while jr.step(object_file, Direction::Forward).unwrap() {
+//         while jr.step(journal_file, Direction::Forward).unwrap() {
 //             entry_offsets.push(jr.get_entry_offset().unwrap());
-//             let ed = EntryData::from_offset(object_file, *entry_offsets.last().unwrap()).unwrap();
+//             let ed = EntryData::from_offset(journal_file, *entry_offsets.last().unwrap()).unwrap();
 
 //             if ed.get_field("SVD_1") == Some("svd-1") {
 //                 num_svd_1 += 1;
@@ -410,9 +410,9 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         let mut num_svd_a = 0;
 
 //         jr.set_location(Location::Tail);
-//         while jr.step(object_file, Direction::Backward).unwrap() {
+//         while jr.step(journal_file, Direction::Backward).unwrap() {
 //             entry_offsets.push(jr.get_entry_offset().unwrap());
-//             let ed = EntryData::from_offset(object_file, *entry_offsets.last().unwrap()).unwrap();
+//             let ed = EntryData::from_offset(journal_file, *entry_offsets.last().unwrap()).unwrap();
 
 //             if ed.get_field("SVD_1") == Some("svd-1") {
 //                 num_svd_1 += 1;
@@ -433,84 +433,84 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         // get realtime of first entry with SVD_1=svd-1
 //         jr.add_match(b"SVD_1=svd-1");
 //         jr.set_location(Location::Head);
-//         assert!(jr.step(object_file, Direction::Forward).unwrap());
+//         assert!(jr.step(journal_file, Direction::Forward).unwrap());
 
 //         let entry_offset = jr.get_entry_offset().unwrap();
-//         let ed = EntryData::from_offset(object_file, entry_offset).unwrap();
+//         let ed = EntryData::from_offset(journal_file, entry_offset).unwrap();
 //         assert_eq!(ed.get_field("SVD_1"), Some("svd-1"));
-//         let svd_1_rt = jr.get_realtime_usec(object_file).unwrap();
+//         let svd_1_rt = jr.get_realtime_usec(journal_file).unwrap();
 
 //         // flush matches and make sure we end up at head
 //         jr.flush_matches();
-//         assert!(jr.step(object_file, Direction::Forward).unwrap());
+//         assert!(jr.step(journal_file, Direction::Forward).unwrap());
 //         assert_eq!(
-//             jr.get_realtime_usec(object_file).unwrap(),
-//             object_file.journal_header().head_entry_realtime
+//             jr.get_realtime_usec(journal_file).unwrap(),
+//             journal_file.journal_header().head_entry_realtime
 //         );
 
 //         // seek by realtime
 //         for _ in 0..5 {
 //             jr.add_match(b"SVD_1=svd-1");
 //             jr.set_location(Location::Realtime(svd_1_rt));
-//             assert!(jr.step(object_file, Direction::Forward).unwrap());
-//             assert_eq!(jr.get_realtime_usec(object_file).unwrap(), svd_1_rt);
+//             assert!(jr.step(journal_file, Direction::Forward).unwrap());
+//             assert_eq!(jr.get_realtime_usec(journal_file).unwrap(), svd_1_rt);
 
-//             assert!(jr.step(object_file, Direction::Forward).unwrap());
-//             assert!(jr.get_realtime_usec(object_file).unwrap() > svd_1_rt);
+//             assert!(jr.step(journal_file, Direction::Forward).unwrap());
+//             assert!(jr.get_realtime_usec(journal_file).unwrap() > svd_1_rt);
 
-//             assert!(jr.step(object_file, Direction::Backward).unwrap());
-//             assert!(jr.get_realtime_usec(object_file).unwrap() == svd_1_rt);
+//             assert!(jr.step(journal_file, Direction::Backward).unwrap());
+//             assert!(jr.get_realtime_usec(journal_file).unwrap() == svd_1_rt);
 
-//             assert!(!jr.step(object_file, Direction::Backward).unwrap());
+//             assert!(!jr.step(journal_file, Direction::Backward).unwrap());
 //         }
 //     }
 
 //     Ok(())
 // }
 
-// fn test_cursor<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
-//     test_head(object_file)?;
-//     test_tail(object_file)?;
-//     test_midpoint_entry(object_file)?;
+// fn test_cursor<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
+//     test_head(journal_file)?;
+//     test_tail(journal_file)?;
+//     test_midpoint_entry(journal_file)?;
 
-//     test_filter(object_file)?;
+//     test_filter(journal_file)?;
 
 //     println!("All good!");
 //     Ok(())
 // }
 
-// fn test_filter_expr<M: MemoryMap>(object_file: &ObjectFile<M>) -> Result<()> {
+// fn test_filter_expr<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<()> {
 //     {
 //         println!("Journal reader:");
 //         let mut jr = JournalReader::default();
 
 //         jr.add_match(b"SVD_1=svd-1");
-//         jr.add_conjunction(object_file)?;
+//         jr.add_conjunction(journal_file)?;
 //         jr.add_match(b"SVD_2=svd-2");
 
 //         jr.set_location(Location::Tail);
-//         while jr.step(object_file, Direction::Backward).unwrap() {
+//         while jr.step(journal_file, Direction::Backward).unwrap() {
 //             let entry_offset = jr.get_entry_offset()?;
-//             let entry_data = EntryData::from_offset(object_file, entry_offset)?;
+//             let entry_data = EntryData::from_offset(journal_file, entry_offset)?;
 //             println!("\ted[{}] = {:?}", entry_offset, entry_data);
 //         }
 //     }
 
-//     let jr_lookups = object_file.stats().direct_lookups;
+//     let jr_lookups = journal_file.stats().direct_lookups;
 
 //     {
 //         println!("Journal filter:");
 //         let mut jf = journal_filter::JournalFilter::default();
 //         jf.add_match(b"SVD_1=svd-1");
-//         jf.set_operation(object_file, journal_filter::LogicalOp::Conjunction)?;
+//         jf.set_operation(journal_file, journal_filter::LogicalOp::Conjunction)?;
 //         jf.add_match(b"SVD_2=svd-2");
 
-//         let mut fe = jf.build(object_file)?;
-//         fe.tail(object_file)?;
+//         let mut fe = jf.build(journal_file)?;
+//         fe.tail(journal_file)?;
 //         let mut needle_offset = u64::MAX;
 
-//         while let Some(entry_offset) = fe.previous(object_file, needle_offset)? {
-//             let entry_data = EntryData::from_offset(object_file, entry_offset)?;
+//         while let Some(entry_offset) = fe.previous(journal_file, needle_offset)? {
+//             let entry_data = EntryData::from_offset(journal_file, entry_offset)?;
 //             println!("\ted[{}] = {:?}", entry_offset, entry_data);
 //             needle_offset = entry_offset - 1;
 //         }
@@ -518,14 +518,14 @@ fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
 //         println!("Journal filter (forwards):");
 //         needle_offset += 1;
 //         println!("needle_offset={:#x?}", needle_offset);
-//         while let Some(entry_offset) = fe.next(object_file, needle_offset)? {
-//             let entry_data = EntryData::from_offset(object_file, entry_offset)?;
+//         while let Some(entry_offset) = fe.next(journal_file, needle_offset)? {
+//             let entry_data = EntryData::from_offset(journal_file, entry_offset)?;
 //             println!("\ted[{}] = {:?}", entry_offset, entry_data);
 //             needle_offset = entry_offset + 1;
 //         }
 //     }
 
-//     let jf_lookups = object_file.stats().direct_lookups - jr_lookups;
+//     let jf_lookups = journal_file.stats().direct_lookups - jr_lookups;
 //     println!("lookups: jr={}, jf={}", jr_lookups, jf_lookups);
 
 //     Ok(())
@@ -553,14 +553,14 @@ impl<'a> JournalWrapper<'a> {
         self.jr.add_match(data.as_bytes());
     }
 
-    pub fn match_and(&mut self, object_file: &'a ObjectFile<Mmap>) {
+    pub fn match_and(&mut self, journal_file: &'a JournalFile<Mmap>) {
         self.j.match_and().unwrap();
-        self.jr.add_conjunction(object_file).unwrap();
+        self.jr.add_conjunction(journal_file).unwrap();
     }
 
-    pub fn match_or(&mut self, object_file: &'a ObjectFile<Mmap>) {
+    pub fn match_or(&mut self, journal_file: &'a JournalFile<Mmap>) {
         self.j.match_or().unwrap();
-        self.jr.add_disjunction(object_file).unwrap();
+        self.jr.add_disjunction(journal_file).unwrap();
     }
 
     pub fn match_flush(&mut self) {
@@ -583,9 +583,9 @@ impl<'a> JournalWrapper<'a> {
         self.jr.set_location(Location::Realtime(usec));
     }
 
-    pub fn next(&mut self, object_file: &'a ObjectFile<Mmap>) -> bool {
+    pub fn next(&mut self, journal_file: &'a JournalFile<Mmap>) -> bool {
         let r1 = self.j.next().unwrap();
-        let r2 = self.jr.step(object_file, Direction::Forward).unwrap();
+        let r2 = self.jr.step(journal_file, Direction::Forward).unwrap();
 
         if r1 > 0 {
             if r2 {
@@ -606,9 +606,9 @@ impl<'a> JournalWrapper<'a> {
         r2
     }
 
-    pub fn previous(&mut self, object_file: &'a ObjectFile<Mmap>) -> bool {
+    pub fn previous(&mut self, journal_file: &'a JournalFile<Mmap>) -> bool {
         let r1 = self.j.previous().unwrap();
-        let r2 = self.jr.step(object_file, Direction::Backward).unwrap();
+        let r2 = self.jr.step(journal_file, Direction::Backward).unwrap();
 
         if r1 > 0 {
             if r2 {
@@ -629,9 +629,9 @@ impl<'a> JournalWrapper<'a> {
         r2
     }
 
-    pub fn get_realtime_usec(&mut self, object_file: &'a ObjectFile<Mmap>) -> u64 {
+    pub fn get_realtime_usec(&mut self, journal_file: &'a JournalFile<Mmap>) -> u64 {
         let usec1 = self.j.timestamp().unwrap();
-        let usec2 = self.jr.get_realtime_usec(object_file).unwrap();
+        let usec2 = self.jr.get_realtime_usec(journal_file).unwrap();
 
         assert_eq!(usec1, usec2);
         usec1
@@ -640,11 +640,11 @@ impl<'a> JournalWrapper<'a> {
 
 fn get_terms(path: &str) -> HashMap<String, Vec<String>> {
     let window_size = 8 * 1024 * 1024;
-    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
+    let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
 
     let mut terms = HashMap::new();
     let mut fields = Vec::new();
-    for field in object_file.fields() {
+    for field in journal_file.fields() {
         let field = field.unwrap();
         let field = String::from(String::from_utf8_lossy(field.get_payload()).clone());
         fields.push(field.clone());
@@ -652,7 +652,7 @@ fn get_terms(path: &str) -> HashMap<String, Vec<String>> {
     }
 
     for field in fields {
-        for data in object_file.field_data_objects(field.as_bytes()).unwrap() {
+        for data in journal_file.field_data_objects(field.as_bytes()).unwrap() {
             let data = data.unwrap();
             if data.is_compressed() {
                 continue;
@@ -681,18 +681,18 @@ enum SeekType {
 
 fn get_timings(path: &str) -> Vec<u64> {
     let window_size = 8 * 1024 * 1024;
-    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
+    let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
     let mut jw: JournalWrapper<'_> = JournalWrapper::open(path).unwrap();
 
     let mut v = Vec::new();
 
     jw.seek_head();
     loop {
-        if !jw.next(&object_file) {
+        if !jw.next(&journal_file) {
             break;
         }
 
-        let usec = jw.get_realtime_usec(&object_file);
+        let usec = jw.get_realtime_usec(&journal_file);
         v.push(usec);
     }
     assert!(v.is_sorted());
@@ -881,18 +881,18 @@ fn apply_seek_operation(seek_operation: SeekOperation, jw: &mut JournalWrapper) 
 fn apply_iteration_operation<'a>(
     iteration_operation: IterationOperation,
     jw: &mut JournalWrapper<'a>,
-    object_file: &'a ObjectFile<Mmap>,
+    journal_file: &'a JournalFile<Mmap>,
 ) -> bool {
     match iteration_operation {
-        IterationOperation::Next => jw.next(object_file),
-        IterationOperation::Previous => jw.previous(object_file),
+        IterationOperation::Next => jw.next(journal_file),
+        IterationOperation::Previous => jw.previous(journal_file),
     }
 }
 
 fn apply_match_expression<'a>(
     match_expr: MatchExpr,
     jw: &mut JournalWrapper<'a>,
-    object_file: &'a ObjectFile<Mmap>,
+    journal_file: &'a JournalFile<Mmap>,
 ) -> bool {
     jw.match_flush();
 
@@ -911,13 +911,13 @@ fn apply_match_expression<'a>(
         }
         MatchExpr::And1(d1, d2) => {
             jw.match_add(&d1);
-            jw.match_and(object_file);
+            jw.match_and(journal_file);
             jw.match_add(&d2);
             return true;
         }
         MatchExpr::And2(d1, (d2, d3)) => {
             jw.match_add(&d1);
-            jw.match_and(object_file);
+            jw.match_and(journal_file);
             jw.match_add(&d2);
             jw.match_add(&d3);
             return true;
@@ -925,20 +925,20 @@ fn apply_match_expression<'a>(
         MatchExpr::And3((d1, d2), d3) => {
             jw.match_add(&d1);
             jw.match_add(&d2);
-            jw.match_and(object_file);
+            jw.match_and(journal_file);
             jw.match_add(&d3);
             return true;
         }
         MatchExpr::And4((d1, d2), (d3, d4)) => {
             jw.match_add(&d1);
             jw.match_add(&d2);
-            jw.match_or(object_file);
+            jw.match_or(journal_file);
 
             jw.match_add(&d3);
             jw.match_add(&d4);
-            jw.match_or(object_file);
+            jw.match_or(journal_file);
 
-            jw.match_and(object_file);
+            jw.match_and(journal_file);
 
             return true;
         }
@@ -948,8 +948,8 @@ fn apply_match_expression<'a>(
 fn filtered_test() {
     let path = "/tmp/user-1000.journal";
     let window_size = 8 * 1024 * 1024;
-    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
-    println!("num entries: {:?}", object_file.journal_header().n_entries);
+    let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
+    println!("num entries: {:?}", journal_file.journal_header().n_entries);
     let mut jw = JournalWrapper::open(path).unwrap();
 
     let terms = get_terms(path);
@@ -960,7 +960,7 @@ fn filtered_test() {
     let mut counter = 0;
     loop {
         let match_expr = select_match_expression(&mut rng, &terms);
-        let applied = apply_match_expression(match_expr.clone(), &mut jw, &object_file);
+        let applied = apply_match_expression(match_expr.clone(), &mut jw, &journal_file);
         if !applied {
             continue;
         }
@@ -976,9 +976,9 @@ fn filtered_test() {
         println!("[{}] iteration: {:?}", counter, iteration_operation);
 
         for _ in 0..rng.random_range(0..2 * timings.len()) {
-            let found = apply_iteration_operation(iteration_operation, &mut jw, &object_file);
+            let found = apply_iteration_operation(iteration_operation, &mut jw, &journal_file);
             if found {
-                jw.get_realtime_usec(&object_file);
+                jw.get_realtime_usec(&journal_file);
                 num_matches += 1;
             }
         }
@@ -992,21 +992,21 @@ fn test_case() {
     let path = "/tmp/user-1000.journal";
 
     let window_size = 8 * 1024 * 1024;
-    let object_file = ObjectFile::<Mmap>::open(path, window_size).unwrap();
+    let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
     let mut jw = JournalWrapper::open(path).unwrap();
 
     let timings = get_timings(path);
     println!("timings: {:#?}", timings);
 
     jw.seek_realtime(u64::MAX);
-    if jw.previous(&object_file) {
-        let value = jw.get_realtime_usec(&object_file);
+    if jw.previous(&journal_file) {
+        let value = jw.get_realtime_usec(&journal_file);
         println!("first value: {:?}", value);
     }
     return;
 
-    jw.next(&object_file);
-    let value = jw.get_realtime_usec(&object_file);
+    jw.next(&journal_file);
+    let value = jw.get_realtime_usec(&journal_file);
     println!("second value: {:?}", value);
 }
 
@@ -1028,20 +1028,20 @@ fn main() {
     //     }
 
     //     const WINDOW_SIZE: u64 = 4096;
-    //     match ObjectFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
-    //         Ok(object_file) => {
+    //     match JournalFile::<Mmap>::open(&args[1], WINDOW_SIZE) {
+    //         Ok(journal_file) => {
     //             if true {
-    //                 if let Err(e) = test_cursor(&object_file) {
+    //                 if let Err(e) = test_cursor(&journal_file) {
     //                     panic!("Cursor tests failed: {:?}", e);
     //                 }
     //             }
 
     //             if true {
-    //                 if let Err(e) = test_filter_expr(&object_file) {
+    //                 if let Err(e) = test_filter_expr(&journal_file) {
     //                     panic!("Filter expression tests failed: {:?}", e);
     //                 }
 
-    //                 println!("Overall stat: {:?}", object_file.stats());
+    //                 println!("Overall stat: {:?}", journal_file.stats());
     //             }
     //         }
     //         Err(e) => panic!("Failed to open journal file: {:?}", e),

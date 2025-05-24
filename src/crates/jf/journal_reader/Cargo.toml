@@ -5,5 +5,5 @@ edition.workspace = true
 
 [dependencies]
 window_manager = { path = "../window_manager" }
-object_file = { path = "../object_file" }
+journal_file = { path = "../journal_file" }
 error = { path = "../error" }

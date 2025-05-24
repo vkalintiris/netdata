@@ -1,6 +1,6 @@
 use crate::journal_filter::FilterExpr;
 use error::{JournalError, Result};
-use object_file::{offset_array, offset_array::Direction, ObjectFile};
+use journal_file::{offset_array, offset_array::Direction, JournalFile};
 use window_manager::MemoryMap;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -55,13 +55,13 @@ impl JournalCursor {
 
     pub fn step<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<bool> {
         let new_location = if self.filter_expr.is_some() {
-            self.resolve_filter_location(object_file, direction)?
+            self.resolve_filter_location(journal_file, direction)?
         } else {
-            self.resolve_array_cursor(object_file, direction)?
+            self.resolve_array_cursor(journal_file, direction)?
         };
 
         if let Some(location) = new_location {
@@ -81,66 +81,66 @@ impl JournalCursor {
 
     fn resolve_array_cursor<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
         let new_location = match (self.location, direction) {
             (Location::Head, Direction::Forward) => {
-                let entry_list = object_file
+                let entry_list = journal_file
                     .entry_list()
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let cursor = entry_list.cursor_head();
-                let offset = cursor.value(object_file)?;
+                let offset = cursor.value(journal_file)?;
                 self.array_cursor = Some(cursor);
                 Some(Location::ResolvedEntry(offset))
             }
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
             (Location::Tail, Direction::Backward) => {
-                let entry_list = object_file
+                let entry_list = journal_file
                     .entry_list()
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
-                let cursor = entry_list.cursor_tail(object_file)?;
-                let offset = cursor.value(object_file)?;
+                let cursor = entry_list.cursor_tail(journal_file)?;
+                let offset = cursor.value(journal_file)?;
                 self.array_cursor = Some(cursor);
                 Some(Location::ResolvedEntry(offset))
             }
             (Location::Realtime(realtime), _) => {
-                let entry_list = object_file
+                let entry_list = journal_file
                     .entry_list()
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
-                    let entry_object = object_file.entry_object(entry_offset)?;
+                    let entry_object = journal_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
 
                 let cursor = entry_list
-                    .directed_partition_point(object_file, predicate, Direction::Forward)?
+                    .directed_partition_point(journal_file, predicate, Direction::Forward)?
                     .map(Ok)
-                    .unwrap_or_else(|| entry_list.cursor_tail(object_file))?;
+                    .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
 
-                let offset = cursor.value(object_file)?;
+                let offset = cursor.value(journal_file)?;
                 self.array_cursor = Some(cursor);
                 Some(Location::ResolvedEntry(offset))
             }
             (Location::ResolvedEntry(_), Direction::Forward) => {
-                let Some(cursor) = self.array_cursor.unwrap().next(object_file)? else {
+                let Some(cursor) = self.array_cursor.unwrap().next(journal_file)? else {
                     return Ok(None);
                 };
 
-                let offset = cursor.value(object_file)?;
+                let offset = cursor.value(journal_file)?;
                 self.array_cursor = Some(cursor);
                 Some(Location::ResolvedEntry(offset))
             }
             (Location::ResolvedEntry(_), Direction::Backward) => {
-                let Some(cursor) = self.array_cursor.unwrap().previous(object_file)? else {
+                let Some(cursor) = self.array_cursor.unwrap().previous(journal_file)? else {
                     return Ok(None);
                 };
 
-                let offset = cursor.value(object_file)?;
+                let offset = cursor.value(journal_file)?;
                 self.array_cursor = Some(cursor);
                 Some(Location::ResolvedEntry(offset))
             }
@@ -154,7 +154,7 @@ impl JournalCursor {
 
     fn resolve_filter_location<M: MemoryMap>(
         &mut self,
-        object_file: &ObjectFile<M>,
+        journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
         let filter_expr = self.filter_expr.as_mut().unwrap();
@@ -162,47 +162,47 @@ impl JournalCursor {
         let resolved_location = match (self.location, direction) {
             (Location::Head, Direction::Forward) => filter_expr
                 .head()
-                .next(object_file, u64::MIN)?
+                .next(journal_file, u64::MIN)?
                 .map(Location::ResolvedEntry),
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
             (Location::Tail, Direction::Backward) => filter_expr
-                .tail(object_file)?
-                .previous(object_file, u64::MAX)?
+                .tail(journal_file)?
+                .previous(journal_file, u64::MAX)?
                 .map(Location::ResolvedEntry),
             (Location::Realtime(realtime), direction) => {
-                let entry_list = object_file
+                let entry_list = journal_file
                     .entry_list()
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
-                    let entry_object = object_file.entry_object(entry_offset)?;
+                    let entry_object = journal_file.entry_object(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
 
                 let cursor = entry_list
-                    .directed_partition_point(object_file, predicate, Direction::Forward)?
+                    .directed_partition_point(journal_file, predicate, Direction::Forward)?
                     .map(Ok)
-                    .unwrap_or_else(|| entry_list.cursor_tail(object_file))?;
+                    .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
 
-                let entry_offset = cursor.value(object_file)?;
+                let entry_offset = cursor.value(journal_file)?;
 
                 match direction {
                     Direction::Forward => filter_expr
                         .head()
-                        .next(object_file, entry_offset)?
+                        .next(journal_file, entry_offset)?
                         .map(Location::ResolvedEntry),
                     Direction::Backward => filter_expr
-                        .tail(object_file)?
-                        .previous(object_file, entry_offset)?
+                        .tail(journal_file)?
+                        .previous(journal_file, entry_offset)?
                         .map(Location::ResolvedEntry),
                 }
             }
             (Location::ResolvedEntry(location_offset), Direction::Forward) => filter_expr
-                .next(object_file, location_offset + 1)?
+                .next(journal_file, location_offset + 1)?
                 .map(Location::ResolvedEntry),
             (Location::ResolvedEntry(location_offset), Direction::Backward) => filter_expr
-                .previous(object_file, location_offset - 1)?
+                .previous(journal_file, location_offset - 1)?
                 .map(Location::ResolvedEntry),
             _ => {
                 unimplemented!();

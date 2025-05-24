@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "error",
     "main",
-    "object_file",
+    "journal_file",
     "journal_reader",
     "journal_reader_ffi",
     "journal_logger",
