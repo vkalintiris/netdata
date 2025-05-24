@@ -229,6 +229,7 @@ cmake_dependent_option(FORCE_LEGACY_LIBBPF "Force usage of libbpf 0.0.9 instead 
 mark_as_advanced(FORCE_LEGACY_LIBBPF)
 
 option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" False)
+option(ENABLE_NETDATA_JOURNAL_FILE_READER_BENCHMARKS "Enable netdata's journal file reader implementation benchmarks" False)
 option(ENABLE_LIBSYSTEMD_JOURNAL_FILE_READER "Enable libsystemd's journal file reader implementation" True)
 
 option(ENABLE_MIMALLOC "Enable mimalloc allocator" OFF)
@@ -2830,19 +2831,21 @@ if(ENABLE_PLUGIN_SYSTEMD_JOURNAL)
                 target_compile_definitions(systemd-journal.plugin PRIVATE HAVE_RUST_PROVIDER)
                 target_link_libraries(systemd-journal.plugin journal_reader_ffi)
 
-                set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
-                                       src/collectors/systemd-journal.plugin/provider/netdata_provider.c
-                                       src/collectors/systemd-journal.plugin/provider/netdata_provider.h
-                )
+                if(ENABLE_NETDATA_JOURNAL_FILE_READER_BENCHMARKS)
+                        set(JF_BENCHMARK_FILES src/crates/jf/benchmark/main.c
+                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.c
+                                               src/collectors/systemd-journal.plugin/provider/netdata_provider.h
+                        )
 
-                add_executable(jfr.bench ${JF_BENCHMARK_FILES})
-                target_compile_definitions(jfr.bench PRIVATE HAVE_RUST_PROVIDER)
-                target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-                target_link_libraries(jfr.bench journal_reader_ffi)
+                        add_executable(jfr.bench ${JF_BENCHMARK_FILES})
+                        target_compile_definitions(jfr.bench PRIVATE HAVE_RUST_PROVIDER)
+                        target_include_directories(jfr.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+                        target_link_libraries(jfr.bench journal_reader_ffi)
 
-                add_executable(jfc.bench ${JF_BENCHMARK_FILES})
-                target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
-                target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
+                        add_executable(jfc.bench ${JF_BENCHMARK_FILES})
+                        target_include_directories(jfc.bench PRIVATE "${CMAKE_SOURCE_DIR}/src")
+                        target_link_libraries(jfc.bench "${SYSTEMD_LDFLAGS}")
+                endif()
         endif()
 
         target_link_libraries(systemd-journal.plugin libnetdata)
