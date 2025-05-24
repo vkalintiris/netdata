@@ -29,6 +29,12 @@ impl MemoryMap for Mmap {
 
 impl MemoryMap for MmapMut {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
+        let required_size = offset + size;
+
+        if required_size > file.metadata()?.len() {
+            file.set_len(required_size)?;
+        }
+
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)
