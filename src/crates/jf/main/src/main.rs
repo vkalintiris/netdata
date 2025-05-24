@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, TimeZone, Utc};
-use error::{JournalError, Result};
-use journal_reader::{journal_filter, Direction, JournalReader, Location};
+use error::Result;
+use journal_reader::{Direction, JournalReader, Location};
 use object_file::*;
 use std::collections::HashMap;
 use window_manager::MemoryMap;

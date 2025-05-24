@@ -1,42 +1,22 @@
 #ifndef ND_SD_JOURNAL_PROVIDER_NETDATA_H
 #define ND_SD_JOURNAL_PROVIDER_NETDATA_H
 
-#include "crates/jf/journal_reader_ffi/journal_reader_ffi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
 
-#if defined(HAVE_BOTH_PROVIDERS)
-    #include "rust_provider.h"
-    #include <systemd/sd-journal.h>
-#elif defined(HAVE_RUST_PROVIDER)
+#if defined(HAVE_RUST_PROVIDER)
     #include "rust_provider.h"
 #else
     #include <systemd/sd-journal.h>
 #endif
 
 #if defined(HAVE_RUST_PROVIDER)
-    #if defined(HAVE_BOTH_PROVIDERS)
-        typedef struct {
-            sd_journal *sdj;
-            RsdJournal *rsdj;
-        } NsdJournal;
+    typedef struct RsdJournal NsdJournal;
 
-        #define NSD_JOURNAL_FOREACH_DATA(j, data, l)                                                                            \
-            for (nsd_journal_restart_data(j); nsd_journal_enumerate_available_data((j), &(data), &(l)) > 0;)
-
-        #define NSD_JOURNAL_FOREACH_UNIQUE(j, data, l)                                                                          \
-            for (nsd_journal_restart_unique(j); nsd_journal_enumerate_available_unique((j), &(data), &(l)) > 0;)
-
-        #define NSD_JOURNAL_FOREACH_FIELD(j, field)                                                                             \
-            for (nsd_journal_restart_fields(j); nsd_journal_enumerate_fields((j), &(field)) > 0;)
-    #else
-        typedef struct RsdJournal NsdJournal;
-
-        #define NSD_JOURNAL_FOREACH_DATA(j, data, l) RSD_JOURNAL_FOREACH_DATA(j, data, l)
-        #define NSD_JOURNAL_FOREACH_UNIQUE(j, data, l) RSD_JOURNAL_FOREACH_UNIQUE(j, data, l)
-        #define NSD_JOURNAL_FOREACH_FIELD(j, field) RSD_JOURNAL_FOREACH_FIELD(j, field)
-    #endif
+    #define NSD_JOURNAL_FOREACH_DATA(j, data, l) RSD_JOURNAL_FOREACH_DATA(j, data, l)
+    #define NSD_JOURNAL_FOREACH_UNIQUE(j, data, l) RSD_JOURNAL_FOREACH_UNIQUE(j, data, l)
+    #define NSD_JOURNAL_FOREACH_FIELD(j, field) RSD_JOURNAL_FOREACH_FIELD(j, field)
 
     typedef struct RsdId128 NsdId128;
 
