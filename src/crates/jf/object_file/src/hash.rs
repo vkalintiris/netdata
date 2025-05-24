@@ -1,14 +1,14 @@
 use siphasher::sip::SipHasher24;
 use std::hash::Hasher;
 
-pub fn jenkins_hash64(data: &[u8]) -> u64 {
+fn jenkins_hash64(data: &[u8]) -> u64 {
     // FIXME: user real jenkins hasher
     let mut hasher = twox_hash::XxHash64::default();
     hasher.write(data);
     hasher.finish()
 }
 
-pub fn siphash24(data: &[u8], key: &[u8; 16]) -> u64 {
+fn siphash24(data: &[u8], key: &[u8; 16]) -> u64 {
     let k0 = u64::from_le_bytes(key[0..8].try_into().unwrap());
     let k1 = u64::from_le_bytes(key[8..16].try_into().unwrap());
 
