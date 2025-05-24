@@ -38,7 +38,6 @@ impl<'a, T> ValueGuard<'a, T> {
     }
 }
 
-// Allow transparent access to the contained value
 impl<T> Deref for ValueGuard<'_, T> {
     type Target = T;
 
@@ -47,7 +46,6 @@ impl<T> Deref for ValueGuard<'_, T> {
     }
 }
 
-// Release the lock when dropped
 impl<T> Drop for ValueGuard<'_, T> {
     fn drop(&mut self) {
         *self.in_use_flag.borrow_mut() = false;
