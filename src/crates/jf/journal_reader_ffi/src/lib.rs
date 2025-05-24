@@ -3,15 +3,12 @@ use memmap2::Mmap;
 use object_file::{HashableObject, ObjectFile};
 use std::ffi::{c_char, c_int, c_void, CStr};
 
-use tracing::{debug, error, info, instrument};
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RsdId128 {
     pub bytes: [u8; 16],
 }
 
-/// Convert a hex character to its numeric value
 fn unhexchar(c: u8) -> Result<u8, i32> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),
@@ -21,7 +18,6 @@ fn unhexchar(c: u8) -> Result<u8, i32> {
     }
 }
 
-/// Parse a string into an rsd_id128_t
 #[no_mangle]
 unsafe extern "C" fn rsd_id128_from_string(s: *const c_char, ret: *mut RsdId128) -> i32 {
     if s.is_null() || ret.is_null() {
@@ -88,13 +84,11 @@ unsafe extern "C" fn rsd_id128_from_string(s: *const c_char, ret: *mut RsdId128)
     0
 }
 
-/// Compare two rsd_id128_t values for equality
 #[no_mangle]
 pub extern "C" fn rsd_id128_equal(a: RsdId128, b: RsdId128) -> i32 {
     (a.bytes == b.bytes) as i32
 }
 
-/// For better Rust integration, also implement the PartialEq trait
 impl PartialEq for RsdId128 {
     fn eq(&self, other: &Self) -> bool {
         self.bytes == other.bytes
@@ -112,7 +106,6 @@ struct RsdJournal<'a> {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_open_files(
     ret: *mut *mut RsdJournal,
     paths: *const *const c_char,
@@ -165,57 +158,32 @@ unsafe extern "C" fn rsd_journal_close(j: *mut RsdJournal) {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_seek_head(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Head);
 
-    debug!(
-        function = "rsd_journal_seek_head",
-        dump = journal.reader.dump(&journal.object_file).unwrap(),
-        path = journal.path
-    );
-
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_seek_tail(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Tail);
 
-    debug!(
-        function = "rsd_journal_seek_head",
-        dump = journal.reader.dump(&journal.object_file).unwrap(),
-        path = journal.path
-    );
-
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_seek_realtime_usec(j: *mut RsdJournal, usec: u64) -> c_int {
     let journal = &mut *j;
     journal.reader.set_location(Location::Realtime(usec));
 
-    debug!(
-        function = "rsd_journal_seek_realtime_usec",
-        usec = usec,
-        dump = journal.reader.dump(&journal.object_file).unwrap(),
-        path = journal.path
-    );
-
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_next(j: *mut RsdJournal) -> c_int {
     let journal = &mut *j;
-
-    debug!(function = "rsd_journal_next", path = journal.path);
 
     match journal
         .reader
@@ -233,15 +201,12 @@ unsafe extern "C" fn rsd_journal_next(j: *mut RsdJournal) -> c_int {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_previous(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
 
     let journal = &mut *j;
-
-    debug!(function = "rsd_journal_previous", path = journal.path);
 
     match journal
         .reader
@@ -259,7 +224,6 @@ unsafe extern "C" fn rsd_journal_previous(j: *mut RsdJournal) -> c_int {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_get_seqnum(
     j: *mut RsdJournal,
     ret_seqnum: *mut u64,
@@ -270,8 +234,6 @@ unsafe extern "C" fn rsd_journal_get_seqnum(
     }
 
     let journal = &mut *j;
-
-    debug!(function = "rsd_journal_get_seqnum", path = journal.path);
 
     match journal.reader.get_seqnum(&journal.object_file) {
         Ok((seqnum, boot_id)) => {
@@ -288,17 +250,12 @@ unsafe extern "C" fn rsd_journal_get_seqnum(
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_get_realtime_usec(j: *mut RsdJournal, ret: *mut u64) -> c_int {
     if j.is_null() || ret.is_null() {
         return -1;
     }
 
     let journal = &mut *j;
-    debug!(
-        function = "rsd_journal_get_realtime_usec",
-        path = journal.path
-    );
 
     match journal.reader.get_realtime_usec(&journal.object_file) {
         Ok(realtime) => {
@@ -446,7 +403,6 @@ unsafe extern "C" fn rsd_journal_enumerate_available_unique(
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_add_match(
     j: *mut RsdJournal,
     data: *const c_void,
@@ -473,28 +429,17 @@ unsafe extern "C" fn rsd_journal_add_match(
         std::slice::from_raw_parts(data as *const u8, size)
     };
 
-    debug!(
-        function = "rsd_journal_add_match",
-        data = ?String::from_utf8_lossy(data_slice),
-        path = journal.path
-    );
     journal.reader.add_match(data_slice);
     0
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_add_conjunction(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
 
     let journal = &mut *j;
-
-    debug!(
-        function = "rsd_journal_add_conjunction",
-        path = journal.path
-    );
 
     match journal.reader.add_conjunction(&journal.object_file) {
         Ok(_) => 0,
@@ -503,18 +448,12 @@ unsafe extern "C" fn rsd_journal_add_conjunction(j: *mut RsdJournal) -> c_int {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_add_disjunction(j: *mut RsdJournal) -> c_int {
     if j.is_null() {
         return -1;
     }
 
     let journal = &mut *j;
-    debug!(
-        function = "rsd_journal_add_disjunction",
-        path = journal.path
-    );
-
     match journal.reader.add_disjunction(&journal.object_file) {
         Ok(_) => 0,
         Err(_) => -1,
@@ -522,25 +461,11 @@ unsafe extern "C" fn rsd_journal_add_disjunction(j: *mut RsdJournal) -> c_int {
 }
 
 #[no_mangle]
-#[instrument(skip_all)]
 unsafe extern "C" fn rsd_journal_flush_matches(j: *mut RsdJournal) {
     if j.is_null() {
         return;
     }
 
     let journal = &mut *j;
-    debug!(function = "rsd_journal_flush_matches", path = journal.path);
-
     journal.reader.flush_matches();
-}
-
-#[no_mangle]
-unsafe extern "C" fn rsd_journal_log(j: *mut RsdJournal) {
-    if j.is_null() {
-        return;
-    }
-
-    let journal = &mut *j;
-
-    journal.reader.log(&journal.object_file, &journal.path);
 }
