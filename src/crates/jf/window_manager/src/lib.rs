@@ -25,7 +25,7 @@ impl MemoryMap for Mmap {
     }
 }
 
-pub struct Window<T: MemoryMap> {
+struct Window<T: MemoryMap> {
     pub offset: u64,
     pub size: u64,
     pub mmap: T,
