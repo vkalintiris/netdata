@@ -5,7 +5,7 @@ use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
-use window_manager::{MemoryMap, WindowManager, WindowManagerStatistics};
+use window_manager::{MemoryMap, WindowManager};
 use zerocopy::FromBytes;
 
 #[cfg(debug_assertions)]
@@ -370,11 +370,6 @@ impl<M: MemoryMap> ObjectFile<M> {
             current_index: 0,
             total_items,
         })
-    }
-
-    pub fn stats(&self) -> WindowManagerStatistics {
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        window_manager.stats()
     }
 }
 

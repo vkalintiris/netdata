@@ -61,19 +61,11 @@ impl<T: MemoryMap> Window<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WindowManagerStatistics {
-    pub direct_lookups: usize,
-    indirect_lookups: usize,
-    missed_lookups: usize,
-}
-
 pub struct WindowManager<M: MemoryMap> {
     chunk_size: u64,
     active_window_idx: Option<usize>,
     max_windows: usize,
     windows: Vec<Window<M>>,
-    statistics: WindowManagerStatistics,
 }
 
 impl<M: MemoryMap> WindowManager<M> {
@@ -87,7 +79,6 @@ impl<M: MemoryMap> WindowManager<M> {
             max_windows,
             windows: Vec::new(),
             active_window_idx: None,
-            statistics: Default::default(),
         }
     }
 
@@ -169,11 +160,9 @@ impl<M: MemoryMap> WindowManager<M> {
     ) -> Result<&mut Window<M>> {
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             // Use the existing window
-            self.statistics.direct_lookups += 1;
             Ok(&mut self.windows[idx])
         } else if let Some(idx) = self.lookup_window_by_position(position) {
             // Remap the window
-            self.statistics.indirect_lookups += 1;
 
             let window = self.windows.remove(idx);
 
@@ -188,7 +177,6 @@ impl<M: MemoryMap> WindowManager<M> {
             Ok(self.windows.last_mut().unwrap())
         } else {
             // Create a brand new window
-            self.statistics.missed_lookups += 1;
 
             // Check if we have to evict a window prior to creating a new one
             if self.windows.len() >= self.max_windows {
@@ -220,9 +208,5 @@ impl<M: MemoryMap> WindowManager<M> {
     pub fn get_slice(&mut self, file: &File, position: u64, size: u64) -> Result<&[u8]> {
         let window = self.get_window(file, position, size)?;
         Ok(window.get_slice(position, size))
-    }
-
-    pub fn stats(&self) -> WindowManagerStatistics {
-        self.statistics
     }
 }
