@@ -1,7 +1,7 @@
 use error::Result;
-use memmap2::{Mmap, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::fs::File;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -11,6 +11,8 @@ pub trait MemoryMap: Deref<Target = [u8]> {
     where
         Self: Sized;
 }
+
+pub trait MemoryMapMut: MemoryMap + DerefMut {}
 
 impl MemoryMap for Mmap {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
@@ -25,13 +27,28 @@ impl MemoryMap for Mmap {
     }
 }
 
-struct Window<T: MemoryMap> {
-    pub offset: u64,
-    pub size: u64,
-    pub mmap: T,
+impl MemoryMap for MmapMut {
+    fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
+        let mmap = unsafe {
+            MmapOptions::new()
+                .offset(offset)
+                .len(size as usize)
+                .map_mut(file)?
+        };
+
+        Ok(mmap)
+    }
 }
 
-impl<T: MemoryMap> std::fmt::Debug for Window<T> {
+impl MemoryMapMut for MmapMut {}
+
+struct Window<M: MemoryMap> {
+    offset: u64,
+    size: u64,
+    mmap: M,
+}
+
+impl<M: MemoryMap> std::fmt::Debug for Window<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Window")
             .field("offset", &self.offset)
@@ -40,20 +57,20 @@ impl<T: MemoryMap> std::fmt::Debug for Window<T> {
     }
 }
 
-impl<T: MemoryMap> Window<T> {
-    pub fn end_offset(&self) -> u64 {
+impl<M: MemoryMap> Window<M> {
+    fn end_offset(&self) -> u64 {
         self.offset + self.size
     }
 
-    pub fn contains(&self, position: u64) -> bool {
+    fn contains(&self, position: u64) -> bool {
         position >= self.offset && position < self.end_offset()
     }
 
-    pub fn contains_range(&self, position: u64, size: u64) -> bool {
+    fn contains_range(&self, position: u64, size: u64) -> bool {
         position >= self.offset && position + size <= self.end_offset()
     }
 
-    pub fn get_slice(&self, position: u64, size: u64) -> &[u8] {
+    fn get_slice(&self, position: u64, size: u64) -> &[u8] {
         debug_assert!(self.contains_range(position, size));
 
         let offset = (position - self.offset) as usize;
@@ -61,7 +78,18 @@ impl<T: MemoryMap> Window<T> {
     }
 }
 
+impl<M: MemoryMapMut> Window<M> {
+    pub fn get_mut_slice(&mut self, position: u64, size: u64) -> &mut [u8] {
+        debug_assert!(self.contains_range(position, size));
+
+        let offset = (position - self.offset) as usize;
+        &mut self.mmap[offset..offset + size as usize]
+    }
+}
+
 pub struct WindowManager<M: MemoryMap> {
+    file: File,
+    _file_size: u64,
     chunk_size: u64,
     active_window_idx: Option<usize>,
     max_windows: usize,
@@ -70,16 +98,20 @@ pub struct WindowManager<M: MemoryMap> {
 
 impl<M: MemoryMap> WindowManager<M> {
     /// Creates a new WindowManager with the specified chunk size
-    pub fn new(chunk_size: u64, max_windows: usize) -> Self {
+    pub fn new(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
         debug_assert!(chunk_size != 0 && (chunk_size % PAGE_SIZE) == 0);
         debug_assert!(max_windows != 0);
 
-        WindowManager {
+        let _file_size = file.metadata()?.len();
+
+        Ok(WindowManager {
+            file,
+            _file_size,
             chunk_size,
             max_windows,
             windows: Vec::new(),
             active_window_idx: None,
-        }
+        })
     }
 
     /// Gets the start position aligned to the chunk size
@@ -91,11 +123,11 @@ impl<M: MemoryMap> WindowManager<M> {
         position.div_ceil(self.chunk_size) * self.chunk_size
     }
 
-    fn create_window(&self, file: &File, window_start: u64, chunk_count: u64) -> Result<Window<M>> {
+    fn create_window(&self, window_start: u64, chunk_count: u64) -> Result<Window<M>> {
         debug_assert_ne!(chunk_count, 0);
 
         let size = chunk_count * self.chunk_size;
-        let mmap = M::create(file, window_start, size)?;
+        let mmap = M::create(&self.file, window_start, size)?;
         Ok(Window {
             offset: window_start,
             size,
@@ -152,12 +184,7 @@ impl<M: MemoryMap> WindowManager<M> {
     }
 
     /// Ensures a window exists that covers the given position and size, and returns its index
-    fn get_window(
-        &mut self,
-        file: &File,
-        position: u64,
-        size_needed: u64,
-    ) -> Result<&mut Window<M>> {
+    fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             // Use the existing window
             Ok(&mut self.windows[idx])
@@ -170,7 +197,7 @@ impl<M: MemoryMap> WindowManager<M> {
             let window_end = self.get_chunk_aligned_end(position + size_needed);
             let num_chunks = (window_end - window_start) / self.chunk_size;
 
-            let new_window = self.create_window(file, window_start, num_chunks)?;
+            let new_window = self.create_window(window_start, num_chunks)?;
 
             self.windows.push(new_window);
             self.active_window_idx = Some(self.windows.len() - 1);
@@ -191,7 +218,7 @@ impl<M: MemoryMap> WindowManager<M> {
                 let window_end = self.get_chunk_aligned_end(position + size_needed);
                 let num_chunks = (window_end - window_start) / self.chunk_size;
 
-                let new_window = self.create_window(file, window_start, num_chunks)?;
+                let new_window = self.create_window(window_start, num_chunks)?;
 
                 // Add the new window to the end of the vector
                 self.windows.push(new_window);
@@ -205,8 +232,15 @@ impl<M: MemoryMap> WindowManager<M> {
         }
     }
 
-    pub fn get_slice(&mut self, file: &File, position: u64, size: u64) -> Result<&[u8]> {
-        let window = self.get_window(file, position, size)?;
+    pub fn get_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
+        let window = self.get_window(position, size)?;
         Ok(window.get_slice(position, size))
+    }
+}
+
+impl<M: MemoryMapMut> WindowManager<M> {
+    pub fn get_mut_slice(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
+        let window = self.get_window(position, size)?;
+        Ok(window.get_mut_slice(position, size))
     }
 }

@@ -3,7 +3,7 @@ use crate::object::*;
 use crate::offset_array;
 use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::Path;
 use window_manager::{MemoryMap, WindowManager};
 use zerocopy::FromBytes;
@@ -36,9 +36,6 @@ const OBJECT_ALIGNMENT: u64 = 8;
 /// This design ensures that memory safety is maintained even though references to memory-mapped
 /// regions could be invalidated when new objects are created.
 pub struct ObjectFile<M: MemoryMap> {
-    file: File,
-    file_size: u64,
-
     // Persistent memory maps for journal header and data/field hash tables
     header_map: M,
     data_hash_table_map: Option<M>,
@@ -62,7 +59,6 @@ impl<M: MemoryMap> ObjectFile<M> {
 
         // Open file and check its size
         let file = OpenOptions::new().read(true).write(false).open(&path)?;
-        let file_size = file.metadata()?.len();
 
         // Create a memory map for the header
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
@@ -77,11 +73,9 @@ impl<M: MemoryMap> ObjectFile<M> {
         let field_hash_table_map = header.map_field_hash_table(&file)?;
 
         // Create window manager for the rest of the objects
-        let window_manager = UnsafeCell::new(WindowManager::new(window_size, 32));
+        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
 
         Ok(ObjectFile {
-            file,
-            file_size,
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -118,20 +112,15 @@ impl<M: MemoryMap> ObjectFile<M> {
     }
 
     fn read_object_header(&self, position: u64) -> Result<&ObjectHeader> {
-        debug_assert_ne!(position, 0);
-        debug_assert_eq!(position % OBJECT_ALIGNMENT, 0);
-
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
         let window_manager = unsafe { &mut *self.window_manager.get() };
-        let header_slice = window_manager.get_slice(&self.file, position, size_needed)?;
+        let header_slice = window_manager.get_slice(position, size_needed)?;
         Ok(ObjectHeader::ref_from_bytes(header_slice).unwrap())
     }
 
     fn read_object_data(&self, position: u64, size_needed: u64) -> Result<&[u8]> {
-        debug_assert!(position < self.file_size);
-
         let window_manager = unsafe { &mut *self.window_manager.get() };
-        let object_slice = window_manager.get_slice(&self.file, position, size_needed)?;
+        let object_slice = window_manager.get_slice(position, size_needed)?;
         Ok(object_slice)
     }
 
