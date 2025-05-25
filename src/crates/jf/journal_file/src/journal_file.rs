@@ -74,6 +74,16 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
     }
 
+    pub fn read_object<T>(&mut self, position: u64, size: u64) -> Result<DataObject<&mut [u8]>> {
+        let object_header = {
+            let size_needed = std::mem::size_of::<ObjectHeader>() as u64 + size;
+            let window_manager = unsafe { &mut *self.window_manager.get() };
+            let header_slice = window_manager.get_mut_slice(position, size_needed)?;
+            ObjectHeader::mut_from_bytes(header_slice).unwrap()
+        };
+        todo!();
+    }
+
     // pub fn write_object_header(&mut self, position: u64) -> Result<&mut ObjectHeader> {
     //     let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
     //     let window_manager = unsafe { &mut *self.window_manager.get() };
