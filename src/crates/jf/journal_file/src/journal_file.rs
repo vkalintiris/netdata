@@ -89,8 +89,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
     fn journal_object_mut<'a, T>(
         &'a self,
+        type_: ObjectType,
         position: u64,
-        payload_size: Option<u64>,
+        size: Option<u64>,
     ) -> Result<ValueGuard<'a, T>>
     where
         T: JournalObjectMut<&'a mut [u8]>,
@@ -119,13 +120,20 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
 
-        let size_needed = {
-            let header = self.object_header_mut(position)?;
-            if let Some(payload_size) = payload_size {
-                header.size = std::mem::size_of::<ObjectHeader>() as u64 + payload_size
+        let size_needed = match size {
+            Some(size) => {
+                let header = self.object_header_mut(position)?;
+                header.type_ = type_ as u8;
+                header.size = size;
+                size
             }
-
-            header.size
+            None => {
+                let header = self.object_header_ref(position)?;
+                if header.type_ != type_ as u8 {
+                    return Err(JournalError::InvalidObjectType);
+                }
+                header.size
+            }
         };
 
         let data = self.object_data_mut(position, size_needed)?;
@@ -133,31 +141,47 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
         // Mark as in use
         *is_in_use = true;
-
         Ok(ValueGuard::new(object, &self.object_in_use))
     }
 
     pub fn offset_array_mut(
         &self,
         position: u64,
+        capacity: Option<u64>,
     ) -> Result<ValueGuard<OffsetArrayObject<&mut [u8]>>> {
-        self.journal_object_mut(position, None)
+        let size = capacity.map(|c| {
+            let mut size = std::mem::size_of::<OffsetArrayObjectHeader>() as u64;
+
+            let is_compact = self
+                .journal_header_ref()
+                .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+            if is_compact {
+                size += c * std::mem::size_of::<u32>() as u64;
+            } else {
+                size += c * std::mem::size_of::<u64>() as u64;
+            }
+
+            size
+        });
+
+        let offset_array = self.journal_object_mut(ObjectType::EntryArray, position, size);
+        offset_array
     }
 
     pub fn field_mut(&self, position: u64) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
-        self.journal_object_mut(position, None)
+        self.journal_object_mut(ObjectType::Field, position, None)
     }
 
-    pub fn entry_mut(&self, position: u64) -> Result<ValueGuard<EntryObject<&[u8]>>> {
-        self.journal_object_ref(position)
+    pub fn entry_mut(&self, position: u64) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
+        self.journal_object_mut(ObjectType::Entry, position, None)
     }
 
     pub fn data_mut(&self, position: u64) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
-        self.journal_object_mut(position, None)
+        self.journal_object_mut(ObjectType::Data, position, None)
     }
 
     pub fn tag_mut(&self, position: u64) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
-        self.journal_object_mut(position, None)
+        self.journal_object_mut(ObjectType::Tag, position, None)
     }
 
     pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {

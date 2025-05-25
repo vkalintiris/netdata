@@ -1014,19 +1014,39 @@ fn test_case() {
 }
 
 fn main() {
-    let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
+    {
+        let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
 
-    let dht = jf.data_hash_table_mut().unwrap();
-    let mut items = dht.items;
-    println!("dht items: {:?}", items.len());
-    items[0].head_hash_offset = 0xdeadbeef;
-    items[0].tail_hash_offset = 0xbeefdead;
+        let dht = jf.data_hash_table_mut().unwrap();
+        let mut items = dht.items;
+        println!("dht items: {:?}", items.len());
+        items[0].head_hash_offset = 0xdeadbeef;
+        items[0].tail_hash_offset = 0xbeefdead;
 
-    let fht = jf.field_hash_table_mut().unwrap();
-    let mut items = fht.items;
-    println!("fht items: {:?}", items.len());
-    items[0].head_hash_offset = 0xaaaabbbb;
-    items[0].tail_hash_offset = 0xccccdddd;
+        let fht = jf.field_hash_table_mut().unwrap();
+        let mut items = fht.items;
+        println!("fht items: {:?}", items.len());
+        items[0].head_hash_offset = 0xaaaabbbb;
+        items[0].tail_hash_offset = 0xccccdddd;
+
+        let mut offset_array = jf.offset_array_mut(1024 * 1024, Some(8)).unwrap();
+
+        for i in 0..4 {
+            let offset = std::num::NonZeroU64::new(0xdead0000 + i).unwrap();
+            offset_array.set(i as usize, offset).unwrap();
+        }
+    }
+
+    let jf = JournalFile::<Mmap>::open("/tmp/muh.journal", 4096).unwrap();
+
+    let offset_array = jf.offset_array_ref(1024 * 1024).unwrap();
+
+    println!("offset_array: {:?}", offset_array);
+
+    for i in 0..4 {
+        let offset = offset_array.get(i, 8).unwrap();
+        println!("offset[{}]: 0x{:x?}", i, offset);
+    }
 
     // filtered_test();
     // test_case()

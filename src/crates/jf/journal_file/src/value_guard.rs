@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 /// A guard that ensures exclusive access to objects obtained from a shared memory window.
 ///
@@ -43,6 +43,12 @@ impl<T> Deref for ValueGuard<'_, T> {
 
     fn deref(&self) -> &Self::Target {
         &self.value
+    }
+}
+
+impl<T> DerefMut for ValueGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
     }
 }
 

@@ -59,6 +59,9 @@ pub enum JournalError {
 
     #[error("Decompressor error")]
     DecompressorError,
+
+    #[error("out of bounds index")]
+    OutOfBoundsIndex,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);

@@ -384,6 +384,21 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
     }
 }
 
+impl<B: SplitByteSliceMut + std::fmt::Debug> OffsetArrayObject<B> {
+    pub fn set(&mut self, index: usize, offset: NonZeroU64) -> Result<()> {
+        if index >= self.capacity() {
+            return Err(JournalError::OutOfBoundsIndex);
+        }
+
+        match &mut self.items {
+            OffsetsType::Regular(items) => items[index] = offset.get(),
+            OffsetsType::Compact(items) => items[index] = offset.get() as u32,
+        };
+
+        Ok(())
+    }
+}
+
 impl<B: ByteSlice> std::fmt::Debug for OffsetArrayObject<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JournalHeader")
@@ -517,6 +532,29 @@ impl<B: ByteSlice> std::fmt::Debug for EntryObject<B> {
 
 impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for EntryObject<B> {
     fn from_data(data: B, is_compact: bool) -> Self {
+        let (header_data, items_data) = data
+            .split_at(std::mem::size_of::<EntryObjectHeader>())
+            .unwrap();
+
+        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
+
+        let items_type = if is_compact {
+            let compact_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            EntryItemsType::Compact(compact_items)
+        } else {
+            let regular_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            EntryItemsType::Regular(regular_items)
+        };
+
+        EntryObject {
+            header,
+            items: items_type,
+        }
+    }
+}
+
+impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for EntryObject<B> {
+    fn from_data_mut(data: B, is_compact: bool) -> Self {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<EntryObjectHeader>())
             .unwrap();
