@@ -64,7 +64,8 @@ impl JournalWriter {
         // );
 
         for payload in items.iter() {
-            match journal_file.find_data_offset_by_payload(payload) {
+            let hash = journal_file.hash(payload);
+            match journal_file.find_data_offset_by_payload(payload, hash) {
                 Ok(data_offset) => {
                     self.offsets_buffer.push(data_offset);
                 }

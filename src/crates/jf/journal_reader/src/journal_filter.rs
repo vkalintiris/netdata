@@ -319,16 +319,18 @@ impl JournalFilter {
             if i - start > 1 {
                 let mut matches = Vec::with_capacity(i - start);
                 for idx in start..i {
-                    let offset = journal_file
-                        .find_data_offset_by_payload(self.current_matches[idx].as_slice())?;
+                    let data = self.current_matches[idx].as_slice();
+                    let hash = journal_file.hash(data);
+                    let offset = journal_file.find_data_offset_by_payload(data, hash)?;
 
                     let ic = journal_file.data_ref(offset)?.inlined_cursor();
                     matches.push(FilterExpr::Match(offset, ic));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
-                let offset = journal_file
-                    .find_data_offset_by_payload(self.current_matches[start].as_slice())?;
+                let data = self.current_matches[start].as_slice();
+                let hash = journal_file.hash(data);
+                let offset = journal_file.find_data_offset_by_payload(data, hash)?;
 
                 let ic = journal_file.data_ref(offset)?.inlined_cursor();
                 elements.push(FilterExpr::Match(offset, ic));

@@ -295,6 +295,22 @@ impl<M: MemoryMap> JournalFile<M> {
         })
     }
 
+    pub fn hash(&self, data: &[u8]) -> u64 {
+        let is_keyed_hash = self
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
+
+        hash::journal_hash_data(
+            data,
+            is_keyed_hash,
+            if is_keyed_hash {
+                Some(&self.journal_header_ref().file_id)
+            } else {
+                None
+            },
+        )
+    }
+
     pub fn entry_list(&self) -> Option<offset_array::List> {
         let head_offset = std::num::NonZeroU64::new(self.journal_header_ref().entry_array_offset)?;
         let total_items =
@@ -397,6 +413,7 @@ impl<M: MemoryMap> JournalFile<M> {
         &'a self,
         hash_table: Option<HashTableObject<&[u8]>>,
         data: &[u8],
+        hash: u64,
         fetch_fn: F,
     ) -> Result<u64>
     where
@@ -405,24 +422,9 @@ impl<M: MemoryMap> JournalFile<M> {
     {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
 
-        // Calculate hash using the appropriate algorithm
-        let is_keyed_hash = self
-            .journal_header_ref()
-            .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
-
-        let payload_hash = hash::journal_hash_data(
-            data,
-            is_keyed_hash,
-            if is_keyed_hash {
-                Some(&self.journal_header_ref().file_id)
-            } else {
-                None
-            },
-        );
-
         // Find the right bucket in the hash table
         let hash_table_size = hash_table.items.len();
-        let bucket_idx = (payload_hash % hash_table_size as u64) as usize;
+        let bucket_idx = (hash % hash_table_size as u64) as usize;
 
         // Get the head object offset from the bucket
         let bucket = hash_table.items[bucket_idx];
@@ -433,7 +435,7 @@ impl<M: MemoryMap> JournalFile<M> {
             match fetch_fn(object_offset) {
                 Ok(object_guard) => {
                     // Check if this is the object we're looking for
-                    if object_guard.hash() == payload_hash && object_guard.get_payload() == data {
+                    if object_guard.hash() == hash && object_guard.get_payload() == data {
                         return Ok(object_offset);
                     }
 
@@ -450,19 +452,21 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     /// Finds a field object by name and returns its offset
-    pub fn find_field_offset_by_name(&self, field_name: &[u8]) -> Result<u64> {
+    pub fn find_field_offset_by_name(&self, field_name: &[u8], hash: u64) -> Result<u64> {
         self.lookup_hash_table::<FieldObject<&[u8]>, _>(
             self.field_hash_table_ref(),
             field_name,
+            hash,
             |offset| self.field_ref(offset),
         )
     }
 
     /// Finds a data object by payload and returns its offset
-    pub fn find_data_offset_by_payload(&self, payload: &[u8]) -> Result<u64> {
+    pub fn find_data_offset_by_payload(&self, payload: &[u8], hash: u64) -> Result<u64> {
         self.lookup_hash_table::<DataObject<&[u8]>, _>(
             self.data_hash_table_ref(),
             payload,
+            hash,
             |offset| self.data_ref(offset),
         )
     }
@@ -534,7 +538,8 @@ impl<M: MemoryMap> JournalFile<M> {
         field_name: &'a [u8],
     ) -> Result<FieldDataIterator<'a, M>> {
         // Find the field offset by name
-        let field_offset = self.find_field_offset_by_name(field_name)?;
+        let field_hash = self.hash(field_name);
+        let field_offset = self.find_field_offset_by_name(field_name, field_hash)?;
 
         // Get the field object to access its head_data_offset
         let field_guard = self.field_ref(field_offset)?;
