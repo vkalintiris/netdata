@@ -1,8 +1,8 @@
 use error::Result;
+use journal_file::JournalFile;
 use journal_logger::JournalLogger;
 use journal_reader::JournalReader;
 use memmap2::Mmap;
-use journal_file::JournalFile;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -89,7 +89,7 @@ fn select_random_entries(
     let mut rng = rand::rng();
 
     // Get total number of entries in the journal
-    let total_entries = journal_file.journal_header().n_entries as usize;
+    let total_entries = journal_file.journal_header_ref().n_entries as usize;
     if total_entries == 0 {
         return Ok(Vec::new());
     }

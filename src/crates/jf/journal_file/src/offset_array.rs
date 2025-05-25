@@ -25,7 +25,7 @@ impl Node {
         offset: NonZeroU64,
         remaining_items: NonZeroUsize,
     ) -> Result<Self> {
-        let array = journal_file.offset_array_object(offset.get())?;
+        let array = journal_file.offset_array_ref(offset.get())?;
         let capacity =
             NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
 
@@ -79,7 +79,7 @@ impl Node {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        let array = journal_file.offset_array_object(self.offset.get())?;
+        let array = journal_file.offset_array_ref(self.offset.get())?;
         array.get(index, self.remaining_items.get())
     }
 

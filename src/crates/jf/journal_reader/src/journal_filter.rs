@@ -224,7 +224,7 @@ impl FilterExpr {
         match self {
             FilterExpr::Match(data_offset, inlined_cursor) => {
                 // Load the data object
-                let data_object = journal_file.data_object(*data_offset)?;
+                let data_object = journal_file.data_ref(*data_offset)?;
 
                 // Get the payload as a string if possible
                 let payload_bytes = data_object.payload_bytes();
@@ -322,7 +322,7 @@ impl JournalFilter {
                     let offset = journal_file
                         .find_data_offset_by_payload(self.current_matches[idx].as_slice())?;
 
-                    let ic = journal_file.data_object(offset)?.inlined_cursor();
+                    let ic = journal_file.data_ref(offset)?.inlined_cursor();
                     matches.push(FilterExpr::Match(offset, ic));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
@@ -330,7 +330,7 @@ impl JournalFilter {
                 let offset = journal_file
                     .find_data_offset_by_payload(self.current_matches[start].as_slice())?;
 
-                let ic = journal_file.data_object(offset)?.inlined_cursor();
+                let ic = journal_file.data_ref(offset)?.inlined_cursor();
                 elements.push(FilterExpr::Match(offset, ic));
             }
         }

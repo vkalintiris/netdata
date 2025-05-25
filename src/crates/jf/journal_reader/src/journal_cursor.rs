@@ -113,7 +113,7 @@ impl JournalCursor {
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
-                    let entry_object = journal_file.entry_object(entry_offset)?;
+                    let entry_object = journal_file.entry_ref(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
 
@@ -176,7 +176,7 @@ impl JournalCursor {
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
-                    let entry_object = journal_file.entry_object(entry_offset)?;
+                    let entry_object = journal_file.entry_ref(entry_offset)?;
                     Ok(entry_object.header.realtime < realtime)
                 };
 

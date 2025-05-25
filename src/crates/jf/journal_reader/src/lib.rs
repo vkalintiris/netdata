@@ -97,16 +97,16 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn get_realtime_usec(&self, journal_file: &'a JournalFile<M>) -> Result<u64> {
         let entry_offset = self.cursor.position()?;
-        let entry_object = journal_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_ref(entry_offset)?;
         Ok(entry_object.header.realtime)
     }
 
     pub fn get_seqnum(&self, journal_file: &'a JournalFile<M>) -> Result<(u64, [u8; 16])> {
         let entry_offset = self.cursor.position()?;
-        let entry_object = journal_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_ref(entry_offset)?;
         Ok((
             entry_object.header.seqnum,
-            journal_file.journal_header().seqnum_id,
+            journal_file.journal_header_ref().seqnum_id,
         ))
     }
 

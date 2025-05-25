@@ -41,7 +41,7 @@ impl EntryData {
         entry_offset: u64,
     ) -> Result<EntryData> {
         // Get the entry object
-        let entry_object = journal_file.entry_object(entry_offset)?;
+        let entry_object = journal_file.entry_ref(entry_offset)?;
 
         // Extract basic information from the entry header
         let realtime = entry_object.header.realtime;
@@ -949,7 +949,10 @@ fn filtered_test() {
     let path = "/tmp/user-1000.journal";
     let window_size = 8 * 1024 * 1024;
     let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
-    println!("num entries: {:?}", journal_file.journal_header().n_entries);
+    println!(
+        "num entries: {:?}",
+        journal_file.journal_header_ref().n_entries
+    );
     let mut jw = JournalWrapper::open(path).unwrap();
 
     let terms = get_terms(path);

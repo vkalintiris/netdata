@@ -180,41 +180,42 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn entry_list(&self) -> Option<offset_array::List> {
-        let head_offset = std::num::NonZeroU64::new(self.journal_header().entry_array_offset)?;
-        let total_items = std::num::NonZeroUsize::new(self.journal_header().n_entries as usize)?;
+        let head_offset = std::num::NonZeroU64::new(self.journal_header_ref().entry_array_offset)?;
+        let total_items =
+            std::num::NonZeroUsize::new(self.journal_header_ref().n_entries as usize)?;
         Some(offset_array::List::new(head_offset, total_items))
     }
 
-    pub fn journal_header(&self) -> &JournalHeader {
+    pub fn journal_header_ref(&self) -> &JournalHeader {
         JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
     }
 
-    pub fn data_hash_table(&self) -> Option<HashTableObject<&[u8]>> {
+    pub fn data_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
         self.data_hash_table_map
             .as_ref()
             .map(|m| HashTableObject::<&[u8]>::from_data(m, false))
     }
 
-    pub fn field_hash_table(&self) -> Option<HashTableObject<&[u8]>> {
+    pub fn field_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
         self.field_hash_table_map
             .as_ref()
             .map(|m| HashTableObject::<&[u8]>::from_data(m, false))
     }
 
-    fn read_object_header(&self, position: u64) -> Result<&ObjectHeader> {
+    fn object_header_ref(&self, position: u64) -> Result<&ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let header_slice = window_manager.get_slice(position, size_needed)?;
         Ok(ObjectHeader::ref_from_bytes(header_slice).unwrap())
     }
 
-    fn read_object_data(&self, position: u64, size_needed: u64) -> Result<&[u8]> {
+    fn object_data_ref(&self, position: u64, size_needed: u64) -> Result<&[u8]> {
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let object_slice = window_manager.get_slice(position, size_needed)?;
         Ok(object_slice)
     }
 
-    fn read_journal_object<'a, T>(&'a self, position: u64) -> Result<ValueGuard<'a, T>>
+    fn journal_object_ref<'a, T>(&'a self, position: u64) -> Result<ValueGuard<'a, T>>
     where
         T: JournalObject<&'a [u8]>,
     {
@@ -239,15 +240,15 @@ impl<M: MemoryMap> JournalFile<M> {
         }
 
         let is_compact = self
-            .journal_header()
+            .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
 
         let size_needed = {
-            let header = self.read_object_header(position)?;
+            let header = self.object_header_ref(position)?;
             header.size
         };
 
-        let data = self.read_object_data(position, size_needed)?;
+        let data = self.object_data_ref(position, size_needed)?;
         let object = T::from_data(data, is_compact);
 
         // Mark as in use
@@ -256,27 +257,24 @@ impl<M: MemoryMap> JournalFile<M> {
         Ok(ValueGuard::new(object, &self.object_in_use))
     }
 
-    pub fn offset_array_object(
-        &self,
-        position: u64,
-    ) -> Result<ValueGuard<OffsetArrayObject<&[u8]>>> {
-        self.read_journal_object(position)
+    pub fn offset_array_ref(&self, position: u64) -> Result<ValueGuard<OffsetArrayObject<&[u8]>>> {
+        self.journal_object_ref(position)
     }
 
-    pub fn field_object(&self, position: u64) -> Result<ValueGuard<FieldObject<&[u8]>>> {
-        self.read_journal_object(position)
+    pub fn field_ref(&self, position: u64) -> Result<ValueGuard<FieldObject<&[u8]>>> {
+        self.journal_object_ref(position)
     }
 
-    pub fn entry_object(&self, position: u64) -> Result<ValueGuard<EntryObject<&[u8]>>> {
-        self.read_journal_object(position)
+    pub fn entry_ref(&self, position: u64) -> Result<ValueGuard<EntryObject<&[u8]>>> {
+        self.journal_object_ref(position)
     }
 
-    pub fn data_object(&self, position: u64) -> Result<ValueGuard<DataObject<&[u8]>>> {
-        self.read_journal_object(position)
+    pub fn data_ref(&self, position: u64) -> Result<ValueGuard<DataObject<&[u8]>>> {
+        self.journal_object_ref(position)
     }
 
-    pub fn tag_object(&self, position: u64) -> Result<ValueGuard<TagObject<&[u8]>>> {
-        self.read_journal_object(position)
+    pub fn tag_ref(&self, position: u64) -> Result<ValueGuard<TagObject<&[u8]>>> {
+        self.journal_object_ref(position)
     }
 
     fn lookup_hash_table<'a, T, F>(
@@ -293,14 +291,14 @@ impl<M: MemoryMap> JournalFile<M> {
 
         // Calculate hash using the appropriate algorithm
         let is_keyed_hash = self
-            .journal_header()
+            .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
 
         let payload_hash = hash::journal_hash_data(
             data,
             is_keyed_hash,
             if is_keyed_hash {
-                Some(&self.journal_header().file_id)
+                Some(&self.journal_header_ref().file_id)
             } else {
                 None
             },
@@ -338,17 +336,19 @@ impl<M: MemoryMap> JournalFile<M> {
     /// Finds a field object by name and returns its offset
     pub fn find_field_offset_by_name(&self, field_name: &[u8]) -> Result<u64> {
         self.lookup_hash_table::<FieldObject<&[u8]>, _>(
-            self.field_hash_table(),
+            self.field_hash_table_ref(),
             field_name,
-            |offset| self.field_object(offset),
+            |offset| self.field_ref(offset),
         )
     }
 
     /// Finds a data object by payload and returns its offset
     pub fn find_data_offset_by_payload(&self, payload: &[u8]) -> Result<u64> {
-        self.lookup_hash_table::<DataObject<&[u8]>, _>(self.data_hash_table(), payload, |offset| {
-            self.data_object(offset)
-        })
+        self.lookup_hash_table::<DataObject<&[u8]>, _>(
+            self.data_hash_table_ref(),
+            payload,
+            |offset| self.data_ref(offset),
+        )
     }
 
     /// Run a directed partition point query on a data object's entry array
@@ -364,7 +364,7 @@ impl<M: MemoryMap> JournalFile<M> {
     where
         F: Fn(u64) -> Result<bool>,
     {
-        let Some(cursor) = self.data_object(data_offset)?.inlined_cursor() else {
+        let Some(cursor) = self.data_ref(data_offset)?.inlined_cursor() else {
             return Ok(None);
         };
 
@@ -382,7 +382,7 @@ impl<M: MemoryMap> JournalFile<M> {
             capacity: if position == 0 {
                 0
             } else {
-                self.offset_array_object(position)?.capacity()
+                self.offset_array_ref(position)?.capacity()
             },
             index: 0,
         })
@@ -390,13 +390,13 @@ impl<M: MemoryMap> JournalFile<M> {
 
     /// Creates an iterator over all entry offsets in the journal
     pub fn entry_offsets(&self) -> Result<OffsetArrayListIterator<'_, M>> {
-        self.array_offsets(self.journal_header().entry_array_offset)
+        self.array_offsets(self.journal_header_ref().entry_array_offset)
     }
 
     /// Creates an iterator over all field objects in the field hash table
     pub fn fields(&self) -> FieldIterator<'_, M> {
         // Get the field hash table
-        let field_hash_table = self.field_hash_table();
+        let field_hash_table = self.field_hash_table_ref();
 
         // Initialize with the first bucket
         let mut iterator = FieldIterator {
@@ -421,7 +421,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let field_offset = self.find_field_offset_by_name(field_name)?;
 
         // Get the field object to access its head_data_offset
-        let field_guard = self.field_object(field_offset)?;
+        let field_guard = self.field_ref(field_offset)?;
         let head_data_offset = field_guard.header.head_data_offset;
 
         // Create the iterator
@@ -434,7 +434,7 @@ impl<M: MemoryMap> JournalFile<M> {
     /// Creates an iterator over all DATA objects for a specific entry
     pub fn entry_data_objects(&self, entry_offset: u64) -> Result<EntryDataIterator<'_, M>> {
         // Get the entry object to determine how many data items it has
-        let entry_guard = self.entry_object(entry_offset)?;
+        let entry_guard = self.entry_ref(entry_offset)?;
 
         // Get the total number of items
         let total_items = match &entry_guard.items {
@@ -476,7 +476,7 @@ impl<M: MemoryMap> Iterator for OffsetArrayListIterator<'_, M> {
         // Check if we need to move to the next offset array
         if self.index >= self.capacity {
             // Get the next offset array offset
-            let next_offset = match self.journal.offset_array_object(self.offset) {
+            let next_offset = match self.journal.offset_array_ref(self.offset) {
                 Ok(array_guard) => array_guard.header.next_offset_array,
                 Err(e) => return Some(Err(e)),
             };
@@ -488,7 +488,7 @@ impl<M: MemoryMap> Iterator for OffsetArrayListIterator<'_, M> {
             }
 
             // Set up the next offset array
-            match self.journal.offset_array_object(next_offset) {
+            match self.journal.offset_array_ref(next_offset) {
                 Ok(array_guard) => {
                     self.offset = next_offset;
                     self.capacity = array_guard.capacity();
@@ -499,7 +499,7 @@ impl<M: MemoryMap> Iterator for OffsetArrayListIterator<'_, M> {
         }
 
         // Get the current offset from the offset array
-        let offset = match self.journal.offset_array_object(self.offset) {
+        let offset = match self.journal.offset_array_ref(self.offset) {
             Ok(array_guard) => match &array_guard.items {
                 OffsetsType::Regular(offsets) => {
                     if self.index < offsets.len() {
@@ -580,7 +580,7 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
         let offset = self.next_field_offset;
 
         // Try to get the field object
-        match self.journal.field_object(offset) {
+        match self.journal.field_ref(offset) {
             Ok(field_guard) => {
                 // Get the next field offset before we return the guard
                 self.next_field_offset = field_guard.header.next_hash_offset;
@@ -621,7 +621,7 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
         let offset = self.current_data_offset;
 
         // Try to get the data object
-        match self.journal.data_object(offset) {
+        match self.journal.data_ref(offset) {
             Ok(data_guard) => {
                 // Get the next data offset before we return the guard
                 self.current_data_offset = data_guard.header.next_field_offset;
@@ -654,7 +654,7 @@ impl<'a, M: MemoryMap> Iterator for EntryDataIterator<'a, M> {
         }
 
         // Get the entry object to access the data offset
-        match self.journal.entry_object(self.entry_offset) {
+        match self.journal.entry_ref(self.entry_offset) {
             Ok(entry_guard) => {
                 let idx = self.current_index;
                 self.current_index += 1;
@@ -678,7 +678,7 @@ impl<'a, M: MemoryMap> Iterator for EntryDataIterator<'a, M> {
                 drop(entry_guard);
 
                 // Try to get the data object
-                match self.journal.data_object(data_offset) {
+                match self.journal.data_ref(data_offset) {
                     Ok(data_guard) => Some(Ok(data_guard)),
                     Err(e) => Some(Err(e)),
                 }
