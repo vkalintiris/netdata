@@ -248,6 +248,10 @@ impl ObjectHeader {
     pub fn is_compressed(&self) -> bool {
         self.zstd_compressed() | self.lz4_compressed() | self.xz_compressed()
     }
+
+    pub fn aligned_size(&self) -> u64 {
+        (self.size + 7) & !7
+    }
 }
 
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]

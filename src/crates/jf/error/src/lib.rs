@@ -62,6 +62,9 @@ pub enum JournalError {
 
     #[error("out of bounds index")]
     OutOfBoundsIndex,
+
+    #[error("invalid offset")]
+    InvalidOffset,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);

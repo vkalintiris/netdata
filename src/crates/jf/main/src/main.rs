@@ -1041,6 +1041,19 @@ fn main() {
 
     let offset_array = jf.offset_array_ref(1024 * 1024).unwrap();
 
+    println!(
+        "tail object offset: 0x{:x?}",
+        jf.journal_header_ref().tail_object_offset
+    );
+    println!(
+        "fht offset: 0x{:x?}",
+        jf.journal_header_ref().field_hash_table_offset
+    );
+    println!(
+        "hash table header size: 0x{:x?}",
+        std::mem::size_of::<ObjectHeader>()
+    );
+
     println!("offset_array: {:?}", offset_array);
 
     for i in 0..4 {
