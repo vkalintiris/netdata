@@ -1019,6 +1019,12 @@ fn main() {
     items[0].head_hash_offset = 0xdeadbeef;
     items[0].tail_hash_offset = 0xbeefdead;
 
+    let fht = jf.field_hash_table_mut().unwrap();
+    let mut items = fht.items;
+    println!("fht items: {:?}", items.len());
+    items[0].head_hash_offset = 0xaaaabbbb;
+    items[0].tail_hash_offset = 0xccccdddd;
+
     // filtered_test();
     // test_case()
 

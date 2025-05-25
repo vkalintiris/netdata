@@ -54,24 +54,30 @@ pub struct JournalFile<M: MemoryMap> {
 }
 
 impl<M: MemoryMapMut> JournalFile<M> {
-    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
-        self.data_hash_table_map
-            .as_mut()
-            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
-    }
-
     pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
         JournalHeader::mut_from_prefix(&mut self.header_map)
             .unwrap()
             .0
     }
 
-    pub fn write_object_header(&mut self, position: u64) -> Result<&mut ObjectHeader> {
-        let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        let header_slice = window_manager.get_mut_slice(position, size_needed)?;
-        Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
+    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+        self.data_hash_table_map
+            .as_mut()
+            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
     }
+
+    pub fn field_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+        self.field_hash_table_map
+            .as_mut()
+            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+    }
+
+    // pub fn write_object_header(&mut self, position: u64) -> Result<&mut ObjectHeader> {
+    //     let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+    //     let window_manager = unsafe { &mut *self.window_manager.get() };
+    //     let header_slice = window_manager.get_mut_slice(position, size_needed)?;
+    //     Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
+    // }
 
     pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
@@ -88,14 +94,19 @@ impl<M: MemoryMapMut> JournalFile<M> {
         let header = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
         header.signature = *b"LPKSHHRH";
 
-        // Initialize the hash table maps if they exist
         {
             header.data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64;
             debug_assert_eq!(header.data_hash_table_offset % 8, 0);
             header.data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
         }
-
         let data_hash_table_map = header.map_data_hash_table(&file)?;
+
+        {
+            header.field_hash_table_offset =
+                header.data_hash_table_offset + header.data_hash_table_size;
+            debug_assert_eq!(header.field_hash_table_offset % 8, 0);
+            header.field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
+        }
         let field_hash_table_map = header.map_field_hash_table(&file)?;
 
         // Create window manager for the rest of the objects
