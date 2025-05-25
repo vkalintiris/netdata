@@ -101,7 +101,7 @@ impl TryFrom<u8> for JournalState {
     }
 }
 
-#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(Default, Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct JournalHeader {
     pub signature: [u8; 8],           // "LPKSHHRH"

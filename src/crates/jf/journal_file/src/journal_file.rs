@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 use crate::hash;
 use crate::object::*;
 use crate::offset_array;
@@ -89,25 +91,29 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .write(true)
             .open(&path)?;
 
-        let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let mut header_map = M::create(&file, 0, header_size)?;
-        let header = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+        let mut header = JournalHeader::default();
         header.signature = *b"LPKSHHRH";
+        header.data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64;
+        header.data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
+        header.field_hash_table_offset =
+            header.data_hash_table_offset + header.data_hash_table_size;
+        header.field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
+        header.n_objects = 2;
 
-        {
-            header.data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64;
-            debug_assert_eq!(header.data_hash_table_offset % 8, 0);
-            header.data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
-        }
+        debug_assert_eq!(header.data_hash_table_offset % 8, 0);
+        debug_assert_eq!(header.data_hash_table_size % 8, 0);
         let data_hash_table_map = header.map_data_hash_table(&file)?;
 
-        {
-            header.field_hash_table_offset =
-                header.data_hash_table_offset + header.data_hash_table_size;
-            debug_assert_eq!(header.field_hash_table_offset % 8, 0);
-            header.field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
-        }
+        debug_assert_eq!(header.field_hash_table_offset % 8, 0);
+        debug_assert_eq!(header.field_hash_table_size % 8, 0);
         let field_hash_table_map = header.map_field_hash_table(&file)?;
+
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let mut header_map = M::create(&file, 0, header_size)?;
+        {
+            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+            *header_mut = header;
+        }
 
         // Create window manager for the rest of the objects
         let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
