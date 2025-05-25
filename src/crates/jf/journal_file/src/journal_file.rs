@@ -5,7 +5,7 @@ use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::OpenOptions;
 use std::path::Path;
-use window_manager::{MemoryMap, WindowManager};
+use window_manager::{MemoryMap, MemoryMapMut, WindowManager};
 use zerocopy::FromBytes;
 
 #[cfg(debug_assertions)]
@@ -51,6 +51,69 @@ pub struct JournalFile<M: MemoryMap> {
     prev_backtrace: RefCell<Backtrace>,
     #[cfg(debug_assertions)]
     backtrace: RefCell<Backtrace>,
+}
+
+impl<M: MemoryMapMut> JournalFile<M> {
+    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+        self.data_hash_table_map
+            .as_mut()
+            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+    }
+
+    pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
+        JournalHeader::mut_from_prefix(&mut self.header_map)
+            .unwrap()
+            .0
+    }
+
+    pub fn write_object_header(&mut self, position: u64) -> Result<&mut ObjectHeader> {
+        let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let header_slice = window_manager.get_mut_slice(position, size_needed)?;
+        Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
+    }
+
+    pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
+        debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
+
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let mut header_map = M::create(&file, 0, header_size)?;
+        let header = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+        header.signature = *b"LPKSHHRH";
+
+        // Initialize the hash table maps if they exist
+        {
+            header.data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64;
+            debug_assert_eq!(header.data_hash_table_offset % 8, 0);
+            header.data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
+        }
+
+        let data_hash_table_map = header.map_data_hash_table(&file)?;
+        let field_hash_table_map = header.map_field_hash_table(&file)?;
+
+        // Create window manager for the rest of the objects
+        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
+
+        Ok(JournalFile {
+            header_map,
+            data_hash_table_map,
+            field_hash_table_map,
+            window_manager,
+            object_in_use: RefCell::new(false),
+
+            #[cfg(debug_assertions)]
+            prev_backtrace: RefCell::new(Backtrace::capture()),
+            #[cfg(debug_assertions)]
+            backtrace: RefCell::new(Backtrace::capture()),
+        })
+    }
 }
 
 impl<M: MemoryMap> JournalFile<M> {

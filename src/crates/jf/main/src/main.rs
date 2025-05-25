@@ -1003,15 +1003,23 @@ fn test_case() {
         let value = jw.get_realtime_usec(&journal_file);
         println!("first value: {:?}", value);
     }
-    return;
+    // return;
 
-    jw.next(&journal_file);
-    let value = jw.get_realtime_usec(&journal_file);
-    println!("second value: {:?}", value);
+    // jw.next(&journal_file);
+    // let value = jw.get_realtime_usec(&journal_file);
+    // println!("second value: {:?}", value);
 }
 
 fn main() {
-    filtered_test();
+    let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
+
+    let dht = jf.data_hash_table_mut().unwrap();
+    let mut items = dht.items;
+    println!("dht items: {:?}", items.len());
+    items[0].head_hash_offset = 0xdeadbeef;
+    items[0].tail_hash_offset = 0xbeefdead;
+
+    // filtered_test();
     // test_case()
 
     //     altime();

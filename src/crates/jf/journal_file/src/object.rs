@@ -3,7 +3,9 @@ use error::{JournalError, Result};
 use std::fs::File;
 use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
-use zerocopy::{ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
+use zerocopy::{
+    ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice, SplitByteSliceMut,
+};
 
 pub trait HashableObject {
     /// Get the hash value of this object
@@ -59,6 +61,11 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> HashableObject for DataObj
 pub trait JournalObject<B: SplitByteSlice>: Sized {
     /// Create a new journal object from a byte slice
     fn from_data(data: B, is_compact: bool) -> Self;
+}
+
+pub trait JournalObjectMut<B: SplitByteSliceMut>: Sized {
+    /// Create a new journal object from a byte slice
+    fn from_data_mut(data: B, is_compact: bool) -> Self;
 }
 
 pub enum HeaderIncompatibleFlags {
@@ -273,6 +280,17 @@ pub struct HashTableObject<B: ByteSlice> {
 
 impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for HashTableObject<B> {
     fn from_data(data: B, _is_compact: bool) -> Self {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).unwrap();
+
+        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
+        let items = zerocopy::Ref::from_bytes(items_data).unwrap();
+
+        HashTableObject { header, items }
+    }
+}
+
+impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for HashTableObject<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Self {
         let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).unwrap();
 
         let header = zerocopy::Ref::from_bytes(header_data).unwrap();
