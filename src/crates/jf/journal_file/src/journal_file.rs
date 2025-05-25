@@ -74,22 +74,91 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
     }
 
-    pub fn read_object<T>(&mut self, position: u64, size: u64) -> Result<DataObject<&mut [u8]>> {
-        let object_header = {
-            let size_needed = std::mem::size_of::<ObjectHeader>() as u64 + size;
-            let window_manager = unsafe { &mut *self.window_manager.get() };
-            let header_slice = window_manager.get_mut_slice(position, size_needed)?;
-            ObjectHeader::mut_from_bytes(header_slice).unwrap()
-        };
-        todo!();
+    fn object_header_mut(&self, position: u64) -> Result<&mut ObjectHeader> {
+        let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let header_slice = window_manager.get_slice_mut(position, size_needed)?;
+        Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
     }
 
-    // pub fn write_object_header(&mut self, position: u64) -> Result<&mut ObjectHeader> {
-    //     let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-    //     let window_manager = unsafe { &mut *self.window_manager.get() };
-    //     let header_slice = window_manager.get_mut_slice(position, size_needed)?;
-    //     Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
-    // }
+    fn object_data_mut(&self, position: u64, size_needed: u64) -> Result<&mut [u8]> {
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let object_slice = window_manager.get_slice_mut(position, size_needed)?;
+        Ok(object_slice)
+    }
+
+    fn journal_object_mut<'a, T>(
+        &'a self,
+        position: u64,
+        payload_size: Option<u64>,
+    ) -> Result<ValueGuard<'a, T>>
+    where
+        T: JournalObjectMut<&'a mut [u8]>,
+    {
+        // Check if any object is already in use
+        let mut is_in_use = self.object_in_use.borrow_mut();
+        if *is_in_use {
+            #[cfg(debug_assertions)]
+            {
+                eprintln!(
+                    "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
+                    self.backtrace.borrow().to_string(),
+                    self.prev_backtrace.borrow().to_string()
+                );
+            }
+            return Err(JournalError::ValueGuardInUse);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            self.backtrace.swap(&self.prev_backtrace);
+            let _ = self.backtrace.replace(Backtrace::force_capture());
+        }
+
+        let is_compact = self
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+
+        let size_needed = {
+            let header = self.object_header_mut(position)?;
+            if let Some(payload_size) = payload_size {
+                header.size = std::mem::size_of::<ObjectHeader>() as u64 + payload_size
+            }
+
+            header.size
+        };
+
+        let data = self.object_data_mut(position, size_needed)?;
+        let object = T::from_data_mut(data, is_compact);
+
+        // Mark as in use
+        *is_in_use = true;
+
+        Ok(ValueGuard::new(object, &self.object_in_use))
+    }
+
+    pub fn offset_array_mut(
+        &self,
+        position: u64,
+    ) -> Result<ValueGuard<OffsetArrayObject<&mut [u8]>>> {
+        self.journal_object_mut(position, None)
+    }
+
+    pub fn field_mut(&self, position: u64) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
+        self.journal_object_mut(position, None)
+    }
+
+    pub fn entry_mut(&self, position: u64) -> Result<ValueGuard<EntryObject<&[u8]>>> {
+        self.journal_object_ref(position)
+    }
+
+    pub fn data_mut(&self, position: u64) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
+        self.journal_object_mut(position, None)
+    }
+
+    pub fn tag_mut(&self, position: u64) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
+        self.journal_object_mut(position, None)
+    }
 
     pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);

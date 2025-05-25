@@ -245,7 +245,7 @@ impl<M: MemoryMap> WindowManager<M> {
 }
 
 impl<M: MemoryMapMut> WindowManager<M> {
-    pub fn get_mut_slice(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
+    pub fn get_slice_mut(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
         let window = self.get_window(position, size)?;
         Ok(window.get_mut_slice(position, size))
     }
