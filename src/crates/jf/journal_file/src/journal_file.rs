@@ -179,12 +179,12 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
         header.n_objects = 2;
 
-        debug_assert_eq!(header.data_hash_table_offset % 8, 0);
-        debug_assert_eq!(header.data_hash_table_size % 8, 0);
+        debug_assert_eq!(header.data_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(header.data_hash_table_size % OBJECT_ALIGNMENT, 0);
         let data_hash_table_map = header.map_data_hash_table(&file)?;
 
-        debug_assert_eq!(header.field_hash_table_offset % 8, 0);
-        debug_assert_eq!(header.field_hash_table_size % 8, 0);
+        debug_assert_eq!(header.field_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(header.field_hash_table_size % OBJECT_ALIGNMENT, 0);
         let field_hash_table_map = header.map_field_hash_table(&file)?;
 
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
