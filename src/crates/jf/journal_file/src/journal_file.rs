@@ -168,20 +168,35 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset_array
     }
 
-    pub fn field_mut(&self, position: u64) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
-        self.journal_object_mut(ObjectType::Field, position, None)
+    pub fn field_mut(
+        &self,
+        position: u64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
+        let size = size.map(|n| std::mem::size_of::<FieldObjectHeader>() as u64 + n);
+        self.journal_object_mut(ObjectType::Field, position, size)
     }
 
     pub fn entry_mut(&self, position: u64) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
         self.journal_object_mut(ObjectType::Entry, position, None)
     }
 
-    pub fn data_mut(&self, position: u64) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
-        self.journal_object_mut(ObjectType::Data, position, None)
+    pub fn data_mut(
+        &self,
+        position: u64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
+        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        self.journal_object_mut(ObjectType::Data, position, size)
     }
 
-    pub fn tag_mut(&self, position: u64) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
-        self.journal_object_mut(ObjectType::Tag, position, None)
+    pub fn tag_mut(&self, position: u64, new: bool) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
+        let size = if new {
+            Some(std::mem::size_of::<TagObjectHeader>() as u64)
+        } else {
+            None
+        };
+        self.journal_object_mut(ObjectType::Tag, position, size)
     }
 
     pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
