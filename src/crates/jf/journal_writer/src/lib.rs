@@ -25,8 +25,14 @@ pub struct JournalWriter {
 
 impl JournalWriter {
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
+        let tail_offset = {
+            let header = journal_file.journal_header_ref();
+            let position = header.tail_object_offset;
+            journal_file.object_header_ref(position)?.size
+        };
+
         Ok(Self {
-            tail_offset: 0,
+            tail_offset,
             offsets_buffer: Vec::with_capacity(128),
             hash_buffer: Vec::with_capacity(128),
         })
@@ -42,26 +48,20 @@ impl JournalWriter {
     ) -> Result<u64> {
         let header = journal_file.journal_header_ref();
 
-        let is_keyed_hash = header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
+        // let is_keyed_hash = header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
         let is_compact = header.has_incompatible_flag(HeaderIncompatibleFlags::Compact);
-        let file_id = header.file_id;
 
-        let mut current_offset = header.tail_object_offset;
-        if (current_offset == 0) || (current_offset % 8 != 0) {
-            return Err(JournalError::InvalidOffset);
-        }
-
-        let mut arena_size = header.arena_size;
-        if (current_offset == 0) || (current_offset % 8 != 0) {
-            return Err(JournalError::InvalidOffset);
-        }
-
-        // self.hash_buffer.clear();
-        // self.hash_buffer.extend(
-        //     items
-        //         .iter()
-        //         .map(|item| journal_hash_data(item, is_keyed_hash, None)),
-        // );
+        let file_id = if header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+            Some(&header.file_id)
+        } else {
+            None
+        };
+        self.hash_buffer.clear();
+        self.hash_buffer.extend(
+            items
+                .iter()
+                .map(|item| journal_hash_data(item, is_keyed_hash, file_id)),
+        );
 
         // for payload in items.iter() {
         //     let hash = journal_file.hash(payload);

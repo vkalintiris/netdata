@@ -115,7 +115,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
         let field_hash_table_map = header.map_field_hash_table(&file)?;
 
         header.tail_object_offset = header.data_hash_table_offset + header.data_hash_table_size;
+        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
         header.n_objects = 2;
+        header.arena_size =
+            header.field_hash_table_offset + header.field_hash_table_size - header.header_size;
 
         // FIXME: just to get us going
         header.machine_id = load_machine_id()?;
@@ -376,7 +379,7 @@ impl<M: MemoryMap> JournalFile<M> {
             .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
     }
 
-    fn object_header_ref(&self, position: u64) -> Result<&ObjectHeader> {
+    pub fn object_header_ref(&self, position: u64) -> Result<&ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let header_slice = window_manager.get_slice(position, size_needed)?;
