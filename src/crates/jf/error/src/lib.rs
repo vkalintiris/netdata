@@ -68,6 +68,9 @@ pub enum JournalError {
 
     #[error("zerocopy failure")]
     ZerocopyFailure,
+
+    #[error("sigbus handler error")]
+    SigbusHandlerError,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);

@@ -1,0 +1,8 @@
+[package]
+name = "sigbus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libc = { workspace = true }
+error = { path = "../error" }

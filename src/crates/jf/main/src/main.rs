@@ -4,6 +4,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
+use sigbus::{self, sigbus_occurred};
 use std::collections::HashMap;
 use window_manager::MemoryMap;
 
@@ -985,7 +986,7 @@ fn filtered_test() {
                 num_matches += 1;
             }
 
-            if SIGBUS_OCCURRED.load(Ordering::Relaxed) {
+            if sigbus::sigbus_occurred() {
                 eprintln!("Got SIGBUS :)");
             }
         }
@@ -1015,54 +1016,6 @@ fn test_case() {
     // jw.next(&journal_file);
     // let value = jw.get_realtime_usec(&journal_file);
     // println!("second value: {:?}", value);
-}
-
-use std::mem;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static SIGBUS_OCCURRED: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn sigbus_handler(
-    _sig: libc::c_int,
-    info: *mut libc::siginfo_t,
-    _ucontext: *mut libc::c_void,
-) {
-    // Your handler code here
-    unsafe {
-        let si = &*info;
-        let fault_addr = si.si_addr();
-
-        // Map zero page at fault address
-        let page_addr = (fault_addr as usize & !(4096 - 1)) as *mut libc::c_void;
-        libc::mmap(
-            page_addr,
-            4096,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
-            -1,
-            0,
-        );
-
-        // Set your global flag
-        SIGBUS_OCCURRED.store(true, Ordering::Relaxed);
-    }
-}
-
-fn install_sigbus_handler() -> Result<()> {
-    unsafe {
-        let mut sa: libc::sigaction = mem::zeroed();
-
-        // Use SA_SIGINFO to get detailed information about the fault
-        sa.sa_flags = libc::SA_SIGINFO;
-        sa.sa_sigaction = sigbus_handler as usize;
-
-        // Install the handler
-        if libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut()) == -1 {
-            panic!("Failed to install signal handler")
-        }
-    }
-
-    Ok(())
 }
 
 fn main() {
@@ -1113,7 +1066,7 @@ fn main() {
     //     println!("offset[{}]: 0x{:x?}", i, offset);
     // }
 
-    install_sigbus_handler().expect("Failed to install SIGBUS handler");
+    sigbus::sigbus_install_handler();
     filtered_test();
     // test_case()
 

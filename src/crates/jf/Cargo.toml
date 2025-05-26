@@ -10,6 +10,7 @@ members = [
     "journal_logger",
     "journal_forwarder",
     "window_manager",
+    "sigbus",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ serde_json = "1.0"
 walkdir = "2"
 ruzstd = "0.8"
 systemd = { path = "/home/vk/repos/crates/rust-systemd"}
+libc = "0.2"
 
 [profile.release]
 lto = true
