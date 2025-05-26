@@ -15,6 +15,34 @@ use std::backtrace::Backtrace;
 
 use crate::value_guard::ValueGuard;
 
+use hex;
+
+fn load_machine_id() -> Result<[u8; 16]> {
+    let content = std::fs::read_to_string("/etc/machine-id")?;
+    let decoded = hex::decode(content.trim()).map_err(|_| JournalError::UuidSerde)?;
+    let bytes: [u8; 16] = decoded.try_into().map_err(|_| JournalError::UuidSerde)?;
+    Ok(bytes)
+}
+
+fn load_boot_id() -> Result<[u8; 16]> {
+    let content = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+
+    let uuid_str = content.trim();
+    let hex_str: String = uuid_str.chars().filter(|c| *c != '-').collect();
+
+    if hex_str.len() != 32 {
+        return Err(JournalError::UuidSerde);
+    }
+
+    let mut bytes = [0u8; 16];
+    for i in 0..16 {
+        let hex_pair = &hex_str[i * 2..i * 2 + 2];
+        bytes[i] = u8::from_str_radix(hex_pair, 16).map_err(|_| JournalError::UuidSerde)?;
+    }
+
+    Ok(bytes)
+}
+
 // Size to pad objects to (8 bytes)
 const OBJECT_ALIGNMENT: u64 = 8;
 
@@ -88,6 +116,20 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
         header.tail_object_offset = header.data_hash_table_offset + header.data_hash_table_size;
         header.n_objects = 2;
+
+        // FIXME: just to get us going
+        header.machine_id = load_machine_id()?;
+        header.tail_entry_boot_id = load_boot_id()?;
+        header.file_id = [
+            // 31c6c25b-2e53-4a23-89e4-47fcaaac811e
+            0x31, 0xc6, 0xc2, 0x5b, 0x2e, 0x53, 0x4a, 0x23, 0x89, 0xe4, 0x47, 0xfc, 0xaa, 0xac,
+            0x81, 0x1e,
+        ];
+        header.seqnum_id = [
+            // 9af51868-eed6-43f9-9b4f-dfdc928e9e3b
+            0x9a, 0xf5, 0x18, 0x68, 0xee, 0xd6, 0x43, 0xf9, 0x9b, 0x4f, 0xdf, 0xdc, 0x92, 0x8e,
+            0x9e, 0x3b,
+        ];
 
         debug_assert_eq!(header.tail_object_offset % OBJECT_ALIGNMENT, 0);
 

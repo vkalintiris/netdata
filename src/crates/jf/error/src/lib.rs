@@ -77,6 +77,9 @@ pub enum JournalError {
 
     #[error("ffi error")]
     InvalidFfiOp,
+
+    #[error("uuid encoding/decoding")]
+    UuidSerde,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);
@@ -108,6 +111,7 @@ impl JournalError {
             JournalError::SigbusHandlerError => -22,
             JournalError::UnknownCompressionMethod => -23,
             JournalError::InvalidFfiOp => -24,
+            JournalError::UuidSerde => -25,
         }
     }
 }
