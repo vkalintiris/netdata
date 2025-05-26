@@ -946,7 +946,7 @@ fn apply_match_expression<'a>(
 }
 
 fn filtered_test() {
-    let path = "/tmp/user-1000.journal";
+    let path = "/tmp/foo.journal";
     let window_size = 8 * 1024 * 1024;
     let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
     println!(
@@ -984,6 +984,10 @@ fn filtered_test() {
                 jw.get_realtime_usec(&journal_file);
                 num_matches += 1;
             }
+
+            if SIGBUS_OCCURRED.load(Ordering::Relaxed) {
+                eprintln!("Got SIGBUS :)");
+            }
         }
 
         println!("[{}] num matches: {:?}\n", counter, num_matches);
@@ -992,7 +996,7 @@ fn filtered_test() {
 }
 
 fn test_case() {
-    let path = "/tmp/user-1000.journal";
+    let path = "/tmp/foo.journal";
 
     let window_size = 8 * 1024 * 1024;
     let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
@@ -1013,55 +1017,104 @@ fn test_case() {
     // println!("second value: {:?}", value);
 }
 
-fn main() {
-    {
-        let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
+use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-        let dht = jf.data_hash_table_mut().unwrap();
-        let mut items = dht.items;
-        println!("dht items: {:?}", items.len());
-        items[0].head_hash_offset = 0xdeadbeef;
-        items[0].tail_hash_offset = 0xbeefdead;
+static SIGBUS_OCCURRED: AtomicBool = AtomicBool::new(false);
 
-        let fht = jf.field_hash_table_mut().unwrap();
-        let mut items = fht.items;
-        println!("fht items: {:?}", items.len());
-        items[0].head_hash_offset = 0xaaaabbbb;
-        items[0].tail_hash_offset = 0xccccdddd;
+extern "C" fn sigbus_handler(
+    _sig: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _ucontext: *mut libc::c_void,
+) {
+    // Your handler code here
+    unsafe {
+        let si = &*info;
+        let fault_addr = si.si_addr();
 
-        let mut offset_array = jf.offset_array_mut(1024 * 1024, Some(8)).unwrap();
+        // Map zero page at fault address
+        let page_addr = (fault_addr as usize & !(4096 - 1)) as *mut libc::c_void;
+        libc::mmap(
+            page_addr,
+            4096,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+            -1,
+            0,
+        );
 
-        for i in 0..4 {
-            let offset = std::num::NonZeroU64::new(0xdead0000 + i).unwrap();
-            offset_array.set(i as usize, offset).unwrap();
+        // Set your global flag
+        SIGBUS_OCCURRED.store(true, Ordering::Relaxed);
+    }
+}
+
+fn install_sigbus_handler() -> Result<()> {
+    unsafe {
+        let mut sa: libc::sigaction = mem::zeroed();
+
+        // Use SA_SIGINFO to get detailed information about the fault
+        sa.sa_flags = libc::SA_SIGINFO;
+        sa.sa_sigaction = sigbus_handler as usize;
+
+        // Install the handler
+        if libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut()) == -1 {
+            panic!("Failed to install signal handler")
         }
     }
 
-    let jf = JournalFile::<Mmap>::open("/tmp/muh.journal", 4096).unwrap();
+    Ok(())
+}
 
-    let offset_array = jf.offset_array_ref(1024 * 1024).unwrap();
+fn main() {
+    // {
+    //     let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
 
-    println!(
-        "tail object offset: 0x{:x?}",
-        jf.journal_header_ref().tail_object_offset
-    );
-    println!(
-        "fht offset: 0x{:x?}",
-        jf.journal_header_ref().field_hash_table_offset
-    );
-    println!(
-        "hash table header size: 0x{:x?}",
-        std::mem::size_of::<ObjectHeader>()
-    );
+    //     let dht = jf.data_hash_table_mut().unwrap();
+    //     let mut items = dht.items;
+    //     println!("dht items: {:?}", items.len());
+    //     items[0].head_hash_offset = 0xdeadbeef;
+    //     items[0].tail_hash_offset = 0xbeefdead;
 
-    println!("offset_array: {:?}", offset_array);
+    //     let fht = jf.field_hash_table_mut().unwrap();
+    //     let mut items = fht.items;
+    //     println!("fht items: {:?}", items.len());
+    //     items[0].head_hash_offset = 0xaaaabbbb;
+    //     items[0].tail_hash_offset = 0xccccdddd;
 
-    for i in 0..4 {
-        let offset = offset_array.get(i, 8).unwrap();
-        println!("offset[{}]: 0x{:x?}", i, offset);
-    }
+    //     let mut offset_array = jf.offset_array_mut(1024 * 1024, Some(8)).unwrap();
 
-    // filtered_test();
+    //     for i in 0..4 {
+    //         let offset = std::num::NonZeroU64::new(0xdead0000 + i).unwrap();
+    //         offset_array.set(i as usize, offset).unwrap();
+    //     }
+    // }
+
+    // let jf = JournalFile::<Mmap>::open("/tmp/muh.journal", 4096).unwrap();
+
+    // let offset_array = jf.offset_array_ref(1024 * 1024).unwrap();
+
+    // println!(
+    //     "tail object offset: 0x{:x?}",
+    //     jf.journal_header_ref().tail_object_offset
+    // );
+    // println!(
+    //     "fht offset: 0x{:x?}",
+    //     jf.journal_header_ref().field_hash_table_offset
+    // );
+    // println!(
+    //     "hash table header size: 0x{:x?}",
+    //     std::mem::size_of::<ObjectHeader>()
+    // );
+
+    // println!("offset_array: {:?}", offset_array);
+
+    // for i in 0..4 {
+    //     let offset = offset_array.get(i, 8).unwrap();
+    //     println!("offset[{}]: 0x{:x?}", i, offset);
+    // }
+
+    install_sigbus_handler().expect("Failed to install SIGBUS handler");
+    filtered_test();
     // test_case()
 
     //     altime();

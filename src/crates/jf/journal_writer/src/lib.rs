@@ -63,25 +63,25 @@ impl JournalWriter {
         //         .map(|item| journal_hash_data(item, is_keyed_hash, None)),
         // );
 
-        for payload in items.iter() {
-            let hash = journal_file.hash(payload);
-            match journal_file.find_data_offset_by_payload(payload, hash) {
-                Ok(data_offset) => {
-                    self.offsets_buffer.push(data_offset);
-                }
-                Err(JournalError::MissingObjectFromHashTable) => {
-                    let size = payload.len() as u64;
-                    let data_object = journal_file.data_mut(current_offset, Some(size))?;
+        // for payload in items.iter() {
+        //     let hash = journal_file.hash(payload);
+        //     match journal_file.find_data_offset_by_payload(payload, hash) {
+        //         Ok(data_offset) => {
+        //             self.offsets_buffer.push(data_offset);
+        //         }
+        //         Err(JournalError::MissingObjectFromHashTable) => {
+        //             let size = payload.len() as u64;
+        //             let data_object = journal_file.data_mut(current_offset, Some(size))?;
 
-                    current_offset += data_object.header.object_header.aligned_size();
+        //             current_offset += data_object.header.object_header.aligned_size();
 
-                    data_object.
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-        }
+        //             data_object.
+        //         }
+        //         Err(e) => {
+        //             return Err(e);
+        //         }
+        //     };
+        // }
 
         Ok(0)
     }

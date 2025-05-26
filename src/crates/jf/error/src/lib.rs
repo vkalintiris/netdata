@@ -65,6 +65,9 @@ pub enum JournalError {
 
     #[error("invalid offset")]
     InvalidOffset,
+
+    #[error("zerocopy failure")]
+    ZerocopyFailure,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);

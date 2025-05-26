@@ -13,3 +13,4 @@ window_manager = { path = "../window_manager" }
 chrono = "0.4"
 systemd = { workspace = true }
 rand = { workspace = true }
+libc = "0.2"

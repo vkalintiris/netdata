@@ -325,13 +325,13 @@ impl<M: MemoryMap> JournalFile<M> {
     pub fn data_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
         self.data_hash_table_map
             .as_ref()
-            .map(|m| HashTableObject::<&[u8]>::from_data(m, false))
+            .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
     }
 
     pub fn field_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
         self.field_hash_table_map
             .as_ref()
-            .map(|m| HashTableObject::<&[u8]>::from_data(m, false))
+            .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
     }
 
     fn object_header_ref(&self, position: u64) -> Result<&ObjectHeader> {
@@ -381,7 +381,9 @@ impl<M: MemoryMap> JournalFile<M> {
         };
 
         let data = self.object_data_ref(position, size_needed)?;
-        let object = T::from_data(data, is_compact);
+        let Some(object) = T::from_data(data, is_compact) else {
+            return Err(JournalError::ZerocopyFailure);
+        };
 
         // Mark as in use
         *is_in_use = true;
