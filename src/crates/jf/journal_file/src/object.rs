@@ -22,6 +22,11 @@ pub trait HashableObject {
     fn object_type() -> ObjectType;
 }
 
+pub trait HashableObjectMut: HashableObject {
+    /// Set the offset to the next object in the hash chain
+    fn set_next_hash_offset(&mut self, offset: NonZeroU64);
+}
+
 impl<B: ByteSlice> HashableObject for FieldObject<B> {
     fn hash(&self) -> u64 {
         self.header.hash
@@ -40,7 +45,13 @@ impl<B: ByteSlice> HashableObject for FieldObject<B> {
     }
 }
 
-impl<B: SplitByteSlice> HashableObject for DataObject<B> {
+impl<B: ByteSliceMut> HashableObjectMut for FieldObject<B> {
+    fn set_next_hash_offset(&mut self, next_hash_offset: NonZeroU64) {
+        self.header.next_hash_offset = Some(next_hash_offset);
+    }
+}
+
+impl<B: ByteSlice> HashableObject for DataObject<B> {
     fn hash(&self) -> u64 {
         self.header.hash
     }
@@ -58,13 +69,19 @@ impl<B: SplitByteSlice> HashableObject for DataObject<B> {
     }
 }
 
+impl<B: ByteSliceMut> HashableObjectMut for DataObject<B> {
+    fn set_next_hash_offset(&mut self, next_hash_offset: NonZeroU64) {
+        self.header.next_hash_offset = Some(next_hash_offset);
+    }
+}
+
 /// Trait to standardize creation of journal objects from byte slices
 pub trait JournalObject<B: SplitByteSlice>: Sized {
     /// Create a new journal object from a byte slice
     fn from_data(data: B, is_compact: bool) -> Option<Self>;
 }
 
-pub trait JournalObjectMut<B: SplitByteSliceMut>: Sized {
+pub trait JournalObjectMut<B: SplitByteSliceMut>: JournalObject<B> {
     /// Create a new journal object from a byte slice
     fn from_data_mut(data: B, is_compact: bool) -> Option<Self>;
 }
@@ -309,6 +326,12 @@ impl<B: SplitByteSliceMut> JournalObjectMut<B> for HashTableObject<B> {
         let items = zerocopy::Ref::from_bytes(items_data).ok()?;
 
         Some(HashTableObject { header, items })
+    }
+}
+
+impl<B: ByteSliceMut> HashTableObject<B> {
+    pub fn insert<T: HashableObjectMut>(&mut self) -> Option<Self> {
+        todo!()
     }
 }
 
