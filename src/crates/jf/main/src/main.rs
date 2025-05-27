@@ -4,10 +4,11 @@ use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
 pub struct EntryData {
-    pub offset: u64,
+    pub offset: NonZeroU64,
     pub realtime: u64,
     pub monotonic: u64,
     pub boot_id: String,
@@ -37,7 +38,7 @@ impl EntryData {
     /// Extract all data from an entry into an owned structure
     pub fn from_offset<M: MemoryMap>(
         journal_file: &JournalFile<M>,
-        entry_offset: u64,
+        entry_offset: NonZeroU64,
     ) -> Result<EntryData> {
         // Get the entry object
         let entry_object = journal_file.entry_ref(entry_offset)?;
@@ -556,7 +557,11 @@ fn filtered_test() {
             }
         }
 
-        println!("[{}] num matches: {:?}\n", counter, num_matches);
+        if num_matches != 0 {
+            println!("[{}] num matches: {:?}\n", counter, num_matches);
+        } else {
+            println!("\n");
+        }
         counter += 1;
     }
 }

@@ -15,7 +15,7 @@ pub trait HashableObject {
     fn get_payload(&self) -> &[u8];
 
     /// Get the offset to the next object in the hash chain
-    fn next_hash_offset(&self) -> u64;
+    fn next_hash_offset(&self) -> Option<NonZeroU64>;
 
     /// Get the object type
     fn object_type() -> ObjectType;
@@ -30,7 +30,7 @@ impl<B: ByteSlice> HashableObject for FieldObject<B> {
         &self.payload
     }
 
-    fn next_hash_offset(&self) -> u64 {
+    fn next_hash_offset(&self) -> Option<NonZeroU64> {
         self.header.next_hash_offset
     }
 
@@ -48,7 +48,7 @@ impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> HashableObject for DataObj
         self.payload_bytes()
     }
 
-    fn next_hash_offset(&self) -> u64 {
+    fn next_hash_offset(&self) -> Option<NonZeroU64> {
         self.header.next_hash_offset
     }
 
@@ -264,7 +264,7 @@ impl ObjectHeader {
 pub struct FieldObjectHeader {
     pub object_header: ObjectHeader,
     pub hash: u64,
-    pub next_hash_offset: u64,
+    pub next_hash_offset: Option<NonZeroU64>,
     pub head_data_offset: u64,
 }
 
@@ -278,8 +278,8 @@ pub struct OffsetArrayObjectHeader {
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct HashItem {
-    pub head_hash_offset: u64,
-    pub tail_hash_offset: u64,
+    pub head_hash_offset: Option<NonZeroU64>,
+    pub tail_hash_offset: Option<NonZeroU64>,
 }
 
 pub struct HashTableObject<B: ByteSlice> {
@@ -589,7 +589,7 @@ impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for EntryObject
 pub struct DataObjectHeader {
     pub object_header: ObjectHeader,
     pub hash: u64,
-    pub next_hash_offset: u64,
+    pub next_hash_offset: Option<NonZeroU64>,
     pub next_field_offset: u64,
     pub entry_offset: u64,
     pub entry_array_offset: u64,

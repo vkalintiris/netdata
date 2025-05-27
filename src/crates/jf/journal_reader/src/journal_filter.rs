@@ -3,6 +3,7 @@ use journal_file::{
     offset_array::{Direction, InlinedCursor},
     JournalFile,
 };
+use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
 #[derive(Clone, Debug)]
@@ -19,17 +20,24 @@ impl FilterExpr {
         needle_offset: u64,
         direction: Direction,
     ) -> Result<Option<u64>> {
+        let Some(needle_offset) = NonZeroU64::new(needle_offset) else {
+            return Err(JournalError::InvalidOffset);
+        };
+
         let predicate =
-            move |entry_offset: u64| -> Result<bool> { Ok(entry_offset < needle_offset) };
+            move |entry_offset: NonZeroU64| -> Result<bool> { Ok(entry_offset < needle_offset) };
 
         match self {
             FilterExpr::Match(data_offset, _) => {
+                let Some(data_offset) = NonZeroU64::new(*data_offset) else {
+                    return Err(JournalError::InvalidOffset);
+                };
                 let entry_offset = journal_file.data_object_directed_partition_point(
-                    *data_offset,
+                    data_offset,
                     predicate,
                     direction,
                 )?;
-                Ok(entry_offset)
+                Ok(entry_offset.map(|x| x.get()))
             }
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut current_offset = needle_offset;
@@ -42,14 +50,19 @@ impl FilterExpr {
                             current_offset = current_offset.saturating_add(1);
                         }
 
-                        match filter_expr.lookup(journal_file, current_offset, direction)? {
-                            Some(new_offset) => current_offset = new_offset,
+                        match filter_expr.lookup(journal_file, current_offset.get(), direction)? {
+                            Some(new_offset) => {
+                                if new_offset == 0 {
+                                    panic!("Wtf");
+                                }
+                                current_offset = NonZeroU64::new(new_offset).unwrap();
+                            }
                             None => return Ok(None),
                         }
                     }
 
                     if current_offset == previous_offset {
-                        return Ok(Some(current_offset));
+                        return Ok(Some(current_offset.get()));
                     }
                 }
             }
@@ -60,7 +73,7 @@ impl FilterExpr {
                 };
 
                 filter_exprs.iter().try_fold(None, |acc, expr| {
-                    let result = expr.lookup(journal_file, needle_offset, direction)?;
+                    let result = expr.lookup(journal_file, needle_offset.get(), direction)?;
 
                     Ok(match (acc, result) {
                         (None, Some(offset)) => Some(offset),
@@ -224,7 +237,10 @@ impl FilterExpr {
         match self {
             FilterExpr::Match(data_offset, inlined_cursor) => {
                 // Load the data object
-                let data_object = journal_file.data_ref(*data_offset)?;
+                let Some(data_offset) = NonZeroU64::new(*data_offset) else {
+                    return Err(JournalError::InvalidOffset);
+                };
+                let data_object = journal_file.data_ref(data_offset)?;
 
                 // Get the payload as a string if possible
                 let payload_bytes = data_object.payload_bytes();
@@ -321,19 +337,25 @@ impl JournalFilter {
                 for idx in start..i {
                     let data = self.current_matches[idx].as_slice();
                     let hash = journal_file.hash(data);
-                    let offset = journal_file.find_data_offset_by_payload(data, hash)?;
+                    let Some(offset) = journal_file.find_data_offset_by_payload(data, hash)? else {
+                        // TODO: should we really return an error?
+                        return Err(JournalError::InvalidOffset);
+                    };
 
                     let ic = journal_file.data_ref(offset)?.inlined_cursor();
-                    matches.push(FilterExpr::Match(offset, ic));
+                    matches.push(FilterExpr::Match(offset.get(), ic));
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
                 let data = self.current_matches[start].as_slice();
                 let hash = journal_file.hash(data);
-                let offset = journal_file.find_data_offset_by_payload(data, hash)?;
+                let Some(offset) = journal_file.find_data_offset_by_payload(data, hash)? else {
+                    // TODO: should we really return an error?
+                    return Err(JournalError::InvalidOffset);
+                };
 
                 let ic = journal_file.data_ref(offset)?.inlined_cursor();
-                elements.push(FilterExpr::Match(offset, ic));
+                elements.push(FilterExpr::Match(offset.get(), ic));
             }
         }
 

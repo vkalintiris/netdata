@@ -25,7 +25,7 @@ impl Node {
         offset: NonZeroU64,
         remaining_items: NonZeroUsize,
     ) -> Result<Self> {
-        let array = journal_file.offset_array_ref(offset.get())?;
+        let array = journal_file.offset_array_ref(offset)?;
         let capacity =
             NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
 
@@ -79,7 +79,7 @@ impl Node {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        let array = journal_file.offset_array_ref(self.offset.get())?;
+        let array = journal_file.offset_array_ref(self.offset)?;
         array.get(index, self.remaining_items.get())
     }
 
@@ -94,7 +94,7 @@ impl Node {
     ) -> Result<usize>
     where
         M: MemoryMap,
-        F: Fn(u64) -> Result<bool>,
+        F: Fn(NonZeroU64) -> Result<bool>,
     {
         let mut left = left;
         let mut right = right;
@@ -104,7 +104,9 @@ impl Node {
 
         while left != right {
             let mid = left.midpoint(right);
-            let offset = self.get(journal_file, mid)?;
+            let Some(offset) = NonZeroU64::new(self.get(journal_file, mid)?) else {
+                return Err(JournalError::InvalidOffset);
+            };
 
             if predicate(offset)? {
                 left = mid + 1;
@@ -127,7 +129,7 @@ impl Node {
     ) -> Result<Option<usize>>
     where
         M: MemoryMap,
-        F: Fn(u64) -> Result<bool>,
+        F: Fn(NonZeroU64) -> Result<bool>,
     {
         let index = self.partition_point(journal_file, left, right, predicate)?;
 
@@ -229,7 +231,7 @@ impl List {
     ) -> Result<Option<Cursor>>
     where
         M: MemoryMap,
-        F: Fn(u64) -> Result<bool>,
+        F: Fn(NonZeroU64) -> Result<bool>,
     {
         let mut last_cursor: Option<Cursor> = None;
 
@@ -604,7 +606,7 @@ impl InlinedCursor {
     ) -> Result<Option<Self>>
     where
         M: MemoryMap,
-        F: Fn(u64) -> Result<bool>,
+        F: Fn(NonZeroU64) -> Result<bool>,
     {
         // Variables to track our best match
         let mut best_match: Option<Self> = None;
@@ -612,12 +614,12 @@ impl InlinedCursor {
         // Handle the inlined entry based on direction
         match direction {
             Direction::Forward => {
-                if !predicate(self.inlined_offset.get())? {
+                if !predicate(self.inlined_offset)? {
                     return Ok(Some(self.head()));
                 }
             }
             Direction::Backward => {
-                if predicate(self.inlined_offset.get())? {
+                if predicate(self.inlined_offset)? {
                     // If predicate is true for inlined entry and we're going backward,
                     // this is potentially our best match
                     best_match = Some(self.head());

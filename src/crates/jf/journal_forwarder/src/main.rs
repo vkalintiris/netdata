@@ -5,6 +5,7 @@ use journal_reader::JournalReader;
 use memmap2::Mmap;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::io::Read;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use walkdir::WalkDir;
@@ -120,8 +121,10 @@ fn select_random_entries(
 
         // Get the entry at the current position
         if let Ok(entry_offset) = reader.get_entry_offset() {
-            if let Ok(entry_data) = extract_entry_data(journal_file, entry_offset) {
-                entries.push(entry_data);
+            if let Some(entry_offset) = NonZeroU64::new(entry_offset) {
+                if let Ok(entry_data) = extract_entry_data(journal_file, entry_offset) {
+                    entries.push(entry_data);
+                }
             }
         }
     }
@@ -134,7 +137,10 @@ struct EntryData {
     fields: Vec<(String, String)>,
 }
 
-fn extract_entry_data(journal_file: &JournalFile<Mmap>, entry_offset: u64) -> Result<EntryData> {
+fn extract_entry_data(
+    journal_file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+) -> Result<EntryData> {
     let mut fields = Vec::new();
 
     // Iterate through all data objects for this entry
