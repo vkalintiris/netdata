@@ -40,7 +40,7 @@ impl<B: ByteSlice> HashableObject for FieldObject<B> {
     }
 }
 
-impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> HashableObject for DataObject<B> {
+impl<B: SplitByteSlice> HashableObject for DataObject<B> {
     fn hash(&self) -> u64 {
         self.header.hash
     }
@@ -66,7 +66,7 @@ pub trait JournalObject<B: SplitByteSlice>: Sized {
 
 pub trait JournalObjectMut<B: SplitByteSliceMut>: Sized {
     /// Create a new journal object from a byte slice
-    fn from_data_mut(data: B, is_compact: bool) -> Self;
+    fn from_data_mut(data: B, is_compact: bool) -> Option<Self>;
 }
 
 pub enum HeaderIncompatibleFlags {
@@ -290,25 +290,25 @@ pub struct HashTableObject<B: ByteSlice> {
     pub items: Ref<B, [HashItem]>,
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for HashTableObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for HashTableObject<B> {
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
 
-        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
-        let items = zerocopy::Ref::from_bytes(items_data).unwrap();
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
 
         Some(HashTableObject { header, items })
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for HashTableObject<B> {
-    fn from_data_mut(data: B, _is_compact: bool) -> Self {
-        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).unwrap();
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for HashTableObject<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
 
-        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
-        let items = zerocopy::Ref::from_bytes(items_data).unwrap();
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
 
-        HashTableObject { header, items }
+        Some(HashTableObject { header, items })
     }
 }
 
@@ -318,18 +318,17 @@ pub struct FieldObject<B: ByteSlice> {
     pub payload: B,
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for FieldObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for FieldObject<B> {
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let (header, payload) = zerocopy::Ref::from_prefix(data).ok()?;
         Some(FieldObject { header, payload })
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for FieldObject<B> {
-    fn from_data_mut(data: B, _is_compact: bool) -> Self {
-        let (header, payload) = zerocopy::Ref::from_prefix(data).unwrap();
-
-        FieldObject { header, payload }
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for FieldObject<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
+        let (header, payload) = zerocopy::Ref::from_prefix(data).ok()?;
+        Some(FieldObject { header, payload })
     }
 }
 
@@ -395,7 +394,7 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
     }
 }
 
-impl<B: ByteSliceMut + std::fmt::Debug> OffsetArrayObject<B> {
+impl<B: ByteSliceMut> OffsetArrayObject<B> {
     pub fn set(&mut self, index: usize, offset: NonZeroU64) -> Result<()> {
         if index >= self.capacity() {
             return Err(JournalError::OutOfBoundsIndex);
@@ -414,7 +413,7 @@ impl<B: ByteSlice> std::fmt::Debug for OffsetArrayObject<B> {
     }
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for OffsetArrayObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for OffsetArrayObject<B> {
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<OffsetArrayObjectHeader>())
@@ -437,26 +436,26 @@ impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for OffsetArrayObject
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for OffsetArrayObject<B> {
-    fn from_data_mut(data: B, is_compact: bool) -> Self {
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for OffsetArrayObject<B> {
+    fn from_data_mut(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<OffsetArrayObjectHeader>())
-            .unwrap();
+            .ok()?;
 
-        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
 
         let items_type = if is_compact {
-            let compact_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            let compact_items = zerocopy::Ref::from_bytes(items_data).ok()?;
             OffsetsType::Compact(compact_items)
         } else {
-            let regular_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            let regular_items = zerocopy::Ref::from_bytes(items_data).ok()?;
             OffsetsType::Regular(regular_items)
         };
 
-        OffsetArrayObject {
+        Some(OffsetArrayObject {
             header,
             items: items_type,
-        }
+        })
     }
 }
 
@@ -537,7 +536,7 @@ impl<B: ByteSlice> std::fmt::Debug for EntryObject<B> {
     }
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for EntryObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for EntryObject<B> {
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<EntryObjectHeader>())
@@ -560,26 +559,26 @@ impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for EntryObject<B> {
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for EntryObject<B> {
-    fn from_data_mut(data: B, is_compact: bool) -> Self {
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for EntryObject<B> {
+    fn from_data_mut(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<EntryObjectHeader>())
-            .unwrap();
+            .ok()?;
 
-        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
 
         let items_type = if is_compact {
-            let compact_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            let compact_items = zerocopy::Ref::from_bytes(items_data).ok()?;
             EntryItemsType::Compact(compact_items)
         } else {
-            let regular_items = zerocopy::Ref::from_bytes(items_data).unwrap();
+            let regular_items = zerocopy::Ref::from_bytes(items_data).ok()?;
             EntryItemsType::Regular(regular_items)
         };
 
-        EntryObject {
+        Some(EntryObject {
             header,
             items: items_type,
-        }
+        })
     }
 }
 
@@ -676,7 +675,7 @@ impl<B: ByteSlice> std::fmt::Debug for DataObject<B> {
     }
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for DataObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for DataObject<B> {
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, remaining_data) = data
             .split_at(std::mem::size_of::<DataObjectHeader>())
@@ -703,20 +702,20 @@ impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for DataObject<B> {
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for DataObject<B> {
-    fn from_data_mut(data: B, is_compact: bool) -> Self {
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for DataObject<B> {
+    fn from_data_mut(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, remaining_data) = data
             .split_at(std::mem::size_of::<DataObjectHeader>())
-            .unwrap();
+            .ok()?;
 
-        let header = zerocopy::Ref::from_bytes(header_data).unwrap();
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
 
         let payload = if is_compact {
             let (fields_data, payload_data) = remaining_data
                 .split_at(std::mem::size_of::<CompactDataFields>())
-                .unwrap();
+                .ok()?;
 
-            let compact_fields = zerocopy::Ref::from_bytes(fields_data).unwrap();
+            let compact_fields = zerocopy::Ref::from_bytes(fields_data).ok()?;
 
             DataPayloadType::Compact {
                 compact_fields,
@@ -726,7 +725,7 @@ impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for DataObject<
             DataPayloadType::Regular(remaining_data)
         };
 
-        DataObject { header, payload }
+        Some(DataObject { header, payload })
     }
 }
 
@@ -743,7 +742,7 @@ impl DataObject<&mut [u8]> {
     }
 }
 
-impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> DataObject<B> {
+impl<B: ByteSlice> DataObject<B> {
     pub fn payload_bytes(&self) -> &[u8] {
         match &self.payload {
             DataPayloadType::Regular(payload) => payload,
@@ -816,21 +815,21 @@ impl<B: ByteSlice> std::fmt::Debug for TagObject<B> {
     }
 }
 
-impl<B: SplitByteSlice + std::fmt::Debug> JournalObject<B> for TagObject<B> {
+impl<B: SplitByteSlice> JournalObject<B> for TagObject<B> {
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let header = zerocopy::Ref::from_bytes(data).ok()?;
         Some(TagObject { header })
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for TagObject<B> {
-    fn from_data_mut(data: B, _is_compact: bool) -> Self {
-        let header = zerocopy::Ref::from_bytes(data).unwrap();
-        TagObject { header }
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for TagObject<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
+        let header = zerocopy::Ref::from_bytes(data).ok()?;
+        Some(TagObject { header })
     }
 }
 
-impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> TagObject<B> {
+impl<B: ByteSlice> TagObject<B> {
     // Helper function to format tag as hex string
     pub fn tag_as_hex(&self) -> String {
         self.header

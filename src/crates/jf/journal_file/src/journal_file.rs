@@ -170,13 +170,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
     pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
         self.data_hash_table_map
             .as_mut()
-            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
     }
 
     pub fn field_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
         self.field_hash_table_map
             .as_mut()
-            .map(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
     }
 
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
@@ -242,7 +242,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         };
 
         let data = self.object_data_mut(offset, size_needed)?;
-        let object = T::from_data_mut(data, is_compact);
+        let object = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
 
         // Mark as in use
         *is_in_use = true;
