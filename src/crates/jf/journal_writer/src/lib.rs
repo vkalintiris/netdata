@@ -38,6 +38,29 @@ impl JournalWriter {
         })
     }
 
+    pub fn add_data(&mut self, journal_file: &mut JournalFile<MmapMut>, data: &[u8]) -> Result<()> {
+        let hash = journal_file.hash(data);
+
+        match journal_file.find_data_offset_by_payload(data, hash) {
+            Ok(data_offset) => {
+                self.offsets_buffer.push(data_offset);
+                Ok(())
+            }
+            Err(JournalError::MissingObjectFromHashTable) => {
+                let size = data.len() as u64;
+
+                let mut data_object = journal_file.data_mut(self.tail_offset, Some(size))?;
+
+                data_object.header.hash = hash;
+                data_object.set_payload(data);
+
+                self.tail_offset += data_object.header.object_header.aligned_size();
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn add_entry(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -48,10 +71,9 @@ impl JournalWriter {
     ) -> Result<u64> {
         let header = journal_file.journal_header_ref();
 
-        // let is_keyed_hash = header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
-        let is_compact = header.has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let is_keyed_hash = header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
 
-        let file_id = if header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+        let file_id = if is_keyed_hash {
             Some(&header.file_id)
         } else {
             None
@@ -63,25 +85,9 @@ impl JournalWriter {
                 .map(|item| journal_hash_data(item, is_keyed_hash, file_id)),
         );
 
-        // for payload in items.iter() {
-        //     let hash = journal_file.hash(payload);
-        //     match journal_file.find_data_offset_by_payload(payload, hash) {
-        //         Ok(data_offset) => {
-        //             self.offsets_buffer.push(data_offset);
-        //         }
-        //         Err(JournalError::MissingObjectFromHashTable) => {
-        //             let size = payload.len() as u64;
-        //             let data_object = journal_file.data_mut(current_offset, Some(size))?;
-
-        //             current_offset += data_object.header.object_header.aligned_size();
-
-        //             data_object.
-        //         }
-        //         Err(e) => {
-        //             return Err(e);
-        //         }
-        //     };
-        // }
+        for payload in items.iter() {
+            self.add_data(journal_file, payload)?;
+        }
 
         Ok(0)
     }

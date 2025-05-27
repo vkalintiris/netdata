@@ -15,8 +15,6 @@ use std::backtrace::Backtrace;
 
 use crate::value_guard::ValueGuard;
 
-use hex;
-
 fn load_machine_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/etc/machine-id")?;
     let decoded = hex::decode(content.trim()).map_err(|_| JournalError::UuidSerde)?;

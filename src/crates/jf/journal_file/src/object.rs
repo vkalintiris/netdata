@@ -733,6 +733,19 @@ impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for DataObject<
     }
 }
 
+impl DataObject<&mut [u8]> {
+    pub fn set_payload(&mut self, data: &[u8]) {
+        match &mut self.payload {
+            DataPayloadType::Regular(payload) => {
+                payload.copy_from_slice(data);
+            }
+            DataPayloadType::Compact { payload, .. } => {
+                payload.copy_from_slice(data);
+            }
+        };
+    }
+}
+
 impl<B: ByteSlice + SplitByteSlice + std::fmt::Debug> DataObject<B> {
     pub fn payload_bytes(&self) -> &[u8] {
         match &self.payload {
