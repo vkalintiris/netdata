@@ -104,30 +104,30 @@ impl TryFrom<u8> for JournalState {
 #[derive(Default, Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct JournalHeader {
-    pub signature: [u8; 8],           // "LPKSHHRH"
-    pub compatible_flags: u32,        // Compatible extension flags
-    pub incompatible_flags: u32,      // Incompatible extension flags
-    pub state: u8,                    // File state (offline=0, online=1, archived=2)
-    pub reserved: [u8; 7],            // Reserved space
-    pub file_id: [u8; 16],            // Unique ID for this file
-    pub machine_id: [u8; 16],         // Machine ID this belongs to
-    pub tail_entry_boot_id: [u8; 16], // Boot ID of the last entry
-    pub seqnum_id: [u8; 16],          // Sequence number ID
-    pub header_size: u64,             // Size of the header
-    pub arena_size: u64,              // Size of the data arena
-    pub data_hash_table_offset: u64,  // Offset of the data hash table
-    pub data_hash_table_size: u64,    // Size of the data hash table
-    pub field_hash_table_offset: u64, // Offset of the field hash table
-    pub field_hash_table_size: u64,   // Size of the field hash table
-    pub tail_object_offset: u64,      // Offset of the last object
-    pub n_objects: u64,               // Number of objects
-    pub n_entries: u64,               // Number of entries
-    pub tail_entry_seqnum: u64,       // Sequence number of the last entry
-    pub head_entry_seqnum: u64,       // Sequence number of the first entry
-    pub entry_array_offset: u64,      // Offset of the entry array
-    pub head_entry_realtime: u64,     // Realtime timestamp of the first entry
-    pub tail_entry_realtime: u64,     // Realtime timestamp of the last entry
-    pub tail_entry_monotonic: u64,    // Monotonic timestamp of the last entry
+    pub signature: [u8; 8],                          // "LPKSHHRH"
+    pub compatible_flags: u32,                       // Compatible extension flags
+    pub incompatible_flags: u32,                     // Incompatible extension flags
+    pub state: u8,                                   // File state (offline=0, online=1, archived=2)
+    pub reserved: [u8; 7],                           // Reserved space
+    pub file_id: [u8; 16],                           // Unique ID for this file
+    pub machine_id: [u8; 16],                        // Machine ID this belongs to
+    pub tail_entry_boot_id: [u8; 16],                // Boot ID of the last entry
+    pub seqnum_id: [u8; 16],                         // Sequence number ID
+    pub header_size: u64,                            // Size of the header
+    pub arena_size: u64,                             // Size of the data arena
+    pub data_hash_table_offset: Option<NonZeroU64>,  // Offset of the data hash table
+    pub data_hash_table_size: Option<NonZeroU64>,    // Size of the data hash table
+    pub field_hash_table_offset: Option<NonZeroU64>, // Offset of the field hash table
+    pub field_hash_table_size: Option<NonZeroU64>,   // Size of the field hash table
+    pub tail_object_offset: Option<NonZeroU64>,      // Offset of the last object
+    pub n_objects: u64,                              // Number of objects
+    pub n_entries: u64,                              // Number of entries
+    pub tail_entry_seqnum: u64,                      // Sequence number of the last entry
+    pub head_entry_seqnum: u64,                      // Sequence number of the first entry
+    pub entry_array_offset: u64,                     // Offset of the entry array
+    pub head_entry_realtime: u64,                    // Realtime timestamp of the first entry
+    pub tail_entry_realtime: u64,                    // Realtime timestamp of the last entry
+    pub tail_entry_monotonic: u64,                   // Monotonic timestamp of the last entry
 }
 
 /*
@@ -161,33 +161,35 @@ impl JournalHeader {
     fn map_hash_table<M: MemoryMap>(
         &self,
         file: &File,
-        offset: u64,
-        size: u64,
+        offset: NonZeroU64,
+        size: NonZeroU64,
     ) -> Result<Option<M>> {
-        if offset == 0 || size == 0 {
-            return Ok(None);
+        if offset.get() <= std::mem::size_of::<JournalHeader>() as u64 {
+            return Err(JournalError::InvalidObjectLocation);
         }
-
-        let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
-        if offset <= object_header_size || size < object_header_size {
+        if size.get() <= std::mem::size_of::<ObjectHeader>() as u64 {
             return Err(JournalError::InvalidObjectLocation);
         }
 
-        let position = offset - object_header_size;
-        let map_size = object_header_size + size;
-        M::create(file, position, map_size).map(Some)
+        let offset = offset.get() - std::mem::size_of::<ObjectHeader>() as u64;
+        let size = std::mem::size_of::<ObjectHeader>() as u64 + size.get();
+        M::create(file, offset, size).map(Some)
     }
 
     pub fn map_data_hash_table<M: MemoryMap>(&self, file: &File) -> Result<Option<M>> {
-        self.map_hash_table(file, self.data_hash_table_offset, self.data_hash_table_size)
+        match (self.data_hash_table_offset, self.data_hash_table_size) {
+            (Some(offset), Some(size)) => self.map_hash_table(file, offset, size),
+            (None, None) => Ok(None),
+            _ => Err(JournalError::InvalidObjectLocation),
+        }
     }
 
     pub fn map_field_hash_table<M: MemoryMap>(&self, file: &File) -> Result<Option<M>> {
-        self.map_hash_table(
-            file,
-            self.field_hash_table_offset,
-            self.field_hash_table_size,
-        )
+        match (self.field_hash_table_offset, self.field_hash_table_size) {
+            (Some(offset), Some(size)) => self.map_hash_table(file, offset, size),
+            (None, None) => Ok(None),
+            _ => Err(JournalError::InvalidObjectLocation),
+        }
     }
 }
 

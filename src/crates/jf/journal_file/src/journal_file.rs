@@ -96,28 +96,29 @@ impl<M: MemoryMapMut> JournalFile<M> {
         let mut header = JournalHeader::default();
         header.signature = *b"LPKSHHRH";
 
-        header.data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
+        let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
             + std::mem::size_of::<ObjectHeader>() as u64;
-        header.data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
+        let data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
 
-        header.field_hash_table_offset = header.data_hash_table_offset
-            + header.data_hash_table_size
+        let field_hash_table_offset = data_hash_table_offset
+            + data_hash_table_size
             + std::mem::size_of::<ObjectHeader>() as u64;
-        header.field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
+        let field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
 
-        debug_assert_eq!(header.data_hash_table_offset % OBJECT_ALIGNMENT, 0);
-        debug_assert_eq!(header.data_hash_table_size % OBJECT_ALIGNMENT, 0);
-        let data_hash_table_map = header.map_data_hash_table(&file)?;
+        debug_assert_eq!(data_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(data_hash_table_size % OBJECT_ALIGNMENT, 0);
+        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
+        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size);
 
-        debug_assert_eq!(header.field_hash_table_offset % OBJECT_ALIGNMENT, 0);
-        debug_assert_eq!(header.field_hash_table_size % OBJECT_ALIGNMENT, 0);
-        let field_hash_table_map = header.map_field_hash_table(&file)?;
+        debug_assert_eq!(field_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(field_hash_table_size % OBJECT_ALIGNMENT, 0);
+        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
+        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size);
 
-        header.tail_object_offset = header.data_hash_table_offset + header.data_hash_table_size;
+        header.tail_object_offset = NonZeroU64::new(data_hash_table_offset + data_hash_table_size);
         header.header_size = std::mem::size_of::<JournalHeader>() as u64;
         header.n_objects = 2;
-        header.arena_size =
-            header.field_hash_table_offset + header.field_hash_table_size - header.header_size;
+        header.arena_size = field_hash_table_offset + field_hash_table_size - header.header_size;
 
         // FIXME: just to get us going
         header.machine_id = load_machine_id()?;
@@ -133,7 +134,8 @@ impl<M: MemoryMapMut> JournalFile<M> {
             0x9e, 0x3b,
         ];
 
-        debug_assert_eq!(header.tail_object_offset % OBJECT_ALIGNMENT, 0);
+        let data_hash_table_map = header.map_data_hash_table(&file)?;
+        let field_hash_table_map = header.map_field_hash_table(&file)?;
 
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
         let mut header_map = M::create(&file, 0, header_size)?;
