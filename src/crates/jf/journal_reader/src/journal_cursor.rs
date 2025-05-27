@@ -1,6 +1,7 @@
 use crate::journal_filter::FilterExpr;
 use error::{JournalError, Result};
 use journal_file::{offset_array, offset_array::Direction, JournalFile};
+use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -11,7 +12,7 @@ pub enum Location {
     Monotonic(u64, [u8; 16]),
     Seqnum(u64, Option<[u8; 16]>),
     XorHash(u64),
-    ResolvedEntry(u64),
+    ResolvedEntry(NonZeroU64),
 }
 
 impl Default for Location {
@@ -72,7 +73,7 @@ impl JournalCursor {
         }
     }
 
-    pub fn position(&self) -> Result<u64> {
+    pub fn position(&self) -> Result<NonZeroU64> {
         match self.location {
             Location::ResolvedEntry(entry_offset) => Ok(entry_offset),
             _ => Err(JournalError::UnsetCursor),
@@ -91,9 +92,12 @@ impl JournalCursor {
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let cursor = entry_list.cursor_head();
-                let offset = cursor.value(journal_file)?;
-                self.array_cursor = Some(cursor);
-                Some(Location::ResolvedEntry(offset))
+                if let Some(offset) = cursor.value(journal_file)? {
+                    self.array_cursor = Some(cursor);
+                    Some(Location::ResolvedEntry(offset))
+                } else {
+                    None
+                }
             }
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
@@ -103,9 +107,12 @@ impl JournalCursor {
                     .ok_or(JournalError::InvalidOffsetArrayOffset)?;
 
                 let cursor = entry_list.cursor_tail(journal_file)?;
-                let offset = cursor.value(journal_file)?;
-                self.array_cursor = Some(cursor);
-                Some(Location::ResolvedEntry(offset))
+                if let Some(offset) = cursor.value(journal_file)? {
+                    self.array_cursor = Some(cursor);
+                    Some(Location::ResolvedEntry(offset))
+                } else {
+                    None
+                }
             }
             (Location::Realtime(realtime), _) => {
                 let entry_list = journal_file
@@ -122,27 +129,36 @@ impl JournalCursor {
                     .map(Ok)
                     .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
 
-                let offset = cursor.value(journal_file)?;
-                self.array_cursor = Some(cursor);
-                Some(Location::ResolvedEntry(offset))
+                if let Some(offset) = cursor.value(journal_file)? {
+                    self.array_cursor = Some(cursor);
+                    Some(Location::ResolvedEntry(offset))
+                } else {
+                    None
+                }
             }
             (Location::ResolvedEntry(_), Direction::Forward) => {
                 let Some(cursor) = self.array_cursor.unwrap().next(journal_file)? else {
                     return Ok(None);
                 };
 
-                let offset = cursor.value(journal_file)?;
-                self.array_cursor = Some(cursor);
-                Some(Location::ResolvedEntry(offset))
+                if let Some(offset) = cursor.value(journal_file)? {
+                    self.array_cursor = Some(cursor);
+                    Some(Location::ResolvedEntry(offset))
+                } else {
+                    None
+                }
             }
             (Location::ResolvedEntry(_), Direction::Backward) => {
                 let Some(cursor) = self.array_cursor.unwrap().previous(journal_file)? else {
                     return Ok(None);
                 };
 
-                let offset = cursor.value(journal_file)?;
-                self.array_cursor = Some(cursor);
-                Some(Location::ResolvedEntry(offset))
+                if let Some(offset) = cursor.value(journal_file)? {
+                    self.array_cursor = Some(cursor);
+                    Some(Location::ResolvedEntry(offset))
+                } else {
+                    None
+                }
             }
             _ => {
                 unimplemented!()
@@ -162,13 +178,13 @@ impl JournalCursor {
         let resolved_location = match (self.location, direction) {
             (Location::Head, Direction::Forward) => filter_expr
                 .head()
-                .next(journal_file, u64::MIN)?
+                .next(journal_file, NonZeroU64::MIN)?
                 .map(Location::ResolvedEntry),
             (Location::Head, Direction::Backward) => None,
             (Location::Tail, Direction::Forward) => None,
             (Location::Tail, Direction::Backward) => filter_expr
                 .tail(journal_file)?
-                .previous(journal_file, u64::MAX)?
+                .previous(journal_file, NonZeroU64::MAX)?
                 .map(Location::ResolvedEntry),
             (Location::Realtime(realtime), direction) => {
                 let entry_list = journal_file
@@ -185,25 +201,33 @@ impl JournalCursor {
                     .map(Ok)
                     .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
 
-                let entry_offset = cursor.value(journal_file)?;
-
-                match direction {
-                    Direction::Forward => filter_expr
-                        .head()
-                        .next(journal_file, entry_offset)?
-                        .map(Location::ResolvedEntry),
-                    Direction::Backward => filter_expr
-                        .tail(journal_file)?
-                        .previous(journal_file, entry_offset)?
-                        .map(Location::ResolvedEntry),
+                if let Some(entry_offset) = cursor.value(journal_file)? {
+                    match direction {
+                        Direction::Forward => filter_expr
+                            .head()
+                            .next(journal_file, entry_offset)?
+                            .map(Location::ResolvedEntry),
+                        Direction::Backward => filter_expr
+                            .tail(journal_file)?
+                            .previous(journal_file, entry_offset)?
+                            .map(Location::ResolvedEntry),
+                    }
+                } else {
+                    None
                 }
             }
             (Location::ResolvedEntry(location_offset), Direction::Forward) => filter_expr
-                .next(journal_file, location_offset + 1)?
+                .next(journal_file, location_offset.saturating_add(1))?
                 .map(Location::ResolvedEntry),
-            (Location::ResolvedEntry(location_offset), Direction::Backward) => filter_expr
-                .previous(journal_file, location_offset - 1)?
-                .map(Location::ResolvedEntry),
+            (Location::ResolvedEntry(location_offset), Direction::Backward) => {
+                if let Some(needle_offset) = NonZeroU64::new(location_offset.get() - 1) {
+                    filter_expr
+                        .previous(journal_file, needle_offset)?
+                        .map(Location::ResolvedEntry)
+                } else {
+                    None
+                }
+            }
             _ => {
                 unimplemented!();
             }

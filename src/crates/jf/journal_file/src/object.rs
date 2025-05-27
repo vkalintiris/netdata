@@ -1,10 +1,11 @@
 use crate::offset_array::{Cursor, InlinedCursor, List};
 use error::{JournalError, Result};
 use std::fs::File;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
 use zerocopy::{
-    ByteSlice, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice, SplitByteSliceMut,
+    ByteSlice, ByteSliceMut, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice,
+    SplitByteSliceMut,
 };
 
 pub trait HashableObject {
@@ -333,15 +334,24 @@ impl<B: SplitByteSliceMut + std::fmt::Debug> JournalObjectMut<B> for FieldObject
 }
 
 pub enum OffsetsType<B: ByteSlice> {
-    Regular(Ref<B, [u64]>),
-    Compact(Ref<B, [u32]>),
+    Regular(Ref<B, [Option<NonZeroU64>]>),
+    Compact(Ref<B, [Option<NonZeroU32>]>),
 }
 
 impl<B: ByteSlice> OffsetsType<B> {
-    pub fn get(&self, index: usize) -> u64 {
+    pub fn get(&self, index: usize) -> Option<NonZeroU64> {
         match self {
             OffsetsType::Regular(offsets) => offsets[index],
-            OffsetsType::Compact(offsets) => offsets[index] as u64,
+            OffsetsType::Compact(offsets) => offsets[index].map(NonZeroU64::from),
+        }
+    }
+}
+
+impl<B: ByteSliceMut> OffsetsType<B> {
+    pub fn set(&mut self, index: usize, value: NonZeroU64) {
+        match self {
+            OffsetsType::Regular(offsets) => offsets[index] = Some(value),
+            OffsetsType::Compact(offsets) => offsets[index] = NonZeroU32::new(value.get() as u32),
         }
     }
 }
@@ -376,35 +386,22 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
         self.len(remaining_items) == 0
     }
 
-    pub fn get(&self, index: usize, remaining_items: usize) -> Result<u64> {
+    pub fn get(&self, index: usize, remaining_items: usize) -> Result<Option<NonZeroU64>> {
         if self.is_empty(remaining_items) {
             return Err(JournalError::EmptyOffsetArrayNode);
         }
 
-        let offset = match &self.items {
-            OffsetsType::Regular(items) => items[index],
-            OffsetsType::Compact(items) => items[index] as u64,
-        };
-
-        if offset == 0 {
-            Err(JournalError::InvalidOffsetArrayOffset)
-        } else {
-            Ok(offset)
-        }
+        Ok(self.items.get(index))
     }
 }
 
-impl<B: SplitByteSliceMut + std::fmt::Debug> OffsetArrayObject<B> {
+impl<B: ByteSliceMut + std::fmt::Debug> OffsetArrayObject<B> {
     pub fn set(&mut self, index: usize, offset: NonZeroU64) -> Result<()> {
         if index >= self.capacity() {
             return Err(JournalError::OutOfBoundsIndex);
         }
 
-        match &mut self.items {
-            OffsetsType::Regular(items) => items[index] = offset.get(),
-            OffsetsType::Compact(items) => items[index] = offset.get() as u32,
-        };
-
+        self.items.set(index, offset);
         Ok(())
     }
 }

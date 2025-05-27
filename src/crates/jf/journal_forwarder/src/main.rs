@@ -121,10 +121,8 @@ fn select_random_entries(
 
         // Get the entry at the current position
         if let Ok(entry_offset) = reader.get_entry_offset() {
-            if let Some(entry_offset) = NonZeroU64::new(entry_offset) {
-                if let Ok(entry_data) = extract_entry_data(journal_file, entry_offset) {
-                    entries.push(entry_data);
-                }
+            if let Ok(entry_data) = extract_entry_data(journal_file, entry_offset) {
+                entries.push(entry_data);
             }
         }
     }

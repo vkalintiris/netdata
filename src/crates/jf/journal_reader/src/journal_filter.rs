@@ -132,8 +132,8 @@ impl FilterExpr {
     pub fn next<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
-        needle_offset: u64,
-    ) -> Result<Option<u64>> {
+        needle_offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
             FilterExpr::Match(_, Some(ic)) => ic.next_until(journal_file, needle_offset),
@@ -157,7 +157,7 @@ impl FilterExpr {
                 }
             }
             FilterExpr::Disjunction(filter_exprs) => {
-                let mut best_offset: Option<u64> = None;
+                let mut best_offset: Option<NonZeroU64> = None;
 
                 for fe in filter_exprs.iter_mut() {
                     if let Some(fe_offset) = fe.next(journal_file, needle_offset)? {
@@ -178,8 +178,8 @@ impl FilterExpr {
     pub fn previous<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
-        needle_offset: u64,
-    ) -> Result<Option<u64>> {
+        needle_offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
         match self {
             FilterExpr::Match(_, None) => Ok(None),
             FilterExpr::Match(_, Some(ic)) => ic.previous_until(journal_file, needle_offset),
@@ -203,7 +203,7 @@ impl FilterExpr {
                 }
             }
             FilterExpr::Disjunction(filter_exprs) => {
-                let mut best_offset: Option<u64> = None;
+                let mut best_offset: Option<NonZeroU64> = None;
 
                 for fe in filter_exprs.iter_mut() {
                     if let Some(fe_offset) = fe.previous(journal_file, needle_offset)? {

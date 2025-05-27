@@ -74,7 +74,11 @@ impl Node {
     }
 
     /// Get an item at the specified index
-    pub fn get<M: MemoryMap>(&self, journal_file: &JournalFile<M>, index: usize) -> Result<u64> {
+    pub fn get<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        index: usize,
+    ) -> Result<Option<NonZeroU64>> {
         if index >= self.len().get() {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
@@ -104,7 +108,7 @@ impl Node {
 
         while left != right {
             let mid = left.midpoint(right);
-            let Some(offset) = NonZeroU64::new(self.get(journal_file, mid)?) else {
+            let Some(offset) = self.get(journal_file, mid)? else {
                 return Err(JournalError::InvalidOffset);
             };
 
@@ -363,7 +367,7 @@ impl Cursor {
         Node::new(journal_file, self.array_offset, self.remaining_items)
     }
 
-    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<u64> {
+    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<NonZeroU64>> {
         self.node(journal_file)?.get(journal_file, self.array_index)
     }
 
@@ -540,10 +544,10 @@ impl InlinedCursor {
         unreachable!();
     }
 
-    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<u64> {
+    pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<NonZeroU64>> {
         // Case 1: We're at the inlined entry
         if self.at_inlined_offset {
-            return Ok(self.inlined_offset.get());
+            return Ok(Some(self.inlined_offset));
         }
 
         // Case 2: We're in the entry array
@@ -557,9 +561,12 @@ impl InlinedCursor {
     pub fn next_until<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
-        offset: u64,
-    ) -> Result<Option<u64>> {
-        let current_offset = self.value(journal_file)?;
+        offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
+        let Some(current_offset) = self.value(journal_file)? else {
+            return Ok(None);
+        };
+
         if current_offset >= offset {
             return Ok(Some(current_offset));
         }
@@ -567,7 +574,10 @@ impl InlinedCursor {
         while let Some(ic) = self.next(journal_file)? {
             *self = ic;
 
-            let current_offset = self.value(journal_file)?;
+            let Some(current_offset) = self.value(journal_file)? else {
+                break;
+            };
+
             if current_offset >= offset {
                 return Ok(Some(current_offset));
             }
@@ -579,9 +589,12 @@ impl InlinedCursor {
     pub fn previous_until<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
-        offset: u64,
-    ) -> Result<Option<u64>> {
-        let current_offset = self.value(journal_file)?;
+        offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
+        let Some(current_offset) = self.value(journal_file)? else {
+            return Ok(None);
+        };
+
         if current_offset <= offset {
             return Ok(Some(current_offset));
         }
@@ -589,7 +602,10 @@ impl InlinedCursor {
         while let Some(ic) = self.previous(journal_file)? {
             *self = ic;
 
-            let current_offset = ic.value(journal_file)?;
+            let Some(current_offset) = ic.value(journal_file)? else {
+                break;
+            };
+
             if current_offset <= offset {
                 return Ok(Some(current_offset));
             }

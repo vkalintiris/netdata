@@ -555,8 +555,7 @@ impl<M: MemoryMap> JournalFile<M> {
             return Ok(None);
         };
 
-        // Convert the result to an entry offset
-        Ok(NonZeroU64::new(best_match.value(self)?))
+        best_match.value(self)
     }
 
     /// Creates an iterator over all field objects in the field hash table
@@ -661,9 +660,7 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
     type Item = Result<ValueGuard<'a, FieldObject<&'a [u8]>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some(offset) = self.next_field_offset else {
-            return None;
-        };
+        let offset = self.next_field_offset?;
 
         match self.journal.field_ref(offset) {
             Ok(field_guard) => {
@@ -724,9 +721,7 @@ impl<'a, M: MemoryMap> Iterator for EntryDataIterator<'a, M> {
     type Item = Result<ValueGuard<'a, DataObject<&'a [u8]>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some(entry_offset) = self.entry_offset else {
-            return None;
-        };
+        let entry_offset = self.entry_offset?;
 
         // If we've reached the end of the data indices, return None
         if self.current_index >= self.total_items {
@@ -754,9 +749,7 @@ impl<'a, M: MemoryMap> Iterator for EntryDataIterator<'a, M> {
                     }
                 };
 
-                let Some(data_offset) = NonZeroU64::new(data_offset) else {
-                    return None;
-                };
+                let data_offset = NonZeroU64::new(data_offset)?;
 
                 // Drop the entry guard before obtaining the data object
                 drop(entry_guard);

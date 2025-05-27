@@ -97,17 +97,13 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     }
 
     pub fn get_realtime_usec(&self, journal_file: &'a JournalFile<M>) -> Result<u64> {
-        let Some(entry_offset) = NonZeroU64::new(self.cursor.position()?) else {
-            return Err(error::JournalError::InvalidOffset);
-        };
+        let entry_offset = self.cursor.position()?;
         let entry_object = journal_file.entry_ref(entry_offset)?;
         Ok(entry_object.header.realtime)
     }
 
     pub fn get_seqnum(&self, journal_file: &'a JournalFile<M>) -> Result<(u64, [u8; 16])> {
-        let Some(entry_offset) = NonZeroU64::new(self.cursor.position()?) else {
-            return Err(error::JournalError::InvalidOffset);
-        };
+        let entry_offset = self.cursor.position()?;
         let entry_object = journal_file.entry_ref(entry_offset)?;
         Ok((
             entry_object.header.seqnum,
@@ -115,7 +111,7 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         ))
     }
 
-    pub fn get_entry_offset(&self) -> Result<u64> {
+    pub fn get_entry_offset(&self) -> Result<NonZeroU64> {
         self.cursor.position()
     }
 
@@ -188,10 +184,7 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         self.drop_guards();
 
         if self.entry_data_iterator.is_none() {
-            let Some(entry_offset) = NonZeroU64::new(self.cursor.position()?) else {
-                return Err(error::JournalError::InvalidOffset);
-            };
-
+            let entry_offset = self.cursor.position()?;
             self.entry_data_iterator = Some(journal_file.entry_data_objects(entry_offset)?);
         }
 
