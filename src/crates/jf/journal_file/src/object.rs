@@ -590,10 +590,10 @@ pub struct DataObjectHeader {
     pub object_header: ObjectHeader,
     pub hash: u64,
     pub next_hash_offset: Option<NonZeroU64>,
-    pub next_field_offset: u64,
-    pub entry_offset: u64,
-    pub entry_array_offset: u64,
-    pub n_entries: u64,
+    pub next_field_offset: Option<NonZeroU64>,
+    pub entry_offset: Option<NonZeroU64>,
+    pub entry_array_offset: Option<NonZeroU64>,
+    pub n_entries: Option<NonZeroU64>,
 }
 
 impl DataObjectHeader {
@@ -614,20 +614,18 @@ impl DataObjectHeader {
     }
 
     pub fn inlined_cursor(&self) -> Option<InlinedCursor> {
-        if self.n_entries == 0 {
-            return None;
-        }
-
-        let inlined_offset = NonZeroU64::new(self.entry_offset)?;
-        let cursor = self.entry_array_offset_list().map(Cursor::at_head);
+        let inlined_offset = self.entry_offset?;
+        let cursor = match self.n_entries?.get() {
+            1 => None,
+            n => {
+                let total_items = unsafe { NonZeroUsize::new_unchecked(n as usize - 1) };
+                Some(Cursor::at_head(List::new(
+                    self.entry_array_offset?,
+                    total_items,
+                )))
+            }
+        };
         Some(InlinedCursor::new(inlined_offset, cursor))
-    }
-
-    pub fn entry_array_offset_list(&self) -> Option<List> {
-        let total_items = NonZeroUsize::new(self.n_entries.saturating_sub(1) as usize)?;
-        let head_offset = NonZeroU64::new(self.entry_array_offset)?;
-
-        Some(List::new(head_offset, total_items))
     }
 }
 

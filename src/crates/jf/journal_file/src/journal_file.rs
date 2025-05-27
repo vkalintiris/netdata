@@ -694,14 +694,12 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
     type Item = Result<ValueGuard<'a, DataObject<&'a [u8]>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some(offset) = self.current_data_offset else {
-            return None;
-        };
+        let data_offset = self.current_data_offset?;
 
-        match self.journal.data_ref(offset) {
+        match self.journal.data_ref(data_offset) {
             Ok(data_guard) => {
                 // Get the next data offset before we return the guard
-                self.current_data_offset = NonZeroU64::new(data_guard.header.next_field_offset);
+                self.current_data_offset = data_guard.header.next_field_offset;
                 Some(Ok(data_guard))
             }
             Err(e) => {
