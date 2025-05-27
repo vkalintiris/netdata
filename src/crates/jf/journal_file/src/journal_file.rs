@@ -6,7 +6,6 @@ use crate::offset_array;
 use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::OpenOptions;
-use std::num::NonZero;
 use std::num::NonZeroU64;
 use std::path::Path;
 use window_manager::{MemoryMap, MemoryMapMut, WindowManager};

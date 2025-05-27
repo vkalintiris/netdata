@@ -272,7 +272,7 @@ pub struct FieldObjectHeader {
 #[repr(C)]
 pub struct OffsetArrayObjectHeader {
     pub object_header: ObjectHeader,
-    pub next_offset_array: u64,
+    pub next_offset_array: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]

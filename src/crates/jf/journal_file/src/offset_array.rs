@@ -31,7 +31,7 @@ impl Node {
 
         Ok(Self {
             offset,
-            next_offset: NonZeroU64::new(array.header.next_offset_array),
+            next_offset: array.header.next_offset_array,
             capacity,
             remaining_items,
         })
