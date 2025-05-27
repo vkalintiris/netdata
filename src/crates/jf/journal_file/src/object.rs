@@ -265,7 +265,7 @@ pub struct FieldObjectHeader {
     pub object_header: ObjectHeader,
     pub hash: u64,
     pub next_hash_offset: Option<NonZeroU64>,
-    pub head_data_offset: u64,
+    pub head_data_offset: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]

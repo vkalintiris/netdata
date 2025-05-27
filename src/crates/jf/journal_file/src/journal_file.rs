@@ -592,7 +592,7 @@ impl<M: MemoryMap> JournalFile<M> {
 
         // Get the field object to access its head_data_offset
         let field_guard = self.field_ref(field_offset)?;
-        let head_data_offset = NonZeroU64::new(field_guard.header.head_data_offset);
+        let head_data_offset = field_guard.header.head_data_offset;
 
         // Create the iterator
         Ok(FieldDataIterator {
