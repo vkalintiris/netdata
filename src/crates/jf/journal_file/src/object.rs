@@ -168,20 +168,15 @@ pub struct JournalHeader {
 */
 
 impl JournalHeader {
-    pub fn has_incompatible_flag(&self, flag: HeaderIncompatibleFlags) -> bool {
-        (self.incompatible_flags & flag as u32) != 0
-    }
-
-    pub fn has_compatible_flag(&self, flag: HeaderCompatibleFlags) -> bool {
-        (self.compatible_flags & flag as u32) != 0
-    }
-
     fn map_hash_table<M: MemoryMap>(
-        &self,
         file: &File,
-        offset: NonZeroU64,
-        size: NonZeroU64,
+        offset: Option<NonZeroU64>,
+        size: Option<NonZeroU64>,
     ) -> Result<Option<M>> {
+        let (Some(offset), Some(size)) = (offset, size) else {
+            return Ok(None);
+        };
+
         if offset.get() <= std::mem::size_of::<JournalHeader>() as u64 {
             return Err(JournalError::InvalidObjectLocation);
         }
@@ -194,20 +189,24 @@ impl JournalHeader {
         M::create(file, offset, size).map(Some)
     }
 
+    pub fn has_incompatible_flag(&self, flag: HeaderIncompatibleFlags) -> bool {
+        (self.incompatible_flags & flag as u32) != 0
+    }
+
+    pub fn has_compatible_flag(&self, flag: HeaderCompatibleFlags) -> bool {
+        (self.compatible_flags & flag as u32) != 0
+    }
+
     pub fn map_data_hash_table<M: MemoryMap>(&self, file: &File) -> Result<Option<M>> {
-        match (self.data_hash_table_offset, self.data_hash_table_size) {
-            (Some(offset), Some(size)) => self.map_hash_table(file, offset, size),
-            (None, None) => Ok(None),
-            _ => Err(JournalError::InvalidObjectLocation),
-        }
+        Self::map_hash_table(file, self.data_hash_table_offset, self.data_hash_table_size)
     }
 
     pub fn map_field_hash_table<M: MemoryMap>(&self, file: &File) -> Result<Option<M>> {
-        match (self.field_hash_table_offset, self.field_hash_table_size) {
-            (Some(offset), Some(size)) => self.map_hash_table(file, offset, size),
-            (None, None) => Ok(None),
-            _ => Err(JournalError::InvalidObjectLocation),
-        }
+        Self::map_hash_table(
+            file,
+            self.field_hash_table_offset,
+            self.field_hash_table_size,
+        )
     }
 }
 
