@@ -1,0 +1,10 @@
+[package]
+name = "ht"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+error = { path = "../error" }
+window_manager = { path = "../window_manager" }
+memmap2 = { workspace = true }
+zerocopy = { workspace = true }

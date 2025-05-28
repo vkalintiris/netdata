@@ -11,6 +11,7 @@ members = [
     "journal_forwarder",
     "window_manager",
     "sigbus",
+    "ht",
 ]
 
 [workspace.package]
