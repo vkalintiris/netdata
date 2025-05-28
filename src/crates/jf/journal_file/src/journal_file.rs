@@ -82,233 +82,6 @@ pub struct JournalFile<M: MemoryMap> {
     backtrace: RefCell<Backtrace>,
 }
 
-impl<M: MemoryMapMut> JournalFile<M> {
-    pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
-        debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
-
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-
-        let mut header = JournalHeader::default();
-        header.signature = *b"LPKSHHRH";
-
-        let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
-            + std::mem::size_of::<ObjectHeader>() as u64;
-        let data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
-
-        let field_hash_table_offset = data_hash_table_offset
-            + data_hash_table_size
-            + std::mem::size_of::<ObjectHeader>() as u64;
-        let field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
-
-        debug_assert_eq!(data_hash_table_offset % OBJECT_ALIGNMENT, 0);
-        debug_assert_eq!(data_hash_table_size % OBJECT_ALIGNMENT, 0);
-        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
-        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size);
-
-        debug_assert_eq!(field_hash_table_offset % OBJECT_ALIGNMENT, 0);
-        debug_assert_eq!(field_hash_table_size % OBJECT_ALIGNMENT, 0);
-        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
-        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size);
-
-        header.tail_object_offset = NonZeroU64::new(data_hash_table_offset + data_hash_table_size);
-        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
-        header.n_objects = 2;
-        header.arena_size = field_hash_table_offset + field_hash_table_size - header.header_size;
-
-        // FIXME: just to get us going
-        header.machine_id = load_machine_id()?;
-        header.tail_entry_boot_id = load_boot_id()?;
-        header.file_id = [
-            // 31c6c25b-2e53-4a23-89e4-47fcaaac811e
-            0x31, 0xc6, 0xc2, 0x5b, 0x2e, 0x53, 0x4a, 0x23, 0x89, 0xe4, 0x47, 0xfc, 0xaa, 0xac,
-            0x81, 0x1e,
-        ];
-        header.seqnum_id = [
-            // 9af51868-eed6-43f9-9b4f-dfdc928e9e3b
-            0x9a, 0xf5, 0x18, 0x68, 0xee, 0xd6, 0x43, 0xf9, 0x9b, 0x4f, 0xdf, 0xdc, 0x92, 0x8e,
-            0x9e, 0x3b,
-        ];
-
-        let data_hash_table_map = header.map_data_hash_table(&file)?;
-        let field_hash_table_map = header.map_field_hash_table(&file)?;
-
-        let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let mut header_map = M::create(&file, 0, header_size)?;
-        {
-            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
-            *header_mut = header;
-        }
-
-        // Create window manager for the rest of the objects
-        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
-
-        Ok(JournalFile {
-            header_map,
-            data_hash_table_map,
-            field_hash_table_map,
-            window_manager,
-            object_in_use: RefCell::new(false),
-
-            #[cfg(debug_assertions)]
-            prev_backtrace: RefCell::new(Backtrace::capture()),
-            #[cfg(debug_assertions)]
-            backtrace: RefCell::new(Backtrace::capture()),
-        })
-    }
-
-    pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
-        JournalHeader::mut_from_prefix(&mut self.header_map)
-            .unwrap()
-            .0
-    }
-
-    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
-        self.data_hash_table_map
-            .as_mut()
-            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
-    }
-
-    pub fn field_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
-        self.field_hash_table_map
-            .as_mut()
-            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
-    }
-
-    fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
-        let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        let header_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
-        Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
-    }
-
-    fn object_data_mut(&self, offset: NonZeroU64, size_needed: u64) -> Result<&mut [u8]> {
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        let object_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
-        Ok(object_slice)
-    }
-
-    fn journal_object_mut<'a, T>(
-        &'a self,
-        type_: ObjectType,
-        offset: NonZeroU64,
-        size: Option<u64>,
-    ) -> Result<ValueGuard<'a, T>>
-    where
-        T: JournalObjectMut<&'a mut [u8]>,
-    {
-        // Check if any object is already in use
-        let mut is_in_use = self.object_in_use.borrow_mut();
-        if *is_in_use {
-            #[cfg(debug_assertions)]
-            {
-                eprintln!(
-                    "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
-                    self.backtrace.borrow().to_string(),
-                    self.prev_backtrace.borrow().to_string()
-                );
-            }
-            return Err(JournalError::ValueGuardInUse);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            self.backtrace.swap(&self.prev_backtrace);
-            let _ = self.backtrace.replace(Backtrace::force_capture());
-        }
-
-        let is_compact = self
-            .journal_header_ref()
-            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
-
-        let size_needed = match size {
-            Some(size) => {
-                let header = self.object_header_mut(offset)?;
-                header.type_ = type_ as u8;
-                header.size = size;
-                size
-            }
-            None => {
-                let header = self.object_header_ref(offset)?;
-                if header.type_ != type_ as u8 {
-                    return Err(JournalError::InvalidObjectType);
-                }
-                header.size
-            }
-        };
-
-        let data = self.object_data_mut(offset, size_needed)?;
-        let object = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
-
-        // Mark as in use
-        *is_in_use = true;
-        Ok(ValueGuard::new(object, &self.object_in_use))
-    }
-
-    pub fn offset_array_mut(
-        &self,
-        offset: NonZeroU64,
-        capacity: Option<u64>,
-    ) -> Result<ValueGuard<OffsetArrayObject<&mut [u8]>>> {
-        let size = capacity.map(|c| {
-            let mut size = std::mem::size_of::<OffsetArrayObjectHeader>() as u64;
-
-            let is_compact = self
-                .journal_header_ref()
-                .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
-            if is_compact {
-                size += c * std::mem::size_of::<u32>() as u64;
-            } else {
-                size += c * std::mem::size_of::<u64>() as u64;
-            }
-
-            size
-        });
-
-        let offset_array = self.journal_object_mut(ObjectType::EntryArray, offset, size);
-        offset_array
-    }
-
-    pub fn field_mut(
-        &self,
-        offset: NonZeroU64,
-        size: Option<u64>,
-    ) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<FieldObjectHeader>() as u64 + n);
-        self.journal_object_mut(ObjectType::Field, offset, size)
-    }
-
-    pub fn entry_mut(&self, offset: NonZeroU64) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
-        self.journal_object_mut(ObjectType::Entry, offset, None)
-    }
-
-    pub fn data_mut(
-        &self,
-        offset: NonZeroU64,
-        size: Option<u64>,
-    ) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
-        self.journal_object_mut(ObjectType::Data, offset, size)
-    }
-
-    pub fn tag_mut(
-        &self,
-        offset: NonZeroU64,
-        new: bool,
-    ) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
-        let size = if new {
-            Some(std::mem::size_of::<TagObjectHeader>() as u64)
-        } else {
-            None
-        };
-        self.journal_object_mut(ObjectType::Tag, offset, size)
-    }
-}
-
 impl<M: MemoryMap> JournalFile<M> {
     pub fn open(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
@@ -620,6 +393,233 @@ impl<M: MemoryMap> JournalFile<M> {
             current_index: 0,
             total_items,
         })
+    }
+}
+
+impl<M: MemoryMapMut> JournalFile<M> {
+    pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
+        debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
+
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+
+        let mut header = JournalHeader::default();
+        header.signature = *b"LPKSHHRH";
+
+        let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
+
+        let field_hash_table_offset = data_hash_table_offset
+            + data_hash_table_size
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let field_hash_table_size = 512 * std::mem::size_of::<HashItem>() as u64;
+
+        debug_assert_eq!(data_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(data_hash_table_size % OBJECT_ALIGNMENT, 0);
+        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
+        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size);
+
+        debug_assert_eq!(field_hash_table_offset % OBJECT_ALIGNMENT, 0);
+        debug_assert_eq!(field_hash_table_size % OBJECT_ALIGNMENT, 0);
+        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
+        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size);
+
+        header.tail_object_offset = NonZeroU64::new(data_hash_table_offset + data_hash_table_size);
+        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
+        header.n_objects = 2;
+        header.arena_size = field_hash_table_offset + field_hash_table_size - header.header_size;
+
+        // FIXME: just to get us going
+        header.machine_id = load_machine_id()?;
+        header.tail_entry_boot_id = load_boot_id()?;
+        header.file_id = [
+            // 31c6c25b-2e53-4a23-89e4-47fcaaac811e
+            0x31, 0xc6, 0xc2, 0x5b, 0x2e, 0x53, 0x4a, 0x23, 0x89, 0xe4, 0x47, 0xfc, 0xaa, 0xac,
+            0x81, 0x1e,
+        ];
+        header.seqnum_id = [
+            // 9af51868-eed6-43f9-9b4f-dfdc928e9e3b
+            0x9a, 0xf5, 0x18, 0x68, 0xee, 0xd6, 0x43, 0xf9, 0x9b, 0x4f, 0xdf, 0xdc, 0x92, 0x8e,
+            0x9e, 0x3b,
+        ];
+
+        let data_hash_table_map = header.map_data_hash_table(&file)?;
+        let field_hash_table_map = header.map_field_hash_table(&file)?;
+
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let mut header_map = M::create(&file, 0, header_size)?;
+        {
+            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+            *header_mut = header;
+        }
+
+        // Create window manager for the rest of the objects
+        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
+
+        Ok(JournalFile {
+            header_map,
+            data_hash_table_map,
+            field_hash_table_map,
+            window_manager,
+            object_in_use: RefCell::new(false),
+
+            #[cfg(debug_assertions)]
+            prev_backtrace: RefCell::new(Backtrace::capture()),
+            #[cfg(debug_assertions)]
+            backtrace: RefCell::new(Backtrace::capture()),
+        })
+    }
+
+    pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
+        JournalHeader::mut_from_prefix(&mut self.header_map)
+            .unwrap()
+            .0
+    }
+
+    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+        self.data_hash_table_map
+            .as_mut()
+            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+    }
+
+    pub fn field_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+        self.field_hash_table_map
+            .as_mut()
+            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+    }
+
+    fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
+        let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let header_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
+        Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
+    }
+
+    fn object_data_mut(&self, offset: NonZeroU64, size_needed: u64) -> Result<&mut [u8]> {
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let object_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
+        Ok(object_slice)
+    }
+
+    fn journal_object_mut<'a, T>(
+        &'a self,
+        type_: ObjectType,
+        offset: NonZeroU64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<'a, T>>
+    where
+        T: JournalObjectMut<&'a mut [u8]>,
+    {
+        // Check if any object is already in use
+        let mut is_in_use = self.object_in_use.borrow_mut();
+        if *is_in_use {
+            #[cfg(debug_assertions)]
+            {
+                eprintln!(
+                    "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
+                    self.backtrace.borrow().to_string(),
+                    self.prev_backtrace.borrow().to_string()
+                );
+            }
+            return Err(JournalError::ValueGuardInUse);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            self.backtrace.swap(&self.prev_backtrace);
+            let _ = self.backtrace.replace(Backtrace::force_capture());
+        }
+
+        let is_compact = self
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+
+        let size_needed = match size {
+            Some(size) => {
+                let header = self.object_header_mut(offset)?;
+                header.type_ = type_ as u8;
+                header.size = size;
+                size
+            }
+            None => {
+                let header = self.object_header_ref(offset)?;
+                if header.type_ != type_ as u8 {
+                    return Err(JournalError::InvalidObjectType);
+                }
+                header.size
+            }
+        };
+
+        let data = self.object_data_mut(offset, size_needed)?;
+        let object = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
+
+        // Mark as in use
+        *is_in_use = true;
+        Ok(ValueGuard::new(object, &self.object_in_use))
+    }
+
+    pub fn offset_array_mut(
+        &self,
+        offset: NonZeroU64,
+        capacity: Option<u64>,
+    ) -> Result<ValueGuard<OffsetArrayObject<&mut [u8]>>> {
+        let size = capacity.map(|c| {
+            let mut size = std::mem::size_of::<OffsetArrayObjectHeader>() as u64;
+
+            let is_compact = self
+                .journal_header_ref()
+                .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+            if is_compact {
+                size += c * std::mem::size_of::<u32>() as u64;
+            } else {
+                size += c * std::mem::size_of::<u64>() as u64;
+            }
+
+            size
+        });
+
+        let offset_array = self.journal_object_mut(ObjectType::EntryArray, offset, size);
+        offset_array
+    }
+
+    pub fn field_mut(
+        &self,
+        offset: NonZeroU64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<FieldObject<&mut [u8]>>> {
+        let size = size.map(|n| std::mem::size_of::<FieldObjectHeader>() as u64 + n);
+        self.journal_object_mut(ObjectType::Field, offset, size)
+    }
+
+    pub fn entry_mut(&self, offset: NonZeroU64) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
+        self.journal_object_mut(ObjectType::Entry, offset, None)
+    }
+
+    pub fn data_mut(
+        &self,
+        offset: NonZeroU64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<DataObject<&mut [u8]>>> {
+        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        self.journal_object_mut(ObjectType::Data, offset, size)
+    }
+
+    pub fn tag_mut(
+        &self,
+        offset: NonZeroU64,
+        new: bool,
+    ) -> Result<ValueGuard<TagObject<&mut [u8]>>> {
+        let size = if new {
+            Some(std::mem::size_of::<TagObjectHeader>() as u64)
+        } else {
+            None
+        };
+        self.journal_object_mut(ObjectType::Tag, offset, size)
     }
 }
 
