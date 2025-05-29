@@ -3,8 +3,8 @@
 use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
+use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::{collections::HashMap, ops::Deref};
 use window_manager::MemoryMap;
 
 pub struct EntryData {
