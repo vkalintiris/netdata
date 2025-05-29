@@ -622,11 +622,20 @@ fn main() {
             for offset in bucket {
                 let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
                 println!(
-                    "GVD[{:?}]: {:?}",
+                    "GVDA[{:?}]: {:?}",
                     offset,
                     String::from_utf8_lossy(field.get_payload())
                 );
             }
+        }
+
+        for offset in ht.offsets() {
+            let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
+            println!(
+                "GVDB[{:?}]: {:?}",
+                offset,
+                String::from_utf8_lossy(field.get_payload())
+            );
         }
 
         // for i in 0..ht.num_buckets() {

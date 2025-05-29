@@ -141,32 +141,45 @@ where
         }
     }
 
-    fn get_bucket(&self, hash: u64) -> HashItem {
-        let bucket_index = hash % self.inner.items.len() as u64;
-        self.inner.items[bucket_index as usize]
-    }
+    // fn get_bucket(&self, hash: u64) -> HashItem {
+    //     let bucket_index = hash % self.inner.items.len() as u64;
+    //     self.inner.items[bucket_index as usize]
+    // }
 
-    pub fn num_buckets(&self) -> usize {
-        self.inner.items.len()
-    }
+    // pub fn num_buckets(&self) -> usize {
+    //     self.inner.items.len()
+    // }
 
-    pub fn bucket_offset_iter(&'a self, bucket_index: usize) -> BucketOffsetsIterator<'a, M, B, F> {
-        let bucket = self.inner.items[bucket_index];
-        BucketOffsetsIterator::new(self, bucket)
-    }
+    // pub fn bucket_offset_iter(&'a self, bucket_index: usize) -> BucketOffsetsIterator<'a, M, B, F> {
+    //     let bucket = self.inner.items[bucket_index];
+    //     BucketOffsetsIterator::new(self, bucket)
+    // }
 
-    pub fn bucket_iter(&'a self) -> BucketIterator<'a, M, B, F> {
-        BucketIterator::new(self)
+    // pub fn bucket_iter(&'a self) -> BucketIterator<'a, M, B, F> {
+    //     BucketIterator::new(self)
+    // }
+
+    // pub fn offsets_iter(&'a self) -> impl Iterator<Item = Result<NonZeroU64>> + 'a {
+    //     self.bucket_iter().flatten()
+    // }
+
+    pub fn offsets(&'a self) -> impl Iterator<Item = Result<NonZeroU64>> + 'a {
+        self.inner
+            .items
+            .iter()
+            .filter_map(|bucket| bucket.head_hash_offset)
+            .flat_map(move |head| {
+                std::iter::successors(Some(Ok(head)), move |prev| match prev {
+                    Ok(offset) => match (self.fetch_fn)(self.journal_file, *offset) {
+                        Ok(Some(next)) => Some(Ok(next)),
+                        Ok(None) => None,
+                        Err(e) => Some(Err(e)),
+                    },
+                    Err(_) => None,
+                })
+            })
     }
 }
-
-// impl<B: SplitByteSliceMut> HashTable<B> {
-//     fn from_mut(b: B) -> Self {
-//         Self {
-//             inner: HashTableObject::<B>::from_data(b, false).unwrap(),
-//         }
-//     }
-// }
 
 fn load_machine_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/etc/machine-id")?;
