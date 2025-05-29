@@ -63,18 +63,22 @@ impl<M: MemoryMap> std::fmt::Debug for Window<M> {
 }
 
 impl<M: MemoryMap> Window<M> {
+    #[inline(always)]
     fn end_offset(&self) -> u64 {
         self.offset + self.size
     }
 
+    #[inline(always)]
     fn contains(&self, position: u64) -> bool {
         position >= self.offset && position < self.end_offset()
     }
 
+    #[inline(always)]
     fn contains_range(&self, position: u64, size: u64) -> bool {
         position >= self.offset && position + size <= self.end_offset()
     }
 
+    #[inline(always)]
     fn get_slice(&self, position: u64, size: u64) -> &[u8] {
         debug_assert!(self.contains_range(position, size));
 
@@ -178,11 +182,20 @@ impl<M: MemoryMap> WindowManager<M> {
         None
     }
 
+    #[inline(always)]
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             // Use the existing window
             Ok(&mut self.windows[idx])
-        } else if let Some(idx) = self.lookup_window_by_position(position) {
+        } else {
+            self.get_window_slow_path(position, size_needed)
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn get_window_slow_path(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
+        if let Some(idx) = self.lookup_window_by_position(position) {
             // Remap the window
 
             let window = self.windows.remove(idx);
