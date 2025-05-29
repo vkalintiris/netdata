@@ -6,9 +6,7 @@ mod value_guard;
 
 pub use crate::hash::*;
 pub use error::Result;
-pub use journal_file::{
-    EntryDataIterator, FieldDataIterator, FieldIterator, HashTable, JournalFile,
-};
+pub use journal_file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile};
 pub use memmap2::{Mmap, MmapMut};
 pub use object::*;
 pub use value_guard::ValueGuard;

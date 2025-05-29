@@ -328,6 +328,47 @@ impl<B: SplitByteSliceMut> JournalObjectMut<B> for HashTableObject<B> {
     }
 }
 
+impl<B: ByteSlice> HashTableObject<B> {
+    pub fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
+        self.items
+            .iter()
+            .filter_map(|hash_item| hash_item.head_hash_offset)
+    }
+
+    pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = NonZeroU64> + 'a
+    where
+        F: Fn(NonZeroU64) -> Option<NonZeroU64> + Clone + 'a,
+    {
+        let successors = move |head_hash_offset| {
+            let fetch_next = fetch_next.clone();
+            std::iter::successors(Some(head_hash_offset), move |offset| fetch_next(*offset))
+        };
+
+        self.head_hash_offsets().flat_map(successors)
+    }
+}
+
+// impl<B: ByteSlice> HashTableObject<B> {
+//     pub fn offsets<F>(&self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>>
+//     where
+//         F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+//     {
+//         self.items
+//             .iter()
+//             .filter_map(|bucket| bucket.head_hash_offset)
+//             .flat_map(move |head| {
+//                 std::iter::successors(Some(Ok(head)), |prev| match *prev {
+//                     Ok(offset) => match (fetch_next)(offset) {
+//                         Ok(Some(next)) => Some(Ok(next)),
+//                         Ok(None) => None,
+//                         Err(e) => Some(Err(e)),
+//                     },
+//                     Err(_) => None,
+//                 })
+//             })
+//     }
+// }
+
 impl<B: ByteSliceMut> HashTableObject<B> {
     pub fn insert<T: HashableObjectMut>(&mut self) -> Option<Self> {
         todo!()

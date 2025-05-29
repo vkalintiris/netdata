@@ -608,35 +608,44 @@ fn main() {
 
         let journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
 
-        let fht_map = journal_file.field_hash_table_map().unwrap();
-        let data = fht_map.deref();
+        let fht = journal_file.field_hash_table_ref().unwrap();
 
-        let fetch_fn = |journal_file: &JournalFile<Mmap>, offset| {
-            Ok(journal_file.field_ref(offset)?.header.next_hash_offset)
+        // let jf = &journal_file;
+        let fetch_next = |offset| {
+            let field = journal_file.field_ref(offset).unwrap();
+            field.header.next_hash_offset
         };
 
-        let ht = HashTable::from_ref(&journal_file, data, fetch_fn);
-        println!("Num buckets: {:?}", ht.num_buckets());
-
-        for bucket in ht.bucket_iter() {
-            for offset in bucket {
-                let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
-                println!(
-                    "GVDA[{:?}]: {:?}",
-                    offset,
-                    String::from_utf8_lossy(field.get_payload())
-                );
-            }
+        for offset in fht.offsets(fetch_next) {
+            println!("offset: {:?}", offset);
         }
 
-        for offset in ht.offsets() {
-            let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
-            println!(
-                "GVDB[{:?}]: {:?}",
-                offset,
-                String::from_utf8_lossy(field.get_payload())
-            );
-        }
+        // let fetch_fn = |journal_file: &JournalFile<Mmap>, offset| {
+        //     Ok(journal_file.field_ref(offset)?.header.next_hash_offset)
+        // };
+
+        // let ht = HashTable::from_ref(&journal_file, data, fetch_fn);
+        // println!("Num buckets: {:?}", ht.num_buckets());
+
+        // for bucket in ht.bucket_iter() {
+        //     for offset in bucket {
+        //         let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
+        //         println!(
+        //             "GVDA[{:?}]: {:?}",
+        //             offset,
+        //             String::from_utf8_lossy(field.get_payload())
+        //         );
+        //     }
+        // }
+
+        // for offset in ht.offsets() {
+        //     let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
+        //     println!(
+        //         "GVDB[{:?}]: {:?}",
+        //         offset,
+        //         String::from_utf8_lossy(field.get_payload())
+        //     );
+        // }
 
         // for i in 0..ht.num_buckets() {
         //     println!("\tIterating offsets of bucket {:?}", i);
