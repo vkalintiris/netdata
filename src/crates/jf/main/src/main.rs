@@ -3,8 +3,8 @@
 use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
-use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::{collections::HashMap, ops::Deref};
 use window_manager::MemoryMap;
 
 pub struct EntryData {
@@ -517,7 +517,7 @@ fn apply_match_expression<'a>(
 }
 
 fn filtered_test() {
-    let path = "/tmp/foo.journal";
+    let path = "/home/vk/foo.journal";
     let window_size = 8 * 1024 * 1024;
     let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
     println!(
@@ -571,6 +571,7 @@ fn test_case() {
 
     let window_size = 8 * 1024 * 1024;
     let journal_file = JournalFile::<Mmap>::open(path, window_size).unwrap();
+    println!("journal_file: {:#?}", journal_file.journal_header_ref());
     let mut jw = JournalWrapper::open(path).unwrap();
 
     let timings = get_timings(path);
@@ -588,7 +589,56 @@ fn test_case() {
     // println!("second value: {:?}", value);
 }
 
+use std::path::PathBuf;
+use walkdir::WalkDir;
+
+fn get_all_files() -> Vec<PathBuf> {
+    WalkDir::new("/var/log/journal")
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.path().to_path_buf())
+        .collect()
+}
+
 fn main() {
+    let paths = get_all_files();
+    for path in paths.iter() {
+        println!("Iterating path: {:?}", path);
+
+        let journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
+
+        let fht_map = journal_file.field_hash_table_map().unwrap();
+        let data = fht_map.deref();
+
+        let fetch_fn = |journal_file: &JournalFile<Mmap>, offset| {
+            Ok(journal_file.field_ref(offset)?.header.next_hash_offset)
+        };
+
+        let ht = HashTable::from_ref(&journal_file, data, fetch_fn);
+        println!("Num buckets: {:?}", ht.num_buckets());
+
+        for bucket in ht.bucket_iter() {
+            for offset in bucket {
+                let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
+                println!(
+                    "GVD[{:?}]: {:?}",
+                    offset,
+                    String::from_utf8_lossy(field.get_payload())
+                );
+            }
+        }
+
+        // for i in 0..ht.num_buckets() {
+        //     println!("\tIterating offsets of bucket {:?}", i);
+        //     for offset in ht.bucket_offset_iter(i) {
+        //         println!("\t\toffset: {:?}", offset);
+        //     }
+        // }
+    }
+
+    // filtered_test();
+
     // {
     //     let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
 
@@ -636,7 +686,6 @@ fn main() {
     //     println!("offset[{}]: 0x{:x?}", i, offset);
     // }
 
-    filtered_test();
     // test_case()
 
     //     altime();

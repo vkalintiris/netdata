@@ -1,4 +1,4 @@
-#![allow(clippy::field_reassign_with_default)]
+#![allow(unused_imports, clippy::field_reassign_with_default)]
 
 use crate::hash;
 use crate::object::*;
@@ -9,12 +9,164 @@ use std::fs::OpenOptions;
 use std::num::NonZeroU64;
 use std::path::Path;
 use window_manager::{MemoryMap, MemoryMapMut, WindowManager};
-use zerocopy::FromBytes;
+use zerocopy::{ByteSlice, FromBytes, SplitByteSlice, SplitByteSliceMut};
 
 #[cfg(debug_assertions)]
 use std::backtrace::Backtrace;
 
 use crate::value_guard::ValueGuard;
+
+pub struct BucketOffsetsIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: ByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    hash_table: &'a HashTable<'a, M, B, F>,
+    bucket: HashItem,
+    current_offset: Option<NonZeroU64>,
+}
+
+impl<'a, M, B, F> BucketOffsetsIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: ByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    pub fn new(hash_table: &'a HashTable<'a, M, B, F>, bucket: HashItem) -> Self {
+        Self {
+            hash_table,
+            bucket,
+            current_offset: None,
+        }
+    }
+}
+
+impl<'a, M, B, F> Iterator for BucketOffsetsIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: ByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    type Item = Result<NonZeroU64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let head_hash_offset = self.bucket.head_hash_offset?;
+
+        let Some(current_offset) = self.current_offset else {
+            self.current_offset = Some(head_hash_offset);
+            return Some(Ok(head_hash_offset));
+        };
+
+        match (self.hash_table.fetch_fn)(self.hash_table.journal_file, current_offset)
+            .transpose()?
+        {
+            Ok(next_offset) => {
+                self.current_offset = Some(next_offset);
+                Ok(self.current_offset).transpose()
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+pub struct BucketIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: ByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    hash_table: &'a HashTable<'a, M, B, F>,
+    current_bucket: usize,
+}
+
+impl<'a, M, B, F> BucketIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: SplitByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    pub fn new(hash_table: &'a HashTable<'a, M, B, F>) -> Self {
+        Self {
+            hash_table,
+            current_bucket: 0,
+        }
+    }
+}
+impl<'a, M, B, F> Iterator for BucketIterator<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: SplitByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    type Item = BucketOffsetsIterator<'a, M, B, F>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let items = &self.hash_table.inner.items;
+
+        for i in self.current_bucket..items.len() {
+            self.current_bucket = i + 1;
+
+            if items[i].head_hash_offset.is_some() {
+                return Some(BucketOffsetsIterator::new(self.hash_table, items[i]));
+            }
+        }
+
+        None
+    }
+}
+
+pub struct HashTable<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: ByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    journal_file: &'a JournalFile<M>,
+    inner: HashTableObject<B>,
+    fetch_fn: F,
+}
+
+impl<'a, M, B, F> HashTable<'a, M, B, F>
+where
+    M: MemoryMap,
+    B: SplitByteSlice,
+    F: Fn(&'a JournalFile<M>, NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    pub fn from_ref(journal_file: &'a JournalFile<M>, data: B, fetch_fn: F) -> Self {
+        Self {
+            journal_file,
+            inner: HashTableObject::<B>::from_data(data, false).unwrap(),
+            fetch_fn,
+        }
+    }
+
+    fn get_bucket(&self, hash: u64) -> HashItem {
+        let bucket_index = hash % self.inner.items.len() as u64;
+        self.inner.items[bucket_index as usize]
+    }
+
+    pub fn num_buckets(&self) -> usize {
+        self.inner.items.len()
+    }
+
+    pub fn bucket_offset_iter(&'a self, bucket_index: usize) -> BucketOffsetsIterator<'a, M, B, F> {
+        let bucket = self.inner.items[bucket_index];
+        BucketOffsetsIterator::new(self, bucket)
+    }
+
+    pub fn bucket_iter(&'a self) -> BucketIterator<'a, M, B, F> {
+        BucketIterator::new(self)
+    }
+}
+
+// impl<B: SplitByteSliceMut> HashTable<B> {
+//     fn from_mut(b: B) -> Self {
+//         Self {
+//             inner: HashTableObject::<B>::from_data(b, false).unwrap(),
+//         }
+//     }
+// }
 
 fn load_machine_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/etc/machine-id")?;
@@ -143,6 +295,23 @@ impl<M: MemoryMap> JournalFile<M> {
 
     pub fn journal_header_ref(&self) -> &JournalHeader {
         JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
+    }
+
+    // pub fn dht_ref(&self) -> Option<HashTable<&[u8]>> {
+    //     let hash_table_object = self
+    //         .data_hash_table_map
+    //         .as_ref()
+    //         .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))?;
+
+    //     Some(HashTable {
+    //         inner: hash_table_object,
+    //     })
+    // }
+    pub fn data_hash_table_map(&self) -> Option<&M> {
+        self.data_hash_table_map.as_ref()
+    }
+    pub fn field_hash_table_map(&self) -> Option<&M> {
+        self.field_hash_table_map.as_ref()
     }
 
     pub fn data_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {

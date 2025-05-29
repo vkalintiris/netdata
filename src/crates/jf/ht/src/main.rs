@@ -121,7 +121,7 @@ fn gvd() {
     let size = NonZeroU64::new(64 * 1024).unwrap();
 
     let mut map = map_memory::<MmapMut>(&file, offset, size).unwrap();
-    let ht = HashTableObject::from_data(map.deref_mut(), false).unwrap();
+    let _ht = HashTableObject::from_data(map.deref_mut(), false).unwrap();
 
     println!("map: {:#?}", map);
 }

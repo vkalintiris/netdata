@@ -13,3 +13,4 @@ window_manager = { path = "../window_manager" }
 rand = { workspace = true }
 systemd = { workspace = true }
 zerocopy = { workspace = true }
+walkdir = { workspace = true }
