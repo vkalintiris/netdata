@@ -393,56 +393,30 @@ impl<B: ByteSlice> HashTableObject<B> {
 
         Ok(None)
     }
-
-    // pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
-    // where
-    //     F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
-    // {
-    //     let heads = self.head_hash_offsets();
-
-    //     let chains = heads.map(move |head| {
-    //         let fetch_next = fetch_next.clone();
-
-    //         let successor_fn = move |prev: &Result<NonZeroU64>| match prev {
-    //             Ok(offset) => match fetch_next(*offset) {
-    //                 Ok(Some(next)) => Some(Ok(next)),
-    //                 Ok(None) => None,
-    //                 Err(e) => Some(Err(e)),
-    //             },
-    //             Err(_) => None,
-    //         };
-
-    //         std::iter::successors(Some(Ok(head)), successor_fn)
-    //     });
-
-    //     chains.flatten()
-    // }
 }
 
-// impl<B: ByteSlice> HashTableObject<B> {
-//     pub fn offsets<F>(&self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>>
-//     where
-//         F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
-//     {
-//         self.items
-//             .iter()
-//             .filter_map(|bucket| bucket.head_hash_offset)
-//             .flat_map(move |head| {
-//                 std::iter::successors(Some(Ok(head)), |prev| match *prev {
-//                     Ok(offset) => match (fetch_next)(offset) {
-//                         Ok(Some(next)) => Some(Ok(next)),
-//                         Ok(None) => None,
-//                         Err(e) => Some(Err(e)),
-//                     },
-//                     Err(_) => None,
-//                 })
-//             })
-//     }
-// }
-
 impl<B: ByteSliceMut> HashTableObject<B> {
-    pub fn insert<T: HashableObjectMut>(&mut self) -> Option<Self> {
-        todo!()
+    /// Insert a new object offset into the hash table
+    ///
+    /// Assumes the object has already been written to the journal file
+    /// and does not already exist in the hash table
+    pub fn insert<T, F>(&mut self, hash: u64, new_offset: NonZeroU64, fetch_object: F) -> Result<()>
+    where
+        T: HashableObjectMut,
+        F: Fn(NonZeroU64) -> Result<T>,
+    {
+        let bucket_index = (hash % self.items.len() as u64) as usize;
+        let bucket = &mut self.items[bucket_index];
+
+        if let Some(tail_offset) = bucket.tail_hash_offset {
+            let mut tail_object = fetch_object(tail_offset)?;
+            tail_object.set_next_hash_offset(new_offset);
+        } else {
+            bucket.head_hash_offset = Some(new_offset);
+        }
+
+        bucket.tail_hash_offset = Some(new_offset);
+        Ok(())
     }
 }
 
