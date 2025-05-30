@@ -16,6 +16,46 @@ use std::backtrace::Backtrace;
 
 use crate::value_guard::ValueGuard;
 
+/// An iterator that yields resolved journal objects instead of just offsets
+pub struct LinkedObjectIterator<'a, T, F, R>
+where
+    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+    R: Fn(NonZeroU64) -> Result<ValueGuard<'a, T>>,
+{
+    offset_iter: LinkedOffsetIterator<F>,
+    resolver: R,
+    _phantom: std::marker::PhantomData<&'a T>,
+}
+
+impl<'a, T, F, R> LinkedObjectIterator<'a, T, F, R>
+where
+    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+    R: Fn(NonZeroU64) -> Result<ValueGuard<'a, T>>,
+{
+    pub fn new(head_offset: Option<NonZeroU64>, fetch_next: F, resolver: R) -> Self {
+        Self {
+            offset_iter: LinkedOffsetIterator::new(head_offset, fetch_next),
+            resolver,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, T, F, R> Iterator for LinkedObjectIterator<'a, T, F, R>
+where
+    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+    R: Fn(NonZeroU64) -> Result<ValueGuard<'a, T>>,
+{
+    type Item = Result<ValueGuard<'a, T>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.offset_iter.next()? {
+            Ok(offset) => Some((self.resolver)(offset)),
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
 fn load_machine_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/etc/machine-id")?;
     let decoded = hex::decode(content.trim()).map_err(|_| JournalError::UuidSerde)?;

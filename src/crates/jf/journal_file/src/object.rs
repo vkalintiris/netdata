@@ -8,6 +8,45 @@ use zerocopy::{
     SplitByteSliceMut,
 };
 
+pub struct LinkedOffsetIterator<F> {
+    next_offset: Option<NonZeroU64>,
+    fetch_next: F,
+}
+
+impl<F> LinkedOffsetIterator<F>
+where
+    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    pub fn new(head_offset: Option<NonZeroU64>, fetch_next: F) -> Self {
+        Self {
+            next_offset: head_offset,
+            fetch_next,
+        }
+    }
+}
+
+impl<F> Iterator for LinkedOffsetIterator<F>
+where
+    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
+{
+    type Item = Result<NonZeroU64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current_offset = self.next_offset?;
+
+        match (self.fetch_next)(current_offset) {
+            Ok(next) => {
+                self.next_offset = next;
+                Some(Ok(current_offset))
+            }
+            Err(e) => {
+                self.next_offset = None;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
 pub trait HashableObject {
     /// Get the hash value of this object
     fn hash(&self) -> u64;
@@ -335,7 +374,7 @@ impl<B: ByteSlice> HashTableObject<B> {
             .filter_map(|hash_item| hash_item.head_hash_offset)
     }
 
-    fn bucket_chain<'a, F>(
+    fn bucket_offsets<'a, F>(
         &'a self,
         bucket_index: usize,
         fetch_next: F,
@@ -343,26 +382,18 @@ impl<B: ByteSlice> HashTableObject<B> {
     where
         F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
     {
-        let head_hash_offset = self.items[bucket_index].head_hash_offset.map(Ok);
-
-        let successor_fn = move |prev: &Result<NonZeroU64>| match prev {
-            Ok(offset) => match fetch_next(*offset) {
-                Ok(Some(next)) => Some(Ok(next)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            },
-            Err(_) => None,
-        };
-
-        std::iter::successors(head_hash_offset, successor_fn)
+        let head = self.items[bucket_index].head_hash_offset;
+        LinkedOffsetIterator::new(head, fetch_next.clone())
     }
 
     pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
     where
         F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
     {
-        (0..self.items.len())
-            .flat_map(move |bucket_index| self.bucket_chain(bucket_index, fetch_next.clone()))
+        self.items
+            .iter()
+            .filter_map(|bucket| bucket.head_hash_offset)
+            .flat_map(move |head| LinkedOffsetIterator::new(Some(head), fetch_next.clone()))
     }
 
     pub fn find<T, F>(
@@ -382,7 +413,7 @@ impl<B: ByteSlice> HashTableObject<B> {
             Ok(object.next_hash_offset())
         };
 
-        for offset_result in self.bucket_chain(bucket_index, fetch_next) {
+        for offset_result in self.bucket_offsets(bucket_index, fetch_next) {
             let offset = offset_result?;
             let object = fetch_object(offset)?;
 
