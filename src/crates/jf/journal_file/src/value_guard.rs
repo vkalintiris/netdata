@@ -57,3 +57,24 @@ impl<T> Drop for ValueGuard<'_, T> {
         *self.in_use_flag.borrow_mut() = false;
     }
 }
+
+use crate::HashableObject;
+use std::num::NonZeroU64;
+
+impl<T: HashableObject> HashableObject for ValueGuard<'_, T> {
+    fn hash(&self) -> u64 {
+        self.value.hash()
+    }
+
+    fn get_payload(&self) -> &[u8] {
+        self.value.get_payload()
+    }
+
+    fn next_hash_offset(&self) -> Option<NonZeroU64> {
+        self.value.next_hash_offset()
+    }
+
+    fn object_type() -> crate::ObjectType {
+        T::object_type()
+    }
+}

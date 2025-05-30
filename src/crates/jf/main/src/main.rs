@@ -612,12 +612,23 @@ fn main() {
 
         // let jf = &journal_file;
         let fetch_next = |offset| {
-            let field = journal_file.field_ref(offset).unwrap();
-            field.header.next_hash_offset
+            let field = journal_file.field_ref(offset)?;
+            Ok(field.header.next_hash_offset)
         };
 
         for offset in fht.offsets(fetch_next) {
             println!("offset: {:?}", offset);
+        }
+
+        let field_name = b"MESSAGE";
+        let hash = journal_file.hash(field_name);
+
+        match fht
+            .find(hash, field_name, |offset| journal_file.field_ref(offset))
+            .unwrap()
+        {
+            Some(offset) => println!("Found field at offset: 0x{:x}", offset),
+            None => println!("Field not found"),
         }
 
         // let fetch_fn = |journal_file: &JournalFile<Mmap>, offset| {

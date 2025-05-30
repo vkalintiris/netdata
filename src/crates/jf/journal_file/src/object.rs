@@ -335,17 +335,88 @@ impl<B: ByteSlice> HashTableObject<B> {
             .filter_map(|hash_item| hash_item.head_hash_offset)
     }
 
-    pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = NonZeroU64> + 'a
+    fn bucket_chain<'a, F>(
+        &'a self,
+        bucket_index: usize,
+        fetch_next: F,
+    ) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
     where
-        F: Fn(NonZeroU64) -> Option<NonZeroU64> + Clone + 'a,
+        F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
     {
-        let successors = move |head_hash_offset| {
-            let fetch_next = fetch_next.clone();
-            std::iter::successors(Some(head_hash_offset), move |offset| fetch_next(*offset))
+        let head_hash_offset = self.items[bucket_index].head_hash_offset.map(Ok);
+
+        let successor_fn = move |prev: &Result<NonZeroU64>| match prev {
+            Ok(offset) => match fetch_next(*offset) {
+                Ok(Some(next)) => Some(Ok(next)),
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
+            },
+            Err(_) => None,
         };
 
-        self.head_hash_offsets().flat_map(successors)
+        std::iter::successors(head_hash_offset, successor_fn)
     }
+
+    pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
+    where
+        F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
+    {
+        (0..self.items.len())
+            .flat_map(move |bucket_index| self.bucket_chain(bucket_index, fetch_next.clone()))
+    }
+
+    pub fn find<T, F>(
+        &self,
+        hash: u64,
+        payload: &[u8],
+        fetch_object: F,
+    ) -> Result<Option<NonZeroU64>>
+    where
+        T: HashableObject,
+        F: Fn(NonZeroU64) -> Result<T>,
+    {
+        let bucket_index = (hash % self.items.len() as u64) as usize;
+
+        let fetch_next = |offset| -> Result<Option<NonZeroU64>> {
+            let object = fetch_object(offset)?;
+            Ok(object.next_hash_offset())
+        };
+
+        for offset_result in self.bucket_chain(bucket_index, fetch_next) {
+            let offset = offset_result?;
+            let object = fetch_object(offset)?;
+
+            if object.hash() == hash && object.get_payload() == payload {
+                return Ok(Some(offset));
+            }
+        }
+
+        Ok(None)
+    }
+
+    // pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
+    // where
+    //     F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
+    // {
+    //     let heads = self.head_hash_offsets();
+
+    //     let chains = heads.map(move |head| {
+    //         let fetch_next = fetch_next.clone();
+
+    //         let successor_fn = move |prev: &Result<NonZeroU64>| match prev {
+    //             Ok(offset) => match fetch_next(*offset) {
+    //                 Ok(Some(next)) => Some(Ok(next)),
+    //                 Ok(None) => None,
+    //                 Err(e) => Some(Err(e)),
+    //             },
+    //             Err(_) => None,
+    //         };
+
+    //         std::iter::successors(Some(Ok(head)), successor_fn)
+    //     });
+
+    //     chains.flatten()
+    // }
 }
 
 // impl<B: ByteSlice> HashTableObject<B> {
