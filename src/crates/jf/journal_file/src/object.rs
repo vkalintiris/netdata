@@ -374,6 +374,11 @@ impl<B: ByteSlice> HashTableObject<B> {
             .filter_map(|hash_item| hash_item.head_hash_offset)
     }
 
+    pub fn hash_item_ref(&self, hash: u64) -> &HashItem {
+        let bucket_index = hash as usize % self.items.len();
+        &self.items[bucket_index]
+    }
+
     fn bucket_offsets<'a, F>(
         &'a self,
         bucket_index: usize,
@@ -427,6 +432,11 @@ impl<B: ByteSlice> HashTableObject<B> {
 }
 
 impl<B: ByteSliceMut> HashTableObject<B> {
+    pub fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
+        let bucket_index = hash as usize % self.items.len();
+        &mut self.items[bucket_index]
+    }
+
     /// Insert a new object offset into the hash table
     ///
     /// Assumes the object has already been written to the journal file
