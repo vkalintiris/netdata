@@ -84,6 +84,12 @@ impl<B: ByteSlice> HashableObject for FieldObject<B> {
     }
 }
 
+impl FieldObject<&mut [u8]> {
+    pub fn set_payload(&mut self, data: &[u8]) {
+        self.payload.copy_from_slice(data);
+    }
+}
+
 impl<B: ByteSliceMut> HashableObjectMut for FieldObject<B> {
     fn set_next_hash_offset(&mut self, next_hash_offset: NonZeroU64) {
         self.header.next_hash_offset = Some(next_hash_offset);

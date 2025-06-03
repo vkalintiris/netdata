@@ -320,6 +320,14 @@ impl<M: MemoryMap> JournalFile<M> {
         dht.find(hash, payload, |offset| self.data_ref(offset))
     }
 
+    pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
+        let Some(fht) = self.field_hash_table_ref() else {
+            return Err(JournalError::InvalidMagicNumber);
+        };
+
+        fht.find(hash, payload, |offset| self.field_ref(offset))
+    }
+
     /// Run a directed partition point query on a data object's entry array
     ///
     /// This finds the first/last entry (depending on direction) that satisfies the given predicate
