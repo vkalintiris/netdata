@@ -8,6 +8,7 @@ error = { path = "../error" }
 journal_file = { path = "../journal_file" }
 journal_logger = { path = "../journal_logger" }
 journal_reader = { path = "../journal_reader" }
+journal_writer = { path = "../journal_writer" }
 sigbus = { path = "../sigbus" }
 window_manager = { path = "../window_manager" }
 rand = { workspace = true }

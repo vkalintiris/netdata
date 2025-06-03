@@ -3,6 +3,7 @@
 use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
+use journal_writer::JournalWriter;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
@@ -602,94 +603,33 @@ fn get_all_files() -> Vec<PathBuf> {
 }
 
 fn main() {
-    let paths = get_all_files();
-    for path in paths.iter() {
-        println!("Iterating path: {:?}", path);
+    // let paths = get_all_files();
+    // for path in paths.iter() {
+    //     println!("Iterating path: {:?}", path);
 
-        let journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
-
-        let fht = journal_file.field_hash_table_ref().unwrap();
-
-        // let jf = &journal_file;
-        let fetch_next = |offset| {
-            let field = journal_file.field_ref(offset)?;
-            Ok(field.header.next_hash_offset)
-        };
-
-        for offset in fht.offsets(fetch_next) {
-            println!("offset: {:?}", offset);
-        }
-
-        let field_name = b"MESSAGE";
-        let hash = journal_file.hash(field_name);
-
-        match fht
-            .find(hash, field_name, |offset| journal_file.field_ref(offset))
-            .unwrap()
-        {
-            Some(offset) => println!("Found field at offset: 0x{:x}", offset),
-            None => println!("Field not found"),
-        }
-
-        // let fetch_fn = |journal_file: &JournalFile<Mmap>, offset| {
-        //     Ok(journal_file.field_ref(offset)?.header.next_hash_offset)
-        // };
-
-        // let ht = HashTable::from_ref(&journal_file, data, fetch_fn);
-        // println!("Num buckets: {:?}", ht.num_buckets());
-
-        // for bucket in ht.bucket_iter() {
-        //     for offset in bucket {
-        //         let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
-        //         println!(
-        //             "GVDA[{:?}]: {:?}",
-        //             offset,
-        //             String::from_utf8_lossy(field.get_payload())
-        //         );
-        //     }
-        // }
-
-        // for offset in ht.offsets() {
-        //     let field = journal_file.field_ref(*offset.as_ref().unwrap()).unwrap();
-        //     println!(
-        //         "GVDB[{:?}]: {:?}",
-        //         offset,
-        //         String::from_utf8_lossy(field.get_payload())
-        //     );
-        // }
-
-        // for i in 0..ht.num_buckets() {
-        //     println!("\tIterating offsets of bucket {:?}", i);
-        //     for offset in ht.bucket_offset_iter(i) {
-        //         println!("\t\toffset: {:?}", offset);
-        //     }
-        // }
-    }
+    //     let _journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
+    // }
 
     // filtered_test();
 
-    // {
-    //     let mut jf = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
+    {
+        let mut journal_file = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
 
-    //     let dht = jf.data_hash_table_mut().unwrap();
-    //     let mut items = dht.items;
-    //     println!("dht items: {:?}", items.len());
-    //     items[0].head_hash_offset = 0xdeadbeef;
-    //     items[0].tail_hash_offset = 0xbeefdead;
+        let mut jw = JournalWriter::new(&mut journal_file).unwrap();
 
-    //     let fht = jf.field_hash_table_mut().unwrap();
-    //     let mut items = fht.items;
-    //     println!("fht items: {:?}", items.len());
-    //     items[0].head_hash_offset = 0xaaaabbbb;
-    //     items[0].tail_hash_offset = 0xccccdddd;
+        let items: &[&[u8]] = {
+            let kv1: &[u8] = b"NAME=Alice";
+            let kv2: &[u8] = b"AGE=30";
+            let kv3: &[u8] = b"CITY=Seattle";
+            let kv4: &[u8] = b"ROLE=developer";
 
-    //     let mut offset_array = jf.offset_array_mut(1024 * 1024, Some(8)).unwrap();
+            &[kv1, kv2, kv3, kv4]
+        };
 
-    //     for i in 0..4 {
-    //         let offset = std::num::NonZeroU64::new(0xdead0000 + i).unwrap();
-    //         offset_array.set(i as usize, offset).unwrap();
-    //     }
-    // }
+        for _ in 0..2 {
+            jw.add_entry(&mut journal_file, items).unwrap();
+        }
+    }
 
     // let jf = JournalFile::<Mmap>::open("/tmp/muh.journal", 4096).unwrap();
 

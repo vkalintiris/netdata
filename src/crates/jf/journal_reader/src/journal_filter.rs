@@ -337,7 +337,7 @@ impl JournalFilter {
                 for idx in start..i {
                     let data = self.current_matches[idx].as_slice();
                     let hash = journal_file.hash(data);
-                    let Some(offset) = journal_file.find_data_offset_by_payload(data, hash)? else {
+                    let Some(offset) = journal_file.find_data_offset(hash, data)? else {
                         // TODO: should we really return an error?
                         return Err(JournalError::InvalidOffset);
                     };
@@ -349,7 +349,7 @@ impl JournalFilter {
             } else {
                 let data = self.current_matches[start].as_slice();
                 let hash = journal_file.hash(data);
-                let Some(offset) = journal_file.find_data_offset_by_payload(data, hash)? else {
+                let Some(offset) = journal_file.find_data_offset(hash, data)? else {
                     // TODO: should we really return an error?
                     return Err(JournalError::InvalidOffset);
                 };

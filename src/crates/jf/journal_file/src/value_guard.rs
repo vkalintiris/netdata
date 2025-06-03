@@ -58,7 +58,7 @@ impl<T> Drop for ValueGuard<'_, T> {
     }
 }
 
-use crate::HashableObject;
+use crate::{HashableObject, HashableObjectMut};
 use std::num::NonZeroU64;
 
 impl<T: HashableObject> HashableObject for ValueGuard<'_, T> {
@@ -76,5 +76,11 @@ impl<T: HashableObject> HashableObject for ValueGuard<'_, T> {
 
     fn object_type() -> crate::ObjectType {
         T::object_type()
+    }
+}
+
+impl<T: HashableObjectMut> HashableObjectMut for ValueGuard<'_, T> {
+    fn set_next_hash_offset(&mut self, offset: NonZeroU64) {
+        self.value.set_next_hash_offset(offset);
     }
 }

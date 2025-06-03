@@ -6,6 +6,8 @@ use crate::offset_array;
 use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::OpenOptions;
+use std::num::NonZero;
+use std::num::NonZeroI128;
 use std::num::NonZeroU64;
 use std::path::Path;
 use window_manager::{MemoryMap, MemoryMapMut, WindowManager};
@@ -350,18 +352,12 @@ impl<M: MemoryMap> JournalFile<M> {
         )
     }
 
-    /// Finds a data object by payload and returns its offset
-    pub fn find_data_offset_by_payload(
-        &self,
-        payload: &[u8],
-        hash: u64,
-    ) -> Result<Option<NonZeroU64>> {
-        self.lookup_hash_table::<DataObject<&[u8]>, _>(
-            self.data_hash_table_ref(),
-            payload,
-            hash,
-            |offset| self.data_ref(offset),
-        )
+    pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
+        let Some(dht) = self.data_hash_table_ref() else {
+            return Err(JournalError::InvalidMagicNumber);
+        };
+
+        dht.find(hash, payload, |offset| self.data_ref(offset))
     }
 
     /// Run a directed partition point query on a data object's entry array
@@ -518,7 +514,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         // Create window manager for the rest of the objects
         let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
 
-        Ok(JournalFile {
+        let jf = JournalFile {
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -529,7 +525,39 @@ impl<M: MemoryMapMut> JournalFile<M> {
             prev_backtrace: RefCell::new(Backtrace::capture()),
             #[cfg(debug_assertions)]
             backtrace: RefCell::new(Backtrace::capture()),
-        })
+        };
+
+        // write dht object header info
+        {
+            let offset = NonZeroU64::new(
+                header.data_hash_table_offset.unwrap().get()
+                    - std::mem::size_of::<ObjectHeader>() as u64,
+            )
+            .unwrap();
+            let size = header.data_hash_table_size.unwrap().get()
+                + std::mem::size_of::<ObjectHeader>() as u64;
+
+            let object_header = jf.object_header_mut(offset)?;
+            object_header.type_ = ObjectType::DataHashTable as u8;
+            object_header.size = size
+        }
+
+        // write fht object header info
+        {
+            let offset = NonZeroU64::new(
+                header.field_hash_table_offset.unwrap().get()
+                    - std::mem::size_of::<ObjectHeader>() as u64,
+            )
+            .unwrap();
+            let size = header.field_hash_table_size.unwrap().get()
+                + std::mem::size_of::<ObjectHeader>() as u64;
+
+            let object_header = jf.object_header_mut(offset)?;
+            object_header.type_ = ObjectType::FieldHashTable as u8;
+            object_header.size = size
+        }
+
+        Ok(jf)
     }
 
     pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
