@@ -645,6 +645,22 @@ pub enum EntryItemsType<B: ByteSlice> {
     Compact(Ref<B, [CompactEntryItem]>),
 }
 
+impl<B: ByteSliceMut> EntryItemsType<B> {
+    pub fn set(&mut self, index: usize, object_offset: NonZeroU64, hash: Option<u64>) {
+        match self {
+            EntryItemsType::Regular(entry_items) => {
+                entry_items[index].object_offset = object_offset.get();
+                entry_items[index].hash = hash.unwrap();
+            }
+            EntryItemsType::Compact(entry_items) => {
+                debug_assert!(hash.is_none());
+                assert!(object_offset.get() < u32::MAX as u64);
+                entry_items[index].object_offset = object_offset.get() as u32;
+            }
+        }
+    }
+}
+
 impl<B: ByteSlice> EntryItemsType<B> {
     pub fn get(&self, index: usize) -> u64 {
         match self {

@@ -4,8 +4,8 @@ use error::{JournalError, Result};
 use journal_file::{
     journal_hash_data, CompactEntryItem, DataObject, DataObjectHeader, DataPayloadType,
     EntryObject, EntryObjectHeader, FieldObject, FieldObjectHeader, HashItem, HashTableObject,
-    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader, JournalState,
-    ObjectHeader, ObjectType, RegularEntryItem,
+    HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader,
+    JournalState, ObjectHeader, ObjectType, RegularEntryItem,
 };
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
@@ -16,10 +16,14 @@ use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
 
+struct EntryItem {
+    offset: NonZeroU64,
+    hash: u64,
+}
+
 pub struct JournalWriter {
     tail_offset: NonZeroU64,
-    data_offsets: Vec<NonZeroU64>,
-    hash_buffer: Vec<u64>,
+    entry_items: Vec<EntryItem>,
 }
 
 impl JournalWriter {
@@ -37,8 +41,7 @@ impl JournalWriter {
 
         Ok(Self {
             tail_offset,
-            data_offsets: Vec::with_capacity(128),
-            hash_buffer: Vec::with_capacity(128),
+            entry_items: Vec::with_capacity(128),
         })
     }
 
@@ -190,32 +193,56 @@ impl JournalWriter {
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
         items: &[&[u8]],
-        // realtime: u64,
-        // monotonic: u64,
-        // boot_id: [u8; 16],
+        realtime: u64,
+        monotonic: u64,
+        boot_id: [u8; 16],
     ) -> Result<u64> {
         let header = journal_file.journal_header_ref();
+        assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
-        let is_keyed_hash = header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
+        // Write the data/field objects while computing the entry's xor-hash
+        // and storing each data object's offset/hash
+        let mut xor_hash = 0;
+        {
+            self.entry_items.clear();
+            for payload in items {
+                let offset = self.add_data(journal_file, payload)?;
+                let hash = {
+                    let data_guard = journal_file.data_ref(offset)?;
+                    data_guard.hash()
+                };
 
-        let file_id = if is_keyed_hash {
-            Some(&header.file_id)
-        } else {
-            None
-        };
+                let entry_item = EntryItem { offset, hash };
+                self.entry_items.push(entry_item);
 
-        self.hash_buffer.clear();
-        self.hash_buffer.extend(
-            items
-                .iter()
-                .map(|item| journal_hash_data(item, is_keyed_hash, file_id)),
-        );
+                xor_hash ^= journal_hash_data(payload, true, None);
+            }
 
-        self.data_offsets.clear();
-        for payload in items {
-            let data_offset = self.add_data(journal_file, payload)?;
-            self.data_offsets.push(data_offset);
+            self.entry_items
+                .sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+            self.entry_items.dedup_by(|a, b| a.offset == b.offset);
         }
+
+        // write the entry itself
+        {
+            let size = Some(self.entry_items.len() as u64 * 16);
+            let mut entry_guard = journal_file.entry_mut(self.tail_offset, size)?;
+
+            entry_guard.header.xor_hash = xor_hash;
+            entry_guard.header.boot_id = boot_id;
+            entry_guard.header.monotonic = monotonic;
+            entry_guard.header.realtime = realtime;
+
+            // set each entry item
+            for (index, entry_item) in self.entry_items.iter().enumerate() {
+                entry_guard
+                    .items
+                    .set(index, entry_item.offset, Some(entry_item.hash));
+            }
+        }
+
+        // TODO: -
+        // link entry and data objects into their entry offset arrays.
 
         Ok(0)
     }

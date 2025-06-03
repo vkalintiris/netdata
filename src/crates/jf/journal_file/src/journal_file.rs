@@ -18,14 +18,14 @@ use std::backtrace::Backtrace;
 
 use crate::value_guard::ValueGuard;
 
-fn load_machine_id() -> Result<[u8; 16]> {
+pub fn load_machine_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/etc/machine-id")?;
     let decoded = hex::decode(content.trim()).map_err(|_| JournalError::UuidSerde)?;
     let bytes: [u8; 16] = decoded.try_into().map_err(|_| JournalError::UuidSerde)?;
     Ok(bytes)
 }
 
-fn load_boot_id() -> Result<[u8; 16]> {
+pub fn load_boot_id() -> Result<[u8; 16]> {
     let content = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
 
     let uuid_str = content.trim();
@@ -431,6 +431,8 @@ impl<M: MemoryMapMut> JournalFile<M> {
         let mut header = JournalHeader::default();
         header.signature = *b"LPKSHHRH";
 
+        header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
+
         let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
             + std::mem::size_of::<ObjectHeader>() as u64;
         let data_hash_table_size = 4096 * std::mem::size_of::<HashItem>() as u64;
@@ -649,8 +651,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
         self.journal_object_mut(ObjectType::Field, offset, size)
     }
 
-    pub fn entry_mut(&self, offset: NonZeroU64) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
-        self.journal_object_mut(ObjectType::Entry, offset, None)
+    pub fn entry_mut(
+        &self,
+        offset: NonZeroU64,
+        size: Option<u64>,
+    ) -> Result<ValueGuard<EntryObject<&mut [u8]>>> {
+        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        self.journal_object_mut(ObjectType::Entry, offset, size)
     }
 
     pub fn data_mut(

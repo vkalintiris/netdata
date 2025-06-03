@@ -627,7 +627,8 @@ fn main() {
         };
 
         for _ in 0..2 {
-            jw.add_entry(&mut journal_file, items).unwrap();
+            jw.add_entry(&mut journal_file, items, 0, 0, [0; 16])
+                .unwrap();
         }
     }
 
