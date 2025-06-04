@@ -245,6 +245,8 @@ impl JournalWriter {
         self.num_writen_objects += 1;
         self.tail_offset = self.tail_offset.saturating_add(entry_size);
 
+        self.append_to_entry_array(journal_file, entry_offset)?;
+
         // TODO: -
         // link entry and data objects into their entry offset arrays.
 
@@ -254,13 +256,13 @@ impl JournalWriter {
     fn allocate_new_array(
         &mut self,
         journal_file: &JournalFile<MmapMut>,
-        previous_capacity: NonZeroU64,
+        capacity: NonZeroU64,
     ) -> Result<NonZeroU64> {
-        let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
+        // let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
 
         let array_offset = self.tail_offset;
         let array_size = {
-            let array_guard = journal_file.offset_array_mut(array_offset, Some(new_capacity))?;
+            let array_guard = journal_file.offset_array_mut(array_offset, Some(capacity))?;
 
             array_guard.header.object_header.aligned_size()
         };
@@ -270,5 +272,51 @@ impl JournalWriter {
         self.tail_offset = self.tail_offset.saturating_add(array_size);
 
         Ok(array_offset)
+    }
+
+    fn append_to_entry_array(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        entry_offset: NonZeroU64,
+    ) -> Result<()> {
+        let header = journal_file.journal_header_ref();
+
+        if header.entry_array_offset == 0 {
+            let array_offset =
+                self.allocate_new_array(journal_file, NonZeroU64::new(4096).unwrap())?;
+            let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
+            array_guard.set(0, entry_offset)?;
+        } else {
+            let tail_node = {
+                let entry_list = journal_file
+                    .entry_list()
+                    .ok_or(JournalError::EmptyOffsetArrayList)?;
+                entry_list.tail(journal_file)?
+            };
+
+            if tail_node.len() < tail_node.capacity() {
+                let mut array_guard = journal_file.offset_array_mut(tail_node.offset(), None)?;
+                array_guard.set(0, entry_offset)?;
+            } else {
+                let new_array_offset = {
+                    let new_capacity = tail_node.capacity().get().saturating_mul(2) as u64;
+                    self.allocate_new_array(journal_file, NonZeroU64::new(new_capacity).unwrap())?
+                };
+
+                // Link the old tail to the new array
+                {
+                    let mut array_guard =
+                        journal_file.offset_array_mut(tail_node.offset(), None)?;
+                    array_guard.header.next_offset_array = Some(new_array_offset);
+                }
+
+                let mut array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
+                array_guard.set(0, entry_offset)?;
+            }
+        }
+
+        journal_file.journal_header_mut().n_entries += 1;
+
+        Ok(())
     }
 }

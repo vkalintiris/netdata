@@ -38,8 +38,8 @@ impl Node {
     }
 
     /// Get the offset of this array in the file
-    pub fn offset(&self) -> u64 {
-        self.offset.get()
+    pub fn offset(&self) -> NonZeroU64 {
+        self.offset
     }
 
     /// Get the maximum number of items this array can hold
