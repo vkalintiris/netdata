@@ -9,7 +9,7 @@ use journal_file::{
 };
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use window_manager::MemoryMapMut;
 use zerocopy::{FromBytes, IntoBytes};
@@ -23,6 +23,7 @@ struct EntryItem {
 
 pub struct JournalWriter {
     tail_offset: NonZeroU64,
+    num_writen_objects: u64,
     entry_items: Vec<EntryItem>,
 }
 
@@ -41,11 +42,12 @@ impl JournalWriter {
 
         Ok(Self {
             tail_offset,
+            num_writen_objects: 0,
             entry_items: Vec::with_capacity(128),
         })
     }
 
-    pub fn add_data(
+    fn add_data(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
         payload: &[u8],
@@ -60,12 +62,16 @@ impl JournalWriter {
                 let data_offset = self.tail_offset;
                 let data_size = {
                     let mut data_guard =
-                        journal_file.data_mut(self.tail_offset, Some(payload.len() as u64))?;
+                        journal_file.data_mut(data_offset, Some(payload.len() as u64))?;
 
                     data_guard.header.hash = hash;
                     data_guard.set_payload(payload);
                     data_guard.header.object_header.aligned_size()
                 };
+
+                // Update our tail offset
+                self.num_writen_objects += 1;
+                self.tail_offset = self.tail_offset.saturating_add(data_size);
 
                 // Update tail object's next_hash_offset
                 {
@@ -76,7 +82,7 @@ impl JournalWriter {
                     let hash_item = dht.hash_item_ref(hash);
                     if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
                         let mut tail_object = journal_file.data_mut(tail_hash_offset, None)?;
-                        tail_object.set_next_hash_offset(self.tail_offset);
+                        tail_object.set_next_hash_offset(data_offset);
                     }
                 };
 
@@ -88,13 +94,10 @@ impl JournalWriter {
 
                     let hash_item = dht.hash_item_mut(hash);
                     if hash_item.head_hash_offset.is_none() {
-                        hash_item.head_hash_offset = Some(self.tail_offset);
+                        hash_item.head_hash_offset = Some(data_offset);
                     }
-                    hash_item.tail_hash_offset = Some(self.tail_offset);
+                    hash_item.tail_hash_offset = Some(data_offset);
                 }
-
-                // Update our tail offset
-                self.tail_offset = self.tail_offset.saturating_add(data_size);
 
                 // Add the field object
                 if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
@@ -103,10 +106,8 @@ impl JournalWriter {
                     // Link data object to the linked-list
                     {
                         let head_data_offset = {
-                            journal_file
-                                .field_ref(field_offset)?
-                                .header
-                                .head_data_offset
+                            let field_guard = journal_file.field_ref(field_offset)?;
+                            field_guard.header.head_data_offset
                         };
 
                         let mut data_guard = journal_file.data_mut(data_offset, None)?;
@@ -115,13 +116,8 @@ impl JournalWriter {
 
                     // Link field to the head of the linked list
                     {
-                        let field_size =
-                            Some((equals_pos + std::mem::size_of::<FieldObject<&[u8]>>()) as u64);
-
-                        journal_file
-                            .field_mut(field_offset, field_size)?
-                            .header
-                            .head_data_offset = Some(data_offset);
+                        let mut field_guard = journal_file.field_mut(field_offset, None)?;
+                        field_guard.header.head_data_offset = Some(data_offset);
                     };
                 }
 
@@ -146,12 +142,16 @@ impl JournalWriter {
                 let field_offset = self.tail_offset;
                 let field_size = {
                     let mut field_guard =
-                        journal_file.field_mut(self.tail_offset, Some(payload.len() as u64))?;
+                        journal_file.field_mut(field_offset, Some(payload.len() as u64))?;
 
                     field_guard.header.hash = hash;
                     field_guard.set_payload(payload);
                     field_guard.header.object_header.aligned_size()
                 };
+
+                // Update our tail offset
+                self.num_writen_objects += 1;
+                self.tail_offset = self.tail_offset.saturating_add(field_size);
 
                 // Update tail object's next_hash_offset
                 {
@@ -162,7 +162,7 @@ impl JournalWriter {
                     let hash_item = fht.hash_item_ref(hash);
                     if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
                         let mut tail_object = journal_file.field_mut(tail_hash_offset, None)?;
-                        tail_object.set_next_hash_offset(self.tail_offset);
+                        tail_object.set_next_hash_offset(field_offset);
                     }
                 };
 
@@ -174,13 +174,10 @@ impl JournalWriter {
 
                     let hash_item = fht.hash_item_mut(hash);
                     if hash_item.head_hash_offset.is_none() {
-                        hash_item.head_hash_offset = Some(self.tail_offset);
+                        hash_item.head_hash_offset = Some(field_offset);
                     }
-                    hash_item.tail_hash_offset = Some(self.tail_offset);
+                    hash_item.tail_hash_offset = Some(field_offset);
                 }
-
-                // Update our tail offset
-                self.tail_offset = self.tail_offset.saturating_add(field_size);
 
                 // Return the offset where we wrote the newly added data object
                 Ok(field_offset)
@@ -224,9 +221,10 @@ impl JournalWriter {
         }
 
         // write the entry itself
-        {
+        let entry_offset = self.tail_offset;
+        let entry_size = {
             let size = Some(self.entry_items.len() as u64 * 16);
-            let mut entry_guard = journal_file.entry_mut(self.tail_offset, size)?;
+            let mut entry_guard = journal_file.entry_mut(entry_offset, size)?;
 
             entry_guard.header.xor_hash = xor_hash;
             entry_guard.header.boot_id = boot_id;
@@ -239,11 +237,38 @@ impl JournalWriter {
                     .items
                     .set(index, entry_item.offset, Some(entry_item.hash));
             }
-        }
+
+            entry_guard.header.object_header.aligned_size()
+        };
+
+        // Update our tail offset
+        self.num_writen_objects += 1;
+        self.tail_offset = self.tail_offset.saturating_add(entry_size);
 
         // TODO: -
         // link entry and data objects into their entry offset arrays.
 
         Ok(0)
+    }
+
+    fn allocate_new_array(
+        &mut self,
+        journal_file: &JournalFile<MmapMut>,
+        previous_capacity: NonZeroU64,
+    ) -> Result<NonZeroU64> {
+        let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
+
+        let array_offset = self.tail_offset;
+        let array_size = {
+            let array_guard = journal_file.offset_array_mut(array_offset, Some(new_capacity))?;
+
+            array_guard.header.object_header.aligned_size()
+        };
+
+        // Update tail offset
+        self.num_writen_objects += 1;
+        self.tail_offset = self.tail_offset.saturating_add(array_size);
+
+        Ok(array_offset)
     }
 }

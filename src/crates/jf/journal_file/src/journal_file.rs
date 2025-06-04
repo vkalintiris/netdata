@@ -621,7 +621,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     pub fn offset_array_mut(
         &self,
         offset: NonZeroU64,
-        capacity: Option<u64>,
+        capacity: Option<NonZeroU64>,
     ) -> Result<ValueGuard<OffsetArrayObject<&mut [u8]>>> {
         let size = capacity.map(|c| {
             let mut size = std::mem::size_of::<OffsetArrayObjectHeader>() as u64;
@@ -630,9 +630,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
                 .journal_header_ref()
                 .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
             if is_compact {
-                size += c * std::mem::size_of::<u32>() as u64;
+                size += c.get() * std::mem::size_of::<u32>() as u64;
             } else {
-                size += c * std::mem::size_of::<u64>() as u64;
+                size += c.get() * std::mem::size_of::<u64>() as u64;
             }
 
             size
