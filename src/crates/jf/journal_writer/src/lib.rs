@@ -9,7 +9,7 @@ use journal_file::{
 };
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
-use std::num::{NonZeroI128, NonZeroU64};
+use std::num::NonZeroU64;
 use std::path::Path;
 use window_manager::MemoryMapMut;
 use zerocopy::{FromBytes, IntoBytes};
