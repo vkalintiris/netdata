@@ -246,16 +246,14 @@ impl<M: MemoryMap> JournalFile<M> {
         self.journal_object_ref(offset)
     }
 
-    fn lookup_hash_table<'a, T, F>(
+    fn lookup_hash_table<'a, T>(
         &'a self,
         hash_table: Option<HashTableObject<&[u8]>>,
         data: &[u8],
         hash: u64,
-        fetch_fn: F,
     ) -> Result<Option<NonZeroU64>>
     where
-        T: HashableObject,
-        F: Fn(NonZeroU64) -> Result<ValueGuard<'a, T>>,
+        T: HashableObject + JournalObject<&'a [u8]>,
     {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
 
@@ -269,7 +267,7 @@ impl<M: MemoryMap> JournalFile<M> {
 
         // Traverse the linked list of objects in this bucket
         while object_offset.is_some() {
-            match fetch_fn(object_offset.unwrap()) {
+            match self.journal_object_ref::<T>(object_offset.unwrap()) {
                 Ok(object_guard) => {
                     // Check if this is the object we're looking for
                     if object_guard.hash() == hash && object_guard.get_payload() == data {
@@ -294,28 +292,17 @@ impl<M: MemoryMap> JournalFile<M> {
         field_name: &[u8],
         hash: u64,
     ) -> Result<Option<NonZeroU64>> {
-        self.lookup_hash_table::<FieldObject<&[u8]>, _>(
-            self.field_hash_table_ref(),
-            field_name,
-            hash,
-            |offset| self.field_ref(offset),
-        )
+        self.lookup_hash_table::<FieldObject<&[u8]>>(self.field_hash_table_ref(), field_name, hash)
     }
 
     pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
-        let Some(dht) = self.data_hash_table_ref() else {
-            return Err(JournalError::InvalidMagicNumber);
-        };
-
-        dht.find(hash, payload, |offset| self.data_ref(offset))
+        let hash_table = self.data_hash_table_ref();
+        self.lookup_hash_table::<DataObject<&[u8]>>(hash_table, payload, hash)
     }
 
     pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
-        let Some(fht) = self.field_hash_table_ref() else {
-            return Err(JournalError::InvalidMagicNumber);
-        };
-
-        fht.find(hash, payload, |offset| self.field_ref(offset))
+        let hash_table = self.field_hash_table_ref();
+        self.lookup_hash_table::<FieldObject<&[u8]>>(hash_table, payload, hash)
     }
 
     /// Run a directed partition point query on a data object's entry array

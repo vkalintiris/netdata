@@ -603,16 +603,16 @@ fn get_all_files() -> Vec<PathBuf> {
 }
 
 fn main() {
-    // let paths = get_all_files();
-    // for path in paths.iter() {
-    //     println!("Iterating path: {:?}", path);
+    let paths = get_all_files();
+    for path in paths.iter() {
+        println!("Iterating path: {:?}", path);
 
-    //     let _journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
-    // }
+        let _journal_file = JournalFile::<Mmap>::open(path, 8 * 1024 * 1024).unwrap();
+    }
 
-    // filtered_test();
+    filtered_test();
 
-    {
+    if false {
         let mut journal_file = JournalFile::<MmapMut>::create("/tmp/muh.journal", 4096).unwrap();
 
         let mut jw = JournalWriter::new(&mut journal_file).unwrap();
