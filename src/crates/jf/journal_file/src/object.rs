@@ -8,45 +8,6 @@ use zerocopy::{
     SplitByteSliceMut,
 };
 
-pub struct LinkedOffsetIterator<F> {
-    next_offset: Option<NonZeroU64>,
-    fetch_next: F,
-}
-
-impl<F> LinkedOffsetIterator<F>
-where
-    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
-{
-    pub fn new(head_offset: Option<NonZeroU64>, fetch_next: F) -> Self {
-        Self {
-            next_offset: head_offset,
-            fetch_next,
-        }
-    }
-}
-
-impl<F> Iterator for LinkedOffsetIterator<F>
-where
-    F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>>,
-{
-    type Item = Result<NonZeroU64>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current_offset = self.next_offset?;
-
-        match (self.fetch_next)(current_offset) {
-            Ok(next) => {
-                self.next_offset = next;
-                Some(Ok(current_offset))
-            }
-            Err(e) => {
-                self.next_offset = None;
-                Some(Err(e))
-            }
-        }
-    }
-}
-
 pub trait HashableObject {
     /// Get the hash value of this object
     fn hash(&self) -> u64;
