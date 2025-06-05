@@ -8,6 +8,63 @@ use zerocopy::{
     SplitByteSliceMut,
 };
 
+/// Trait for hash table operations
+pub trait HashTable {
+    /// The type of objects stored in this hash table
+    type Object: HashableObject;
+
+    /// Get the hash item for a given hash value
+    fn hash_item_ref(&self, hash: u64) -> &HashItem;
+
+    /// Get all head hash offsets in the table
+    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_;
+}
+
+/// Trait for mutable hash table operations
+pub trait HashTableMut: HashTable {
+    /// Get a mutable reference to the hash item for a given hash value
+    fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem;
+}
+
+pub struct DataHashTable<B: ByteSlice>(pub HashTableObject<B>);
+pub struct FieldHashTable<B: ByteSlice>(pub HashTableObject<B>);
+
+impl<B: ByteSlice> HashTable for DataHashTable<B> {
+    type Object = DataObject<B>;
+
+    fn hash_item_ref(&self, hash: u64) -> &HashItem {
+        self.0.hash_item_ref(hash)
+    }
+
+    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
+        self.0.head_hash_offsets()
+    }
+}
+
+impl<B: ByteSlice> HashTable for FieldHashTable<B> {
+    type Object = FieldObject<B>;
+
+    fn hash_item_ref(&self, hash: u64) -> &HashItem {
+        self.0.hash_item_ref(hash)
+    }
+
+    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
+        self.0.head_hash_offsets()
+    }
+}
+
+impl<B: ByteSliceMut> HashTableMut for DataHashTable<B> {
+    fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
+        self.0.hash_item_mut(hash)
+    }
+}
+
+impl<B: ByteSliceMut> HashTableMut for FieldHashTable<B> {
+    fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
+        self.0.hash_item_mut(hash)
+    }
+}
+
 pub trait HashableObject {
     /// Get the hash value of this object
     fn hash(&self) -> u64;

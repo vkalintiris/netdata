@@ -154,16 +154,18 @@ impl<M: MemoryMap> JournalFile<M> {
         self.field_hash_table_map.as_ref()
     }
 
-    pub fn data_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
+    pub fn data_hash_table_ref(&self) -> Option<DataHashTable<&[u8]>> {
         self.data_hash_table_map
             .as_ref()
             .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
+            .map(DataHashTable)
     }
 
-    pub fn field_hash_table_ref(&self) -> Option<HashTableObject<&[u8]>> {
+    pub fn field_hash_table_ref(&self) -> Option<FieldHashTable<&[u8]>> {
         self.field_hash_table_map
             .as_ref()
             .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
+            .map(FieldHashTable)
     }
 
     pub fn object_header_ref(&self, position: NonZeroU64) -> Result<&ObjectHeader> {
@@ -246,28 +248,25 @@ impl<M: MemoryMap> JournalFile<M> {
         self.journal_object_ref(offset)
     }
 
-    fn lookup_hash_table<'a, T>(
+    fn lookup_hash_table<'a, H>(
         &'a self,
-        hash_table: Option<HashTableObject<&[u8]>>,
+        hash_table: Option<H>,
         data: &[u8],
         hash: u64,
     ) -> Result<Option<NonZeroU64>>
     where
-        T: HashableObject + JournalObject<&'a [u8]>,
+        H: HashTable,
+        H::Object: JournalObject<&'a [u8]>,
     {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
 
-        // Find the right bucket in the hash table
-        let hash_table_size = hash_table.items.len();
-        let bucket_idx = (hash % hash_table_size as u64) as usize;
-
         // Get the head object offset from the bucket
-        let bucket = hash_table.items[bucket_idx];
+        let bucket = hash_table.hash_item_ref(hash);
         let mut object_offset = bucket.head_hash_offset;
 
         // Traverse the linked list of objects in this bucket
         while object_offset.is_some() {
-            match self.journal_object_ref::<T>(object_offset.unwrap()) {
+            match self.journal_object_ref::<H::Object>(object_offset.unwrap()) {
                 Ok(object_guard) => {
                     // Check if this is the object we're looking for
                     if object_guard.hash() == hash && object_guard.get_payload() == data {
@@ -292,17 +291,21 @@ impl<M: MemoryMap> JournalFile<M> {
         field_name: &[u8],
         hash: u64,
     ) -> Result<Option<NonZeroU64>> {
-        self.lookup_hash_table::<FieldObject<&[u8]>>(self.field_hash_table_ref(), field_name, hash)
+        self.lookup_hash_table::<FieldHashTable<&[u8]>>(
+            self.field_hash_table_ref(),
+            field_name,
+            hash,
+        )
     }
 
     pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
         let hash_table = self.data_hash_table_ref();
-        self.lookup_hash_table::<DataObject<&[u8]>>(hash_table, payload, hash)
+        self.lookup_hash_table::<DataHashTable<&[u8]>>(hash_table, payload, hash)
     }
 
     pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
         let hash_table = self.field_hash_table_ref();
-        self.lookup_hash_table::<FieldObject<&[u8]>>(hash_table, payload, hash)
+        self.lookup_hash_table::<FieldHashTable<&[u8]>>(hash_table, payload, hash)
     }
 
     /// Run a directed partition point query on a data object's entry array
@@ -663,7 +666,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
 /// Iterator that walks through all field objects in the field hash table
 pub struct FieldIterator<'a, M: MemoryMap> {
     journal: &'a JournalFile<M>,
-    field_hash_table: Option<HashTableObject<&'a [u8]>>,
+    field_hash_table: Option<FieldHashTable<&'a [u8]>>,
     current_bucket_index: usize,
     next_field_offset: Option<NonZeroU64>,
 }
@@ -676,7 +679,7 @@ impl<M: MemoryMap> FieldIterator<'_, M> {
             return;
         };
 
-        let items = &hash_table.items;
+        let items = &hash_table.0.items;
 
         // Find the next non-empty bucket
         while self.current_bucket_index < items.len() {
