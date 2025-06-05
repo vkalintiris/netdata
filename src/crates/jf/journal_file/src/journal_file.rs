@@ -5,7 +5,7 @@ use crate::object::*;
 use crate::offset_array;
 use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::num::NonZero;
 use std::num::NonZeroI128;
 use std::num::NonZeroU64;
@@ -84,6 +84,27 @@ pub struct JournalFile<M: MemoryMap> {
     backtrace: RefCell<Backtrace>,
 }
 
+fn map_hash_table<M: MemoryMap>(
+    file: &File,
+    offset: Option<NonZeroU64>,
+    size: Option<NonZeroU64>,
+) -> Result<Option<M>> {
+    let (Some(offset), Some(size)) = (offset, size) else {
+        return Ok(None);
+    };
+
+    if offset.get() <= std::mem::size_of::<JournalHeader>() as u64 {
+        return Err(JournalError::InvalidObjectLocation);
+    }
+    if size.get() <= std::mem::size_of::<ObjectHeader>() as u64 {
+        return Err(JournalError::InvalidObjectLocation);
+    }
+
+    let offset = offset.get() - std::mem::size_of::<ObjectHeader>() as u64;
+    let size = std::mem::size_of::<ObjectHeader>() as u64 + size.get();
+    M::create(file, offset, size).map(Some)
+}
+
 impl<M: MemoryMap> JournalFile<M> {
     pub fn open(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
@@ -100,8 +121,16 @@ impl<M: MemoryMap> JournalFile<M> {
         }
 
         // Initialize the hash table maps if they exist
-        let data_hash_table_map = header.map_data_hash_table(&file)?;
-        let field_hash_table_map = header.map_field_hash_table(&file)?;
+        let data_hash_table_map = map_hash_table(
+            &file,
+            header.data_hash_table_offset,
+            header.data_hash_table_size,
+        )?;
+        let field_hash_table_map = map_hash_table(
+            &file,
+            header.field_hash_table_offset,
+            header.field_hash_table_size,
+        )?;
 
         // Create window manager for the rest of the objects
         let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
@@ -449,8 +478,16 @@ impl<M: MemoryMapMut> JournalFile<M> {
             0x9e, 0x3b,
         ];
 
-        let data_hash_table_map = header.map_data_hash_table(&file)?;
-        let field_hash_table_map = header.map_field_hash_table(&file)?;
+        let data_hash_table_map = map_hash_table(
+            &file,
+            header.data_hash_table_offset,
+            header.data_hash_table_size,
+        )?;
+        let field_hash_table_map = map_hash_table(
+            &file,
+            header.field_hash_table_offset,
+            header.field_hash_table_size,
+        )?;
 
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
         let mut header_map = M::create(&file, 0, header_size)?;
