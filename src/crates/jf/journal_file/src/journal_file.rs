@@ -157,15 +157,13 @@ impl<M: MemoryMap> JournalFile<M> {
     pub fn data_hash_table_ref(&self) -> Option<DataHashTable<&[u8]>> {
         self.data_hash_table_map
             .as_ref()
-            .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
-            .map(DataHashTable)
+            .and_then(|m| DataHashTable::<&[u8]>::from_data(m, false))
     }
 
     pub fn field_hash_table_ref(&self) -> Option<FieldHashTable<&[u8]>> {
         self.field_hash_table_map
             .as_ref()
-            .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))
-            .map(FieldHashTable)
+            .and_then(|m| FieldHashTable::<&[u8]>::from_data(m, false))
     }
 
     pub fn object_header_ref(&self, position: NonZeroU64) -> Result<&ObjectHeader> {
@@ -516,16 +514,16 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .0
     }
 
-    pub fn data_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+    pub fn data_hash_table_mut(&mut self) -> Option<DataHashTable<&mut [u8]>> {
         self.data_hash_table_map
             .as_mut()
-            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+            .and_then(|m| DataHashTable::<&mut [u8]>::from_data_mut(m, false))
     }
 
-    pub fn field_hash_table_mut(&mut self) -> Option<HashTableObject<&mut [u8]>> {
+    pub fn field_hash_table_mut(&mut self) -> Option<FieldHashTable<&mut [u8]>> {
         self.field_hash_table_map
             .as_mut()
-            .and_then(|m| HashTableObject::<&mut [u8]>::from_data_mut(m, false))
+            .and_then(|m| FieldHashTable::<&mut [u8]>::from_data_mut(m, false))
     }
 
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
@@ -679,7 +677,7 @@ impl<M: MemoryMap> FieldIterator<'_, M> {
             return;
         };
 
-        let items = &hash_table.0.items;
+        let items = &hash_table.items;
 
         // Find the next non-empty bucket
         while self.current_bucket_index < items.len() {

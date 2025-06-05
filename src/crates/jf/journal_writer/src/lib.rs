@@ -2,10 +2,11 @@
 
 use error::{JournalError, Result};
 use journal_file::{
-    journal_hash_data, CompactEntryItem, DataObject, DataObjectHeader, DataPayloadType,
-    EntryObject, EntryObjectHeader, FieldObject, FieldObjectHeader, HashItem, HashTableObject,
-    HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader,
-    JournalState, ObjectHeader, ObjectType, RegularEntryItem,
+    journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
+    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
+    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
+    HeaderIncompatibleFlags, JournalFile, JournalHeader, JournalState, ObjectHeader, ObjectType,
+    RegularEntryItem,
 };
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
@@ -80,7 +81,7 @@ impl JournalWriter {
                         .data_hash_table_ref()
                         .ok_or(JournalError::MissingHashTable)?;
 
-                    let hash_item = dht.0.hash_item_ref(hash);
+                    let hash_item = dht.hash_item_ref(hash);
                     if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
                         let mut tail_object = journal_file.data_mut(tail_hash_offset, None)?;
                         tail_object.set_next_hash_offset(data_offset);
@@ -160,7 +161,7 @@ impl JournalWriter {
                         .field_hash_table_ref()
                         .ok_or(JournalError::MissingHashTable)?;
 
-                    let hash_item = fht.0.hash_item_ref(hash);
+                    let hash_item = fht.hash_item_ref(hash);
                     if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
                         let mut tail_object = journal_file.field_mut(tail_hash_offset, None)?;
                         tail_object.set_next_hash_offset(field_offset);

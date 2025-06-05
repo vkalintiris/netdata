@@ -18,6 +18,14 @@ pub trait HashTable {
 
     /// Get all head hash offsets in the table
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_;
+
+    /// Get the length of the hash table (number of buckets)
+    fn len(&self) -> usize;
+
+    /// Make clippy happy
+    fn is_empty(&self) -> bool {
+        todo!()
+    }
 }
 
 /// Trait for mutable hash table operations
@@ -26,42 +34,117 @@ pub trait HashTableMut: HashTable {
     fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem;
 }
 
-pub struct DataHashTable<B: ByteSlice>(pub HashTableObject<B>);
-pub struct FieldHashTable<B: ByteSlice>(pub HashTableObject<B>);
+pub struct DataHashTable<B: ByteSlice> {
+    pub header: Ref<B, ObjectHeader>,
+    pub items: Ref<B, [HashItem]>,
+}
 
+pub struct FieldHashTable<B: ByteSlice> {
+    pub header: Ref<B, ObjectHeader>,
+    pub items: Ref<B, [HashItem]>,
+}
+
+// Implement HashTable for DataHashTable
 impl<B: ByteSlice> HashTable for DataHashTable<B> {
     type Object = DataObject<B>;
 
     fn hash_item_ref(&self, hash: u64) -> &HashItem {
-        self.0.hash_item_ref(hash)
+        let bucket_index = hash as usize % self.items.len();
+        &self.items[bucket_index]
     }
 
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
-        self.0.head_hash_offsets()
+        self.items
+            .iter()
+            .filter_map(|hash_item| hash_item.head_hash_offset)
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
+// Implement HashTable for FieldHashTable
 impl<B: ByteSlice> HashTable for FieldHashTable<B> {
     type Object = FieldObject<B>;
 
     fn hash_item_ref(&self, hash: u64) -> &HashItem {
-        self.0.hash_item_ref(hash)
+        let bucket_index = hash as usize % self.items.len();
+        &self.items[bucket_index]
     }
 
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
-        self.0.head_hash_offsets()
+        self.items
+            .iter()
+            .filter_map(|hash_item| hash_item.head_hash_offset)
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
+// Implement HashTableMut for DataHashTable
 impl<B: ByteSliceMut> HashTableMut for DataHashTable<B> {
     fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
-        self.0.hash_item_mut(hash)
+        let bucket_index = hash as usize % self.items.len();
+        &mut self.items[bucket_index]
     }
 }
 
+// Implement HashTableMut for FieldHashTable
 impl<B: ByteSliceMut> HashTableMut for FieldHashTable<B> {
     fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
-        self.0.hash_item_mut(hash)
+        let bucket_index = hash as usize % self.items.len();
+        &mut self.items[bucket_index]
+    }
+}
+
+// Implement JournalObject for DataHashTable
+impl<B: SplitByteSlice> JournalObject<B> for DataHashTable<B> {
+    fn from_data(data: B, _is_compact: bool) -> Option<Self> {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
+
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
+
+        Some(DataHashTable { header, items })
+    }
+}
+
+// Implement JournalObjectMut for DataHashTable
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for DataHashTable<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
+
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
+
+        Some(DataHashTable { header, items })
+    }
+}
+
+// Implement JournalObject for FieldHashTable
+impl<B: SplitByteSlice> JournalObject<B> for FieldHashTable<B> {
+    fn from_data(data: B, _is_compact: bool) -> Option<Self> {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
+
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
+
+        Some(FieldHashTable { header, items })
+    }
+}
+
+// Implement JournalObjectMut for FieldHashTable
+impl<B: SplitByteSliceMut> JournalObjectMut<B> for FieldHashTable<B> {
+    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
+        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
+
+        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
+        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
+
+        Some(FieldHashTable { header, items })
     }
 }
 
@@ -374,53 +457,6 @@ pub struct OffsetArrayObjectHeader {
 pub struct HashItem {
     pub head_hash_offset: Option<NonZeroU64>,
     pub tail_hash_offset: Option<NonZeroU64>,
-}
-
-pub struct HashTableObject<B: ByteSlice> {
-    pub header: Ref<B, ObjectHeader>,
-    pub items: Ref<B, [HashItem]>,
-}
-
-impl<B: SplitByteSlice> JournalObject<B> for HashTableObject<B> {
-    fn from_data(data: B, _is_compact: bool) -> Option<Self> {
-        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
-
-        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
-        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
-
-        Some(HashTableObject { header, items })
-    }
-}
-
-impl<B: SplitByteSliceMut> JournalObjectMut<B> for HashTableObject<B> {
-    fn from_data_mut(data: B, _is_compact: bool) -> Option<Self> {
-        let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
-
-        let header = zerocopy::Ref::from_bytes(header_data).ok()?;
-        let items = zerocopy::Ref::from_bytes(items_data).ok()?;
-
-        Some(HashTableObject { header, items })
-    }
-}
-
-impl<B: ByteSlice> HashTableObject<B> {
-    pub fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
-        self.items
-            .iter()
-            .filter_map(|hash_item| hash_item.head_hash_offset)
-    }
-
-    pub fn hash_item_ref(&self, hash: u64) -> &HashItem {
-        let bucket_index = hash as usize % self.items.len();
-        &self.items[bucket_index]
-    }
-}
-
-impl<B: ByteSliceMut> HashTableObject<B> {
-    pub fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
-        let bucket_index = hash as usize % self.items.len();
-        &mut self.items[bucket_index]
-    }
 }
 
 #[derive(Debug)]
