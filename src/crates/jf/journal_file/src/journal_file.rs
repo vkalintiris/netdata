@@ -147,16 +147,6 @@ impl<M: MemoryMap> JournalFile<M> {
         JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
     }
 
-    // pub fn dht_ref(&self) -> Option<HashTable<&[u8]>> {
-    //     let hash_table_object = self
-    //         .data_hash_table_map
-    //         .as_ref()
-    //         .and_then(|m| HashTableObject::<&[u8]>::from_data(m, false))?;
-
-    //     Some(HashTable {
-    //         inner: hash_table_object,
-    //     })
-    // }
     pub fn data_hash_table_map(&self) -> Option<&M> {
         self.data_hash_table_map.as_ref()
     }
