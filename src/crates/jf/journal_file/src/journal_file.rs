@@ -6,6 +6,7 @@ use crate::offset_array;
 use error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
+use std::marker::PhantomData;
 use std::num::NonZero;
 use std::num::NonZeroI128;
 use std::num::NonZeroU64;
@@ -47,6 +48,58 @@ pub fn load_boot_id() -> Result<[u8; 16]> {
 // Size to pad objects to (8 bytes)
 const OBJECT_ALIGNMENT: u64 = 8;
 
+pub trait BucketVisitor<'a> {
+    type Object: JournalObject<&'a [u8]> + HashableObject;
+    type Output;
+
+    /// Called for each object in the bucket. Return Some(output) to stop iteration,
+    /// or None to continue to the next object.
+    fn visit(&mut self, object: &ValueGuard<'a, Self::Object>) -> Result<Option<Self::Output>>;
+}
+
+struct PayloadMatcher<'data, T> {
+    payload: &'data [u8],
+    hash: u64,
+    _phantom: PhantomData<T>,
+}
+
+impl<'data, B: ByteSlice> PayloadMatcher<'data, DataObject<B>> {
+    fn data_matcher(payload: &'data [u8], hash: u64) -> Self {
+        Self {
+            payload,
+            hash,
+            _phantom: PhantomData::<DataObject<B>>,
+        }
+    }
+}
+
+impl<'data, B: ByteSlice> PayloadMatcher<'data, FieldObject<B>> {
+    fn field_matcher(payload: &'data [u8], hash: u64) -> Self {
+        Self {
+            payload,
+            hash,
+            _phantom: PhantomData::<FieldObject<B>>,
+        }
+    }
+}
+
+impl<'a, T> BucketVisitor<'a> for PayloadMatcher<'_, T>
+where
+    T: JournalObject<&'a [u8]> + HashableObject,
+{
+    type Object = T;
+    type Output = NonZeroU64;
+
+    fn visit(&mut self, object: &ValueGuard<'a, Self::Object>) -> Result<Option<Self::Output>> {
+        if object.hash() == self.hash && object.get_payload() == self.payload {
+            Ok(Some(object.offset()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+///
 /// A reader for systemd journal files that efficiently maps small regions of the file into memory.
 ///
 /// # Memory Management
@@ -106,6 +159,33 @@ fn map_hash_table<M: MemoryMap>(
 }
 
 impl<M: MemoryMap> JournalFile<M> {
+    pub fn visit_bucket<'a, H, V>(
+        &'a self,
+        hash_table: Option<H>,
+        hash: u64,
+        mut visitor: V,
+    ) -> Result<Option<V::Output>>
+    where
+        H: HashTable<Object = V::Object>,
+        V: BucketVisitor<'a>,
+    {
+        let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
+        let bucket = hash_table.hash_item_ref(hash);
+        let mut object_offset = bucket.head_hash_offset;
+
+        while let Some(offset) = object_offset {
+            let object_guard = self.journal_object_ref::<V::Object>(offset)?;
+
+            if let Some(output) = visitor.visit(&object_guard)? {
+                return Ok(Some(output));
+            }
+
+            object_offset = object_guard.next_hash_offset();
+        }
+
+        Ok(None)
+    }
+
     pub fn open(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
@@ -275,59 +355,14 @@ impl<M: MemoryMap> JournalFile<M> {
         self.journal_object_ref(offset)
     }
 
-    fn lookup_hash_table<'a, H>(
-        &'a self,
-        hash_table: Option<H>,
-        data: &[u8],
-        hash: u64,
-    ) -> Result<Option<NonZeroU64>>
-    where
-        H: HashTable,
-        H::Object: JournalObject<&'a [u8]>,
-    {
-        let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
-
-        // Get the head object offset from the bucket
-        let bucket = hash_table.hash_item_ref(hash);
-        let mut object_offset = bucket.head_hash_offset;
-
-        // Traverse the linked list of objects in this bucket
-        while let Some(offset) = object_offset {
-            let object_guard = self.journal_object_ref::<H::Object>(offset)?;
-
-            // Check if this is the object we're looking for
-            if object_guard.hash() == hash && object_guard.get_payload() == data {
-                return Ok(Some(object_guard.offset())); // Use the offset from the guard
-            }
-
-            // Move to the next object in the chain
-            object_offset = object_guard.next_hash_offset();
-        }
-
-        Ok(None)
-    }
-
-    /// Finds a field object by name and returns its offset
-    pub fn find_field_offset_by_name(
-        &self,
-        field_name: &[u8],
-        hash: u64,
-    ) -> Result<Option<NonZeroU64>> {
-        self.lookup_hash_table::<FieldHashTable<&[u8]>>(
-            self.field_hash_table_ref(),
-            field_name,
-            hash,
-        )
-    }
-
     pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
-        let hash_table = self.data_hash_table_ref();
-        self.lookup_hash_table::<DataHashTable<&[u8]>>(hash_table, payload, hash)
+        let visitor = PayloadMatcher::data_matcher(payload, hash);
+        self.visit_bucket(self.data_hash_table_ref(), hash, visitor)
     }
 
     pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
-        let hash_table = self.field_hash_table_ref();
-        self.lookup_hash_table::<FieldHashTable<&[u8]>>(hash_table, payload, hash)
+        let visitor = PayloadMatcher::field_matcher(payload, hash);
+        self.visit_bucket(self.field_hash_table_ref(), hash, visitor)
     }
 
     /// Run a directed partition point query on a data object's entry array
@@ -380,7 +415,7 @@ impl<M: MemoryMap> JournalFile<M> {
     ) -> Result<FieldDataIterator<'a, M>> {
         // Find the field offset by name
         let field_hash = self.hash(field_name);
-        let Some(field_offset) = self.find_field_offset_by_name(field_name, field_hash)? else {
+        let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
             return Ok(FieldDataIterator {
                 journal: self,
                 current_data_offset: None,
