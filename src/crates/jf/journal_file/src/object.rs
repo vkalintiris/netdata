@@ -396,86 +396,12 @@ impl<B: ByteSlice> HashTableObject<B> {
         let bucket_index = hash as usize % self.items.len();
         &self.items[bucket_index]
     }
-
-    fn bucket_offsets<'a, F>(
-        &'a self,
-        bucket_index: usize,
-        fetch_next: F,
-    ) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
-    where
-        F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
-    {
-        let head = self.items[bucket_index].head_hash_offset;
-        LinkedOffsetIterator::new(head, fetch_next.clone())
-    }
-
-    pub fn offsets<'a, F>(&'a self, fetch_next: F) -> impl Iterator<Item = Result<NonZeroU64>> + 'a
-    where
-        F: Fn(NonZeroU64) -> Result<Option<NonZeroU64>> + Clone + 'a,
-    {
-        self.items
-            .iter()
-            .filter_map(|bucket| bucket.head_hash_offset)
-            .flat_map(move |head| LinkedOffsetIterator::new(Some(head), fetch_next.clone()))
-    }
-
-    pub fn find<T, F>(
-        &self,
-        hash: u64,
-        payload: &[u8],
-        fetch_object: F,
-    ) -> Result<Option<NonZeroU64>>
-    where
-        T: HashableObject,
-        F: Fn(NonZeroU64) -> Result<T>,
-    {
-        let bucket_index = (hash % self.items.len() as u64) as usize;
-
-        let fetch_next = |offset| -> Result<Option<NonZeroU64>> {
-            let object = fetch_object(offset)?;
-            Ok(object.next_hash_offset())
-        };
-
-        for offset_result in self.bucket_offsets(bucket_index, fetch_next) {
-            let offset = offset_result?;
-            let object = fetch_object(offset)?;
-
-            if object.hash() == hash && object.get_payload() == payload {
-                return Ok(Some(offset));
-            }
-        }
-
-        Ok(None)
-    }
 }
 
 impl<B: ByteSliceMut> HashTableObject<B> {
     pub fn hash_item_mut(&mut self, hash: u64) -> &mut HashItem {
         let bucket_index = hash as usize % self.items.len();
         &mut self.items[bucket_index]
-    }
-
-    /// Insert a new object offset into the hash table
-    ///
-    /// Assumes the object has already been written to the journal file
-    /// and does not already exist in the hash table
-    pub fn insert<T, F>(&mut self, hash: u64, new_offset: NonZeroU64, fetch_object: F) -> Result<()>
-    where
-        T: HashableObjectMut,
-        F: Fn(NonZeroU64) -> Result<T>,
-    {
-        let bucket_index = (hash % self.items.len() as u64) as usize;
-        let bucket = &mut self.items[bucket_index];
-
-        if let Some(tail_offset) = bucket.tail_hash_offset {
-            let mut tail_object = fetch_object(tail_offset)?;
-            tail_object.set_next_hash_offset(new_offset);
-        } else {
-            bucket.head_hash_offset = Some(new_offset);
-        }
-
-        bucket.tail_hash_offset = Some(new_offset);
-        Ok(())
     }
 }
 
