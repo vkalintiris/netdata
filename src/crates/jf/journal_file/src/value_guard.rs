@@ -28,13 +28,22 @@ use std::ops::{Deref, DerefMut};
 /// their underlying memory might have been repurposed.
 #[derive(Debug)]
 pub struct ValueGuard<'a, T> {
+    offset: NonZeroU64,
     value: T,
     in_use_flag: &'a RefCell<bool>,
 }
 
 impl<'a, T> ValueGuard<'a, T> {
-    pub fn new(value: T, in_use_flag: &'a RefCell<bool>) -> Self {
-        Self { value, in_use_flag }
+    pub fn new(offset: NonZeroU64, value: T, in_use_flag: &'a RefCell<bool>) -> Self {
+        Self {
+            offset,
+            value,
+            in_use_flag,
+        }
+    }
+
+    pub fn offset(&self) -> NonZeroU64 {
+        self.offset
     }
 }
 

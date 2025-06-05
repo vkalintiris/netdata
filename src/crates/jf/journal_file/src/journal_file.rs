@@ -242,14 +242,14 @@ impl<M: MemoryMap> JournalFile<M> {
         };
 
         let data = self.object_data_ref(offset, size_needed)?;
-        let Some(object) = T::from_data(data, is_compact) else {
+        let Some(value) = T::from_data(data, is_compact) else {
             return Err(JournalError::ZerocopyFailure);
         };
 
         // Mark as in use
         *is_in_use = true;
 
-        Ok(ValueGuard::new(object, &self.object_in_use))
+        Ok(ValueGuard::new(offset, value, &self.object_in_use))
     }
 
     pub fn offset_array_ref(
@@ -292,21 +292,16 @@ impl<M: MemoryMap> JournalFile<M> {
         let mut object_offset = bucket.head_hash_offset;
 
         // Traverse the linked list of objects in this bucket
-        while object_offset.is_some() {
-            match self.journal_object_ref::<H::Object>(object_offset.unwrap()) {
-                Ok(object_guard) => {
-                    // Check if this is the object we're looking for
-                    if object_guard.hash() == hash && object_guard.get_payload() == data {
-                        return Ok(object_offset);
-                    }
+        while let Some(offset) = object_offset {
+            let object_guard = self.journal_object_ref::<H::Object>(offset)?;
 
-                    // Move to the next object in the chain
-                    object_offset = object_guard.next_hash_offset();
-                }
-                Err(e) => {
-                    return Err(e);
-                }
+            // Check if this is the object we're looking for
+            if object_guard.hash() == hash && object_guard.get_payload() == data {
+                return Ok(Some(object_guard.offset())); // Use the offset from the guard
             }
+
+            // Move to the next object in the chain
+            object_offset = object_guard.next_hash_offset();
         }
 
         Ok(None)
@@ -626,11 +621,11 @@ impl<M: MemoryMapMut> JournalFile<M> {
         };
 
         let data = self.object_data_mut(offset, size_needed)?;
-        let object = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
+        let value = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
 
         // Mark as in use
         *is_in_use = true;
-        Ok(ValueGuard::new(object, &self.object_in_use))
+        Ok(ValueGuard::new(offset, value, &self.object_in_use))
     }
 
     pub fn offset_array_mut(
