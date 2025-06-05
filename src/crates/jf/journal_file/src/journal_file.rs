@@ -170,7 +170,7 @@ impl<M: MemoryMap> JournalFile<M> {
         V: BucketVisitor<'a>,
     {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
-        let bucket = hash_table.hash_item_ref(hash);
+        let bucket = hash_table.hash_item(hash);
         let mut object_offset = bucket.head_hash_offset;
 
         while let Some(offset) = object_offset {
@@ -591,6 +591,66 @@ impl<M: MemoryMapMut> JournalFile<M> {
         self.field_hash_table_map
             .as_mut()
             .and_then(|m| FieldHashTable::<&mut [u8]>::from_data_mut(m, false))
+    }
+
+    pub fn data_hash_table_set_tail_offset(
+        &mut self,
+        hash: u64,
+        data_offset: NonZeroU64,
+    ) -> Result<()> {
+        let hash_item = {
+            let Some(dht) = self.data_hash_table_ref() else {
+                return Err(JournalError::MissingHashTable);
+            };
+            dht.hash_item(hash)
+        };
+
+        if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
+            let mut tail_object = self.data_mut(tail_hash_offset, None)?;
+            tail_object.set_next_hash_offset(data_offset);
+        }
+
+        let Some(mut dht) = self.data_hash_table_mut() else {
+            return Err(JournalError::MissingHashTable);
+        };
+
+        let hash_item = dht.hash_item_mut(hash);
+        if hash_item.head_hash_offset.is_none() {
+            hash_item.head_hash_offset = Some(data_offset);
+        }
+        hash_item.tail_hash_offset = Some(data_offset);
+
+        Ok(())
+    }
+
+    pub fn field_hash_table_set_tail_offset(
+        &mut self,
+        hash: u64,
+        field_offset: NonZeroU64,
+    ) -> Result<()> {
+        let hash_item = {
+            let Some(fht) = self.field_hash_table_ref() else {
+                return Err(JournalError::MissingHashTable);
+            };
+            fht.hash_item(hash)
+        };
+
+        if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
+            let mut tail_object = self.field_mut(tail_hash_offset, None)?;
+            tail_object.set_next_hash_offset(field_offset);
+        }
+
+        let Some(mut fht) = self.field_hash_table_mut() else {
+            return Err(JournalError::MissingHashTable);
+        };
+
+        let hash_item = fht.hash_item_mut(hash);
+        if hash_item.head_hash_offset.is_none() {
+            hash_item.head_hash_offset = Some(field_offset);
+        }
+        hash_item.tail_hash_offset = Some(field_offset);
+
+        Ok(())
     }
 
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {

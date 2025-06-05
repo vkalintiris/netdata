@@ -75,31 +75,8 @@ impl JournalWriter {
                 self.num_writen_objects += 1;
                 self.tail_offset = self.tail_offset.saturating_add(data_size);
 
-                // Update tail object's next_hash_offset
-                {
-                    let dht = journal_file
-                        .data_hash_table_ref()
-                        .ok_or(JournalError::MissingHashTable)?;
-
-                    let hash_item = dht.hash_item_ref(hash);
-                    if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
-                        let mut tail_object = journal_file.data_mut(tail_hash_offset, None)?;
-                        tail_object.set_next_hash_offset(data_offset);
-                    }
-                };
-
-                // Update the hash table bucket
-                {
-                    let mut dht = journal_file
-                        .data_hash_table_mut()
-                        .ok_or(JournalError::MissingHashTable)?;
-
-                    let hash_item = dht.hash_item_mut(hash);
-                    if hash_item.head_hash_offset.is_none() {
-                        hash_item.head_hash_offset = Some(data_offset);
-                    }
-                    hash_item.tail_hash_offset = Some(data_offset);
-                }
+                // Update hash table
+                journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
 
                 // Add the field object
                 if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
@@ -155,31 +132,8 @@ impl JournalWriter {
                 self.num_writen_objects += 1;
                 self.tail_offset = self.tail_offset.saturating_add(field_size);
 
-                // Update tail object's next_hash_offset
-                {
-                    let fht = journal_file
-                        .field_hash_table_ref()
-                        .ok_or(JournalError::MissingHashTable)?;
-
-                    let hash_item = fht.hash_item_ref(hash);
-                    if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
-                        let mut tail_object = journal_file.field_mut(tail_hash_offset, None)?;
-                        tail_object.set_next_hash_offset(field_offset);
-                    }
-                };
-
-                // Update the hash table bucket
-                {
-                    let mut fht = journal_file
-                        .field_hash_table_mut()
-                        .ok_or(JournalError::MissingHashTable)?;
-
-                    let hash_item = fht.hash_item_mut(hash);
-                    if hash_item.head_hash_offset.is_none() {
-                        hash_item.head_hash_offset = Some(field_offset);
-                    }
-                    hash_item.tail_hash_offset = Some(field_offset);
-                }
+                // Update hash table
+                journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
 
                 // Return the offset where we wrote the newly added data object
                 Ok(field_offset)
