@@ -83,4 +83,8 @@ impl<T: HashableObjectMut> HashableObjectMut for ValueGuard<'_, T> {
     fn set_next_hash_offset(&mut self, offset: NonZeroU64) {
         self.value.set_next_hash_offset(offset);
     }
+
+    fn set_payload(&mut self, data: &[u8]) {
+        self.value.set_payload(data);
+    }
 }

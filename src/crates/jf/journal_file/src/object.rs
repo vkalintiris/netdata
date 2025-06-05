@@ -64,6 +64,9 @@ pub trait HashableObject {
 pub trait HashableObjectMut: HashableObject {
     /// Set the offset to the next object in the hash chain
     fn set_next_hash_offset(&mut self, offset: NonZeroU64);
+
+    /// Set the payload of the object
+    fn set_payload(&mut self, data: &[u8]);
 }
 
 impl<B: ByteSlice> HashableObject for FieldObject<B> {
@@ -84,15 +87,13 @@ impl<B: ByteSlice> HashableObject for FieldObject<B> {
     }
 }
 
-impl FieldObject<&mut [u8]> {
-    pub fn set_payload(&mut self, data: &[u8]) {
-        self.payload.copy_from_slice(data);
-    }
-}
-
-impl<B: ByteSliceMut> HashableObjectMut for FieldObject<B> {
+impl HashableObjectMut for FieldObject<&mut [u8]> {
     fn set_next_hash_offset(&mut self, next_hash_offset: NonZeroU64) {
         self.header.next_hash_offset = Some(next_hash_offset);
+    }
+
+    fn set_payload(&mut self, data: &[u8]) {
+        self.payload.copy_from_slice(data);
     }
 }
 
@@ -114,9 +115,20 @@ impl<B: ByteSlice> HashableObject for DataObject<B> {
     }
 }
 
-impl<B: ByteSliceMut> HashableObjectMut for DataObject<B> {
+impl HashableObjectMut for DataObject<&mut [u8]> {
     fn set_next_hash_offset(&mut self, next_hash_offset: NonZeroU64) {
         self.header.next_hash_offset = Some(next_hash_offset);
+    }
+
+    fn set_payload(&mut self, data: &[u8]) {
+        match &mut self.payload {
+            DataPayloadType::Regular(payload) => {
+                payload.copy_from_slice(data);
+            }
+            DataPayloadType::Compact { payload, .. } => {
+                payload.copy_from_slice(data);
+            }
+        };
     }
 }
 
@@ -897,19 +909,6 @@ impl<B: SplitByteSliceMut> JournalObjectMut<B> for DataObject<B> {
         };
 
         Some(DataObject { header, payload })
-    }
-}
-
-impl DataObject<&mut [u8]> {
-    pub fn set_payload(&mut self, data: &[u8]) {
-        match &mut self.payload {
-            DataPayloadType::Regular(payload) => {
-                payload.copy_from_slice(data);
-            }
-            DataPayloadType::Compact { payload, .. } => {
-                payload.copy_from_slice(data);
-            }
-        };
     }
 }
 
