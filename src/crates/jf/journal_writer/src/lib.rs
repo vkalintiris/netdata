@@ -16,6 +16,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
 
+#[derive(Debug, Clone, Copy)]
 struct EntryItem {
     offset: NonZeroU64,
     hash: u64,
@@ -193,7 +194,7 @@ impl JournalWriter {
         realtime: u64,
         monotonic: u64,
         boot_id: [u8; 16],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let header = journal_file.journal_header_ref();
         assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
@@ -247,10 +248,11 @@ impl JournalWriter {
 
         self.append_to_entry_array(journal_file, entry_offset)?;
 
-        // TODO: -
-        // link entry and data objects into their entry offset arrays.
+        for entry_item_index in 0..self.entry_items.len() {
+            self.link_data_to_entry(journal_file, entry_offset, entry_item_index)?;
+        }
 
-        Ok(0)
+        Ok(())
     }
 
     fn allocate_new_array(
@@ -316,6 +318,131 @@ impl JournalWriter {
         }
 
         journal_file.journal_header_mut().n_entries += 1;
+
+        Ok(())
+    }
+
+    fn append_to_data_entry_array(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        mut array_offset: NonZeroU64,
+        entry_offset: NonZeroU64,
+        current_count: u64,
+    ) -> Result<()> {
+        // Navigate to the tail of the array chain
+        let mut current_index = 0u64;
+        let mut tail_offset = array_offset;
+
+        loop {
+            let array_guard = journal_file.offset_array_ref(array_offset)?;
+            let capacity = array_guard.capacity() as u64;
+
+            if current_index + capacity >= current_count {
+                // This is the tail array
+                tail_offset = array_offset;
+                break;
+            }
+
+            current_index += capacity;
+
+            if let Some(next_offset) = array_guard.header.next_offset_array {
+                array_offset = next_offset;
+            } else {
+                // This shouldn't happen if counts are correct
+                return Err(JournalError::InvalidOffsetArrayOffset);
+            }
+        }
+
+        // Try to add to the tail array
+        let tail_guard = journal_file.offset_array_ref(tail_offset)?;
+        let tail_capacity = tail_guard.capacity() as u64;
+        let entries_in_tail = current_count - current_index;
+
+        if entries_in_tail < tail_capacity {
+            // There's space in the tail array
+            drop(tail_guard);
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.set(entries_in_tail as usize, entry_offset)?;
+        } else {
+            // Need to create a new array
+            let new_capacity = NonZeroU64::new(tail_capacity * 2).unwrap(); // Double the size
+            let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
+
+            // Link the old tail to the new array
+            drop(tail_guard);
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.header.next_offset_array = Some(new_array_offset);
+            drop(tail_guard);
+
+            // Add entry to the new array
+            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
+            new_array_guard.set(0, entry_offset)?;
+        }
+
+        Ok(())
+    }
+
+    fn link_data_to_entry(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        entry_offset: NonZeroU64,
+        entry_item_index: usize,
+    ) -> Result<()> {
+        let data_offset = self.entry_items[entry_item_index].offset;
+        let mut data_guard = journal_file.data_mut(data_offset, None)?;
+
+        match data_guard.header.n_entries {
+            None => {
+                data_guard.header.entry_offset = Some(entry_offset);
+                data_guard.header.n_entries = NonZeroU64::new(1);
+            }
+            Some(n_entries) => {
+                match n_entries.get() {
+                    0 => {
+                        unreachable!();
+                    }
+                    1 => {
+                        drop(data_guard);
+
+                        // Create new entry array with initial capacity
+                        let array_capacity = NonZeroU64::new(64).unwrap();
+                        let array_offset = self.allocate_new_array(journal_file, array_capacity)?;
+
+                        // Load new array and set its first entry offset
+                        {
+                            let mut array_guard =
+                                journal_file.offset_array_mut(array_offset, None)?;
+                            array_guard.set(0, entry_offset)?;
+                        }
+
+                        // Update data object to point to the array
+                        let mut data_guard = journal_file.data_mut(data_offset, None)?;
+                        data_guard.header.entry_array_offset = Some(array_offset);
+                        data_guard.header.n_entries = NonZeroU64::new(2);
+                    }
+                    x => {
+                        // There's already an entry array, append to it
+                        let current_count = x - 1;
+                        let array_offset = data_guard.header.entry_array_offset.unwrap();
+
+                        // Drop the data guard to avoid borrow conflicts
+                        drop(data_guard);
+
+                        // Find the tail of the entry array chain and append
+                        self.append_to_data_entry_array(
+                            journal_file,
+                            array_offset,
+                            entry_offset,
+                            current_count,
+                        )?;
+
+                        // Update the count
+                        let mut data_guard = journal_file.data_mut(data_offset, None)?;
+                        data_guard.header.n_entries = NonZeroU64::new(current_count + 1);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
