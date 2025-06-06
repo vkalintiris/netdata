@@ -12,7 +12,7 @@ pub trait HashTable {
     type Object: HashableObject;
 
     /// Get the hash item for a given hash value
-    fn hash_item(&self, hash: u64) -> HashItem;
+    fn hash_item_ref(&self, hash: u64) -> &HashItem;
 
     /// Get all head hash offsets in the table
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_;
@@ -46,9 +46,9 @@ pub struct FieldHashTable<B: ByteSlice> {
 impl<B: ByteSlice> HashTable for DataHashTable<B> {
     type Object = DataObject<B>;
 
-    fn hash_item(&self, hash: u64) -> HashItem {
+    fn hash_item_ref(&self, hash: u64) -> &HashItem {
         let bucket_index = hash as usize % self.items.len();
-        self.items[bucket_index]
+        &self.items[bucket_index]
     }
 
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
@@ -66,9 +66,9 @@ impl<B: ByteSlice> HashTable for DataHashTable<B> {
 impl<B: ByteSlice> HashTable for FieldHashTable<B> {
     type Object = FieldObject<B>;
 
-    fn hash_item(&self, hash: u64) -> HashItem {
+    fn hash_item_ref(&self, hash: u64) -> &HashItem {
         let bucket_index = hash as usize % self.items.len();
-        self.items[bucket_index]
+        &self.items[bucket_index]
     }
 
     fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {

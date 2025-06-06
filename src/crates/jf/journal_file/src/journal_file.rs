@@ -170,7 +170,7 @@ impl<M: MemoryMap> JournalFile<M> {
         V: BucketVisitor<'a>,
     {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
-        let bucket = hash_table.hash_item(hash);
+        let bucket = hash_table.hash_item_ref(hash);
         let mut object_offset = bucket.head_hash_offset;
 
         while let Some(offset) = object_offset {
@@ -602,7 +602,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             let Some(dht) = self.data_hash_table_ref() else {
                 return Err(JournalError::MissingHashTable);
             };
-            dht.hash_item(hash)
+            *dht.hash_item_ref(hash)
         };
 
         if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
@@ -632,7 +632,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             let Some(fht) = self.field_hash_table_ref() else {
                 return Err(JournalError::MissingHashTable);
             };
-            fht.hash_item(hash)
+            *fht.hash_item_ref(hash)
         };
 
         if let Some(tail_hash_offset) = hash_item.tail_hash_offset {
