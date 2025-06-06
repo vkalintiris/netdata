@@ -78,7 +78,7 @@ impl JournalWriter {
                 // Update hash table
                 journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
 
-                // Add the field object
+                // Add the field object, if we have any
                 if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
                     let field_offset = self.add_field(journal_file, &payload[..equals_pos])?;
 
@@ -257,7 +257,12 @@ impl JournalWriter {
             } else {
                 let new_array_offset = {
                     let new_capacity = tail_node.capacity().get().saturating_mul(2) as u64;
-                    self.allocate_new_array(journal_file, NonZeroU64::new(new_capacity).unwrap())?
+                    let new_array_offset = self
+                        .allocate_new_array(journal_file, NonZeroU64::new(new_capacity).unwrap())?;
+                    let mut array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
+                    array_guard.set(0, entry_offset)?;
+
+                    new_array_offset
                 };
 
                 // Link the old tail to the new array
@@ -266,9 +271,6 @@ impl JournalWriter {
                         journal_file.offset_array_mut(tail_node.offset(), None)?;
                     array_guard.header.next_offset_array = Some(new_array_offset);
                 }
-
-                let mut array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
-                array_guard.set(0, entry_offset)?;
             }
         }
 
