@@ -253,7 +253,7 @@ impl JournalWriter {
 
             if tail_node.len() < tail_node.capacity() {
                 let mut array_guard = journal_file.offset_array_mut(tail_node.offset(), None)?;
-                array_guard.set(0, entry_offset)?;
+                array_guard.set(tail_node.len().get(), entry_offset)?;
             } else {
                 let new_array_offset = {
                     let new_capacity = tail_node.capacity().get().saturating_mul(2) as u64;
