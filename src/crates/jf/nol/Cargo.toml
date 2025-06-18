@@ -1,0 +1,10 @@
+[package]
+name = "nol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+opentelemetry-proto = { workspace = true }

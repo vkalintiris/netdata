@@ -11,6 +11,7 @@ members = [
     "journal_forwarder",
     "window_manager",
     "sigbus",
+    "nol",
 ]
 
 [workspace.package]
@@ -32,6 +33,11 @@ ruzstd = "0.8"
 systemd = { path = "/home/vk/repos/crates/rust-systemd"}
 libc = "0.2"
 hex = "0.4"
+
+tokio = { version = "1.45", features = ["rt-multi-thread"] }
+prost = "0.14"
+tonic = "0.13"
+opentelemetry-proto = "0.30"
 
 [profile.release]
 lto = true
