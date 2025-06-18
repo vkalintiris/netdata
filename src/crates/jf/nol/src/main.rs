@@ -16,8 +16,13 @@ impl LogsService for MyLogsService {
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let req = request.into_inner();
 
-        let result = flatten_export_logs_request(&req);
-        println!("{:#?}", result);
+        let result = flatten_export_logs_request(&req).unwrap();
+        for (idx, item) in result.iter().enumerate() {
+            println!(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+            println!("Displaying flattened log: {:?}", idx);
+            println!("{:#?}", item);
+            println!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        }
 
         let reply = ExportLogsServiceResponse {
             partial_success: None,
