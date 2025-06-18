@@ -1,3 +1,4 @@
+use flatten_otel_logs::flatten_export_logs_request;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     logs_service_server::{LogsService, LogsServiceServer},
     ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -15,27 +16,8 @@ impl LogsService for MyLogsService {
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let req = request.into_inner();
 
-        println!("Received logs export request:");
-        for resource_log in req.resource_logs {
-            if let Some(resource) = &resource_log.resource {
-                println!("Resource attributes: {:?}", resource.attributes);
-            }
-
-            for scope_log in resource_log.scope_logs {
-                if let Some(scope) = &scope_log.scope {
-                    println!("Scope: {}", scope.name);
-                }
-
-                for log_record in scope_log.log_records {
-                    println!("Log Record:");
-                    println!("  Time: {:?}", log_record.time_unix_nano);
-                    println!("  Severity: {:?}", log_record.severity_text);
-                    println!("  Body: {:?}", log_record.body);
-                    println!("  Attributes: {:?}", log_record.attributes);
-                    println!("---");
-                }
-            }
-        }
+        let result = flatten_export_logs_request(&req);
+        println!("{:#?}", result);
 
         let reply = ExportLogsServiceResponse {
             partial_success: None,

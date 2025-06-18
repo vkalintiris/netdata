@@ -8,3 +8,5 @@ tokio = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 opentelemetry-proto = { workspace = true }
+
+flatten-otel-logs = { path = "../flatten-otel-logs" }

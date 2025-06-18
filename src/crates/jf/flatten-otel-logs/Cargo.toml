@@ -1,0 +1,9 @@
+[package]
+name = "flatten-otel-logs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opentelemetry-proto = { workspace = true, features = ["logs", "with-serde"] }
+flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch" }
+serde_json = { workspace = true }

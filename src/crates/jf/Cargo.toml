@@ -12,6 +12,7 @@ members = [
     "window_manager",
     "sigbus",
     "nol",
+    "flatten-otel-logs",
 ]
 
 [workspace.package]
@@ -38,6 +39,8 @@ tokio = { version = "1.45", features = ["rt-multi-thread"] }
 prost = "0.14"
 tonic = "0.13"
 opentelemetry-proto = "0.30"
+
+indexmap = "2.9"
 
 [profile.release]
 lto = true
