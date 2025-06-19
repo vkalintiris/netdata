@@ -25,13 +25,14 @@ struct EntryItem {
 
 pub struct JournalWriter {
     tail_offset: NonZeroU64,
-    num_writen_objects: u64,
+    next_seqnum: u64,
+    num_written_objects: u64,
     entry_items: Vec<EntryItem>,
 }
 
 impl JournalWriter {
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
-        let tail_offset = {
+        let (tail_offset, next_seqnum) = {
             let header = journal_file.journal_header_ref();
 
             let Some(tail_object_offset) = header.tail_object_offset else {
@@ -39,12 +40,17 @@ impl JournalWriter {
             };
 
             let tail_object = journal_file.object_header_ref(tail_object_offset)?;
-            tail_object_offset.saturating_add(tail_object.size)
+
+            (
+                tail_object_offset.saturating_add(tail_object.size),
+                header.tail_entry_seqnum + 1,
+            )
         };
 
         Ok(Self {
             tail_offset,
-            num_writen_objects: 0,
+            next_seqnum,
+            num_written_objects: 0,
             entry_items: Vec::with_capacity(128),
         })
     }
@@ -72,7 +78,7 @@ impl JournalWriter {
                 };
 
                 // Update our tail offset
-                self.num_writen_objects += 1;
+                self.num_written_objects += 1;
                 self.tail_offset = self.tail_offset.saturating_add(data_size);
 
                 // Update hash table
@@ -129,7 +135,7 @@ impl JournalWriter {
                 };
 
                 // Update our tail offset
-                self.num_writen_objects += 1;
+                self.num_written_objects += 1;
                 self.tail_offset = self.tail_offset.saturating_add(field_size);
 
                 // Update hash table
@@ -182,6 +188,7 @@ impl JournalWriter {
             let size = Some(self.entry_items.len() as u64 * 16);
             let mut entry_guard = journal_file.entry_mut(entry_offset, size)?;
 
+            entry_guard.header.seqnum = self.next_seqnum;
             entry_guard.header.xor_hash = xor_hash;
             entry_guard.header.boot_id = boot_id;
             entry_guard.header.monotonic = monotonic;
@@ -197,14 +204,44 @@ impl JournalWriter {
             entry_guard.header.object_header.aligned_size()
         };
 
-        // Update our tail offset
-        self.num_writen_objects += 1;
-        self.tail_offset = self.tail_offset.saturating_add(entry_size);
+        // Update state
+        self.next_seqnum += 1;
+        self.num_written_objects += 1;
+        self.tail_offset = NonZeroU64::new(self.tail_offset.get() + entry_size)
+            .ok_or(JournalError::InvalidOffset)?;
 
         self.append_to_entry_array(journal_file, entry_offset)?;
-
         for entry_item_index in 0..self.entry_items.len() {
             self.link_data_to_entry(journal_file, entry_offset, entry_item_index)?;
+        }
+
+        // Update header
+        {
+            let header = journal_file.journal_header_mut();
+
+            // Update counts
+            header.n_entries += 1;
+            header.n_objects += self.num_written_objects;
+
+            header.tail_object_offset = Some(entry_offset);
+
+            // Update sequence numbers
+            header.tail_entry_seqnum = self.next_seqnum - 1;
+            if header.head_entry_seqnum == 0 {
+                header.head_entry_seqnum = self.next_seqnum - 1;
+            }
+
+            // Update timestamps
+            header.tail_entry_realtime = realtime;
+            if header.head_entry_realtime == 0 {
+                header.head_entry_realtime = realtime;
+            }
+
+            header.tail_entry_monotonic = monotonic;
+            header.tail_entry_boot_id = boot_id;
+
+            // Update arena size
+            header.arena_size = self.tail_offset.get() - header.header_size;
         }
 
         Ok(())
@@ -225,7 +262,7 @@ impl JournalWriter {
         };
 
         // Update tail offset
-        self.num_writen_objects += 1;
+        self.num_written_objects += 1;
         self.tail_offset = self.tail_offset.saturating_add(array_size);
 
         Ok(array_offset)
