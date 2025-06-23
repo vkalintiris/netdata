@@ -10,3 +10,8 @@ window_manager = { path = "../window_manager" }
 memmap2 = { workspace = true }
 zerocopy = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+journal_reader = { path = "../journal_reader" }
+tempfile = { workspace = true }
+
