@@ -298,7 +298,7 @@ pub struct JournalHeader {
     pub n_entries: u64,                              // Number of entries
     pub tail_entry_seqnum: u64,                      // Sequence number of the last entry
     pub head_entry_seqnum: u64,                      // Sequence number of the first entry
-    pub entry_array_offset: u64,                     // Offset of the entry array
+    pub entry_array_offset: Option<NonZeroU64>,      // Offset of the entry array
     pub head_entry_realtime: u64,                    // Realtime timestamp of the first entry
     pub tail_entry_realtime: u64,                    // Realtime timestamp of the last entry
     pub tail_entry_monotonic: u64,                   // Monotonic timestamp of the last entry

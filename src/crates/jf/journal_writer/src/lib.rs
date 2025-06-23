@@ -222,26 +222,26 @@ impl JournalWriter {
             // Update counts
             header.n_entries += 1;
             header.n_objects += self.num_written_objects;
-
             header.tail_object_offset = Some(entry_offset);
+            header.arena_size = self.tail_offset.get() - header.header_size;
 
-            // Update sequence numbers
-            header.tail_entry_seqnum = self.next_seqnum - 1;
+            // entries seqnum
             if header.head_entry_seqnum == 0 {
                 header.head_entry_seqnum = self.next_seqnum - 1;
             }
+            header.tail_entry_seqnum = self.next_seqnum - 1;
 
-            // Update timestamps
+            // entries realtime
             header.tail_entry_realtime = realtime;
             if header.head_entry_realtime == 0 {
                 header.head_entry_realtime = realtime;
             }
 
+            // entries monotonic time
             header.tail_entry_monotonic = monotonic;
-            header.tail_entry_boot_id = boot_id;
 
-            // Update arena size
-            header.arena_size = self.tail_offset.get() - header.header_size;
+            // entries boot id
+            header.tail_entry_boot_id = boot_id;
         }
 
         Ok(())
@@ -273,13 +273,16 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         entry_offset: NonZeroU64,
     ) -> Result<()> {
-        let header = journal_file.journal_header_ref();
+        let entry_array_offset = journal_file.journal_header_ref().entry_array_offset;
 
-        if header.entry_array_offset == 0 {
-            let array_offset =
-                self.allocate_new_array(journal_file, NonZeroU64::new(4096).unwrap())?;
-            let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
-            array_guard.set(0, entry_offset)?;
+        if entry_array_offset.is_none() {
+            journal_file.journal_header_mut().entry_array_offset = {
+                let array_offset =
+                    self.allocate_new_array(journal_file, NonZeroU64::new(4096).unwrap())?;
+                let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
+                array_guard.set(0, entry_offset)?;
+                Some(array_offset)
+            };
         } else {
             let tail_node = {
                 let entry_list = journal_file

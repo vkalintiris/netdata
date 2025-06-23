@@ -246,7 +246,7 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn entry_list(&self) -> Option<offset_array::List> {
-        let head_offset = std::num::NonZeroU64::new(self.journal_header_ref().entry_array_offset)?;
+        let head_offset = self.journal_header_ref().entry_array_offset?;
         let total_items =
             std::num::NonZeroUsize::new(self.journal_header_ref().n_entries as usize)?;
         Some(offset_array::List::new(head_offset, total_items))
