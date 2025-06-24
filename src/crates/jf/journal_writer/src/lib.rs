@@ -487,7 +487,8 @@ mod tests {
         let num_entries = test_data.values().next().unwrap().len();
 
         let mut journal_file = JournalFile::create(journal_path, 8 * 1024)?;
-        for _ in 0..5000 {
+        let iterations = 5000;
+        for _ in 0..iterations {
             let mut writer = JournalWriter::new(&mut journal_file)?;
 
             // Write entries to the journal
@@ -576,10 +577,11 @@ mod tests {
                 entries_read += 1;
             }
 
-            // assert_eq!(
-            //     entries_read as usize, num_entries,
-            //     "Number of entries read doesn't match written"
-            // );
+            assert_eq!(
+                entries_read as usize,
+                num_entries * iterations,
+                "Number of entries read doesn't match written"
+            );
         }
 
         // Step 3: Test filtering by specific fields
