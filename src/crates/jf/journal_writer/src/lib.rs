@@ -60,128 +60,6 @@ impl JournalWriter {
         })
     }
 
-    fn object_added(&mut self, object_offset: NonZeroU64, object_size: u64) {
-        self.tail_object_offset = object_offset;
-        self.append_offset = object_offset.saturating_add(object_size);
-        self.num_written_objects += 1;
-    }
-
-    fn entry_added(
-        &mut self,
-        header: &mut JournalHeader,
-        realtime: u64,
-        monotonic: u64,
-        boot_id: [u8; 16],
-    ) {
-        header.n_entries += 1;
-        header.n_objects += self.num_written_objects;
-        header.tail_object_offset = Some(self.tail_object_offset);
-        header.arena_size = self.append_offset.get() - header.header_size;
-
-        if header.head_entry_seqnum == 0 {
-            header.head_entry_seqnum = self.next_seqnum;
-        }
-        if header.head_entry_realtime == 0 {
-            header.head_entry_realtime = realtime;
-        }
-
-        header.tail_entry_seqnum = self.next_seqnum;
-        header.tail_entry_realtime = realtime;
-        header.tail_entry_monotonic = monotonic;
-        header.tail_entry_boot_id = boot_id;
-
-        self.next_seqnum += 1;
-        self.num_written_objects = 0;
-    }
-
-    fn add_data(
-        &mut self,
-        journal_file: &mut JournalFile<MmapMut>,
-        payload: &[u8],
-    ) -> Result<NonZeroU64> {
-        let hash = journal_file.hash(payload);
-
-        match journal_file.find_data_offset(hash, payload) {
-            Ok(Some(data_offset)) => Ok(data_offset),
-            Ok(None) => {
-                // We will have to write the new data object at the current
-                // tail offset
-                let data_offset = self.append_offset;
-                let data_size = {
-                    let mut data_guard =
-                        journal_file.data_mut(data_offset, Some(payload.len() as u64))?;
-
-                    data_guard.header.hash = hash;
-                    data_guard.set_payload(payload);
-                    data_guard.header.object_header.aligned_size()
-                };
-
-                self.object_added(data_offset, data_size);
-
-                // Update hash table
-                journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
-
-                // Add the field object, if we have any
-                if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
-                    let field_offset = self.add_field(journal_file, &payload[..equals_pos])?;
-
-                    // Link data object to the linked-list
-                    {
-                        let head_data_offset = {
-                            let field_guard = journal_file.field_ref(field_offset)?;
-                            field_guard.header.head_data_offset
-                        };
-
-                        let mut data_guard = journal_file.data_mut(data_offset, None)?;
-                        data_guard.header.next_field_offset = head_data_offset;
-                    }
-
-                    // Link field to the head of the linked list
-                    {
-                        let mut field_guard = journal_file.field_mut(field_offset, None)?;
-                        field_guard.header.head_data_offset = Some(data_offset);
-                    };
-                }
-
-                Ok(data_offset)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn add_field(
-        &mut self,
-        journal_file: &mut JournalFile<MmapMut>,
-        payload: &[u8],
-    ) -> Result<NonZeroU64> {
-        let hash = journal_file.hash(payload);
-
-        match journal_file.find_field_offset(hash, payload) {
-            Ok(Some(field_offset)) => Ok(field_offset),
-            Ok(None) => {
-                // We will have to write the new field object at the current
-                // tail offset
-                let field_offset = self.append_offset;
-                let field_size = {
-                    let mut field_guard =
-                        journal_file.field_mut(field_offset, Some(payload.len() as u64))?;
-
-                    field_guard.header.hash = hash;
-                    field_guard.set_payload(payload);
-                    field_guard.header.object_header.aligned_size()
-                };
-                self.object_added(field_offset, field_size);
-
-                // Update hash table
-                journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
-
-                // Return the offset where we wrote the newly added data object
-                Ok(field_offset)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     pub fn add_entry(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -252,6 +130,126 @@ impl JournalWriter {
         );
 
         Ok(())
+    }
+
+    fn object_added(&mut self, object_offset: NonZeroU64, object_size: u64) {
+        self.tail_object_offset = object_offset;
+        self.append_offset = object_offset.saturating_add(object_size);
+        self.num_written_objects += 1;
+    }
+
+    fn entry_added(
+        &mut self,
+        header: &mut JournalHeader,
+        realtime: u64,
+        monotonic: u64,
+        boot_id: [u8; 16],
+    ) {
+        header.n_entries += 1;
+        header.n_objects += self.num_written_objects;
+        header.tail_object_offset = Some(self.tail_object_offset);
+        header.arena_size = self.append_offset.get() - header.header_size;
+
+        if header.head_entry_seqnum == 0 {
+            header.head_entry_seqnum = self.next_seqnum;
+        }
+        if header.head_entry_realtime == 0 {
+            header.head_entry_realtime = realtime;
+        }
+
+        header.tail_entry_seqnum = self.next_seqnum;
+        header.tail_entry_realtime = realtime;
+        header.tail_entry_monotonic = monotonic;
+        header.tail_entry_boot_id = boot_id;
+
+        self.next_seqnum += 1;
+        self.num_written_objects = 0;
+    }
+
+    fn add_data(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        payload: &[u8],
+    ) -> Result<NonZeroU64> {
+        let hash = journal_file.hash(payload);
+
+        match journal_file.find_data_offset(hash, payload)? {
+            Some(data_offset) => Ok(data_offset),
+            None => {
+                // We will have to write the new data object at the current
+                // tail offset
+                let data_offset = self.append_offset;
+                let data_size = {
+                    let mut data_guard =
+                        journal_file.data_mut(data_offset, Some(payload.len() as u64))?;
+
+                    data_guard.header.hash = hash;
+                    data_guard.set_payload(payload);
+                    data_guard.header.object_header.aligned_size()
+                };
+
+                self.object_added(data_offset, data_size);
+
+                // Update hash table
+                journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
+
+                // Add the field object, if we have any
+                if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
+                    let field_offset = self.add_field(journal_file, &payload[..equals_pos])?;
+
+                    // Link data object to the linked-list
+                    {
+                        let head_data_offset = {
+                            let field_guard = journal_file.field_ref(field_offset)?;
+                            field_guard.header.head_data_offset
+                        };
+
+                        let mut data_guard = journal_file.data_mut(data_offset, None)?;
+                        data_guard.header.next_field_offset = head_data_offset;
+                    }
+
+                    // Link field to the head of the linked list
+                    {
+                        let mut field_guard = journal_file.field_mut(field_offset, None)?;
+                        field_guard.header.head_data_offset = Some(data_offset);
+                    };
+                }
+
+                Ok(data_offset)
+            }
+        }
+    }
+
+    fn add_field(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        payload: &[u8],
+    ) -> Result<NonZeroU64> {
+        let hash = journal_file.hash(payload);
+
+        match journal_file.find_field_offset(hash, payload)? {
+            Some(field_offset) => Ok(field_offset),
+            None => {
+                // We will have to write the new field object at the current
+                // tail offset
+                let field_offset = self.append_offset;
+                let field_size = {
+                    let mut field_guard =
+                        journal_file.field_mut(field_offset, Some(payload.len() as u64))?;
+
+                    field_guard.header.hash = hash;
+                    field_guard.set_payload(payload);
+                    field_guard.header.object_header.aligned_size()
+                };
+                self.object_added(field_offset, field_size);
+
+                // Update hash table
+                journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
+
+                // Return the offset where we wrote the newly added data object
+                Ok(field_offset)
+            }
+        }
     }
 
     fn allocate_new_array(
