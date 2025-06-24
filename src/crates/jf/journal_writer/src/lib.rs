@@ -60,6 +60,40 @@ impl JournalWriter {
         })
     }
 
+    fn object_added(&mut self, object_offset: NonZeroU64, object_size: u64) {
+        self.tail_object_offset = object_offset;
+        self.append_offset = object_offset.saturating_add(object_size);
+        self.num_written_objects += 1;
+    }
+
+    fn entry_added(
+        &mut self,
+        header: &mut JournalHeader,
+        realtime: u64,
+        monotonic: u64,
+        boot_id: [u8; 16],
+    ) {
+        header.n_entries += 1;
+        header.n_objects += self.num_written_objects;
+        header.tail_object_offset = Some(self.tail_object_offset);
+        header.arena_size = self.append_offset.get() - header.header_size;
+
+        if header.head_entry_seqnum == 0 {
+            header.head_entry_seqnum = self.next_seqnum;
+        }
+        if header.head_entry_realtime == 0 {
+            header.head_entry_realtime = realtime;
+        }
+
+        header.tail_entry_seqnum = self.next_seqnum;
+        header.tail_entry_realtime = realtime;
+        header.tail_entry_monotonic = monotonic;
+        header.tail_entry_boot_id = boot_id;
+
+        self.next_seqnum += 1;
+        self.num_written_objects = 0;
+    }
+
     fn add_data(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -82,10 +116,7 @@ impl JournalWriter {
                     data_guard.header.object_header.aligned_size()
                 };
 
-                // Update our tail offset
-                self.tail_object_offset = data_offset;
-                self.num_written_objects += 1;
-                self.append_offset = self.append_offset.saturating_add(data_size);
+                self.object_added(data_offset, data_size);
 
                 // Update hash table
                 journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
@@ -139,11 +170,7 @@ impl JournalWriter {
                     field_guard.set_payload(payload);
                     field_guard.header.object_header.aligned_size()
                 };
-
-                // Update our tail offset
-                self.tail_object_offset = field_offset;
-                self.num_written_objects += 1;
-                self.append_offset = self.append_offset.saturating_add(field_size);
+                self.object_added(field_offset, field_size);
 
                 // Update hash table
                 journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
@@ -210,50 +237,20 @@ impl JournalWriter {
 
             entry_guard.header.object_header.aligned_size()
         };
-
-        // Update state
-        self.tail_object_offset = entry_offset;
-        self.num_written_objects += 1;
-        self.append_offset = NonZeroU64::new(self.append_offset.get() + entry_size)
-            .ok_or(JournalError::InvalidOffset)?;
-
-        self.next_seqnum += 1;
+        self.object_added(entry_offset, entry_size);
 
         self.append_to_entry_array(journal_file, entry_offset)?;
         for entry_item_index in 0..self.entry_items.len() {
             self.link_data_to_entry(journal_file, entry_offset, entry_item_index)?;
         }
 
-        // Update header
-        {
-            let header = journal_file.journal_header_mut();
+        self.entry_added(
+            journal_file.journal_header_mut(),
+            realtime,
+            monotonic,
+            boot_id,
+        );
 
-            // Update counts
-            header.n_entries += 1;
-            header.n_objects += self.num_written_objects;
-            header.tail_object_offset = Some(self.tail_object_offset);
-            header.arena_size = self.append_offset.get() - header.header_size;
-
-            // entries seqnum
-            if header.head_entry_seqnum == 0 {
-                header.head_entry_seqnum = self.next_seqnum - 1;
-            }
-            header.tail_entry_seqnum = self.next_seqnum - 1;
-
-            // entries realtime
-            header.tail_entry_realtime = realtime;
-            if header.head_entry_realtime == 0 {
-                header.head_entry_realtime = realtime;
-            }
-
-            // entries monotonic time
-            header.tail_entry_monotonic = monotonic;
-
-            // entries boot id
-            header.tail_entry_boot_id = boot_id;
-        }
-
-        self.num_written_objects = 0;
         Ok(())
     }
 
@@ -270,11 +267,7 @@ impl JournalWriter {
 
             array_guard.header.object_header.aligned_size()
         };
-
-        // Update tail offset
-        self.tail_object_offset = array_offset;
-        self.num_written_objects += 1;
-        self.append_offset = self.append_offset.saturating_add(array_size);
+        self.object_added(array_offset, array_size);
 
         Ok(array_offset)
     }
