@@ -99,6 +99,72 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct JournalFileOptions {
+    machine_id: [u8; 16],
+    boot_id: [u8; 16],
+    file_id: [u8; 16],
+    seqnum_id: [u8; 16],
+    window_size: u64,
+    data_hash_table_buckets: usize,
+    field_hash_table_buckets: usize,
+    enable_keyed_hash: bool,
+}
+
+impl JournalFileOptions {
+    pub fn new(
+        machine_id: [u8; 16],
+        boot_id: [u8; 16],
+        file_id: [u8; 16],
+        seqnum_id: [u8; 16],
+    ) -> Self {
+        Self {
+            machine_id,
+            boot_id,
+            file_id,
+            seqnum_id,
+            window_size: 64 * 1024,
+            data_hash_table_buckets: 4096,
+            field_hash_table_buckets: 512,
+            enable_keyed_hash: true,
+        }
+    }
+
+    pub fn with_window_size(mut self, size: u64) -> Self {
+        assert_eq!(size % OBJECT_ALIGNMENT, 0);
+        assert_eq!(size % 4096, 0, "Window size must be page-aligned");
+        self.window_size = size;
+        self
+    }
+
+    pub fn with_data_hash_table_buckets(mut self, buckets: usize) -> Self {
+        assert!(
+            buckets.is_power_of_two(),
+            "Hash table buckets should be a power of two"
+        );
+        self.data_hash_table_buckets = buckets;
+        self
+    }
+
+    pub fn with_field_hash_table_buckets(mut self, buckets: usize) -> Self {
+        assert!(
+            buckets.is_power_of_two(),
+            "Hash table buckets should be a power of two"
+        );
+        self.field_hash_table_buckets = buckets;
+        self
+    }
+
+    pub fn with_keyed_hash(mut self, enabled: bool) -> Self {
+        self.enable_keyed_hash = enabled;
+        self
+    }
+
+    pub fn create<M: MemoryMapMut>(self, path: impl AsRef<Path>) -> Result<JournalFile<M>> {
+        JournalFile::create(path, self)
+    }
+}
+
 ///
 /// A reader for systemd journal files that efficiently maps small regions of the file into memory.
 ///
@@ -455,7 +521,126 @@ impl<M: MemoryMap> JournalFile<M> {
 }
 
 impl<M: MemoryMapMut> JournalFile<M> {
-    pub fn create(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
+    pub fn create(path: impl AsRef<Path>, options: JournalFileOptions) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+
+        // Calculate hash table sizes
+        let data_hash_table_size =
+            options.data_hash_table_buckets * std::mem::size_of::<HashItem>();
+        let field_hash_table_size =
+            options.field_hash_table_buckets * std::mem::size_of::<HashItem>();
+
+        // Calculate hash table offsets
+        let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let field_hash_table_offset = data_hash_table_offset
+            + data_hash_table_size as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+
+        // Create header with options configuration
+        let mut header = JournalHeader::default();
+        header.signature = *b"LPKSHHRH";
+
+        // Set flags based on options configuration
+        if options.enable_keyed_hash {
+            header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
+        }
+
+        // Set hash table configuration
+        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
+        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size as u64);
+        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
+        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size as u64);
+
+        // Set other header fields
+        header.tail_object_offset =
+            NonZeroU64::new(data_hash_table_offset + data_hash_table_size as u64);
+        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
+        header.n_objects = 2;
+        header.arena_size =
+            field_hash_table_offset + field_hash_table_size as u64 - header.header_size;
+
+        // Set IDs from options
+        header.machine_id = options.machine_id;
+        header.tail_entry_boot_id = options.boot_id;
+        header.file_id = options.file_id;
+        header.seqnum_id = options.seqnum_id;
+
+        // Create memory maps for hash tables
+        let data_hash_table_map = map_hash_table(
+            &file,
+            header.data_hash_table_offset,
+            header.data_hash_table_size,
+        )?;
+        let field_hash_table_map = map_hash_table(
+            &file,
+            header.field_hash_table_offset,
+            header.field_hash_table_size,
+        )?;
+
+        // Create header memory map and write header
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let mut header_map = M::create(&file, 0, header_size)?;
+        {
+            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+            *header_mut = header;
+        }
+
+        // Create window manager for the rest of the objects
+        let window_manager = UnsafeCell::new(WindowManager::new(file, options.window_size, 32)?);
+
+        let jf = JournalFile {
+            header_map,
+            data_hash_table_map,
+            field_hash_table_map,
+            window_manager,
+            object_in_use: RefCell::new(false),
+
+            #[cfg(debug_assertions)]
+            prev_backtrace: RefCell::new(Backtrace::capture()),
+            #[cfg(debug_assertions)]
+            backtrace: RefCell::new(Backtrace::capture()),
+        };
+
+        // write data hash table object header info
+        {
+            let offset = NonZeroU64::new(
+                header.data_hash_table_offset.unwrap().get()
+                    - std::mem::size_of::<ObjectHeader>() as u64,
+            )
+            .unwrap();
+            let size = header.data_hash_table_size.unwrap().get()
+                + std::mem::size_of::<ObjectHeader>() as u64;
+
+            let object_header = jf.object_header_mut(offset)?;
+            object_header.type_ = ObjectType::DataHashTable as u8;
+            object_header.size = size
+        }
+
+        // write field hash table object header info
+        {
+            let offset = NonZeroU64::new(
+                header.field_hash_table_offset.unwrap().get()
+                    - std::mem::size_of::<ObjectHeader>() as u64,
+            )
+            .unwrap();
+            let size = header.field_hash_table_size.unwrap().get()
+                + std::mem::size_of::<ObjectHeader>() as u64;
+
+            let object_header = jf.object_header_mut(offset)?;
+            object_header.type_ = ObjectType::FieldHashTable as u8;
+            object_header.size = size
+        }
+
+        Ok(jf)
+    }
+
+    pub fn create_old(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
         let file = OpenOptions::new()

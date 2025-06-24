@@ -5,8 +5,8 @@ use journal_file::{
     journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
     DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
     FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
-    HeaderIncompatibleFlags, JournalFile, JournalHeader, JournalState, ObjectHeader, ObjectType,
-    RegularEntryItem,
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
+    ObjectHeader, ObjectType, RegularEntryItem,
 };
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
@@ -454,6 +454,12 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
 
+    fn generate_uuid() -> [u8; 16] {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        rng.random()
+    }
+
     #[test]
     fn test_write_and_read_journal_entries() -> Result<()> {
         // Create test data - a hash map with key/values to add to the journal file
@@ -477,7 +483,13 @@ mod tests {
         let boot_id = load_boot_id().unwrap_or([1; 16]); // Use real boot_id or fallback
         let num_entries = test_data.values().next().unwrap().len();
 
-        let mut journal_file = JournalFile::create(journal_path, 8 * 1024)?;
+        let options = JournalFileOptions::new(
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+        );
+        let mut journal_file = JournalFile::create(journal_path, options)?;
         let iterations = 5000;
         for _ in 0..iterations {
             let mut writer = JournalWriter::new(&mut journal_file)?;
@@ -624,7 +636,14 @@ mod tests {
 
         // Write a single entry with multiple fields
         {
-            let mut journal_file = JournalFile::create(journal_path, 64 * 1024)?;
+            let options = JournalFileOptions::new(
+                generate_uuid(),
+                generate_uuid(),
+                generate_uuid(),
+                generate_uuid(),
+            );
+
+            let mut journal_file = JournalFile::create(journal_path, options)?;
             let mut writer = JournalWriter::new(&mut journal_file)?;
 
             let entry_data = vec![

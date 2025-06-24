@@ -3,7 +3,6 @@
 use error::Result;
 use journal_file::*;
 use journal_reader::{Direction, JournalReader, Location};
-use journal_writer::JournalWriter;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
@@ -611,37 +610,6 @@ fn main() {
     // }
 
     // filtered_test();
-
-    if true {
-        let path = "/tmp/muh.journal";
-        let mut journal_file = JournalFile::<MmapMut>::create(path, 4096).unwrap();
-
-        let mut jw = JournalWriter::new(&mut journal_file).unwrap();
-
-        let items: &[&[u8]] = {
-            let kv1: &[u8] = b"NAME=Alice";
-            let kv2: &[u8] = b"AGE=30";
-            let kv3: &[u8] = b"CITY=Seattle";
-            let kv4: &[u8] = b"ROLE=developer";
-
-            &[kv1, kv2, kv3, kv4]
-        };
-
-        let mut previous_size: Option<u64> = None;
-        for _ in 0..100 {
-            jw.add_entry(&mut journal_file, items, 0, 0, [0; 16])
-                .unwrap();
-
-            let current_size = std::fs::metadata(path).unwrap().len();
-            let delta = match previous_size {
-                Some(prev) => current_size as i64 - prev as i64,
-                None => 0,
-            };
-
-            println!("Total: {} bytes, Delta: {:+} bytes", current_size, delta);
-            previous_size = Some(current_size);
-        }
-    }
 
     // let jf = JournalFile::<Mmap>::open("/tmp/muh.journal", 4096).unwrap();
 

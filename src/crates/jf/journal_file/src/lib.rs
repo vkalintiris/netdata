@@ -8,6 +8,7 @@ pub use crate::hash::*;
 pub use error::Result;
 pub use journal_file::{
     load_boot_id, EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile,
+    JournalFileOptions,
 };
 pub use memmap2::{Mmap, MmapMut};
 pub use object::*;
