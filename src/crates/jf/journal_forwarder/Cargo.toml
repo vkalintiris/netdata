@@ -7,7 +7,6 @@ edition.workspace = true
 error = { path = "../error" }
 journal_file = { path = "../journal_file" }
 journal_logger = { path = "../journal_logger" }
-journal_reader = { path = "../journal_reader" }
 window_manager = { path = "../window_manager" }
 memmap2 = { workspace = true }
 rand = { workspace = true }

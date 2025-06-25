@@ -1,18 +1,14 @@
-use error::Result;
-use journal_file::{
-    offset_array, DataObject, EntryDataIterator, FieldDataIterator, FieldIterator, FieldObject,
-    JournalFile, ValueGuard,
+use crate::{
+    journal_file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
+    journal_filter::{JournalFilter, LogicalOp},
+    journal_cursor::{JournalCursor, Location},
+    offset_array::Direction,
+    object::{DataObject, FieldObject},
+    value_guard::ValueGuard,
 };
+use error::Result;
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
-
-pub mod journal_filter;
-use journal_filter::{JournalFilter, LogicalOp};
-pub mod journal_cursor;
-use journal_cursor::JournalCursor;
-pub use journal_cursor::Location;
-
-pub use offset_array::Direction;
 
 pub struct JournalReader<'a, M: MemoryMap> {
     cursor: JournalCursor,

@@ -2,7 +2,7 @@
 
 use error::Result;
 use journal_file::*;
-use journal_reader::{Direction, JournalReader, Location};
+use journal_file::{Direction, JournalReader, Location};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;

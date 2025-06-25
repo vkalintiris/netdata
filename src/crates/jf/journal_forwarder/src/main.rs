@@ -1,7 +1,6 @@
 use error::Result;
-use journal_file::JournalFile;
+use journal_file::{Direction, JournalFile, JournalReader, Location};
 use journal_logger::JournalLogger;
-use journal_reader::JournalReader;
 use memmap2::Mmap;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::io::Read;
@@ -110,11 +109,11 @@ fn select_random_entries(
     // Collect entries at the random indices
     for idx in indices {
         // Reset to head
-        reader.set_location(journal_reader::Location::Head);
+        reader.set_location(Location::Head);
 
         // Skip forward to the random index
         for _ in 0..idx {
-            if !reader.step(journal_file, journal_reader::Direction::Forward)? {
+            if !reader.step(journal_file, Direction::Forward)? {
                 break;
             }
         }

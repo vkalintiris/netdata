@@ -1,5 +1,5 @@
 use journal_file::{HashableObject, JournalFile};
-use journal_reader::{Direction, JournalReader, Location};
+use journal_file::{Direction, JournalReader, Location};
 use memmap2::Mmap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 

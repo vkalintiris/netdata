@@ -1,13 +1,13 @@
 #![allow(unused_imports, dead_code)]
 
-use error::{JournalError, Result};
-use journal_file::{
+use crate::{
     journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
     DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
     FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
     HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
     ObjectHeader, ObjectType, RegularEntryItem,
 };
+use error::{JournalError, Result};
 use memmap2::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -448,8 +448,7 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use journal_file::{load_boot_id, JournalFile};
-    use journal_reader::{Direction, JournalReader, Location};
+    use crate::{load_boot_id, JournalFile, Direction, JournalReader, Location};
     use memmap2::Mmap;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;

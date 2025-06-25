@@ -1,8 +1,8 @@
-use error::{JournalError, Result};
-use journal_file::{
+use crate::{
     offset_array::{Direction, InlinedCursor},
-    JournalFile,
+    journal_file::JournalFile,
 };
+use error::{JournalError, Result};
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
