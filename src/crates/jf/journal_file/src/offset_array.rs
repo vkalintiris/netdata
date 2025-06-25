@@ -1,4 +1,4 @@
-use crate::journal_file::JournalFile;
+use crate::file::JournalFile;
 use error::{JournalError, Result};
 use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;

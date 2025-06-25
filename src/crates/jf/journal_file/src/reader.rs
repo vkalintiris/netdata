@@ -1,7 +1,7 @@
 use crate::{
-    journal_file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
-    journal_filter::{JournalFilter, LogicalOp},
-    journal_cursor::{JournalCursor, Location},
+    file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
+    filter::{JournalFilter, LogicalOp},
+    cursor::{JournalCursor, Location},
     offset_array::Direction,
     object::{DataObject, FieldObject},
     value_guard::ValueGuard,
