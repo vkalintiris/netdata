@@ -1,3 +1,4 @@
+// Modules - keep some public for advanced usage
 pub mod cursor;
 pub mod file;
 pub mod filter;
@@ -8,17 +9,27 @@ pub mod reader;
 mod value_guard;
 pub mod writer;
 
-pub use crate::hash::*;
-pub use cursor::{JournalCursor, Location};
-pub use error::Result;
-pub use file::{
-    load_boot_id, EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile,
-    JournalFileOptions,
-};
-pub use filter::{FilterExpr, JournalFilter, LogicalOp};
-pub use memmap2::{Mmap, MmapMut};
-pub use object::*;
-pub use offset_array::Direction;
+// Core functionality
+pub use file::{load_boot_id, JournalFile, JournalFileOptions};
 pub use reader::JournalReader;
-pub use value_guard::ValueGuard;
 pub use writer::JournalWriter;
+
+// Essential types for working with readers
+pub use cursor::Location;
+pub use offset_array::Direction;
+
+// Advanced filtering (for users who need it)
+pub use cursor::JournalCursor;
+pub use filter::{FilterExpr, JournalFilter, LogicalOp};
+
+// For FFI compatibility and advanced object manipulation
+pub use object::HashableObject;
+
+// Re-export commonly needed external types
+pub use memmap2::{Mmap, MmapMut};
+
+// Internal utilities that might be needed
+pub use crate::hash::journal_hash_data;
+
+// Internal re-exports needed by the crate itself (not part of public API)
+pub(crate) use object::*;
