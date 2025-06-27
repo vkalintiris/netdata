@@ -80,6 +80,18 @@ pub enum JournalError {
 
     #[error("uuid encoding/decoding")]
     UuidSerde,
+
+    #[error("invalid filename")]
+    InvalidFilename,
+
+    #[error("system time error")]
+    SystemTimeError,
+
+    #[error("directory not found")]
+    DirectoryNotFound,
+
+    #[error("not a directory")]
+    NotADirectory,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);
@@ -112,6 +124,10 @@ impl JournalError {
             JournalError::UnknownCompressionMethod => -23,
             JournalError::InvalidFfiOp => -24,
             JournalError::UuidSerde => -25,
+            JournalError::InvalidFilename => -26,
+            JournalError::SystemTimeError => -27,
+            JournalError::DirectoryNotFound => -28,
+            JournalError::NotADirectory => -29,
         }
     }
 }

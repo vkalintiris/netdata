@@ -13,3 +13,4 @@ rand = { workspace = true }
 systemd = { workspace = true }
 zerocopy = { workspace = true }
 walkdir = { workspace = true }
+journal_log = { path = "../journal_log" }

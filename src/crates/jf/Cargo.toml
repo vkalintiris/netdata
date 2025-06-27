@@ -5,6 +5,7 @@ members = [
     "main",
     "journal_file",
     "journal_reader_ffi",
+    "journal_log",
     "journal_logger",
     "journal_forwarder",
     "window_manager",

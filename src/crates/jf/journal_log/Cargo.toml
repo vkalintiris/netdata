@@ -1,0 +1,10 @@
+[package]
+name = "journal_log"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+error = { path = "../error" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
