@@ -12,7 +12,8 @@ members = [
     "window_manager",
     "sigbus",
     "nol",
-    "flatten-otel-logs",
+    "nom",
+    "flatten-otel-logs", "nom",
 ]
 
 [workspace.package]
