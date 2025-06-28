@@ -1,0 +1,19 @@
+[package]
+name = "journal_benchmark"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "journal_benchmark"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_create"
+path = "src/test_create.rs"
+
+[dependencies]
+journal_file = { path = "../journal_file" }
+error = { path = "../error" }
+memmap2 = { workspace = true }
+rand = { workspace = true }
+tempfile = { workspace = true }
