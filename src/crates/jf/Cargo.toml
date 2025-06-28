@@ -8,6 +8,7 @@ members = [
     "journal_log",
     "journal_logger",
     "journal_forwarder",
+    "journal_benchmark",
     "window_manager",
     "sigbus",
     "nol",
