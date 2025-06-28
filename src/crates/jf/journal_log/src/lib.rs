@@ -264,6 +264,18 @@ impl JournalDirectory {
         Ok(journal_directory)
     }
 
+    pub fn directory_path(&self) -> &Path {
+        &self.config.directory
+    }
+
+    pub fn get_full_path(&self, file_info: &JournalFileInfo) -> PathBuf {
+        if file_info.path.is_absolute() {
+            file_info.path.clone()
+        } else {
+            self.config.directory.join(&file_info.path)
+        }
+    }
+
     // Get information about all the files in the journal directory
     pub fn files(&self) -> Vec<JournalFileInfo> {
         self.files.clone()

@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use walkdir::WalkDir;
 
-fn process_one_cycle() -> Result<()> {
+fn process_one_cycle() -> Result<usize> {
     // Find all journal files in the specified directory
     let journal_dir = "/var/log/journal";
     let journal_files = find_journal_files(journal_dir)?;
     if journal_files.is_empty() {
         eprintln!("No journal files found in {}", journal_dir);
-        return Ok(());
+        return Ok(0);
     }
 
     // Pick a random journal file
@@ -35,9 +35,12 @@ fn process_one_cycle() -> Result<()> {
     let batches = split_into_batches(entries, 5);
 
     // Forward each batch with a delay
+    let mut sent = 0;
     for (i, batch) in batches.iter().enumerate() {
+        sent += batch.len();
+
         if i > 0 {
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(100));
         }
 
         let mut logger = journal_logger::JournalLogger::new(
@@ -49,7 +52,7 @@ fn process_one_cycle() -> Result<()> {
         forward_entries(batch, &mut logger)?;
     }
 
-    Ok(())
+    Ok(sent)
 }
 
 fn find_journal_files(journal_dir: &str) -> Result<Vec<PathBuf>> {
@@ -206,10 +209,16 @@ fn forward_entries(entries: &[EntryData], logger: &mut JournalLogger) -> Result<
 
 fn main() -> Result<()> {
     // Main loop
+    let mut total = 0;
     loop {
-        if let Err(e) = process_one_cycle() {
-            eprintln!("Error during cycle: {:?}", e);
-        }
+        match process_one_cycle() {
+            Ok(n) => total += n,
+            Err(e) => {
+                eprintln!("Error during cycle: {:?}", e);
+            }
+        };
+
+        println!("Total sent so far: {:?}", total);
 
         // Wait for the next cycle
         std::thread::sleep(Duration::from_secs(1));
