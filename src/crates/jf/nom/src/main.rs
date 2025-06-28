@@ -472,13 +472,20 @@ impl MetricsService for MyMetricsService {
 
         // Process flattened metrics through chart management
         for flattened_metric in flatten_metrics_request(&req) {
-            if let Err(e) = self.process_flattened_metric(&flattened_metric) {
-                eprintln!("Error processing metric: {}", e);
+            if false {
+                if let Err(e) = self.process_flattened_metric(&flattened_metric) {
+                    eprintln!("Error processing metric: {}", e);
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&flattened_metric).unwrap()
+                );
             }
         }
 
-        // Process all charts to handle buffering and emission
-        self.process_all_charts();
+        // // Process all charts to handle buffering and emission
+        // self.process_all_charts();
 
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
