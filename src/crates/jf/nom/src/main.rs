@@ -14,6 +14,11 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 use std::sync::RwLock;
 use tonic::{transport::Server, Request, Response, Status};
+use utils::concat_matching_values;
+
+use regex::Regex;
+
+mod utils;
 
 #[derive(Debug, Clone)]
 struct NetdataMetricConfig {
@@ -470,6 +475,8 @@ impl MetricsService for MyMetricsService {
         // Preprocess metrics to add Netdata metadata
         preprocess_metrics_request(&mut req, &self.metric_configs);
 
+        let regex = Regex::new(r"^metric\.attributes\.").unwrap();
+
         // Process flattened metrics through chart management
         for flattened_metric in flatten_metrics_request(&req) {
             if false {
@@ -481,6 +488,9 @@ impl MetricsService for MyMetricsService {
                     "{}",
                     serde_json::to_string_pretty(&flattened_metric).unwrap()
                 );
+
+                let v = concat_matching_values(&flattened_metric, &regex, ".");
+                println!("Extracted value: {:?}", v);
             }
         }
 

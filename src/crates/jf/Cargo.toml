@@ -44,6 +44,7 @@ opentelemetry-proto = "0.30"
 indexmap = "2.9"
 
 tempfile = "3"
+regex = "1.10"
 
 [profile.release]
 lto = true
