@@ -469,7 +469,7 @@ impl MetricsService for MyMetricsService {
         let req = request.into_inner();
 
         let values = flatten_metrics_request(&req);
-        for (idx, value) in values.as_array().iter().enumerate() {
+        for (idx, value) in values.iter().enumerate() {
             println!(
                 "value[{}]: {}",
                 idx,
