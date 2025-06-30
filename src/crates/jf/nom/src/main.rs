@@ -468,6 +468,9 @@ impl MetricsService for MyMetricsService {
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let req = request.into_inner();
 
+        // Step 1: Extract/Remove configuration from metrics in req
+
+        // Step 2: Flatten metrics
         let values = flatten_metrics_request(&req);
         for (idx, value) in values.iter().enumerate() {
             println!(
@@ -476,6 +479,10 @@ impl MetricsService for MyMetricsService {
                 serde_json::to_string_pretty(value).unwrap()
             );
         }
+
+        // Step 3: Map to charts
+
+        // Step 4: Update charts
 
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
