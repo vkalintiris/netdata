@@ -13,7 +13,7 @@ members = [
     "sigbus",
     "nol",
     "nom",
-    "flatten-otel-logs", "nom",
+    "flatten_otel",
 ]
 
 [workspace.package]

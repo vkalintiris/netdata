@@ -1,4 +1,4 @@
-use flatten_otel_logs::json_from_export_logs_service_request;
+use flatten_otel::json_from_export_logs_service_request;
 use journal_file::{load_boot_id, JournalFile, JournalFileOptions, JournalWriter};
 use journal_log::{JournalDirectory, JournalDirectoryConfig, RetentionPolicy, SealingPolicy};
 use memmap2::MmapMut;

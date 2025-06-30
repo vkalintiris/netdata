@@ -1,5 +1,5 @@
 [package]
-name = "flatten-otel-logs"
+name = "flatten_otel"
 version.workspace = true
 edition.workspace = true
 

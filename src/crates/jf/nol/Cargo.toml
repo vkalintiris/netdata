@@ -9,7 +9,7 @@ prost = { workspace = true }
 tonic = { workspace = true, features = ["gzip"] }
 opentelemetry-proto = { workspace = true }
 
-flatten-otel-logs = { path = "../flatten-otel-logs" }
+flatten_otel = { path = "../flatten_otel" }
 journal_file = { path = "../journal_file" }
 journal_log = { path = "../journal_log" }
 memmap2 = { workspace = true }
