@@ -3,18 +3,18 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::{MetricsService, MetricsServiceServer},
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
-use opentelemetry_proto::tonic::metrics::v1::Metric;
-use serde_json::Value as JsonValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::RwLock;
 use tonic::{transport::Server, Request, Response, Status};
-use utils::concat_matching_values;
 
 use regex::Regex;
+use std::sync::{Arc, Mutex};
 
 mod utils;
+
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 struct NetdataMetricConfig {
@@ -243,7 +243,7 @@ impl NetdataChart {
         }
     }
 
-    fn ingest(&mut self, dimension_name: String, value: f64, timestamp: u64) {
+    fn ingest(&mut self, dimension_name: String, timestamp: u64, value: f64) {
         let sample_point = SamplePoint::new(timestamp, value);
         self.samples_table.insert(dimension_name, sample_point);
     }
@@ -382,81 +382,284 @@ impl NetdataChart {
     }
 }
 
+#[derive(Default)]
 struct MyMetricsService {
-    metric_configs: HashMap<String, NetdataMetricConfig>,
-    charts: RwLock<HashMap<String, NetdataChart>>,
+    regex_cache: RegexCache,
+    charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
 }
 
-impl MyMetricsService {
-    fn new(metric_configs: HashMap<String, NetdataMetricConfig>) -> Self {
+// impl MyMetricsService {
+//     fn _process_flattened_metric(&self, flattened_metric: &JsonValue) -> Result<(), String> {
+//         // Extract key information from flattened metric
+//         let metric_hash = flattened_metric["metric.hash"]
+//             .as_str()
+//             .ok_or("Missing metric.hash")?;
+//         let metric_name = flattened_metric["metric.name"]
+//             .as_str()
+//             .ok_or("Missing metric.name")?;
+//         let metric_unit = flattened_metric["metric.unit"].as_str().unwrap_or("count");
+//         let metric_type = flattened_metric["metric.type"].as_str().unwrap_or("gauge");
+//         let metric_value = flattened_metric["metric.value"]
+//             .as_f64()
+//             .ok_or("Missing or invalid metric.value")?;
+//         let timestamp = flattened_metric["metric.time_unix_nano"]
+//             .as_u64()
+//             .ok_or("Missing metric.time_unix_nano")?;
+
+//         // Extract dimension name from metadata or default
+//         let dimension_name = if let Some(dim_attr) = flattened_metric
+//             .get("metric.metadata._nd_dimension_attribute")
+//             .and_then(|v| v.as_str())
+//         {
+//             // Look for the dimension attribute value in metric attributes
+//             let attr_key = format!("metric.attributes.{}", dim_attr);
+//             flattened_metric
+//                 .get(&attr_key)
+//                 .and_then(|v| v.as_str())
+//                 .unwrap_or("value")
+//                 .to_string()
+//         } else {
+//             "value".to_string()
+//         };
+
+//         // Update or create chart
+//         {
+//             let mut charts = self
+//                 ._charts
+//                 .write()
+//                 .map_err(|_| "Failed to acquire charts lock")?;
+
+//             let chart = charts.entry(metric_hash.to_string()).or_insert_with(|| {
+//                 NetdataChart::new(
+//                     metric_hash.to_string(),
+//                     metric_name.to_string(),
+//                     metric_unit.to_string(),
+//                     metric_type.to_string(),
+//                 )
+//             });
+
+//             // Ingest sample into buffering system
+//             chart.ingest(dimension_name, metric_value, timestamp);
+//         }
+
+//         Ok(())
+//     }
+
+//     fn _process_all_charts(&self) {
+//         if let Ok(mut charts) = self._charts.write() {
+//             for chart in charts.values_mut() {
+//                 chart.process();
+//             }
+//         }
+//     }
+// }
+
+#[derive(Default, Debug)]
+pub struct RegexCache {
+    cache: Arc<Mutex<HashMap<String, Regex>>>,
+}
+
+impl RegexCache {
+    pub fn new() -> Self {
         Self {
-            metric_configs,
-            charts: RwLock::new(HashMap::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    fn process_flattened_metric(&self, flattened_metric: &JsonValue) -> Result<(), String> {
-        // Extract key information from flattened metric
-        let metric_hash = flattened_metric["metric.hash"]
-            .as_str()
-            .ok_or("Missing metric.hash")?;
-        let metric_name = flattened_metric["metric.name"]
-            .as_str()
-            .ok_or("Missing metric.name")?;
-        let metric_unit = flattened_metric["metric.unit"].as_str().unwrap_or("count");
-        let metric_type = flattened_metric["metric.type"].as_str().unwrap_or("gauge");
-        let metric_value = flattened_metric["metric.value"]
-            .as_f64()
-            .ok_or("Missing or invalid metric.value")?;
-        let timestamp = flattened_metric["metric.time_unix_nano"]
-            .as_u64()
-            .ok_or("Missing metric.time_unix_nano")?;
+    pub fn get_regex(&self, pattern: &str) -> Result<Regex, regex::Error> {
+        let mut cache = self.cache.lock().unwrap();
 
-        // Extract dimension name from metadata or default
-        let dimension_name = if let Some(dim_attr) = flattened_metric
-            .get("metric.metadata._nd_dimension_attribute")
-            .and_then(|v| v.as_str())
-        {
-            // Look for the dimension attribute value in metric attributes
-            let attr_key = format!("metric.attributes.{}", dim_attr);
-            flattened_metric
-                .get(&attr_key)
-                .and_then(|v| v.as_str())
-                .unwrap_or("value")
-                .to_string()
-        } else {
-            "value".to_string()
+        if let Some(regex) = cache.get(pattern) {
+            return Ok(regex.clone());
+        }
+
+        let compiled_regex = Regex::new(pattern)?;
+        cache.insert(pattern.to_string(), compiled_regex.clone());
+        Ok(compiled_regex)
+    }
+}
+
+#[derive(Default)]
+struct FlattenedMetric {
+    json_map: JsonMap<String, JsonValue>,
+    nd_instance_pattern: Option<String>,
+    nd_dimension_key: Option<String>,
+
+    metric_name: String,
+    metric_unit: String,
+    metric_type: String,
+
+    metric_time_unix_nano: u64,
+    metric_value: f64,
+}
+
+impl FlattenedMetric {
+    pub fn new(mut json_map: JsonMap<String, JsonValue>, regex_cache: &RegexCache) -> Option<Self> {
+        let metric_name = match json_map.remove("metric.name").unwrap() {
+            JsonValue::String(s) => s,
+            _ => return None,
+        };
+        let metric_unit = match json_map.remove("metric.unit").unwrap() {
+            JsonValue::String(s) => s,
+            _ => return None,
+        };
+        let metric_type = match json_map.remove("metric.type").unwrap() {
+            JsonValue::String(s) => s,
+            _ => return None,
+        };
+        let metric_time_unix_nano = match json_map.remove("metric.time_unix_nano").unwrap() {
+            JsonValue::Number(n) => n.as_u64()?,
+            _ => return None,
+        };
+        let metric_value = match json_map.remove("metric.value").unwrap() {
+            JsonValue::Number(n) => n.as_f64()?,
+            _ => return None,
         };
 
-        // Update or create chart
-        {
-            let mut charts = self
-                .charts
-                .write()
-                .map_err(|_| "Failed to acquire charts lock")?;
+        // TODO: we need the instance/dimension strings.
+        // Handle the case where the annotations are missing or invalid.
 
-            let chart = charts.entry(metric_hash.to_string()).or_insert_with(|| {
-                NetdataChart::new(
-                    metric_hash.to_string(),
-                    metric_name.to_string(),
-                    metric_unit.to_string(),
-                    metric_type.to_string(),
-                )
-            });
+        let nd_instance_pattern = match json_map.remove("metric.attributes._nd_chart_instance") {
+            Some(JsonValue::String(s)) => regex_cache.get_regex(&s).unwrap(),
+            _ => return None,
+        };
 
-            // Ingest sample into buffering system
-            chart.ingest(dimension_name, metric_value, timestamp);
-        }
+        let nd_dimension_key = match json_map.remove("metric.attributes._nd_dimension") {
+            Some(JsonValue::String(s)) => Some(s),
+            _ => return None,
+        };
 
-        Ok(())
+        Some(Self {
+            json_map,
+            nd_instance_pattern,
+            nd_dimension_key,
+            metric_name,
+            metric_unit,
+            metric_type,
+            metric_time_unix_nano,
+            metric_value,
+        })
     }
 
-    fn process_all_charts(&self) {
-        if let Ok(mut charts) = self.charts.write() {
-            for chart in charts.values_mut() {
-                chart.process();
+    pub fn instance(
+        &self,
+        regex_cache: &RegexCache,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let Some(pattern) = self.nd_instance_pattern.as_ref() else {
+            return Ok(None);
+        };
+        let regex = regex_cache.get_regex(pattern)?;
+
+        let metric_name = self
+            .json_map
+            .get("metric.name")
+            .expect("a valid metric name")
+            .as_str()
+            .expect("a string metric name");
+
+        let mut matched_values = Vec::new();
+        for (key, value) in &self.json_map {
+            if regex.is_match(key) {
+                let value_str = match value {
+                    JsonValue::String(s) => s.clone(),
+                    JsonValue::Number(n) => n.to_string(),
+                    JsonValue::Bool(b) => b.to_string(),
+                    JsonValue::Null => "null".to_string(),
+                    _ => serde_json::to_string(value).unwrap_or_default(),
+                };
+                matched_values.push(value_str);
             }
         }
+
+        let suffix = matched_values.join(".");
+        Ok(Some(format!("{}.{}", metric_name, suffix)))
+    }
+
+    pub fn dimension(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let Some(key) = self.nd_dimension_key.as_ref() else {
+            return Ok(None);
+        };
+
+        let Some(value) = self.json_map.get(key) else {
+            return Ok(None);
+        };
+
+        let s = match value {
+            JsonValue::String(s) => s.clone(),
+            JsonValue::Number(n) => n.to_string(),
+            JsonValue::Bool(b) => b.to_string(),
+            JsonValue::Null => "null".to_string(),
+            _ => serde_json::to_string(value).unwrap_or_default(),
+        };
+
+        Ok(Some(s))
+    }
+
+    pub fn metric_name(&self) -> &str {
+        self.json_map.get("metric.name").unwrap().as_str().unwrap()
+    }
+
+    pub fn metric_unit(&self) -> &str {
+        self.json_map.get("metric.unit").unwrap().as_str().unwrap()
+    }
+
+    pub fn metric_type(&self) -> &str {
+        self.json_map.get("metric.type").unwrap().as_str().unwrap()
+    }
+
+    pub fn metric_time_unix_nano(&self) -> u64 {
+        self.json_map
+            .get("metric.time_unix_nano")
+            .unwrap()
+            .as_u64()
+            .unwrap()
+    }
+
+    pub fn metric_value(&self) -> f64 {
+        self.json_map.get("metric.value").unwrap().as_f64().unwrap()
+    }
+}
+
+impl Hash for FlattenedMetric {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for (key, value) in self.json_map.iter() {
+            if key == "metric.start_time_unix_nano" {
+                continue;
+            }
+            if key == "metric.time_unix_nano" {
+                continue;
+            }
+            if key == "metric.value" {
+                continue;
+            }
+            if Some(key) == self.nd_dimension_key.as_ref() {
+                continue;
+            }
+
+            key.hash(state);
+            value.hash(state);
+        }
+    }
+}
+
+impl std::fmt::Debug for FlattenedMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_struct = f.debug_struct("FlattenedMetric");
+
+        // Format the JSON map as pretty JSON
+        match serde_json::to_string_pretty(&self.json_map) {
+            Ok(pretty_json) => {
+                debug_struct.field("json_map", &format_args!("\n{}", pretty_json));
+            }
+            Err(_) => {
+                debug_struct.field("json_map", &"<invalid JSON>");
+            }
+        }
+
+        debug_struct
+            .field("nd_instance_pattern", &self.nd_instance_pattern)
+            .field("nd_dimension_key", &self.nd_dimension_key)
+            .finish()
     }
 }
 
@@ -468,21 +671,44 @@ impl MetricsService for MyMetricsService {
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let req = request.into_inner();
 
-        // Step 1: Extract/Remove configuration from metrics in req
+        let flattened_metrics = flatten_metrics_request(&req)
+            .into_iter()
+            .map(FlattenedMetric::new);
 
-        // Step 2: Flatten metrics
-        let values = flatten_metrics_request(&req);
-        for (idx, value) in values.iter().enumerate() {
-            println!(
-                "value[{}]: {}",
-                idx,
-                serde_json::to_string_pretty(value).unwrap()
-            );
+        let filtered_metrics = flattened_metrics.filter(|fm| fm.metric_name() == "system.cpu.time");
+
+        for fm in filtered_metrics.clone() {
+            let mut guard = self.charts.write().unwrap();
+
+            let chart_id = fm.instance(&self.regex_cache).unwrap().unwrap();
+
+            let netdata_chart = guard.entry(chart_id.clone()).or_insert_with(|| {
+                let chart = NetdataChart::new(
+                    chart_id.clone(),
+                    String::from(fm.metric_name()),
+                    String::from(fm.metric_unit()),
+                    String::from(fm.metric_type()),
+                );
+                println!("Chart {:#?}", chart);
+
+                chart
+            });
+
+            let dimension_name = fm.dimension().unwrap().unwrap();
+            let value = fm.metric_value();
+            let timestamp = fm.metric_time_unix_nano();
+
+            netdata_chart.ingest(dimension_name, timestamp, value);
         }
 
-        // Step 3: Map to charts
+        {
+            let guard = self.charts.write().unwrap();
+            for (idx, key) in guard.keys().enumerate() {}
 
-        // Step 4: Update charts
+            println!();
+        }
+
+        // hashing?
 
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
@@ -490,139 +716,12 @@ impl MetricsService for MyMetricsService {
     }
 }
 
-fn create_default_metric_configs() -> HashMap<String, NetdataMetricConfig> {
-    let mut configs = HashMap::new();
-
-    // Example: system.cpu.time metric
-    configs.insert(
-        "system.cpu.time".to_string(),
-        NetdataMetricConfig::new(vec!["cpu".to_string()], "state".to_string()),
-    );
-
-    // Example: system.memory.usage metric
-    configs.insert(
-        "system.memory.usage".to_string(),
-        NetdataMetricConfig::new(vec![], "state".to_string()),
-    );
-
-    // Example: system.disk.io metric
-    configs.insert(
-        "system.disk.io".to_string(),
-        NetdataMetricConfig::new(vec!["device".to_string()], "direction".to_string()),
-    );
-
-    // Example: system.network.io metric
-    configs.insert(
-        "system.network.io".to_string(),
-        NetdataMetricConfig::new(vec!["device".to_string()], "direction".to_string()),
-    );
-
-    // Example: process.cpu.time metric
-    configs.insert(
-        "process.cpu.time".to_string(),
-        NetdataMetricConfig::new(vec!["pid".to_string()], "state".to_string()),
-    );
-
-    configs
-}
-
-// fn compute_metric_hash(flattened_metric: &JsonMap<String, JsonValue>) -> u64 {
-//     let mut hasher = DefaultHasher::new();
-
-//     // Define fields to exclude from hashing (metadata and temporal/value fields)
-//     let excluded_prefixes = [
-//         "metric.metadata.",
-//         "metric.start_time_unix_nano",
-//         "metric.time_unix_nano",
-//         "metric.value",
-//         "metric.count",
-//         "metric.sum",
-//         "metric.min",
-//         "metric.max",
-//         "metric.bucket_counts.",
-//         "metric.explicit_bounds.",
-//         "metric.exemplars_count",
-//         "metric.flags",
-//     ];
-
-//     // Collect and sort keys to ensure consistent hashing
-//     let mut hash_fields: Vec<(&String, &JsonValue)> = flattened_metric
-//         .iter()
-//         .filter(|(key, _)| {
-//             // Include all fields except those with excluded prefixes
-//             !excluded_prefixes
-//                 .iter()
-//                 .any(|prefix| key.starts_with(prefix))
-//         })
-//         .collect();
-
-//     // Sort by key for deterministic hashing
-//     hash_fields.sort_by_key(|(key, _)| *key);
-
-//     // Hash each included field
-//     for (key, value) in hash_fields {
-//         key.hash(&mut hasher);
-//         hash_json_value(value, &mut hasher);
-//     }
-
-//     hasher.finish()
-// }
-
-// fn hash_json_value(value: &JsonValue, hasher: &mut DefaultHasher) {
-//     match value {
-//         JsonValue::Null => 0u8.hash(hasher),
-//         JsonValue::Bool(b) => b.hash(hasher),
-//         JsonValue::Number(n) => {
-//             if let Some(i) = n.as_i64() {
-//                 i.hash(hasher);
-//             } else if let Some(u) = n.as_u64() {
-//                 u.hash(hasher);
-//             } else if let Some(f) = n.as_f64() {
-//                 f.to_bits().hash(hasher);
-//             }
-//         }
-//         JsonValue::String(s) => s.hash(hasher),
-//         JsonValue::Array(arr) => {
-//             arr.len().hash(hasher);
-//             for item in arr {
-//                 hash_json_value(item, hasher);
-//             }
-//         }
-//         JsonValue::Object(obj) => {
-//             obj.len().hash(hasher);
-//             let mut sorted_items: Vec<_> = obj.iter().collect();
-//             sorted_items.sort_by_key(|(k, _)| *k);
-//             for (key, val) in sorted_items {
-//                 key.hash(hasher);
-//                 hash_json_value(val, hasher);
-//             }
-//         }
-//     }
-// }
-
-// fn flatten_final_object(object: JsonMap<String, JsonValue>) -> JsonValue {
-//     let mut flattened = flatten_serde_json::flatten(&object);
-
-//     // Compute and add metric hash
-//     let metric_hash = compute_metric_hash(&flattened);
-//     flattened.insert(
-//         "metric.hash".to_string(),
-//         JsonValue::String(format!("{:016x}", metric_hash)),
-//     );
-
-//     JsonValue::Object(flattened)
-// }
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:21212".parse()?;
-    let metrics_service = MyMetricsService::new(create_default_metric_configs());
+    let metrics_service = MyMetricsService::default();
 
-    println!("OTEL Metrics Receiver (nom) listening on {}", addr);
-    println!(
-        "Loaded {} metric configurations",
-        metrics_service.metric_configs.len()
-    );
+    println!("OTEL Metrics Receiver listening on {}", addr);
 
     Server::builder()
         .add_service(

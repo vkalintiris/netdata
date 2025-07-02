@@ -601,29 +601,80 @@
 //         .collect()
 // }
 
-fn main() {
-    use journal_log::*;
+use journal_file::{HashableObject, JournalFile, Mmap};
+use std::collections::HashSet;
 
-    let sealing_policy = SealingPolicy::new()
-        .with_max_file_size(32 * 1024 * 1024)
-        .with_max_entry_span(std::time::Duration::from_secs(24 * 3600));
+fn read_all_data_objects(
+    journal_file: &JournalFile<Mmap>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut unique_data_objects = HashSet::new();
+    let mut total_data_count = 0;
 
-    let retention_policy = RetentionPolicy::new()
-        .with_max_files(1000)
-        .with_max_total_size(1024 * 1024 * 1024)
-        .with_max_entry_age(std::time::Duration::from_secs(30 * 24 * 3600));
+    println!("\n=== Reading all data objects ===");
 
-    println!("{:#?}", sealing_policy);
-    println!("{:#?}", retention_policy);
+    // Iterate through all fields and their associated data objects
+    for field_result in journal_file.fields() {
+        let field = field_result?;
+        let field_name = Vec::from(field.get_payload());
+        drop(field);
 
-    let config = JournalDirectoryConfig::new("/tmp/foo")
-        .with_sealing_policy(sealing_policy)
-        .with_retention_policy(retention_policy);
+        let field_name_str = String::from_utf8_lossy(&field_name);
 
-    println!("{:#?}", config);
+        // Get all data objects for this field
+        for data_result in journal_file.field_data_objects(field_name_str.as_bytes())? {
+            let data_object = data_result?;
+            let payload = data_object.payload_bytes();
 
-    let journal_directory = JournalDirectory::with_config(config);
-    println!("jd: {:#?}", journal_directory);
+            // Handle potentially compressed data
+            let content = if data_object.is_compressed() {
+                let mut decompressed_buf = Vec::new();
+                match data_object.decompress(&mut decompressed_buf) {
+                    Ok(_) => String::from_utf8_lossy(&decompressed_buf).to_string(),
+                    Err(_) => {
+                        println!("  [COMPRESSED] Failed to decompress data");
+                        continue;
+                    }
+                }
+            } else {
+                String::from_utf8_lossy(payload).to_string()
+            };
+
+            // Print the data object content
+            println!("  Data: {}", content);
+
+            // Count unique data objects (using the raw payload for uniqueness)
+            unique_data_objects.insert(payload.to_vec());
+            total_data_count += 1;
+        }
+    }
+
+    println!("\n=== Summary ===");
+    println!("Total data objects processed: {}", total_data_count);
+    println!("Total unique data objects: {}", unique_data_objects.len());
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <journal_file_path>", args[0]);
+        std::process::exit(1);
+    }
+
+    let journal_path = &args[1];
+    println!("Reading journal file: {}", journal_path);
+
+    // Open the journal file with a reasonable window size
+    const WINDOW_SIZE: u64 = 64 * 1024 * 1024; // 8MB window
+    let journal_file =
+        journal_file::JournalFile::<journal_file::Mmap>::open(journal_path, WINDOW_SIZE)?;
+
+    println!("Journal file opened successfully");
+
+    read_all_data_objects(&journal_file)?;
+
+    Ok(())
 
     // let paths = get_all_files();
     // for path in paths.iter() {
