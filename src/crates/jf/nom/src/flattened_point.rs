@@ -107,6 +107,13 @@ impl FlattenedPoint {
             metric_value,
         })
     }
+
+    fn metric_description(&self) -> &str {
+        match self.attributes.get("metric.description") {
+            Some(JsonValue::String(s)) => s,
+            Some(_) | None => "",
+        }
+    }
 }
 
 impl Hash for FlattenedPoint {

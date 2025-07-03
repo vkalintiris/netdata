@@ -231,6 +231,13 @@ impl NetdataChart {
         }
     }
 
+    fn description(&self) -> &str {
+        match self.attributes.get("metric.description") {
+            Some(JsonValue::String(s)) => s,
+            Some(_) | None => "",
+        }
+    }
+
     fn ingest(&mut self, fp: &FlattenedPoint) {
         let dimension_name = &fp.nd_dimension_name;
         let value = fp.metric_value;
@@ -347,9 +354,21 @@ impl NetdataChart {
     }
 
     fn emit_chart_definition(&self) {
+        let ci = self.last_collection_interval.unwrap();
+        let ue = ci.update_every;
+
+        let type_id = &self.chart_id;
+        let name = "";
+        let title = self.description();
+        let units = &self.metric_unit;
+        let family = &self.metric_name;
+        let context = format!("otel.{}", &self.metric_name);
+        let chart_type = "line";
+        let priority = 1;
+        let update_every = std::time::Duration::from_nanos(ue.get()).as_secs();
+
         println!(
-            "CHART {} '' '{}' '{}' 'otel' 'otel.{}' line 1 1",
-            self.chart_id, self.metric_name, self.metric_unit, self.metric_type
+            "CHART {type_id} '{name}' '{title}' '{units}' '{family}' '{context}' {chart_type} {priority} {update_every}"
         );
 
         // Emit dimensions for all known dimension names
@@ -401,7 +420,6 @@ impl MetricsService for MyMetricsService {
 
                 if !guard.contains_key(&fp.nd_instance_name) {
                     let netdata_chart = NetdataChart::from_flattened_point(fp);
-                    println!("Chart: {:#?}", netdata_chart);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
                 }
 
@@ -432,7 +450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:21212".parse()?;
     let metrics_service = MyMetricsService::default();
 
-    println!("OTEL Metrics Receiver listening on {}", addr);
+    eprintln!("OTEL Metrics Receiver listening on {}", addr);
 
     Server::builder()
         .add_service(
