@@ -17,90 +17,98 @@ pub struct FlattenedPoint {
     pub metric_time_unix_nano: u64,
     pub metric_value: f64,
 
-    pub is_monotonic: Option<bool>,
+    pub metric_is_monotonic: Option<bool>,
 }
 
 impl FlattenedPoint {
     pub fn new(mut json_map: JsonMap<String, JsonValue>, regex_cache: &RegexCache) -> Option<Self> {
-        let metric_name = match json_map.remove("metric.name").unwrap() {
-            JsonValue::String(s) => s,
-            _ => return None,
-        };
-        let metric_unit = match json_map.remove("metric.unit").unwrap() {
-            JsonValue::String(s) => s,
-            _ => return None,
-        };
-        let metric_type = match json_map.remove("metric.type").unwrap() {
-            JsonValue::String(s) => s,
-            _ => return None,
-        };
-        let metric_time_unix_nano = match json_map.remove("metric.time_unix_nano").unwrap() {
-            JsonValue::Number(n) => n.as_u64()?,
-            _ => return None,
-        };
-        let metric_value = match json_map.remove("metric.value").unwrap() {
-            JsonValue::Number(n) => n.as_f64()?,
-            _ => return None,
+        let Some(JsonValue::String(metric_name)) = json_map.remove("metric.name") else {
+            debug_assert!(false, "metric.name missing from json map");
+            return None;
         };
 
-        let nd_chart_instance = match json_map.remove("metric.attributes._nd_chart_instance") {
-            Some(JsonValue::String(s)) => Some(regex_cache.get(&s).unwrap()),
-            _ => return None,
+        let Some(JsonValue::String(metric_unit)) = json_map.remove("metric.unit") else {
+            debug_assert!(false, "metric.unit missing from json map");
+            return None;
         };
 
-        let nd_dimension_key = match json_map.remove("metric.attributes._nd_dimension") {
-            Some(JsonValue::String(s)) => Some(s),
-            _ => return None,
+        let Some(JsonValue::String(metric_type)) = json_map.remove("metric.type") else {
+            debug_assert!(false, "metric.type missing from json map");
+            return None;
+        };
+
+        let Some(metric_time_unix_nano) = json_map
+            .remove("metric.time_unix_nano")
+            .and_then(|v| v.as_u64())
+        else {
+            debug_assert!(false, "metric.time_unix_nano missing from json map");
+            return None;
+        };
+
+        let Some(metric_value) = json_map.remove("metric.value").and_then(|v| v.as_f64()) else {
+            debug_assert!(false, "metric.value missing from json map");
+            return None;
+        };
+
+        let metric_is_monotonic = json_map
+            .remove("metric.is_monotonic")
+            .and_then(|v| v.as_bool());
+
+        let nd_dimension_name = {
+            let nd_dimension_key = json_map
+                .remove("metric.attributes._nd_dimension")
+                .and_then(|v| v.as_str().map(String::from));
+
+            if let Some(key) = nd_dimension_key {
+                match json_map.remove(&key) {
+                    Some(JsonValue::String(s)) => s.clone(),
+                    Some(JsonValue::Number(n)) => n.to_string(),
+                    Some(JsonValue::Bool(b)) => b.to_string(),
+                    _ => {
+                        return None;
+                    }
+                }
+            } else {
+                String::from("value")
+            }
         };
 
         let nd_instance_name = {
-            let Some(pattern) = nd_chart_instance.as_ref() else {
-                return None;
-            };
+            let nd_chart_instance = json_map
+                .remove("metric.attributes._nd_chart_instance")
+                .and_then(|v| v.as_str().map(String::from))
+                .and_then(|s| regex_cache.get(&s).ok());
 
-            let mut matched_values = Vec::new();
-            for (key, value) in &json_map {
-                if pattern.is_match(key) {
-                    let value_str = match value {
-                        JsonValue::String(s) => s.clone(),
-                        JsonValue::Number(n) => n.to_string(),
-                        JsonValue::Bool(b) => b.to_string(),
-                        JsonValue::Null => "null".to_string(),
-                        _ => serde_json::to_string(value).unwrap_or_default(),
-                    };
-                    matched_values.push(value_str);
+            let mut matched_values = vec![metric_name.clone()];
+            if let Some(pattern) = nd_chart_instance {
+                for (key, value) in &json_map {
+                    if pattern.is_match(key) {
+                        let value_str = match value {
+                            JsonValue::String(s) => s.clone(),
+                            JsonValue::Number(n) => n.to_string(),
+                            JsonValue::Bool(b) => b.to_string(),
+                            JsonValue::Null => "null".to_string(),
+                            _ => serde_json::to_string(value).unwrap_or_default(),
+                        };
+                        matched_values.push(value_str);
+                    }
                 }
             }
 
-            let suffix = matched_values.join(".");
-            Some(format!("{}.{}", metric_name, suffix))
-        }
-        .unwrap_or(metric_name.clone());
+            let name = matched_values.join(".");
 
-        let nd_dimension_name = {
-            let Some(key) = nd_dimension_key.as_ref() else {
-                return None;
+            let hash = {
+                use std::hash::DefaultHasher;
+
+                let mut state = DefaultHasher::new();
+                name.hash(&mut state);
+                json_map.hash(&mut state);
+                metric_unit.hash(&mut state);
+                metric_type.hash(&mut state);
+                state.finish()
             };
 
-            let Some(value) = json_map.remove(key) else {
-                return None;
-            };
-
-            let s = match value {
-                JsonValue::String(s) => s.clone(),
-                JsonValue::Number(n) => n.to_string(),
-                JsonValue::Bool(b) => b.to_string(),
-                JsonValue::Null => "null".to_string(),
-                _ => unimplemented!(),
-            };
-
-            Some(s)
-        }
-        .unwrap_or(String::from("value"));
-
-        let is_monotonic = match json_map.remove("metric.is_monotonic") {
-            Some(JsonValue::Bool(b)) => Some(b),
-            _ => None,
+            format!("{name}.{hash:016x}")
         };
 
         Some(Self {
@@ -112,17 +120,7 @@ impl FlattenedPoint {
             metric_type,
             metric_time_unix_nano,
             metric_value,
-            is_monotonic,
+            metric_is_monotonic,
         })
-    }
-}
-
-impl Hash for FlattenedPoint {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.attributes.hash(state);
-
-        self.metric_name.hash(state);
-        self.metric_unit.hash(state);
-        self.metric_type.hash(state);
     }
 }

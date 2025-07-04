@@ -224,7 +224,7 @@ impl NetdataChart {
             metric_unit: fp.metric_unit.clone(),
             metric_type: fp.metric_type.clone(),
             attributes: fp.attributes.clone(),
-            is_monotonic: fp.is_monotonic,
+            is_monotonic: fp.metric_is_monotonic,
             samples_table: SamplesTable::default(),
             last_samples_table_interval: None,
             last_collection_interval: None,
@@ -433,15 +433,13 @@ impl MetricsService for MyMetricsService {
         // ingest
         {
             for fp in flattened_points.iter() {
-                if true {
-                    eprintln!("fp: {:#?}", fp);
-                }
-
                 let mut guard = self.charts.write().unwrap();
+
+                // eprintln!("fp: {:#?}", fp);
 
                 if !guard.contains_key(&fp.nd_instance_name) {
                     let netdata_chart = NetdataChart::from_flattened_point(fp);
-                    eprintln!("Chart: {:#?}", netdata_chart);
+                    // eprintln!("Chart: {:#?}", netdata_chart);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
                 }
 
@@ -459,8 +457,6 @@ impl MetricsService for MyMetricsService {
             }
         }
 
-        // hashing?
-
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -469,7 +465,7 @@ impl MetricsService for MyMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:21213".parse()?;
+    let addr = "0.0.0.0:21213".parse()?;
     let metrics_service = MyMetricsService::default();
 
     eprintln!("OTEL Metrics Receiver listening on {}", addr);
