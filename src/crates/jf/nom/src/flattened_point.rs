@@ -16,6 +16,8 @@ pub struct FlattenedPoint {
 
     pub metric_time_unix_nano: u64,
     pub metric_value: f64,
+
+    pub is_monotonic: Option<bool>,
 }
 
 impl FlattenedPoint {
@@ -96,6 +98,11 @@ impl FlattenedPoint {
         }
         .unwrap_or(String::from("value"));
 
+        let is_monotonic = match json_map.remove("metric.is_monotonic") {
+            Some(JsonValue::Bool(b)) => Some(b),
+            _ => None,
+        };
+
         Some(Self {
             attributes: json_map,
             nd_instance_name,
@@ -105,14 +112,8 @@ impl FlattenedPoint {
             metric_type,
             metric_time_unix_nano,
             metric_value,
+            is_monotonic,
         })
-    }
-
-    fn metric_description(&self) -> &str {
-        match self.attributes.get("metric.description") {
-            Some(JsonValue::String(s)) => s,
-            Some(_) | None => "",
-        }
     }
 }
 

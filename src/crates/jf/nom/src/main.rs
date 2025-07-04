@@ -206,6 +206,7 @@ struct NetdataChart {
     metric_name: String,
     metric_unit: String,
     metric_type: String,
+    is_monotonic: Option<bool>,
     attributes: JsonMap<String, JsonValue>,
 
     samples_table: SamplesTable,
@@ -223,6 +224,7 @@ impl NetdataChart {
             metric_unit: fp.metric_unit.clone(),
             metric_type: fp.metric_type.clone(),
             attributes: fp.attributes.clone(),
+            is_monotonic: fp.is_monotonic,
             samples_table: SamplesTable::default(),
             last_samples_table_interval: None,
             last_collection_interval: None,
@@ -373,9 +375,14 @@ impl NetdataChart {
 
         // Emit dimensions for all known dimension names
         for dimension_name in self.samples_table.dimensions.keys() {
+            let algorithm = match self.is_monotonic {
+                Some(true) => "incremental",
+                _ => "absolute",
+            };
+
             println!(
-                "DIMENSION {} {} absolute 1 1",
-                dimension_name, dimension_name
+                "DIMENSION {} {} {} 1 1",
+                dimension_name, dimension_name, algorithm,
             );
         }
     }
@@ -389,7 +396,11 @@ impl NetdataChart {
     }
 
     fn emit_end(&self) {
-        println!("END");
+        let collection_time = std::time::Duration::from_nanos(
+            self.last_collection_interval.unwrap().collection_time(),
+        )
+        .as_secs();
+        println!("END {collection_time}");
     }
 }
 
@@ -405,21 +416,32 @@ impl MetricsService for MyMetricsService {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+        let hs: std::collections::HashSet<String> = vec![
+            // String::from("system.cpu.time"),
+            String::from("system.network.packets"),
+        ]
+        .into_iter()
+        .collect();
         let req = request.into_inner();
 
         let flattened_points = flatten_metrics_request(&req)
             .into_iter()
             .filter_map(|fm| FlattenedPoint::new(fm, &self.regex_cache))
-            .filter(|fm| fm.metric_name == "system.cpu.time")
+            .filter(|fm| hs.contains(&fm.metric_name))
             .collect::<Vec<_>>();
 
         // ingest
         {
             for fp in flattened_points.iter() {
+                if true {
+                    eprintln!("fp: {:#?}", fp);
+                }
+
                 let mut guard = self.charts.write().unwrap();
 
                 if !guard.contains_key(&fp.nd_instance_name) {
                     let netdata_chart = NetdataChart::from_flattened_point(fp);
+                    eprintln!("Chart: {:#?}", netdata_chart);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
                 }
 
@@ -447,7 +469,7 @@ impl MetricsService for MyMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:21212".parse()?;
+    let addr = "127.0.0.1:21213".parse()?;
     let metrics_service = MyMetricsService::default();
 
     eprintln!("OTEL Metrics Receiver listening on {}", addr);
