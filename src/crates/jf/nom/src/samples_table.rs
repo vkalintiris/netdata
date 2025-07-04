@@ -359,6 +359,18 @@ impl NetdataChart {
             "CHART {type_id} '{name}' '{title}' '{units}' '{family}' '{context}' {chart_type} {priority} {update_every}"
         );
 
+        for (key, value) in self.attributes.iter() {
+            let value_str = match value {
+                JsonValue::String(s) => s.clone(),
+                JsonValue::Number(n) => n.to_string(),
+                JsonValue::Bool(b) => b.to_string(),
+                _ => continue,
+            };
+
+            println!("CLABEL '{key}' '{value_str}' 1");
+        }
+        println!("CLABEL_COMMIT");
+
         // Emit dimensions for all known dimension names
         for dimension_name in self.samples_table.dimensions.keys() {
             let algorithm = match self.is_monotonic {
