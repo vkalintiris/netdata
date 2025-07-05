@@ -32,11 +32,12 @@ impl MetricsService for MyMetricsService {
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let hs: std::collections::HashSet<String> = vec![
-            // String::from("system.cpu.time"),
+            String::from("system.cpu.time"),
             String::from("system.network.packets"),
         ]
         .into_iter()
         .collect();
+
         let req = request.into_inner();
 
         let flattened_points = flatten_metrics_request(&req)

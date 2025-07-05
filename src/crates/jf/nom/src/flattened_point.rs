@@ -11,6 +11,7 @@ pub struct FlattenedPoint {
     pub nd_dimension_name: String,
 
     pub metric_name: String,
+    pub metric_description: String,
     pub metric_unit: String,
     pub metric_type: String,
 
@@ -24,6 +25,12 @@ impl FlattenedPoint {
     pub fn new(mut json_map: JsonMap<String, JsonValue>, regex_cache: &RegexCache) -> Option<Self> {
         let Some(JsonValue::String(metric_name)) = json_map.remove("metric.name") else {
             debug_assert!(false, "metric.name missing from json map");
+            return None;
+        };
+
+        let Some(JsonValue::String(metric_description)) = json_map.remove("metric.description")
+        else {
+            debug_assert!(false, "metric.description missing from json map");
             return None;
         };
 
@@ -65,6 +72,7 @@ impl FlattenedPoint {
                     Some(JsonValue::Number(n)) => n.to_string(),
                     Some(JsonValue::Bool(b)) => b.to_string(),
                     _ => {
+                        eprintln!("Only strings/number/bool values can be used for dimension name");
                         return None;
                     }
                 }
@@ -116,6 +124,7 @@ impl FlattenedPoint {
             nd_instance_name,
             nd_dimension_name,
             metric_name,
+            metric_description,
             metric_unit,
             metric_type,
             metric_time_unix_nano,

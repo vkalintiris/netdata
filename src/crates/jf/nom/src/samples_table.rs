@@ -190,6 +190,7 @@ enum ChartState {
 pub struct NetdataChart {
     chart_id: String,
     metric_name: String,
+    metric_description: String,
     metric_unit: String,
     metric_type: String,
     is_monotonic: Option<bool>,
@@ -207,6 +208,7 @@ impl NetdataChart {
         Self {
             chart_id: fp.nd_instance_name.clone(),
             metric_name: fp.metric_name.clone(),
+            metric_description: fp.metric_description.clone(),
             metric_unit: fp.metric_unit.clone(),
             metric_type: fp.metric_type.clone(),
             attributes: fp.attributes.clone(),
@@ -216,13 +218,6 @@ impl NetdataChart {
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
             samples_threshold: 3, // Wait for at least 3 samples to detect frequency
-        }
-    }
-
-    fn description(&self) -> &str {
-        match self.attributes.get("metric.description") {
-            Some(JsonValue::String(s)) => s,
-            Some(_) | None => "",
         }
     }
 
@@ -347,7 +342,7 @@ impl NetdataChart {
 
         let type_id = &self.chart_id;
         let name = "";
-        let title = self.description();
+        let title = &self.metric_description;
         let units = &self.metric_unit;
         let family = &self.metric_name;
         let context = format!("otel.{}", &self.metric_name);
