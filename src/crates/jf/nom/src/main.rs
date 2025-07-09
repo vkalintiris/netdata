@@ -70,9 +70,6 @@ impl MetricsService for NetdataMetricsService {
             .into_iter()
             .filter_map(|jm| {
                 let cfg = self.chart_config_manager.find_matching_config(&jm);
-                if cfg.is_none() {
-                    eprintln!("Could not find config for {:?}", jm.get("metric.name"));
-                }
                 FlattenedPoint::new(jm, cfg, &self.regex_cache)
             })
             // .filter(|fm| hs.contains(&fm.metric_name))
@@ -100,6 +97,8 @@ impl MetricsService for NetdataMetricsService {
             // process
             {
                 let mut guard = self.charts.write().unwrap();
+
+                eprintln!("GVD: number of charts: {:?}", guard.len());
 
                 for netdata_chart in guard.values_mut() {
                     netdata_chart.process();

@@ -8,7 +8,7 @@ pub struct ChartConfig {
     pub instrumentation_scope_name: Option<Regex>,
     pub instrumentation_scope_version: Option<Regex>,
     pub metric_name: Regex,
-    pub chart_instance_pattern: String,
+    pub chart_instance_pattern: Option<String>,
     pub dimension_name: Option<String>,
     pub priority: u32,
 }
@@ -18,7 +18,7 @@ impl ChartConfig {
         scope_name: Option<&str>,
         scope_version: Option<&str>,
         metric_name: &str,
-        chart_instance_pattern: &str,
+        chart_instance_pattern: Option<&str>,
         dimension_name: Option<&str>,
         priority: u32,
     ) -> Result<Self, regex::Error> {
@@ -38,7 +38,7 @@ impl ChartConfig {
             instrumentation_scope_name,
             instrumentation_scope_version,
             metric_name,
-            chart_instance_pattern: chart_instance_pattern.to_string(),
+            chart_instance_pattern: chart_instance_pattern.map(String::from),
             dimension_name: dimension_name.map(String::from),
             priority,
         })
@@ -115,7 +115,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*networkscraper$"),
             None,
             r"system\.network\.connections",
-            "metric.attributes.protocol",
+            Some("metric.attributes.protocol"),
             Some("metric.attributes.state"),
             100,
         ) {
@@ -126,7 +126,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*networkscraper$"),
             None,
             r"system\.network\.dropped",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -137,7 +137,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*networkscraper$"),
             None,
             r"system\.network\.errors",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -148,7 +148,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*networkscraper$"),
             None,
             r"system\.network\.io",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -159,7 +159,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*networkscraper$"),
             None,
             r"system\.network\.packets",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -173,7 +173,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*cpuscraper$"),
             None,
             r"system\.cpu\.time",
-            "metric.attributes.cpu",
+            Some("metric.attributes.cpu"),
             Some("metric.attributes.state"),
             100,
         ) {
@@ -184,7 +184,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*cpuscraper$"),
             None,
             r"system\.cpu\.frequency",
-            "metric.attributes.cpu",
+            Some("metric.attributes.cpu"),
             None,
             100,
         ) {
@@ -195,7 +195,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*cpuscraper$"),
             None,
             r"system\.cpu\.utilization",
-            "metric.attributes.cpu",
+            Some("metric.attributes.cpu"),
             Some("metric.attributes.state"),
             100,
         ) {
@@ -209,7 +209,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.io",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -220,7 +220,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.io_time",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             None,
             100,
         ) {
@@ -231,7 +231,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.merged",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -242,7 +242,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.operation_time",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -253,7 +253,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.operations",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,
         ) {
@@ -264,7 +264,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.pending_operations",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             None,
             100,
         ) {
@@ -275,7 +275,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
             r"system\.disk\.weighted_io",
-            "metric.attributes.device",
+            Some("metric.attributes.device"),
             None,
             100,
         ) {
@@ -290,7 +290,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*filesystemscraper$"),
             None,
             r"system\.filesystem\.inodes\.usage",
-            "metric.attributes.mountpoint",
+            Some("metric.attributes.mountpoint"),
             Some("metric.attributes.state"),
             100,
         ) {
@@ -301,7 +301,7 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*filesystemscraper$"),
             None,
             r"system\.filesystem\.usage",
-            "metric.attributes.mountpoint",
+            Some("metric.attributes.mountpoint"),
             Some("metric.attributes.state"),
             100,
         ) {
@@ -312,8 +312,165 @@ impl ChartConfigManager {
             Some(".*hostmetricsreceiver.*filesystemscraper$"),
             None,
             r"system\.filesystem\.utilization",
-            "metric.attributes.mountpoint",
+            Some("metric.attributes.mountpoint"),
             None,
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        /*
+         * memory scraper
+         */
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*memoryscraper$"),
+            None,
+            r"system\.memory\.utilization",
+            None,
+            Some("metric.attributes.state"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        /*
+         * paging scraper
+         */
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*pagingscraper$"),
+            None,
+            r"system\.paging\.faults",
+            None,
+            Some("metric.attributes.type"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        // TODO: should we swap chart instance with dimension?
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*pagingscraper$"),
+            None,
+            r"system\.paging\.operations",
+            Some("metric.attributes.type"),
+            Some("metric.attributes.direction"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*pagingscraper$"),
+            None,
+            r"system\.paging\.usage",
+            Some("metric.attributes.device"),
+            Some("metric.attributes.state"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*pagingscraper$"),
+            None,
+            r"system\.paging\.utilization",
+            Some("metric.attributes.device"),
+            Some("metric.attributes.state"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        /*
+         * paging scraper
+         */
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processesscraper$"),
+            None,
+            r"system\.processes\.count",
+            None,
+            Some("metric.attributes.status"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        /*
+         * process scraper
+         */
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.cpu\.time",
+            None,
+            Some("metric.attributes.state"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.disk\.io",
+            None,
+            Some("metric.attributes.direction"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.context_switches",
+            None,
+            Some("metric.attributes.type"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.cpu\.utilization",
+            None,
+            Some("metric.attributes.state"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.disk\.operations",
+            None,
+            Some("metric.attributes.direction"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.paging\.faults",
+            None,
+            Some("metric.attributes.type"),
+            100,
+        ) {
+            self.add_config(config);
+        }
+
+        if let Ok(config) = ChartConfig::new(
+            Some(".*hostmetricsreceiver.*processscraper$"),
+            None,
+            r"process\.paging\.faults",
+            None,
+            Some("metric.attributes.type"),
             100,
         ) {
             self.add_config(config);

@@ -217,7 +217,7 @@ impl NetdataChart {
             last_samples_table_interval: None,
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
-            samples_threshold: 10, // Wait for at least 3 samples to detect frequency
+            samples_threshold: 3, // Wait for at least 3 samples to detect frequency
         }
     }
 
