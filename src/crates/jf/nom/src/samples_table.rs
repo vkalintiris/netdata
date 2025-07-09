@@ -221,6 +221,10 @@ impl NetdataChart {
         }
     }
 
+    fn is_histogram(&self) -> bool {
+        self.metric_type == "histogram"
+    }
+
     pub fn ingest(&mut self, fp: &FlattenedPoint) {
         let dimension_name = &fp.nd_dimension_name;
         let value = fp.metric_value;
@@ -346,7 +350,11 @@ impl NetdataChart {
         let units = &self.metric_unit;
         let family = &self.metric_name;
         let context = format!("otel.{}", &self.metric_name);
-        let chart_type = "line";
+        let chart_type = if self.is_histogram() {
+            "heatmap"
+        } else {
+            "line"
+        };
         let priority = 1;
         let update_every = std::time::Duration::from_nanos(ue.get()).as_secs();
 
@@ -367,16 +375,46 @@ impl NetdataChart {
         println!("CLABEL_COMMIT");
 
         // Emit dimensions for all known dimension names
-        for dimension_name in self.samples_table.dimensions.keys() {
-            let algorithm = match self.is_monotonic {
-                Some(true) => "incremental",
-                _ => "absolute",
-            };
+        if self.is_histogram() {
+            let mut keys = Vec::from_iter(self.samples_table.dimensions.keys());
 
-            println!(
-                "DIMENSION {} {} {} 1 1",
-                dimension_name, dimension_name, algorithm,
-            );
+            keys.sort_by(|a, b| {
+                let a_val = if *a == "+Inf" {
+                    f64::INFINITY
+                } else {
+                    a.parse::<f64>().unwrap()
+                };
+                let b_val = if *b == "+Inf" {
+                    f64::INFINITY
+                } else {
+                    b.parse::<f64>().unwrap()
+                };
+                a_val.partial_cmp(&b_val).unwrap()
+            });
+
+            for dimension_name in keys {
+                let algorithm = match self.is_monotonic {
+                    Some(true) => "incremental",
+                    _ => "absolute",
+                };
+
+                println!(
+                    "DIMENSION {} {} {} 1 1",
+                    dimension_name, dimension_name, algorithm,
+                );
+            }
+        } else {
+            for dimension_name in self.samples_table.dimensions.keys() {
+                let algorithm = match self.is_monotonic {
+                    Some(true) => "incremental",
+                    _ => "absolute",
+                };
+
+                println!(
+                    "DIMENSION {} {} {} 1 1",
+                    dimension_name, dimension_name, algorithm,
+                );
+            }
         }
     }
 

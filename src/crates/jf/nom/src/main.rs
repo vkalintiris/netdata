@@ -46,30 +46,32 @@ impl MetricsService for MyMetricsService {
             .filter(|fm| hs.contains(&fm.metric_name))
             .collect::<Vec<_>>();
 
-        // ingest
-        {
-            for fp in flattened_points.iter() {
+        if true {
+            // ingest
+            {
+                for fp in flattened_points.iter() {
+                    let mut guard = self.charts.write().unwrap();
+
+                    // eprintln!("fp: {:#?}", fp);
+
+                    if !guard.contains_key(&fp.nd_instance_name) {
+                        let netdata_chart = NetdataChart::from_flattened_point(fp);
+                        // eprintln!("Chart: {:#?}", netdata_chart);
+                        guard.insert(fp.nd_instance_name.clone(), netdata_chart);
+                    }
+
+                    let netdata_chart = guard.get_mut(&fp.nd_instance_name).unwrap();
+                    netdata_chart.ingest(fp);
+                }
+            }
+
+            // process
+            {
                 let mut guard = self.charts.write().unwrap();
 
-                // eprintln!("fp: {:#?}", fp);
-
-                if !guard.contains_key(&fp.nd_instance_name) {
-                    let netdata_chart = NetdataChart::from_flattened_point(fp);
-                    // eprintln!("Chart: {:#?}", netdata_chart);
-                    guard.insert(fp.nd_instance_name.clone(), netdata_chart);
+                for netdata_chart in guard.values_mut() {
+                    netdata_chart.process();
                 }
-
-                let netdata_chart = guard.get_mut(&fp.nd_instance_name).unwrap();
-                netdata_chart.ingest(fp);
-            }
-        }
-
-        // process
-        {
-            let mut guard = self.charts.write().unwrap();
-
-            for netdata_chart in guard.values_mut() {
-                netdata_chart.process();
             }
         }
 

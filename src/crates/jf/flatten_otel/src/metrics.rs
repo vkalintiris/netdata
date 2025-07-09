@@ -3,8 +3,8 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     metrics::v1::{
-        metric::Data, AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, Sum,
+        metric::Data, AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric,
+        NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
     },
 };
 
@@ -63,8 +63,12 @@ fn flatten_metric(metric: &Metric) -> Vec<JsonMap<String, JsonValue>> {
     let mut flattened_metrics = match data {
         Data::Gauge(gauge) => flatten_gauge(gauge),
         Data::Sum(sum) => flatten_sum(sum),
-        Data::Histogram(_) | Data::ExponentialHistogram(_) | Data::Summary(_) => {
-            todo!();
+        Data::Histogram(histogram) => flatten_histogram(histogram),
+        Data::ExponentialHistogram(_) => {
+            todo!("Exponential histogram: metric={}", metric.name);
+        }
+        Data::Summary(_) => {
+            todo!("Summary: metric={}", metric.name);
         }
     };
 
@@ -148,6 +152,36 @@ fn flatten_sum(sum: &Sum) -> Vec<JsonMap<String, JsonValue>> {
     flattened_metrics
 }
 
+fn flatten_histogram(histogram: &Histogram) -> Vec<JsonMap<String, JsonValue>> {
+    let mut flattened_metrics = Vec::new();
+
+    let aggregation_temporality = match histogram.aggregation_temporality {
+        x if x == AggregationTemporality::Unspecified as i32 => "unspecified",
+        x if x == AggregationTemporality::Delta as i32 => "delta",
+        x if x == AggregationTemporality::Cumulative as i32 => "cumulative",
+        _ => "unknown",
+    };
+
+    for data_point in &histogram.data_points {
+        let mut bucket_maps = flatten_histogram_data_point(data_point);
+
+        for jm in bucket_maps.iter_mut() {
+            jm.insert(
+                "metric.type".to_string(),
+                JsonValue::String("histogram".to_string()),
+            );
+            jm.insert(
+                "metric.aggregation_temporality".to_string(),
+                JsonValue::String(aggregation_temporality.to_string()),
+            );
+        }
+
+        flattened_metrics.extend(bucket_maps);
+    }
+
+    flattened_metrics
+}
+
 fn flatten_number_data_point(ndp: &NumberDataPoint) -> JsonMap<String, JsonValue> {
     let mut jm = JsonMap::new();
 
@@ -178,7 +212,7 @@ fn flatten_number_data_point(ndp: &NumberDataPoint) -> JsonMap<String, JsonValue
     }
 
     if !ndp.exemplars.is_empty() {
-        todo!();
+        // todo!...
     }
 
     if ndp.flags != 0 {
@@ -189,4 +223,61 @@ fn flatten_number_data_point(ndp: &NumberDataPoint) -> JsonMap<String, JsonValue
     }
 
     jm
+}
+
+fn flatten_histogram_data_point(hdp: &HistogramDataPoint) -> Vec<JsonMap<String, JsonValue>> {
+    let mut results = Vec::new();
+
+    if hdp.bucket_counts.is_empty() || hdp.explicit_bounds.is_empty() {
+        return results;
+    }
+
+    // Create base map with common fields
+    let mut base_map = JsonMap::new();
+    base_map.insert(
+        "metric.start_time_unix_nano".to_string(),
+        JsonValue::Number(hdp.start_time_unix_nano.into()),
+    );
+    base_map.insert(
+        "metric.time_unix_nano".to_string(),
+        JsonValue::Number(hdp.time_unix_nano.into()),
+    );
+
+    // Add attributes
+    for (key, value) in json_from_key_value_list(&hdp.attributes) {
+        base_map.insert(format!("metric.attributes.{}", key), value);
+    }
+
+    // Handle regular buckets
+    for (&bound, &count) in hdp.explicit_bounds.iter().zip(hdp.bucket_counts.iter()) {
+        let mut bucket_map = base_map.clone();
+
+        // Set dimension name to bucket identifier
+        let bucket_name = format!("{}", bound);
+        bucket_map.insert(
+            "metric.attributes._nd_dimension".to_string(),
+            JsonValue::String("bucket".to_string()),
+        );
+        bucket_map.insert("bucket".to_string(), JsonValue::String(bucket_name.clone()));
+        bucket_map.insert("metric.value".to_string(), JsonValue::from(count));
+
+        results.push(bucket_map);
+    }
+
+    // Handle +Inf bucket if it exists
+    if hdp.bucket_counts.len() > hdp.explicit_bounds.len() {
+        let mut inf_map = base_map.clone();
+        let inf_count = hdp.bucket_counts[hdp.bucket_counts.len() - 1];
+
+        inf_map.insert(
+            "metric.attributes._nd_dimension".to_string(),
+            JsonValue::String("bucket".to_string()),
+        );
+        inf_map.insert("bucket".to_string(), JsonValue::String("+Inf".to_string()));
+        inf_map.insert("metric.value".to_string(), JsonValue::from(inf_count));
+
+        results.push(inf_map);
+    }
+
+    results
 }

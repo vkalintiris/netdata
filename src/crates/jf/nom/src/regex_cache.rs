@@ -8,12 +8,6 @@ pub struct RegexCache {
 }
 
 impl RegexCache {
-    pub fn new() -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
     pub fn get(&self, pattern: &str) -> Result<Regex, regex::Error> {
         let mut cache = self.cache.lock().unwrap();
 

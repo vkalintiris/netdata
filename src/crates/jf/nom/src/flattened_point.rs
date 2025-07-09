@@ -44,6 +44,9 @@ impl FlattenedPoint {
             return None;
         };
 
+        // Ignore start_time_unix for the time being.
+        json_map.remove("metric.start_time_unix_nano");
+
         let Some(metric_time_unix_nano) = json_map
             .remove("metric.time_unix_nano")
             .and_then(|v| v.as_u64())
