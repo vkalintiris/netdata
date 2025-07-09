@@ -21,8 +21,14 @@ pub struct FlattenedPoint {
     pub metric_is_monotonic: Option<bool>,
 }
 
+use crate::chart_config::ChartConfig;
+
 impl FlattenedPoint {
-    pub fn new(mut json_map: JsonMap<String, JsonValue>, regex_cache: &RegexCache) -> Option<Self> {
+    pub fn new(
+        mut json_map: JsonMap<String, JsonValue>,
+        chart_config: Option<&ChartConfig>,
+        regex_cache: &RegexCache,
+    ) -> Option<Self> {
         let Some(JsonValue::String(metric_name)) = json_map.remove("metric.name") else {
             debug_assert!(false, "metric.name missing from json map");
             return None;
@@ -63,6 +69,24 @@ impl FlattenedPoint {
         let metric_is_monotonic = json_map
             .remove("metric.is_monotonic")
             .and_then(|v| v.as_bool());
+
+        if let Some(config) = chart_config {
+            if !json_map.contains_key("metric.attributes._nd_chart_instance") {
+                json_map.insert(
+                    "metric.attributes._nd_chart_instance".to_string(),
+                    JsonValue::String(config.chart_instance_pattern.clone()),
+                );
+            }
+
+            if let Some(dimension_name) = &config.dimension_name {
+                if !json_map.contains_key("metric.attributes._nd_dimension") {
+                    json_map.insert(
+                        "metric.attributes._nd_dimension".to_string(),
+                        JsonValue::String(dimension_name.clone()),
+                    );
+                }
+            }
+        }
 
         let nd_dimension_name = {
             let nd_dimension_key = json_map

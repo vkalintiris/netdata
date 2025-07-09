@@ -19,31 +19,63 @@ use crate::regex_cache::RegexCache;
 mod samples_table;
 use crate::samples_table::NetdataChart;
 
+mod chart_config;
+use crate::chart_config::ChartConfigManager;
+
 #[derive(Default)]
-struct MyMetricsService {
+struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
+    chart_config_manager: ChartConfigManager,
+}
+
+impl NetdataMetricsService {
+    fn new() -> Self {
+        Self {
+            regex_cache: RegexCache::default(),
+            charts: Arc::default(),
+            chart_config_manager: ChartConfigManager::with_default_configs(),
+        }
+        // let mut s = Self::default();
+        // s.chart_config_manager = ChartConfigManager::with_default_configs();
+        // s
+    }
 }
 
 #[tonic::async_trait]
-impl MetricsService for MyMetricsService {
+impl MetricsService for NetdataMetricsService {
     async fn export(
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        let hs: std::collections::HashSet<String> = vec![
-            String::from("system.cpu.time"),
-            String::from("system.network.packets"),
-        ]
-        .into_iter()
-        .collect();
+        eprintln!("Received request...");
+
+        // let hs: std::collections::HashSet<String> = vec![
+        //     String::from("system.cpu.time"),
+        //     String::from("system.cpu.frequency"),
+        //     String::from("system.cpu.logical.count"),
+        //     String::from("system.cpu.physical.count"),
+        //     String::from("system.cpu.utilization"),
+        //     String::from("system.network.packets"),
+        //     String::from("system.network.connections"),
+        //     String::from("system.network.dropped"),
+        //     String::from("system.network.errors"),
+        // ]
+        // .into_iter()
+        // .collect();
 
         let req = request.into_inner();
 
         let flattened_points = flatten_metrics_request(&req)
             .into_iter()
-            .filter_map(|fm| FlattenedPoint::new(fm, &self.regex_cache))
-            .filter(|fm| hs.contains(&fm.metric_name))
+            .filter_map(|jm| {
+                let cfg = self.chart_config_manager.find_matching_config(&jm);
+                if cfg.is_none() {
+                    eprintln!("Could not find config for {:?}", jm.get("metric.name"));
+                }
+                FlattenedPoint::new(jm, cfg, &self.regex_cache)
+            })
+            // .filter(|fm| hs.contains(&fm.metric_name))
             .collect::<Vec<_>>();
 
         if true {
@@ -84,7 +116,7 @@ impl MetricsService for MyMetricsService {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:21213".parse()?;
-    let metrics_service = MyMetricsService::default();
+    let metrics_service = NetdataMetricsService::new();
 
     eprintln!("OTEL Metrics Receiver listening on {}", addr);
 
