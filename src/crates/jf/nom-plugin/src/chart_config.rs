@@ -1,7 +1,5 @@
-// src/chart_config.rs
 use regex::Regex;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ChartConfig {
