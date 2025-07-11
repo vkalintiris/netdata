@@ -120,7 +120,7 @@ impl SamplesBuffer {
         self.0.len()
     }
 
-    fn drop_stale_samples(&mut self, ci: &CollectionInterval) {
+    fn drop_stale_samples(&mut self, ci: &CollectionInterval) -> usize {
         let split_idx = self
             .0
             .iter()
@@ -128,6 +128,8 @@ impl SamplesBuffer {
             .unwrap_or(self.0.len());
 
         self.0.drain(..split_idx);
+
+        split_idx
     }
 
     fn collection_interval(&self) -> Option<CollectionInterval> {
@@ -163,10 +165,21 @@ impl SamplesTable {
             .unwrap_or(0)
     }
 
-    fn drop_stale_samples(&mut self, ci: &CollectionInterval) {
+    fn drop_stale_samples(&mut self, ci: &CollectionInterval, chart_id: &str) -> usize {
+        let mut dropped_samples = 0;
+
         for buffer in self.dimensions.values_mut() {
-            buffer.drop_stale_samples(ci);
+            dropped_samples += buffer.drop_stale_samples(ci);
         }
+
+        if dropped_samples != 0 {
+            eprintln!(
+                "[GVD0] Dropped {:?} samples from {:?}",
+                dropped_samples, chart_id
+            );
+        }
+
+        dropped_samples
     }
 
     fn collection_interval(&self) -> Option<CollectionInterval> {
@@ -259,7 +272,7 @@ impl NetdataChart {
     fn initialize(&mut self) -> bool {
         // Clean up stale samples if we have a previous interval
         if let Some(ci) = &self.last_samples_table_interval {
-            self.samples_table.drop_stale_samples(ci);
+            self.samples_table.drop_stale_samples(ci, &self.chart_id);
         }
 
         // Check if we have enough samples to determine frequency
@@ -295,7 +308,7 @@ impl NetdataChart {
         };
 
         // Clean stale samples
-        self.samples_table.drop_stale_samples(lsti);
+        self.samples_table.drop_stale_samples(lsti, &self.chart_id);
         if self.samples_table.is_empty() {
             return ChartState::Empty;
         }
