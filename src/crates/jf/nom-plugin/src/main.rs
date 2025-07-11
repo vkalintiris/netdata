@@ -5,7 +5,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
 use std::collections::HashMap;
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 use tonic::{transport::Server, Request, Response, Status};
 
 use std::sync::Arc;
@@ -50,20 +50,6 @@ impl MetricsService for NetdataMetricsService {
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         eprintln!("Received request...");
 
-        // let hs: std::collections::HashSet<String> = vec![
-        //     String::from("system.cpu.time"),
-        //     String::from("system.cpu.frequency"),
-        //     String::from("system.cpu.logical.count"),
-        //     String::from("system.cpu.physical.count"),
-        //     String::from("system.cpu.utilization"),
-        //     String::from("system.network.packets"),
-        //     String::from("system.network.connections"),
-        //     String::from("system.network.dropped"),
-        //     String::from("system.network.errors"),
-        // ]
-        // .into_iter()
-        // .collect();
-
         let req = request.into_inner();
 
         let flattened_points = flatten_metrics_request(&req)
@@ -72,14 +58,13 @@ impl MetricsService for NetdataMetricsService {
                 let cfg = self.chart_config_manager.find_matching_config(&jm);
                 FlattenedPoint::new(jm, cfg, &self.regex_cache)
             })
-            // .filter(|fm| hs.contains(&fm.metric_name))
             .collect::<Vec<_>>();
 
         if true {
             // ingest
             {
                 for fp in flattened_points.iter() {
-                    let mut guard = self.charts.write().unwrap();
+                    let mut guard = self.charts.write().await;
 
                     // eprintln!("fp: {:#?}", fp);
 
@@ -96,7 +81,7 @@ impl MetricsService for NetdataMetricsService {
 
             // process
             {
-                let mut guard = self.charts.write().unwrap();
+                let mut guard = self.charts.write().await;
 
                 eprintln!("GVD: number of charts: {:?}", guard.len());
 
