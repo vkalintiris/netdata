@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+
 use std::num::NonZeroU64;
 
 use crate::flattened_point::FlattenedPoint;
@@ -143,14 +146,19 @@ struct SamplesTable {
 }
 
 impl SamplesTable {
-    fn insert(&mut self, dimension: &str, sample_point: SamplePoint) {
+    fn insert(&mut self, dimension: &str, sample_point: SamplePoint) -> bool {
+        let mut new_dimension = false;
+
         if !self.dimensions.contains_key(dimension) {
             self.dimensions
                 .insert(String::from(dimension), SamplesBuffer::default());
+            new_dimension = true;
         }
 
         let samples_buffer = self.dimensions.get_mut(dimension).unwrap();
         samples_buffer.push(sample_point);
+
+        new_dimension
     }
 
     fn is_empty(&self) -> bool {
@@ -214,6 +222,8 @@ pub struct NetdataChart {
     last_collection_interval: Option<CollectionInterval>,
     chart_state: ChartState,
     samples_threshold: usize,
+
+    needs_chart_definition: bool,
 }
 
 impl NetdataChart {
@@ -231,6 +241,7 @@ impl NetdataChart {
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
             samples_threshold: 5, // Wait for at least 3 samples to detect frequency
+            needs_chart_definition: false,
         }
     }
 
@@ -244,30 +255,30 @@ impl NetdataChart {
         let unix_time = fp.metric_time_unix_nano;
 
         let sample_point = SamplePoint::new(unix_time, value);
-        self.samples_table.insert(dimension_name, sample_point);
+        self.needs_chart_definition |= self.samples_table.insert(dimension_name, sample_point);
     }
 
-    pub fn process(&mut self) {
-        loop {
-            match &self.chart_state {
-                ChartState::Uninitialized | ChartState::InGap => {
-                    if !self.initialize() {
-                        return;
-                    }
+    // pub fn process(&mut self) {
+    //     loop {
+    //         match &self.chart_state {
+    //             ChartState::Uninitialized | ChartState::InGap => {
+    //                 if !self.initialize() {
+    //                     return;
+    //                 }
 
-                    self.emit_chart_definition();
-                    self.chart_state = ChartState::Initialized;
-                }
-                ChartState::Initialized => {
-                    self.chart_state = self.process_next_interval();
-                }
-                ChartState::Empty => {
-                    self.chart_state = ChartState::Initialized;
-                    return;
-                }
-            }
-        }
-    }
+    //                 self.emit_chart_definition();
+    //                 self.chart_state = ChartState::Initialized;
+    //             }
+    //             ChartState::Initialized => {
+    //                 self.chart_state = self.process_next_interval();
+    //             }
+    //             ChartState::Empty => {
+    //                 self.chart_state = ChartState::Initialized;
+    //                 return;
+    //             }
+    //         }
+    //     }
+    // }
 
     fn initialize(&mut self) -> bool {
         // Clean up stale samples if we have a previous interval
@@ -279,6 +290,9 @@ impl NetdataChart {
         if self.samples_table.total_samples() < self.samples_threshold {
             return false;
         }
+
+        // Store the old interval before calculating the new one
+        let old_lci = self.last_collection_interval;
 
         // Set up collection intervals
         self.last_samples_table_interval =
@@ -293,67 +307,208 @@ impl NetdataChart {
             .last_samples_table_interval
             .and_then(|ci| ci.aligned_interval());
 
-        true
-    }
-
-    fn process_next_interval(&mut self) -> ChartState {
-        let lsti = match &self.last_samples_table_interval {
-            Some(interval) => interval,
-            None => return ChartState::Empty,
-        };
-
-        let lci = match &self.last_collection_interval {
-            Some(interval) => interval,
-            None => return ChartState::Empty,
-        };
-
-        // Clean stale samples
-        self.samples_table.drop_stale_samples(lsti, &self.chart_id);
-        if self.samples_table.is_empty() {
-            return ChartState::Empty;
-        }
-
-        // Check for gaps (all dimensions have samples that are not on time)
-        let have_gap = self
-            .samples_table
-            .dimensions
-            .values()
-            .all(|buffer| buffer.first().map_or(true, |sp| lsti.is_in_gap(sp)));
-
-        if have_gap {
-            return ChartState::InGap;
-        }
-
-        // Collect samples to emit
-        let mut samples_to_emit = Vec::new();
-
-        for (dimension_name, buffer) in &mut self.samples_table.dimensions {
-            if let Some(sp) = buffer.first() {
-                if lsti.is_on_time(sp) {
-                    if let Some(sample) = buffer.pop() {
-                        samples_to_emit.push((dimension_name.clone(), sample.value));
-                    }
+        // Check if we need to emit a chart definition
+        if let Some(new_lci) = &self.last_collection_interval {
+            if let Some(old_lci) = old_lci {
+                if old_lci.update_every != new_lci.update_every {
+                    self.needs_chart_definition = true;
                 }
             }
         }
 
-        // Emit data if we have samples
-        if !samples_to_emit.is_empty() {
-            self.emit_begin(lci.collection_time());
-            for (dimension_name, value) in samples_to_emit {
-                self.emit_set(&dimension_name, value);
-            }
-            self.emit_end();
-        }
-
-        // Move to next interval
-        self.last_samples_table_interval = Some(lsti.next_interval());
-        self.last_collection_interval = Some(lci.next_interval());
-
-        ChartState::Initialized
+        true
     }
 
-    fn emit_chart_definition(&self) {
+    // fn process_next_interval(&mut self) -> ChartState {
+    //     let lsti = match &self.last_samples_table_interval {
+    //         Some(interval) => interval,
+    //         None => return ChartState::Empty,
+    //     };
+
+    //     let lci = match &self.last_collection_interval {
+    //         Some(interval) => interval,
+    //         None => return ChartState::Empty,
+    //     };
+
+    //     // Clean stale samples
+    //     self.samples_table.drop_stale_samples(lsti, &self.chart_id);
+    //     if self.samples_table.is_empty() {
+    //         return ChartState::Empty;
+    //     }
+
+    //     // Check for gaps (all dimensions have samples that are not on time)
+    //     let have_gap = self
+    //         .samples_table
+    //         .dimensions
+    //         .values()
+    //         .all(|buffer| buffer.first().map_or(true, |sp| lsti.is_in_gap(sp)));
+
+    //     if have_gap {
+    //         return ChartState::InGap;
+    //     }
+
+    //     // Collect samples to emit
+    //     let mut samples_to_emit = Vec::new();
+
+    //     for (dimension_name, buffer) in &mut self.samples_table.dimensions {
+    //         if let Some(sp) = buffer.first() {
+    //             if lsti.is_on_time(sp) {
+    //                 if let Some(sample) = buffer.pop() {
+    //                     samples_to_emit.push((dimension_name.clone(), sample.value));
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     // Emit data if we have samples
+    //     if !samples_to_emit.is_empty() {
+    //         self.emit_begin(lci.collection_time());
+    //         for (dimension_name, value) in samples_to_emit {
+    //             self.emit_set(&dimension_name, value);
+    //         }
+    //         self.emit_end();
+    //     }
+
+    //     // Move to next interval
+    //     self.last_samples_table_interval = Some(lsti.next_interval());
+    //     self.last_collection_interval = Some(lci.next_interval());
+
+    //     ChartState::Initialized
+    // }
+
+    // fn emit_chart_definition(&self) {
+    //     let ci = self.last_collection_interval.unwrap();
+    //     let ue = ci.update_every;
+
+    //     let type_id = &self.chart_id;
+    //     let name = "";
+    //     let title = &self.metric_description;
+    //     let units = &self.metric_unit;
+    //     let family = &self.metric_name;
+    //     let context = format!("otel.{}", &self.metric_name);
+    //     let chart_type = if self.is_histogram() {
+    //         "heatmap"
+    //     } else {
+    //         "line"
+    //     };
+    //     let priority = 1;
+    //     let update_every = std::time::Duration::from_nanos(ue.get()).as_secs();
+
+    //     println!(
+    //         "CHART {type_id} '{name}' '{title}' '{units}' '{family}' '{context}' {chart_type} {priority} {update_every}"
+    //     );
+
+    //     for (key, value) in self.attributes.iter() {
+    //         let value_str = match value {
+    //             JsonValue::String(s) => s.clone(),
+    //             JsonValue::Number(n) => n.to_string(),
+    //             JsonValue::Bool(b) => b.to_string(),
+    //             _ => continue,
+    //         };
+
+    //         println!("CLABEL '{key}' '{value_str}' 1");
+    //     }
+    //     println!("CLABEL_COMMIT");
+
+    //     // Emit dimensions for all known dimension names
+    //     if self.is_histogram() {
+    //         let mut keys = Vec::from_iter(self.samples_table.dimensions.keys());
+
+    //         keys.sort_by(|a, b| {
+    //             let a_val = if *a == "+Inf" {
+    //                 f64::INFINITY
+    //             } else {
+    //                 a.parse::<f64>().unwrap()
+    //             };
+    //             let b_val = if *b == "+Inf" {
+    //                 f64::INFINITY
+    //             } else {
+    //                 b.parse::<f64>().unwrap()
+    //             };
+    //             a_val.partial_cmp(&b_val).unwrap()
+    //         });
+
+    //         for dimension_name in keys {
+    //             let algorithm = match self.is_monotonic {
+    //                 Some(true) => "incremental",
+    //                 _ => "absolute",
+    //             };
+
+    //             println!(
+    //                 "DIMENSION {} {} {} 1 1",
+    //                 dimension_name, dimension_name, algorithm,
+    //             );
+    //         }
+    //     } else {
+    //         for dimension_name in self.samples_table.dimensions.keys() {
+    //             let algorithm = match self.is_monotonic {
+    //                 Some(true) => "incremental",
+    //                 _ => "absolute",
+    //             };
+
+    //             println!(
+    //                 "DIMENSION {} {} {} 1 1",
+    //                 dimension_name, dimension_name, algorithm,
+    //             );
+    //         }
+    //     }
+    // }
+
+    // fn emit_begin(&self, _collection_time: u64) {
+    //     println!("BEGIN {}", self.chart_id);
+    // }
+
+    // fn emit_set(&self, dimension_name: &str, value: f64) {
+    //     println!("SET {} {}", dimension_name, value);
+    // }
+
+    // fn emit_end(&self) {
+    //     let collection_time = std::time::Duration::from_nanos(
+    //         self.last_collection_interval.unwrap().collection_time(),
+    //     )
+    //     .as_secs();
+    //     println!("END {collection_time}");
+    // }
+
+    fn write_line(&self, writer: &mut BufWriter<File>, line: &str) {
+        if let Err(e) = writeln!(writer, "{}", line) {
+            eprintln!(
+                "Failed to write to file for chart '{}': {}",
+                self.chart_id, e
+            );
+        }
+        // Also print to stdout for debugging
+        println!("{}", line);
+    }
+
+    pub fn process(&mut self, writer: &mut BufWriter<File>) {
+        loop {
+            match &self.chart_state {
+                ChartState::Uninitialized | ChartState::InGap => {
+                    if !self.initialize() {
+                        return;
+                    }
+
+                    if !self.needs_chart_definition {
+                        self.chart_state = ChartState::Initialized;
+                    } else {
+                        self.emit_chart_definition(writer);
+                        self.chart_state = self.process_next_interval(writer);
+                        self.needs_chart_definition = false;
+                    }
+                }
+                ChartState::Initialized => {
+                    self.chart_state = self.process_next_interval(writer);
+                }
+                ChartState::Empty => {
+                    self.chart_state = ChartState::Initialized;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn emit_chart_definition(&self, writer: &mut BufWriter<File>) {
         let ci = self.last_collection_interval.unwrap();
         let ue = ci.update_every;
 
@@ -371,9 +526,9 @@ impl NetdataChart {
         let priority = 1;
         let update_every = std::time::Duration::from_nanos(ue.get()).as_secs();
 
-        println!(
+        self.write_line(writer, &format!(
             "CHART {type_id} '{name}' '{title}' '{units}' '{family}' '{context}' {chart_type} {priority} {update_every}"
-        );
+        ));
 
         for (key, value) in self.attributes.iter() {
             let value_str = match value {
@@ -383,14 +538,13 @@ impl NetdataChart {
                 _ => continue,
             };
 
-            println!("CLABEL '{key}' '{value_str}' 1");
+            self.write_line(writer, &format!("CLABEL '{key}' '{value_str}' 1"));
         }
-        println!("CLABEL_COMMIT");
+        self.write_line(writer, "CLABEL_COMMIT");
 
-        // Emit dimensions for all known dimension names
+        // Emit dimensions
         if self.is_histogram() {
             let mut keys = Vec::from_iter(self.samples_table.dimensions.keys());
-
             keys.sort_by(|a, b| {
                 let a_val = if *a == "+Inf" {
                     f64::INFINITY
@@ -410,10 +564,12 @@ impl NetdataChart {
                     Some(true) => "incremental",
                     _ => "absolute",
                 };
-
-                println!(
-                    "DIMENSION {} {} {} 1 1",
-                    dimension_name, dimension_name, algorithm,
+                self.write_line(
+                    writer,
+                    &format!(
+                        "DIMENSION {} {} {} 1 1",
+                        dimension_name, dimension_name, algorithm,
+                    ),
                 );
             }
         } else {
@@ -422,28 +578,104 @@ impl NetdataChart {
                     Some(true) => "incremental",
                     _ => "absolute",
                 };
-
-                println!(
-                    "DIMENSION {} {} {} 1 1",
-                    dimension_name, dimension_name, algorithm,
+                self.write_line(
+                    writer,
+                    &format!(
+                        "DIMENSION {} {} {} 1 1",
+                        dimension_name, dimension_name, algorithm,
+                    ),
                 );
             }
         }
+
+        let _ = writer.flush();
     }
 
-    fn emit_begin(&self, _collection_time: u64) {
-        println!("BEGIN {}", self.chart_id);
+    fn process_next_interval(&mut self, writer: &mut BufWriter<File>) -> ChartState {
+        let lsti = match &self.last_samples_table_interval {
+            Some(interval) => interval,
+            None => return ChartState::Empty,
+        };
+
+        let lci = match &self.last_collection_interval {
+            Some(interval) => interval,
+            None => return ChartState::Empty,
+        };
+
+        // Clean stale samples
+        self.samples_table.drop_stale_samples(lsti, &self.chart_id);
+        if self.samples_table.is_empty() {
+            return ChartState::Empty;
+        }
+
+        // Check for gaps
+        let have_gap = self
+            .samples_table
+            .dimensions
+            .values()
+            .all(|buffer| buffer.first().map_or(true, |sp| lsti.is_in_gap(sp)));
+
+        if have_gap {
+            return ChartState::InGap;
+        }
+
+        // Collect samples to emit
+        let mut samples_to_emit = Vec::new();
+        for (dimension_name, buffer) in &mut self.samples_table.dimensions {
+            if let Some(sp) = buffer.first() {
+                if lsti.is_on_time(sp) {
+                    if let Some(sample) = buffer.pop() {
+                        samples_to_emit.push((dimension_name.clone(), sample.value));
+                    }
+                }
+            }
+        }
+
+        // Emit data if we have samples
+        if !samples_to_emit.is_empty() {
+            self.emit_begin(writer, lci.collection_time());
+            for (dimension_name, value) in samples_to_emit {
+                self.emit_set(writer, &dimension_name, value);
+            }
+
+            if self.needs_chart_definition {
+                self.emit_end_aux(writer);
+                self.needs_chart_definition = false;
+            } else {
+                self.emit_end(writer);
+            }
+        }
+
+        // Move to next interval
+        self.last_samples_table_interval = Some(lsti.next_interval());
+        self.last_collection_interval = Some(lci.next_interval());
+
+        ChartState::Initialized
     }
 
-    fn emit_set(&self, dimension_name: &str, value: f64) {
-        println!("SET {} {}", dimension_name, value);
+    fn emit_begin(&self, writer: &mut BufWriter<File>, _collection_time: u64) {
+        self.write_line(writer, &format!("BEGIN {}", self.chart_id));
     }
 
-    fn emit_end(&self) {
+    fn emit_set(&self, writer: &mut BufWriter<File>, dimension_name: &str, value: f64) {
+        self.write_line(writer, &format!("SET {} {}", dimension_name, value));
+    }
+
+    fn emit_end(&self, writer: &mut BufWriter<File>) {
         let collection_time = std::time::Duration::from_nanos(
             self.last_collection_interval.unwrap().collection_time(),
         )
         .as_secs();
-        println!("END {collection_time}");
+        self.write_line(writer, &format!("END {collection_time}"));
+        let _ = writer.flush();
+    }
+
+    fn emit_end_aux(&self, writer: &mut BufWriter<File>) {
+        let collection_time = std::time::Duration::from_nanos(
+            self.last_collection_interval.unwrap().collection_time(),
+        )
+        .as_secs();
+        self.write_line(writer, &format!("END {collection_time} 0 true"));
+        let _ = writer.flush();
     }
 }
