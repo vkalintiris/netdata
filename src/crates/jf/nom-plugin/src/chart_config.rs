@@ -208,7 +208,7 @@ impl ChartConfigManager {
         if let Ok(config) = ChartConfig::new(
             Some(".*hostmetricsreceiver.*diskscraper$"),
             None,
-            r"system\.disk\.io",
+            r"system\.disk\.io$",
             Some("metric.attributes.device"),
             Some("metric.attributes.direction"),
             100,

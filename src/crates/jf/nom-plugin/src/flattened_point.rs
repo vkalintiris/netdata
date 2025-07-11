@@ -100,8 +100,15 @@ impl FlattenedPoint {
                     Some(JsonValue::String(s)) => s.clone(),
                     Some(JsonValue::Number(n)) => n.to_string(),
                     Some(JsonValue::Bool(b)) => b.to_string(),
+                    Some(value) => {
+                        eprintln!("Only strings/number/bool values can be used for dimension name >>>{:#?}<<<", value);
+                        return None;
+                    }
                     _ => {
-                        eprintln!("Only strings/number/bool values can be used for dimension name");
+                        eprintln!(
+                            "Dimension key >>>{:?}<<< not found in flattened representation.",
+                            key
+                        );
                         return None;
                     }
                 }
