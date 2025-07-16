@@ -64,11 +64,12 @@ fn flatten_metric(metric: &Metric) -> Vec<JsonMap<String, JsonValue>> {
         Data::Gauge(gauge) => flatten_gauge(gauge),
         Data::Sum(sum) => flatten_sum(sum),
         Data::Histogram(histogram) => flatten_histogram(histogram),
-        Data::ExponentialHistogram(_) => {
-            todo!("Exponential histogram: metric={}", metric.name);
-        }
-        Data::Summary(_) => {
-            todo!("Summary: metric={}", metric.name);
+        Data::ExponentialHistogram(_) | Data::Summary(_) => {
+            eprintln!(
+                "Summary and exponential histogram metrics are not supported yet ('{}')",
+                metric.name
+            );
+            return Vec::new();
         }
     };
 
