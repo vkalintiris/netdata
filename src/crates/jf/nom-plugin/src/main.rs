@@ -108,18 +108,15 @@ impl MetricsService for NetdataMetricsService {
                 for fp in flattened_points.iter() {
                     let mut guard = self.charts.write().await;
 
-                    // eprintln!("fp: {:#?}", fp);
-
-                    if !guard.contains_key(&fp.nd_instance_name) {
+                    if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
+                        netdata_chart.ingest(fp);
+                    } else {
                         let _ = self.get_or_create_writer(&fp.nd_instance_name).await;
 
-                        let netdata_chart = NetdataChart::from_flattened_point(fp);
-                        // eprintln!("Chart: {:#?}", netdata_chart);
+                        let mut netdata_chart = NetdataChart::from_flattened_point(fp);
+                        netdata_chart.ingest(fp);
                         guard.insert(fp.nd_instance_name.clone(), netdata_chart);
                     }
-
-                    let netdata_chart = guard.get_mut(&fp.nd_instance_name).unwrap();
-                    netdata_chart.ingest(fp);
                 }
             }
 
