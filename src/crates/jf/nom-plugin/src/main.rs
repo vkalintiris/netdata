@@ -16,11 +16,13 @@ use crate::flattened_point::FlattenedPoint;
 mod regex_cache;
 use crate::regex_cache::RegexCache;
 
-mod samples_table;
-use crate::samples_table::NetdataChart;
-
 mod chart_config;
 use crate::chart_config::ChartConfigManager;
+
+mod netdata_chart;
+use crate::netdata_chart::NetdataChart;
+
+mod samples_table;
 
 #[derive(Default)]
 struct NetdataMetricsService {
