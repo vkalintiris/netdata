@@ -160,7 +160,7 @@ impl FlattenedPoint {
             nd_instance_name,
             nd_dimension_name,
             metric_name,
-            metric_description,
+            metric_description: metric_description.replace('\'', "\""),
             metric_unit,
             metric_type,
             metric_time_unix_nano,
