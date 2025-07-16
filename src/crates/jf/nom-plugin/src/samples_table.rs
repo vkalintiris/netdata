@@ -1,7 +1,4 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-
 use std::num::NonZeroU64;
 
 use crate::flattened_point::FlattenedPoint;
@@ -170,7 +167,7 @@ impl SamplesTable {
             .unwrap_or(0)
     }
 
-    fn drop_stale_samples(&mut self, ci: &CollectionInterval, chart_id: &str) -> usize {
+    fn drop_stale_samples(&mut self, ci: &CollectionInterval) -> usize {
         let mut dropped_samples = 0;
 
         for buffer in self.dimensions.values_mut() {
@@ -273,7 +270,7 @@ impl NetdataChart {
     fn initialize(&mut self) -> bool {
         // Clean up stale samples if we have a previous interval
         if let Some(ci) = &self.last_samples_table_interval {
-            self.samples_table.drop_stale_samples(ci, &self.chart_id);
+            self.samples_table.drop_stale_samples(ci);
         }
 
         // Check if we have enough samples to determine frequency
@@ -460,18 +457,7 @@ impl NetdataChart {
     //     println!("END {collection_time}");
     // }
 
-    fn write_line(&self, writer: &mut BufWriter<File>, line: &str) {
-        if let Err(e) = writeln!(writer, "{}", line) {
-            eprintln!(
-                "Failed to write to file for chart '{}': {}",
-                self.chart_id, e
-            );
-        }
-        // Also print to stdout for debugging
-        println!("{}", line);
-    }
-
-    pub fn process(&mut self, writer: &mut BufWriter<File>) {
+    pub fn process(&mut self) {
         loop {
             match &self.chart_state {
                 ChartState::Uninitialized | ChartState::InGap => {
@@ -482,13 +468,13 @@ impl NetdataChart {
                     if !self.needs_chart_definition {
                         self.chart_state = ChartState::Initialized;
                     } else {
-                        self.emit_chart_definition(writer);
-                        self.chart_state = self.process_next_interval(writer);
+                        self.emit_chart_definition();
+                        self.chart_state = self.process_next_interval();
                         self.needs_chart_definition = false;
                     }
                 }
                 ChartState::Initialized => {
-                    self.chart_state = self.process_next_interval(writer);
+                    self.chart_state = self.process_next_interval();
                 }
                 ChartState::Empty => {
                     self.chart_state = ChartState::Initialized;
@@ -498,7 +484,7 @@ impl NetdataChart {
         }
     }
 
-    fn emit_chart_definition(&self, writer: &mut BufWriter<File>) {
+    fn emit_chart_definition(&self) {
         let ci = self.last_collection_interval.unwrap();
         let ue = ci.update_every;
 
@@ -516,9 +502,9 @@ impl NetdataChart {
         let priority = 1;
         let update_every = std::time::Duration::from_nanos(ue.get()).as_secs();
 
-        self.write_line(writer, &format!(
+        println!(
             "CHART {type_id} '{name}' '{title}' '{units}' '{family}' '{context}' {chart_type} {priority} {update_every}"
-        ));
+        );
 
         for (key, value) in self.attributes.iter() {
             let value_str = match value {
@@ -528,9 +514,9 @@ impl NetdataChart {
                 _ => continue,
             };
 
-            self.write_line(writer, &format!("CLABEL '{key}' '{value_str}' 1"));
+            println!("CLABEL '{key}' '{value_str}' 1");
         }
-        self.write_line(writer, "CLABEL_COMMIT");
+        println!("CLABEL_COMMIT");
 
         // Emit dimensions
         if self.is_histogram() {
@@ -554,12 +540,9 @@ impl NetdataChart {
                     Some(true) => "incremental",
                     _ => "absolute",
                 };
-                self.write_line(
-                    writer,
-                    &format!(
-                        "DIMENSION {} {} {} 1 1",
-                        dimension_name, dimension_name, algorithm,
-                    ),
+                println!(
+                    "DIMENSION {} {} {} 1 1",
+                    dimension_name, dimension_name, algorithm,
                 );
             }
         } else {
@@ -568,20 +551,15 @@ impl NetdataChart {
                     Some(true) => "incremental",
                     _ => "absolute",
                 };
-                self.write_line(
-                    writer,
-                    &format!(
-                        "DIMENSION {} {} {} 1 1",
-                        dimension_name, dimension_name, algorithm,
-                    ),
+                println!(
+                    "DIMENSION {} {} {} 1 1",
+                    dimension_name, dimension_name, algorithm,
                 );
             }
         }
-
-        let _ = writer.flush();
     }
 
-    fn process_next_interval(&mut self, writer: &mut BufWriter<File>) -> ChartState {
+    fn process_next_interval(&mut self) -> ChartState {
         let lsti = match &self.last_samples_table_interval {
             Some(interval) => interval,
             None => return ChartState::Empty,
@@ -593,7 +571,7 @@ impl NetdataChart {
         };
 
         // Clean stale samples
-        self.samples_table.drop_stale_samples(lsti, &self.chart_id);
+        self.samples_table.drop_stale_samples(lsti);
         if self.samples_table.is_empty() {
             return ChartState::Empty;
         }
@@ -623,16 +601,16 @@ impl NetdataChart {
 
         // Emit data if we have samples
         if !samples_to_emit.is_empty() {
-            self.emit_begin(writer, lci.collection_time());
+            self.emit_begin(lci.collection_time());
             for (dimension_name, value) in samples_to_emit {
-                self.emit_set(writer, &dimension_name, value);
+                self.emit_set(&dimension_name, value);
             }
 
             if self.needs_chart_definition {
-                self.emit_end_aux(writer);
+                self.emit_end_aux();
                 self.needs_chart_definition = false;
             } else {
-                self.emit_end(writer);
+                self.emit_end();
             }
         }
 
@@ -643,29 +621,27 @@ impl NetdataChart {
         ChartState::Initialized
     }
 
-    fn emit_begin(&self, writer: &mut BufWriter<File>, _collection_time: u64) {
-        self.write_line(writer, &format!("BEGIN {}", self.chart_id));
+    fn emit_begin(&self, _collection_time: u64) {
+        println!("BEGIN {}", self.chart_id);
     }
 
-    fn emit_set(&self, writer: &mut BufWriter<File>, dimension_name: &str, value: f64) {
-        self.write_line(writer, &format!("SET {} {}", dimension_name, value));
+    fn emit_set(&self, dimension_name: &str, value: f64) {
+        println!("SET {} {}", dimension_name, value);
     }
 
-    fn emit_end(&self, writer: &mut BufWriter<File>) {
+    fn emit_end(&self) {
         let collection_time = std::time::Duration::from_nanos(
             self.last_collection_interval.unwrap().collection_time(),
         )
         .as_secs();
-        self.write_line(writer, &format!("END {collection_time}"));
-        let _ = writer.flush();
+        println!("END {collection_time}");
     }
 
-    fn emit_end_aux(&self, writer: &mut BufWriter<File>) {
+    fn emit_end_aux(&self) {
         let collection_time = std::time::Duration::from_nanos(
             self.last_collection_interval.unwrap().collection_time(),
         )
         .as_secs();
-        self.write_line(writer, &format!("END {collection_time} 0 true"));
-        let _ = writer.flush();
+        println!("END {collection_time} 0 true");
     }
 }
