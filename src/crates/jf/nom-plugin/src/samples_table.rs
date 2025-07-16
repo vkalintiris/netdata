@@ -7,12 +7,6 @@ pub struct SamplePoint {
     pub value: f64,
 }
 
-impl SamplePoint {
-    pub fn new(unix_time: u64, value: f64) -> Self {
-        Self { unix_time, value }
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct CollectionInterval {
     pub end_time: u64,
@@ -143,7 +137,7 @@ impl SamplesTable {
     pub fn insert(&mut self, dimension: &str, unix_time: u64, value: f64) -> bool {
         let sp = SamplePoint { unix_time, value };
 
-        if let Some(sb) = self.dimensions.get_mut(dimension) {
+        let is_new_dimension = if let Some(sb) = self.dimensions.get_mut(dimension) {
             sb.push(sp);
             false
         } else {
@@ -151,7 +145,9 @@ impl SamplesTable {
             sb.push(sp);
             self.dimensions.insert(dimension.to_string(), sb);
             true
-        }
+        };
+
+        is_new_dimension
     }
 
     pub fn is_empty(&self) -> bool {
@@ -181,10 +177,6 @@ impl SamplesTable {
             .values()
             .filter_map(|sb| sb.collection_interval())
             .min_by_key(|ci| ci.collection_time())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &SamplesBuffer)> {
-        self.dimensions.iter()
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut SamplesBuffer)> {
