@@ -27,8 +27,6 @@ pub struct NetdataChart {
     last_collection_interval: Option<CollectionInterval>,
     chart_state: ChartState,
     samples_threshold: usize,
-
-    needs_chart_definition: bool,
 }
 
 impl NetdataChart {
@@ -41,12 +39,13 @@ impl NetdataChart {
             metric_type: fp.metric_type.clone(),
             attributes: fp.attributes.clone(),
             is_monotonic: fp.metric_is_monotonic,
+
             samples_table: SamplesTable::default(),
             last_samples_table_interval: None,
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
+
             samples_threshold: 5, // Wait for at least X samples to detect frequency
-            needs_chart_definition: false,
         }
     }
 
@@ -59,7 +58,13 @@ impl NetdataChart {
         let value = fp.metric_value;
         let unix_time = fp.metric_time_unix_nano;
 
-        self.needs_chart_definition |= self.samples_table.insert(dimension_name, unix_time, value);
+        let new_dimension = self.samples_table.insert(dimension_name, unix_time, value);
+
+        if new_dimension {
+            self.chart_state = ChartState::Uninitialized;
+            self.last_samples_table_interval = None;
+            self.last_collection_interval = None;
+        }
     }
 
     fn initialize(&mut self) -> bool {
@@ -93,8 +98,13 @@ impl NetdataChart {
         if let Some(new_lci) = &self.last_collection_interval {
             if let Some(old_lci) = old_lci {
                 if old_lci.update_every != new_lci.update_every {
-                    self.needs_chart_definition = true;
+                    // Update every changed, emit the chart definition again
+                    self.emit_chart_definition();
                 }
+            } else {
+                // No previous collection interval, we need to emit the
+                // chart definition first
+                self.emit_chart_definition();
             }
         }
 
@@ -109,13 +119,7 @@ impl NetdataChart {
                         return;
                     }
 
-                    if !self.needs_chart_definition {
-                        self.chart_state = ChartState::Initialized;
-                    } else {
-                        self.emit_chart_definition();
-                        self.needs_chart_definition = false;
-                        self.chart_state = self.process_next_interval();
-                    }
+                    self.chart_state = ChartState::Initialized;
                 }
                 ChartState::Initialized => {
                     self.chart_state = self.process_next_interval();
@@ -249,13 +253,7 @@ impl NetdataChart {
             for (dimension_name, value) in samples_to_emit {
                 self.emit_set(&dimension_name, value);
             }
-
-            if self.needs_chart_definition {
-                self.emit_end_aux();
-                self.needs_chart_definition = false;
-            } else {
-                self.emit_end();
-            }
+            self.emit_end();
         }
 
         // Move to next interval
@@ -279,13 +277,5 @@ impl NetdataChart {
         )
         .as_secs();
         println!("END {collection_time}");
-    }
-
-    fn emit_end_aux(&self) {
-        let collection_time = std::time::Duration::from_nanos(
-            self.last_collection_interval.unwrap().collection_time(),
-        )
-        .as_secs();
-        println!("END {collection_time} 0 true");
     }
 }
