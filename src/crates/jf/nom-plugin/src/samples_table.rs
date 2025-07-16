@@ -147,18 +147,15 @@ struct SamplesTable {
 
 impl SamplesTable {
     fn insert(&mut self, dimension: &str, sample_point: SamplePoint) -> bool {
-        let mut new_dimension = false;
-
-        if !self.dimensions.contains_key(dimension) {
-            self.dimensions
-                .insert(String::from(dimension), SamplesBuffer::default());
-            new_dimension = true;
+        if let Some(buffer) = self.dimensions.get_mut(dimension) {
+            buffer.push(sample_point);
+            false
+        } else {
+            let mut buffer = SamplesBuffer::default();
+            buffer.push(sample_point);
+            self.dimensions.insert(dimension.to_string(), buffer);
+            true
         }
-
-        let samples_buffer = self.dimensions.get_mut(dimension).unwrap();
-        samples_buffer.push(sample_point);
-
-        new_dimension
     }
 
     fn is_empty(&self) -> bool {
@@ -178,13 +175,6 @@ impl SamplesTable {
 
         for buffer in self.dimensions.values_mut() {
             dropped_samples += buffer.drop_stale_samples(ci);
-        }
-
-        if dropped_samples != 0 {
-            eprintln!(
-                "[GVD0] Dropped {:?} samples from {:?}",
-                dropped_samples, chart_id
-            );
         }
 
         dropped_samples
@@ -240,7 +230,7 @@ impl NetdataChart {
             last_samples_table_interval: None,
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
-            samples_threshold: 5, // Wait for at least 3 samples to detect frequency
+            samples_threshold: 5, // Wait for at least X samples to detect frequency
             needs_chart_definition: false,
         }
     }
