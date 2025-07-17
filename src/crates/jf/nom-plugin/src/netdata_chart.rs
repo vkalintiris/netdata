@@ -279,4 +279,10 @@ impl NetdataChart {
         .as_secs();
         println!("END {collection_time}");
     }
+
+    pub fn last_collection_time(&self) -> Option<std::time::SystemTime> {
+        self.last_collection_interval.as_ref().map(|lci| {
+            std::time::UNIX_EPOCH + std::time::Duration::from_nanos(lci.collection_time())
+        })
+    }
 }
