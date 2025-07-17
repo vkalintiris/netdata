@@ -83,7 +83,7 @@
 #define PLUGINSD_KEYWORD_JSON_CMD_ML_MODEL      "ML_MODEL"
 
 // trust BEGIN timestamps from the plugin
-#define PLUGINSD_KEYWORD_TRUST_TIMESTAMPS       "TRUST_TIMESTAMPS"
+#define PLUGINSD_KEYWORD_TRUST_DURATIONS        "TRUST_DURATIONS"
 
 typedef void (*functions_evloop_worker_execute_t)(const char *transaction, char *function, usec_t *stop_monotonic_ut,
                                                   bool *cancelled, BUFFER *payload, HTTP_ACCESS access,

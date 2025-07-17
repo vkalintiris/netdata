@@ -249,7 +249,7 @@ impl NetdataChart {
 
         // Emit data if we have samples
         if !samples_to_emit.is_empty() {
-            self.emit_begin(lci.collection_time());
+            self.emit_begin(lci.update_every.get());
             for (dimension_name, value) in samples_to_emit {
                 self.emit_set(&dimension_name, value);
             }
@@ -263,8 +263,9 @@ impl NetdataChart {
         ChartState::Initialized
     }
 
-    fn emit_begin(&self, _collection_time: u64) {
-        println!("BEGIN {}", self.chart_id);
+    fn emit_begin(&self, update_every: u64) {
+        let ue = std::time::Duration::from_nanos(update_every).as_micros() as u64;
+        println!("BEGIN {} {}", self.chart_id, ue);
     }
 
     fn emit_set(&self, dimension_name: &str, value: f64) {

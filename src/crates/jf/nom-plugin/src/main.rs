@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:21213".parse()?;
     let metrics_service = NetdataMetricsService::new();
 
-    println!("TRUST_TIMESTAMPS 1");
+    println!("TRUST_DURATIONS 1");
 
     Server::builder()
         .add_service(
