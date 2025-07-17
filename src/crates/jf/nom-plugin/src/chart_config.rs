@@ -1,13 +1,27 @@
+// src/chart_config.rs
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::fs;
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChartConfig {
+    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none")]
     pub instrumentation_scope_name: Option<Regex>,
+
+    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none")]
     pub instrumentation_scope_version: Option<Regex>,
+
+    #[serde(with = "serde_regex")]
     pub metric_name: Regex,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chart_instance_pattern: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dimension_name: Option<String>,
+
     pub priority: u32,
 }
 
@@ -74,7 +88,7 @@ impl ChartConfig {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ChartConfigManager {
     configs: Vec<ChartConfig>,
 }
@@ -92,6 +106,26 @@ impl ChartConfigManager {
         manager
     }
 
+    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let manager: ChartConfigManager = serde_yaml::from_str(&contents)?;
+        Ok(manager)
+    }
+
+    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let yaml_string = serde_yaml::to_string(self)?;
+        fs::write(path, yaml_string)?;
+        Ok(())
+    }
+
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, serde_yaml::Error> {
+        serde_yaml::from_str(yaml)
+    }
+
+    pub fn to_yaml_string(&self) -> Result<String, serde_yaml::Error> {
+        serde_yaml::to_string(self)
+    }
+
     pub fn add_config(&mut self, config: ChartConfig) {
         self.configs.push(config);
         // Sort by priority (higher priority first)
@@ -105,6 +139,7 @@ impl ChartConfigManager {
         self.configs.iter().find(|config| config.matches(json_map))
     }
 
+    // Keep your existing add_default_configs method unchanged
     fn add_default_configs(&mut self) {
         /*
          * network scraper
