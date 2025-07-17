@@ -29,6 +29,7 @@ struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
     chart_config_manager: ChartConfigManager,
+    call_count: std::sync::atomic::AtomicU64,
 }
 
 impl NetdataMetricsService {
@@ -37,7 +38,24 @@ impl NetdataMetricsService {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
             chart_config_manager: ChartConfigManager::with_default_configs(),
+            call_count: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    async fn cleanup_stale_charts(&self, max_age: std::time::Duration) {
+        let now = std::time::SystemTime::now();
+
+        let mut guard = self.charts.write().await;
+        guard.retain(|_, chart| {
+            let Some(chart_time) = chart.last_collection_time() else {
+                // keep uninitialized charts
+                return true;
+            };
+
+            now.duration_since(chart_time)
+                .unwrap_or(std::time::Duration::ZERO)
+                < max_age
+        });
     }
 }
 
@@ -78,6 +96,18 @@ impl MetricsService for NetdataMetricsService {
 
             for netdata_chart in guard.values_mut() {
                 netdata_chart.process();
+            }
+        }
+
+        // cleanup stale charts
+        {
+            let prev_count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            if prev_count % 60 == 0 {
+                let one_hour = std::time::Duration::from_secs(3600);
+                self.cleanup_stale_charts(one_hour).await;
             }
         }
 
