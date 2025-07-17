@@ -30,6 +30,7 @@ struct NetdataMetricsService {
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
     chart_config_manager: ChartConfigManager,
     call_count: std::sync::atomic::AtomicU64,
+    throttle_charts: u64,
 }
 
 impl NetdataMetricsService {
@@ -39,6 +40,7 @@ impl NetdataMetricsService {
             charts: Arc::default(),
             chart_config_manager: ChartConfigManager::with_default_configs(),
             call_count: std::sync::atomic::AtomicU64::new(0),
+            throttle_charts: 10,
         }
     }
 
@@ -77,15 +79,19 @@ impl MetricsService for NetdataMetricsService {
 
         // ingest
         {
+            let mut newly_created_charts = 0;
+
             for fp in flattened_points.iter() {
                 let mut guard = self.charts.write().await;
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else {
+                } else if newly_created_charts < self.throttle_charts {
                     let mut netdata_chart = NetdataChart::from_flattened_point(fp);
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
+
+                    newly_created_charts += 1;
                 }
             }
         }
