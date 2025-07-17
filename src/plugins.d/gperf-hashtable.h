@@ -54,7 +54,7 @@
 #define PLUGINSD_KEYWORD_ID_SET                    11
 #define PLUGINSD_KEYWORD_ID_VARIABLE               53
 #define PLUGINSD_KEYWORD_ID_CONFIG                 100
-#define PLUGINSD_KEYWORD_ID_TRUST_TIMESTAMPS       101
+#define PLUGINSD_KEYWORD_ID_TRUST_DURATIONS        101
 
 #define PLUGINSD_KEYWORD_ID_CLAIMED_ID             61
 #define PLUGINSD_KEYWORD_ID_BEGIN2                 2
@@ -105,7 +105,7 @@ gperf_keyword_hash_function (register const char *str, register size_t len)
       54, 54, 54, 54, 54, 54, 54, 54, 54, 54,
       54, 54, 54, 54, 54, 31, 28,  2,  4,  0,
        5, 54,  0, 25, 22, 54, 17, 54, 27,  0,
-      54, 54,  1, 16, 23, 15,  0, 54,  2,  0,
+      54, 54,  1, 16, 24, 15,  0, 54,  2,  0,
       54, 54, 54, 54, 54, 54, 54, 54, 54, 54,
       54, 54, 54, 54, 54, 54, 54, 54, 54, 54,
       54, 54, 54, 54, 54, 54, 54, 54, 54, 54,
@@ -205,7 +205,7 @@ static const PARSER_KEYWORD gperf_keywords[] =
 #line 89 "gperf-config.txt"
     {"VARIABLE",              PLUGINSD_KEYWORD_ID_VARIABLE,              PARSER_INIT_PLUGINSD|PARSER_INIT_STREAMING|PARSER_REP_METADATA, WORKER_PARSER_FIRST_JOB + 20},
 #line 91 "gperf-config.txt"
-    {"TRUST_TIMESTAMPS",      PLUGINSD_KEYWORD_ID_TRUST_TIMESTAMPS,      PARSER_INIT_PLUGINSD|PARSER_REP_METADATA,                       WORKER_PARSER_FIRST_JOB + 22},
+    {"TRUST_DURATIONS",       PLUGINSD_KEYWORD_ID_TRUST_DURATIONS,       PARSER_INIT_PLUGINSD|PARSER_REP_METADATA,                       WORKER_PARSER_FIRST_JOB + 22},
 #line 84 "gperf-config.txt"
     {"FUNCTION_RESULT_BEGIN", PLUGINSD_KEYWORD_ID_FUNCTION_RESULT_BEGIN, PARSER_INIT_PLUGINSD|PARSER_INIT_STREAMING,                     WORKER_PARSER_FIRST_JOB + 15},
 #line 111 "gperf-config.txt"
