@@ -6,6 +6,28 @@ use zerocopy::{
     SplitByteSliceMut,
 };
 
+pub trait HashableObject {
+    /// Get the hash value of this object
+    fn hash(&self) -> u64;
+
+    /// Get the payload data for matching
+    fn get_payload(&self) -> &[u8];
+
+    /// Get the offset to the next object in the hash chain
+    fn next_hash_offset(&self) -> Option<NonZeroU64>;
+
+    /// Get the object type
+    fn object_type() -> ObjectType;
+}
+
+pub trait HashableObjectMut: HashableObject {
+    /// Set the offset to the next object in the hash chain
+    fn set_next_hash_offset(&mut self, offset: NonZeroU64);
+
+    /// Set the payload of the object
+    fn set_payload(&mut self, data: &[u8]);
+}
+
 /// Trait for hash table operations
 pub trait HashTable {
     /// The type of objects stored in this hash table
@@ -13,9 +35,6 @@ pub trait HashTable {
 
     /// Get the hash item for a given hash value
     fn hash_item_ref(&self, hash: u64) -> &HashItem;
-
-    /// Get all head hash offsets in the table
-    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_;
 
     /// Get the length of the hash table (number of buckets)
     fn len(&self) -> usize;
@@ -51,12 +70,6 @@ impl<B: ByteSlice> HashTable for DataHashTable<B> {
         &self.items[bucket_index]
     }
 
-    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
-        self.items
-            .iter()
-            .filter_map(|hash_item| hash_item.head_hash_offset)
-    }
-
     fn len(&self) -> usize {
         self.items.len()
     }
@@ -69,12 +82,6 @@ impl<B: ByteSlice> HashTable for FieldHashTable<B> {
     fn hash_item_ref(&self, hash: u64) -> &HashItem {
         let bucket_index = hash as usize % self.items.len();
         &self.items[bucket_index]
-    }
-
-    fn head_hash_offsets(&self) -> impl Iterator<Item = NonZeroU64> + '_ {
-        self.items
-            .iter()
-            .filter_map(|hash_item| hash_item.head_hash_offset)
     }
 
     fn len(&self) -> usize {
@@ -144,28 +151,6 @@ impl<B: SplitByteSliceMut> JournalObjectMut<B> for FieldHashTable<B> {
 
         Some(FieldHashTable { header, items })
     }
-}
-
-pub trait HashableObject {
-    /// Get the hash value of this object
-    fn hash(&self) -> u64;
-
-    /// Get the payload data for matching
-    fn get_payload(&self) -> &[u8];
-
-    /// Get the offset to the next object in the hash chain
-    fn next_hash_offset(&self) -> Option<NonZeroU64>;
-
-    /// Get the object type
-    fn object_type() -> ObjectType;
-}
-
-pub trait HashableObjectMut: HashableObject {
-    /// Set the offset to the next object in the hash chain
-    fn set_next_hash_offset(&mut self, offset: NonZeroU64);
-
-    /// Set the payload of the object
-    fn set_payload(&mut self, data: &[u8]);
 }
 
 impl<B: ByteSlice> HashableObject for FieldObject<B> {

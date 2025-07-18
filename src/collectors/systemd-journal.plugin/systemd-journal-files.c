@@ -828,6 +828,7 @@ void nd_journal_init_files_and_directories(void)
 
     journal_directories[d++].path = string_strdupz("/run/log/journal");
     journal_directories[d++].path = string_strdupz("/var/log/journal");
+    journal_directories[d++].path = string_strdupz("/tmp/nol-journals");
 
     if (*netdata_configured_host_prefix) {
         char path[PATH_MAX];
