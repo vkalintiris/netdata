@@ -71,7 +71,7 @@ impl FlattenedPoint {
             .and_then(|v| v.as_bool());
 
         if let Some(config) = chart_config {
-            if let Some(chart_instance_pattern) = &config.chart_instance_pattern {
+            if let Some(chart_instance_pattern) = &config.extract.chart_instance_pattern {
                 if !json_map.contains_key("metric.attributes._nd_chart_instance") {
                     json_map.insert(
                         "metric.attributes._nd_chart_instance".to_string(),
@@ -80,7 +80,7 @@ impl FlattenedPoint {
                 }
             }
 
-            if let Some(dimension_name) = &config.dimension_name {
+            if let Some(dimension_name) = &config.extract.dimension_name {
                 if !json_map.contains_key("metric.attributes._nd_dimension") {
                     json_map.insert(
                         "metric.attributes._nd_dimension".to_string(),
