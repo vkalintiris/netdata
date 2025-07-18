@@ -23,8 +23,6 @@ pub struct ExtractPattern {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dimension_name: Option<String>,
-
-    pub priority: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +38,6 @@ impl ChartConfig {
         metric_name: &str,
         chart_instance_pattern: Option<&str>,
         dimension_name: Option<&str>,
-        priority: u32,
     ) -> Result<Self, regex::Error> {
         let instrumentation_scope_name = match scope_name {
             Some(pattern) => Some(Regex::new(pattern)?),
@@ -63,7 +60,6 @@ impl ChartConfig {
             extract: ExtractPattern {
                 chart_instance_pattern: chart_instance_pattern.map(String::from),
                 dimension_name: dimension_name.map(String::from),
-                priority,
             },
         })
     }
@@ -97,32 +93,38 @@ impl ChartConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    Stock,
+    User,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct ChartConfigManager {
+pub struct ChartConfigs {
     configs: Vec<ChartConfig>,
 }
 
-impl ChartConfigManager {
-    pub fn new() -> Self {
-        Self {
-            configs: Vec::new(),
-        }
-    }
+#[derive(Debug, Default)]
+pub struct ChartConfigManager {
+    stock: ChartConfigs,
+    user: ChartConfigs,
+}
 
+impl ChartConfigManager {
     pub fn with_default_configs() -> Self {
-        let mut manager = Self::new();
-        manager.add_default_configs();
+        let mut manager = Self::default();
+        manager.load_stock_config();
         manager
     }
 
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = fs::read_to_string(path)?;
-        let manager: ChartConfigManager = serde_yaml::from_str(&contents)?;
-        Ok(manager)
-    }
+    // pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    //     let contents = fs::read_to_string(path)?;
+    //     let chart_configs: ChartConfigs = serde_yaml::from_str(&contents)?;
+    //     Ok(manager)
+    // }
 
     pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let yaml_string = serde_yaml::to_string(self)?;
+        let yaml_string = serde_yaml::to_string(&self.stock)?;
         fs::write(path, yaml_string)?;
         Ok(())
     }
@@ -131,384 +133,75 @@ impl ChartConfigManager {
         &self,
         json_map: &JsonMap<String, JsonValue>,
     ) -> Option<&ChartConfig> {
-        self.configs.iter().find(|config| config.matches(json_map))
+        self.user
+            .configs
+            .iter()
+            .chain(self.stock.configs.iter())
+            .find(|config| config.matches(json_map))
     }
 
-    pub fn add_config(&mut self, config: ChartConfig) {
-        self.configs.push(config);
-        // Sort by priority (higher priority first)
-        self.configs
-            .sort_by(|a, b| b.extract.priority.cmp(&a.extract.priority));
+    fn load_stock_config(&mut self) {
+        const DEFAULT_CONFIGS_YAML: &str = include_str!("../configs/stock.yml");
+
+        match serde_yaml::from_str::<ChartConfigs>(DEFAULT_CONFIGS_YAML) {
+            Ok(configs) => {
+                self.stock = configs;
+            }
+            Err(e) => {
+                eprintln!("Failed to parse default configs YAML: {}", e);
+                // Handle error as appropriate
+            }
+        }
     }
 
-    // Keep your existing add_default_configs method unchanged
-    fn add_default_configs(&mut self) {
-        /*
-         * network scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*networkscraper$"),
-            None,
-            r"system\.network\.connections",
-            Some("metric.attributes.protocol"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
+    pub fn load_user_configs<P: AsRef<Path>>(
+        &mut self,
+        config_dir: P,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // check dir
+        let config_path = config_dir.as_ref();
+        if !config_path.exists() || !config_path.is_dir() {
+            return Ok(());
         }
 
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*networkscraper$"),
-            None,
-            r"system\.network\.dropped",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
+        // collect them
+        let mut config_files: Vec<_> = std::fs::read_dir(config_path)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.is_file()
+                    && matches!(
+                        path.extension().and_then(|s| s.to_str()),
+                        Some("yml" | "yaml")
+                    )
+                {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        config_files.sort();
+
+        // deserialize them
+        self.user = ChartConfigs::default();
+        for path in config_files {
+            match fs::read_to_string(&path) {
+                Ok(contents) => match serde_yaml::from_str::<ChartConfigs>(&contents) {
+                    Ok(chart_configs) => {
+                        self.user.configs.extend(chart_configs.configs);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse YAML file {}: {}", path.display(), e);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to read file {}: {}", path.display(), e);
+                }
+            }
         }
 
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*networkscraper$"),
-            None,
-            r"system\.network\.errors",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*networkscraper$"),
-            None,
-            r"system\.network\.io",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*networkscraper$"),
-            None,
-            r"system\.network\.packets",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * cpu scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*cpuscraper$"),
-            None,
-            r"system\.cpu\.time",
-            Some("metric.attributes.cpu"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*cpuscraper$"),
-            None,
-            r"system\.cpu\.frequency",
-            Some("metric.attributes.cpu"),
-            None,
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*cpuscraper$"),
-            None,
-            r"system\.cpu\.utilization",
-            Some("metric.attributes.cpu"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * disk scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.io$",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.io_time",
-            Some("metric.attributes.device"),
-            None,
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.merged",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.operation_time",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.operations",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.pending_operations",
-            Some("metric.attributes.device"),
-            None,
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*diskscraper$"),
-            None,
-            r"system\.disk\.weighted_io",
-            Some("metric.attributes.device"),
-            None,
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * filesystem scraper
-         */
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*filesystemscraper$"),
-            None,
-            r"system\.filesystem\.inodes\.usage",
-            Some("metric.attributes.mountpoint"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*filesystemscraper$"),
-            None,
-            r"system\.filesystem\.usage",
-            Some("metric.attributes.mountpoint"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*filesystemscraper$"),
-            None,
-            r"system\.filesystem\.utilization",
-            Some("metric.attributes.mountpoint"),
-            None,
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * memory scraper
-         */
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*memoryscraper$"),
-            None,
-            r"system\.memory\.utilization",
-            None,
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * paging scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*pagingscraper$"),
-            None,
-            r"system\.paging\.faults",
-            None,
-            Some("metric.attributes.type"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        // TODO: should we swap chart instance with dimension?
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*pagingscraper$"),
-            None,
-            r"system\.paging\.operations",
-            Some("metric.attributes.type"),
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*pagingscraper$"),
-            None,
-            r"system\.paging\.usage",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*pagingscraper$"),
-            None,
-            r"system\.paging\.utilization",
-            Some("metric.attributes.device"),
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * paging scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processesscraper$"),
-            None,
-            r"system\.processes\.count",
-            None,
-            Some("metric.attributes.status"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        /*
-         * process scraper
-         */
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.cpu\.time",
-            None,
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.disk\.io",
-            None,
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.context_switches",
-            None,
-            Some("metric.attributes.type"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.cpu\.utilization",
-            None,
-            Some("metric.attributes.state"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.disk\.operations",
-            None,
-            Some("metric.attributes.direction"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.paging\.faults",
-            None,
-            Some("metric.attributes.type"),
-            100,
-        ) {
-            self.add_config(config);
-        }
-
-        if let Ok(config) = ChartConfig::new(
-            Some(".*hostmetricsreceiver.*processscraper$"),
-            None,
-            r"process\.paging\.faults",
-            None,
-            Some("metric.attributes.type"),
-            100,
-        ) {
-            self.add_config(config);
-        }
+        // profit
+        Ok(())
     }
 }
