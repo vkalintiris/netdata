@@ -6,10 +6,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectCriteria {
-    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none")]
+    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none", default)]
     pub instrumentation_scope_name: Option<Regex>,
 
-    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none")]
+    #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none", default)]
     pub instrumentation_scope_version: Option<Regex>,
 
     #[serde(with = "serde_regex")]
