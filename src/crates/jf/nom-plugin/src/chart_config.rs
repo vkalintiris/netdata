@@ -1,4 +1,3 @@
-// src/chart_config.rs
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -6,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChartConfig {
+pub struct SelectCriteria {
     #[serde(with = "serde_regex", skip_serializing_if = "Option::is_none")]
     pub instrumentation_scope_name: Option<Regex>,
 
@@ -15,7 +14,10 @@ pub struct ChartConfig {
 
     #[serde(with = "serde_regex")]
     pub metric_name: Regex,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractPattern {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart_instance_pattern: Option<String>,
 
@@ -23,6 +25,12 @@ pub struct ChartConfig {
     pub dimension_name: Option<String>,
 
     pub priority: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChartConfig {
+    pub select: SelectCriteria,
+    pub extract: ExtractPattern,
 }
 
 impl ChartConfig {
@@ -47,18 +55,21 @@ impl ChartConfig {
         let metric_name = Regex::new(metric_name)?;
 
         Ok(ChartConfig {
-            instrumentation_scope_name,
-            instrumentation_scope_version,
-            metric_name,
-            chart_instance_pattern: chart_instance_pattern.map(String::from),
-            dimension_name: dimension_name.map(String::from),
-            priority,
+            select: SelectCriteria {
+                instrumentation_scope_name,
+                instrumentation_scope_version,
+                metric_name,
+            },
+            extract: ExtractPattern {
+                chart_instance_pattern: chart_instance_pattern.map(String::from),
+                dimension_name: dimension_name.map(String::from),
+                priority,
+            },
         })
     }
 
     pub fn matches(&self, json_map: &JsonMap<String, JsonValue>) -> bool {
-        // Check scope name
-        if let Some(scope_regex) = &self.instrumentation_scope_name {
+        if let Some(scope_regex) = &self.select.instrumentation_scope_name {
             if let Some(JsonValue::String(scope_name)) = json_map.get("scope.name") {
                 if !scope_regex.is_match(scope_name) {
                     return false;
@@ -68,8 +79,7 @@ impl ChartConfig {
             }
         }
 
-        // Check scope version
-        if let Some(version_regex) = &self.instrumentation_scope_version {
+        if let Some(version_regex) = &self.select.instrumentation_scope_version {
             if let Some(JsonValue::String(scope_version)) = json_map.get("scope.version") {
                 if !version_regex.is_match(scope_version) {
                     return false;
@@ -79,9 +89,8 @@ impl ChartConfig {
             }
         }
 
-        // Check metric name
         if let Some(JsonValue::String(metric_name)) = json_map.get("metric.name") {
-            self.metric_name.is_match(metric_name)
+            self.select.metric_name.is_match(metric_name)
         } else {
             false
         }
@@ -118,25 +127,18 @@ impl ChartConfigManager {
         Ok(())
     }
 
-    pub fn from_yaml_str(yaml: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(yaml)
-    }
-
-    pub fn to_yaml_string(&self) -> Result<String, serde_yaml::Error> {
-        serde_yaml::to_string(self)
-    }
-
-    pub fn add_config(&mut self, config: ChartConfig) {
-        self.configs.push(config);
-        // Sort by priority (higher priority first)
-        self.configs.sort_by(|a, b| b.priority.cmp(&a.priority));
-    }
-
     pub fn find_matching_config(
         &self,
         json_map: &JsonMap<String, JsonValue>,
     ) -> Option<&ChartConfig> {
         self.configs.iter().find(|config| config.matches(json_map))
+    }
+
+    pub fn add_config(&mut self, config: ChartConfig) {
+        self.configs.push(config);
+        // Sort by priority (higher priority first)
+        self.configs
+            .sort_by(|a, b| b.extract.priority.cmp(&a.extract.priority));
     }
 
     // Keep your existing add_default_configs method unchanged

@@ -128,6 +128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:21213".parse()?;
     let metrics_service = NetdataMetricsService::new();
 
+    metrics_service
+        .chart_config_manager
+        .to_yaml_file("/tmp/config.yml")
+        .unwrap();
+
     println!("TRUST_DURATIONS 1");
 
     Server::builder()
