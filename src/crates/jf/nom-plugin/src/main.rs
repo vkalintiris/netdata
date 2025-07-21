@@ -17,30 +17,30 @@ mod regex_cache;
 use crate::regex_cache::RegexCache;
 
 mod chart_config;
-use crate::chart_config::ChartConfigManager;
 
 mod netdata_chart;
 use crate::netdata_chart::NetdataChart;
 
 mod samples_table;
 
+mod plugin_config;
+use crate::plugin_config::PluginConfig;
+
 #[derive(Default)]
 struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
-    chart_config_manager: ChartConfigManager,
+    config: Arc<PluginConfig>,
     call_count: std::sync::atomic::AtomicU64,
-    throttle_charts: u64,
 }
 
 impl NetdataMetricsService {
-    fn new() -> Self {
+    fn new(config: Arc<PluginConfig>) -> Self {
         Self {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
-            chart_config_manager: ChartConfigManager::with_default_configs(),
+            config,
             call_count: std::sync::atomic::AtomicU64::new(0),
-            throttle_charts: 10,
         }
     }
 
@@ -50,7 +50,6 @@ impl NetdataMetricsService {
         let mut guard = self.charts.write().await;
         guard.retain(|_, chart| {
             let Some(chart_time) = chart.last_collection_time() else {
-                // keep uninitialized charts
                 return true;
             };
 
@@ -72,10 +71,21 @@ impl MetricsService for NetdataMetricsService {
         let flattened_points = flatten_metrics_request(&req)
             .into_iter()
             .filter_map(|jm| {
-                let cfg = self.chart_config_manager.find_matching_config(&jm);
+                let cfg = self.config.chart_config_manager.find_matching_config(&jm);
                 FlattenedPoint::new(jm, cfg, &self.regex_cache)
             })
             .collect::<Vec<_>>();
+
+        if self.config.print_flattened_metrics {
+            // Just print the flattened points
+            for fp in &flattened_points {
+                println!("{:#?}", fp);
+            }
+
+            return Ok(Response::new(ExportMetricsServiceResponse {
+                partial_success: None,
+            }));
+        }
 
         // ingest
         {
@@ -86,7 +96,7 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts < self.throttle_charts {
+                } else if newly_created_charts < self.config.buffer_samples {
                     let mut netdata_chart = NetdataChart::from_flattened_point(fp);
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
@@ -125,10 +135,12 @@ impl MetricsService for NetdataMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "0.0.0.0:21213".parse()?;
-    let metrics_service = NetdataMetricsService::new();
+    let config = Arc::new(PluginConfig::new()?);
 
-    metrics_service
+    let addr = config.endpoint.parse()?;
+    let metrics_service = NetdataMetricsService::new(config.clone());
+
+    config
         .chart_config_manager
         .to_yaml_file("/tmp/config.yml")
         .unwrap();

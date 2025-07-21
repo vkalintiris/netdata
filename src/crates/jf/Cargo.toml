@@ -40,6 +40,7 @@ regex = "1.10"
 tokio = { version = "1.45", features = ["rt-multi-thread"] }
 tonic = "0.13"
 opentelemetry-proto = "0.30"
+atty = "0.2"
 
 [profile.release]
 lto = true
