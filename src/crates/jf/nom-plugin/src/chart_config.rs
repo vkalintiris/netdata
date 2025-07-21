@@ -133,6 +133,8 @@ impl ChartConfigManager {
         &self,
         json_map: &JsonMap<String, JsonValue>,
     ) -> Option<&ChartConfig> {
+        // Chaining-order is important. We want to priority user configurations
+        // and fall back to stock configurations if they are missing.
         self.user
             .configs
             .iter()
@@ -149,7 +151,6 @@ impl ChartConfigManager {
             }
             Err(e) => {
                 eprintln!("Failed to parse default configs YAML: {}", e);
-                // Handle error as appropriate
             }
         }
     }
@@ -201,7 +202,6 @@ impl ChartConfigManager {
             }
         }
 
-        // profit
         Ok(())
     }
 }
