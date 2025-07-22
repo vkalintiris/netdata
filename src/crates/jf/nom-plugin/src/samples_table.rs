@@ -190,4 +190,32 @@ impl SamplesTable {
     pub fn iter_samples_buffers(&self) -> impl Iterator<Item = &SamplesBuffer> {
         self.dimensions.values()
     }
+
+    // returns multiplier/divisor
+    pub fn scaling_factors(&self) -> (i32, i32) {
+        let mut has_nonzero = false;
+
+        for buffer in self.dimensions.values() {
+            for sample in &buffer.0 {
+                let value = sample.value;
+
+                // Check if value is outside the -100 to 100 range
+                if !(-100.0..=100.0).contains(&value) {
+                    return (1, 1);
+                }
+
+                // Check for non-zero values
+                if value != 0.0 {
+                    has_nonzero = true;
+                }
+            }
+        }
+
+        // Return 1/1000 scaling if all values are in range and at least one is non-zero
+        if has_nonzero {
+            (1, 1000)
+        } else {
+            (1, 1)
+        }
+    }
 }

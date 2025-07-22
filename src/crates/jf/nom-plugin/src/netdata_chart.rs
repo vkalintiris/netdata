@@ -27,6 +27,9 @@ pub struct NetdataChart {
     last_collection_interval: Option<CollectionInterval>,
     chart_state: ChartState,
     samples_threshold: usize,
+
+    multiplier: i32,
+    divisor: i32,
 }
 
 impl NetdataChart {
@@ -46,6 +49,9 @@ impl NetdataChart {
             chart_state: ChartState::Uninitialized,
 
             samples_threshold,
+
+            multiplier: 1,
+            divisor: 1,
         }
     }
 
@@ -93,6 +99,8 @@ impl NetdataChart {
         self.last_collection_interval = self
             .last_samples_table_interval
             .and_then(|ci| ci.aligned_interval());
+
+        (self.multiplier, self.divisor) = self.samples_table.scaling_factors();
 
         // Check if we need to emit a chart definition
         if let Some(new_lci) = &self.last_collection_interval {
@@ -190,8 +198,8 @@ impl NetdataChart {
                     _ => "absolute",
                 };
                 println!(
-                    "DIMENSION {} {} {} 1 1",
-                    dimension_name, dimension_name, algorithm,
+                    "DIMENSION {} {} {} 1 {}",
+                    dimension_name, dimension_name, algorithm, self.divisor
                 );
             }
         } else {
@@ -201,8 +209,8 @@ impl NetdataChart {
                     _ => "absolute",
                 };
                 println!(
-                    "DIMENSION {} {} {} 1 1",
-                    dimension_name, dimension_name, algorithm,
+                    "DIMENSION {} {} {} 1 {}",
+                    dimension_name, dimension_name, algorithm, self.divisor
                 );
             }
         }
@@ -269,7 +277,7 @@ impl NetdataChart {
     }
 
     fn emit_set(&self, dimension_name: &str, value: f64) {
-        println!("SET {} {}", dimension_name, value);
+        println!("SET {} {}", dimension_name, value * self.divisor as f64);
     }
 
     fn emit_end(&self) {
