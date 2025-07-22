@@ -1,0 +1,13 @@
+syntax = "proto3";
+package netdata;
+
+service NetdataPlugin {
+  // Basic ping/pong for health checks
+  rpc Ping(PingRequest) returns (PongResponse);
+}
+
+// Basic ping/pong messages
+message PingRequest {}
+message PongResponse {
+  string message = 1;
+}

@@ -13,6 +13,8 @@ members = [
     "sigbus",
     "nom-plugin",
     "flatten_otel",
+    "netdata-bridge",
+    "my-plugin"
 ]
 
 [workspace.package]
@@ -35,10 +37,15 @@ ruzstd = "0.8"
 libc = "0.2"
 
 # nom
-prost = "0.14"
+prost = "0.13"
 regex = "1.10"
 tokio = { version = "1.45", features = ["rt-multi-thread"] }
+tokio-stream = "0.1"
 tonic = "0.13"
+tonic-build = "0.13"
+prost-build = "0.13"
+hyper-util = "0.1"
+tower = "0.5"
 opentelemetry-proto = "0.30"
 atty = "0.2"
 
