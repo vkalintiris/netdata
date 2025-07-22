@@ -32,38 +32,6 @@ pub struct ChartConfig {
 }
 
 impl ChartConfig {
-    pub fn new(
-        scope_name: Option<&str>,
-        scope_version: Option<&str>,
-        metric_name: &str,
-        chart_instance_pattern: Option<&str>,
-        dimension_name: Option<&str>,
-    ) -> Result<Self, regex::Error> {
-        let instrumentation_scope_name = match scope_name {
-            Some(pattern) => Some(Regex::new(pattern)?),
-            None => None,
-        };
-
-        let instrumentation_scope_version = match scope_version {
-            Some(pattern) => Some(Regex::new(pattern)?),
-            None => None,
-        };
-
-        let metric_name = Regex::new(metric_name)?;
-
-        Ok(ChartConfig {
-            select: SelectCriteria {
-                instrumentation_scope_name,
-                instrumentation_scope_version,
-                metric_name,
-            },
-            extract: ExtractPattern {
-                chart_instance_pattern: chart_instance_pattern.map(String::from),
-                dimension_name: dimension_name.map(String::from),
-            },
-        })
-    }
-
     pub fn matches(&self, json_map: &JsonMap<String, JsonValue>) -> bool {
         if let Some(scope_regex) = &self.select.instrumentation_scope_name {
             if let Some(JsonValue::String(scope_name)) = json_map.get("scope.name") {
@@ -91,12 +59,6 @@ impl ChartConfig {
             false
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Priority {
-    Stock,
-    User,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
