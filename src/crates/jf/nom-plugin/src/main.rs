@@ -35,11 +35,11 @@ struct NetdataMetricsService {
 }
 
 impl NetdataMetricsService {
-    fn new(config: Arc<PluginConfig>) -> Self {
+    fn new(config: PluginConfig) -> Self {
         Self {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
-            config,
+            config: Arc::new(config),
             call_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -96,8 +96,9 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts < self.config.buffer_samples {
-                    let mut netdata_chart = NetdataChart::from_flattened_point(fp);
+                } else if newly_created_charts < self.config.throttle_charts {
+                    let mut netdata_chart =
+                        NetdataChart::from_flattened_point(fp, self.config.buffer_samples);
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
 
@@ -135,15 +136,10 @@ impl MetricsService for NetdataMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Arc::new(PluginConfig::new()?);
+    let config = PluginConfig::new()?;
 
     let addr = config.endpoint.parse()?;
-    let metrics_service = NetdataMetricsService::new(config.clone());
-
-    config
-        .chart_config_manager
-        .to_yaml_file("/tmp/config.yml")
-        .unwrap();
+    let metrics_service = NetdataMetricsService::new(config);
 
     println!("TRUST_DURATIONS 1");
 

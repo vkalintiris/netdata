@@ -30,7 +30,7 @@ pub struct NetdataChart {
 }
 
 impl NetdataChart {
-    pub fn from_flattened_point(fp: &FlattenedPoint) -> Self {
+    pub fn from_flattened_point(fp: &FlattenedPoint, samples_threshold: usize) -> Self {
         Self {
             chart_id: fp.nd_instance_name.clone(),
             metric_name: fp.metric_name.clone(),
@@ -45,7 +45,7 @@ impl NetdataChart {
             last_collection_interval: None,
             chart_state: ChartState::Uninitialized,
 
-            samples_threshold: 10, // Wait for at least X samples to detect frequency
+            samples_threshold,
         }
     }
 
