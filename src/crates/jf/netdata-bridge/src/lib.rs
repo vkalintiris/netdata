@@ -148,27 +148,24 @@ where
         while let Some(command) = command_rx.recv().await {
             match command {
                 Command::Ping => {
-                    // Handle ping synchronously (it's fast)
                     let mut client = client.clone();
                     let response_tx = response_tx.clone();
 
-                    tokio::spawn(async move {
-                        let request = Request::new(PingRequest {});
-                        match client.ping(request).await {
-                            Ok(response) => {
-                                let pong = response.into_inner();
-                                let _ = response_tx.send(Response::Pong {
-                                    message: pong.message,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = response_tx.send(Response::Error {
-                                    transaction_id: None,
-                                    message: format!("Ping failed: {}", e),
-                                });
-                            }
+                    let request = Request::new(PingRequest {});
+                    match client.ping(request).await {
+                        Ok(response) => {
+                            let pong = response.into_inner();
+                            let _ = response_tx.send(Response::Pong {
+                                message: pong.message,
+                            });
                         }
-                    });
+                        Err(e) => {
+                            let _ = response_tx.send(Response::Error {
+                                transaction_id: None,
+                                message: format!("Ping failed: {}", e),
+                            });
+                        }
+                    }
                 }
 
                 Command::Work {
