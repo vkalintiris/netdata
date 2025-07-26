@@ -19,3 +19,4 @@ serde_yaml = "0.9.34"
 serde_regex = "1.1.0"
 serde = { version = "1.0.219", features = ["derive"] }
 atty = { workspace = true }
+clap = { workspace = true }
