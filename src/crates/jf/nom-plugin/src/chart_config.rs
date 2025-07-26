@@ -85,11 +85,11 @@ impl ChartConfigManager {
     //     Ok(manager)
     // }
 
-    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let yaml_string = serde_yaml::to_string(&self.stock)?;
-        fs::write(path, yaml_string)?;
-        Ok(())
-    }
+    // pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+    //     let yaml_string = serde_yaml::to_string(&self.stock)?;
+    //     fs::write(path, yaml_string)?;
+    //     Ok(())
+    // }
 
     pub fn find_matching_config(
         &self,
