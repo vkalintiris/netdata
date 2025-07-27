@@ -61,12 +61,12 @@ impl ChartConfig {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChartConfigs {
     configs: Vec<ChartConfig>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ChartConfigManager {
     stock: ChartConfigs,
     user: ChartConfigs,

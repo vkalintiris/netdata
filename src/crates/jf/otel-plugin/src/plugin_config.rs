@@ -8,10 +8,6 @@ use crate::chart_config::ChartConfigManager;
 #[command(about = "OpenTelemetry metrics and logs plugin.")]
 #[command(version = "0.1")]
 pub struct CliConfig {
-    /// Netdata user config directory
-    #[arg(long, env = "NETDATA_USER_CONFIG_DIR")]
-    pub netdata_user_config_dir: Option<PathBuf>,
-
     /// Print flattened metrics to stdout for debugging
     #[arg(long)]
     pub otel_metrics_print_flattened: bool,
@@ -40,7 +36,6 @@ pub struct CliConfig {
 impl Default for CliConfig {
     fn default() -> Self {
         Self {
-            netdata_user_config_dir: None,
             otel_metrics_print_flattened: false,
             otel_metrics_buffer_samples: 10,
             otel_metrics_throttle_charts: 100,
@@ -70,7 +65,7 @@ impl CliConfig {
         }
 
         // Load chart configurations
-        let config_dir = config.netdata_user_config_dir.clone().or_else(|| {
+        let config_dir = None.clone().or_else(|| {
             std::env::var("NETDATA_USER_CONFIG_DIR")
                 .ok()
                 .map(PathBuf::from)
@@ -87,5 +82,60 @@ impl CliConfig {
         config.chart_config_manager = chart_config_manager;
 
         Ok(config)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MetricsConfig {
+    /// Print flattened metrics to stdout for debugging
+    pub otel_metrics_print_flattened: bool,
+
+    /// Number of samples to buffer for collection interval detection
+    pub otel_metrics_buffer_samples: usize,
+
+    /// Maximum number of new charts to create per collection interval
+    pub otel_metrics_throttle_charts: usize,
+
+    /// Chart configuration manager (not part of CLI)
+    pub chart_config_manager: ChartConfigManager,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            otel_metrics_print_flattened: false,
+            otel_metrics_buffer_samples: 10,
+            otel_metrics_throttle_charts: 100,
+            chart_config_manager: ChartConfigManager::with_default_configs(),
+        }
+    }
+}
+
+impl MetricsConfig {
+    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
+        Self {
+            otel_metrics_print_flattened: cli_config.otel_metrics_print_flattened,
+            otel_metrics_buffer_samples: cli_config.otel_metrics_buffer_samples,
+            otel_metrics_throttle_charts: cli_config.otel_metrics_throttle_charts,
+            chart_config_manager: ChartConfigManager::with_default_configs(),
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct LogsConfig(());
+
+#[derive(Debug, Default)]
+pub struct PluginConfig {
+    pub metrics_config: MetricsConfig,
+    pub logs_config: LogsConfig,
+}
+
+impl PluginConfig {
+    pub fn new(metrics_config: &MetricsConfig) -> Self {
+        Self {
+            metrics_config: metrics_config.clone(),
+            logs_config: LogsConfig(()),
+        }
     }
 }

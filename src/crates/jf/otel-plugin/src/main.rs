@@ -24,18 +24,18 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::CliConfig;
+use crate::plugin_config::{CliConfig, MetricsConfig, PluginConfig};
 
 #[derive(Default)]
 struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
-    config: Arc<CliConfig>,
+    config: Arc<PluginConfig>,
     call_count: std::sync::atomic::AtomicU64,
 }
 
 impl NetdataMetricsService {
-    fn new(config: CliConfig) -> Self {
+    fn new(config: PluginConfig) -> Self {
         Self {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
@@ -71,12 +71,16 @@ impl MetricsService for NetdataMetricsService {
         let flattened_points = flatten_metrics_request(&req)
             .into_iter()
             .filter_map(|jm| {
-                let cfg = self.config.chart_config_manager.find_matching_config(&jm);
+                let cfg = self
+                    .config
+                    .metrics_config
+                    .chart_config_manager
+                    .find_matching_config(&jm);
                 FlattenedPoint::new(jm, cfg, &self.regex_cache)
             })
             .collect::<Vec<_>>();
 
-        if self.config.otel_metrics_print_flattened {
+        if self.config.metrics_config.otel_metrics_print_flattened {
             // Just print the flattened points
             for fp in &flattened_points {
                 println!("{:#?}", fp);
@@ -96,10 +100,12 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts < self.config.otel_metrics_throttle_charts {
+                } else if newly_created_charts
+                    < self.config.metrics_config.otel_metrics_throttle_charts
+                {
                     let mut netdata_chart = NetdataChart::from_flattened_point(
                         fp,
-                        self.config.otel_metrics_buffer_samples,
+                        self.config.metrics_config.otel_metrics_buffer_samples,
                     );
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
@@ -138,10 +144,12 @@ impl MetricsService for NetdataMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = CliConfig::new()?;
+    let cli_config = CliConfig::new()?;
+    let metrics_config = MetricsConfig::from_cli_config(&cli_config);
+    let plugin_config = PluginConfig::new(&metrics_config);
 
-    let addr = config.otel_endpoint.parse()?;
-    let metrics_service = NetdataMetricsService::new(config);
+    let addr = cli_config.otel_endpoint.parse()?;
+    let metrics_service = NetdataMetricsService::new(plugin_config);
 
     println!("TRUST_DURATIONS 1");
 
