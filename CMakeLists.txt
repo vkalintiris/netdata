@@ -175,8 +175,7 @@ mark_as_advanced(ENABLE_DASHBOARD)
 
 # Data collection plugins
 option(ENABLE_PLUGIN_GO "Enable metric collectors written in Go" ${DEFAULT_FEATURE_STATE})
-option(ENABLE_PLUGIN_NOM "Enable OpenTelemetry metrics collection via nom.plugin" ${DEFAULT_FEATURE_STATE})
-option(ENABLE_PLUGIN_OTEL "Enable metrics collection via OpenTelemetry collector" False)
+option(ENABLE_PLUGIN_OTEL "Enable collection of OpenTelemetry metrics and logs" ${DEFAULT_FEATURE_STATE})
 option(ENABLE_PLUGIN_PYTHON "Enable metric collectors written in Python" ${DEFAULT_FEATURE_STATE})
 
 cmake_dependent_option(ENABLE_PLUGIN_APPS "Enable per-process resource usage monitoring" ${DEFAULT_FEATURE_STATE} "OS_LINUX OR OS_FREEBSD OR OS_MACOS OR OS_WINDOWS" False)
@@ -232,7 +231,7 @@ cmake_dependent_option(ENABLE_NETDATA_JOURNAL_FILE_READER_BENCHMARKS "Enable net
 mark_as_advanced(ENABLE_NETDATA_JOURNAL_FILE_READER_BENCHMARKS)
 
 # Setup Rust/Corrosion for plugins that need it
-if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_NOM)
+if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL)
     include(FetchContent)
     FetchContent_Declare(
         Corrosion
@@ -329,7 +328,7 @@ if(ENABLE_JEMALLOC)
     endif()
 endif()
 
-if(ENABLE_PLUGIN_GO OR ENABLE_PLUGIN_OTEL)
+if(ENABLE_PLUGIN_GO)
     include(NetdataGoTools)
 
     find_min_go_version("${CMAKE_SOURCE_DIR}/src/go")
@@ -3172,24 +3171,12 @@ if(ENABLE_PLUGIN_GO)
 endif()
 
 #
-# Handle OTel Collector plugin
+# otel.plugin
 #
-
 if(ENABLE_PLUGIN_OTEL)
-  include(${CMAKE_SOURCE_DIR}/src/go/otel-collector/CMakeLists.txt)
-
-  install(PROGRAMS ${CMAKE_BINARY_DIR}/otel-collector/otelcol.plugin
-          COMPONENT plugin-otelcol
-          DESTINATION usr/libexec/netdata/plugins.d)
-endif()
-
-#
-# nom.plugin
-#
-if(ENABLE_PLUGIN_NOM)
-    corrosion_install(TARGETS nom-plugin
+    corrosion_install(TARGETS otel-plugin
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
-                      COMPONENT plugin-nom)
+                      COMPONENT plugin-otel)
 endif()
 
 #

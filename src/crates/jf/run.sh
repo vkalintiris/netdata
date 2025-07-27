@@ -2,7 +2,7 @@
 
 set -exu -o pipefail
 
-cargo build -p nom-plugin
+cargo build -p otel-plugin
 rm -f ~/opt/nom/netdata/usr/libexec/netdata/plugins.d/nom-plugin
 cp $PWD/target/debug/nom-plugin ~/opt/nom/netdata/usr/libexec/netdata/plugins.d/nom-plugin
 find ~/opt/nom/netdata/var/log -type f -delete
