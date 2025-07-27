@@ -1,5 +1,4 @@
 use clap::Parser;
-use std::path::PathBuf;
 
 use crate::chart_config::ChartConfigManager;
 
@@ -99,14 +98,14 @@ pub struct LogsConfig(());
 #[derive(Debug, Default)]
 pub struct PluginConfig {
     pub metrics_config: MetricsConfig,
-    pub logs_config: LogsConfig,
+    pub _logs_config: LogsConfig,
 }
 
 impl PluginConfig {
     pub fn new(metrics_config: &MetricsConfig) -> Self {
         Self {
             metrics_config: metrics_config.clone(),
-            logs_config: LogsConfig(()),
+            _logs_config: LogsConfig(()),
         }
     }
 }
