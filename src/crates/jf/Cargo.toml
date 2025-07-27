@@ -11,7 +11,7 @@ members = [
     # "journal_forwarder",
     "window_manager",
     "sigbus",
-    "nom-plugin",
+    "otel-plugin",
     "flatten_otel",
     "netdata-bridge",
     "my-plugin"
@@ -36,7 +36,7 @@ ruzstd = "0.8"
 # systemd = { path = "/home/vk/repos/crates/rust-systemd"}
 libc = "0.2"
 
-# nom
+# otel-plugin
 prost = "0.13"
 regex = "1.10"
 tokio = { version = "1.45", features = ["rt-multi-thread"] }
