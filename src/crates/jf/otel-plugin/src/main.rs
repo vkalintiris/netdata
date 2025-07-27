@@ -24,18 +24,18 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::PluginConfig;
+use crate::plugin_config::CliConfig;
 
 #[derive(Default)]
 struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
-    config: Arc<PluginConfig>,
+    config: Arc<CliConfig>,
     call_count: std::sync::atomic::AtomicU64,
 }
 
 impl NetdataMetricsService {
-    fn new(config: PluginConfig) -> Self {
+    fn new(config: CliConfig) -> Self {
         Self {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
@@ -136,7 +136,7 @@ impl MetricsService for NetdataMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = PluginConfig::new()?;
+    let config = CliConfig::new()?;
 
     let addr = config.endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(config);
