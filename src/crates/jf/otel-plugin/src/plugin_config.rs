@@ -8,6 +8,10 @@ use crate::chart_config::ChartConfigManager;
 #[command(about = "OpenTelemetry metrics and logs plugin.")]
 #[command(version = "0.1")]
 pub struct CliConfig {
+    /// gRPC endpoint to listen on
+    #[arg(long, default_value = "0.0.0.0:21213")]
+    pub otel_endpoint: String,
+
     /// Print flattened metrics to stdout for debugging
     #[arg(long)]
     pub otel_metrics_print_flattened: bool,
@@ -20,17 +24,9 @@ pub struct CliConfig {
     #[arg(long, default_value = "100")]
     pub otel_metrics_throttle_charts: usize,
 
-    /// gRPC endpoint to listen on
-    #[arg(long, default_value = "0.0.0.0:21213")]
-    pub otel_endpoint: String,
-
     /// Collection interval (ignored)
     #[arg(help = "Collection interval in seconds (ignored)")]
     pub _update_frequency: Option<u32>,
-
-    /// Chart configuration manager (not part of CLI)
-    #[clap(skip)]
-    pub chart_config_manager: ChartConfigManager,
 }
 
 impl Default for CliConfig {
@@ -41,14 +37,13 @@ impl Default for CliConfig {
             otel_metrics_throttle_charts: 100,
             otel_endpoint: String::from("0.0.0.0:21213"),
             _update_frequency: None,
-            chart_config_manager: ChartConfigManager::with_default_configs(),
         }
     }
 }
 
 impl CliConfig {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut config = Self::parse();
+        let config = Self::parse();
 
         // Validate configuration
         if config.otel_metrics_buffer_samples == 0 {
@@ -64,48 +59,24 @@ impl CliConfig {
             return Err("endpoint must be in format host:port".into());
         }
 
-        // Load chart configurations
-        let config_dir = None.clone().or_else(|| {
-            std::env::var("NETDATA_USER_CONFIG_DIR")
-                .ok()
-                .map(PathBuf::from)
-        });
-
-        if config_dir.is_none() && !atty::is(atty::Stream::Stdout) {
-            return Err("NETDATA_USER_CONFIG_DIR environment variable is not set and no --netdata-user-config-dir provided".into());
-        }
-
-        let mut chart_config_manager = ChartConfigManager::with_default_configs();
-        if let Some(dir) = &config_dir {
-            chart_config_manager.load_user_configs(dir)?;
-        }
-        config.chart_config_manager = chart_config_manager;
-
         Ok(config)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
-    /// Print flattened metrics to stdout for debugging
-    pub otel_metrics_print_flattened: bool,
-
-    /// Number of samples to buffer for collection interval detection
-    pub otel_metrics_buffer_samples: usize,
-
-    /// Maximum number of new charts to create per collection interval
-    pub otel_metrics_throttle_charts: usize,
-
-    /// Chart configuration manager (not part of CLI)
+    pub print_flattened: bool,
+    pub buffer_samples: usize,
+    pub throttle_charts: usize,
     pub chart_config_manager: ChartConfigManager,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            otel_metrics_print_flattened: false,
-            otel_metrics_buffer_samples: 10,
-            otel_metrics_throttle_charts: 100,
+            print_flattened: false,
+            buffer_samples: 10,
+            throttle_charts: 100,
             chart_config_manager: ChartConfigManager::with_default_configs(),
         }
     }
@@ -114,9 +85,9 @@ impl Default for MetricsConfig {
 impl MetricsConfig {
     pub fn from_cli_config(cli_config: &CliConfig) -> Self {
         Self {
-            otel_metrics_print_flattened: cli_config.otel_metrics_print_flattened,
-            otel_metrics_buffer_samples: cli_config.otel_metrics_buffer_samples,
-            otel_metrics_throttle_charts: cli_config.otel_metrics_throttle_charts,
+            print_flattened: cli_config.otel_metrics_print_flattened,
+            buffer_samples: cli_config.otel_metrics_buffer_samples,
+            throttle_charts: cli_config.otel_metrics_throttle_charts,
             chart_config_manager: ChartConfigManager::with_default_configs(),
         }
     }

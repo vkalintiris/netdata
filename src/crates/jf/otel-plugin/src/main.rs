@@ -80,7 +80,7 @@ impl MetricsService for NetdataMetricsService {
             })
             .collect::<Vec<_>>();
 
-        if self.config.metrics_config.otel_metrics_print_flattened {
+        if self.config.metrics_config.print_flattened {
             // Just print the flattened points
             for fp in &flattened_points {
                 println!("{:#?}", fp);
@@ -100,12 +100,10 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts
-                    < self.config.metrics_config.otel_metrics_throttle_charts
-                {
+                } else if newly_created_charts < self.config.metrics_config.throttle_charts {
                     let mut netdata_chart = NetdataChart::from_flattened_point(
                         fp,
-                        self.config.metrics_config.otel_metrics_buffer_samples,
+                        self.config.metrics_config.buffer_samples,
                     );
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
