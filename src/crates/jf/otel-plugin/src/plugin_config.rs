@@ -14,19 +14,19 @@ pub struct CliConfig {
 
     /// Print flattened metrics to stdout for debugging
     #[arg(long)]
-    pub print_flattened_metrics: bool,
+    pub otel_metrics_print_flattened: bool,
 
     /// Number of samples to buffer for collection interval detection
     #[arg(long, default_value = "10")]
-    pub buffer_samples: usize,
+    pub otel_metrics_buffer_samples: usize,
 
     /// Maximum number of new charts to create per collection interval
     #[arg(long, default_value = "100")]
-    pub throttle_charts: usize,
+    pub otel_metrics_throttle_charts: usize,
 
     /// gRPC endpoint to listen on
     #[arg(long, default_value = "0.0.0.0:21213")]
-    pub endpoint: String,
+    pub otel_endpoint: String,
 
     /// Collection interval (ignored)
     #[arg(help = "Collection interval in seconds (ignored)")]
@@ -41,10 +41,10 @@ impl Default for CliConfig {
     fn default() -> Self {
         Self {
             netdata_user_config_dir: None,
-            print_flattened_metrics: false,
-            buffer_samples: 10,
-            throttle_charts: 100,
-            endpoint: String::from("0.0.0.0:21213"),
+            otel_metrics_print_flattened: false,
+            otel_metrics_buffer_samples: 10,
+            otel_metrics_throttle_charts: 100,
+            otel_endpoint: String::from("0.0.0.0:21213"),
             _update_frequency: None,
             chart_config_manager: ChartConfigManager::with_default_configs(),
         }
@@ -56,16 +56,16 @@ impl CliConfig {
         let mut config = Self::parse();
 
         // Validate configuration
-        if config.buffer_samples == 0 {
+        if config.otel_metrics_buffer_samples == 0 {
             return Err("buffer_samples must be greater than 0".into());
         }
 
-        if config.throttle_charts == 0 {
+        if config.otel_metrics_throttle_charts == 0 {
             return Err("throttle_charts must be greater than 0".into());
         }
 
         // Validate endpoint format (basic check)
-        if !config.endpoint.contains(':') {
+        if !config.otel_endpoint.contains(':') {
             return Err("endpoint must be in format host:port".into());
         }
 

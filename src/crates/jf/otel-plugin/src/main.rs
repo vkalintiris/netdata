@@ -76,7 +76,7 @@ impl MetricsService for NetdataMetricsService {
             })
             .collect::<Vec<_>>();
 
-        if self.config.print_flattened_metrics {
+        if self.config.otel_metrics_print_flattened {
             // Just print the flattened points
             for fp in &flattened_points {
                 println!("{:#?}", fp);
@@ -96,9 +96,11 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts < self.config.throttle_charts {
-                    let mut netdata_chart =
-                        NetdataChart::from_flattened_point(fp, self.config.buffer_samples);
+                } else if newly_created_charts < self.config.otel_metrics_throttle_charts {
+                    let mut netdata_chart = NetdataChart::from_flattened_point(
+                        fp,
+                        self.config.otel_metrics_buffer_samples,
+                    );
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
 
@@ -138,7 +140,7 @@ impl MetricsService for NetdataMetricsService {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = CliConfig::new()?;
 
-    let addr = config.endpoint.parse()?;
+    let addr = config.otel_endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(config);
 
     println!("TRUST_DURATIONS 1");
