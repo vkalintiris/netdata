@@ -1,0 +1,17 @@
+[package]
+name = "nol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true, features = ["gzip"] }
+opentelemetry-proto = { workspace = true }
+
+flatten_otel = { path = "../flatten_otel" }
+journal_file = { path = "../journal_file" }
+journal_log = { path = "../journal_log" }
+memmap2 = { workspace = true }
+serde_json = { workspace = true }
+uuid = { version = "1.0", features = ["v4", "rng"] }

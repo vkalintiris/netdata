@@ -5,13 +5,16 @@ members = [
     # "main",
     "journal_file",
     # "journal_writer",
-    "journal_reader",
+    # "journal_reader", # integrated into journal_file
     "journal_reader_ffi",
     # "journal_logger",
     # "journal_forwarder",
+    "journal_log",
+    "journal_benchmark",
     "window_manager",
     "sigbus",
     "otel-plugin",
+    "nol",
     "flatten_otel",
     "netdata-bridge",
     "my-plugin"
@@ -35,6 +38,10 @@ walkdir = "2"
 ruzstd = "0.8"
 # systemd = { path = "/home/vk/repos/crates/rust-systemd"}
 libc = "0.2"
+hex = "0.4"
+tempfile = "3"
+indexmap = "2.9"
+uuid = { version = "1.0", features = ["v4", "rng"] }
 
 # otel-plugin
 prost = "0.13"
