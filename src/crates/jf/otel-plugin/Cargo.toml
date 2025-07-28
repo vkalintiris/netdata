@@ -7,7 +7,7 @@ edition.workspace = true
 tokio = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true, features = ["gzip"] }
-opentelemetry-proto = { workspace = true, features = ["metrics"] }
+opentelemetry-proto = { workspace = true, features = ["metrics", "logs"] }
 
 flatten_otel = { path = "../flatten_otel" }
 serde_json = { workspace = true, feature =["preserve_order"] }

@@ -1,5 +1,9 @@
-use flatten_otel::flatten_metrics_request;
+use flatten_otel::{flatten_metrics_request, json_from_export_logs_service_request};
 
+use opentelemetry_proto::tonic::collector::logs::v1::{
+    logs_service_server::{LogsService, LogsServiceServer},
+    ExportLogsServiceRequest, ExportLogsServiceResponse,
+};
 use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::{MetricsService, MetricsServiceServer},
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -140,6 +144,31 @@ impl MetricsService for NetdataMetricsService {
     }
 }
 
+#[derive(Default)]
+struct NetdataLogsService;
+
+#[tonic::async_trait]
+impl LogsService for NetdataLogsService {
+    async fn export(
+        &self,
+        request: Request<ExportLogsServiceRequest>,
+    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        let req = request.into_inner();
+
+        let flattened_logs = json_from_export_logs_service_request(&req);
+
+        // Print the flattened logs to stdout
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&flattened_logs).unwrap_or_else(|_| "{}".to_string())
+        );
+
+        Ok(Response::new(ExportLogsServiceResponse {
+            partial_success: None,
+        }))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;
@@ -148,12 +177,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = cli_config.otel_endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(plugin_config);
+    let logs_service = NetdataLogsService::default();
 
     println!("TRUST_DURATIONS 1");
 
     Server::builder()
         .add_service(
             MetricsServiceServer::new(metrics_service)
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip),
+        )
+        .add_service(
+            LogsServiceServer::new(logs_service)
                 .accept_compressed(tonic::codec::CompressionEncoding::Gzip),
         )
         .serve(addr)
