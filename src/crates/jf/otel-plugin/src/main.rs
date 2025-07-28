@@ -1,9 +1,6 @@
-use flatten_otel::{flatten_metrics_request, json_from_export_logs_service_request};
+use flatten_otel::flatten_metrics_request;
 
-use opentelemetry_proto::tonic::collector::logs::v1::{
-    logs_service_server::{LogsService, LogsServiceServer},
-    ExportLogsServiceRequest, ExportLogsServiceResponse,
-};
+use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
 use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::{MetricsService, MetricsServiceServer},
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -28,7 +25,10 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::{CliConfig, MetricsConfig, PluginConfig};
+use crate::plugin_config::{CliConfig, LogsConfig, MetricsConfig, PluginConfig};
+
+mod journal_logs_service;
+use crate::journal_logs_service::NetdataJournalLogsService;
 
 #[derive(Default)]
 struct NetdataMetricsService {
@@ -144,40 +144,18 @@ impl MetricsService for NetdataMetricsService {
     }
 }
 
-#[derive(Default)]
-struct NetdataLogsService;
-
-#[tonic::async_trait]
-impl LogsService for NetdataLogsService {
-    async fn export(
-        &self,
-        request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        let req = request.into_inner();
-
-        let flattened_logs = json_from_export_logs_service_request(&req);
-
-        // Print the flattened logs to stdout
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&flattened_logs).unwrap_or_else(|_| "{}".to_string())
-        );
-
-        Ok(Response::new(ExportLogsServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
+// Old simple logs service removed - now using NetdataJournalLogsService
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;
     let metrics_config = MetricsConfig::from_cli_config(&cli_config);
-    let plugin_config = PluginConfig::new(&metrics_config);
+    let logs_config = LogsConfig::from_cli_config(&cli_config);
+    let plugin_config = PluginConfig::new(&metrics_config, &logs_config);
 
     let addr = cli_config.otel_endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(plugin_config);
-    let logs_service = NetdataLogsService::default();
+    let logs_service = NetdataJournalLogsService::new(&logs_config)?;
 
     println!("TRUST_DURATIONS 1");
 

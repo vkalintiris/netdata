@@ -10,7 +10,10 @@ tonic = { workspace = true, features = ["gzip"] }
 opentelemetry-proto = { workspace = true, features = ["metrics", "logs"] }
 
 flatten_otel = { path = "../flatten_otel" }
-serde_json = { workspace = true, feature =["preserve_order"] }
+journal_file = { path = "../journal_file" }
+journal_log = { path = "../journal_log" }
+memmap2 = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 uuid = { version = "1.0", features = ["v4", "rng"] }
 flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", branch = "main", package = "flatten-serde-json" }
 base64 = "0.21"
