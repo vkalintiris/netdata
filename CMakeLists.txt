@@ -150,10 +150,10 @@ endif()
 
 include(NetdataCompilerFlags)
 
-check_c_compiler_flag("-fexceptions" HAVE_FEXCEPTIONS)
-if (NOT HAVE_FEXCEPTIONS)
-    message(FATAL_ERROR "Missing required compiler flag: -fexceptions.")
-endif()
+# check_c_compiler_flag("-fexceptions" HAVE_FEXCEPTIONS)
+# if (NOT HAVE_FEXCEPTIONS)
+#     message(FATAL_ERROR "Missing required compiler flag: -fexceptions.")
+# endif()
 
 # This is intended to make life easier for developers who are working on one
 # specific feature.
