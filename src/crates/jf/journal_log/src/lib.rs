@@ -1,7 +1,10 @@
 use error::{JournalError, Result};
+use journal_file::{load_boot_id, JournalFile, JournalFileOptions, JournalWriter};
+use memmap2::MmapMut;
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,5 +297,161 @@ impl JournalDirectory {
         }
 
         Ok(new_file)
+    }
+}
+
+fn generate_uuid() -> [u8; 16] {
+    uuid::Uuid::new_v4().into_bytes()
+}
+
+/// Configuration for JournalLog
+#[derive(Debug, Clone)]
+pub struct JournalLogConfig {
+    /// Directory where journal files are stored
+    pub journal_dir: PathBuf,
+    /// Maximum file size in bytes before sealing
+    pub max_file_size: u64,
+    /// Maximum number of files to keep
+    pub max_files: usize,
+    /// Maximum total size of all files in bytes
+    pub max_total_size: u64,
+    /// Maximum age of entries in seconds
+    pub max_entry_age_secs: u64,
+}
+
+impl JournalLogConfig {
+    pub fn new(journal_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            journal_dir: journal_dir.into(),
+            max_file_size: 100 * 1024 * 1024, // 100MB
+            max_files: 10,
+            max_total_size: 1024 * 1024 * 1024, // 1GB
+            max_entry_age_secs: 7 * 24 * 3600,  // 7 days
+        }
+    }
+
+    pub fn with_max_file_size(mut self, max_file_size: u64) -> Self {
+        self.max_file_size = max_file_size;
+        self
+    }
+
+    pub fn with_max_files(mut self, max_files: usize) -> Self {
+        self.max_files = max_files;
+        self
+    }
+
+    pub fn with_max_total_size(mut self, max_total_size: u64) -> Self {
+        self.max_total_size = max_total_size;
+        self
+    }
+
+    pub fn with_max_entry_age_secs(mut self, max_entry_age_secs: u64) -> Self {
+        self.max_entry_age_secs = max_entry_age_secs;
+        self
+    }
+}
+
+pub struct JournalLog {
+    directory: Arc<Mutex<JournalDirectory>>,
+    current_file: Arc<Mutex<Option<JournalFile<MmapMut>>>>,
+    current_writer: Arc<Mutex<Option<JournalWriter>>>,
+    machine_id: [u8; 16],
+    boot_id: [u8; 16],
+    seqnum_id: [u8; 16],
+}
+
+impl JournalLog {
+    pub fn new(config: JournalLogConfig) -> Result<Self> {
+        let sealing_policy = SealingPolicy::new()
+            .with_max_file_size(config.max_file_size)
+            .with_max_entry_span(Duration::from_secs(3600));
+
+        let retention_policy = RetentionPolicy::new()
+            .with_max_files(config.max_files)
+            .with_max_total_size(config.max_total_size)
+            .with_max_entry_age(Duration::from_secs(config.max_entry_age_secs));
+
+        let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
+            .with_sealing_policy(sealing_policy)
+            .with_retention_policy(retention_policy);
+
+        let directory = JournalDirectory::with_config(journal_config)?;
+
+        let machine_id = journal_file::file::load_machine_id()?;
+        let boot_id = load_boot_id().unwrap_or_else(|_| generate_uuid());
+        let seqnum_id = generate_uuid();
+
+        Ok(JournalLog {
+            directory: Arc::new(Mutex::new(directory)),
+            current_file: Arc::new(Mutex::new(None)),
+            current_writer: Arc::new(Mutex::new(None)),
+            machine_id,
+            boot_id,
+            seqnum_id,
+        })
+    }
+
+    fn ensure_active_journal(&self) -> Result<()> {
+        let mut current_file = self.current_file.lock().unwrap();
+        let mut current_writer = self.current_writer.lock().unwrap();
+
+        if current_file.is_none() {
+            // Create a new journal file
+            let mut directory = self.directory.lock().unwrap();
+            let file_info = directory.new_file(None)?;
+
+            // Get the full path for the journal file
+            let file_path = directory.get_full_path(&file_info);
+
+            let options = JournalFileOptions::new(
+                self.machine_id,
+                self.boot_id,
+                self.seqnum_id,
+                generate_uuid(),
+            )
+            .with_window_size(8 * 1024 * 1024)
+            .with_data_hash_table_buckets(4096)
+            .with_field_hash_table_buckets(512)
+            .with_keyed_hash(true);
+
+            let mut journal_file = JournalFile::create(&file_path, options)?;
+            let writer = JournalWriter::new(&mut journal_file)?;
+
+            *current_file = Some(journal_file);
+            *current_writer = Some(writer);
+        }
+
+        Ok(())
+    }
+
+    pub fn write_entry(&self, items: &[&[u8]]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        self.ensure_active_journal()?;
+
+        let mut current_file = self.current_file.lock().unwrap();
+        let mut current_writer = self.current_writer.lock().unwrap();
+
+        let Some(journal_file) = current_file.as_mut() else {
+            return Ok(());
+        };
+        let Some(writer) = current_writer.as_mut() else {
+            return Ok(());
+        };
+
+        let now = SystemTime::now();
+        let realtime = now
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        // Use realtime for monotonic as well for simplicity
+        let monotonic = realtime;
+
+        writer.add_entry(journal_file, items, realtime, monotonic, self.boot_id)?;
+
+        Ok(())
     }
 }
