@@ -1,4 +1,5 @@
 use flatten_otel::json_from_export_logs_service_request;
+use journal_file::file::load_machine_id;
 use journal_file::{load_boot_id, JournalFile, JournalFileOptions, JournalWriter};
 use journal_log::{JournalDirectory, JournalDirectoryConfig, RetentionPolicy, SealingPolicy};
 use memmap2::MmapMut;
@@ -44,7 +45,7 @@ impl JournalManager {
         let directory = JournalDirectory::with_config(journal_config)?;
 
         let boot_id = load_boot_id().unwrap_or_else(|_| generate_uuid());
-        let machine_id = generate_uuid();
+        let machine_id = load_machine_id()?;
         let seqnum_id = generate_uuid();
 
         Ok(JournalManager {
