@@ -166,10 +166,8 @@ impl LogsService for NetdataLogsService {
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let req = request.into_inner();
 
-        // Convert OTLP logs to flattened JSON format
         let json_array = json_from_export_logs_service_request(&req);
 
-        // Write each log entry to the journal
         if let Value::Array(entries) = json_array {
             for entry in entries {
                 if let Err(e) = self.journal_manager.write_log_entry(&entry) {
