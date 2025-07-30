@@ -448,7 +448,7 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{load_boot_id, JournalFile, Direction, JournalReader, Location};
+    use crate::{load_boot_id, Direction, JournalFile, JournalReader, Location};
     use memmap2::Mmap;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;

@@ -30,12 +30,12 @@ impl JournalManager {
     pub fn new(config: &LogsConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Create journal directory configuration
         let sealing_policy = SealingPolicy::new()
-            .with_max_file_size(config.max_file_size_mb * 1024 * 1024) // Convert MB to bytes
-            .with_max_entry_span(Duration::from_secs(3600)); // 1 hour max span
+            .with_max_file_size(config.max_file_size_mb * 1024 * 1024)
+            .with_max_entry_span(Duration::from_secs(3600));
 
         let retention_policy = RetentionPolicy::new()
             .with_max_files(config.max_files)
-            .with_max_total_size(config.max_total_size_mb * 1024 * 1024) // Convert MB to bytes
+            .with_max_total_size(config.max_total_size_mb * 1024 * 1024)
             .with_max_entry_age(Duration::from_secs(config.max_entry_age_days * 24 * 3600));
 
         let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
@@ -76,7 +76,7 @@ impl JournalManager {
                 self.seqnum_id,
                 generate_uuid(),
             )
-            .with_window_size(64 * 1024)
+            .with_window_size(8 * 1024 * 1024)
             .with_data_hash_table_buckets(4096)
             .with_field_hash_table_buckets(512)
             .with_keyed_hash(true);
@@ -123,18 +123,15 @@ impl JournalManager {
         }
 
         if !entry_data.is_empty() {
-            // Convert to slice references for the writer
             let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
 
-            // Get current timestamps
             let now = SystemTime::now();
             let realtime = now
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_micros() as u64;
 
-            // For monotonic time, we'll use the same as realtime for simplicity
-            // In a real implementation, you'd want to use a proper monotonic clock
+            // Use realtime for now
             let monotonic = realtime;
 
             writer.add_entry(journal_file, &entry_refs, realtime, monotonic, self.boot_id)?;
