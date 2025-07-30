@@ -5,7 +5,6 @@ members = [
     # "main",
     "journal_file",
     # "journal_writer",
-    # "journal_reader", # integrated into journal_file
     "journal_reader_ffi",
     # "journal_logger",
     # "journal_forwarder",
@@ -14,7 +13,6 @@ members = [
     "window_manager",
     "sigbus",
     "otel-plugin",
-    "nol",
     "flatten_otel",
     "netdata-bridge",
     "my-plugin"
