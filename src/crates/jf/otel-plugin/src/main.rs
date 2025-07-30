@@ -144,8 +144,6 @@ impl MetricsService for NetdataMetricsService {
     }
 }
 
-// Old simple logs service removed - now using NetdataJournalLogsService
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;

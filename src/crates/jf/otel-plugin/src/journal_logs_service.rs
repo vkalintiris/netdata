@@ -26,7 +26,7 @@ pub struct JournalManager {
 }
 
 impl JournalManager {
-    pub fn new(config: &LogsConfig) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    pub fn new(config: &LogsConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Create journal directory configuration
         let sealing_policy = SealingPolicy::new()
             .with_max_file_size(config.max_file_size_mb * 1024 * 1024) // Convert MB to bytes
@@ -49,14 +49,14 @@ impl JournalManager {
         let machine_id = generate_uuid();
         let seqnum_id = generate_uuid();
 
-        Ok(Arc::new(JournalManager {
+        Ok(JournalManager {
             directory: Arc::new(Mutex::new(directory)),
             current_file: Arc::new(Mutex::new(None)),
             current_writer: Arc::new(Mutex::new(None)),
             boot_id,
             machine_id,
             seqnum_id,
-        }))
+        })
     }
 
     fn ensure_active_journal(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -151,7 +151,7 @@ impl NetdataLogsService {
         // Ensure journal directory exists
         std::fs::create_dir_all(&config.journal_dir)?;
 
-        let journal_manager = JournalManager::new(config)?;
+        let journal_manager = Arc::new(JournalManager::new(config)?);
         Ok(NetdataLogsService { journal_manager })
     }
 }
