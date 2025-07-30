@@ -102,23 +102,16 @@ impl PartialOrd for JournalFileInfo {
     }
 }
 
-/// Sealing policy - determines when an active journal file should be sealed
-#[derive(Debug, Clone)]
-pub struct SealingPolicy {
-    /// Maximum file size before sealing (in bytes)
+/// Determines when an active journal file should be sealed
+#[derive(Debug, Clone, Default)]
+pub struct RotationPolicy {
+    /// Maximum file size before rotating (in bytes)
     pub max_file_size: Option<u64>,
     /// Maximum duration that entries in a single file can span
     pub max_entry_span: Option<Duration>,
 }
 
-impl SealingPolicy {
-    pub fn new() -> Self {
-        Self {
-            max_file_size: None,
-            max_entry_span: None,
-        }
-    }
-
+impl RotationPolicy {
     pub fn with_max_file_size(mut self, max_size: u64) -> Self {
         self.max_file_size = Some(max_size);
         self
@@ -130,14 +123,8 @@ impl SealingPolicy {
     }
 }
 
-impl Default for SealingPolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Retention policy - determines when files should be removed
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RetentionPolicy {
     /// Maximum number of journal files to keep
     pub max_files: Option<usize>,
@@ -148,14 +135,6 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
-    pub fn new() -> Self {
-        Self {
-            max_files: None,
-            max_total_size: None,
-            max_entry_age: None,
-        }
-    }
-
     pub fn with_max_files(mut self, max_files: usize) -> Self {
         self.max_files = Some(max_files);
         self
@@ -172,19 +151,13 @@ impl RetentionPolicy {
     }
 }
 
-impl Default for RetentionPolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Configuration for journal directory management
 #[derive(Debug, Clone)]
 pub struct JournalDirectoryConfig {
     /// Directory path where journal files are stored
     pub directory: PathBuf,
     /// Policy for when to seal active files
-    pub sealing_policy: SealingPolicy,
+    pub sealing_policy: RotationPolicy,
     /// Policy for when to remove old files
     pub retention_policy: RetentionPolicy,
 }
@@ -193,12 +166,12 @@ impl JournalDirectoryConfig {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
         Self {
             directory: directory.into(),
-            sealing_policy: SealingPolicy::default(),
+            sealing_policy: RotationPolicy::default(),
             retention_policy: RetentionPolicy::default(),
         }
     }
 
-    pub fn with_sealing_policy(mut self, policy: SealingPolicy) -> Self {
+    pub fn with_sealing_policy(mut self, policy: RotationPolicy) -> Self {
         self.sealing_policy = policy;
         self
     }
@@ -362,11 +335,11 @@ pub struct JournalLog {
 
 impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
-        let sealing_policy = SealingPolicy::new()
+        let sealing_policy = RotationPolicy::default()
             .with_max_file_size(config.max_file_size)
             .with_max_entry_span(Duration::from_secs(3600));
 
-        let retention_policy = RetentionPolicy::new()
+        let retention_policy = RetentionPolicy::default()
             .with_max_files(config.max_files)
             .with_max_total_size(config.max_total_size)
             .with_max_entry_age(Duration::from_secs(config.max_entry_age_secs));
