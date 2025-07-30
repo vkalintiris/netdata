@@ -103,8 +103,8 @@ where
 pub struct JournalFileOptions {
     machine_id: [u8; 16],
     boot_id: [u8; 16],
-    file_id: [u8; 16],
     seqnum_id: [u8; 16],
+    file_id: [u8; 16],
     window_size: u64,
     data_hash_table_buckets: usize,
     field_hash_table_buckets: usize,
@@ -115,14 +115,14 @@ impl JournalFileOptions {
     pub fn new(
         machine_id: [u8; 16],
         boot_id: [u8; 16],
-        file_id: [u8; 16],
         seqnum_id: [u8; 16],
+        file_id: [u8; 16],
     ) -> Self {
         Self {
             machine_id,
             boot_id,
-            file_id,
             seqnum_id,
+            file_id,
             window_size: 64 * 1024,
             data_hash_table_buckets: 4096,
             field_hash_table_buckets: 512,

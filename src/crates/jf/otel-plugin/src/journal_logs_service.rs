@@ -21,8 +21,8 @@ pub struct JournalManager {
     directory: Arc<Mutex<JournalDirectory>>,
     current_file: Arc<Mutex<Option<JournalFile<MmapMut>>>>,
     current_writer: Arc<Mutex<Option<JournalWriter>>>,
-    boot_id: [u8; 16],
     machine_id: [u8; 16],
+    boot_id: [u8; 16],
     seqnum_id: [u8; 16],
 }
 
@@ -44,16 +44,16 @@ impl JournalManager {
 
         let directory = JournalDirectory::with_config(journal_config)?;
 
-        let boot_id = load_boot_id().unwrap_or_else(|_| generate_uuid());
         let machine_id = load_machine_id()?;
+        let boot_id = load_boot_id().unwrap_or_else(|_| generate_uuid());
         let seqnum_id = generate_uuid();
 
         Ok(JournalManager {
             directory: Arc::new(Mutex::new(directory)),
             current_file: Arc::new(Mutex::new(None)),
             current_writer: Arc::new(Mutex::new(None)),
-            boot_id,
             machine_id,
+            boot_id,
             seqnum_id,
         })
     }
@@ -73,8 +73,8 @@ impl JournalManager {
             let options = JournalFileOptions::new(
                 self.machine_id,
                 self.boot_id,
-                generate_uuid(),
                 self.seqnum_id,
+                generate_uuid(),
             )
             .with_window_size(64 * 1024)
             .with_data_hash_table_buckets(4096)
