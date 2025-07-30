@@ -30,14 +30,12 @@ impl JournalManager {
         // Create journal directory configuration
         let sealing_policy = SealingPolicy::new()
             .with_max_file_size(config.max_file_size_mb * 1024 * 1024) // Convert MB to bytes
-            .with_max_entry_span(<Duration as DurationExt>::from_hours(1)); // 1 hour max span
+            .with_max_entry_span(Duration::from_secs(3600)); // 1 hour max span
 
         let retention_policy = RetentionPolicy::new()
             .with_max_files(config.max_files)
             .with_max_total_size(config.max_total_size_mb * 1024 * 1024) // Convert MB to bytes
-            .with_max_entry_age(<Duration as DurationExt>::from_days(
-                config.max_entry_age_days,
-            ));
+            .with_max_entry_age(Duration::from_secs(config.max_entry_age_days * 24 * 3600));
 
         let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
             .with_sealing_policy(sealing_policy)
@@ -98,44 +96,47 @@ impl JournalManager {
         let mut current_file = self.current_file.lock().unwrap();
         let mut current_writer = self.current_writer.lock().unwrap();
 
-        if let (Some(ref mut journal_file), Some(ref mut writer)) =
-            (current_file.as_mut(), current_writer.as_mut())
-        {
-            // Convert JSON log entry to key-value pairs
-            let mut entry_data = Vec::new();
+        let Some(journal_file) = current_file.as_mut() else {
+            return Ok(());
+        };
+        let Some(writer) = current_writer.as_mut() else {
+            return Ok(());
+        };
 
-            if let Value::Object(obj) = json_value {
-                for (key, value) in obj {
-                    let value_str = match value {
-                        Value::String(s) => s.clone(),
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        Value::Null => "null".to_string(),
-                        _ => serde_json::to_string(value).unwrap_or_default(),
-                    };
+        // Convert JSON log entry to key-value pairs
+        let mut entry_data = Vec::new();
 
-                    let kv_pair = format!("{}={}", key, value_str);
-                    entry_data.push(kv_pair.into_bytes());
-                }
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                let value_str = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    _ => serde_json::to_string(value).unwrap_or_default(),
+                };
+
+                let kv_pair = format!("{}={}", key, value_str);
+                entry_data.push(kv_pair.into_bytes());
             }
+        }
 
-            if !entry_data.is_empty() {
-                // Convert to slice references for the writer
-                let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
+        if !entry_data.is_empty() {
+            // Convert to slice references for the writer
+            let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
 
-                // Get current timestamps
-                let now = SystemTime::now();
-                let realtime = now
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_micros() as u64;
+            // Get current timestamps
+            let now = SystemTime::now();
+            let realtime = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
 
-                // For monotonic time, we'll use the same as realtime for simplicity
-                // In a real implementation, you'd want to use a proper monotonic clock
-                let monotonic = realtime;
+            // For monotonic time, we'll use the same as realtime for simplicity
+            // In a real implementation, you'd want to use a proper monotonic clock
+            let monotonic = realtime;
 
-                writer.add_entry(journal_file, &entry_refs, realtime, monotonic, self.boot_id)?;
-            }
+            writer.add_entry(journal_file, &entry_refs, realtime, monotonic, self.boot_id)?;
         }
 
         Ok(())
@@ -185,21 +186,5 @@ impl LogsService for NetdataLogsService {
         };
 
         Ok(Response::new(reply))
-    }
-}
-
-// Helper trait for duration constants
-trait DurationExt {
-    fn from_hours(hours: u64) -> Duration;
-    fn from_days(days: u64) -> Duration;
-}
-
-impl DurationExt for Duration {
-    fn from_hours(hours: u64) -> Duration {
-        Duration::from_secs(hours * 3600)
-    }
-
-    fn from_days(days: u64) -> Duration {
-        Duration::from_secs(days * 24 * 3600)
     }
 }
