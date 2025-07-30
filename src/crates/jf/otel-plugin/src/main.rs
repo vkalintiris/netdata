@@ -28,7 +28,7 @@ mod plugin_config;
 use crate::plugin_config::{CliConfig, LogsConfig, MetricsConfig, PluginConfig};
 
 mod journal_logs_service;
-use crate::journal_logs_service::NetdataJournalLogsService;
+use crate::journal_logs_service::NetdataLogsService;
 
 #[derive(Default)]
 struct NetdataMetricsService {
@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = cli_config.otel_endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(plugin_config);
-    let logs_service = NetdataJournalLogsService::new(&logs_config)?;
+    let logs_service = NetdataLogsService::new(&logs_config)?;
 
     println!("TRUST_DURATIONS 1");
 

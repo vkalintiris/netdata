@@ -142,22 +142,22 @@ impl JournalManager {
     }
 }
 
-pub struct NetdataJournalLogsService {
+pub struct NetdataLogsService {
     journal_manager: Arc<JournalManager>,
 }
 
-impl NetdataJournalLogsService {
+impl NetdataLogsService {
     pub fn new(config: &LogsConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Ensure journal directory exists
         std::fs::create_dir_all(&config.journal_dir)?;
 
         let journal_manager = JournalManager::new(config)?;
-        Ok(NetdataJournalLogsService { journal_manager })
+        Ok(NetdataLogsService { journal_manager })
     }
 }
 
 #[tonic::async_trait]
-impl LogsService for NetdataJournalLogsService {
+impl LogsService for NetdataLogsService {
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
@@ -178,8 +178,6 @@ impl LogsService for NetdataJournalLogsService {
                     )));
                 }
             }
-
-            println!("Added log entries...");
         }
 
         let reply = ExportLogsServiceResponse {
