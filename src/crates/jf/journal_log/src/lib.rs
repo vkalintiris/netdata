@@ -337,7 +337,7 @@ impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
         let sealing_policy = RotationPolicy::default()
             .with_max_file_size(config.max_file_size)
-            .with_max_entry_span(Duration::from_secs(3600));
+            .with_max_entry_span(Duration::from_secs(60));
 
         let retention_policy = RetentionPolicy::default()
             .with_max_files(config.max_files)
