@@ -9,6 +9,7 @@ members = [
     # "journal_logger",
     # "journal_forwarder",
     "journal_log",
+    "journal_log_test",
     "journal_benchmark",
     "window_manager",
     "sigbus",
