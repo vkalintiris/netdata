@@ -432,9 +432,9 @@ pub struct JournalLog {
 
 impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
-        let sealing_policy = RotationPolicy::default()
+        let rotation_policy = RotationPolicy::default()
             .with_max_file_size(config.rotation_max_file_size)
-            .with_max_file_duration(Duration::from_secs(config.retention_max_duration));
+            .with_max_file_duration(Duration::from_secs(config.rotation_max_duration));
 
         let retention_policy = RetentionPolicy::default()
             .with_max_files(config.retention_max_files)
@@ -442,7 +442,7 @@ impl JournalLog {
             .with_max_entry_age(Duration::from_secs(config.retention_max_duration));
 
         let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
-            .with_sealing_policy(sealing_policy)
+            .with_sealing_policy(rotation_policy)
             .with_retention_policy(retention_policy);
 
         let mut directory = JournalDirectory::with_config(journal_config)?;
@@ -497,6 +497,9 @@ impl JournalLog {
             self.current_file = Some(journal_file);
             self.current_writer = Some(writer);
             self.current_file_info = Some(file_info);
+
+            // Enforce retention policy after creating new file to account for the new file count
+            self.directory.enforce_retention_policy()?;
         }
 
         Ok(())
@@ -572,9 +575,6 @@ impl JournalLog {
         self.current_file = None;
         self.current_writer = None;
         self.current_file_info = None;
-
-        // Enforce retention policy after rotation
-        self.directory.enforce_retention_policy()?;
 
         // Next call to ensure_active_journal() will create new file
         Ok(())
