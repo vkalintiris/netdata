@@ -10,7 +10,7 @@ mod value_guard;
 pub mod writer;
 
 // Core functionality
-pub use file::{load_boot_id, JournalFile, JournalFileOptions};
+pub use file::{load_boot_id, BucketUtilization, JournalFile, JournalFileOptions};
 pub use reader::JournalReader;
 pub use writer::JournalWriter;
 

@@ -1,5 +1,7 @@
 use error::{JournalError, Result};
-use journal_file::{load_boot_id, JournalFile, JournalFileOptions, JournalWriter};
+use journal_file::{
+    load_boot_id, BucketUtilization, JournalFile, JournalFileOptions, JournalWriter,
+};
 use memmap2::MmapMut;
 use std::cmp::Ordering;
 use std::ffi::OsStr;
@@ -428,6 +430,45 @@ pub struct JournalLog {
     machine_id: [u8; 16],
     boot_id: [u8; 16],
     seqnum_id: [u8; 16],
+    previous_bucket_utilization: Option<BucketUtilization>,
+}
+
+/// Calculate optimal bucket sizes based on previous file utilization or rotation policy
+fn calculate_bucket_sizes(
+    previous_utilization: Option<&BucketUtilization>,
+    rotation_policy: &RotationPolicy,
+) -> (usize, usize) {
+    if let Some(utilization) = previous_utilization {
+        let data_utilization = utilization.data_utilization();
+        let field_utilization = utilization.field_utilization();
+
+        let data_buckets = if data_utilization > 0.75 {
+            (utilization.data_total * 2).next_power_of_two()
+        } else if data_utilization < 0.25 && utilization.data_total > 4096 {
+            (utilization.data_total / 2).next_power_of_two()
+        } else {
+            utilization.data_total
+        };
+
+        let field_buckets = if field_utilization > 0.75 {
+            (utilization.field_total * 2).next_power_of_two()
+        } else if field_utilization < 0.25 && utilization.field_total > 512 {
+            (utilization.field_total / 2).next_power_of_two()
+        } else {
+            utilization.field_total
+        };
+
+        (data_buckets, field_buckets)
+    } else {
+        // Initial sizing based on rotation policy max file size
+        let max_file_size = rotation_policy.max_file_size.unwrap_or(8 * 1024 * 1024);
+
+        // 16 MiB -> 4096 data buckets
+        let data_buckets = (max_file_size / 4096).max(1024) as usize;
+        let field_buckets = 128; // Assume ~8:1 data:field ratio
+
+        (data_buckets, field_buckets)
+    }
 }
 
 impl JournalLog {
@@ -462,6 +503,7 @@ impl JournalLog {
             machine_id,
             boot_id,
             seqnum_id,
+            previous_bucket_utilization: None,
         })
     }
 
@@ -480,6 +522,12 @@ impl JournalLog {
             // Get the full path for the journal file
             let file_path = self.directory.get_full_path(&file_info);
 
+            // Calculate optimal bucket sizes based on previous file utilization
+            let (data_buckets, field_buckets) = calculate_bucket_sizes(
+                self.previous_bucket_utilization.as_ref(),
+                &self.directory.config.rotation_policy,
+            );
+
             let options = JournalFileOptions::new(
                 self.machine_id,
                 self.boot_id,
@@ -487,8 +535,8 @@ impl JournalLog {
                 generate_uuid(),
             )
             .with_window_size(8 * 1024 * 1024)
-            .with_data_hash_table_buckets(4096)
-            .with_field_hash_table_buckets(512)
+            .with_data_hash_table_buckets(data_buckets)
+            .with_field_hash_table_buckets(field_buckets)
             .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file_path, options)?;
@@ -546,6 +594,11 @@ impl JournalLog {
     }
 
     fn rotate_current_file(&mut self) -> Result<()> {
+        // Capture bucket utilization before closing the file
+        if let Some(file) = &self.current_file {
+            self.previous_bucket_utilization = file.bucket_utilization();
+        }
+
         // Update the current file's size in our tracking before closing
         if let (Some(file_info), Some(writer)) = (&mut self.current_file_info, &self.current_writer)
         {

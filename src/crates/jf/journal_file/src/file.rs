@@ -165,6 +165,33 @@ impl JournalFileOptions {
     }
 }
 
+/// Hash table bucket utilization statistics
+#[derive(Debug, Clone, Copy)]
+pub struct BucketUtilization {
+    pub data_occupied: usize,
+    pub data_total: usize,
+    pub field_occupied: usize,
+    pub field_total: usize,
+}
+
+impl BucketUtilization {
+    pub fn data_utilization(&self) -> f64 {
+        if self.data_total == 0 {
+            0.0
+        } else {
+            self.data_occupied as f64 / self.data_total as f64
+        }
+    }
+
+    pub fn field_utilization(&self) -> f64 {
+        if self.field_total == 0 {
+            0.0
+        } else {
+            self.field_occupied as f64 / self.field_total as f64
+        }
+    }
+}
+
 ///
 /// A reader for systemd journal files that efficiently maps small regions of the file into memory.
 ///
@@ -516,6 +543,32 @@ impl<M: MemoryMap> JournalFile<M> {
             entry_offset: Some(entry_offset),
             current_index: 0,
             total_items,
+        })
+    }
+
+    /// Get hash table bucket utilization statistics
+    pub fn bucket_utilization(&self) -> Option<BucketUtilization> {
+        let data_hash_table = self.data_hash_table_ref()?;
+        let data_total = data_hash_table.items.len();
+        let data_occupied = data_hash_table
+            .items
+            .iter()
+            .filter(|item| item.head_hash_offset.is_some())
+            .count();
+
+        let field_hash_table = self.field_hash_table_ref()?;
+        let field_total = field_hash_table.items.len();
+        let field_occupied = field_hash_table
+            .items
+            .iter()
+            .filter(|item| item.head_hash_offset.is_some())
+            .count();
+
+        Some(BucketUtilization {
+            data_occupied,
+            data_total,
+            field_occupied,
+            field_total,
         })
     }
 }
