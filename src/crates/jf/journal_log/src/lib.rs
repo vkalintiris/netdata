@@ -107,7 +107,7 @@ pub struct RotationPolicy {
     /// Maximum file size before rotating (in bytes)
     pub max_file_size: Option<u64>,
     /// Maximum duration that entries in a single file can span
-    pub max_entry_span: Option<Duration>,
+    pub max_file_duration: Option<Duration>,
 }
 
 impl RotationPolicy {
@@ -116,8 +116,8 @@ impl RotationPolicy {
         self
     }
 
-    pub fn with_max_entry_span(mut self, max_span: Duration) -> Self {
-        self.max_entry_span = Some(max_span);
+    pub fn with_max_file_duration(mut self, max_duration: Duration) -> Self {
+        self.max_file_duration = Some(max_duration);
         self
     }
 }
@@ -128,9 +128,9 @@ pub struct RetentionPolicy {
     /// Maximum number of journal files to keep
     pub max_files: Option<usize>,
     /// Maximum total size of all journal files (in bytes)
-    pub max_total_size: Option<u64>,
-    /// Maximum age of entries to keep
-    pub max_entry_age: Option<Duration>,
+    pub max_size: Option<u64>,
+    /// Maximum age of files to keep
+    pub max_duration: Option<Duration>,
 }
 
 impl RetentionPolicy {
@@ -140,12 +140,12 @@ impl RetentionPolicy {
     }
 
     pub fn with_max_total_size(mut self, max_size: u64) -> Self {
-        self.max_total_size = Some(max_size);
+        self.max_size = Some(max_size);
         self
     }
 
     pub fn with_max_entry_age(mut self, max_age: Duration) -> Self {
-        self.max_entry_age = Some(max_age);
+        self.max_duration = Some(max_age);
         self
     }
 }
@@ -341,14 +341,14 @@ impl JournalDirectory {
         }
 
         // 2. Remove by total size limit
-        if let Some(max_total_size) = policy.max_total_size {
+        if let Some(max_total_size) = policy.max_size {
             while self.total_size > max_total_size && !self.files.is_empty() {
                 self.remove_oldest_file()?;
             }
         }
 
         // 3. Remove by entry age limit
-        if let Some(max_entry_age) = policy.max_entry_age {
+        if let Some(max_entry_age) = policy.max_duration {
             let cutoff_time = SystemTime::now()
                 .checked_sub(max_entry_age)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -434,7 +434,7 @@ impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
         let sealing_policy = RotationPolicy::default()
             .with_max_file_size(config.rotation_max_file_size)
-            .with_max_entry_span(Duration::from_secs(config.retention_max_duration));
+            .with_max_file_duration(Duration::from_secs(config.retention_max_duration));
 
         let retention_policy = RetentionPolicy::default()
             .with_max_files(config.retention_max_files)
@@ -518,7 +518,7 @@ impl JournalLog {
         let Some(file) = &self.current_file else {
             return false;
         };
-        let Some(max_entry_span) = policy.max_entry_span else {
+        let Some(max_entry_span) = policy.max_file_duration else {
             return false;
         };
         let Some(first_monotonic) = writer.first_entry_monotonic() else {
