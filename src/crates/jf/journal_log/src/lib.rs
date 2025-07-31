@@ -404,11 +404,6 @@ impl JournalLogConfig {
         self
     }
 
-    pub fn with_retention_max_files(mut self, max_files: usize) -> Self {
-        self.retention_max_files = max_files;
-        self
-    }
-
     pub fn with_retention_max_size(mut self, max_total_size: u64) -> Self {
         self.retention_max_size = max_total_size;
         self
@@ -416,6 +411,11 @@ impl JournalLogConfig {
 
     pub fn with_retention_max_duration(mut self, max_duration: u64) -> Self {
         self.retention_max_duration = max_duration;
+        self
+    }
+
+    pub fn with_retention_max_files(mut self, max_files: usize) -> Self {
+        self.retention_max_files = max_files;
         self
     }
 }
