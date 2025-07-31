@@ -841,6 +841,12 @@ void nd_journal_init_files_and_directories(void)
         journal_directories[d++].path = string_strdupz(path);
     }
 
+    if (*netdata_configured_log_dir) {
+        char path[PATH_MAX];
+        snprintfz(path, sizeof(path), "%s/otel", netdata_configured_host_prefix);
+        journal_directories[d++].path = string_strdupz(path);
+    };
+
     // terminate the list
     journal_directories[d].path = NULL;
 
