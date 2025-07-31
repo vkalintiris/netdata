@@ -4,13 +4,13 @@ use opentelemetry_proto::tonic::collector::logs::v1::{
     logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::plugin_config::LogsConfig;
 
 pub struct NetdataLogsService {
-    journal_log: Arc<JournalLog>,
+    journal_log: Arc<Mutex<JournalLog>>,
 }
 
 impl NetdataLogsService {
@@ -24,7 +24,7 @@ impl NetdataLogsService {
             .with_max_total_size(config.max_total_size_mb * 1024 * 1024)
             .with_max_entry_age_secs(config.max_entry_age_days * 24 * 3600);
 
-        let journal_log = Arc::new(JournalLog::new(journal_config)?);
+        let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config)?));
         Ok(NetdataLogsService { journal_log })
     }
 
@@ -65,7 +65,7 @@ impl LogsService for NetdataLogsService {
                 let entry_data = self.json_to_entry_data(&entry);
                 if !entry_data.is_empty() {
                     let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-                    if let Err(e) = self.journal_log.write_entry(&entry_refs) {
+                    if let Err(e) = self.journal_log.lock().unwrap().write_entry(&entry_refs) {
                         eprintln!("Failed to write log entry: {}", e);
                         return Err(Status::internal(format!(
                             "Failed to write log entry: {}",

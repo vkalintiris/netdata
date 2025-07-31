@@ -4,7 +4,6 @@ use memmap2::MmapMut;
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,9 +324,10 @@ impl JournalLogConfig {
 }
 
 pub struct JournalLog {
-    directory: Arc<Mutex<JournalDirectory>>,
-    current_file: Arc<Mutex<Option<JournalFile<MmapMut>>>>,
-    current_writer: Arc<Mutex<Option<JournalWriter>>>,
+    directory: JournalDirectory,
+    current_file: Option<JournalFile<MmapMut>>,
+    current_writer: Option<JournalWriter>,
+    current_file_info: Option<JournalFileInfo>,
     machine_id: [u8; 16],
     boot_id: [u8; 16],
     seqnum_id: [u8; 16],
@@ -355,26 +355,30 @@ impl JournalLog {
         let seqnum_id = generate_uuid();
 
         Ok(JournalLog {
-            directory: Arc::new(Mutex::new(directory)),
-            current_file: Arc::new(Mutex::new(None)),
-            current_writer: Arc::new(Mutex::new(None)),
+            directory,
+            current_file: None,
+            current_writer: None,
+            current_file_info: None,
             machine_id,
             boot_id,
             seqnum_id,
         })
     }
 
-    fn ensure_active_journal(&self) -> Result<()> {
-        let mut current_file = self.current_file.lock().unwrap();
-        let mut current_writer = self.current_writer.lock().unwrap();
+    fn ensure_active_journal(&mut self) -> Result<()> {
+        // Check if rotation is needed before writing
+        if let Some(writer) = &self.current_writer {
+            if self.should_rotate(writer) {
+                self.rotate_current_file()?;
+            }
+        }
 
-        if current_file.is_none() {
+        if self.current_file.is_none() {
             // Create a new journal file
-            let mut directory = self.directory.lock().unwrap();
-            let file_info = directory.new_file(None)?;
+            let file_info = self.directory.new_file(None)?;
 
             // Get the full path for the journal file
-            let file_path = directory.get_full_path(&file_info);
+            let file_path = self.directory.get_full_path(&file_info);
 
             let options = JournalFileOptions::new(
                 self.machine_id,
@@ -390,29 +394,60 @@ impl JournalLog {
             let mut journal_file = JournalFile::create(&file_path, options)?;
             let writer = JournalWriter::new(&mut journal_file)?;
 
-            *current_file = Some(journal_file);
-            *current_writer = Some(writer);
+            self.current_file = Some(journal_file);
+            self.current_writer = Some(writer);
+            self.current_file_info = Some(file_info);
         }
 
         Ok(())
     }
 
-    pub fn write_entry(&self, items: &[&[u8]]) -> Result<()> {
+    /// Checks if we have to rotate. Prioritizes file size over file creation
+    /// time.
+    fn should_rotate(&self, writer: &JournalWriter) -> bool {
+        let policy = &self.directory.config.sealing_policy;
+
+        if let Some(max_size) = policy.max_file_size {
+            if writer.current_file_size() >= max_size {
+                return true;
+            }
+        }
+
+        // FIXME: The proper implementation would check first/last entries'
+        // timestamps.
+        if let Some(max_span) = policy.max_entry_span {
+            if let Some(file_info) = &self.current_file_info {
+                let file_age = SystemTime::now()
+                    .duration_since(file_info.timestamp)
+                    .unwrap_or_default();
+                if file_age >= max_span {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn rotate_current_file(&mut self) -> Result<()> {
+        // Close current file
+        self.current_file = None;
+        self.current_writer = None;
+        self.current_file_info = None;
+
+        // Next call to ensure_active_journal() will create new file
+        Ok(())
+    }
+
+    pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
 
         self.ensure_active_journal()?;
 
-        let mut current_file = self.current_file.lock().unwrap();
-        let mut current_writer = self.current_writer.lock().unwrap();
-
-        let Some(journal_file) = current_file.as_mut() else {
-            return Ok(());
-        };
-        let Some(writer) = current_writer.as_mut() else {
-            return Ok(());
-        };
+        let journal_file = self.current_file.as_mut().unwrap();
+        let writer = self.current_writer.as_mut().unwrap();
 
         let now = SystemTime::now();
         let realtime = now

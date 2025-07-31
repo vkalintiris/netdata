@@ -32,6 +32,11 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
+    /// Get current file size in bytes
+    pub fn current_file_size(&self) -> u64 {
+        self.append_offset.get()
+    }
+
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
         let (append_offset, next_seqnum) = {
             let header = journal_file.journal_header_ref();
