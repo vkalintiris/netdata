@@ -4,7 +4,6 @@ members = [
     "error",
     # "main",
     "journal_file",
-    # "journal_writer",
     "journal_reader_ffi",
     # "journal_logger",
     # "journal_forwarder",
