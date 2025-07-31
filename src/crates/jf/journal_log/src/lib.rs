@@ -337,7 +337,7 @@ impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
         let sealing_policy = RotationPolicy::default()
             .with_max_file_size(config.max_file_size)
-            .with_max_entry_span(Duration::from_secs(60));
+            .with_max_entry_span(Duration::from_secs(config.max_entry_age_secs));
 
         let retention_policy = RetentionPolicy::default()
             .with_max_files(config.max_files)
@@ -407,23 +407,36 @@ impl JournalLog {
     fn should_rotate(&self, writer: &JournalWriter) -> bool {
         let policy = &self.directory.config.sealing_policy;
 
+        // Check if the file size went over the limit
         if let Some(max_size) = policy.max_file_size {
             if writer.current_file_size() >= max_size {
                 return true;
             }
         }
 
-        // FIXME: The proper implementation would check first/last entries'
-        // timestamps.
-        if let Some(max_span) = policy.max_entry_span {
-            if let Some(file_info) = &self.current_file_info {
-                let file_age = SystemTime::now()
-                    .duration_since(file_info.timestamp)
-                    .unwrap_or_default();
-                if file_age >= max_span {
-                    return true;
-                }
-            }
+        // Check if the time span between first and last entries exceeds the limit
+        let Some(file) = &self.current_file else {
+            return false;
+        };
+        let Some(max_entry_span) = policy.max_entry_span else {
+            return false;
+        };
+        let Some(first_monotonic) = writer.first_entry_monotonic() else {
+            return false;
+        };
+
+        let header = file.journal_header_ref();
+        let last_monotonic = header.tail_entry_monotonic;
+
+        // Convert monotonic timestamps (microseconds) to duration
+        let entry_span = if last_monotonic >= first_monotonic {
+            Duration::from_micros(last_monotonic - first_monotonic)
+        } else {
+            return false;
+        };
+
+        if entry_span >= max_entry_span {
+            return true;
         }
 
         false

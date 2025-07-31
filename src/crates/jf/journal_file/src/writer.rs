@@ -29,12 +29,18 @@ pub struct JournalWriter {
     next_seqnum: u64,
     num_written_objects: u64,
     entry_items: Vec<EntryItem>,
+    first_entry_monotonic: Option<u64>,
 }
 
 impl JournalWriter {
     /// Get current file size in bytes
     pub fn current_file_size(&self) -> u64 {
         self.append_offset.get()
+    }
+
+    /// Get the monotonic timestamp of the first entry written to this file
+    pub fn first_entry_monotonic(&self) -> Option<u64> {
+        self.first_entry_monotonic
     }
 
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
@@ -62,6 +68,7 @@ impl JournalWriter {
             next_seqnum,
             num_written_objects: 0,
             entry_items: Vec::with_capacity(128),
+            first_entry_monotonic: None,
         })
     }
 
@@ -160,6 +167,9 @@ impl JournalWriter {
         }
         if header.head_entry_realtime == 0 {
             header.head_entry_realtime = realtime;
+        }
+        if self.first_entry_monotonic.is_none() {
+            self.first_entry_monotonic = Some(monotonic);
         }
 
         header.tail_entry_seqnum = self.next_seqnum;
