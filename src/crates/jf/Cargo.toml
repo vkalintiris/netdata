@@ -4,17 +4,15 @@ members = [
     "error",
     # "main",
     "journal_file",
-    # "journal_writer",
-    # "journal_reader", # integrated into journal_file
     "journal_reader_ffi",
     # "journal_logger",
     # "journal_forwarder",
     "journal_log",
+    "journal_log_test",
     "journal_benchmark",
     "window_manager",
     "sigbus",
     "otel-plugin",
-    "nol",
     "flatten_otel",
     "netdata-bridge",
     "my-plugin"
