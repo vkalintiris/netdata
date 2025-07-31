@@ -1,7 +1,7 @@
 use journal_log::{JournalLog, JournalLogConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let test_dir = "/tmp/journal_log_test";
+    let test_dir = "/home/cm/repos/nd/otel-plugin/src/crates/jf/journal_log_dir/";
     let config = JournalLogConfig::new(test_dir)
         .with_rotation_max_file_size(128 * 1024)
         .with_rotation_max_duration(128 * 1024)
