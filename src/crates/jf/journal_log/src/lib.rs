@@ -102,7 +102,7 @@ impl PartialOrd for JournalFileInfo {
 }
 
 /// Determines when an active journal file should be sealed
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RotationPolicy {
     /// Maximum file size before rotating (in bytes)
     pub max_file_size: Option<u64>,
@@ -123,7 +123,7 @@ impl RotationPolicy {
 }
 
 /// Retention policy - determines when files should be removed
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct RetentionPolicy {
     /// Maximum number of journal files to keep
     pub max_files: Option<usize>,
@@ -155,8 +155,8 @@ impl RetentionPolicy {
 pub struct JournalDirectoryConfig {
     /// Directory path where journal files are stored
     pub directory: PathBuf,
-    /// Policy for when to seal active files
-    pub sealing_policy: RotationPolicy,
+    /// Policy for when to rotate active files
+    pub rotation_policy: RotationPolicy,
     /// Policy for when to remove old files
     pub retention_policy: RetentionPolicy,
 }
@@ -165,13 +165,13 @@ impl JournalDirectoryConfig {
     pub fn new(directory: impl Into<PathBuf>) -> Self {
         Self {
             directory: directory.into(),
-            sealing_policy: RotationPolicy::default(),
+            rotation_policy: RotationPolicy::default(),
             retention_policy: RetentionPolicy::default(),
         }
     }
 
     pub fn with_sealing_policy(mut self, policy: RotationPolicy) -> Self {
-        self.sealing_policy = policy;
+        self.rotation_policy = policy;
         self
     }
 
@@ -220,8 +220,10 @@ impl JournalDirectory {
             }
 
             match JournalFileInfo::from_path(&file_path) {
-                Ok(file_info) => {
-                    journal_directory.total_size += file_info.size.unwrap_or(0);
+                Ok(mut file_info) => {
+                    // Load the actual file size from filesystem
+                    let file_size = file_info.get_size().unwrap_or(0);
+                    journal_directory.total_size += file_size;
                     journal_directory.next_counter =
                         journal_directory.next_counter.max(file_info.counter + 1);
                     journal_directory.files.push(file_info);
@@ -269,6 +271,91 @@ impl JournalDirectory {
         }
 
         Ok(new_file)
+    }
+
+    /// Remove the oldest file (by counter) from both filesystem and tracking
+    fn remove_oldest_file(&mut self) -> Result<()> {
+        if let Some(oldest_file) = self.files.first() {
+            let file_path = self.get_full_path(oldest_file);
+            let file_size = oldest_file.size.unwrap_or(0);
+
+            // Remove from filesystem
+            if let Err(e) = std::fs::remove_file(&file_path) {
+                // Log error but continue cleanup - file might already be deleted
+                eprintln!(
+                    "Warning: Failed to remove journal file {:?}: {}",
+                    file_path, e
+                );
+            }
+
+            // Remove from tracking and update total size
+            self.files.remove(0);
+            self.total_size = self.total_size.saturating_sub(file_size);
+        }
+
+        Ok(())
+    }
+
+    /// Remove files older than the specified cutoff time
+    fn remove_files_older_than(&mut self, cutoff_time: SystemTime) -> Result<()> {
+        // Find files older than cutoff time
+        let mut files_to_remove = Vec::new();
+        for (index, file) in self.files.iter().enumerate() {
+            if file.timestamp <= cutoff_time {
+                files_to_remove.push(index);
+            }
+        }
+
+        // Remove files in reverse order to maintain indices
+        for &index in files_to_remove.iter().rev() {
+            let file = &self.files[index];
+            let file_path = self.get_full_path(file);
+            let file_size = file.size.unwrap_or(0);
+
+            // Remove from filesystem
+            if let Err(e) = std::fs::remove_file(&file_path) {
+                // Log error but continue cleanup
+                eprintln!(
+                    "Warning: Failed to remove journal file {:?}: {}",
+                    file_path, e
+                );
+            }
+
+            // Remove from tracking and update total size
+            self.files.remove(index);
+            self.total_size = self.total_size.saturating_sub(file_size);
+        }
+
+        Ok(())
+    }
+
+    /// Enforce the retention policy by removing old files
+    pub fn enforce_retention_policy(&mut self) -> Result<()> {
+        let policy = self.config.retention_policy;
+
+        // 1. Remove by file count limit
+        if let Some(max_files) = policy.max_files {
+            while self.files.len() > max_files {
+                self.remove_oldest_file()?;
+            }
+        }
+
+        // 2. Remove by total size limit
+        if let Some(max_total_size) = policy.max_total_size {
+            while self.total_size > max_total_size && !self.files.is_empty() {
+                self.remove_oldest_file()?;
+            }
+        }
+
+        // 3. Remove by entry age limit
+        if let Some(max_entry_age) = policy.max_entry_age {
+            let cutoff_time = SystemTime::now()
+                .checked_sub(max_entry_age)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            self.remove_files_older_than(cutoff_time)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -348,7 +435,10 @@ impl JournalLog {
             .with_sealing_policy(sealing_policy)
             .with_retention_policy(retention_policy);
 
-        let directory = JournalDirectory::with_config(journal_config)?;
+        let mut directory = JournalDirectory::with_config(journal_config)?;
+
+        // Enforce retention policy on startup to clean up any old files
+        directory.enforce_retention_policy()?;
 
         let machine_id = journal_file::file::load_machine_id()?;
         let boot_id = load_boot_id().unwrap_or_else(|_| generate_uuid());
@@ -405,7 +495,7 @@ impl JournalLog {
     /// Checks if we have to rotate. Prioritizes file size over file creation
     /// time.
     fn should_rotate(&self, writer: &JournalWriter) -> bool {
-        let policy = &self.directory.config.sealing_policy;
+        let policy = self.directory.config.rotation_policy;
 
         // Check if the file size went over the limit
         if let Some(max_size) = policy.max_file_size {
@@ -443,10 +533,38 @@ impl JournalLog {
     }
 
     fn rotate_current_file(&mut self) -> Result<()> {
+        // Update the current file's size in our tracking before closing
+        if let (Some(file_info), Some(writer)) = (&mut self.current_file_info, &self.current_writer)
+        {
+            let current_size = writer.current_file_size();
+            file_info.size = Some(current_size);
+
+            // Update the size in the directory's file list
+            if let Some(tracked_file) = self
+                .directory
+                .files
+                .iter_mut()
+                .find(|f| f.counter == file_info.counter)
+            {
+                let old_size = tracked_file.size.unwrap_or(0);
+                tracked_file.size = Some(current_size);
+
+                // Update total size tracking
+                self.directory.total_size = self
+                    .directory
+                    .total_size
+                    .saturating_sub(old_size)
+                    .saturating_add(current_size);
+            }
+        }
+
         // Close current file
         self.current_file = None;
         self.current_writer = None;
         self.current_file_info = None;
+
+        // Enforce retention policy after rotation
+        self.directory.enforce_retention_policy()?;
 
         // Next call to ensure_active_journal() will create new file
         Ok(())
