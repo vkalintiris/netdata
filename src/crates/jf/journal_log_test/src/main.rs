@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test_dir = "/tmp/journal_log_test";
     let config = JournalLogConfig::new(test_dir)
         .with_max_file_size(512 * 1024)
-        .with_max_entry_age_secs(365 * 24 * 3600)
+        .with_max_entry_age_secs(60)
         .with_max_files(1000)
         .with_max_total_size(1 * 1024 * 1024 * 1024);
 
@@ -25,6 +25,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i % 10 == 0 {
             println!("  Written {} entries", i + 1);
         }
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     Ok(())
