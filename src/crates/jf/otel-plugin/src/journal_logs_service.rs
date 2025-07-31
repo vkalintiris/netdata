@@ -19,10 +19,10 @@ impl NetdataLogsService {
         std::fs::create_dir_all(&config.journal_dir)?;
 
         let journal_config = JournalLogConfig::new(&config.journal_dir)
-            .with_max_file_size(config.max_file_size_mb * 1024 * 1024)
-            .with_max_files(config.max_files)
-            .with_max_total_size(config.max_total_size_mb * 1024 * 1024)
-            .with_max_entry_age_secs(config.max_entry_age_days * 24 * 3600);
+            .with_rotation_max_file_size(config.max_file_size_mb * 1024 * 1024)
+            .with_retention_max_files(config.max_files)
+            .with_retention_max_size(config.max_total_size_mb * 1024 * 1024)
+            .with_retention_max_duration(config.max_entry_age_days * 24 * 3600);
 
         let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config)?));
         Ok(NetdataLogsService { journal_log })

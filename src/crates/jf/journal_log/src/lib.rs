@@ -368,44 +368,54 @@ fn generate_uuid() -> [u8; 16] {
 pub struct JournalLogConfig {
     /// Directory where journal files are stored
     pub journal_dir: PathBuf,
-    /// Maximum file size in bytes before sealing
-    pub max_file_size: u64,
+
+    /// Maximum file size in bytes to trigger rotation
+    pub rotation_max_file_size: u64,
+    /// Maximum duration span of entries to trigger rotation
+    pub rotation_max_duration: u64,
+
     /// Maximum number of files to keep
-    pub max_files: usize,
+    pub retention_max_files: usize,
     /// Maximum total size of all files in bytes
-    pub max_total_size: u64,
+    pub retention_max_size: u64,
     /// Maximum age of entries in seconds
-    pub max_entry_age_secs: u64,
+    pub retention_max_duration: u64,
 }
 
 impl JournalLogConfig {
     pub fn new(journal_dir: impl Into<PathBuf>) -> Self {
         Self {
             journal_dir: journal_dir.into(),
-            max_file_size: 100 * 1024 * 1024, // 100MB
-            max_files: 10,
-            max_total_size: 1024 * 1024 * 1024, // 1GB
-            max_entry_age_secs: 7 * 24 * 3600,  // 7 days
+            rotation_max_file_size: 100 * 1024 * 1024, // 100MB
+            rotation_max_duration: 2 * 3600,           // 2 hours
+            retention_max_files: 10,                   // 10 files
+            retention_max_size: 1024 * 1024 * 1024,    // 1GB
+            retention_max_duration: 7 * 24 * 3600,     // 7 days
         }
     }
 
-    pub fn with_max_file_size(mut self, max_file_size: u64) -> Self {
-        self.max_file_size = max_file_size;
+    pub fn with_rotation_max_file_size(mut self, max_file_size: u64) -> Self {
+        self.rotation_max_file_size = max_file_size;
         self
     }
 
-    pub fn with_max_files(mut self, max_files: usize) -> Self {
-        self.max_files = max_files;
+    pub fn with_rotation_max_duration(mut self, max_duration: u64) -> Self {
+        self.rotation_max_duration = max_duration;
         self
     }
 
-    pub fn with_max_total_size(mut self, max_total_size: u64) -> Self {
-        self.max_total_size = max_total_size;
+    pub fn with_retention_max_files(mut self, max_files: usize) -> Self {
+        self.retention_max_files = max_files;
         self
     }
 
-    pub fn with_max_entry_age_secs(mut self, max_entry_age_secs: u64) -> Self {
-        self.max_entry_age_secs = max_entry_age_secs;
+    pub fn with_retention_max_size(mut self, max_total_size: u64) -> Self {
+        self.retention_max_size = max_total_size;
+        self
+    }
+
+    pub fn with_retention_max_duration(mut self, max_duration: u64) -> Self {
+        self.retention_max_duration = max_duration;
         self
     }
 }
@@ -423,13 +433,13 @@ pub struct JournalLog {
 impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
         let sealing_policy = RotationPolicy::default()
-            .with_max_file_size(config.max_file_size)
-            .with_max_entry_span(Duration::from_secs(config.max_entry_age_secs));
+            .with_max_file_size(config.rotation_max_file_size)
+            .with_max_entry_span(Duration::from_secs(config.retention_max_duration));
 
         let retention_policy = RetentionPolicy::default()
-            .with_max_files(config.max_files)
-            .with_max_total_size(config.max_total_size)
-            .with_max_entry_age(Duration::from_secs(config.max_entry_age_secs));
+            .with_max_files(config.retention_max_files)
+            .with_max_total_size(config.retention_max_size)
+            .with_max_entry_age(Duration::from_secs(config.retention_max_duration));
 
         let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
             .with_sealing_policy(sealing_policy)
