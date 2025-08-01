@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 tokio = { workspace = true }
 prost = { workspace = true }
-tonic = { workspace = true, features = ["gzip"] }
+tonic = { workspace = true, features = ["gzip", "tls-ring"] }
 opentelemetry-proto = { workspace = true, features = ["metrics", "logs"] }
 
 flatten_otel = { path = "../flatten_otel" }

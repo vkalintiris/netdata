@@ -7,7 +7,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
 };
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{transport::{Server, Identity, ServerTlsConfig}, Request, Response, Status};
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::{CliConfig, LogsConfig, MetricsConfig, PluginConfig};
+use crate::plugin_config::{CliConfig, LogsConfig, MetricsConfig, PluginConfig, TlsConfig};
 
 mod journal_logs_service;
 use crate::journal_logs_service::NetdataLogsService;
@@ -149,7 +149,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;
     let metrics_config = MetricsConfig::from_cli_config(&cli_config);
     let logs_config = LogsConfig::from_cli_config(&cli_config);
-    let plugin_config = PluginConfig::new(&metrics_config, &logs_config);
+    let tls_config = TlsConfig::from_cli_config(&cli_config);
+    let plugin_config = PluginConfig::new(&metrics_config, &logs_config, &tls_config);
 
     let addr = cli_config.otel_endpoint.parse()?;
     let metrics_service = NetdataMetricsService::new(plugin_config);
@@ -157,7 +158,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("TRUST_DURATIONS 1");
 
-    Server::builder()
+    let mut server_builder = Server::builder();
+
+    // Configure TLS if enabled
+    if tls_config.enabled {
+        let cert_path = tls_config.cert_path.as_ref().unwrap();
+        let key_path = tls_config.key_path.as_ref().unwrap();
+
+        eprintln!("Loading TLS certificate from: {}", cert_path);
+        eprintln!("Loading TLS private key from: {}", key_path);
+
+        let cert = std::fs::read(cert_path)?;
+        let key = std::fs::read(key_path)?;
+        let identity = Identity::from_pem(cert, key);
+
+        let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
+
+        // If CA certificate is provided, enable client authentication
+        if let Some(ca_cert_path) = &tls_config.ca_cert_path {
+            eprintln!("Loading CA certificate from: {}", ca_cert_path);
+            let ca_cert = std::fs::read(ca_cert_path)?;
+            tls_config_builder = tls_config_builder.client_ca_root(tonic::transport::Certificate::from_pem(ca_cert));
+        }
+
+        server_builder = server_builder.tls_config(tls_config_builder)?;
+        eprintln!("TLS enabled on endpoint: {}", cli_config.otel_endpoint);
+    } else {
+        eprintln!("TLS disabled, using insecure connection on endpoint: {}", cli_config.otel_endpoint);
+    }
+
+    server_builder
         .add_service(
             MetricsServiceServer::new(metrics_service)
                 .accept_compressed(tonic::codec::CompressionEncoding::Gzip),

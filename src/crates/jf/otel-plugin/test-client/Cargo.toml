@@ -1,0 +1,9 @@
+[package]
+name = "otel-test-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros"] }
+tonic = { version = "0.13", features = ["tls-ring"] }
+opentelemetry-proto = { version = "0.30", features = ["metrics", "logs"] }

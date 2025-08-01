@@ -11,6 +11,22 @@ pub struct CliConfig {
     #[arg(long, default_value = "0.0.0.0:21213")]
     pub otel_endpoint: String,
 
+    /// Enable TLS/SSL for secure connections
+    #[arg(long)]
+    pub otel_tls_enabled: bool,
+
+    /// Path to TLS certificate file
+    #[arg(long)]
+    pub otel_tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file
+    #[arg(long)]
+    pub otel_tls_key_path: Option<String>,
+
+    /// Path to TLS CA certificate file for client authentication (optional)
+    #[arg(long)]
+    pub otel_tls_ca_cert_path: Option<String>,
+
     /// Print flattened metrics to stdout for debugging
     #[arg(long)]
     pub otel_metrics_print_flattened: bool,
@@ -55,6 +71,10 @@ impl Default for CliConfig {
             otel_metrics_buffer_samples: 10,
             otel_metrics_throttle_charts: 100,
             otel_endpoint: String::from("0.0.0.0:21213"),
+            otel_tls_enabled: false,
+            otel_tls_cert_path: None,
+            otel_tls_key_path: None,
+            otel_tls_ca_cert_path: None,
             otel_logs_journal_dir: String::from("/tmp/netdata-journals"),
             otel_logs_max_file_size_mb: 100,
             otel_logs_max_files: 10,
@@ -81,6 +101,16 @@ impl CliConfig {
         // Validate endpoint format (basic check)
         if !config.otel_endpoint.contains(':') {
             return Err("endpoint must be in format host:port".into());
+        }
+
+        // Validate TLS configuration
+        if config.otel_tls_enabled {
+            if config.otel_tls_cert_path.is_none() {
+                return Err("TLS certificate path must be provided when TLS is enabled".into());
+            }
+            if config.otel_tls_key_path.is_none() {
+                return Err("TLS private key path must be provided when TLS is enabled".into());
+            }
         }
 
         Ok(config)
@@ -150,17 +180,49 @@ impl LogsConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    pub ca_cert_path: Option<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
+        }
+    }
+}
+
+impl TlsConfig {
+    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
+        Self {
+            enabled: cli_config.otel_tls_enabled,
+            cert_path: cli_config.otel_tls_cert_path.clone(),
+            key_path: cli_config.otel_tls_key_path.clone(),
+            ca_cert_path: cli_config.otel_tls_ca_cert_path.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PluginConfig {
     pub metrics_config: MetricsConfig,
     pub logs_config: LogsConfig,
+    pub tls_config: TlsConfig,
 }
 
 impl PluginConfig {
-    pub fn new(metrics_config: &MetricsConfig, logs_config: &LogsConfig) -> Self {
+    pub fn new(metrics_config: &MetricsConfig, logs_config: &LogsConfig, tls_config: &TlsConfig) -> Self {
         Self {
             metrics_config: metrics_config.clone(),
             logs_config: logs_config.clone(),
+            tls_config: tls_config.clone(),
         }
     }
 }
