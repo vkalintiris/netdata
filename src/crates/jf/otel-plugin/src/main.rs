@@ -48,7 +48,7 @@ impl NetdataMetricsService {
         let mut chart_config_manager = ChartConfigManager::with_default_configs();
 
         // Load user chart configs if directory is specified
-        if let Some(chart_configs_dir) = &config.metrics_config.chart_configs_dir {
+        if let Some(chart_configs_dir) = &config.metrics.chart_configs_dir {
             chart_config_manager.load_user_configs(chart_configs_dir)?;
         }
 
@@ -93,7 +93,7 @@ impl MetricsService for NetdataMetricsService {
             })
             .collect::<Vec<_>>();
 
-        if self.config.metrics_config.print_flattened {
+        if self.config.metrics.print_flattened {
             // Just print the flattened points
             for fp in &flattened_points {
                 println!("{:#?}", fp);
@@ -113,11 +113,9 @@ impl MetricsService for NetdataMetricsService {
 
                 if let Some(netdata_chart) = guard.get_mut(&fp.nd_instance_name) {
                     netdata_chart.ingest(fp);
-                } else if newly_created_charts < self.config.metrics_config.throttle_charts {
-                    let mut netdata_chart = NetdataChart::from_flattened_point(
-                        fp,
-                        self.config.metrics_config.buffer_samples,
-                    );
+                } else if newly_created_charts < self.config.metrics.throttle_charts {
+                    let mut netdata_chart =
+                        NetdataChart::from_flattened_point(fp, self.config.metrics.buffer_samples);
                     netdata_chart.ingest(fp);
                     guard.insert(fp.nd_instance_name.clone(), netdata_chart);
 
@@ -157,23 +155,18 @@ impl MetricsService for NetdataMetricsService {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = PluginConfig::new()?;
 
-    let addr = config.endpoint_config.path.parse()?;
+    let addr = config.endpoint.path.parse()?;
     let metrics_service = NetdataMetricsService::new(config.clone())?;
-    let logs_service = NetdataLogsService::new(&config.logs_config)?;
+    let logs_service = NetdataLogsService::new(&config.logs)?;
 
     println!("TRUST_DURATIONS 1");
 
     let mut server_builder = Server::builder();
 
     // Configure TLS if enabled
-    if config.endpoint_config.tls.enabled {
-        let cert_path = config
-            .endpoint_config
-            .tls
-            .cert_path
-            .as_ref()
-            .unwrap();
-        let key_path = config.endpoint_config.tls.key_path.as_ref().unwrap();
+    if config.endpoint.tls.enabled {
+        let cert_path = config.endpoint.tls.cert_path.as_ref().unwrap();
+        let key_path = config.endpoint.tls.key_path.as_ref().unwrap();
 
         eprintln!("Loading TLS certificate from: {}", cert_path);
         eprintln!("Loading TLS private key from: {}", key_path);
@@ -185,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
 
         // If CA certificate is provided, enable client authentication
-        if let Some(ca_cert_path) = &config.endpoint_config.tls.ca_cert_path {
+        if let Some(ca_cert_path) = &config.endpoint.tls.ca_cert_path {
             eprintln!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert = std::fs::read(ca_cert_path)?;
             tls_config_builder =
@@ -193,11 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         server_builder = server_builder.tls_config(tls_config_builder)?;
-        eprintln!("TLS enabled on endpoint: {}", config.endpoint_config.path);
+        eprintln!("TLS enabled on endpoint: {}", config.endpoint.path);
     } else {
         eprintln!(
             "TLS disabled, using insecure connection on endpoint: {}",
-            config.endpoint_config.path
+            config.endpoint.path
         );
     }
 

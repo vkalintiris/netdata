@@ -3,85 +3,34 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Parser, Clone, Serialize, Deserialize)]
-#[command(name = "otel-plugin")]
-#[command(about = "OpenTelemetry metrics and logs plugin.")]
-#[command(version = "0.1")]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct PluginConfig {
-    // endpoint configuration (includes grpc endpoint and tls)
-    #[command(flatten)]
-    #[serde(rename = "endpoint_config")]
-    pub endpoint_config: EndpointConfig,
+pub struct TlsConfig {
+    /// Enable TLS/SSL for secure connections
+    #[arg(long = "otel-tls-enabled")]
+    pub enabled: bool,
 
-    // metrics
-    #[command(flatten)]
-    #[serde(rename = "metrics_config")]
-    pub metrics_config: MetricsConfig,
+    /// Path to TLS certificate file
+    #[arg(long = "otel-tls-cert-path")]
+    pub cert_path: Option<String>,
 
-    // logs
-    #[command(flatten)]
-    #[serde(rename = "logs_config")]
-    pub logs_config: LogsConfig,
+    /// Path to TLS private key file
+    #[arg(long = "otel-tls-key-path")]
+    pub key_path: Option<String>,
 
-    /// Collection interval (ignored)
-    #[arg(help = "Collection interval in seconds (ignored)")]
-    #[serde(skip)]
-    pub _update_frequency: Option<u32>,
+    /// Path to TLS CA certificate file for client authentication (optional)
+    #[arg(long = "otel-tls-ca-cert-path")]
+    pub ca_cert_path: Option<String>,
 }
 
-impl Default for PluginConfig {
+impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            endpoint_config: EndpointConfig::default(),
-            metrics_config: MetricsConfig::default(),
-            logs_config: LogsConfig::default(),
-            _update_frequency: None,
+            enabled: false,
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
         }
-    }
-}
-
-impl PluginConfig {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = Self::parse();
-
-        // Validate configuration
-        if config.metrics_config.buffer_samples == 0 {
-            return Err("buffer_samples must be greater than 0".into());
-        }
-
-        if config.metrics_config.throttle_charts == 0 {
-            return Err("throttle_charts must be greater than 0".into());
-        }
-
-        // Validate endpoint format (basic check)
-        if !config.endpoint_config.path.contains(':') {
-            return Err("endpoint must be in format host:port".into());
-        }
-
-        // Validate TLS configuration
-        if config.endpoint_config.tls.enabled {
-            if config.endpoint_config.tls.cert_path.is_none() {
-                return Err("TLS certificate path must be provided when TLS is enabled".into());
-            }
-            if config.endpoint_config.tls.key_path.is_none() {
-                return Err("TLS private key path must be provided when TLS is enabled".into());
-            }
-        }
-
-        Ok(config)
-    }
-
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = fs::read_to_string(path)?;
-        let config: PluginConfig = serde_yaml::from_str(&contents)?;
-        Ok(config)
-    }
-
-    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let yaml_string = serde_yaml::to_string(self)?;
-        fs::write(path, yaml_string)?;
-        Ok(())
     }
 }
 
@@ -176,34 +125,84 @@ impl Default for LogsConfig {
     }
 }
 
-#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Parser, Clone, Serialize, Deserialize)]
+#[command(name = "otel-plugin")]
+#[command(about = "OpenTelemetry metrics and logs plugin.")]
+#[command(version = "0.1")]
 #[serde(default)]
-pub struct TlsConfig {
-    /// Enable TLS/SSL for secure connections
-    #[arg(long = "otel-tls-enabled")]
-    pub enabled: bool,
+pub struct PluginConfig {
+    // endpoint configuration (includes grpc endpoint and tls)
+    #[command(flatten)]
+    #[serde(rename = "endpoint")]
+    pub endpoint: EndpointConfig,
 
-    /// Path to TLS certificate file
-    #[arg(long = "otel-tls-cert-path")]
-    pub cert_path: Option<String>,
+    // metrics
+    #[command(flatten)]
+    #[serde(rename = "metrics")]
+    pub metrics: MetricsConfig,
 
-    /// Path to TLS private key file
-    #[arg(long = "otel-tls-key-path")]
-    pub key_path: Option<String>,
+    // logs
+    #[command(flatten)]
+    #[serde(rename = "logs")]
+    pub logs: LogsConfig,
 
-    /// Path to TLS CA certificate file for client authentication (optional)
-    #[arg(long = "otel-tls-ca-cert-path")]
-    pub ca_cert_path: Option<String>,
+    /// Collection interval (ignored)
+    #[arg(help = "Collection interval in seconds (ignored)")]
+    #[serde(skip)]
+    pub _update_frequency: Option<u32>,
 }
 
-impl Default for TlsConfig {
+impl Default for PluginConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            cert_path: None,
-            key_path: None,
-            ca_cert_path: None,
+            endpoint: EndpointConfig::default(),
+            metrics: MetricsConfig::default(),
+            logs: LogsConfig::default(),
+            _update_frequency: None,
         }
     }
 }
 
+impl PluginConfig {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let config = Self::parse();
+
+        // Validate configuration
+        if config.metrics.buffer_samples == 0 {
+            return Err("buffer_samples must be greater than 0".into());
+        }
+
+        if config.metrics.throttle_charts == 0 {
+            return Err("throttle_charts must be greater than 0".into());
+        }
+
+        // Validate endpoint format (basic check)
+        if !config.endpoint.path.contains(':') {
+            return Err("endpoint must be in format host:port".into());
+        }
+
+        // Validate TLS configuration
+        if config.endpoint.tls.enabled {
+            if config.endpoint.tls.cert_path.is_none() {
+                return Err("TLS certificate path must be provided when TLS is enabled".into());
+            }
+            if config.endpoint.tls.key_path.is_none() {
+                return Err("TLS private key path must be provided when TLS is enabled".into());
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let config: PluginConfig = serde_yaml::from_str(&contents)?;
+        Ok(config)
+    }
+
+    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let yaml_string = serde_yaml::to_string(self)?;
+        fs::write(path, yaml_string)?;
+        Ok(())
+    }
+}
