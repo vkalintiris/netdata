@@ -13,7 +13,6 @@ members = [
     "window_manager",
     "sigbus",
     "otel-plugin",
-    "otel-plugin/test-client",
     "flatten_otel",
     "netdata-bridge",
     "my-plugin"

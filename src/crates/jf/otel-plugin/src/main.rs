@@ -7,7 +7,10 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
 };
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tonic::{transport::{Server, Identity, ServerTlsConfig}, Request, Response, Status};
+use tonic::{
+    transport::{Identity, Server, ServerTlsConfig},
+    Request, Response, Status,
+};
 
 use std::sync::Arc;
 
@@ -18,6 +21,7 @@ mod regex_cache;
 use crate::regex_cache::RegexCache;
 
 mod chart_config;
+use crate::chart_config::ChartConfigManager;
 
 mod netdata_chart;
 use crate::netdata_chart::NetdataChart;
@@ -25,7 +29,7 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::{CliConfig, LogsConfig, MetricsConfig, PluginConfig, TlsConfig};
+use crate::plugin_config::{CliConfig, PluginConfig};
 
 mod journal_logs_service;
 use crate::journal_logs_service::NetdataLogsService;
@@ -35,17 +39,26 @@ struct NetdataMetricsService {
     regex_cache: RegexCache,
     charts: Arc<RwLock<HashMap<String, NetdataChart>>>,
     config: Arc<PluginConfig>,
+    chart_config_manager: ChartConfigManager,
     call_count: std::sync::atomic::AtomicU64,
 }
 
 impl NetdataMetricsService {
-    fn new(config: PluginConfig) -> Self {
-        Self {
+    fn new(config: PluginConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut chart_config_manager = ChartConfigManager::with_default_configs();
+
+        // Load user chart configs if directory is specified
+        if let Some(chart_configs_dir) = &config.metrics_config.chart_configs_dir {
+            chart_config_manager.load_user_configs(chart_configs_dir)?;
+        }
+
+        Ok(Self {
             regex_cache: RegexCache::default(),
             charts: Arc::default(),
             config: Arc::new(config),
+            chart_config_manager,
             call_count: std::sync::atomic::AtomicU64::new(0),
-        }
+        })
     }
 
     async fn cleanup_stale_charts(&self, max_age: std::time::Duration) {
@@ -75,11 +88,7 @@ impl MetricsService for NetdataMetricsService {
         let flattened_points = flatten_metrics_request(&req)
             .into_iter()
             .filter_map(|jm| {
-                let cfg = self
-                    .config
-                    .metrics_config
-                    .chart_config_manager
-                    .find_matching_config(&jm);
+                let cfg = self.chart_config_manager.find_matching_config(&jm);
                 FlattenedPoint::new(jm, cfg, &self.regex_cache)
             })
             .collect::<Vec<_>>();
@@ -147,23 +156,20 @@ impl MetricsService for NetdataMetricsService {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;
-    let metrics_config = MetricsConfig::from_cli_config(&cli_config);
-    let logs_config = LogsConfig::from_cli_config(&cli_config);
-    let tls_config = TlsConfig::from_cli_config(&cli_config);
-    let plugin_config = PluginConfig::new(&metrics_config, &logs_config, &tls_config);
+    let plugin_config = cli_config.create_plugin_config()?;
 
     let addr = cli_config.otel_endpoint.parse()?;
-    let metrics_service = NetdataMetricsService::new(plugin_config);
-    let logs_service = NetdataLogsService::new(&logs_config)?;
+    let metrics_service = NetdataMetricsService::new(plugin_config.clone())?;
+    let logs_service = NetdataLogsService::new(&plugin_config.logs_config)?;
 
     println!("TRUST_DURATIONS 1");
 
     let mut server_builder = Server::builder();
 
     // Configure TLS if enabled
-    if tls_config.enabled {
-        let cert_path = tls_config.cert_path.as_ref().unwrap();
-        let key_path = tls_config.key_path.as_ref().unwrap();
+    if plugin_config.tls_config.enabled {
+        let cert_path = plugin_config.tls_config.cert_path.as_ref().unwrap();
+        let key_path = plugin_config.tls_config.key_path.as_ref().unwrap();
 
         eprintln!("Loading TLS certificate from: {}", cert_path);
         eprintln!("Loading TLS private key from: {}", key_path);
@@ -175,16 +181,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
 
         // If CA certificate is provided, enable client authentication
-        if let Some(ca_cert_path) = &tls_config.ca_cert_path {
+        if let Some(ca_cert_path) = &plugin_config.tls_config.ca_cert_path {
             eprintln!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert = std::fs::read(ca_cert_path)?;
-            tls_config_builder = tls_config_builder.client_ca_root(tonic::transport::Certificate::from_pem(ca_cert));
+            tls_config_builder =
+                tls_config_builder.client_ca_root(tonic::transport::Certificate::from_pem(ca_cert));
         }
 
         server_builder = server_builder.tls_config(tls_config_builder)?;
         eprintln!("TLS enabled on endpoint: {}", cli_config.otel_endpoint);
     } else {
-        eprintln!("TLS disabled, using insecure connection on endpoint: {}", cli_config.otel_endpoint);
+        eprintln!(
+            "TLS disabled, using insecure connection on endpoint: {}",
+            cli_config.otel_endpoint
+        );
     }
 
     server_builder

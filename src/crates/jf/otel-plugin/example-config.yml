@@ -1,0 +1,45 @@
+# Example YAML configuration for otel-plugin
+# This file demonstrates all available configuration options
+
+metrics_config:
+  # Print flattened metrics to stdout for debugging
+  print_flattened: false
+  
+  # Number of samples to buffer for collection interval detection
+  buffer_samples: 10
+  
+  # Maximum number of new charts to create per collection interval
+  throttle_charts: 100
+  
+  # Directory containing user chart configuration YAML files
+  # If specified, all .yml and .yaml files in this directory will be loaded
+  chart_configs_dir: "/etc/netdata/otel-plugin/chart-configs"
+
+logs_config:
+  # Directory to store journal files for logs
+  journal_dir: "/var/log/netdata-journals"
+  
+  # Maximum file size for journal files (in MB)
+  max_file_size_mb: 100
+  
+  # Maximum number of journal files to keep
+  max_files: 10
+  
+  # Maximum total size for all journal files (in MB)
+  max_total_size_mb: 1000
+  
+  # Maximum age for journal entries (in days)
+  max_entry_age_days: 7
+
+tls_config:
+  # Enable TLS/SSL for secure connections
+  enabled: false
+  
+  # Path to TLS certificate file (required if enabled: true)
+  cert_path: "/etc/ssl/certs/otel-plugin.crt"
+  
+  # Path to TLS private key file (required if enabled: true)  
+  key_path: "/etc/ssl/private/otel-plugin.key"
+  
+  # Path to TLS CA certificate file for client authentication (optional)
+  ca_cert_path: "/etc/ssl/certs/ca.crt"

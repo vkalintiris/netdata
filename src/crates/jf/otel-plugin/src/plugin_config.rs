@@ -1,6 +1,7 @@
 use clap::Parser;
-
-use crate::chart_config::ChartConfigManager;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Parser)]
 #[command(name = "otel-plugin")]
@@ -10,6 +11,10 @@ pub struct CliConfig {
     /// gRPC endpoint to listen on
     #[arg(long, default_value = "0.0.0.0:21213")]
     pub otel_endpoint: String,
+
+    // metrics
+    #[command(flatten)]
+    metrics: MetricsConfig,
 
     /// Enable TLS/SSL for secure connections
     #[arg(long)]
@@ -59,6 +64,14 @@ pub struct CliConfig {
     #[arg(long, default_value = "7")]
     pub otel_logs_max_entry_age_days: u64,
 
+    /// Path to YAML configuration file to override default settings
+    #[arg(long)]
+    pub config_file: Option<String>,
+
+    /// Directory containing user chart configuration YAML files
+    #[arg(long)]
+    pub top_chart_configs_dir: Option<String>,
+
     /// Collection interval (ignored)
     #[arg(help = "Collection interval in seconds (ignored)")]
     pub _update_frequency: Option<u32>,
@@ -67,6 +80,7 @@ pub struct CliConfig {
 impl Default for CliConfig {
     fn default() -> Self {
         Self {
+            metrics: MetricsConfig::default(),
             otel_metrics_print_flattened: false,
             otel_metrics_buffer_samples: 10,
             otel_metrics_throttle_charts: 100,
@@ -80,6 +94,8 @@ impl Default for CliConfig {
             otel_logs_max_files: 10,
             otel_logs_max_total_size_mb: 1000,
             otel_logs_max_entry_age_days: 7,
+            config_file: None,
+            top_chart_configs_dir: None,
             _update_frequency: None,
         }
     }
@@ -115,14 +131,34 @@ impl CliConfig {
 
         Ok(config)
     }
+
+    pub fn create_plugin_config(&self) -> Result<PluginConfig, Box<dyn std::error::Error>> {
+        if let Some(config_file) = &self.config_file {
+            PluginConfig::from_yaml_file(config_file)
+        } else {
+            Ok(PluginConfig::from_cli_config(self))
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MetricsConfig {
+    /// Print flattened metrics to stdout for debugging
+    #[arg(long = "otel-metrics-print-flattened")]
     pub print_flattened: bool,
+
+    /// Number of samples to buffer for collection interval detection
+    #[arg(long, default_value = "10")]
     pub buffer_samples: usize,
+
+    /// Maximum number of new charts to create per collection interval
+    #[arg(long, default_value = "100")]
     pub throttle_charts: usize,
-    pub chart_config_manager: ChartConfigManager,
+
+    /// Directory to store journal files for logs
+    #[arg(long, default_value = Some("/foo/otel.d"))]
+    pub chart_configs_dir: Option<String>,
 }
 
 impl Default for MetricsConfig {
@@ -131,7 +167,7 @@ impl Default for MetricsConfig {
             print_flattened: false,
             buffer_samples: 10,
             throttle_charts: 100,
-            chart_config_manager: ChartConfigManager::with_default_configs(),
+            chart_configs_dir: None,
         }
     }
 }
@@ -142,12 +178,13 @@ impl MetricsConfig {
             print_flattened: cli_config.otel_metrics_print_flattened,
             buffer_samples: cli_config.otel_metrics_buffer_samples,
             throttle_charts: cli_config.otel_metrics_throttle_charts,
-            chart_config_manager: ChartConfigManager::with_default_configs(),
+            chart_configs_dir: cli_config.top_chart_configs_dir.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LogsConfig {
     pub journal_dir: String,
     pub max_file_size_mb: u64,
@@ -180,7 +217,8 @@ impl LogsConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TlsConfig {
     pub enabled: bool,
     pub cert_path: Option<String>,
@@ -210,7 +248,8 @@ impl TlsConfig {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PluginConfig {
     pub metrics_config: MetricsConfig,
     pub logs_config: LogsConfig,
@@ -218,11 +257,35 @@ pub struct PluginConfig {
 }
 
 impl PluginConfig {
-    pub fn new(metrics_config: &MetricsConfig, logs_config: &LogsConfig, tls_config: &TlsConfig) -> Self {
+    pub fn new(
+        metrics_config: &MetricsConfig,
+        logs_config: &LogsConfig,
+        tls_config: &TlsConfig,
+    ) -> Self {
         Self {
             metrics_config: metrics_config.clone(),
             logs_config: logs_config.clone(),
             tls_config: tls_config.clone(),
         }
+    }
+
+    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let config: PluginConfig = serde_yaml::from_str(&contents)?;
+        Ok(config)
+    }
+
+    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
+        let metrics_config = MetricsConfig::from_cli_config(cli_config);
+        let logs_config = LogsConfig::from_cli_config(cli_config);
+        let tls_config = TlsConfig::from_cli_config(cli_config);
+
+        Self::new(&metrics_config, &logs_config, &tls_config)
+    }
+
+    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let yaml_string = serde_yaml::to_string(self)?;
+        fs::write(path, yaml_string)?;
+        Ok(())
     }
 }
