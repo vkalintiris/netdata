@@ -1,5 +1,5 @@
 use flatten_otel::json_from_export_logs_service_request;
-use journal_log::{JournalLog, JournalLogConfig};
+use journal_log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
 use opentelemetry_proto::tonic::collector::logs::v1::{
     logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
@@ -18,11 +18,19 @@ impl NetdataLogsService {
         // Ensure journal directory exists
         std::fs::create_dir_all(&config.journal_dir)?;
 
+        let rotation_policy =
+            RotationPolicy::default().with_max_file_size(config.max_file_size_mb * 1024 * 1024);
+
+        let retention_policy = RetentionPolicy::default()
+            .with_max_files(config.max_files)
+            .with_max_total_size(config.max_total_size_mb * 1024 * 1024)
+            .with_max_entry_age(std::time::Duration::from_secs(
+                config.max_entry_age_days * 24 * 3600,
+            ));
+
         let journal_config = JournalLogConfig::new(&config.journal_dir)
-            .with_rotation_max_file_size(config.max_file_size_mb * 1024 * 1024)
-            .with_retention_max_files(config.max_files)
-            .with_retention_max_size(config.max_total_size_mb * 1024 * 1024)
-            .with_retention_max_duration(config.max_entry_age_days * 24 * 3600);
+            .with_rotation_policy(rotation_policy)
+            .with_retention_policy(retention_policy);
 
         let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config)?));
         Ok(NetdataLogsService { journal_log })

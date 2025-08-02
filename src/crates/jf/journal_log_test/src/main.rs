@@ -52,12 +52,12 @@ fn test_size_based_rotation() -> Result<(), Box<dyn std::error::Error>> {
     println!("TEST 1: Size-based Rotation");
     println!("========================================");
 
-    let config = JournalLogConfig::new(test_dir)
-        .with_rotation_max_file_size(32 * 1024) // 32KB per file (small for testing)
-        .with_rotation_max_duration(3600) // 1 hour (won't trigger)
-        .with_retention_max_size(1024 * 1024) // 1MB total (generous)
-        .with_retention_max_duration(24 * 3600) // 24 hours
-        .with_retention_max_files(10); // Max 10 files
+    let config = JournalLogConfig::new(test_dir);
+    // .with_rotation_max_file_size(32 * 1024) // 32KB per file (small for testing)
+    // .with_rotation_max_duration(3600) // 1 hour (won't trigger)
+    // .with_retention_max_size(1024 * 1024) // 1MB total (generous)
+    // .with_retention_max_duration(24 * 3600) // 24 hours
+    // .with_retention_max_files(10); // Max 10 files
 
     println!("Config: 32KB rotation size, 1MB total retention, 10 files max");
 
@@ -89,12 +89,12 @@ fn test_duration_based_rotation() -> Result<(), Box<dyn std::error::Error>> {
     println!("TEST 2: Duration-based Rotation");
     println!("========================================");
 
-    let config = JournalLogConfig::new(test_dir)
-        .with_rotation_max_file_size(1024 * 1024) // 1MB (won't trigger)
-        .with_rotation_max_duration(3) // 3 seconds duration
-        .with_retention_max_size(10 * 1024 * 1024) // 10MB total
-        .with_retention_max_duration(24 * 3600) // 24 hours
-        .with_retention_max_files(10); // Max 10 files
+    let config = JournalLogConfig::new(test_dir);
+    // .with_rotation_max_file_size(1024 * 1024) // 1MB (won't trigger)
+    // .with_rotation_max_duration(3) // 3 seconds duration
+    // .with_retention_max_size(10 * 1024 * 1024) // 10MB total
+    // .with_retention_max_duration(24 * 3600) // 24 hours
+    // .with_retention_max_files(10); // Max 10 files
 
     println!("Config: 3 second rotation duration, 1MB file size limit, 10MB total retention");
 
@@ -141,12 +141,12 @@ fn test_file_count_retention() -> Result<(), Box<dyn std::error::Error>> {
     println!("TEST 3: File Count Retention");
     println!("========================================");
 
-    let config = JournalLogConfig::new(test_dir)
-        .with_rotation_max_file_size(20 * 1024) // 20KB per file (small)
-        .with_rotation_max_duration(3600) // 1 hour
-        .with_retention_max_size(10 * 1024 * 1024) // 10MB total (generous)
-        .with_retention_max_duration(24 * 3600) // 24 hours
-        .with_retention_max_files(3); // Max 3 files only!
+    let config = JournalLogConfig::new(test_dir);
+    // .with_rotation_max_file_size(20 * 1024) // 20KB per file (small)
+    // .with_rotation_max_duration(3600) // 1 hour
+    // .with_retention_max_size(10 * 1024 * 1024) // 10MB total (generous)
+    // .with_retention_max_duration(24 * 3600) // 24 hours
+    // .with_retention_max_files(3); // Max 3 files only!
 
     println!("Config: 20KB rotation, MAX 3 FILES retention, 10MB total, 24h duration");
 
@@ -182,12 +182,12 @@ fn test_total_size_retention() -> Result<(), Box<dyn std::error::Error>> {
     println!("TEST 4: Total Size Retention");
     println!("========================================");
 
-    let config = JournalLogConfig::new(test_dir)
-        .with_rotation_max_file_size(25 * 1024) // 25KB per file
-        .with_rotation_max_duration(3600) // 1 hour
-        .with_retention_max_size(80 * 1024) // 80KB total (should allow ~3 files)
-        .with_retention_max_duration(24 * 3600) // 24 hours
-        .with_retention_max_files(20); // Large limit to test size limit
+    let config = JournalLogConfig::new(test_dir);
+    // .with_rotation_max_file_size(25 * 1024) // 25KB per file
+    // .with_rotation_max_duration(3600) // 1 hour
+    // .with_retention_max_size(80 * 1024) // 80KB total (should allow ~3 files)
+    // .with_retention_max_duration(24 * 3600) // 24 hours
+    // .with_retention_max_files(20); // Large limit to test size limit
 
     println!("Config: 25KB rotation, 80KB TOTAL SIZE retention, 20 files max");
 
@@ -215,50 +215,6 @@ fn test_total_size_retention() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn test_simple_duration_rotation() -> Result<(), Box<dyn std::error::Error>> {
-    let test_dir = "/home/cm/repos/nd/otel-plugin/src/crates/jf/journal_log_dir/";
-    clean_test_dir(test_dir)?;
-
-    println!("\n========================================");
-    println!("TEST 5: Simple Duration Rotation");
-    println!("========================================");
-
-    let config = JournalLogConfig::new(test_dir)
-        .with_rotation_max_file_size(1024 * 1024) // 1MB (won't trigger)
-        .with_rotation_max_duration(2) // 2 seconds duration
-        .with_retention_max_size(10 * 1024 * 1024) // 10MB total
-        .with_retention_max_duration(24 * 3600) // 24 hours
-        .with_retention_max_files(10); // Max 10 files
-
-    println!("Config: 2 second rotation duration, 1MB file size limit");
-
-    let mut journal = JournalLog::new(config)?;
-    print_directory_info(test_dir, "Initial");
-
-    println!("\nWriting entries with 3-second delays...");
-
-    for round in 0..3 {
-        println!("Round {} - writing 20 entries...", round + 1);
-
-        for i in 0..20 {
-            let message = format!("ROUND_{}_ENTRY_{:02}: Simple duration test to verify time-based rotation works correctly.", round, i);
-            let items_refs: Vec<&[u8]> =
-                vec![b"MESSAGE", message.as_bytes(), b"TEST", b"SIMPLE_DURATION"];
-            journal.write_entry(&items_refs)?;
-        }
-
-        print_directory_info(test_dir, &format!("After round {}", round + 1));
-
-        if round < 2 {
-            println!("Sleeping 3 seconds...");
-            std::thread::sleep(Duration::from_secs(3));
-        }
-    }
-
-    print_directory_info(test_dir, "Final Simple Duration Test");
-    Ok(())
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Journal Log Test Suite - Multiple Scenarios");
     println!("===========================================");
@@ -266,13 +222,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Uncomment the test you want to run:
 
     // Test 1: Size-based rotation
-    // test_size_based_rotation()?;
+    test_size_based_rotation()?;
 
     // Test 2: Duration-based rotation
-    // test_duration_based_rotation()?;
+    test_duration_based_rotation()?;
 
     // Test 3: File count retention
-    // test_file_count_retention()?;
+    test_file_count_retention()?;
 
     // Test 4: Total size retention
     test_total_size_retention()?;
