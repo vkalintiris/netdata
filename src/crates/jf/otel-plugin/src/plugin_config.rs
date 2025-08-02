@@ -144,7 +144,20 @@ impl Default for PluginConfig {
 
 impl PluginConfig {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = Self::parse();
+        let config = if atty::is(atty::Stream::Stdout) {
+            // Running from terminal, use CLI arguments
+            Self::parse()
+        } else {
+            // Not running from terminal, load from YAML file
+            match Self::from_yaml_file("/tmp/foo.yaml") {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!("Failed to load config from /tmp/foo.yaml: {}", e);
+                    eprintln!("Falling back to CLI argument parsing");
+                    Self::parse()
+                }
+            }
+        };
 
         // Validate configuration
         if config.metrics.buffer_samples == 0 {
@@ -161,7 +174,10 @@ impl PluginConfig {
         }
 
         // Validate TLS configuration
-        match (&config.endpoint.tls_cert_path, &config.endpoint.tls_key_path) {
+        match (
+            &config.endpoint.tls_cert_path,
+            &config.endpoint.tls_key_path,
+        ) {
             (Some(cert_path), Some(key_path)) => {
                 if cert_path.is_empty() {
                     return Err("TLS certificate path cannot be empty when provided".into());
@@ -171,10 +187,14 @@ impl PluginConfig {
                 }
             }
             (Some(_), None) => {
-                return Err("TLS private key path must be provided when TLS certificate is provided".into());
+                return Err(
+                    "TLS private key path must be provided when TLS certificate is provided".into(),
+                );
             }
             (None, Some(_)) => {
-                return Err("TLS certificate path must be provided when TLS private key is provided".into());
+                return Err(
+                    "TLS certificate path must be provided when TLS private key is provided".into(),
+                );
             }
             (None, None) => {
                 // TLS disabled, which is fine
@@ -188,11 +208,5 @@ impl PluginConfig {
         let contents = fs::read_to_string(path)?;
         let config: PluginConfig = serde_yaml::from_str(&contents)?;
         Ok(config)
-    }
-
-    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let yaml_string = serde_yaml::to_string(self)?;
-        fs::write(path, yaml_string)?;
-        Ok(())
     }
 }
