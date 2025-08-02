@@ -3,70 +3,43 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EndpointConfig {
+    /// gRPC endpoint to listen on
+    #[arg(long = "otel-endpoint", default_value = "0.0.0.0:21213")]
+    pub path: String,
+
+    /// TLS configuration
+    #[command(flatten)]
+    pub tls: TlsConfig,
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            path: String::from("0.0.0.0:21213"),
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "otel-plugin")]
 #[command(about = "OpenTelemetry metrics and logs plugin.")]
 #[command(version = "0.1")]
 pub struct CliConfig {
-    /// gRPC endpoint to listen on
-    #[arg(long, default_value = "0.0.0.0:21213")]
-    pub otel_endpoint: String,
+    // endpoint configuration (includes grpc endpoint and tls)
+    #[command(flatten)]
+    pub endpoint: EndpointConfig,
 
     // metrics
     #[command(flatten)]
     metrics: MetricsConfig,
 
-    /// Enable TLS/SSL for secure connections
-    #[arg(long)]
-    pub otel_tls_enabled: bool,
-
-    /// Path to TLS certificate file
-    #[arg(long)]
-    pub otel_tls_cert_path: Option<String>,
-
-    /// Path to TLS private key file
-    #[arg(long)]
-    pub otel_tls_key_path: Option<String>,
-
-    /// Path to TLS CA certificate file for client authentication (optional)
-    #[arg(long)]
-    pub otel_tls_ca_cert_path: Option<String>,
-
-    /// Print flattened metrics to stdout for debugging
-    #[arg(long)]
-    pub otel_metrics_print_flattened: bool,
-
-    /// Number of samples to buffer for collection interval detection
-    #[arg(long, default_value = "10")]
-    pub otel_metrics_buffer_samples: usize,
-
-    /// Maximum number of new charts to create per collection interval
-    #[arg(long, default_value = "100")]
-    pub otel_metrics_throttle_charts: usize,
-
-    /// Directory to store journal files for logs
-    #[arg(long, default_value = "/tmp/netdata-journals")]
-    pub otel_logs_journal_dir: String,
-
-    /// Maximum file size for journal files (in MB)
-    #[arg(long, default_value = "100")]
-    pub otel_logs_max_file_size_mb: u64,
-
-    /// Maximum number of journal files to keep
-    #[arg(long, default_value = "10")]
-    pub otel_logs_max_files: usize,
-
-    /// Maximum total size for all journal files (in MB)
-    #[arg(long, default_value = "1000")]
-    pub otel_logs_max_total_size_mb: u64,
-
-    /// Maximum age for journal entries (in days)
-    #[arg(long, default_value = "7")]
-    pub otel_logs_max_entry_age_days: u64,
-
-    /// Path to YAML configuration file to override default settings
-    #[arg(long)]
-    pub config_file: Option<String>,
+    // logs
+    #[command(flatten)]
+    logs: LogsConfig,
 
     /// Directory containing user chart configuration YAML files
     #[arg(long)]
@@ -80,21 +53,9 @@ pub struct CliConfig {
 impl Default for CliConfig {
     fn default() -> Self {
         Self {
+            endpoint: EndpointConfig::default(),
             metrics: MetricsConfig::default(),
-            otel_metrics_print_flattened: false,
-            otel_metrics_buffer_samples: 10,
-            otel_metrics_throttle_charts: 100,
-            otel_endpoint: String::from("0.0.0.0:21213"),
-            otel_tls_enabled: false,
-            otel_tls_cert_path: None,
-            otel_tls_key_path: None,
-            otel_tls_ca_cert_path: None,
-            otel_logs_journal_dir: String::from("/tmp/netdata-journals"),
-            otel_logs_max_file_size_mb: 100,
-            otel_logs_max_files: 10,
-            otel_logs_max_total_size_mb: 1000,
-            otel_logs_max_entry_age_days: 7,
-            config_file: None,
+            logs: LogsConfig::default(),
             top_chart_configs_dir: None,
             _update_frequency: None,
         }
@@ -106,25 +67,25 @@ impl CliConfig {
         let config = Self::parse();
 
         // Validate configuration
-        if config.otel_metrics_buffer_samples == 0 {
+        if config.metrics.buffer_samples == 0 {
             return Err("buffer_samples must be greater than 0".into());
         }
 
-        if config.otel_metrics_throttle_charts == 0 {
+        if config.metrics.throttle_charts == 0 {
             return Err("throttle_charts must be greater than 0".into());
         }
 
         // Validate endpoint format (basic check)
-        if !config.otel_endpoint.contains(':') {
+        if !config.endpoint.path.contains(':') {
             return Err("endpoint must be in format host:port".into());
         }
 
         // Validate TLS configuration
-        if config.otel_tls_enabled {
-            if config.otel_tls_cert_path.is_none() {
+        if config.endpoint.tls.enabled {
+            if config.endpoint.tls.cert_path.is_none() {
                 return Err("TLS certificate path must be provided when TLS is enabled".into());
             }
-            if config.otel_tls_key_path.is_none() {
+            if config.endpoint.tls.key_path.is_none() {
                 return Err("TLS private key path must be provided when TLS is enabled".into());
             }
         }
@@ -133,11 +94,7 @@ impl CliConfig {
     }
 
     pub fn create_plugin_config(&self) -> Result<PluginConfig, Box<dyn std::error::Error>> {
-        if let Some(config_file) = &self.config_file {
-            PluginConfig::from_yaml_file(config_file)
-        } else {
-            Ok(PluginConfig::from_cli_config(self))
-        }
+        Ok(PluginConfig::from_cli_config(self))
     }
 }
 
@@ -149,15 +106,15 @@ pub struct MetricsConfig {
     pub print_flattened: bool,
 
     /// Number of samples to buffer for collection interval detection
-    #[arg(long, default_value = "10")]
+    #[arg(long = "otel-metrics-buffer-samples", default_value = "10")]
     pub buffer_samples: usize,
 
     /// Maximum number of new charts to create per collection interval
-    #[arg(long, default_value = "100")]
+    #[arg(long = "otel-metrics-throttle-charts", default_value = "100")]
     pub throttle_charts: usize,
 
     /// Directory to store journal files for logs
-    #[arg(long, default_value = Some("/foo/otel.d"))]
+    #[arg(long = "otel-metrics-charts-configs-dir", default_value = Some("/foo/otel.d"))]
     pub chart_configs_dir: Option<String>,
 }
 
@@ -172,24 +129,30 @@ impl Default for MetricsConfig {
     }
 }
 
-impl MetricsConfig {
-    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
-        Self {
-            print_flattened: cli_config.otel_metrics_print_flattened,
-            buffer_samples: cli_config.otel_metrics_buffer_samples,
-            throttle_charts: cli_config.otel_metrics_throttle_charts,
-            chart_configs_dir: cli_config.top_chart_configs_dir.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogsConfig {
+    /// Directory to store journal files for logs
+    #[arg(
+        long = "otel-logs-journal-dir",
+        default_value = "/tmp/netdata-journals"
+    )]
     pub journal_dir: String,
+
+    /// Maximum file size for journal files (in MB)
+    #[arg(long = "otel-logs-max-file-size-mb", default_value = "100")]
     pub max_file_size_mb: u64,
+
+    /// Maximum number of journal files to keep
+    #[arg(long = "otel-logs-max-files", default_value = "10")]
     pub max_files: usize,
+
+    /// Maximum total size for all journal files (in MB)
+    #[arg(long = "otel-logs-max-total-size-mb", default_value = "1000")]
     pub max_total_size_mb: u64,
+
+    /// Maximum age for journal entries (in days)
+    #[arg(long = "otel-logs-max-entry-age-days", default_value = "7")]
     pub max_entry_age_days: u64,
 }
 
@@ -205,24 +168,23 @@ impl Default for LogsConfig {
     }
 }
 
-impl LogsConfig {
-    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
-        Self {
-            journal_dir: cli_config.otel_logs_journal_dir.clone(),
-            max_file_size_mb: cli_config.otel_logs_max_file_size_mb,
-            max_files: cli_config.otel_logs_max_files,
-            max_total_size_mb: cli_config.otel_logs_max_total_size_mb,
-            max_entry_age_days: cli_config.otel_logs_max_entry_age_days,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TlsConfig {
+    /// Enable TLS/SSL for secure connections
+    #[arg(long = "otel-tls-enabled")]
     pub enabled: bool,
+
+    /// Path to TLS certificate file
+    #[arg(long = "otel-tls-cert-path")]
     pub cert_path: Option<String>,
+
+    /// Path to TLS private key file
+    #[arg(long = "otel-tls-key-path")]
     pub key_path: Option<String>,
+
+    /// Path to TLS CA certificate file for client authentication (optional)
+    #[arg(long = "otel-tls-ca-cert-path")]
     pub ca_cert_path: Option<String>,
 }
 
@@ -237,35 +199,24 @@ impl Default for TlsConfig {
     }
 }
 
-impl TlsConfig {
-    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
-        Self {
-            enabled: cli_config.otel_tls_enabled,
-            cert_path: cli_config.otel_tls_cert_path.clone(),
-            key_path: cli_config.otel_tls_key_path.clone(),
-            ca_cert_path: cli_config.otel_tls_ca_cert_path.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PluginConfig {
+    pub endpoint_config: EndpointConfig,
     pub metrics_config: MetricsConfig,
     pub logs_config: LogsConfig,
-    pub tls_config: TlsConfig,
 }
 
 impl PluginConfig {
     pub fn new(
+        endpoint_config: &EndpointConfig,
         metrics_config: &MetricsConfig,
         logs_config: &LogsConfig,
-        tls_config: &TlsConfig,
     ) -> Self {
         Self {
+            endpoint_config: endpoint_config.clone(),
             metrics_config: metrics_config.clone(),
             logs_config: logs_config.clone(),
-            tls_config: tls_config.clone(),
         }
     }
 
@@ -276,11 +227,11 @@ impl PluginConfig {
     }
 
     pub fn from_cli_config(cli_config: &CliConfig) -> Self {
-        let metrics_config = MetricsConfig::from_cli_config(cli_config);
-        let logs_config = LogsConfig::from_cli_config(cli_config);
-        let tls_config = TlsConfig::from_cli_config(cli_config);
+        let endpoint_config = cli_config.endpoint.clone();
+        let metrics_config = cli_config.metrics.clone();
+        let logs_config = cli_config.logs.clone();
 
-        Self::new(&metrics_config, &logs_config, &tls_config)
+        Self::new(&endpoint_config, &metrics_config, &logs_config)
     }
 
     pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {

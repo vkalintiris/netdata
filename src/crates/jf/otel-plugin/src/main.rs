@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_config = CliConfig::new()?;
     let plugin_config = cli_config.create_plugin_config()?;
 
-    let addr = cli_config.otel_endpoint.parse()?;
+    let addr = cli_config.endpoint.path.parse()?;
     let metrics_service = NetdataMetricsService::new(plugin_config.clone())?;
     let logs_service = NetdataLogsService::new(&plugin_config.logs_config)?;
 
@@ -167,9 +167,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server_builder = Server::builder();
 
     // Configure TLS if enabled
-    if plugin_config.tls_config.enabled {
-        let cert_path = plugin_config.tls_config.cert_path.as_ref().unwrap();
-        let key_path = plugin_config.tls_config.key_path.as_ref().unwrap();
+    if plugin_config.endpoint_config.tls.enabled {
+        let cert_path = plugin_config
+            .endpoint_config
+            .tls
+            .cert_path
+            .as_ref()
+            .unwrap();
+        let key_path = plugin_config.endpoint_config.tls.key_path.as_ref().unwrap();
 
         eprintln!("Loading TLS certificate from: {}", cert_path);
         eprintln!("Loading TLS private key from: {}", key_path);
@@ -181,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
 
         // If CA certificate is provided, enable client authentication
-        if let Some(ca_cert_path) = &plugin_config.tls_config.ca_cert_path {
+        if let Some(ca_cert_path) = &plugin_config.endpoint_config.tls.ca_cert_path {
             eprintln!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert = std::fs::read(ca_cert_path)?;
             tls_config_builder =
@@ -189,11 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         server_builder = server_builder.tls_config(tls_config_builder)?;
-        eprintln!("TLS enabled on endpoint: {}", cli_config.otel_endpoint);
+        eprintln!("TLS enabled on endpoint: {}", cli_config.endpoint.path);
     } else {
         eprintln!(
             "TLS disabled, using insecure connection on endpoint: {}",
-            cli_config.otel_endpoint
+            cli_config.endpoint.path
         );
     }
 
