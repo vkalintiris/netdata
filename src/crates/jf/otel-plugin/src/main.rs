@@ -163,11 +163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut server_builder = Server::builder();
 
-    // Configure TLS if enabled
-    if config.endpoint.tls.enabled {
-        let cert_path = config.endpoint.tls.cert_path.as_ref().unwrap();
-        let key_path = config.endpoint.tls.key_path.as_ref().unwrap();
-
+    // Configure TLS if provided
+    if let (Some(cert_path), Some(key_path)) = (&config.endpoint.tls_cert_path, &config.endpoint.tls_key_path) {
         eprintln!("Loading TLS certificate from: {}", cert_path);
         eprintln!("Loading TLS private key from: {}", key_path);
 
@@ -178,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
 
         // If CA certificate is provided, enable client authentication
-        if let Some(ca_cert_path) = &config.endpoint.tls.ca_cert_path {
+        if let Some(ref ca_cert_path) = config.endpoint.tls_ca_cert_path {
             eprintln!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert = std::fs::read(ca_cert_path)?;
             tls_config_builder =

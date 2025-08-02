@@ -5,52 +5,31 @@ use std::path::Path;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TlsConfig {
-    /// Enable TLS/SSL for secure connections
-    #[arg(long = "otel-tls-enabled")]
-    pub enabled: bool,
-
-    /// Path to TLS certificate file
-    #[arg(long = "otel-tls-cert-path")]
-    pub cert_path: Option<String>,
-
-    /// Path to TLS private key file
-    #[arg(long = "otel-tls-key-path")]
-    pub key_path: Option<String>,
-
-    /// Path to TLS CA certificate file for client authentication (optional)
-    #[arg(long = "otel-tls-ca-cert-path")]
-    pub ca_cert_path: Option<String>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: None,
-            key_path: None,
-            ca_cert_path: None,
-        }
-    }
-}
-
-#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct EndpointConfig {
     /// gRPC endpoint to listen on
     #[arg(long = "otel-endpoint", default_value = "0.0.0.0:21213")]
     pub path: String,
 
-    /// TLS configuration
-    #[command(flatten)]
-    pub tls: TlsConfig,
+    /// Path to TLS certificate file (enables TLS when provided)
+    #[arg(long = "otel-tls-cert-path")]
+    pub tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file (required when TLS certificate is provided)
+    #[arg(long = "otel-tls-key-path")]
+    pub tls_key_path: Option<String>,
+
+    /// Path to TLS CA certificate file for client authentication (optional)
+    #[arg(long = "otel-tls-ca-cert-path")]
+    pub tls_ca_cert_path: Option<String>,
 }
 
 impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
             path: String::from("0.0.0.0:21213"),
-            tls: TlsConfig::default(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_ca_cert_path: None,
         }
     }
 }
@@ -182,12 +161,23 @@ impl PluginConfig {
         }
 
         // Validate TLS configuration
-        if config.endpoint.tls.enabled {
-            if config.endpoint.tls.cert_path.is_none() {
-                return Err("TLS certificate path must be provided when TLS is enabled".into());
+        match (&config.endpoint.tls_cert_path, &config.endpoint.tls_key_path) {
+            (Some(cert_path), Some(key_path)) => {
+                if cert_path.is_empty() {
+                    return Err("TLS certificate path cannot be empty when provided".into());
+                }
+                if key_path.is_empty() {
+                    return Err("TLS private key path cannot be empty when provided".into());
+                }
             }
-            if config.endpoint.tls.key_path.is_none() {
-                return Err("TLS private key path must be provided when TLS is enabled".into());
+            (Some(_), None) => {
+                return Err("TLS private key path must be provided when TLS certificate is provided".into());
+            }
+            (None, Some(_)) => {
+                return Err("TLS certificate path must be provided when TLS private key is provided".into());
+            }
+            (None, None) => {
+                // TLS disabled, which is fine
             }
         }
 
