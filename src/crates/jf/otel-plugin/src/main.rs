@@ -29,7 +29,7 @@ use crate::netdata_chart::NetdataChart;
 mod samples_table;
 
 mod plugin_config;
-use crate::plugin_config::{CliConfig, PluginConfig};
+use crate::plugin_config::PluginConfig;
 
 mod journal_logs_service;
 use crate::journal_logs_service::NetdataLogsService;
@@ -155,26 +155,25 @@ impl MetricsService for NetdataMetricsService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli_config = CliConfig::new()?;
-    let plugin_config = cli_config.create_plugin_config()?;
+    let config = PluginConfig::new()?;
 
-    let addr = cli_config.endpoint.path.parse()?;
-    let metrics_service = NetdataMetricsService::new(plugin_config.clone())?;
-    let logs_service = NetdataLogsService::new(&plugin_config.logs_config)?;
+    let addr = config.endpoint_config.path.parse()?;
+    let metrics_service = NetdataMetricsService::new(config.clone())?;
+    let logs_service = NetdataLogsService::new(&config.logs_config)?;
 
     println!("TRUST_DURATIONS 1");
 
     let mut server_builder = Server::builder();
 
     // Configure TLS if enabled
-    if plugin_config.endpoint_config.tls.enabled {
-        let cert_path = plugin_config
+    if config.endpoint_config.tls.enabled {
+        let cert_path = config
             .endpoint_config
             .tls
             .cert_path
             .as_ref()
             .unwrap();
-        let key_path = plugin_config.endpoint_config.tls.key_path.as_ref().unwrap();
+        let key_path = config.endpoint_config.tls.key_path.as_ref().unwrap();
 
         eprintln!("Loading TLS certificate from: {}", cert_path);
         eprintln!("Loading TLS private key from: {}", key_path);
@@ -186,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut tls_config_builder = ServerTlsConfig::new().identity(identity);
 
         // If CA certificate is provided, enable client authentication
-        if let Some(ca_cert_path) = &plugin_config.endpoint_config.tls.ca_cert_path {
+        if let Some(ca_cert_path) = &config.endpoint_config.tls.ca_cert_path {
             eprintln!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert = std::fs::read(ca_cert_path)?;
             tls_config_builder =
@@ -194,11 +193,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         server_builder = server_builder.tls_config(tls_config_builder)?;
-        eprintln!("TLS enabled on endpoint: {}", cli_config.endpoint.path);
+        eprintln!("TLS enabled on endpoint: {}", config.endpoint_config.path);
     } else {
         eprintln!(
             "TLS disabled, using insecure connection on endpoint: {}",
-            cli_config.endpoint.path
+            config.endpoint_config.path
         );
     }
 

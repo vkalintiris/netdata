@@ -3,6 +3,88 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug, Parser, Clone, Serialize, Deserialize)]
+#[command(name = "otel-plugin")]
+#[command(about = "OpenTelemetry metrics and logs plugin.")]
+#[command(version = "0.1")]
+#[serde(default)]
+pub struct PluginConfig {
+    // endpoint configuration (includes grpc endpoint and tls)
+    #[command(flatten)]
+    #[serde(rename = "endpoint_config")]
+    pub endpoint_config: EndpointConfig,
+
+    // metrics
+    #[command(flatten)]
+    #[serde(rename = "metrics_config")]
+    pub metrics_config: MetricsConfig,
+
+    // logs
+    #[command(flatten)]
+    #[serde(rename = "logs_config")]
+    pub logs_config: LogsConfig,
+
+    /// Collection interval (ignored)
+    #[arg(help = "Collection interval in seconds (ignored)")]
+    #[serde(skip)]
+    pub _update_frequency: Option<u32>,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            endpoint_config: EndpointConfig::default(),
+            metrics_config: MetricsConfig::default(),
+            logs_config: LogsConfig::default(),
+            _update_frequency: None,
+        }
+    }
+}
+
+impl PluginConfig {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let config = Self::parse();
+
+        // Validate configuration
+        if config.metrics_config.buffer_samples == 0 {
+            return Err("buffer_samples must be greater than 0".into());
+        }
+
+        if config.metrics_config.throttle_charts == 0 {
+            return Err("throttle_charts must be greater than 0".into());
+        }
+
+        // Validate endpoint format (basic check)
+        if !config.endpoint_config.path.contains(':') {
+            return Err("endpoint must be in format host:port".into());
+        }
+
+        // Validate TLS configuration
+        if config.endpoint_config.tls.enabled {
+            if config.endpoint_config.tls.cert_path.is_none() {
+                return Err("TLS certificate path must be provided when TLS is enabled".into());
+            }
+            if config.endpoint_config.tls.key_path.is_none() {
+                return Err("TLS private key path must be provided when TLS is enabled".into());
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let config: PluginConfig = serde_yaml::from_str(&contents)?;
+        Ok(config)
+    }
+
+    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let yaml_string = serde_yaml::to_string(self)?;
+        fs::write(path, yaml_string)?;
+        Ok(())
+    }
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EndpointConfig {
@@ -21,80 +103,6 @@ impl Default for EndpointConfig {
             path: String::from("0.0.0.0:21213"),
             tls: TlsConfig::default(),
         }
-    }
-}
-
-#[derive(Debug, Parser)]
-#[command(name = "otel-plugin")]
-#[command(about = "OpenTelemetry metrics and logs plugin.")]
-#[command(version = "0.1")]
-pub struct CliConfig {
-    // endpoint configuration (includes grpc endpoint and tls)
-    #[command(flatten)]
-    pub endpoint: EndpointConfig,
-
-    // metrics
-    #[command(flatten)]
-    metrics: MetricsConfig,
-
-    // logs
-    #[command(flatten)]
-    logs: LogsConfig,
-
-    /// Directory containing user chart configuration YAML files
-    #[arg(long)]
-    pub top_chart_configs_dir: Option<String>,
-
-    /// Collection interval (ignored)
-    #[arg(help = "Collection interval in seconds (ignored)")]
-    pub _update_frequency: Option<u32>,
-}
-
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: EndpointConfig::default(),
-            metrics: MetricsConfig::default(),
-            logs: LogsConfig::default(),
-            top_chart_configs_dir: None,
-            _update_frequency: None,
-        }
-    }
-}
-
-impl CliConfig {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = Self::parse();
-
-        // Validate configuration
-        if config.metrics.buffer_samples == 0 {
-            return Err("buffer_samples must be greater than 0".into());
-        }
-
-        if config.metrics.throttle_charts == 0 {
-            return Err("throttle_charts must be greater than 0".into());
-        }
-
-        // Validate endpoint format (basic check)
-        if !config.endpoint.path.contains(':') {
-            return Err("endpoint must be in format host:port".into());
-        }
-
-        // Validate TLS configuration
-        if config.endpoint.tls.enabled {
-            if config.endpoint.tls.cert_path.is_none() {
-                return Err("TLS certificate path must be provided when TLS is enabled".into());
-            }
-            if config.endpoint.tls.key_path.is_none() {
-                return Err("TLS private key path must be provided when TLS is enabled".into());
-            }
-        }
-
-        Ok(config)
-    }
-
-    pub fn create_plugin_config(&self) -> Result<PluginConfig, Box<dyn std::error::Error>> {
-        Ok(PluginConfig::from_cli_config(self))
     }
 }
 
@@ -199,44 +207,3 @@ impl Default for TlsConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PluginConfig {
-    pub endpoint_config: EndpointConfig,
-    pub metrics_config: MetricsConfig,
-    pub logs_config: LogsConfig,
-}
-
-impl PluginConfig {
-    pub fn new(
-        endpoint_config: &EndpointConfig,
-        metrics_config: &MetricsConfig,
-        logs_config: &LogsConfig,
-    ) -> Self {
-        Self {
-            endpoint_config: endpoint_config.clone(),
-            metrics_config: metrics_config.clone(),
-            logs_config: logs_config.clone(),
-        }
-    }
-
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = fs::read_to_string(path)?;
-        let config: PluginConfig = serde_yaml::from_str(&contents)?;
-        Ok(config)
-    }
-
-    pub fn from_cli_config(cli_config: &CliConfig) -> Self {
-        let endpoint_config = cli_config.endpoint.clone();
-        let metrics_config = cli_config.metrics.clone();
-        let logs_config = cli_config.logs.clone();
-
-        Self::new(&endpoint_config, &metrics_config, &logs_config)
-    }
-
-    pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let yaml_string = serde_yaml::to_string(self)?;
-        fs::write(path, yaml_string)?;
-        Ok(())
-    }
-}
