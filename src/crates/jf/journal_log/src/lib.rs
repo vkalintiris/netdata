@@ -463,6 +463,7 @@ impl JournalLog {
 
         let machine_id = journal_file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
+        // TODO: Use NETDATA_INVOCATION_ID
         let seqnum_id = generate_uuid();
 
         Ok(JournalLog {
