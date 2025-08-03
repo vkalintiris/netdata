@@ -109,11 +109,20 @@ impl ChartConfigManager {
     pub fn load_user_configs<P: AsRef<Path>>(&mut self, config_dir: P) -> Result<()> {
         // check dir
         let config_path = config_dir.as_ref();
-        if !config_path.exists() || !config_path.is_dir() {
-            return Ok(());
+        if !config_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Configuration directory does not exist: {}",
+                config_path.display()
+            ));
+        }
+        if !config_path.is_dir() {
+            return Err(anyhow::anyhow!(
+                "Configuration path is not a directory: {}",
+                config_path.display()
+            ));
         }
 
-        // collect them
+        // collect the yaml files
         let mut config_files: Vec<_> = std::fs::read_dir(config_path)
             .with_context(|| {
                 format!(
