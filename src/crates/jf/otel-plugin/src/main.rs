@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     let metrics_service =
         NetdataMetricsService::new(config.clone()).context("Failed to create metrics service")?;
     let logs_service =
-        NetdataLogsService::new(&config.logs).context("Failed to create logs service")?;
+        NetdataLogsService::new(config.clone()).context("Failed to create logs service")?;
 
     println!("TRUST_DURATIONS 1");
 

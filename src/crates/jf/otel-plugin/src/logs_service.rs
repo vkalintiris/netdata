@@ -8,25 +8,27 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
-use crate::plugin_config::LogsConfig;
+use crate::plugin_config::PluginConfig;
 
 pub struct NetdataLogsService {
     journal_log: Arc<Mutex<JournalLog>>,
 }
 
 impl NetdataLogsService {
-    pub fn new(config: &LogsConfig) -> Result<Self> {
-        let rotation_policy =
-            RotationPolicy::default().with_max_file_size(config.max_file_size_mb * 1024 * 1024);
+    pub fn new(plugin_config: PluginConfig) -> Result<Self> {
+        let logs_config = plugin_config.logs;
+
+        let rotation_policy = RotationPolicy::default()
+            .with_max_file_size(logs_config.max_file_size_mb * 1024 * 1024);
 
         let retention_policy = RetentionPolicy::default()
-            .with_max_files(config.max_files)
-            .with_max_total_size(config.max_total_size_mb * 1024 * 1024)
+            .with_max_files(logs_config.max_files)
+            .with_max_total_size(logs_config.max_total_size_mb * 1024 * 1024)
             .with_max_entry_age(std::time::Duration::from_secs(
-                config.max_entry_age_days * 24 * 3600,
+                logs_config.max_entry_age_days * 24 * 3600,
             ));
 
-        let journal_config = JournalLogConfig::new(&config.journal_dir)
+        let journal_config = JournalLogConfig::new(&logs_config.journal_dir)
             .with_rotation_policy(rotation_policy)
             .with_retention_policy(retention_policy);
 
@@ -34,7 +36,7 @@ impl NetdataLogsService {
             || {
                 format!(
                     "Failed to create journal log for directory: {}",
-                    config.journal_dir
+                    logs_config.journal_dir
                 )
             },
         )?));
