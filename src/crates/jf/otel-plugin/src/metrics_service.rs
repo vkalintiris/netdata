@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use flatten_otel::flatten_metrics_request;
 use opentelemetry_proto::tonic::collector::metrics::v1::{
-    metrics_service_server::MetricsService, ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    metrics_service_server::MetricsService, ExportMetricsServiceRequest,
+    ExportMetricsServiceResponse,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,12 +25,19 @@ pub struct NetdataMetricsService {
 }
 
 impl NetdataMetricsService {
-    pub fn new(config: PluginConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(config: PluginConfig) -> Result<Self> {
         let mut chart_config_manager = ChartConfigManager::with_default_configs();
 
         // Load user chart configs if directory is specified
         if let Some(chart_configs_dir) = &config.metrics.chart_configs_dir {
-            chart_config_manager.load_user_configs(chart_configs_dir)?;
+            chart_config_manager
+                .load_user_configs(chart_configs_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to load chart configs from directory: {}",
+                        chart_configs_dir
+                    )
+                })?;
         }
 
         Ok(Self {

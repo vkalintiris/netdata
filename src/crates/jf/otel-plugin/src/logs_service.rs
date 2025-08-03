@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
 use journal_log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
 use opentelemetry_proto::tonic::collector::logs::v1::{
@@ -14,10 +15,7 @@ pub struct NetdataLogsService {
 }
 
 impl NetdataLogsService {
-    pub fn new(config: &LogsConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        // Ensure journal directory exists
-        std::fs::create_dir_all(&config.journal_dir)?;
-
+    pub fn new(config: &LogsConfig) -> Result<Self> {
         let rotation_policy =
             RotationPolicy::default().with_max_file_size(config.max_file_size_mb * 1024 * 1024);
 
@@ -32,7 +30,14 @@ impl NetdataLogsService {
             .with_rotation_policy(rotation_policy)
             .with_retention_policy(retention_policy);
 
-        let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config)?));
+        let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config).with_context(
+            || {
+                format!(
+                    "Failed to create journal log for directory: {}",
+                    config.journal_dir
+                )
+            },
+        )?));
         Ok(NetdataLogsService { journal_log })
     }
 

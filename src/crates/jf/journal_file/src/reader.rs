@@ -1,9 +1,9 @@
 use crate::{
+    cursor::{JournalCursor, Location},
     file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
     filter::{JournalFilter, LogicalOp},
-    cursor::{JournalCursor, Location},
-    offset_array::Direction,
     object::{DataObject, FieldObject},
+    offset_array::Direction,
     value_guard::ValueGuard,
 };
 use error::Result;

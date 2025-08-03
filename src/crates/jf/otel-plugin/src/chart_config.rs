@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -117,10 +118,7 @@ impl ChartConfigManager {
         }
     }
 
-    pub fn load_user_configs<P: AsRef<Path>>(
-        &mut self,
-        config_dir: P,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_user_configs<P: AsRef<Path>>(&mut self, config_dir: P) -> Result<()> {
         // check dir
         let config_path = config_dir.as_ref();
         if !config_path.exists() || !config_path.is_dir() {
@@ -128,7 +126,13 @@ impl ChartConfigManager {
         }
 
         // collect them
-        let mut config_files: Vec<_> = std::fs::read_dir(config_path)?
+        let mut config_files: Vec<_> = std::fs::read_dir(config_path)
+            .with_context(|| {
+                format!(
+                    "Failed to read chart config directory: {}",
+                    config_path.display()
+                )
+            })?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();

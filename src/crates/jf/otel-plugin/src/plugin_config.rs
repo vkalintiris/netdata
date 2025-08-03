@@ -1,5 +1,6 @@
 use crate::netdata_env::NetdataEnv;
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -139,21 +140,33 @@ pub struct PluginConfig {
 }
 
 impl PluginConfig {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new() -> Result<Self> {
         let netdata_env = NetdataEnv::from_environment();
 
         let config = if netdata_env.running_under_netdata() {
-            // load from user or stock files
-            if let Some(mut user_config_path) = netdata_env.user_config_dir.clone() {
-                user_config_path.push("otel.yml");
-                eprintln!("Loading user config file: {}", user_config_path.display());
-                Self::from_yaml_file(user_config_path)?
-            } else if let Some(mut stock_config_path) = netdata_env.stock_config_dir.clone() {
-                stock_config_path.push("otel.yml");
-                eprintln!("Loading stock config file: {}", stock_config_path.display());
-                Self::from_yaml_file(stock_config_path)?
+            // Try user config first, fallback to stock config
+            let user_config = netdata_env
+                .user_config_dir
+                .as_ref()
+                .map(|path| path.join("otel.yml"))
+                .and_then(|path| {
+                    Self::from_yaml_file(&path)
+                        .with_context(|| format!("Loading user config from {}", path.display()))
+                        .ok()
+                });
+
+            if let Some(config) = user_config {
+                config
+            } else if let Some(stock_path) = netdata_env
+                .stock_config_dir
+                .as_ref()
+                .map(|p| p.join("otel.yml"))
+            {
+                Self::from_yaml_file(&stock_path).with_context(|| {
+                    format!("Loading stock config from {}", stock_path.display())
+                })?
             } else {
-                return Err("Failed to load user and stock configuration file".into());
+                anyhow::bail!("No configuration directories available");
             }
         } else {
             // load from CLI args
@@ -162,16 +175,19 @@ impl PluginConfig {
 
         // Validate configuration
         if config.metrics.buffer_samples == 0 {
-            return Err("buffer_samples must be greater than 0".into());
+            anyhow::bail!("buffer_samples must be greater than 0");
         }
 
         if config.metrics.throttle_charts == 0 {
-            return Err("throttle_charts must be greater than 0".into());
+            anyhow::bail!("throttle_charts must be greater than 0");
         }
 
         // Validate endpoint format (basic check)
         if !config.endpoint.path.contains(':') {
-            return Err("endpoint must be in format host:port".into());
+            anyhow::bail!(
+                "endpoint must be in format host:port, got: {}",
+                config.endpoint.path
+            );
         }
 
         // Validate TLS configuration
@@ -181,20 +197,20 @@ impl PluginConfig {
         ) {
             (Some(cert_path), Some(key_path)) => {
                 if cert_path.is_empty() {
-                    return Err("TLS certificate path cannot be empty when provided".into());
+                    anyhow::bail!("TLS certificate path cannot be empty when provided");
                 }
                 if key_path.is_empty() {
-                    return Err("TLS private key path cannot be empty when provided".into());
+                    anyhow::bail!("TLS private key path cannot be empty when provided");
                 }
             }
             (Some(_), None) => {
-                return Err(
-                    "TLS private key path must be provided when TLS certificate is provided".into(),
+                anyhow::bail!(
+                    "TLS private key path must be provided when TLS certificate is provided"
                 );
             }
             (None, Some(_)) => {
-                return Err(
-                    "TLS certificate path must be provided when TLS private key is provided".into(),
+                anyhow::bail!(
+                    "TLS certificate path must be provided when TLS private key is provided"
                 );
             }
             (None, None) => {
@@ -205,9 +221,12 @@ impl PluginConfig {
         Ok(config)
     }
 
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = fs::read_to_string(path)?;
-        let config: PluginConfig = serde_yaml::from_str(&contents)?;
+    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let config: PluginConfig = serde_yaml::from_str(&contents)
+            .with_context(|| format!("Failed to parse YAML config file: {}", path.display()))?;
         Ok(config)
     }
 }

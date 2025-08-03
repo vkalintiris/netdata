@@ -1,6 +1,6 @@
 use crate::{
-    offset_array::{Direction, InlinedCursor},
     file::JournalFile,
+    offset_array::{Direction, InlinedCursor},
 };
 use error::{JournalError, Result};
 use std::num::NonZeroU64;
