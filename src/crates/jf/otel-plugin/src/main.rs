@@ -7,6 +7,7 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 mod chart_config;
 mod flattened_point;
 mod netdata_chart;
+mod netdata_env;
 mod regex_cache;
 mod samples_table;
 

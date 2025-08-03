@@ -1,3 +1,5 @@
+use crate::netdata_env::NetdataEnv;
+
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -104,7 +106,7 @@ impl Default for LogsConfig {
     }
 }
 
-#[derive(Debug, Parser, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Parser, Clone, Serialize, Deserialize)]
 #[command(name = "otel-plugin")]
 #[command(about = "OpenTelemetry metrics and logs plugin.")]
 #[command(version = "0.1")]
@@ -126,37 +128,26 @@ pub struct PluginConfig {
     pub logs: LogsConfig,
 
     /// Collection interval (ignored)
-    #[arg(help = "Collection interval in seconds (ignored)")]
+    #[arg(hide = true, help = "Collection interval in seconds (ignored)")]
     #[serde(skip)]
     pub _update_frequency: Option<u32>,
-}
 
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: EndpointConfig::default(),
-            metrics: MetricsConfig::default(),
-            logs: LogsConfig::default(),
-            _update_frequency: None,
-        }
-    }
+    // netdata env variables
+    #[arg(skip)]
+    #[serde(skip)]
+    pub netdata_env: NetdataEnv,
 }
 
 impl PluginConfig {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = if atty::is(atty::Stream::Stdout) {
-            // Running from terminal, use CLI arguments
-            Self::parse()
+        let netdata_env = NetdataEnv::from_environment();
+
+        let config = if netdata_env.running_under_netdata() {
+            // load from YAML file
+            Self::from_yaml_file("/tmp/foo.yaml")?
         } else {
-            // Not running from terminal, load from YAML file
-            match Self::from_yaml_file("/tmp/foo.yaml") {
-                Ok(config) => config,
-                Err(e) => {
-                    eprintln!("Failed to load config from /tmp/foo.yaml: {}", e);
-                    eprintln!("Falling back to CLI argument parsing");
-                    Self::parse()
-                }
-            }
+            // load from CLI args
+            Self::parse()
         };
 
         // Validate configuration
