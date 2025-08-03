@@ -1,13 +1,16 @@
-use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
-use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::logs_service_server::LogsServiceServer,
+    metrics::v1::metrics_service_server::MetricsServiceServer,
+};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 mod chart_config;
 mod flattened_point;
 mod netdata_chart;
-mod plugin_config;
 mod regex_cache;
 mod samples_table;
+
+mod plugin_config;
 use crate::plugin_config::PluginConfig;
 
 mod logs_service;
