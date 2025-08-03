@@ -143,8 +143,18 @@ impl PluginConfig {
         let netdata_env = NetdataEnv::from_environment();
 
         let config = if netdata_env.running_under_netdata() {
-            // load from YAML file
-            Self::from_yaml_file("/tmp/foo.yaml")?
+            // load from user or stock files
+            if let Some(mut user_config_path) = netdata_env.user_config_dir.clone() {
+                user_config_path.push("otel.yml");
+                eprintln!("Loading user config file: {}", user_config_path.display());
+                Self::from_yaml_file(user_config_path)?
+            } else if let Some(mut stock_config_path) = netdata_env.stock_config_dir.clone() {
+                stock_config_path.push("otel.yml");
+                eprintln!("Loading stock config file: {}", stock_config_path.display());
+                Self::from_yaml_file(stock_config_path)?
+            } else {
+                return Err("Failed to load user and stock configuration file".into());
+            }
         } else {
             // load from CLI args
             Self::parse()
