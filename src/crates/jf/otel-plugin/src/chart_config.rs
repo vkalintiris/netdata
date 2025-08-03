@@ -80,18 +80,6 @@ impl ChartConfigManager {
         manager
     }
 
-    // pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-    //     let contents = fs::read_to_string(path)?;
-    //     let chart_configs: ChartConfigs = serde_yaml::from_str(&contents)?;
-    //     Ok(manager)
-    // }
-
-    // pub fn to_yaml_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-    //     let yaml_string = serde_yaml::to_string(&self.stock)?;
-    //     fs::write(path, yaml_string)?;
-    //     Ok(())
-    // }
-
     pub fn find_matching_config(
         &self,
         json_map: &JsonMap<String, JsonValue>,
