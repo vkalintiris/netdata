@@ -54,8 +54,8 @@ pub struct MetricsConfig {
     #[arg(long = "otel-metrics-throttle-charts", default_value = "100")]
     pub throttle_charts: usize,
 
-    /// Directory to store journal files for logs
-    #[arg(long = "otel-metrics-charts-configs-dir", default_value = Some("/foo/otel.d"))]
+    /// Directory with configuration files for mapping OTEL metrics to Netdata charts
+    #[arg(long = "otel-metrics-charts-configs-dir")]
     pub chart_configs_dir: Option<String>,
 }
 
