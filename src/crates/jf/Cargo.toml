@@ -56,6 +56,8 @@ atty = "0.2"
 anyhow = "1.0"
 humantime-serde = "1.1"
 humantime = "2.2"
+bytesize = "1.0"
+bytesize-serde = "0.2"
 
 clap = { version = "4.5", features = ["derive", "env"] }
 

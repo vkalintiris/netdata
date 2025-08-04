@@ -26,5 +26,5 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 humantime-serde = { workspace = true }
 humantime = { workspace = true }
-bytesize = "1.0"
-bytesize-serde = "0.2"
+bytesize = { workspace = true }
+bytesize-serde = { workspace = true }
