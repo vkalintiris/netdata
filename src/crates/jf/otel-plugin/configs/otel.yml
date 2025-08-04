@@ -24,11 +24,13 @@ metrics:
   # Maximum number of new charts to create per collection interval
   throttle_charts: 100
 
-  # Directory with configuration files for mapping OTEL metrics to Netdata charts.
+  # Directory with configuration files for mapping OTEL metrics to Netdata charts
+  # (relative paths are resolved based on Netdata's user configuration directory)
   chart_configs_dir: otel.d/v1/metrics
 
 logs:
   # Directory to store journal files for logs.
+  # (relative paths are resolved based on Netdata's log directory)
   journal_dir: otel/v1
 
   # Maximum file size for individual journal files (e.g., "100MB", "1.5GB").
