@@ -1,10 +1,12 @@
 use crate::netdata_env::NetdataEnv;
 
 use anyhow::{Context, Result};
+use bytesize::ByteSize;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -68,6 +70,17 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Parse a duration string for clap (e.g., "7 days", "1 week", "168h")
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s)
+        .map_err(|e| format!("Invalid duration format: '{}'. Use formats like '7 days', '1 week', '168h'. Error: {}", s, e))
+}
+
+/// Parse a bytesize string for clap (e.g., "100MB", "1.5GB", "512MiB")
+fn parse_bytesize(s: &str) -> Result<ByteSize, String> {
+    s.parse().map_err(|e| format!("Invalid size format: '{}'. Use formats like '100MB', '1.5GB', '512MiB'. Error: {}", s, e))
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogsConfig {
@@ -78,12 +91,14 @@ pub struct LogsConfig {
     )]
     pub journal_dir: String,
 
-    /// Maximum file size for journal files (in MB)
+    /// Maximum file size for journal files (accepts human-readable sizes like "100MB", "1.5GB")
     #[arg(
         long = "otel-logs-rotation-size-of-journal-file",
-        default_value = "100"
+        default_value = "100MB",
+        value_parser = parse_bytesize
     )]
-    pub size_of_journal_file: u64,
+    #[serde(with = "bytesize_serde")]
+    pub size_of_journal_file: ByteSize,
 
     /// Maximum number of journal files to keep
     #[arg(
@@ -92,29 +107,43 @@ pub struct LogsConfig {
     )]
     pub number_of_journal_files: usize,
 
-    /// Maximum total size for all journal files (in MB)
+    /// Maximum total size for all journal files (accepts human-readable sizes like "1GB", "500MB")
     #[arg(
         long = "otel-logs-retention-size-of-journal-files",
-        default_value = "1000"
+        default_value = "1GB",
+        value_parser = parse_bytesize
     )]
-    pub size_of_journal_files: u64,
+    #[serde(with = "bytesize_serde")]
+    pub size_of_journal_files: ByteSize,
 
-    /// Maximum age for journal entries (in days)
+    /// Maximum age for journal entries (accepts human-readable durations like "7 days", "1 week", "168h")
     #[arg(
         long = "otel-logs-retention-duration-of-journal-files",
-        default_value = "7"
+        default_value = "7 days",
+        value_parser = parse_duration
     )]
-    pub duration_of_journal_files: u64,
+    #[serde(with = "humantime_serde")]
+    pub duration_of_journal_files: Duration,
+
+    /// Maximum duration that entries in a single journal file can span (accepts human-readable durations like "2 hours", "1h", "30m")
+    #[arg(
+        long = "otel-logs-rotation-duration-of-journal-file",
+        default_value = "2 hours",
+        value_parser = parse_duration
+    )]
+    #[serde(with = "humantime_serde")]
+    pub duration_of_journal_file: Duration,
 }
 
 impl Default for LogsConfig {
     fn default() -> Self {
         Self {
             journal_dir: String::from("/tmp/netdata-journals"),
-            size_of_journal_file: 100,
+            size_of_journal_file: ByteSize::mb(100),
             number_of_journal_files: 10,
-            size_of_journal_files: 1000,
-            duration_of_journal_files: 7,
+            size_of_journal_files: ByteSize::gb(1),
+            duration_of_journal_files: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
+            duration_of_journal_file: Duration::from_secs(2 * 60 * 60), // 2 hours
         }
     }
 }

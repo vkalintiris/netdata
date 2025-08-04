@@ -24,3 +24,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 atty = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+humantime-serde = { workspace = true }
+humantime = { workspace = true }
+bytesize = "1.0"
+bytesize-serde = "0.2"

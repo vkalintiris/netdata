@@ -25,6 +25,8 @@ use crate::metrics_service::NetdataMetricsService;
 async fn main() -> Result<()> {
     let config = PluginConfig::new().context("Failed to initialize plugin configuration")?;
 
+    eprintln!("config: {:#?}", config);
+
     let addr =
         config.endpoint.path.parse().with_context(|| {
             format!("Failed to parse endpoint address: {}", config.endpoint.path)

@@ -19,14 +19,13 @@ impl NetdataLogsService {
         let logs_config = plugin_config.logs;
 
         let rotation_policy = RotationPolicy::default()
-            .with_size_of_journal_file(logs_config.size_of_journal_file * 1024 * 1024);
+            .with_size_of_journal_file(logs_config.size_of_journal_file.as_u64())
+            .with_duration_of_journal_file(logs_config.duration_of_journal_file);
 
         let retention_policy = RetentionPolicy::default()
             .with_number_of_journal_files(logs_config.number_of_journal_files)
-            .with_size_of_journal_files(logs_config.size_of_journal_files * 1024 * 1024)
-            .with_duration_of_journal_files(std::time::Duration::from_secs(
-                logs_config.duration_of_journal_files * 24 * 3600,
-            ));
+            .with_size_of_journal_files(logs_config.size_of_journal_files.as_u64())
+            .with_duration_of_journal_files(logs_config.duration_of_journal_files);
 
         let journal_config = JournalLogConfig::new(&logs_config.journal_dir)
             .with_rotation_policy(rotation_policy)
