@@ -3177,6 +3177,16 @@ if(ENABLE_PLUGIN_OTEL)
     corrosion_install(TARGETS otel-plugin
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
                       COMPONENT plugin-otel)
+
+    install(FILES src/crates/jf/otel-plugin/configs/otel.yml
+            COMPONENT plugin-otel
+            DESTINATION usr/lib/netdata/conf.d)
+
+    install(FILES src/crates/jf/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yml
+            COMPONENT plugin-otel
+            DESTINATION usr/lib/netdata/conf.d/otel.d/v1)
+
+    install(DIRECTORY COMPONENT plugin-otel DESTINATION etc/netdata/otel.d/v1/metrics)
 endif()
 
 #
@@ -3602,6 +3612,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
                 ${CMAKE_BINARY_DIR}/tests/ebpf/ebpf_thread_function.sh
                 DESTINATION usr/libexec/netdata/plugins.d)
 endif()
+
 #
 # charts.d plugin
 #
