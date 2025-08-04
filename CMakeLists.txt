@@ -3184,7 +3184,7 @@ if(ENABLE_PLUGIN_OTEL)
 
     install(FILES src/crates/jf/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yml
             COMPONENT plugin-otel
-            DESTINATION usr/lib/netdata/conf.d/otel.d/v1)
+            DESTINATION usr/lib/netdata/conf.d/otel.d/v1/metrics)
 
     install(DIRECTORY COMPONENT plugin-otel DESTINATION etc/netdata/otel.d/v1/metrics)
 endif()
