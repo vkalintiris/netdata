@@ -79,30 +79,42 @@ pub struct LogsConfig {
     pub journal_dir: String,
 
     /// Maximum file size for journal files (in MB)
-    #[arg(long = "otel-logs-max-file-size-mb", default_value = "100")]
-    pub max_file_size_mb: u64,
+    #[arg(
+        long = "otel-logs-rotation-size-of-journal-file",
+        default_value = "100"
+    )]
+    pub size_of_journal_file: u64,
 
     /// Maximum number of journal files to keep
-    #[arg(long = "otel-logs-max-files", default_value = "10")]
-    pub max_files: usize,
+    #[arg(
+        long = "otel-logs-retention-number-of-journal-files",
+        default_value = "10"
+    )]
+    pub number_of_journal_files: usize,
 
     /// Maximum total size for all journal files (in MB)
-    #[arg(long = "otel-logs-max-total-size-mb", default_value = "1000")]
-    pub max_total_size_mb: u64,
+    #[arg(
+        long = "otel-logs-retention-size-of-journal-files",
+        default_value = "1000"
+    )]
+    pub size_of_journal_files: u64,
 
     /// Maximum age for journal entries (in days)
-    #[arg(long = "otel-logs-max-entry-age-days", default_value = "7")]
-    pub max_entry_age_days: u64,
+    #[arg(
+        long = "otel-logs-retention-duration-of-journal-files",
+        default_value = "7"
+    )]
+    pub duration_of_journal_files: u64,
 }
 
 impl Default for LogsConfig {
     fn default() -> Self {
         Self {
             journal_dir: String::from("/tmp/netdata-journals"),
-            max_file_size_mb: 100,
-            max_files: 10,
-            max_total_size_mb: 1000,
-            max_entry_age_days: 7,
+            size_of_journal_file: 100,
+            number_of_journal_files: 10,
+            size_of_journal_files: 1000,
+            duration_of_journal_files: 7,
         }
     }
 }

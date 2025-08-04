@@ -107,19 +107,19 @@ impl PartialOrd for JournalFileInfo {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct RotationPolicy {
     /// Maximum file size before rotating (in bytes)
-    pub max_file_size: Option<u64>,
+    pub size_of_journal_file: Option<u64>,
     /// Maximum duration that entries in a single file can span
-    pub max_file_duration: Option<Duration>,
+    pub duration_of_journal_file: Option<Duration>,
 }
 
 impl RotationPolicy {
-    pub fn with_max_file_size(mut self, max_size: u64) -> Self {
-        self.max_file_size = Some(max_size);
+    pub fn with_size_of_journal_file(mut self, size_of_journal_file: u64) -> Self {
+        self.size_of_journal_file = Some(size_of_journal_file);
         self
     }
 
-    pub fn with_max_file_duration(mut self, max_duration: Duration) -> Self {
-        self.max_file_duration = Some(max_duration);
+    pub fn with_duration_of_journal_file(mut self, duration_of_journal_file: Duration) -> Self {
+        self.duration_of_journal_file = Some(duration_of_journal_file);
         self
     }
 }
@@ -128,26 +128,26 @@ impl RotationPolicy {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct RetentionPolicy {
     /// Maximum number of journal files to keep
-    pub max_files: Option<usize>,
+    pub number_of_journal_files: Option<usize>,
     /// Maximum total size of all journal files (in bytes)
-    pub max_size: Option<u64>,
+    pub size_of_journal_files: Option<u64>,
     /// Maximum age of files to keep
-    pub max_duration: Option<Duration>,
+    pub duration_of_journal_files: Option<Duration>,
 }
 
 impl RetentionPolicy {
-    pub fn with_max_files(mut self, max_files: usize) -> Self {
-        self.max_files = Some(max_files);
+    pub fn with_number_of_journal_files(mut self, number_of_journal_files: usize) -> Self {
+        self.number_of_journal_files = Some(number_of_journal_files);
         self
     }
 
-    pub fn with_max_total_size(mut self, max_size: u64) -> Self {
-        self.max_size = Some(max_size);
+    pub fn with_size_of_journal_files(mut self, size_of_journal_files: u64) -> Self {
+        self.size_of_journal_files = Some(size_of_journal_files);
         self
     }
 
-    pub fn with_max_entry_age(mut self, max_age: Duration) -> Self {
-        self.max_duration = Some(max_age);
+    pub fn with_duration_of_journal_files(mut self, duration_of_journal_files: Duration) -> Self {
+        self.duration_of_journal_files = Some(duration_of_journal_files);
         self
     }
 }
@@ -336,21 +336,21 @@ impl JournalDirectory {
         let policy = self.config.retention_policy;
 
         // 1. Remove by file count limit
-        if let Some(max_files) = policy.max_files {
+        if let Some(max_files) = policy.number_of_journal_files {
             while self.files.len() > max_files {
                 self.remove_oldest_file()?;
             }
         }
 
         // 2. Remove by total size limit
-        if let Some(max_total_size) = policy.max_size {
+        if let Some(max_total_size) = policy.size_of_journal_files {
             while self.total_size > max_total_size && !self.files.is_empty() {
                 self.remove_oldest_file()?;
             }
         }
 
         // 3. Remove by entry age limit
-        if let Some(max_entry_age) = policy.max_duration {
+        if let Some(max_entry_age) = policy.duration_of_journal_files {
             let cutoff_time = SystemTime::now()
                 .checked_sub(max_entry_age)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -381,12 +381,12 @@ impl JournalLogConfig {
         Self {
             journal_dir: journal_dir.into(),
             rotation_policy: RotationPolicy::default()
-                .with_max_file_size(100 * 1024 * 1024) // 100MB
-                .with_max_file_duration(Duration::from_secs(2 * 3600)), // 2 hours
+                .with_size_of_journal_file(100 * 1024 * 1024) // 100MB
+                .with_duration_of_journal_file(Duration::from_secs(2 * 3600)), // 2 hours
             retention_policy: RetentionPolicy::default()
-                .with_max_files(10) // 10 files
-                .with_max_total_size(1024 * 1024 * 1024) // 1GB
-                .with_max_entry_age(Duration::from_secs(7 * 24 * 3600)), // 7 days
+                .with_number_of_journal_files(10) // 10 files
+                .with_size_of_journal_files(1024 * 1024 * 1024) // 1GB
+                .with_duration_of_journal_files(Duration::from_secs(7 * 24 * 3600)), // 7 days
         }
     }
 
@@ -440,7 +440,9 @@ fn calculate_bucket_sizes(
         (data_buckets, field_buckets)
     } else {
         // Initial sizing based on rotation policy max file size
-        let max_file_size = rotation_policy.max_file_size.unwrap_or(8 * 1024 * 1024);
+        let max_file_size = rotation_policy
+            .size_of_journal_file
+            .unwrap_or(8 * 1024 * 1024);
 
         // 16 MiB -> 4096 data buckets
         let data_buckets = (max_file_size / 4096).max(1024) as usize;
@@ -530,7 +532,7 @@ impl JournalLog {
         let policy = self.directory.config.rotation_policy;
 
         // Check if the file size went over the limit
-        if let Some(max_size) = policy.max_file_size {
+        if let Some(max_size) = policy.size_of_journal_file {
             if writer.current_file_size() >= max_size {
                 return true;
             }
@@ -540,7 +542,7 @@ impl JournalLog {
         let Some(file) = &self.current_file else {
             return false;
         };
-        let Some(max_entry_span) = policy.max_file_duration else {
+        let Some(max_entry_span) = policy.duration_of_journal_file else {
             return false;
         };
         let Some(first_monotonic) = writer.first_entry_monotonic() else {
