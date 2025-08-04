@@ -72,13 +72,22 @@ impl Default for MetricsConfig {
 
 /// Parse a duration string for clap (e.g., "7 days", "1 week", "168h")
 fn parse_duration(s: &str) -> Result<Duration, String> {
-    humantime::parse_duration(s)
-        .map_err(|e| format!("Invalid duration format: '{}'. Use formats like '7 days', '1 week', '168h'. Error: {}", s, e))
+    humantime::parse_duration(s).map_err(|e| {
+        format!(
+            "Invalid duration format: '{}'. Use formats like '7 days', '1 week', '168h'. Error: {}",
+            s, e
+        )
+    })
 }
 
 /// Parse a bytesize string for clap (e.g., "100MB", "1.5GB", "512MiB")
 fn parse_bytesize(s: &str) -> Result<ByteSize, String> {
-    s.parse().map_err(|e| format!("Invalid size format: '{}'. Use formats like '100MB', '1.5GB', '512MiB'. Error: {}", s, e))
+    s.parse().map_err(|e| {
+        format!(
+            "Invalid size format: '{}'. Use formats like '100MB', '1.5GB', '512MiB'. Error: {}",
+            s, e
+        )
+    })
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +152,7 @@ impl Default for LogsConfig {
             number_of_journal_files: 10,
             size_of_journal_files: ByteSize::gb(1),
             duration_of_journal_files: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
-            duration_of_journal_file: Duration::from_secs(2 * 60 * 60), // 2 hours
+            duration_of_journal_file: Duration::from_secs(2 * 60 * 60),       // 2 hours
         }
     }
 }
