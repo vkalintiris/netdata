@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct EndpointConfig {
     /// gRPC endpoint to listen on
     #[arg(long = "otel-endpoint", default_value = "0.0.0.0:21213")]
@@ -40,7 +40,7 @@ impl Default for EndpointConfig {
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     /// Print flattened metrics to stdout for debugging
     #[arg(long = "otel-metrics-print-flattened")]
@@ -91,7 +91,7 @@ fn parse_bytesize(s: &str) -> Result<ByteSize, String> {
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct LogsConfig {
     /// Directory to store journal files for logs
     #[arg(
@@ -161,7 +161,7 @@ impl Default for LogsConfig {
 #[command(name = "otel-plugin")]
 #[command(about = "OpenTelemetry metrics and logs plugin.")]
 #[command(version = "0.1")]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct PluginConfig {
     // endpoint configuration (includes grpc endpoint and tls)
     #[command(flatten)]
