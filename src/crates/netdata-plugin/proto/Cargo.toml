@@ -1,0 +1,49 @@
+[package]
+name = "netdata-plugin-proto"
+version.workspace = true
+edition.workspace = true
+description = "Protobuf generated files for Netdata external plugin protocol."
+license = "Apache-2.0"
+autotests = false
+autobenches = false
+
+[lib]
+doctest = false
+bench = false
+
+[[test]]
+name = "proto_build"
+path = "tests/proto_build.rs"
+
+[features]
+default = ["full"]
+full = ["gen-tonic", "functions", "agent", "plugin", "with-serde"]
+
+# Code generation features
+gen-tonic-messages = ["tonic", "prost"]
+gen-tonic = ["gen-tonic-messages", "tonic/channel"]
+
+# Protocol message types
+functions = []
+
+# Service types
+agent = []
+
+# Service types
+plugin = []
+
+# Serialization support
+with-serde = ["serde", "serde_json"]
+
+[dependencies]
+prost = { version = "0.13", optional = true }
+tonic = { version = "0.12", optional = true }
+serde = { version = "1.0", optional = true, features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+
+[dev-dependencies]
+prost-build = "0.13"
+tonic-build = "0.12"
+tempfile = "3.0"
+serde_json = "1.0"
+textwrap = "0.16"
