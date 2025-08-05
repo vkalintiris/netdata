@@ -1,0 +1,339 @@
+#![allow(dead_code, unused_imports)]
+
+//! Example plugin demonstrating the netdata-plugin-runtime usage
+//!
+//! This example shows how to:
+//! - Create a plugin runtime
+//! - Register multiple functions with different behaviors
+//! - Handle plugin and function contexts
+//! - Manage transactions and cancellations
+//! - Access plugin statistics
+
+use netdata_plugin_protocol::{
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionDeclaration,
+    FunctionResult, HttpAccess,
+};
+use netdata_plugin_runtime::{ConfigDeclarable, FunctionContext, PluginContext, PluginRuntime};
+use netdata_plugin_schema::NetdataSchema;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tracing::{error, info};
+
+/// A simple greeting function
+async fn hello_function(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
+    info!(
+        "hello_function called: transaction={}, source={:?}",
+        fn_ctx.transaction_id(),
+        fn_ctx.source()
+    );
+
+    let response = format!(
+        "Hello from {}!\n\
+         Transaction: {}\n\
+         Function: {}\n\
+         Source: {}\n\
+         Elapsed: {:?}",
+        plugin_ctx.plugin_name(),
+        fn_ctx.transaction_id(),
+        fn_ctx.function_name(),
+        fn_ctx.source().unwrap_or("unknown"),
+        fn_ctx.elapsed(),
+    );
+
+    FunctionResult {
+        transaction: fn_ctx.transaction_id().clone(),
+        status: 200,
+        format: "text/plain".to_string(),
+        expires: 0,
+        payload: response.into_bytes(),
+    }
+}
+
+/// A function that processes data from the payload
+async fn process_data(_plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
+    info!(
+        "process_data called: transaction={}, has_payload={}",
+        fn_ctx.transaction_id(),
+        fn_ctx.payload().is_some()
+    );
+
+    // Check if we have payload data
+    let response = if let Some(payload) = fn_ctx.payload() {
+        match String::from_utf8(payload.to_vec()) {
+            Ok(data) => {
+                // Simulate some processing
+                let processed = data.to_uppercase();
+                format!(
+                    "Processed data successfully!\n\
+                     Original length: {}\n\
+                     Processed: {}",
+                    data.len(),
+                    processed
+                )
+            }
+            Err(e) => format!("Error decoding payload: {}", e),
+        }
+    } else {
+        "No payload data provided".to_string()
+    };
+
+    FunctionResult {
+        transaction: fn_ctx.transaction_id().clone(),
+        status: 200,
+        format: "text/plain".to_string(),
+        expires: 0,
+        payload: response.into_bytes(),
+    }
+}
+
+/// A slow function that can be cancelled
+async fn slow_function(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
+    info!(
+        "slow_function called: transaction={}, timeout={}s",
+        fn_ctx.transaction_id(),
+        fn_ctx.timeout()
+    );
+
+    // Simulate a slow operation with cancellation checks
+    for i in 0..10 {
+        // Check for cancellation via both methods:
+        // 1. Check if transaction was cancelled (explicit cancellation)
+        // 2. Check if function context is cancelled (shutdown or timeout)
+        if plugin_ctx
+            .is_transaction_cancelled(fn_ctx.transaction_id())
+            .await
+            || fn_ctx.is_cancelled()
+        {
+            info!(
+                "Transaction {} was cancelled after {} iterations (shutdown: {})",
+                fn_ctx.transaction_id(),
+                i,
+                fn_ctx.is_cancelled()
+            );
+            return FunctionResult {
+                transaction: fn_ctx.transaction_id().clone(),
+                status: 499, // Client Closed Request
+                format: "text/plain".to_string(),
+                expires: 0,
+                payload: format!("Operation cancelled after {} iterations", i).into_bytes(),
+            };
+        }
+
+        // Simulate work - can also use tokio::select! for immediate cancellation
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+                // Work completed
+            }
+            _ = fn_ctx.cancellation_token().cancelled() => {
+                info!("Detected cancellation during sleep");
+                return FunctionResult {
+                    transaction: fn_ctx.transaction_id().clone(),
+                    status: 499,
+                    format: "text/plain".to_string(),
+                    expires: 0,
+                    payload: format!("Operation cancelled during iteration {}", i).into_bytes(),
+                };
+            }
+        }
+    }
+
+    FunctionResult {
+        transaction: fn_ctx.transaction_id().clone(),
+        status: 200,
+        format: "text/plain".to_string(),
+        expires: 0,
+        payload: format!(
+            "Slow operation completed successfully after {:?}",
+            fn_ctx.elapsed()
+        )
+        .into_bytes(),
+    }
+}
+
+/// Get active transactions
+async fn get_transactions(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
+    let transactions = plugin_ctx.get_active_transactions().await;
+
+    let mut response = format!("Active transactions: {}\n\n", transactions.len());
+    for tx in transactions {
+        response.push_str(&format!(
+            "- Transaction: {}\n  Function: {}\n  Source: {:?}\n  Elapsed: {:?}\n  Cancelled: {}\n\n",
+            tx.id,
+            tx.function_name,
+            tx.source,
+            tx.elapsed(),
+            tx.cancelled
+        ));
+    }
+
+    FunctionResult {
+        transaction: fn_ctx.transaction_id().clone(),
+        status: 200,
+        format: "text/plain".to_string(),
+        expires: 0,
+        payload: response.into_bytes(),
+    }
+}
+
+pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let hello_func_decl = FunctionDeclaration::new(
+        "hello",
+        "Returns a friendly greeting with plugin statistics",
+    );
+    runtime
+        .register_function(hello_func_decl, hello_function)
+        .await?;
+
+    let process_func_decl = FunctionDeclaration::new("process", "Processes data from the payload");
+    runtime
+        .register_function(process_func_decl, process_data)
+        .await?;
+
+    let slow_func_decl = FunctionDeclaration::new("slow", "A slow operation that can be cancelled");
+    runtime
+        .register_function(slow_func_decl, slow_function)
+        .await?;
+
+    let transactions_func_decl =
+        FunctionDeclaration::new("transactions", "Get list of active transactions");
+    runtime
+        .register_function(transactions_func_decl, get_transactions)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let initial_value = Some(MyConfig::new("https://www.google.com", 80));
+    runtime.register_config::<MyConfig>(initial_value).await?;
+    Ok(())
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
+#[schemars(
+    title = "Demo Plugin Configuration",
+    description = "Configuration for the demo plugin",
+    extend("x-config-id" = "demo_plugin:my_config"),
+    extend("x-config-path" = "/collectors"),
+    extend("x-config-type" = "single"),
+    extend("x-config-status" = "running"),
+    extend("x-config-source-type" = "stock"),
+    extend("x-config-source" = "Plugin-generated configuration"),
+    extend("x-config-cmds" = "schema|get|update"),
+    extend("x-config-view-access" = 0),
+    extend("x-config-edit-access" = 0)
+)]
+struct MyConfig {
+    #[schemars(
+        title = "Server URL",
+        description = "The base URL for the server endpoint",
+        example = "https://api.example.com",
+        url,
+        extend("x-ui-help" = "Full URL including protocol (http:// or https://)"),
+        extend("x-ui-placeholder" = "https://example.com")
+    )]
+    url: String,
+
+    #[schemars(
+        title = "Port Number",
+        description = "TCP port for server connection",
+        range(min = 1, max = 65535),
+        example = 8080,
+        extend("x-ui-help" = "Standard TCP port number (1-65535)"),
+        extend("x-ui-placeholder" = "8080")
+    )]
+    port: u16,
+}
+
+impl MyConfig {
+    pub fn new(url: &str, port: u16) -> Self {
+        Self {
+            url: String::from(url),
+            port,
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing with tokio-console support
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        console_subscriber::init();
+    } else {
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("/tmp/demo_plugin.log")
+            .expect("Failed to open log file");
+
+        tracing_subscriber::fmt()
+            .with_writer(log_file)
+            .with_env_filter(
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
+            )
+            .init();
+    }
+
+    info!("Starting demo plugin...");
+
+    // Create the plugin runtime
+    let runtime = PluginRuntime::new("demo-plugin");
+
+    register_functions(&runtime).await?;
+
+    register_configs(&runtime).await?;
+
+    info!("All functions registered, starting runtime...");
+    info!("Try calling: FUNCTION tsx-01 10 'config demo_plugin:my_config schema'");
+
+    // ConfigDeclaration {
+    //     id: String::from("demo_plugin:my_config"),
+    //     status: DynCfgStatus::None,
+    //     type_: DynCfgType::Single,
+    //     path: String::from("/collectors"),
+    //     source_type: DynCfgSourceType::Stock,
+    //     source: String::from("Whatever source help info"),
+    //     cmds: DynCfgCmds::SCHEMA,
+    //     view_access: HttpAccess::empty(),
+    //     edit_access: HttpAccess::empty(),
+    // }
+    //
+    // functions_evloop_dyncfg_add(
+    //     wg,
+    //     "systemd-journal:monitored-directories",
+    //     "/logs/systemd-journal",
+    //     DYNCFG_STATUS_RUNNING,
+    //     DYNCFG_TYPE_SINGLE,
+    //     DYNCFG_SOURCE_TYPE_INTERNAL,
+    //     "internal",
+    //     DYNCFG_CMD_SCHEMA | DYNCFG_CMD_GET | DYNCFG_CMD_UPDATE,
+    //     HTTP_ACCESS_NONE,
+    //     HTTP_ACCESS_NONE,
+    //     systemd_journal_directories_dyncfg_cb,
+    //     NULL);
+
+    // "CONFIG 'demo_plugin:my_config' CREATE 'running' 'single' '/demo/plugin' 'internal' 'internal' 'schema get' 0 0"
+    // println!(
+    //     "CONFIG 'systemd-journal:monitored-directories' create 'running' 'single' '/logs/systemd-journal' 'internal' 'internal' 'get schema update' 0x0 0x0"
+    // );
+    println!(
+        "CONFIG 'demo_plugin:my_config' create 'running' 'single' '/foo/bar' 'internal' 'internal' 'schema get' 0x0 0x0"
+    );
+
+    // Run the plugin
+    match runtime.run().await {
+        Ok(()) => {
+            info!("Plugin runtime completed successfully");
+        }
+        Err(e) => {
+            error!("Plugin runtime error: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    info!("Exiting demo plugin");
+    std::process::exit(0)
+}

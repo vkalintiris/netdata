@@ -1,0 +1,69 @@
+[workspace]
+resolver = "2"
+members = [
+    "journal-query",
+    "log-viewer-plugin",
+    "types",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.clippy]
+collapsible_if = "allow"
+
+[workspace.dependencies]
+# Core dependencies
+anyhow = "1.0"
+async-trait = "0.1.89"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1.45", features = ["full"] }
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-journald = "0.3"
+tracing-opentelemetry = "0.32.0"
+opentelemetry = "0.31.0"
+opentelemetry_sdk = "0.31.0"
+opentelemetry-otlp = "0.31.0"
+
+# Netdata plugin
+schemars = "1.0"
+
+# Journal histogram dependencies
+atoi = "2.0"
+bitflags = "2.9"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+phf = { version = "0.12", default-features = false }
+phf_codegen = "0.12"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
+notify = "8.2"
+foyer = { version = "0.20.0", features = ["serde"] }
+lru = "0.16"
+parking_lot = "0.12"
+allocative = { version = "0.3.4" }
+hdrhistogram = { version = "7.5" }
+rayon = "1.11.0"
+
+rt = { path = "../netdata-plugin/rt" }
+netdata-plugin-error = { path = "../netdata-plugin/error" }
+netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
+netdata-plugin-schema = { path = "../netdata-plugin/schema" }
+journal = { path = "../journal" }
+journal-query = { path = "journal-query" }
+
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

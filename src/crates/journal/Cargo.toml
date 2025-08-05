@@ -1,0 +1,109 @@
+[package]
+name = "journal"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+collapsible_if = "allow"
+
+[features]
+allocative = ["dep:allocative", "roaring/allocative"]
+indexing-stats = ["dep:hdrhistogram"]
+serde-api = ["dep:flatten-serde-json"]
+
+[profile.release]
+debug = true
+
+[profile.dev]
+opt-level = 1
+debug = true
+debug-assertions = true
+
+[dependencies]
+# Core dependencies
+static_assertions = "1.1"
+thiserror = "1.0"
+zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
+libc = "0.2"
+memmap2 = "0.9"
+uuid = { version = "1.0", features = ["v4", "rng", "serde"] }
+
+# File format dependencies
+ruzstd = "0.8"
+zstd = "0.13"
+siphasher = "1.0"
+twox-hash = { version = "2.1", default-features = false, features = ["std"] }
+rand = "0.9"
+roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative", features = ["serde"] }
+lz4 = "1.25"
+serde = { version = "1.0", features = ["derive"] }
+rustc-hash = "2.1"
+
+# File index depedencies
+bincode = { version = "1.3" }
+
+# Registry dependencies
+notify = "8.2"
+parking_lot = "0.12"
+walkdir = "2.4"
+crossbeam-channel = "0.5"
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+bitvec = "1.0.1"
+serde_json = "1.0"
+anyhow = "1.0"
+arbitrary = "1.3"
+
+tracing = "0.1"
+allocative = { version = "0.3.4", optional = true }
+hdrhistogram = { version = "7.5", optional = true }
+tokio = { version = "1.35", features = ["rt", "sync", "macros", "rt-multi-thread"] }
+flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1", optional = true }
+
+[dev-dependencies]
+tempfile = { version = "3" }
+rayon = "1.10"
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = "0.3"
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "basic_usage_with_cache"
+path = "examples/basic_usage_with_cache.rs"
+
+[[example]]
+name = "histogram_viewer"
+path = "examples/histogram_viewer.rs"
+
+[[example]]
+name = "filtered_histogram_viewer"
+path = "examples/filtered_histogram_viewer.rs"
+
+[[example]]
+name = "file_index"
+path = "examples/file_index.rs"
+
+[[example]]
+name = "fuzzy_histogram_test"
+path = "examples/fuzzy_histogram_test.rs"
+
+[[example]]
+name = "paths"
+path = "examples/paths.rs"
+
+[[example]]
+name = "head_tail_seqnum"
+path = "examples/head_tail_seqnum.rs"
+
+[[example]]
+name = "structured_logging"
+path = "examples/structured_logging.rs"
+required-features = ["serde-api"]
+
+[[example]]
+name = "filtered_retrieval"
+path = "examples/filtered_retrieval.rs"
+
