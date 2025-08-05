@@ -1,0 +1,21 @@
+[package]
+name = "netdata-plugin-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+netdata-plugin-proto = { path = "../proto" }
+
+phf = { workspace = true }
+atoi = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+futures = "0.3"
+tokio = { version = "1.0", features = ["io-std"] }
+
+[build-dependencies]
+phf_codegen = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+futures-util = { version = "0.3", features = ["sink"] }

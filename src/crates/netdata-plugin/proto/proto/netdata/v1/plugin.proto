@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package netdata.v1;
+
+import "netdata/v1/functions.proto";
+
+// Service for managing plugin functions
+service Plugin {
+  // Call a function
+  rpc CallFunction(netdata.v1.FunctionCall) returns (FunctionResult) {}
+
+  // Cancel a function
+  rpc CancelFunction(netdata.v1.FunctionCancel) returns (FunctionResult) {}
+}

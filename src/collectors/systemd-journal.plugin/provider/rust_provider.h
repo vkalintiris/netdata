@@ -1,7 +1,7 @@
 #ifndef ND_SD_JOURNAL_PROVIDER_RUST_H
 #define ND_SD_JOURNAL_PROVIDER_RUST_H
 
-#include "crates/jf/journal_reader_ffi/journal_reader_ffi.h"
+#include "crates/journal/journal_reader_ffi/journal_reader_ffi.h"
 
 #define RSD_ID128_NULL ((const RsdId128){.bytes = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}})
 #define RSD_ID128_STRING_MAX 33U
