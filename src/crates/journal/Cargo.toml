@@ -1,0 +1,85 @@
+[package]
+name = "journal"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+collapsible_if = "allow"
+
+[dependencies]
+# Core dependencies
+static_assertions = "1.1"
+thiserror = "1.0"
+zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
+libc = "0.2"
+memmap2 = "0.9"
+uuid = { version = "1.0", features = ["v4", "rng"] }
+
+# File format dependencies
+ruzstd = "0.8"
+siphasher = "1.0"
+twox-hash = { version = "2.1", default-features = false, features = ["std"] }
+rand = "0.9"
+roaring = { version = "0.11.2", features = ["serde"] }
+lz4 = "1.25"
+serde = { version = "1.0", features = ["derive"] }
+rustc-hash = "2.1"
+
+# File index depedencies
+bincode = { version = "1.3" }
+
+# Registry dependencies
+notify = "8.2"
+parking_lot = "0.12"
+walkdir = "2.4"
+crossbeam-channel = "0.5"
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+bitvec = "1.0.1"
+rayon = "1.11.0"
+foyer = { version = "0.20.0", features = ["serde"] }
+serde_json = "1.0"
+anyhow = "1.0"
+arbitrary = "1.3"
+
+
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = { version = "3" }
+tokio = { version = "1.35", features = ["full"] }
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "basic_usage_with_cache"
+path = "examples/basic_usage_with_cache.rs"
+
+[[example]]
+name = "histogram_viewer"
+path = "examples/histogram_viewer.rs"
+
+[[example]]
+name = "filtered_histogram_viewer"
+path = "examples/filtered_histogram_viewer.rs"
+
+[[example]]
+name = "file_index"
+path = "examples/file_index.rs"
+
+[[example]]
+name = "fuzzy_histogram_test"
+path = "examples/fuzzy_histogram_test.rs"
+
+[[example]]
+name = "paths"
+path = "examples/paths.rs"
+
+[[example]]
+name = "head_tail_seqnum"
+path = "examples/head_tail_seqnum.rs"
+
+[profile.release]
+debug = true

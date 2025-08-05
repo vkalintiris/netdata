@@ -1,0 +1,30 @@
+[package]
+name = "log-viewer-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+
+rt = { workspace = true }
+netdata-plugin-error = { workspace = true }
+netdata-plugin-protocol = { workspace = true }
+netdata-plugin-schema = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
+tokio = { workspace = true }
+polars = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json"]}
+types = { path = "../types" }
+tracing-futures = { workspace = true }
+
+[lints]
+workspace = true
