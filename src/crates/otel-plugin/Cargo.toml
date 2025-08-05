@@ -1,0 +1,27 @@
+[package]
+name = "otel-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+atty = { workspace = true }
+bytesize-serde = { workspace = true }
+bytesize = { workspace = true }
+clap = { workspace = true }
+humantime-serde = { workspace = true }
+humantime = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["metrics", "logs"] }
+prost = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde_regex = { workspace = true }
+serde = { workspace=true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, features = ["gzip", "tls-ring"] }
+
+journal_file = { path = "../journal/journal_file" }
+journal_log = { path = "../journal/journal_log" }
+flatten_otel = { path = "../flatten_otel" }

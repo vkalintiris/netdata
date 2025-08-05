@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package netdata.protocol.v1.agent;
+
+import "netdata/protocol/v1/functions.proto";
+
+// Service for managing Netdata functions
+service NetdataService {
+  // Declare a function to Netdata
+  rpc DeclareFunction(netdata.protocol.v1.FunctionDeclaration) returns (DeclareFunctionResponse) {}
+}
+
+// Response message for function declaration
+message DeclareFunctionResponse {
+  // Whether the declaration was successful
+  bool success = 1;
+  
+  // Optional error message if declaration failed
+  optional string error_message = 2;
+}

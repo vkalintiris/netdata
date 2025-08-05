@@ -1,0 +1,26 @@
+[package]
+name = "hello-service"
+version.workspace = true
+edition.workspace = true
+description = "Simple Netdata plugin service that declares a hello function"
+
+[[bin]]
+name = "hello-service"
+path = "src/main.rs"
+
+[dependencies]
+# Local crates  
+netdata-plugin-sdk = { path = "../netdata-plugin/sdk" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# JSON serialization
+serde_json = "1.0"

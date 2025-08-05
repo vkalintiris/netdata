@@ -1,4 +1,0 @@
-target/
-.idea/
-Cargo.lock
-journal_reader_ffi/journal_reader_ffi.h

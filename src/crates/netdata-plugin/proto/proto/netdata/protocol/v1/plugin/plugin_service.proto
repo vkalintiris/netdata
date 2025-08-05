@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package netdata.protocol.v1.plugin;
+
+import "netdata/protocol/v1/functions.proto";
+
+// Service for managing plugin functions
+service PluginService {
+  // Call a function
+  rpc CallFunction(netdata.protocol.v1.FunctionCall) returns (FunctionResult) {}
+}
