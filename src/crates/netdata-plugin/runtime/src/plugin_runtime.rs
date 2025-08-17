@@ -196,6 +196,12 @@ impl PluginRuntime {
 
         loop {
             tokio::select! {
+                // Make the shutdown signal higher priority by putting it first
+                _ = self.shutdown_token.cancelled() => {
+                    info!("Shutdown requested... Stop processing messages from stdin");
+                    // Reader will be dropped here, closing stdin
+                    break;
+                }
                 message = self.reader.next() => {
                     match message {
                         Some(Ok(Message::FunctionCall(call))) => {
@@ -216,11 +222,6 @@ impl PluginRuntime {
                             break;
                         }
                     }
-                }
-                _ = self.shutdown_token.cancelled() => {
-                    info!("Shutdown requested... Stop processing messages from stdin");
-                    // Reader will be dropped here, closing stdin
-                    break;
                 }
             }
         }
@@ -272,22 +273,19 @@ impl PluginRuntime {
     pub async fn run(mut self) -> Result<()> {
         info!("Starting plugin runtime: {}", self.plugin_name);
 
-        // Set up Ctrl-C handler
-        {
-            let mut tasks = self.runtime_tasks.lock().await;
-            let shutdown_token = self.shutdown_token.clone();
-            tasks.spawn(async move {
-                match tokio::signal::ctrl_c().await {
-                    Ok(()) => {
-                        info!("Received Ctrl-C signal, initiating graceful shutdown");
-                        shutdown_token.cancel();
-                    }
-                    Err(e) => {
-                        error!("Failed to listen for Ctrl-C signal: {}", e);
-                    }
+        // Set up Ctrl-C handler - spawn directly, not in runtime_tasks
+        let shutdown_token = self.shutdown_token.clone();
+        tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received Ctrl-C signal, initiating graceful shutdown");
+                    shutdown_token.cancel();
                 }
-            });
-        }
+                Err(e) => {
+                    error!("Failed to listen for Ctrl-C signal: {}", e);
+                }
+            }
+        });
 
         // Start transaction cleanup task
         {

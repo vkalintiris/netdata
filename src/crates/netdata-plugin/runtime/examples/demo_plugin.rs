@@ -199,13 +199,17 @@ async fn reset_stats(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) ->
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
-        )
-        .init();
+    // Initialize tracing with tokio-console support
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        console_subscriber::init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
+            )
+            .init();
+    }
 
     info!("Starting demo plugin...");
 
@@ -297,9 +301,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the plugin
     match runtime.run().await {
-        Ok(()) => info!("Plugin runtime completed successfully"),
-        Err(e) => error!("Plugin runtime error: {}", e),
+        Ok(()) => {
+            info!("Plugin runtime completed successfully");
+        }
+        Err(e) => {
+            error!("Plugin runtime error: {}", e);
+            std::process::exit(1);
+        }
     }
 
-    Ok(())
+    info!("Exiting demo plugin");
+    std::process::exit(0)
 }
