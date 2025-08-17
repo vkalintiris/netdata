@@ -70,9 +70,9 @@ where
     type Item = Result<Message, TransportError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.reader
-            .poll_next_unpin(cx)
-            .map(|opt| opt.map(|result| result.map_err(|e| TransportError::Protocol(format!("{:?}", e)))))
+        self.reader.poll_next_unpin(cx).map(|opt| {
+            opt.map(|result| result.map_err(|e| TransportError::Protocol(format!("{:?}", e))))
+        })
     }
 }
 

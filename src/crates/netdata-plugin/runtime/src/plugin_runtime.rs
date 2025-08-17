@@ -20,6 +20,7 @@ pub struct PluginRuntime {
     reader: MessageReader<tokio::io::Stdin>,
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
     active_handlers: Arc<Mutex<JoinSet<()>>>,
+    runtime_tasks: Arc<Mutex<JoinSet<()>>>,
     shutdown_token: CancellationToken,
 }
 
@@ -32,6 +33,7 @@ impl PluginRuntime {
         let reader = MessageReader::new(tokio::io::stdin());
         let writer = Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout())));
         let active_handlers = Arc::new(Mutex::new(JoinSet::new()));
+        let runtime_tasks = Arc::new(Mutex::new(JoinSet::new()));
         let shutdown_token = CancellationToken::new();
 
         Self {
@@ -41,6 +43,7 @@ impl PluginRuntime {
             reader,
             writer,
             active_handlers,
+            runtime_tasks,
             shutdown_token,
         }
     }
@@ -66,16 +69,19 @@ impl PluginRuntime {
 
         for declaration in functions {
             info!("Declaring function: {}", declaration.name);
-            if let Err(e) = writer
-                .send(Message::FunctionDeclaration(Box::new(declaration.clone())))
-                .await
-            {
+
+            let message = Message::FunctionDeclaration(Box::new(declaration.clone()));
+            if let Err(e) = writer.send(message).await {
                 error!("Failed to declare function {}: {}", declaration.name, e);
                 return Err(RuntimeError::Transport(Box::new(e)));
             }
         }
 
-        writer.flush().await.map_err(|e| RuntimeError::Transport(Box::new(e)))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| RuntimeError::Transport(Box::new(e)))?;
+
         Ok(())
     }
 
@@ -111,14 +117,14 @@ impl PluginRuntime {
                 expires: 0,
                 payload: b"Duplicate transaction ID".to_vec(),
             };
-            
+
             self.send_result(error_result).await;
             return;
         }
 
         // Create cancellation token for this handler
         let handler_token = self.shutdown_token.child_token();
-        
+
         // Clone what we need for the async task
         let registry = self.function_registry.clone();
         let context = self.plugin_context.clone();
@@ -165,10 +171,10 @@ impl PluginRuntime {
     async fn handle_function_cancel(&self, cancel: Box<FunctionCancel>) {
         let transaction_id = &cancel.transaction;
         info!("Cancelling function: {}", transaction_id);
-        
+
         // Cancel the transaction in the context
         self.plugin_context.cancel_transaction(transaction_id).await;
-        
+
         // Note: The handler should detect cancellation via:
         // 1. plugin_context.is_transaction_cancelled()
         // 2. function_context.is_cancelled()
@@ -212,7 +218,8 @@ impl PluginRuntime {
                     }
                 }
                 _ = self.shutdown_token.cancelled() => {
-                    info!("Shutdown requested");
+                    info!("Shutdown requested... Stop processing messages from stdin");
+                    // Reader will be dropped here, closing stdin
                     break;
                 }
             }
@@ -223,17 +230,17 @@ impl PluginRuntime {
 
     /// Wait for active handlers to complete
     async fn wait_for_handlers(&self, timeout: Duration) {
-        info!("Waiting for active function handlers to complete...");
-        
+        info!("Waiting for any active function handlers to complete...");
+
         let start = std::time::Instant::now();
-        
+
         loop {
             let handlers_count = {
                 let mut handlers = self.active_handlers.lock().await;
                 // Clean up finished tasks
                 while let Some(result) = handlers.try_join_next() {
                     match result {
-                        Ok(()) => {},
+                        Ok(()) => {}
                         Err(e) => warn!("Handler task failed: {}", e),
                     }
                 }
@@ -246,11 +253,17 @@ impl PluginRuntime {
             }
 
             if start.elapsed() >= timeout {
-                warn!("Shutdown timeout reached, {} handlers still active", handlers_count);
+                warn!(
+                    "Shutdown timeout reached, {} handlers still active",
+                    handlers_count
+                );
                 break;
             }
 
-            debug!("{} function handlers still active, waiting...", handlers_count);
+            debug!(
+                "{} function handlers still active, waiting...",
+                handlers_count
+            );
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
@@ -260,45 +273,61 @@ impl PluginRuntime {
         info!("Starting plugin runtime: {}", self.plugin_name);
 
         // Set up Ctrl-C handler
-        let shutdown_token = self.shutdown_token.clone();
-        tokio::spawn(async move {
-            match tokio::signal::ctrl_c().await {
-                Ok(()) => {
-                    info!("Received Ctrl-C signal, initiating graceful shutdown");
-                    shutdown_token.cancel();
+        {
+            let mut tasks = self.runtime_tasks.lock().await;
+            let shutdown_token = self.shutdown_token.clone();
+            tasks.spawn(async move {
+                match tokio::signal::ctrl_c().await {
+                    Ok(()) => {
+                        info!("Received Ctrl-C signal, initiating graceful shutdown");
+                        shutdown_token.cancel();
+                    }
+                    Err(e) => {
+                        error!("Failed to listen for Ctrl-C signal: {}", e);
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to listen for Ctrl-C signal: {}", e);
-                }
-            }
-        });
+            });
+        }
 
         // Start transaction cleanup task
-        let cleanup_context = self.plugin_context.clone();
-        let cleanup_token = self.shutdown_token.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        cleanup_context.cleanup_expired_transactions().await;
-                    }
-                    _ = cleanup_token.cancelled() => {
-                        debug!("Transaction cleanup task shutting down");
-                        break;
+        {
+            let mut tasks = self.runtime_tasks.lock().await;
+            let cleanup_context = self.plugin_context.clone();
+            let cleanup_token = self.shutdown_token.clone();
+            tasks.spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            cleanup_context.cleanup_expired_transactions().await;
+                        }
+                        _ = cleanup_token.cancelled() => {
+                            debug!("Transaction cleanup task shutting down");
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         // Declare functions
         self.declare_functions().await?;
 
-        // Process messages
+        // Process messages - reader will be dropped when this returns
         self.process_messages().await?;
 
         // Graceful shutdown: wait for active handlers
         self.wait_for_handlers(Duration::from_secs(30)).await;
+
+        // Abort all runtime tasks
+        {
+            let mut tasks = self.runtime_tasks.lock().await;
+            debug!("Aborting {} runtime tasks", tasks.len());
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {
+                // Drain all tasks
+            }
+        }
 
         info!("Plugin runtime stopped");
         Ok(())
