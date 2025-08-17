@@ -107,7 +107,8 @@ async fn slow_function(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) 
         // 2. Check if function context is cancelled (shutdown or timeout)
         if plugin_ctx
             .is_transaction_cancelled(fn_ctx.transaction_id())
-            .await || fn_ctx.is_cancelled()
+            .await
+            || fn_ctx.is_cancelled()
         {
             info!(
                 "Transaction {} was cancelled after {} iterations (shutdown: {})",
