@@ -92,25 +92,6 @@ impl FunctionRegistry {
         let functions = self.functions.read().await;
         functions.values().map(|f| f.declaration.clone()).collect()
     }
-
-    /// Get the number of registered functions
-    pub async fn len(&self) -> usize {
-        let functions = self.functions.read().await;
-        functions.len()
-    }
-
-    /// Check if a function is registered
-    pub async fn contains(&self, function_name: &str) -> bool {
-        let functions = self.functions.read().await;
-        functions.contains_key(function_name)
-    }
-
-    /// Clear all registered functions
-    pub async fn clear(&self) {
-        let mut functions = self.functions.write().await;
-        functions.clear();
-        debug!("Cleared all registered functions");
-    }
 }
 
 impl Default for FunctionRegistry {
