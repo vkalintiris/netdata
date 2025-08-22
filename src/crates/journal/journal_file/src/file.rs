@@ -808,6 +808,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .and_then(|m| FieldHashTable::<&mut [u8]>::from_data_mut(m, false))
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
         let window_manager = unsafe { &mut *self.window_manager.get() };
@@ -815,6 +816,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn object_data_mut(&self, offset: NonZeroU64, size_needed: u64) -> Result<&mut [u8]> {
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let object_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
@@ -898,8 +900,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             size
         });
 
-        let offset_array = self.journal_object_mut(ObjectType::EntryArray, offset, size);
-        offset_array
+        self.journal_object_mut(ObjectType::EntryArray, offset, size)
     }
 
     pub fn field_mut(

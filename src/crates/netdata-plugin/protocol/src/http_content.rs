@@ -298,11 +298,11 @@ impl HttpContent {
             result.push_str(options);
         }
 
-        if info.needs_charset {
-            if let Some(charset) = charset {
-                result.push_str("; charset=");
-                result.push_str(charset);
-            }
+        if info.needs_charset
+            && let Some(charset) = charset
+        {
+            result.push_str("; charset=");
+            result.push_str(charset);
         }
 
         result

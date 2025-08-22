@@ -137,7 +137,8 @@ impl SamplesTable {
     pub fn insert(&mut self, dimension: &str, unix_time: u64, value: f64) -> bool {
         let sp = SamplePoint { unix_time, value };
 
-        let is_new_dimension = if let Some(sb) = self.dimensions.get_mut(dimension) {
+        // returns true if this we added a new dimension
+        if let Some(sb) = self.dimensions.get_mut(dimension) {
             sb.push(sp);
             false
         } else {
@@ -145,9 +146,7 @@ impl SamplesTable {
             sb.push(sp);
             self.dimensions.insert(dimension.to_string(), sb);
             true
-        };
-
-        is_new_dimension
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -212,10 +211,6 @@ impl SamplesTable {
         }
 
         // Return 1/1000 scaling if all values are in range and at least one is non-zero
-        if has_nonzero {
-            (1, 1000)
-        } else {
-            (1, 1)
-        }
+        if has_nonzero { (1, 1000) } else { (1, 1) }
     }
 }
