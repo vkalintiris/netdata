@@ -1,5 +1,5 @@
 use journal_file::{Direction, HashableObject, JournalFile, JournalReader, Location};
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use window_manager::Mmap;
 
 #[repr(C)]
@@ -22,12 +22,14 @@ unsafe extern "C" fn rsd_id128_from_string(s: *const c_char, ret: *mut RsdId128)
     debug_assert!(!s.is_null());
     debug_assert!(!ret.is_null());
 
-    let c_str = match CStr::from_ptr(s).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    let c_str = unsafe {
+        match CStr::from_ptr(s).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
     };
 
-    let res = &mut *ret;
+    let res = unsafe { &mut *ret };
     let mut n: usize = 0;
     let mut i: usize = 0;
     let mut is_guid = false;
@@ -116,16 +118,18 @@ unsafe extern "C" fn rsd_journal_open_files(
     }
 
     // Get the first path
-    let path_ptr = *paths;
+    let path_ptr = unsafe { *paths };
     if path_ptr.is_null() {
         return error::JournalError::InvalidFfiOp.to_error_code();
     }
 
     // Convert C string to Rust string
-    let path = match CStr::from_ptr(path_ptr).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            return error::JournalError::InvalidFfiOp.to_error_code();
+    let path = unsafe {
+        match CStr::from_ptr(path_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                return error::JournalError::InvalidFfiOp.to_error_code();
+            }
         }
     };
 
@@ -146,7 +150,9 @@ unsafe extern "C" fn rsd_journal_open_files(
     });
 
     // Pass ownership to the caller
-    *ret = Box::into_raw(journal);
+    unsafe {
+        *ret = Box::into_raw(journal);
+    }
 
     0
 }
