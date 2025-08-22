@@ -76,7 +76,7 @@ impl MessageParser {
             }
 
             Command::FunctionPayloadData { data } => {
-                if let Some(Message::FunctionCall(ref mut func_call)) = &mut self.current_message {
+                if let Some(Message::FunctionCall(func_call)) = &mut self.current_message {
                     if let Some(ref mut payload) = func_call.payload {
                         payload.extend_from_slice(data);
                     } else {
@@ -89,7 +89,7 @@ impl MessageParser {
             Command::FunctionPayload { args: _ } => None,
 
             Command::FunctionResultPayload { data } => {
-                if let Some(Message::FunctionResult(ref mut func_result)) =
+                if let Some(Message::FunctionResult(func_result)) =
                     &mut self.current_message
                 {
                     func_result.payload.extend_from_slice(data);
