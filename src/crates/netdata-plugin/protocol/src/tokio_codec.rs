@@ -1,8 +1,8 @@
 //! tokio_util::codec implementations for the Netdata protocol
 
-use crate::http_access::HttpAccess;
 use crate::message_parser::{Message, MessageParser};
 use bytes::{Buf, BytesMut};
+use netdata_plugin_types::FunctionCall;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Helper function to quote strings if needed
@@ -18,10 +18,7 @@ fn quote_if_needed(s: &str) -> String {
 }
 
 /// Helper function to build function command parts
-fn build_function_parts(
-    func_call: &netdata_plugin_proto::v1::FunctionCall,
-    command: &str,
-) -> Vec<String> {
+fn build_function_parts(func_call: &FunctionCall, command: &str) -> Vec<String> {
     let mut parts = vec![
         command.to_string(),
         quote_if_needed(&func_call.transaction),
@@ -30,7 +27,7 @@ fn build_function_parts(
     ];
 
     if let Some(access) = func_call.access {
-        parts.push(HttpAccess::from_u32(access).to_string());
+        parts.push(access.to_string());
     }
 
     if let Some(source) = func_call.source.as_ref() {
@@ -98,6 +95,24 @@ impl Encoder<Message> for MessageParser {
         dst: &mut BytesMut,
     ) -> std::result::Result<(), Self::Error> {
         match item {
+            Message::ConfigDeclaration(cfg_decl) => {
+                // CONFIG <id> CREATE <status> <type> <path> <source_type> <source> <cmds> <view_access> <edit_access>
+                let parts = vec![
+                    "CONFIG".to_string(),
+                    quote_if_needed(&cfg_decl.id),
+                    "CREATE".to_string(),
+                    cfg_decl.status.to_string(),
+                    cfg_decl.type_.to_string(),
+                    quote_if_needed(&cfg_decl.path),
+                    cfg_decl.source_type.to_string(),
+                    quote_if_needed(&cfg_decl.source),
+                    quote_if_needed(&cfg_decl.cmds.to_string()),
+                    cfg_decl.view_access.to_string(),
+                    cfg_decl.edit_access.to_string(),
+                ];
+
+                dst.extend_from_slice(format!("{}\n", parts.join(" ")).as_bytes());
+            }
             Message::FunctionDeclaration(func_decl) => {
                 // FUNCTION [GLOBAL] name timeout help [tags [access [priority [version]]]
                 let mut parts = Vec::with_capacity(8);

@@ -1,9 +1,7 @@
-use crate::http_access::HttpAccess;
 use crate::http_content::HttpContent;
 use crate::line_parser::{Command, LineParser};
 use crate::word_iterator::WordIterator;
-
-use netdata_plugin_proto::v1::{FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult};
+use netdata_plugin_types::*;
 
 /// Parser direction configuration
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +31,7 @@ pub enum Message {
     FunctionCall(Box<FunctionCall>),
     FunctionResult(Box<FunctionResult>),
     FunctionCancel(Box<FunctionCancel>),
+    ConfigDeclaration(Box<ConfigDeclaration>),
 }
 
 impl MessageParser {
@@ -89,9 +88,7 @@ impl MessageParser {
             Command::FunctionPayload { args: _ } => None,
 
             Command::FunctionResultPayload { data } => {
-                if let Some(Message::FunctionResult(func_result)) =
-                    &mut self.current_message
-                {
+                if let Some(Message::FunctionResult(func_result)) = &mut self.current_message {
                     func_result.payload.extend_from_slice(data);
                 }
                 None
@@ -142,7 +139,7 @@ impl MessageParser {
         let timeout = words.next_u32()?;
         let help = words.next_string()?;
         let tags = words.next_string();
-        let access = words.next().map(|x| HttpAccess::from_slice(x).as_u32());
+        let access = words.next().map(HttpAccess::from_slice);
         let priority = words.next_u32();
         let version = words.next_u32();
 
@@ -168,7 +165,7 @@ impl MessageParser {
         let transaction = words.next_string()?;
         let timeout = words.next_u32()?;
         let name = words.next_string()?;
-        let access = words.next().map(|x| HttpAccess::from_slice(x).as_u32());
+        let access = words.next().map(HttpAccess::from_slice);
         let source = words.next_string();
 
         let function_call = Box::new(FunctionCall {
@@ -212,7 +209,7 @@ impl MessageParser {
         let transaction = words.next_string()?;
         let timeout = words.next_u32()?;
         let name = words.next_string()?;
-        let access = words.next().map(|x| HttpAccess::from_slice(x).as_u32());
+        let access = words.next().map(HttpAccess::from_slice);
         let source = words.next_string();
 
         let function_call = Box::new(FunctionCall {

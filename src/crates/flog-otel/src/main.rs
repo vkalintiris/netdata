@@ -2,9 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use opentelemetry_proto::tonic::collector::logs::v1::{
-    logs_service_client::LogsServiceClient, ExportLogsServiceRequest,
+    ExportLogsServiceRequest, logs_service_client::LogsServiceClient,
 };
-use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
+use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use serde::Deserialize;
@@ -14,7 +14,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 use tracing::{error, info, warn};
-use tracing_subscriber;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -155,7 +154,7 @@ fn flog_to_otel(entry: FlogEntry) -> Result<LogRecord> {
 
     Ok(LogRecord {
         time_unix_nano,
-        severity_number: severity_number as i32,
+        severity_number,
         severity_text: String::new(),
         body: Some(AnyValue {
             value: Some(any_value::Value::StringValue(log_message)),

@@ -8,7 +8,7 @@
 //! - Access plugin statistics
 
 use netdata_plugin_runtime::{
-    FunctionContext, FunctionDeclaration, FunctionResult, PluginContext, PluginRuntime,
+    FunctionContext, FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
 };
 use std::sync::Arc;
 use tracing::{error, info};
@@ -197,25 +197,7 @@ async fn reset_stats(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) ->
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing with tokio-console support
-    if std::env::var("TOKIO_CONSOLE").is_ok() {
-        console_subscriber::init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                std::env::var("RUST_LOG")
-                    .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
-            )
-            .init();
-    }
-
-    info!("Starting demo plugin...");
-
-    // Create the plugin runtime
-    let runtime = PluginRuntime::new("demo-plugin");
-
+pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
     // Register functions
     runtime
         .register_function(
@@ -224,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 help: "Returns a friendly greeting with plugin statistics".to_string(),
                 timeout: 10,
                 tags: Some("greeting,info".to_string()),
-                access: Some(0),
+                access: Some(HttpAccess::from_u32(0)),
                 priority: Some(100),
                 version: Some(1),
                 global: false,
@@ -240,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 help: "Processes data from the payload".to_string(),
                 timeout: 30,
                 tags: Some("data,processing".to_string()),
-                access: Some(0),
+                access: Some(HttpAccess::from_u32(0)),
                 priority: Some(90),
                 version: Some(1),
                 global: false,
@@ -256,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 help: "A slow operation that can be cancelled".to_string(),
                 timeout: 60,
                 tags: Some("slow,cancellable".to_string()),
-                access: Some(0),
+                access: Some(HttpAccess::from_u32(0)),
                 priority: Some(50),
                 version: Some(1),
                 global: false,
@@ -272,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 help: "Get list of active transactions".to_string(),
                 timeout: 5,
                 tags: Some("admin,debug".to_string()),
-                access: Some(1),
+                access: Some(HttpAccess::from_u32(0)),
                 priority: Some(200),
                 version: Some(1),
                 global: false,
@@ -288,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 help: "Reset plugin statistics".to_string(),
                 timeout: 5,
                 tags: Some("admin".to_string()),
-                access: Some(2),
+                access: Some(HttpAccess::from_u32(0)),
                 priority: Some(200),
                 version: Some(1),
                 global: false,
@@ -296,6 +278,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reset_stats,
         )
         .await?;
+
+    Ok(())
+}
+
+pub async fn register_configs(_runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing with tokio-console support
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        console_subscriber::init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
+            )
+            .init();
+    }
+
+    info!("Starting demo plugin...");
+
+    // Create the plugin runtime
+    let runtime = PluginRuntime::new("demo-plugin");
+
+    register_functions(&runtime).await?;
+
+    register_configs(&runtime).await?;
 
     info!("All functions registered, starting runtime...");
 

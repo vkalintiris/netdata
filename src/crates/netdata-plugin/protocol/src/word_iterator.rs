@@ -46,7 +46,7 @@ impl<'a> WordIterator<'a> {
 
     pub(crate) fn next_str(&mut self) -> Option<&str> {
         let s = self.next()?;
-        str::from_utf8(s).ok()
+        std::str::from_utf8(s).ok()
     }
 }
 

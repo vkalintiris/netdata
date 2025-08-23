@@ -1,4 +1,4 @@
-use crate::{FunctionCall, TransactionId};
+use crate::{FunctionCall, HttpAccess, TransactionId};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +45,7 @@ impl FunctionContext {
     }
 
     /// Get the access level
-    pub fn access(&self) -> Option<u32> {
+    pub fn access(&self) -> Option<HttpAccess> {
         self.call.access
     }
 
