@@ -1,3 +1,4 @@
+use netdata_plugin_protocol::HttpAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ pub struct Transaction {
     pub started_at: Instant,
     pub timeout: Duration,
     pub source: Option<String>,
-    pub access: Option<u32>,
+    pub access: Option<HttpAccess>,
     pub cancelled: bool,
 }
 
@@ -26,7 +27,7 @@ impl Transaction {
         function_name: String,
         timeout_secs: u32,
         source: Option<String>,
-        access: Option<u32>,
+        access: Option<HttpAccess>,
     ) -> Self {
         Self {
             id,
@@ -144,7 +145,7 @@ impl PluginContext {
         function_name: String,
         timeout_secs: u32,
         source: Option<String>,
-        access: Option<u32>,
+        access: Option<HttpAccess>,
     ) -> bool {
         let transaction = Transaction::new(
             id.clone(),

@@ -21,7 +21,7 @@
 //!
 //! ```rust,no_run
 //! use netdata_plugin_runtime::{
-//!     PluginRuntime, FunctionContext, FunctionDeclaration, 
+//!     PluginRuntime, FunctionContext, FunctionDeclaration,
 //!     FunctionResult, PluginContext
 //! };
 //! use std::sync::Arc;
@@ -97,4 +97,6 @@ pub use plugin_context::{PluginContext, PluginStats, Transaction, TransactionId}
 pub use plugin_runtime::PluginRuntime;
 
 // Re-export commonly used types from proto
-pub use netdata_plugin_proto::v1::{FunctionCall, FunctionDeclaration, FunctionResult};
+pub use netdata_plugin_protocol::{
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult, HttpAccess,
+};

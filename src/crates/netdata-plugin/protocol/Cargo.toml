@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-netdata-plugin-proto = { path = "../proto" }
+netdata-plugin-types = { path = "../types" }
 
 phf = { workspace = true }
 atoi = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
-futures = "0.3"
-tokio = { version = "1.0", features = ["io-std"] }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "io-util"] }
 
 [build-dependencies]
 phf_codegen = { workspace = true }

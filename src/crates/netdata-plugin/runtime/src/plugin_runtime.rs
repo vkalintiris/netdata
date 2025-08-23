@@ -1,9 +1,8 @@
 use crate::{
-    FunctionCall, FunctionContext, FunctionDeclaration, FunctionRegistry, FunctionResult,
-    PluginContext, Result, RuntimeError,
+    FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration, FunctionRegistry,
+    FunctionResult, PluginContext, Result, RuntimeError,
 };
 use futures::StreamExt;
-use netdata_plugin_proto::v1::FunctionCancel;
 use netdata_plugin_protocol::{Message, MessageReader, MessageWriter};
 use std::sync::Arc;
 use std::time::Duration;
