@@ -1,19 +1,41 @@
+#![allow(dead_code)]
+
 use crate::{
-    FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration, FunctionRegistry,
-    FunctionResult, PluginContext, Result, RuntimeError,
+    ConfigDeclaration, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
+    FunctionRegistry, FunctionResult, PluginContext, Result, RuntimeError,
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{Message, MessageReader, MessageWriter};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[derive(Default, Debug)]
+pub struct ConfigRegistry {
+    config_declarations: Arc<RwLock<HashSet<ConfigDeclaration>>>,
+}
+
+impl ConfigRegistry {
+    async fn add(&self, cfg_decl: ConfigDeclaration) {
+        let mut hm = self.config_declarations.write().await;
+        hm.insert(cfg_decl);
+    }
+
+    async fn get_all_declarations(&self) -> Vec<ConfigDeclaration> {
+        let hm = self.config_declarations.read().await;
+        hm.iter().cloned().collect()
+    }
+}
+
 /// The main plugin runtime that handles Netdata protocol messages
 pub struct PluginRuntime {
     plugin_name: String,
+    config_registry: Arc<ConfigRegistry>,
     function_registry: Arc<FunctionRegistry>,
     plugin_context: Arc<PluginContext>,
     reader: MessageReader<tokio::io::Stdin>,
@@ -28,6 +50,7 @@ impl PluginRuntime {
     pub fn new(plugin_name: impl Into<String>) -> Self {
         let plugin_name = plugin_name.into();
         let plugin_context = Arc::new(PluginContext::new(plugin_name.clone()));
+        let config_registry = Arc::default();
         let function_registry = Arc::new(FunctionRegistry::new());
         let reader = MessageReader::new(tokio::io::stdin());
         let writer = Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout())));
@@ -37,6 +60,7 @@ impl PluginRuntime {
 
         Self {
             plugin_name,
+            config_registry,
             function_registry,
             plugin_context,
             reader,
@@ -45,6 +69,11 @@ impl PluginRuntime {
             runtime_tasks,
             shutdown_token,
         }
+    }
+
+    pub async fn register_config(&self, cfg_decl: ConfigDeclaration) -> Result<()> {
+        self.config_registry.add(cfg_decl).await;
+        Ok(())
     }
 
     /// Register a function with its handler

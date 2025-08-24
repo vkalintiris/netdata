@@ -4,7 +4,7 @@ use bitflags::bitflags;
 use std::fmt;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
     pub struct HttpAccess: u32 {
         const SIGNED_ID = 1 << 0;
         const SAME_SPACE = 1 << 1;

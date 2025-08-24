@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 //! Example plugin demonstrating the netdata-plugin-runtime usage
 //!
 //! This example shows how to:
@@ -8,7 +10,8 @@
 //! - Access plugin statistics
 
 use netdata_plugin_runtime::{
-    FunctionContext, FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionContext,
+    FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
 };
 use std::sync::Arc;
 use tracing::{error, info};
@@ -282,8 +285,39 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
     Ok(())
 }
 
-pub async fn register_configs(_runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+pub fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let cfg_decl = MyConfig::config_declaration();
+    runtime.register_config(cfg_decl).unwrap();
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct MyConfig {
+    url: String,
+    port: u16,
+}
+
+impl MyConfig {
+    pub fn new(url: &str, port: u16) -> Self {
+        Self {
+            url: String::from(url),
+            port,
+        }
+    }
+
+    pub fn config_declaration() -> ConfigDeclaration {
+        ConfigDeclaration {
+            id: String::from("demo_plugin:my_config"),
+            status: DynCfgStatus::None,
+            type_: DynCfgType::Single,
+            path: String::from("demo_plugin/my_config"),
+            source_type: DynCfgSourceType::Stock,
+            source: String::from("Whatever source help info"),
+            cmds: DynCfgCmds::SCHEMA,
+            view_access: HttpAccess::empty(),
+            edit_access: HttpAccess::empty(),
+        }
+    }
 }
 
 #[tokio::main]
@@ -308,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     register_functions(&runtime).await?;
 
-    register_configs(&runtime).await?;
+    register_configs(&runtime)?;
 
     info!("All functions registered, starting runtime...");
 

@@ -98,5 +98,6 @@ pub use plugin_runtime::PluginRuntime;
 
 // Re-export commonly used types from proto
 pub use netdata_plugin_protocol::{
-    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult, HttpAccess,
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionCall,
+    FunctionCancel, FunctionDeclaration, FunctionResult, HttpAccess,
 };
