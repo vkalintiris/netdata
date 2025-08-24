@@ -1,6 +1,6 @@
 use crate::{DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, HttpAccess};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConfigDeclaration {
     pub id: String,
     pub status: DynCfgStatus,

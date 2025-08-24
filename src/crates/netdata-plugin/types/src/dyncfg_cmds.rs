@@ -5,7 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
     pub struct DynCfgCmds: u32 {
         const GET = 1 << 0;
         const SCHEMA = 1 << 1;
