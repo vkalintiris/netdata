@@ -9,10 +9,7 @@ use tracing::{debug, info, warn};
 
 /// Type-erased async function handler
 type FunctionHandler = Box<
-    dyn Fn(
-            Arc<PluginContext>,
-            FunctionContext,
-        ) -> Pin<Box<dyn Future<Output = FunctionResult> + Send>>
+    dyn Fn(PluginContext, FunctionContext) -> Pin<Box<dyn Future<Output = FunctionResult> + Send>>
         + Send
         + Sync,
 >;
@@ -40,7 +37,7 @@ impl FunctionRegistry {
     /// Register a function with its handler
     pub async fn register<F, Fut>(&self, declaration: FunctionDeclaration, handler: F)
     where
-        F: Fn(Arc<PluginContext>, FunctionContext) -> Fut + Send + Sync + 'static,
+        F: Fn(PluginContext, FunctionContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = FunctionResult> + Send + 'static,
     {
         let function_name = declaration.name.clone();
@@ -63,7 +60,7 @@ impl FunctionRegistry {
     /// Call a function by name with the given context and cancellation token
     pub async fn call_function(
         &self,
-        plugin_context: Arc<PluginContext>,
+        plugin_context: PluginContext,
         call: FunctionCall,
         cancellation_token: CancellationToken,
     ) -> Option<FunctionResult> {
