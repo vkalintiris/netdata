@@ -285,10 +285,9 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
     Ok(())
 }
 
-pub fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
     let cfg_decl = MyConfig::config_declaration();
-    runtime.register_config(cfg_decl).unwrap();
-    Ok(())
+    Ok(runtime.register_config(cfg_decl).await.unwrap())
 }
 
 #[derive(Clone, Debug)]
@@ -342,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     register_functions(&runtime).await?;
 
-    register_configs(&runtime)?;
+    register_configs(&runtime).await?;
 
     info!("All functions registered, starting runtime...");
 

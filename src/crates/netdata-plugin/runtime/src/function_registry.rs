@@ -24,6 +24,7 @@ struct RegisteredFunction {
 }
 
 /// Function registry that maintains registered functions and their handlers
+#[derive(Clone)]
 pub struct FunctionRegistry {
     functions: Arc<RwLock<HashMap<String, RegisteredFunction>>>,
 }

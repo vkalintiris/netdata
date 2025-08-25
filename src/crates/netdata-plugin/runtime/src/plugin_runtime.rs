@@ -35,8 +35,8 @@ impl ConfigRegistry {
 /// The main plugin runtime that handles Netdata protocol messages
 pub struct PluginRuntime {
     plugin_name: String,
-    config_registry: Arc<ConfigRegistry>,
-    function_registry: Arc<FunctionRegistry>,
+    config_registry: ConfigRegistry,
+    function_registry: FunctionRegistry,
     plugin_context: Arc<PluginContext>,
     reader: MessageReader<tokio::io::Stdin>,
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
@@ -50,8 +50,8 @@ impl PluginRuntime {
     pub fn new(plugin_name: impl Into<String>) -> Self {
         let plugin_name = plugin_name.into();
         let plugin_context = Arc::new(PluginContext::new(plugin_name.clone()));
-        let config_registry = Arc::default();
-        let function_registry = Arc::new(FunctionRegistry::new());
+        let config_registry = ConfigRegistry::default();
+        let function_registry = FunctionRegistry::new();
         let reader = MessageReader::new(tokio::io::stdin());
         let writer = Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout())));
         let active_handlers = Arc::new(Mutex::new(JoinSet::new()));
