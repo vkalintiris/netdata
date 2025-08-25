@@ -37,7 +37,7 @@ pub struct PluginRuntime {
     plugin_name: String,
     config_registry: ConfigRegistry,
     function_registry: FunctionRegistry,
-    plugin_context: Arc<PluginContext>,
+    plugin_context: PluginContext,
     reader: MessageReader<tokio::io::Stdin>,
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
     active_handlers: Arc<Mutex<JoinSet<()>>>,
@@ -49,7 +49,7 @@ impl PluginRuntime {
     /// Create a new plugin runtime
     pub fn new(plugin_name: impl Into<String>) -> Self {
         let plugin_name = plugin_name.into();
-        let plugin_context = Arc::new(PluginContext::new(plugin_name.clone()));
+        let plugin_context = PluginContext::new(plugin_name.clone());
         let config_registry = ConfigRegistry::default();
         let function_registry = FunctionRegistry::new();
         let reader = MessageReader::new(tokio::io::stdin());
@@ -83,7 +83,7 @@ impl PluginRuntime {
         handler: F,
     ) -> Result<()>
     where
-        F: Fn(Arc<PluginContext>, FunctionContext) -> Fut + Send + Sync + 'static,
+        F: Fn(PluginContext, FunctionContext) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = FunctionResult> + Send + 'static,
     {
         self.function_registry.register(declaration, handler).await;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 /// A simple greeting function
-async fn hello_function(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) -> FunctionResult {
+async fn hello_function(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
     info!(
         "hello_function called: transaction={}, source={:?}",
         fn_ctx.transaction_id(),
@@ -59,7 +59,7 @@ async fn hello_function(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext)
 }
 
 /// A function that processes data from the payload
-async fn process_data(_plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) -> FunctionResult {
+async fn process_data(_plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
     info!(
         "process_data called: transaction={}, has_payload={}",
         fn_ctx.transaction_id(),
@@ -96,7 +96,7 @@ async fn process_data(_plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) 
 }
 
 /// A slow function that can be cancelled
-async fn slow_function(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) -> FunctionResult {
+async fn slow_function(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
     info!(
         "slow_function called: transaction={}, timeout={}s",
         fn_ctx.transaction_id(),
@@ -160,10 +160,7 @@ async fn slow_function(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) 
 }
 
 /// Get active transactions
-async fn get_transactions(
-    plugin_ctx: Arc<PluginContext>,
-    fn_ctx: FunctionContext,
-) -> FunctionResult {
+async fn get_transactions(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
     let transactions = plugin_ctx.get_active_transactions().await;
 
     let mut response = format!("Active transactions: {}\n\n", transactions.len());
@@ -188,7 +185,7 @@ async fn get_transactions(
 }
 
 /// Reset plugin statistics
-async fn reset_stats(plugin_ctx: Arc<PluginContext>, fn_ctx: FunctionContext) -> FunctionResult {
+async fn reset_stats(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
     plugin_ctx.reset_stats().await;
 
     FunctionResult {
