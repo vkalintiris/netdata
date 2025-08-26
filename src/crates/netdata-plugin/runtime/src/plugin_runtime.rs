@@ -58,8 +58,8 @@ impl PluginRuntime {
 
         if cmds.contains(DynCfgCmds::SCHEMA) {
             let id = String::from(cfg.id());
-            let name = format!("config '{}' schema", id);
-            let help = format!("Retrieve configuration schema for '{:?}'", id);
+            let name = format!("config {} schema", id);
+            let help = format!("Retrieve configuration schema for '{}'", id);
 
             let declaration = FunctionDeclaration {
                 name,
@@ -80,7 +80,7 @@ impl PluginRuntime {
                 FunctionResult {
                     transaction: fn_ctx.transaction_id().clone(),
                     status: 200,
-                    format: "text/plain".to_string(),
+                    format: "application/json".to_string(),
                     expires: 0,
                     payload,
                 }
@@ -92,11 +92,8 @@ impl PluginRuntime {
 
     pub async fn register_config<T: ConfigDeclarable>(&self) -> Result<()> {
         let cfg = Config::new::<T>(None);
-
-        info!("Registering configuration {:#?}", cfg);
-        self.config_registry.add(cfg.clone()).await;
-
-        self.register_config_functions(cfg);
+        self.plugin_context.insert_config(cfg.clone()).await;
+        self.register_config_functions(cfg).await;
 
         Ok(())
     }

@@ -362,6 +362,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_configs(&runtime).await?;
 
     info!("All functions registered, starting runtime...");
+    info!("Try calling: FUNCTION tsx-01 10 'config demo_plugin:my_config schema'");
 
     // Run the plugin
     match runtime.run().await {
