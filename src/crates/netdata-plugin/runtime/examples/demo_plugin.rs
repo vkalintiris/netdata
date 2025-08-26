@@ -379,10 +379,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     view_access: HttpAccess::empty(),
     //     edit_access: HttpAccess::empty(),
     // }
+    //
+    // functions_evloop_dyncfg_add(
+    //     wg,
+    //     "systemd-journal:monitored-directories",
+    //     "/logs/systemd-journal",
+    //     DYNCFG_STATUS_RUNNING,
+    //     DYNCFG_TYPE_SINGLE,
+    //     DYNCFG_SOURCE_TYPE_INTERNAL,
+    //     "internal",
+    //     DYNCFG_CMD_SCHEMA | DYNCFG_CMD_GET | DYNCFG_CMD_UPDATE,
+    //     HTTP_ACCESS_NONE,
+    //     HTTP_ACCESS_NONE,
+    //     systemd_journal_directories_dyncfg_cb,
+    //     NULL);
 
     println!(
-        "CONFIG demo_plugin:my_config CREATE accepted single /collectors internal internal schema|get 0 0"
+        "CONFIG 'demo_plugin:my_config' CREATE 'running' 'single' '/demo/plugin' 'internal' 'internal' 'schema get' 0 0"
     );
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
 
     // Run the plugin
     match runtime.run().await {
