@@ -289,7 +289,11 @@ pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std
     let schema = generator.into_root_schema_for::<MyConfig>();
     eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
 
-    runtime.register_config::<MyConfig>().await.unwrap();
+    let initial_value = Some(MyConfig::new("https://www.google.com", 80));
+    runtime
+        .register_config::<MyConfig>(initial_value)
+        .await
+        .unwrap();
     Ok(())
 }
 
@@ -317,7 +321,7 @@ impl ConfigDeclarable for MyConfig {
             path: String::from("/collectors"),
             source_type: DynCfgSourceType::Stock,
             source: String::from("Whatever source help info"),
-            cmds: DynCfgCmds::SCHEMA,
+            cmds: DynCfgCmds::SCHEMA | DynCfgCmds::GET,
             view_access: HttpAccess::empty(),
             edit_access: HttpAccess::empty(),
         }
@@ -363,6 +367,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("All functions registered, starting runtime...");
     info!("Try calling: FUNCTION tsx-01 10 'config demo_plugin:my_config schema'");
+
+    // ConfigDeclaration {
+    //     id: String::from("demo_plugin:my_config"),
+    //     status: DynCfgStatus::None,
+    //     type_: DynCfgType::Single,
+    //     path: String::from("/collectors"),
+    //     source_type: DynCfgSourceType::Stock,
+    //     source: String::from("Whatever source help info"),
+    //     cmds: DynCfgCmds::SCHEMA,
+    //     view_access: HttpAccess::empty(),
+    //     edit_access: HttpAccess::empty(),
+    // }
+
+    println!(
+        "CONFIG demo_plugin:my_config CREATE accepted single /collectors internal internal schema|get 0 0"
+    );
 
     // Run the plugin
     match runtime.run().await {
