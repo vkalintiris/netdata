@@ -88,7 +88,12 @@ impl FunctionRegistry {
     /// Get all registered function declarations
     pub async fn get_all_declarations(&self) -> Vec<FunctionDeclaration> {
         let functions = self.functions.read().await;
-        functions.values().map(|f| f.declaration.clone()).collect()
+        // filter out config-related functions
+        functions
+            .values()
+            .filter(|f| !f.declaration.name.starts_with("config "))
+            .map(|f| f.declaration.clone())
+            .collect()
     }
 }
 
