@@ -147,6 +147,11 @@ impl PluginContext {
         cfg_registry.get(id).await
     }
 
+    pub async fn insert_config(&self, cfg: Config) {
+        let cfg_registry = self.inner.config_registry.read().await;
+        cfg_registry.add(cfg).await
+    }
+
     /// Get the plugin name
     pub fn plugin_name(&self) -> &str {
         &self.inner.plugin_name
