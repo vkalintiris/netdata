@@ -64,7 +64,7 @@ impl PluginRuntime {
             let declaration = FunctionDeclaration {
                 name,
                 help,
-                global: true,
+                global: false,
                 timeout: 10,
                 tags: None,
                 access: None,

@@ -314,7 +314,7 @@ impl ConfigDeclarable for MyConfig {
             id: String::from("demo_plugin:my_config"),
             status: DynCfgStatus::None,
             type_: DynCfgType::Single,
-            path: String::from("demo_plugin/my_config"),
+            path: String::from("/collectors"),
             source_type: DynCfgSourceType::Stock,
             source: String::from("Whatever source help info"),
             cmds: DynCfgCmds::SCHEMA,
