@@ -1,73 +1,18 @@
 #![allow(dead_code)]
 
+use crate::config_registry::{Config, ConfigRegistry};
 use crate::{
-    ConfigDeclaration, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
+    ConfigDeclarable, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
     FunctionRegistry, FunctionResult, PluginContext, Result, RuntimeError,
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{Message, MessageReader, MessageWriter};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-
-use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
-use serde::{Serialize, de::DeserializeOwned};
-
-pub trait ConfigDeclarable: Send + Sync + Serialize + DeserializeOwned + JsonSchema {
-    fn config_declaration() -> ConfigDeclaration;
-}
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// The configuration declaration (metadata)
-    pub declaration: ConfigDeclaration,
-
-    /// Schema for the configuration
-    pub schema: schemars::Schema,
-
-    /// Optional current configuration instance
-    pub instance: Option<serde_json::Value>,
-}
-
-impl Config {
-    pub fn new<T>(initial_value: Option<T>) -> Self
-    where
-        T: ConfigDeclarable,
-    {
-        let declaration = T::config_declaration();
-
-        let settings = SchemaSettings::draft07();
-        let generator = SchemaGenerator::new(settings);
-        let schema = generator.into_root_schema_for::<T>();
-
-        Self {
-            declaration,
-            schema,
-            instance: initial_value
-                .as_ref()
-                .map(|v| serde_json::to_value(v).unwrap()),
-        }
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct ConfigRegistry {
-    config_declarations: Arc<RwLock<HashMap<String, Config>>>,
-}
-
-impl ConfigRegistry {
-    async fn add(&self, cfg: Config) {
-        let id = cfg.declaration.id.clone();
-
-        let mut hm = self.config_declarations.write().await;
-        hm.insert(id, cfg);
-    }
-}
 
 /// The main plugin runtime that handles Netdata protocol messages
 pub struct PluginRuntime {
@@ -112,6 +57,7 @@ impl PluginRuntime {
         let cfg = Config::new::<T>(None);
         info!("Registering configuration {:#?}", cfg);
         self.config_registry.add(cfg).await;
+
         Ok(())
     }
 
