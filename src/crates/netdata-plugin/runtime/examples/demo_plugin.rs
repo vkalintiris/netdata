@@ -284,10 +284,10 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
 }
 
 pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    // let settings = SchemaSettings::draft07();
-    // let generator = SchemaGenerator::new(settings);
-    // let schema = generator.into_root_schema_for::<MyConfig>();
-    // eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
+    let settings = SchemaSettings::draft07();
+    let generator = SchemaGenerator::new(settings);
+    let schema = generator.into_root_schema_for::<MyConfig>();
+    eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
 
     runtime.register_config::<MyConfig>().await.unwrap();
     Ok(())
