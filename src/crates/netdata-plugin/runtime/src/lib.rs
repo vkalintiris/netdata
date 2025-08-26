@@ -94,7 +94,7 @@ pub use error::{Result, RuntimeError};
 pub use function_context::FunctionContext;
 pub use function_registry::FunctionRegistry;
 pub use plugin_context::{PluginContext, PluginStats, Transaction, TransactionId};
-pub use plugin_runtime::PluginRuntime;
+pub use plugin_runtime::{ConfigDeclarable, PluginRuntime};
 
 // Re-export commonly used types from proto
 pub use netdata_plugin_protocol::{
