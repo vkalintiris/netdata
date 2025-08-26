@@ -57,6 +57,7 @@ impl PluginRuntime {
         let cmds = cfg.dyncfg_commands();
 
         if cmds.contains(DynCfgCmds::SCHEMA) {
+            // setup function handler for retrieving configuration schema
             let id = String::from(cfg.id());
             let name = format!("config {} schema", id);
             let help = format!("Retrieve configuration schema for '{}'", id);
@@ -88,10 +89,48 @@ impl PluginRuntime {
 
             self.register_function(declaration, handler).await.unwrap();
         }
+
+        if cmds.contains(DynCfgCmds::GET) {
+            // setup function handler for retrieving config value
+            let id = String::from(cfg.id());
+            let name = format!("config {} get", id);
+            let help = format!("Get configuration value for '{}'", id);
+
+            let declaration = FunctionDeclaration {
+                name,
+                help,
+                global: false,
+                timeout: 10,
+                tags: None,
+                access: None,
+                priority: None,
+                version: None,
+            };
+
+            let handler = async |plugin_ctx: PluginContext, fn_ctx: FunctionContext| {
+                let id = fn_ctx.function_name().split_whitespace().nth(1).unwrap();
+                let cfg = plugin_ctx.get_config(id).await.unwrap();
+                let initial_value = cfg.initial_value().expect("WTF?");
+                let payload = serde_json::to_vec_pretty(initial_value).unwrap();
+
+                FunctionResult {
+                    transaction: fn_ctx.transaction_id().clone(),
+                    status: 200,
+                    format: "application/json".to_string(),
+                    expires: 0,
+                    payload,
+                }
+            };
+
+            self.register_function(declaration, handler).await.unwrap();
+        }
     }
 
-    pub async fn register_config<T: ConfigDeclarable>(&self) -> Result<()> {
-        let cfg = Config::new::<T>(None);
+    pub async fn register_config<T: ConfigDeclarable>(
+        &self,
+        initial_value: Option<T>,
+    ) -> Result<()> {
+        let cfg = Config::new::<T>(initial_value);
         self.plugin_context.insert_config(cfg.clone()).await;
         self.register_config_functions(cfg).await;
 

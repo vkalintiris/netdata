@@ -57,6 +57,10 @@ impl Config {
         &self.inner.schema
     }
 
+    pub fn initial_value(&self) -> Option<&serde_json::Value> {
+        self.inner.instance.as_ref()
+    }
+
     pub fn dyncfg_commands(&self) -> DynCfgCmds {
         self.inner.declaration.cmds
     }
