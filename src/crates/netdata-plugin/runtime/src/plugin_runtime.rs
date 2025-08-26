@@ -6,7 +6,7 @@ use crate::{
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{Message, MessageReader, MessageWriter};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -22,7 +22,7 @@ pub trait ConfigDeclarable: Send + Sync + Serialize + DeserializeOwned + JsonSch
     fn config_declaration() -> ConfigDeclaration;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// The configuration declaration (metadata)
     pub declaration: ConfigDeclaration,
@@ -37,7 +37,7 @@ pub struct Config {
 impl Config {
     pub fn new<T>(initial_value: Option<T>) -> Self
     where
-        T: ConfigDeclarable + 'static,
+        T: ConfigDeclarable,
     {
         let declaration = T::config_declaration();
 
@@ -57,18 +57,15 @@ impl Config {
 
 #[derive(Default, Debug)]
 pub struct ConfigRegistry {
-    config_declarations: Arc<RwLock<HashSet<ConfigDeclaration>>>,
+    config_declarations: Arc<RwLock<HashMap<String, Config>>>,
 }
 
 impl ConfigRegistry {
-    async fn add(&self, cfg_decl: ConfigDeclaration) {
-        let mut hm = self.config_declarations.write().await;
-        hm.insert(cfg_decl);
-    }
+    async fn add(&self, cfg: Config) {
+        let id = cfg.declaration.id.clone();
 
-    async fn get_all_declarations(&self) -> Vec<ConfigDeclaration> {
-        let hm = self.config_declarations.read().await;
-        hm.iter().cloned().collect()
+        let mut hm = self.config_declarations.write().await;
+        hm.insert(id, cfg);
     }
 }
 
@@ -111,8 +108,10 @@ impl PluginRuntime {
         }
     }
 
-    pub async fn register_config(&self, cfg_decl: ConfigDeclaration) -> Result<()> {
-        self.config_registry.add(cfg_decl).await;
+    pub async fn register_config<T: ConfigDeclarable>(&self) -> Result<()> {
+        let cfg = Config::new::<T>(None);
+        info!("Registering configuration {:#?}", cfg);
+        self.config_registry.add(cfg).await;
         Ok(())
     }
 

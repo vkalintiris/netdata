@@ -10,9 +10,10 @@
 //! - Access plugin statistics
 
 use netdata_plugin_runtime::{
-    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionContext,
-    FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
+    ConfigDeclarable, ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType,
+    FunctionContext, FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -282,29 +283,45 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
     Ok(())
 }
 
-pub async fn register_config(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = SchemaSettings::draft07();
-    let generator = SchemaGenerator::new(settings);
-    let schema = generator.into_root_schema_for::<MyConfig>();
-    eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
+pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    // let settings = SchemaSettings::draft07();
+    // let generator = SchemaGenerator::new(settings);
+    // let schema = generator.into_root_schema_for::<MyConfig>();
+    // eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
 
-    let cfg_decl = MyConfig::config_declaration();
-    Ok(runtime.register_config(cfg_decl).await.unwrap())
+    runtime.register_config::<MyConfig>().await.unwrap();
+    Ok(())
 }
 
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings, schema_for};
 
-#[derive(Clone, Debug, JsonSchema)]
+#[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 struct MyCredentials {
     username: String,
     password: String,
 }
 
-#[derive(Clone, Debug, JsonSchema)]
+#[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 struct MyConfig {
     url: String,
     port: u16,
     credentials: Option<MyCredentials>,
+}
+
+impl ConfigDeclarable for MyConfig {
+    fn config_declaration() -> ConfigDeclaration {
+        ConfigDeclaration {
+            id: String::from("demo_plugin:my_config"),
+            status: DynCfgStatus::None,
+            type_: DynCfgType::Single,
+            path: String::from("demo_plugin/my_config"),
+            source_type: DynCfgSourceType::Stock,
+            source: String::from("Whatever source help info"),
+            cmds: DynCfgCmds::SCHEMA,
+            view_access: HttpAccess::empty(),
+            edit_access: HttpAccess::empty(),
+        }
+    }
 }
 
 impl MyConfig {
@@ -316,20 +333,6 @@ impl MyConfig {
                 username: String::from("vk"),
                 password: String::from("123456"),
             }),
-        }
-    }
-
-    pub fn config_declaration() -> ConfigDeclaration {
-        ConfigDeclaration {
-            id: String::from("demo_plugin:my_config"),
-            status: DynCfgStatus::None,
-            type_: DynCfgType::Single,
-            path: String::from("demo_plugin/my_config"),
-            source_type: DynCfgSourceType::Stock,
-            source: String::from("Whatever source help info"),
-            cmds: DynCfgCmds::SCHEMA,
-            view_access: HttpAccess::empty(),
-            edit_access: HttpAccess::empty(),
         }
     }
 }
