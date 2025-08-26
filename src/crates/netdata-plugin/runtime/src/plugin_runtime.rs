@@ -6,7 +6,7 @@ use crate::{
     FunctionRegistry, FunctionResult, PluginContext, Result, RuntimeError,
 };
 use futures::StreamExt;
-use netdata_plugin_protocol::{Message, MessageReader, MessageWriter};
+use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -53,10 +53,50 @@ impl PluginRuntime {
         }
     }
 
+    pub async fn register_config_functions(&self, cfg: Config) {
+        let cmds = cfg.dyncfg_commands();
+
+        if cmds.contains(DynCfgCmds::SCHEMA) {
+            let id = String::from(cfg.id());
+            let name = format!("config '{}' schema", id);
+            let help = format!("Retrieve configuration schema for '{:?}'", id);
+
+            let declaration = FunctionDeclaration {
+                name,
+                help,
+                global: true,
+                timeout: 10,
+                tags: None,
+                access: None,
+                priority: None,
+                version: None,
+            };
+
+            let handler = async |plugin_ctx: PluginContext, fn_ctx: FunctionContext| {
+                let id = fn_ctx.function_name().split_whitespace().nth(1).unwrap();
+                let cfg = plugin_ctx.get_config(id).await.unwrap();
+                let payload = serde_json::to_vec_pretty(cfg.schema()).unwrap();
+
+                FunctionResult {
+                    transaction: fn_ctx.transaction_id().clone(),
+                    status: 200,
+                    format: "text/plain".to_string(),
+                    expires: 0,
+                    payload,
+                }
+            };
+
+            self.register_function(declaration, handler).await.unwrap();
+        }
+    }
+
     pub async fn register_config<T: ConfigDeclarable>(&self) -> Result<()> {
         let cfg = Config::new::<T>(None);
+
         info!("Registering configuration {:#?}", cfg);
-        self.config_registry.add(cfg).await;
+        self.config_registry.add(cfg.clone()).await;
+
+        self.register_config_functions(cfg);
 
         Ok(())
     }

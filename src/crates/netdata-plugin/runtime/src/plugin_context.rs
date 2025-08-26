@@ -1,3 +1,4 @@
+use crate::config_registry::{Config, ConfigRegistry};
 use netdata_plugin_protocol::HttpAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -118,7 +119,8 @@ impl TransactionRegistry {
 /// Plugin context maintaining state and transaction registry
 pub struct PluginContextInner {
     plugin_name: String,
-    registry: RwLock<TransactionRegistry>,
+    config_registry: RwLock<ConfigRegistry>,
+    transaction_registry: RwLock<TransactionRegistry>,
     stats: RwLock<PluginStats>,
 }
 
@@ -132,11 +134,17 @@ impl PluginContext {
     pub fn new(plugin_name: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(PluginContextInner {
+                config_registry: RwLock::default(),
                 plugin_name: plugin_name.into(),
-                registry: RwLock::new(TransactionRegistry::new()),
+                transaction_registry: RwLock::new(TransactionRegistry::new()),
                 stats: RwLock::new(PluginStats::default()),
             }),
         }
+    }
+
+    pub async fn get_config(&self, id: &str) -> Option<Config> {
+        let cfg_registry = self.inner.config_registry.read().await;
+        cfg_registry.get(id).await
     }
 
     /// Get the plugin name
@@ -164,7 +172,7 @@ impl PluginContext {
 
         debug!("Starting transaction {} for function {}", id, function_name);
 
-        let mut registry = self.inner.registry.write().await;
+        let mut registry = self.inner.transaction_registry.write().await;
 
         // Check if transaction already exists
         if registry.transactions.contains_key(&id) {
@@ -185,7 +193,7 @@ impl PluginContext {
     pub async fn complete_transaction(&self, transaction_id: &TransactionId) {
         debug!("Completing transaction: {}", transaction_id);
 
-        let mut registry = self.inner.registry.write().await;
+        let mut registry = self.inner.transaction_registry.write().await;
         if let Some(transaction) = registry.remove(transaction_id) {
             info!(
                 "Transaction {} completed successfully (elapsed: {:?})",
@@ -203,7 +211,7 @@ impl PluginContext {
     pub async fn fail_transaction(&self, transaction_id: &TransactionId) {
         debug!("Failing transaction: {}", transaction_id);
 
-        let mut registry = self.inner.registry.write().await;
+        let mut registry = self.inner.transaction_registry.write().await;
         if let Some(transaction) = registry.remove(transaction_id) {
             warn!(
                 "Transaction {} failed (elapsed: {:?})",
@@ -221,7 +229,7 @@ impl PluginContext {
     pub async fn cancel_transaction(&self, transaction_id: &TransactionId) {
         debug!("Cancelling transaction: {}", transaction_id);
 
-        let mut registry = self.inner.registry.write().await;
+        let mut registry = self.inner.transaction_registry.write().await;
         if let Some(transaction) = registry.get_mut(transaction_id) {
             transaction.cancelled = true;
             info!(
@@ -240,7 +248,7 @@ impl PluginContext {
 
     /// Check if a transaction is cancelled
     pub async fn is_transaction_cancelled(&self, transaction_id: &TransactionId) -> bool {
-        let registry = self.inner.registry.read().await;
+        let registry = self.inner.transaction_registry.read().await;
         registry
             .get(transaction_id)
             .map(|t| t.cancelled)
@@ -249,19 +257,19 @@ impl PluginContext {
 
     /// Get transaction details
     pub async fn get_transaction(&self, transaction_id: &TransactionId) -> Option<Transaction> {
-        let registry = self.inner.registry.read().await;
+        let registry = self.inner.transaction_registry.read().await;
         registry.get(transaction_id).cloned()
     }
 
     /// Get all active transactions
     pub async fn get_active_transactions(&self) -> Vec<Transaction> {
-        let registry = self.inner.registry.read().await;
+        let registry = self.inner.transaction_registry.read().await;
         registry.values().cloned().collect()
     }
 
     /// Clean up expired transactions
     pub async fn cleanup_expired_transactions(&self) {
-        let mut registry = self.inner.registry.write().await;
+        let mut registry = self.inner.transaction_registry.write().await;
         let expired = registry.cleanup_expired();
 
         if !expired.is_empty() {
@@ -284,7 +292,7 @@ impl PluginContext {
     /// Reset plugin statistics
     pub async fn reset_stats(&self) {
         let mut stats = self.inner.stats.write().await;
-        let registry = self.inner.registry.read().await;
+        let registry = self.inner.transaction_registry.read().await;
         *stats = PluginStats {
             active_transactions: registry.len(),
             ..Default::default()
