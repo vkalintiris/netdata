@@ -15,6 +15,46 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
+use serde::{Serialize, de::DeserializeOwned};
+
+pub trait ConfigDeclarable: Send + Sync + Serialize + DeserializeOwned + JsonSchema {
+    fn config_declaration() -> ConfigDeclaration;
+}
+
+#[derive(Debug)]
+pub struct Config {
+    /// The configuration declaration (metadata)
+    pub declaration: ConfigDeclaration,
+
+    /// Schema for the configuration
+    pub schema: schemars::Schema,
+
+    /// Optional current configuration instance
+    pub instance: Option<serde_json::Value>,
+}
+
+impl Config {
+    pub fn new<T>(initial_value: Option<T>) -> Self
+    where
+        T: ConfigDeclarable + 'static,
+    {
+        let declaration = T::config_declaration();
+
+        let settings = SchemaSettings::draft07();
+        let generator = SchemaGenerator::new(settings);
+        let schema = generator.into_root_schema_for::<T>();
+
+        Self {
+            declaration,
+            schema,
+            instance: initial_value
+                .as_ref()
+                .map(|v| serde_json::to_value(v).unwrap()),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct ConfigRegistry {
     config_declarations: Arc<RwLock<HashSet<ConfigDeclaration>>>,

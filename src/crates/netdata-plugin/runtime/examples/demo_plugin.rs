@@ -282,15 +282,29 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
     Ok(())
 }
 
-pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn register_config(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
+    let settings = SchemaSettings::draft07();
+    let generator = SchemaGenerator::new(settings);
+    let schema = generator.into_root_schema_for::<MyConfig>();
+    eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
+
     let cfg_decl = MyConfig::config_declaration();
     Ok(runtime.register_config(cfg_decl).await.unwrap())
 }
 
-#[derive(Clone, Debug)]
+use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings, schema_for};
+
+#[derive(Clone, Debug, JsonSchema)]
+struct MyCredentials {
+    username: String,
+    password: String,
+}
+
+#[derive(Clone, Debug, JsonSchema)]
 struct MyConfig {
     url: String,
     port: u16,
+    credentials: Option<MyCredentials>,
 }
 
 impl MyConfig {
@@ -298,6 +312,10 @@ impl MyConfig {
         Self {
             url: String::from(url),
             port,
+            credentials: Some(MyCredentials {
+                username: String::from("vk"),
+                password: String::from("123456"),
+            }),
         }
     }
 
