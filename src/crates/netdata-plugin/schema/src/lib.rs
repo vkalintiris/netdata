@@ -255,11 +255,11 @@ mod tests {
     #[test]
     fn test_netdata_schema_generation() {
         let schema = TestConfig::netdata_schema();
-        
+
         // Should have both jsonSchema and uiSchema
         assert!(schema.get("jsonSchema").is_some());
         assert!(schema.get("uiSchema").is_some());
-        
+
         // UI schema should contain our annotations
         let ui_schema = &schema["uiSchema"];
         assert_eq!(ui_schema["field"]["ui:help"], "This is help text");
@@ -270,12 +270,12 @@ mod tests {
     #[test]
     fn test_clean_json_schema() {
         let schema = TestConfig::clean_json_schema();
-        
+
         // Should not contain x-ui-* extensions
         let properties = &schema["properties"]["field"];
         assert!(properties.get("x-ui-help").is_none());
         assert!(properties.get("x-ui-placeholder").is_none());
-        
+
         // But should still have title and other standard properties
         assert_eq!(properties["title"], "Test Field");
     }
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_ui_schema_only() {
         let ui_schema = TestConfig::ui_schema();
-        
+
         // Should contain our UI annotations
         assert_eq!(ui_schema["field"]["ui:help"], "This is help text");
         assert_eq!(ui_schema["field"]["ui:placeholder"], "Enter value...");

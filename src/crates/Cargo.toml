@@ -12,8 +12,7 @@ members = [
     "flog-otel",
     "netdata-plugin/protocol",
     "netdata-plugin/runtime",
-    "netdata-schema",
-    "schema-generator",
+    "netdata-plugin/schema",
 ]
 
 [workspace.package]
