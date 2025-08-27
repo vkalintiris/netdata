@@ -1,6 +1,7 @@
 use crate::ConfigDeclaration;
 use netdata_plugin_protocol::DynCfgCmds;
-use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
+use netdata_plugin_schema::NetdataSchema;
+use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ pub struct ConfigInner {
     pub declaration: ConfigDeclaration,
 
     /// Schema for the configuration
-    pub schema: schemars::Schema,
+    pub schema: serde_json::Value,
 
     /// Optional current configuration instance
     pub instance: Option<serde_json::Value>,
@@ -30,18 +31,14 @@ pub struct Config {
 impl Config {
     pub fn new<T>(initial_value: Option<T>) -> Self
     where
-        T: ConfigDeclarable,
+        T: ConfigDeclarable + NetdataSchema,
     {
         let declaration = T::config_declaration();
-
-        let settings = SchemaSettings::draft07();
-        let generator = SchemaGenerator::new(settings);
-        let schema = generator.into_root_schema_for::<T>();
 
         Self {
             inner: Arc::new(ConfigInner {
                 declaration,
-                schema,
+                schema: T::netdata_schema(),
                 instance: initial_value
                     .as_ref()
                     .map(|v| serde_json::to_value(v).unwrap()),
@@ -53,7 +50,7 @@ impl Config {
         &self.inner.declaration.id
     }
 
-    pub fn schema(&self) -> &schemars::Schema {
+    pub fn schema(&self) -> &serde_json::Value {
         &self.inner.schema
     }
 
@@ -84,6 +81,6 @@ impl ConfigRegistry {
 
     pub async fn get(&self, id: &str) -> Option<Config> {
         let guard = self.config_declarations.read().await;
-        guard.get(id).map(|x| x.clone())
+        guard.get(id).cloned()
     }
 }

@@ -7,6 +7,7 @@ use crate::{
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
+use netdata_plugin_schema::NetdataSchema;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -126,7 +127,7 @@ impl PluginRuntime {
         }
     }
 
-    pub async fn register_config<T: ConfigDeclarable>(
+    pub async fn register_config<T: ConfigDeclarable + NetdataSchema>(
         &self,
         initial_value: Option<T>,
     ) -> Result<()> {

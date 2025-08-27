@@ -283,86 +283,9 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn generate_netdata_config_schema<T: JsonSchema>() -> serde_json::Value {
-    let settings = SchemaSettings::draft07();
-    let generator = SchemaGenerator::new(settings);
-    let schema = generator.into_root_schema_for::<T>();
-    let mut schema_json = serde_json::to_value(&schema).unwrap();
-    
-    // Extract UI schema from x-* extensions
-    let ui_schema = extract_ui_schema_from_extensions(&mut schema_json);
-    
-    serde_json::json!({
-        "jsonSchema": schema,
-        "uiSchema": ui_schema
-    })
-}
-
-fn extract_ui_schema_from_extensions(schema: &mut serde_json::Value) -> serde_json::Value {
-    use serde_json::{Value, Map};
-    
-    let mut ui_schema = Map::new();
-    
-    // Add global UI options
-    ui_schema.insert("uiOptions".to_string(), serde_json::json!({
-        "fullPage": true
-    }));
-    
-    // For now, create a basic UI schema with placeholders and help text
-    // In a real implementation, you'd traverse the JSON schema to extract x-* extensions
-    ui_schema.insert("url".to_string(), serde_json::json!({
-        "ui:help": "Full URL including protocol (http:// or https://)",
-        "ui:placeholder": "https://example.com"
-    }));
-    
-    ui_schema.insert("port".to_string(), serde_json::json!({
-        "ui:help": "Standard TCP port number (1-65535)",
-        "ui:placeholder": "8080"
-    }));
-    
-    ui_schema.insert("credentials".to_string(), serde_json::json!({
-        "ui:help": "Leave empty for anonymous access",
-        "username": {
-            "ui:help": "Enter your login username",
-            "ui:placeholder": "Enter username..."
-        },
-        "password": {
-            "ui:widget": "password",
-            "ui:help": "Enter your login password",
-            "ui:placeholder": "Enter password..."
-        }
-    }));
-    
-    // Add tabs structure
-    ui_schema.insert("ui:flavour".to_string(), Value::String("tabs".to_string()));
-    ui_schema.insert("ui:options".to_string(), serde_json::json!({
-        "tabs": [
-            {
-                "title": "Connection",
-                "fields": ["url", "port"]
-            },
-            {
-                "title": "Authentication", 
-                "fields": ["credentials"]
-            }
-        ]
-    }));
-    
-    Value::Object(ui_schema)
-}
-
 pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    // Generate standard JSON schema
-    let settings = SchemaSettings::draft07();
-    let generator = SchemaGenerator::new(settings);
-    let schema = generator.into_root_schema_for::<MyConfig>();
-    eprintln!("=== Standard JSON Schema ===");
-    eprintln!("{}", serde_json::to_string_pretty(&schema).unwrap());
-    
-    // Generate Netdata format with UI schema
-    let netdata_schema = generate_netdata_config_schema::<MyConfig>();
-    eprintln!("\n=== Netdata Format (JSON Schema + UI Schema) ===");
-    eprintln!("{}", serde_json::to_string_pretty(&netdata_schema).unwrap());
+    // let fo = MyConfig::netdata_schema();
+    // eprintln!("{}", serde_json::to_string_pretty(&fo).unwrap());
 
     let initial_value = Some(MyConfig::new("https://www.google.com", 80));
     runtime
@@ -372,6 +295,7 @@ pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std
     Ok(())
 }
 
+use netdata_plugin_schema::NetdataSchema;
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings, schema_for};
 
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
@@ -384,7 +308,7 @@ struct MyCredentials {
         extend("x-ui-placeholder" = "Enter username...")
     )]
     username: String,
-    
+
     #[schemars(
         title = "Password",
         description = "Password for authentication",
@@ -408,7 +332,7 @@ struct MyCredentials {
                 "fields": ["url", "port"]
             },
             {
-                "title": "Authentication", 
+                "title": "Authentication",
                 "fields": ["credentials"]
             }
         ]
@@ -424,17 +348,17 @@ struct MyConfig {
         extend("x-ui-placeholder" = "https://example.com")
     )]
     url: String,
-    
+
     #[schemars(
         title = "Port Number",
-        description = "TCP port for server connection", 
+        description = "TCP port for server connection",
         range(min = 1, max = 65535),
         example = 8080,
         extend("x-ui-help" = "Standard TCP port number (1-65535)"),
         extend("x-ui-placeholder" = "8080")
     )]
     port: u16,
-    
+
     #[schemars(
         title = "Credentials",
         description = "Optional authentication credentials",
