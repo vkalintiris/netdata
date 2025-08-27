@@ -347,8 +347,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("TOKIO_CONSOLE").is_ok() {
         console_subscriber::init();
     } else {
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("/tmp/demo_plugin.log")
+            .expect("Failed to open log file");
+
         tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
+            .with_writer(log_file)
             .with_env_filter(
                 std::env::var("RUST_LOG")
                     .unwrap_or_else(|_| "demo_plugin=info,netdata_plugin_runtime=info".to_string()),
@@ -394,11 +401,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     systemd_journal_directories_dyncfg_cb,
     //     NULL);
 
+    // "CONFIG 'demo_plugin:my_config' CREATE 'running' 'single' '/demo/plugin' 'internal' 'internal' 'schema get' 0 0"
+    // println!(
+    //     "CONFIG 'systemd-journal:monitored-directories' create 'running' 'single' '/logs/systemd-journal' 'internal' 'internal' 'get schema update' 0x0 0x0"
+    // );
     println!(
-        "CONFIG 'demo_plugin:my_config' CREATE 'running' 'single' '/demo/plugin' 'internal' 'internal' 'schema get' 0 0"
+        "CONFIG 'demo_plugin:my_config' create 'running' 'single' '/foo/bar' 'internal' 'internal' 'schema get' 0 0"
     );
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
 
     // Run the plugin
     match runtime.run().await {
