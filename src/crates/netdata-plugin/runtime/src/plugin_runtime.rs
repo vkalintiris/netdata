@@ -7,7 +7,6 @@ use crate::{
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
-use netdata_plugin_schema::NetdataSchema;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -127,15 +126,20 @@ impl PluginRuntime {
         }
     }
 
-    pub async fn register_config<T: ConfigDeclarable + NetdataSchema>(
+    pub async fn register_config<T: ConfigDeclarable>(
         &self,
         initial_value: Option<T>,
     ) -> Result<()> {
-        let cfg = Config::new::<T>(initial_value);
-        self.plugin_context.insert_config(cfg.clone()).await;
-        self.register_config_functions(cfg).await;
-
-        Ok(())
+        if let Some(cfg) = Config::new::<T>(initial_value) {
+            eprintln!("cfg: {:#?}", cfg);
+            self.plugin_context.insert_config(cfg.clone()).await;
+            self.register_config_functions(cfg).await;
+            Ok(())
+        } else {
+            Err(RuntimeError::Config(
+                "Type does not have x-config-id annotation".to_string(),
+            ))
+        }
     }
 
     /// Register a function with its handler

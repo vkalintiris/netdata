@@ -148,6 +148,7 @@ impl PluginContext {
     }
 
     pub async fn insert_config(&self, cfg: Config) {
+        println!("Config: {:#?}", cfg);
         let cfg_registry = self.inner.config_registry.read().await;
         cfg_registry.add(cfg).await
     }
