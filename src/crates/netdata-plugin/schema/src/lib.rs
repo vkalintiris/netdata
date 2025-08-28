@@ -8,7 +8,7 @@
 //! ```rust
 //! use schemars::JsonSchema;
 //! use serde::{Deserialize, Serialize};
-//! use netdata_schema::NetdataSchema;
+//! use netdata_plugin_schema::NetdataSchema;
 //!
 //! #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 //! #[schemars(extend("x-ui-flavour" = "tabs"))]
@@ -116,9 +116,9 @@ impl Transform for CollectUISchema {
 #[derive(Debug, Clone)]
 struct NetdataSchemaConfig {
     /// Whether to include the full page UI option
-    pub full_page: bool,
+    full_page: bool,
     /// JSON Schema settings to use
-    pub schema_settings: SchemaSettings,
+    schema_settings: SchemaSettings,
 }
 
 impl Default for NetdataSchemaConfig {
@@ -137,37 +137,32 @@ pub trait NetdataSchema: JsonSchema {
     where
         Self: Sized,
     {
-        generate_netdata_schema::<Self>()
+        let config = NetdataSchemaConfig::default();
+        let generator = SchemaGenerator::new(config.schema_settings.clone());
+        let mut schema = generator.into_root_schema_for::<Self>();
+
+        // Apply our UI schema collector transform
+        let mut ui_collector = CollectUISchema::default();
+        ui_collector.transform(&mut schema);
+
+        // Create the UI schema from collected information
+        let mut ui_schema = ui_collector.ui_schema;
+
+        // Add default UI options
+        if config.full_page {
+            ui_schema.insert(
+                "uiOptions".to_string(),
+                serde_json::json!({
+                    "fullPage": true
+                }),
+            );
+        }
+
+        serde_json::json!({
+            "jsonSchema": schema,
+            "uiSchema": ui_schema
+        })
     }
-}
-
-/// Generate a Netdata-compatible schema for the given type
-pub fn generate_netdata_schema<T: JsonSchema>() -> serde_json::Value {
-    let config = NetdataSchemaConfig::default();
-    let generator = SchemaGenerator::new(config.schema_settings.clone());
-    let mut schema = generator.into_root_schema_for::<T>();
-
-    // Apply our UI schema collector transform
-    let mut ui_collector = CollectUISchema::default();
-    ui_collector.transform(&mut schema);
-
-    // Create the UI schema from collected information
-    let mut ui_schema = ui_collector.ui_schema;
-
-    // Add default UI options
-    if config.full_page {
-        ui_schema.insert(
-            "uiOptions".to_string(),
-            serde_json::json!({
-                "fullPage": true
-            }),
-        );
-    }
-
-    serde_json::json!({
-        "jsonSchema": schema,
-        "uiSchema": ui_schema
-    })
 }
 
 /// Blanket implementation for all JsonSchema types
