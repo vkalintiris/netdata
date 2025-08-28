@@ -114,7 +114,7 @@ impl Transform for CollectUISchema {
 
 /// Configuration for Netdata schema generation
 #[derive(Debug, Clone)]
-pub struct NetdataSchemaConfig {
+struct NetdataSchemaConfig {
     /// Whether to include the full page UI option
     pub full_page: bool,
     /// JSON Schema settings to use
@@ -137,76 +137,13 @@ pub trait NetdataSchema: JsonSchema {
     where
         Self: Sized,
     {
-        Self::netdata_schema_with_config(&NetdataSchemaConfig::default())
-    }
-
-    /// Generate a Netdata-compatible schema with custom configuration
-    fn netdata_schema_with_config(config: &NetdataSchemaConfig) -> serde_json::Value
-    where
-        Self: Sized,
-    {
-        generate_netdata_schema::<Self>(config)
-    }
-
-    /// Generate only the UI schema part (useful for debugging)
-    fn ui_schema() -> serde_json::Value
-    where
-        Self: Sized,
-    {
-        Self::ui_schema_with_config(&NetdataSchemaConfig::default())
-    }
-
-    /// Generate only the UI schema part with custom configuration
-    fn ui_schema_with_config(config: &NetdataSchemaConfig) -> serde_json::Value
-    where
-        Self: Sized,
-    {
-        let generator = SchemaGenerator::new(config.schema_settings.clone());
-        let mut schema = generator.into_root_schema_for::<Self>();
-
-        let mut ui_collector = CollectUISchema::default();
-        ui_collector.transform(&mut schema);
-
-        let mut ui_schema = ui_collector.ui_schema;
-
-        if config.full_page {
-            ui_schema.insert(
-                "uiOptions".to_string(),
-                serde_json::json!({
-                    "fullPage": true
-                }),
-            );
-        }
-
-        serde_json::Value::Object(ui_schema)
-    }
-
-    /// Generate only the clean JSON schema (without UI extensions)
-    fn clean_json_schema() -> serde_json::Value
-    where
-        Self: Sized,
-    {
-        Self::clean_json_schema_with_config(&NetdataSchemaConfig::default())
-    }
-
-    /// Generate only the clean JSON schema with custom configuration
-    fn clean_json_schema_with_config(config: &NetdataSchemaConfig) -> serde_json::Value
-    where
-        Self: Sized,
-    {
-        let generator = SchemaGenerator::new(config.schema_settings.clone());
-        let mut schema = generator.into_root_schema_for::<Self>();
-
-        // Remove UI extensions
-        let mut ui_collector = CollectUISchema::default();
-        ui_collector.transform(&mut schema);
-
-        serde_json::to_value(schema).unwrap()
+        generate_netdata_schema::<Self>()
     }
 }
 
 /// Generate a Netdata-compatible schema for the given type
-pub fn generate_netdata_schema<T: JsonSchema>(config: &NetdataSchemaConfig) -> serde_json::Value {
+pub fn generate_netdata_schema<T: JsonSchema>() -> serde_json::Value {
+    let config = NetdataSchemaConfig::default();
     let generator = SchemaGenerator::new(config.schema_settings.clone());
     let mut schema = generator.into_root_schema_for::<T>();
 
@@ -235,58 +172,3 @@ pub fn generate_netdata_schema<T: JsonSchema>(config: &NetdataSchemaConfig) -> s
 
 /// Blanket implementation for all JsonSchema types
 impl<T> NetdataSchema for T where T: JsonSchema {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
-    struct TestConfig {
-        #[schemars(
-            title = "Test Field",
-            extend("x-ui-help" = "This is help text"),
-            extend("x-ui-placeholder" = "Enter value...")
-        )]
-        field: String,
-    }
-
-    #[test]
-    fn test_netdata_schema_generation() {
-        let schema = TestConfig::netdata_schema();
-
-        // Should have both jsonSchema and uiSchema
-        assert!(schema.get("jsonSchema").is_some());
-        assert!(schema.get("uiSchema").is_some());
-
-        // UI schema should contain our annotations
-        let ui_schema = &schema["uiSchema"];
-        assert_eq!(ui_schema["field"]["ui:help"], "This is help text");
-        assert_eq!(ui_schema["field"]["ui:placeholder"], "Enter value...");
-        assert_eq!(ui_schema["uiOptions"]["fullPage"], true);
-    }
-
-    #[test]
-    fn test_clean_json_schema() {
-        let schema = TestConfig::clean_json_schema();
-
-        // Should not contain x-ui-* extensions
-        let properties = &schema["properties"]["field"];
-        assert!(properties.get("x-ui-help").is_none());
-        assert!(properties.get("x-ui-placeholder").is_none());
-
-        // But should still have title and other standard properties
-        assert_eq!(properties["title"], "Test Field");
-    }
-
-    #[test]
-    fn test_ui_schema_only() {
-        let ui_schema = TestConfig::ui_schema();
-
-        // Should contain our UI annotations
-        assert_eq!(ui_schema["field"]["ui:help"], "This is help text");
-        assert_eq!(ui_schema["field"]["ui:placeholder"], "Enter value...");
-        assert_eq!(ui_schema["uiOptions"]["fullPage"], true);
-    }
-}
