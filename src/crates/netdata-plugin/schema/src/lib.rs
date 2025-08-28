@@ -42,7 +42,7 @@ use serde_json::{Map, Value};
 
 // Re-export types for convenience
 pub use netdata_plugin_types::{
-    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, HttpAccess
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, HttpAccess,
 };
 
 /// Transform that collects UI schema information from x-ui-* extensions
@@ -151,15 +151,25 @@ impl Transform for CollectConfigDeclaration {
                         "source" => config_props.source = Some(str_value.to_string()),
                         "type" => config_props.type_ = DynCfgType::from_name(str_value),
                         "status" => config_props.status = DynCfgStatus::from_name(str_value),
-                        "source-type" => config_props.source_type = DynCfgSourceType::from_name(str_value),
+                        "source-type" => {
+                            config_props.source_type = DynCfgSourceType::from_name(str_value)
+                        }
                         "cmds" => config_props.cmds = Some(parse_cmds_string(str_value)),
-                        _ => {} // Ignore unknown config extensions
+                        unknown => {
+                            panic!("Unknown config declaration attribute: {}", unknown);
+                        }
                     }
                 } else if let Some(int_value) = value.as_u64() {
                     match config_key {
-                        "view-access" => config_props.view_access = Some(HttpAccess::from_u32(int_value as u32)),
-                        "edit-access" => config_props.edit_access = Some(HttpAccess::from_u32(int_value as u32)),
-                        _ => {}
+                        "view-access" => {
+                            config_props.view_access = Some(HttpAccess::from_u32(int_value as u32))
+                        }
+                        "edit-access" => {
+                            config_props.edit_access = Some(HttpAccess::from_u32(int_value as u32))
+                        }
+                        unknown => {
+                            panic!("Unknown config declaration attribute: {}", unknown);
+                        }
                     }
                 }
                 keys_to_remove.push(key.clone());
@@ -171,17 +181,12 @@ impl Transform for CollectConfigDeclaration {
             obj.remove(&key);
         }
 
-        // Build config declaration if we have required fields - only if we don't have one already
-        if let Some(built_config) = config_props.build() {
-            self.config_declaration = Some(built_config);
-        }
-
-        // Continue processing subschemas
-        transform_subschemas(self, schema);
+        // Build config declaration
+        self.config_declaration = Some(config_props.build());
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ConfigDeclarationBuilder {
     id: Option<String>,
     status: Option<DynCfgStatus>,
@@ -195,21 +200,18 @@ struct ConfigDeclarationBuilder {
 }
 
 impl ConfigDeclarationBuilder {
-    fn build(self) -> Option<ConfigDeclaration> {
-        // Require at least an ID to create a config declaration
-        let id = self.id?;
-        
-        Some(ConfigDeclaration {
-            id,
-            status: self.status.unwrap_or(DynCfgStatus::Running),
-            type_: self.type_.unwrap_or(DynCfgType::Single),
-            path: self.path.unwrap_or_else(|| "/collectors".to_string()),
-            source_type: self.source_type.unwrap_or(DynCfgSourceType::Stock),
-            source: self.source.unwrap_or_else(|| "plugin".to_string()),
-            cmds: self.cmds.unwrap_or(DynCfgCmds::SCHEMA | DynCfgCmds::GET),
-            view_access: self.view_access.unwrap_or(HttpAccess::empty()),
-            edit_access: self.edit_access.unwrap_or(HttpAccess::empty()),
-        })
+    fn build(self) -> ConfigDeclaration {
+        ConfigDeclaration {
+            id: self.id.unwrap(),
+            status: self.status.unwrap(),
+            type_: self.type_.unwrap(),
+            path: self.path.unwrap(),
+            source_type: self.source_type.unwrap(),
+            source: self.source.unwrap(),
+            cmds: self.cmds.unwrap(),
+            view_access: self.view_access.unwrap(),
+            edit_access: self.edit_access.unwrap(),
+        }
     }
 }
 
@@ -246,17 +248,15 @@ pub trait NetdataSchema: JsonSchema {
     {
         let config = NetdataSchemaConfig::default();
         let generator = SchemaGenerator::new(config.schema_settings.clone());
-        let mut schema = generator.into_root_schema_for::<Self>();
+        let mut json_schema = generator.into_root_schema_for::<Self>();
 
         // Apply our UI schema collector transform
         let mut ui_collector = CollectUISchema::default();
-        ui_collector.transform(&mut schema);
+        ui_collector.transform(&mut json_schema);
 
-        // Apply our config declaration collector transform on a separate schema instance
-        let generator2 = SchemaGenerator::new(SchemaSettings::draft07());
-        let mut config_schema = generator2.into_root_schema_for::<Self>();
+        // Apply our config declaration collector
         let mut config_collector = CollectConfigDeclaration::default();
-        config_collector.transform(&mut config_schema);
+        config_collector.transform(&mut json_schema);
 
         // Create the UI schema from collected information
         let mut ui_schema = ui_collector.ui_schema;
@@ -273,7 +273,7 @@ pub trait NetdataSchema: JsonSchema {
 
         // Build the result object
         let mut result = serde_json::json!({
-            "jsonSchema": schema,
+            "jsonSchema": json_schema,
             "uiSchema": ui_schema
         });
 
