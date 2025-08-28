@@ -1,7 +1,7 @@
 //! # Netdata Schema Generation Library
 //!
 //! This library provides functionality to generate Netdata-compatible JSON schemas
-//! with UI annotations from Rust types annotated with schemars attributes.
+//! with UI annotations and configuration declarations from Rust types annotated with schemars attributes.
 //!
 //! ## Basic Usage
 //!
@@ -11,7 +11,11 @@
 //! use netdata_plugin_schema::NetdataSchema;
 //!
 //! #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
-//! #[schemars(extend("x-ui-flavour" = "tabs"))]
+//! #[schemars(
+//!     extend("x-ui-flavour" = "tabs"),
+//!     extend("x-config-id" = "my_plugin:my_config"),
+//!     extend("x-config-path" = "/collectors")
+//! )]
 //! struct MyConfig {
 //!     #[schemars(
 //!         title = "Server URL",
@@ -25,11 +29,21 @@
 //!
 //! let netdata_schema = MyConfig::netdata_schema();
 //! println!("{}", serde_json::to_string_pretty(&netdata_schema).unwrap());
+//!
+//! // Generate config declaration if metadata is present
+//! if let Some(config_decl) = MyConfig::config_declaration() {
+//!     println!("Config ID: {}", config_decl.id);
+//! }
 //! ```
 
 use schemars::transform::{Transform, transform_subschemas};
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value};
+
+// Re-export types for convenience
+pub use netdata_plugin_types::{
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, HttpAccess
+};
 
 /// Transform that collects UI schema information from x-ui-* extensions
 /// and removes them from the JSON schema, collecting them separately
@@ -112,6 +126,99 @@ impl Transform for CollectUISchema {
     }
 }
 
+/// Transform that collects config declaration information from x-config-* extensions
+#[derive(Default)]
+struct CollectConfigDeclaration {
+    config_declaration: Option<ConfigDeclaration>,
+}
+
+impl Transform for CollectConfigDeclaration {
+    fn transform(&mut self, schema: &mut Schema) {
+        let Some(obj) = schema.as_object_mut() else {
+            return;
+        };
+
+        // Only process root-level schema (where config declarations should be)
+        let mut config_props = ConfigDeclarationBuilder::default();
+        let mut keys_to_remove = Vec::new();
+
+        for (key, value) in obj.iter() {
+            if let Some(config_key) = key.strip_prefix("x-config-") {
+                if let Some(str_value) = value.as_str() {
+                    match config_key {
+                        "id" => config_props.id = Some(str_value.to_string()),
+                        "path" => config_props.path = Some(str_value.to_string()),
+                        "source" => config_props.source = Some(str_value.to_string()),
+                        "type" => config_props.type_ = DynCfgType::from_name(str_value),
+                        "status" => config_props.status = DynCfgStatus::from_name(str_value),
+                        "source-type" => config_props.source_type = DynCfgSourceType::from_name(str_value),
+                        "cmds" => config_props.cmds = Some(parse_cmds_string(str_value)),
+                        _ => {} // Ignore unknown config extensions
+                    }
+                } else if let Some(int_value) = value.as_u64() {
+                    match config_key {
+                        "view-access" => config_props.view_access = Some(HttpAccess::from_u32(int_value as u32)),
+                        "edit-access" => config_props.edit_access = Some(HttpAccess::from_u32(int_value as u32)),
+                        _ => {}
+                    }
+                }
+                keys_to_remove.push(key.clone());
+            }
+        }
+
+        // Remove the x-config-* extensions from the JSON schema
+        for key in keys_to_remove {
+            obj.remove(&key);
+        }
+
+        // Build config declaration if we have required fields - only if we don't have one already
+        if let Some(built_config) = config_props.build() {
+            self.config_declaration = Some(built_config);
+        }
+
+        // Continue processing subschemas
+        transform_subschemas(self, schema);
+    }
+}
+
+#[derive(Default)]
+struct ConfigDeclarationBuilder {
+    id: Option<String>,
+    status: Option<DynCfgStatus>,
+    type_: Option<DynCfgType>,
+    path: Option<String>,
+    source_type: Option<DynCfgSourceType>,
+    source: Option<String>,
+    cmds: Option<DynCfgCmds>,
+    view_access: Option<HttpAccess>,
+    edit_access: Option<HttpAccess>,
+}
+
+impl ConfigDeclarationBuilder {
+    fn build(self) -> Option<ConfigDeclaration> {
+        // Require at least an ID to create a config declaration
+        let id = self.id?;
+        
+        Some(ConfigDeclaration {
+            id,
+            status: self.status.unwrap_or(DynCfgStatus::Running),
+            type_: self.type_.unwrap_or(DynCfgType::Single),
+            path: self.path.unwrap_or_else(|| "/collectors".to_string()),
+            source_type: self.source_type.unwrap_or(DynCfgSourceType::Stock),
+            source: self.source.unwrap_or_else(|| "plugin".to_string()),
+            cmds: self.cmds.unwrap_or(DynCfgCmds::SCHEMA | DynCfgCmds::GET),
+            view_access: self.view_access.unwrap_or(HttpAccess::empty()),
+            edit_access: self.edit_access.unwrap_or(HttpAccess::empty()),
+        })
+    }
+}
+
+/// Parse command string like "schema|get|update" into DynCfgCmds flags
+fn parse_cmds_string(cmds_str: &str) -> DynCfgCmds {
+    // Use the existing parsing functionality from DynCfgCmds
+    DynCfgCmds::from_str_multi(cmds_str).unwrap_or_else(DynCfgCmds::empty)
+}
+
 /// Configuration for Netdata schema generation
 #[derive(Debug, Clone)]
 struct NetdataSchemaConfig {
@@ -130,9 +237,9 @@ impl Default for NetdataSchemaConfig {
     }
 }
 
-/// Trait for types that can generate Netdata-compatible schemas
+/// Trait for types that can generate Netdata-compatible schemas with UI and config declarations
 pub trait NetdataSchema: JsonSchema {
-    /// Generate a Netdata-compatible schema with default configuration
+    /// Generate a comprehensive Netdata-compatible schema with jsonSchema, uiSchema, and configDeclaration
     fn netdata_schema() -> serde_json::Value
     where
         Self: Sized,
@@ -144,6 +251,12 @@ pub trait NetdataSchema: JsonSchema {
         // Apply our UI schema collector transform
         let mut ui_collector = CollectUISchema::default();
         ui_collector.transform(&mut schema);
+
+        // Apply our config declaration collector transform on a separate schema instance
+        let generator2 = SchemaGenerator::new(SchemaSettings::draft07());
+        let mut config_schema = generator2.into_root_schema_for::<Self>();
+        let mut config_collector = CollectConfigDeclaration::default();
+        config_collector.transform(&mut config_schema);
 
         // Create the UI schema from collected information
         let mut ui_schema = ui_collector.ui_schema;
@@ -158,10 +271,28 @@ pub trait NetdataSchema: JsonSchema {
             );
         }
 
-        serde_json::json!({
+        // Build the result object
+        let mut result = serde_json::json!({
             "jsonSchema": schema,
             "uiSchema": ui_schema
-        })
+        });
+
+        // Add config declaration if present
+        if let Some(config_decl) = config_collector.config_declaration {
+            result["configDeclaration"] = serde_json::json!({
+                "id": config_decl.id,
+                "status": config_decl.status.name(),
+                "type": config_decl.type_.name(),
+                "path": config_decl.path,
+                "sourceType": config_decl.source_type.name(),
+                "source": config_decl.source,
+                "cmds": config_decl.cmds.to_pipe_separated(),
+                "viewAccess": u32::from(config_decl.view_access),
+                "editAccess": u32::from(config_decl.edit_access)
+            });
+        }
+
+        result
     }
 }
 

@@ -13,6 +13,8 @@ use netdata_plugin_runtime::{
     ConfigDeclarable, ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType,
     FunctionContext, FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
 };
+use netdata_plugin_schema::NetdataSchema;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{error, info};
@@ -287,18 +289,23 @@ pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std
     let initial_value = Some(MyConfig::new("https://www.google.com", 80));
     runtime
         .register_config::<MyConfig>(initial_value)
-        .await
-        .unwrap();
+        .await?;
     Ok(())
 }
-
-use netdata_plugin_schema::NetdataSchema;
-use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings, schema_for};
 
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 #[schemars(
     title = "Demo Plugin Configuration",
-    description = "Configuration for the demo plugin"
+    description = "Configuration for the demo plugin",
+    extend("x-config-id" = "demo_plugin:my_config"),
+    extend("x-config-path" = "/collectors"),
+    extend("x-config-type" = "single"),
+    extend("x-config-status" = "running"),
+    extend("x-config-source-type" = "stock"),
+    extend("x-config-source" = "Plugin-generated configuration"),
+    extend("x-config-cmds" = "schema|get|update"),
+    extend("x-config-view-access" = 0),
+    extend("x-config-edit-access" = 0)
 )]
 struct MyConfig {
     #[schemars(
@@ -322,21 +329,6 @@ struct MyConfig {
     port: u16,
 }
 
-impl ConfigDeclarable for MyConfig {
-    fn config_declaration() -> ConfigDeclaration {
-        ConfigDeclaration {
-            id: String::from("demo_plugin:my_config"),
-            status: DynCfgStatus::None,
-            type_: DynCfgType::Single,
-            path: String::from("/collectors"),
-            source_type: DynCfgSourceType::Stock,
-            source: String::from("Whatever source help info"),
-            cmds: DynCfgCmds::SCHEMA | DynCfgCmds::GET,
-            view_access: HttpAccess::empty(),
-            edit_access: HttpAccess::empty(),
-        }
-    }
-}
 
 impl MyConfig {
     pub fn new(url: &str, port: u16) -> Self {
