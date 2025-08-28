@@ -284,9 +284,6 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
 }
 
 pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    // let fo = MyConfig::netdata_schema();
-    // eprintln!("{}", serde_json::to_string_pretty(&fo).unwrap());
-
     let initial_value = Some(MyConfig::new("https://www.google.com", 80));
     runtime
         .register_config::<MyConfig>(initial_value)
@@ -299,44 +296,9 @@ use netdata_plugin_schema::NetdataSchema;
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings, schema_for};
 
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
-struct MyCredentials {
-    #[schemars(
-        title = "Username",
-        description = "Username for authentication",
-        example = &"admin",
-        extend("x-ui-help" = "Enter your login username"),
-        extend("x-ui-placeholder" = "Enter username...")
-    )]
-    username: String,
-
-    #[schemars(
-        title = "Password",
-        description = "Password for authentication",
-        extend("x-ui-widget" = "password"),
-        extend("x-ui-help" = "Enter your login password"),
-        extend("x-ui-placeholder" = "Enter password..."),
-        extend("x-sensitive" = true)
-    )]
-    password: String,
-}
-
-#[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 #[schemars(
     title = "Demo Plugin Configuration",
-    description = "Configuration for the demo plugin",
-    extend("x-ui-flavour" = "tabs"),
-    extend("x-ui-options" = {
-        "tabs": [
-            {
-                "title": "Connection",
-                "fields": ["url", "port"]
-            },
-            {
-                "title": "Authentication",
-                "fields": ["credentials"]
-            }
-        ]
-    })
+    description = "Configuration for the demo plugin"
 )]
 struct MyConfig {
     #[schemars(
@@ -358,13 +320,6 @@ struct MyConfig {
         extend("x-ui-placeholder" = "8080")
     )]
     port: u16,
-
-    #[schemars(
-        title = "Credentials",
-        description = "Optional authentication credentials",
-        extend("x-ui-help" = "Leave empty for anonymous access")
-    )]
-    credentials: Option<MyCredentials>,
 }
 
 impl ConfigDeclarable for MyConfig {
@@ -388,10 +343,6 @@ impl MyConfig {
         Self {
             url: String::from(url),
             port,
-            credentials: Some(MyCredentials {
-                username: String::from("vk"),
-                password: String::from("123456"),
-            }),
         }
     }
 }
@@ -461,7 +412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     "CONFIG 'systemd-journal:monitored-directories' create 'running' 'single' '/logs/systemd-journal' 'internal' 'internal' 'get schema update' 0x0 0x0"
     // );
     println!(
-        "CONFIG 'demo_plugin:my_config' create 'running' 'single' '/foo/bar' 'internal' 'internal' 'schema get' 0 0"
+        "CONFIG 'demo_plugin:my_config' create 'running' 'single' '/foo/bar' 'internal' 'internal' 'schema get' 0x0 0x0"
     );
 
     // Run the plugin
