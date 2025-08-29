@@ -6,6 +6,7 @@ description = "Runtime layer that simplifies writing Netdata plugins with gRPC s
 
 [dependencies]
 # Local crates
+netdata-plugin-error = { path = "../error" }
 netdata-plugin-protocol = { path = "../protocol" }
 netdata-plugin-schema = { path = "../schema" }
 

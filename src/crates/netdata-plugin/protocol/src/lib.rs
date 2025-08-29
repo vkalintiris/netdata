@@ -13,4 +13,5 @@ pub use netdata_plugin_types::{
 };
 
 pub use message_parser::Message;
+pub use netdata_plugin_error::{NetdataPluginError, Result};
 pub use transport::{MessageReader, MessageWriter, Transport, TransportError};

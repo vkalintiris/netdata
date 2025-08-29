@@ -1,39 +1,13 @@
 use crate::message_parser::{Message, MessageParser};
 use futures::{SinkExt, Stream, StreamExt};
-use std::fmt;
+use netdata_plugin_error::{NetdataPluginError, Result};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-/// Error type for transport operations
-#[derive(Debug)]
-pub enum TransportError {
-    /// IO error during transport operations
-    Io(std::io::Error),
-    /// Protocol parsing error - contains the debug representation of the error
-    Protocol(String),
-    /// Transport is closed
-    Closed,
-}
-
-impl fmt::Display for TransportError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TransportError::Io(e) => write!(f, "IO error: {}", e),
-            TransportError::Protocol(e) => write!(f, "Protocol error: {}", e),
-            TransportError::Closed => write!(f, "Transport is closed"),
-        }
-    }
-}
-
-impl std::error::Error for TransportError {}
-
-impl From<std::io::Error> for TransportError {
-    fn from(e: std::io::Error) -> Self {
-        TransportError::Io(e)
-    }
-}
+// TransportError is now replaced by NetdataPluginError
+pub type TransportError = NetdataPluginError;
 
 /// Reader for receiving Netdata protocol messages
 pub struct MessageReader<R>
@@ -55,11 +29,11 @@ where
     }
 
     /// Receive the next message
-    pub async fn recv(&mut self) -> Option<Result<Message, TransportError>> {
+    pub async fn recv(&mut self) -> Option<Result<Message>> {
         self.reader
             .next()
             .await
-            .map(|result| result.map_err(|e| TransportError::Protocol(format!("{:?}", e))))
+            .map(|result| result.map_err(|e| NetdataPluginError::Protocol { message: format!("{:?}", e) }))
     }
 }
 
@@ -67,11 +41,11 @@ impl<R> Stream for MessageReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    type Item = Result<Message, TransportError>;
+    type Item = Result<Message>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.reader.poll_next_unpin(cx).map(|opt| {
-            opt.map(|result| result.map_err(|e| TransportError::Protocol(format!("{:?}", e))))
+            opt.map(|result| result.map_err(|e| NetdataPluginError::Protocol { message: format!("{:?}", e) }))
         })
     }
 }
@@ -96,14 +70,14 @@ where
     }
 
     /// Send a message
-    pub async fn send(&mut self, message: Message) -> Result<(), TransportError> {
+    pub async fn send(&mut self, message: Message) -> Result<()> {
         self.writer.send(message).await?;
         self.writer.flush().await?;
         Ok(())
     }
 
     /// Force flush the underlying writer
-    pub async fn flush(&mut self) -> Result<(), TransportError> {
+    pub async fn flush(&mut self) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         self.writer.get_mut().flush().await?;
         Ok(())
@@ -135,22 +109,22 @@ where
     }
 
     /// Send a message through the transport
-    pub async fn send(&mut self, message: Message) -> Result<(), TransportError> {
+    pub async fn send(&mut self, message: Message) -> Result<()> {
         self.writer.send(message).await
     }
 
     /// Force flush the underlying writer
-    pub async fn flush(&mut self) -> Result<(), TransportError> {
+    pub async fn flush(&mut self) -> Result<()> {
         self.writer.flush().await
     }
 
     /// Receive the next message from the transport
-    pub async fn recv(&mut self) -> Option<Result<Message, TransportError>> {
+    pub async fn recv(&mut self) -> Option<Result<Message>> {
         self.reader.recv().await
     }
 
     /// Send a message and receive the next response
-    pub async fn request(&mut self, message: Message) -> Result<Option<Message>, TransportError> {
+    pub async fn request(&mut self, message: Message) -> Result<Option<Message>> {
         self.send(message).await?;
         match self.recv().await {
             Some(Ok(response)) => Ok(Some(response)),
