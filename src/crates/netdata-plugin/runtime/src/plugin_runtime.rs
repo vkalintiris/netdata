@@ -53,7 +53,10 @@ impl PluginRuntime {
         }
     }
 
-    pub async fn register_config_functions(&self, cfg: Config) {
+    pub async fn register_config_functions<T>(&self, cfg: Config)
+    where
+        T: ConfigDeclarable,
+    {
         let cmds = cfg.dyncfg_commands();
 
         if cmds.contains(DynCfgCmds::SCHEMA) {
@@ -110,8 +113,8 @@ impl PluginRuntime {
             let handler = async |plugin_ctx: PluginContext, fn_ctx: FunctionContext| {
                 let id = fn_ctx.function_name().split_whitespace().nth(1).unwrap();
                 let cfg = plugin_ctx.get_config(id).await.unwrap();
-                let initial_value = cfg.initial_value().expect("WTF?");
-                let payload = serde_json::to_vec_pretty(initial_value).unwrap();
+                let instance = cfg.instance::<T>().expect("WTF?").unwrap();
+                let payload = serde_json::to_vec_pretty(&instance).unwrap();
 
                 FunctionResult {
                     transaction: fn_ctx.transaction_id().clone(),
@@ -126,14 +129,14 @@ impl PluginRuntime {
         }
     }
 
-    pub async fn register_config<T: ConfigDeclarable>(
-        &self,
-        initial_value: Option<T>,
-    ) -> Result<()> {
+    pub async fn register_config<T>(&self, initial_value: Option<T>) -> Result<()>
+    where
+        T: ConfigDeclarable,
+    {
         if let Some(cfg) = Config::new::<T>(initial_value) {
             eprintln!("cfg: {:#?}", cfg);
             self.plugin_context.insert_config(cfg.clone()).await;
-            self.register_config_functions(cfg).await;
+            self.register_config_functions::<T>(cfg).await;
             Ok(())
         } else {
             Err(RuntimeError::Config(

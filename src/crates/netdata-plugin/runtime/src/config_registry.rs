@@ -1,8 +1,9 @@
 use crate::ConfigDeclaration;
-use netdata_plugin_protocol::{DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, HttpAccess};
+use netdata_plugin_protocol::DynCfgCmds;
 use netdata_plugin_schema::NetdataSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -12,45 +13,6 @@ pub trait ConfigDeclarable: Send + Sync + Serialize + DeserializeOwned + Netdata
 
 /// Blanket implementation for all types that implement the required traits
 impl<T> ConfigDeclarable for T where T: Send + Sync + Serialize + DeserializeOwned + NetdataSchema {}
-
-/// Extract ConfigDeclaration from a Netdata schema object
-fn extract_config_declaration_from_schema(schema: &serde_json::Value) -> Option<ConfigDeclaration> {
-    let config_decl = schema.get("configDeclaration")?;
-    
-    let id = config_decl.get("id")?.as_str()?.to_string();
-    let status = config_decl.get("status")?.as_str()
-        .and_then(DynCfgStatus::from_name)
-        .unwrap_or(DynCfgStatus::Running);
-    let type_ = config_decl.get("type")?.as_str()
-        .and_then(DynCfgType::from_name)
-        .unwrap_or(DynCfgType::Single);
-    let path = config_decl.get("path")?.as_str()?.to_string();
-    let source_type = config_decl.get("sourceType")?.as_str()
-        .and_then(DynCfgSourceType::from_name)
-        .unwrap_or(DynCfgSourceType::Stock);
-    let source = config_decl.get("source")?.as_str()?.to_string();
-    let cmds = config_decl.get("cmds")?.as_str()
-        .and_then(|s| DynCfgCmds::from_str_multi(s))
-        .unwrap_or(DynCfgCmds::SCHEMA | DynCfgCmds::GET);
-    let view_access = config_decl.get("viewAccess")?.as_u64()
-        .map(|v| HttpAccess::from_u32(v as u32))
-        .unwrap_or(HttpAccess::empty());
-    let edit_access = config_decl.get("editAccess")?.as_u64()
-        .map(|v| HttpAccess::from_u32(v as u32))
-        .unwrap_or(HttpAccess::empty());
-    
-    Some(ConfigDeclaration {
-        id,
-        status,
-        type_,
-        path,
-        source_type,
-        source,
-        cmds,
-        view_access,
-        edit_access,
-    })
-}
 
 #[derive(Debug, Clone)]
 pub struct ConfigInner {
@@ -75,9 +37,12 @@ impl Config {
         T: ConfigDeclarable,
     {
         let schema = T::netdata_schema();
-        
-        // Extract config declaration from the schema
-        let declaration = extract_config_declaration_from_schema(&schema)?;
+        let Ok(declaration) = ConfigDeclaration::try_from(&schema) else {
+            panic!(
+                "Could not create config declaration from schema: {:?}",
+                serde_json::to_string_pretty(&schema)
+            );
+        };
 
         Some(Self {
             inner: Arc::new(ConfigInner {
@@ -98,8 +63,17 @@ impl Config {
         &self.inner.schema
     }
 
-    pub fn initial_value(&self) -> Option<&serde_json::Value> {
-        self.inner.instance.as_ref()
+    pub fn instance<T>(&self) -> Result<Option<T>, serde_json::Error>
+    where
+        T: ConfigDeclarable,
+    {
+        match &self.inner.instance {
+            Some(value) => {
+                let config = serde_json::from_value::<T>(value.clone())?;
+                Ok(Some(config))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn dyncfg_commands(&self) -> DynCfgCmds {

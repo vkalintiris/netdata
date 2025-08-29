@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 bitflags = { workspace = true }
+serde_json = { workspace = true }
