@@ -3,7 +3,7 @@
 use crate::config_registry::{Config, ConfigRegistry};
 use crate::{
     ConfigDeclarable, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
-    FunctionRegistry, FunctionResult, PluginContext, Result, RuntimeError,
+    FunctionRegistry, FunctionResult, NetdataPluginError, PluginContext, Result,
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
@@ -139,9 +139,9 @@ impl PluginRuntime {
             self.register_config_functions::<T>(cfg).await;
             Ok(())
         } else {
-            Err(RuntimeError::Config(
-                "Type does not have x-config-id annotation".to_string(),
-            ))
+            Err(NetdataPluginError::Config {
+                message: "Type does not have x-config-id annotation".to_string(),
+            })
         }
     }
 
@@ -170,14 +170,11 @@ impl PluginRuntime {
             let message = Message::FunctionDeclaration(Box::new(declaration.clone()));
             if let Err(e) = writer.send(message).await {
                 error!("Failed to declare function {}: {}", declaration.name, e);
-                return Err(RuntimeError::Transport(Box::new(e)));
+                return Err(e);
             }
         }
 
-        writer
-            .flush()
-            .await
-            .map_err(|e| RuntimeError::Transport(Box::new(e)))?;
+        writer.flush().await?;
 
         Ok(())
     }

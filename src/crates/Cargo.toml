@@ -10,6 +10,7 @@ members = [
     "otel-plugin",
     "flatten_otel",
     "flog-otel",
+    "netdata-plugin/error",
     "netdata-plugin/protocol",
     "netdata-plugin/runtime",
     "netdata-plugin/schema",

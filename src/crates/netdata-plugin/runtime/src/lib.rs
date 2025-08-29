@@ -92,7 +92,7 @@ mod plugin_runtime;
 
 // Public exports
 pub use config_registry::ConfigDeclarable;
-pub use error::{Result, RuntimeError};
+pub use error::{NetdataPluginError, Result};
 pub use function_context::FunctionContext;
 pub use function_registry::FunctionRegistry;
 pub use plugin_context::{PluginContext, PluginStats, Transaction, TransactionId};
