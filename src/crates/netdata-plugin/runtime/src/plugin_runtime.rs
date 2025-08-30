@@ -3,7 +3,7 @@
 use crate::config_registry::{Config, ConfigRegistry};
 use crate::{
     ConfigDeclarable, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
-    FunctionRegistry, FunctionResult, NetdataPluginError, PluginContext, Result,
+    FunctionRegistry, FunctionResult, PluginContext, Result,
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
@@ -133,16 +133,12 @@ impl PluginRuntime {
     where
         T: ConfigDeclarable,
     {
-        if let Some(cfg) = Config::new::<T>(initial_value) {
-            eprintln!("cfg: {:#?}", cfg);
-            self.plugin_context.insert_config(cfg.clone()).await;
-            self.register_config_functions::<T>(cfg).await;
-            Ok(())
-        } else {
-            Err(NetdataPluginError::Config {
-                message: "Type does not have x-config-id annotation".to_string(),
-            })
-        }
+        let cfg = Config::new::<T>(initial_value)?;
+
+        eprintln!("cfg: {:#?}", cfg);
+        self.plugin_context.insert_config(cfg.clone()).await;
+        self.register_config_functions::<T>(cfg).await;
+        Ok(())
     }
 
     /// Register a function with its handler
