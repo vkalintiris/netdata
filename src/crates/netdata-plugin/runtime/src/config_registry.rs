@@ -1,4 +1,5 @@
 use crate::ConfigDeclaration;
+use netdata_plugin_error::{NetdataPluginError, Result};
 use netdata_plugin_protocol::DynCfgCmds;
 use netdata_plugin_schema::NetdataSchema;
 use serde::{Serialize, de::DeserializeOwned};
@@ -22,8 +23,8 @@ pub struct ConfigInner {
     /// Schema for the configuration
     pub schema: serde_json::Value,
 
-    /// Optional current configuration instance
-    pub instance: Option<serde_json::Value>,
+    /// Optional current configuration value
+    pub value: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,23 +33,18 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new<T>(initial_value: Option<T>) -> Option<Self>
+    pub fn new<T>(initial_value: Option<T>) -> Result<Self>
     where
         T: ConfigDeclarable,
     {
         let schema = T::netdata_schema();
-        let Ok(declaration) = ConfigDeclaration::try_from(&schema) else {
-            panic!(
-                "Could not create config declaration from schema: {:?}",
-                serde_json::to_string_pretty(&schema)
-            );
-        };
+        let declaration = ConfigDeclaration::try_from(&schema)?;
 
-        Some(Self {
+        Ok(Self {
             inner: Arc::new(ConfigInner {
                 declaration,
                 schema,
-                instance: initial_value
+                value: initial_value
                     .as_ref()
                     .map(|v| serde_json::to_value(v).unwrap()),
             }),
@@ -63,17 +59,23 @@ impl Config {
         &self.inner.schema
     }
 
-    pub fn instance<T>(&self) -> Result<Option<T>, serde_json::Error>
+    pub fn value(&self) -> Option<&serde_json::Value> {
+        self.inner.value.as_ref()
+    }
+
+    pub fn instance<T>(&self) -> Result<Option<T>>
     where
         T: ConfigDeclarable,
     {
-        match &self.inner.instance {
-            Some(value) => {
-                let config = serde_json::from_value::<T>(value.clone())?;
-                Ok(Some(config))
-            }
-            None => Ok(None),
-        }
+        let Some(value) = self.inner.value.as_ref() else {
+            return Ok(None);
+        };
+
+        let config =
+            serde_json::from_value::<T>(value.clone()).map_err(|e| NetdataPluginError::Schema {
+                message: format!("Malformed configuration instance value: {:#?}", e),
+            })?;
+        Ok(Some(config))
     }
 
     pub fn dyncfg_commands(&self) -> DynCfgCmds {
