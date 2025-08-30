@@ -88,13 +88,9 @@ pub struct ConfigRegistry {
 
 impl ConfigRegistry {
     pub async fn add(&self, cfg: Config) {
-        let inner = cfg.inner.clone();
-        let id = inner.declaration.id.clone();
-
-        {
-            let mut guard = self.config_declarations.write().await;
-            guard.insert(id, cfg);
-        }
+        let mut guard = self.config_declarations.write().await;
+        let id = cfg.inner.declaration.id.clone();
+        guard.insert(id, cfg);
     }
 
     pub async fn get(&self, id: &str) -> Option<Config> {
