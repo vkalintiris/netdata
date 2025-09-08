@@ -24,7 +24,7 @@ pub enum SourceTypeError {
     Indeterminate(PathBuf),
 }
 
-impl TryFrom<&Path> for JournalSourceType {
+impl TryFrom<&Path> for SourceType {
     type Error = SourceTypeError;
 
     fn try_from(path: &Path) -> std::result::Result<Self, Self::Error> {
@@ -37,23 +37,23 @@ impl TryFrom<&Path> for JournalSourceType {
 
         // Determine the source type
         let source_type = if path_str.contains("/remote/") {
-            JournalSourceType::Remote
+            SourceType::Remote
         } else if path_str.contains("/system") || path_str.contains("/system.journal") {
-            JournalSourceType::System
+            SourceType::System
         } else if path_str.contains("/user") || path_str.contains("/user-") {
-            JournalSourceType::User
+            SourceType::User
         } else if path
             .parent()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().contains('.'))
             .unwrap_or(false)
         {
-            JournalSourceType::Namespace
+            SourceType::Namespace
         } else {
             if !path_str.contains("/journal") && !path_str.ends_with(".journal") {
                 return Err(SourceTypeError::Indeterminate(path.to_path_buf()));
             }
-            JournalSourceType::Other
+            SourceType::Other
         };
 
         Ok(source_type)
@@ -61,7 +61,7 @@ impl TryFrom<&Path> for JournalSourceType {
 }
 
 #[derive(Debug, Error)]
-pub enum JournalRegistryError {
+pub enum RegistryError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -87,11 +87,11 @@ pub enum JournalRegistryError {
     },
 }
 
-pub type Result<T> = std::result::Result<T, JournalRegistryError>;
+pub type Result<T> = std::result::Result<T, RegistryError>;
 
 /// Represents a systemd journal file with parsed metadata
 #[derive(Debug, Clone)]
-pub struct JournalFile {
+pub struct RegistryFile {
     /// Full path to the journal file
     pub path: PathBuf,
 
@@ -102,7 +102,7 @@ pub struct JournalFile {
     pub modified: SystemTime,
 
     /// Source type based on directory location
-    pub source_type: JournalSourceType,
+    pub source_type: SourceType,
 
     /// Machine ID or writer ID if extractable from filename
     pub machine_id: Option<String>,
@@ -115,7 +115,7 @@ pub struct JournalFile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum JournalSourceType {
+pub enum SourceType {
     System,
     User,
     Remote,
@@ -123,7 +123,7 @@ pub enum JournalSourceType {
     Other,
 }
 
-impl std::fmt::Display for JournalSourceType {
+impl std::fmt::Display for SourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::System => write!(f, "system"),
@@ -135,19 +135,17 @@ impl std::fmt::Display for JournalSourceType {
     }
 }
 
-impl JournalFile {
+impl RegistryFile {
     /// Parse a journal file path and extract metadata
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let metadata = path
-            .metadata()
-            .map_err(|e| JournalRegistryError::MetadataError {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        let metadata = path.metadata().map_err(|e| RegistryError::MetadataError {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
 
-        let source_type = JournalSourceType::try_from(path)
-            .map_err(|e| JournalRegistryError::InvalidFilename(e.to_string()))?;
+        let source_type = SourceType::try_from(path)
+            .map_err(|e| RegistryError::InvalidFilename(e.to_string()))?;
 
         let (machine_id, sequence_number, first_timestamp) = Self::parse_filename(path);
 
@@ -203,7 +201,7 @@ struct WatcherState {
 /// Registry of journal files with automatic file system monitoring
 pub struct JournalRegistry {
     /// Currently tracked journal files
-    files: Arc<RwLock<HashMap<PathBuf, JournalFile>>>,
+    files: Arc<RwLock<HashMap<PathBuf, RegistryFile>>>,
 
     /// Directories being monitored
     watch_dirs: Arc<RwLock<HashSet<PathBuf>>>,
@@ -237,7 +235,7 @@ impl JournalRegistry {
             },
             Config::default(),
         )
-        .map_err(JournalRegistryError::WatcherInit)?;
+        .map_err(RegistryError::WatcherInit)?;
 
         // Clone what we need for the background task
         let files = Arc::clone(&self.files);
@@ -298,7 +296,7 @@ impl JournalRegistry {
             state
                 .watcher
                 .watch(&canonical_dir, RecursiveMode::Recursive)
-                .map_err(|e| JournalRegistryError::WatchError {
+                .map_err(|e| RegistryError::WatchError {
                     path: canonical_dir.clone(),
                     source: e,
                 })?;
@@ -345,7 +343,7 @@ impl JournalRegistry {
     }
 
     /// Get a snapshot of all current journal files
-    pub fn get_files(&self) -> Vec<JournalFile> {
+    pub fn get_files(&self) -> Vec<RegistryFile> {
         self.files.read().values().cloned().collect()
     }
 
@@ -358,7 +356,7 @@ impl JournalRegistry {
         {
             let path = entry.path();
 
-            if !entry.file_type().is_dir() && JournalFile::is_journal_file(path) {
+            if !entry.file_type().is_dir() && RegistryFile::is_journal_file(path) {
                 self.add_journal_file(path)?;
             }
         }
@@ -367,7 +365,7 @@ impl JournalRegistry {
 
     /// Internal: Add or update a journal file
     fn add_journal_file(&self, path: &Path) -> Result<()> {
-        match JournalFile::from_path(path) {
+        match RegistryFile::from_path(path) {
             Ok(journal_file) => {
                 let mut files = self.files.write();
                 files.insert(path.to_path_buf(), journal_file.clone());
@@ -383,7 +381,7 @@ impl JournalRegistry {
 
     /// Internal: Handle filesystem events
     fn handle_event_internal(
-        files: &Arc<RwLock<HashMap<PathBuf, JournalFile>>>,
+        files: &Arc<RwLock<HashMap<PathBuf, RegistryFile>>>,
         watch_dirs: &Arc<RwLock<HashSet<PathBuf>>>,
         event: Event,
     ) -> Result<()> {
@@ -393,8 +391,8 @@ impl JournalRegistry {
                     if path.is_dir() {
                         info!("New directory created: {:?}", path);
                         watch_dirs.write().insert(path.clone());
-                    } else if JournalFile::is_journal_file(&path) {
-                        if let Ok(journal_file) = JournalFile::from_path(&path) {
+                    } else if RegistryFile::is_journal_file(&path) {
+                        if let Ok(journal_file) = RegistryFile::from_path(&path) {
                             let is_new = !files.read().contains_key(&path);
                             files.write().insert(path.clone(), journal_file.clone());
 
@@ -424,8 +422,8 @@ impl JournalRegistry {
                     }
                 }
                 EventKind::Modify(_) => {
-                    if !path.is_dir() && JournalFile::is_journal_file(&path) {
-                        if let Ok(journal_file) = JournalFile::from_path(&path) {
+                    if !path.is_dir() && RegistryFile::is_journal_file(&path) {
+                        if let Ok(journal_file) = RegistryFile::from_path(&path) {
                             files.write().insert(path.clone(), journal_file.clone());
                             debug!("Modified journal file: {:?}", path);
                         }
@@ -438,8 +436,8 @@ impl JournalRegistry {
     }
 
     /// Create a new query builder for this registry
-    pub fn query(&self) -> JournalQuery<'_> {
-        JournalQuery::new(self)
+    pub fn query(&self) -> RegistryQuery<'_> {
+        RegistryQuery::new(self)
     }
 }
 
@@ -455,9 +453,9 @@ impl Drop for JournalRegistry {
 }
 
 /// A builder for querying journal files with various filters
-pub struct JournalQuery<'a> {
+pub struct RegistryQuery<'a> {
     registry: &'a JournalRegistry,
-    source_types: Option<Vec<JournalSourceType>>,
+    source_types: Option<Vec<SourceType>>,
     machine_ids: Option<Vec<String>>,
     time_range: Option<(Option<SystemTime>, Option<SystemTime>)>,
     size_range: Option<(Option<u64>, Option<u64>)>,
@@ -480,7 +478,7 @@ pub enum SortOrder {
     Descending,
 }
 
-impl<'a> JournalQuery<'a> {
+impl<'a> RegistryQuery<'a> {
     fn new(registry: &'a JournalRegistry) -> Self {
         Self {
             registry,
@@ -495,7 +493,7 @@ impl<'a> JournalQuery<'a> {
     }
 
     /// Filter by source type(s)
-    pub fn source(mut self, source_type: JournalSourceType) -> Self {
+    pub fn source(mut self, source_type: SourceType) -> Self {
         self.source_types
             .get_or_insert_with(Vec::new)
             .push(source_type);
@@ -503,7 +501,7 @@ impl<'a> JournalQuery<'a> {
     }
 
     /// Filter by multiple source types
-    pub fn sources(mut self, types: impl IntoIterator<Item = JournalSourceType>) -> Self {
+    pub fn sources(mut self, types: impl IntoIterator<Item = SourceType>) -> Self {
         self.source_types = Some(types.into_iter().collect());
         self
     }
@@ -571,8 +569,8 @@ impl<'a> JournalQuery<'a> {
     }
 
     /// Execute the query and return matching files
-    pub fn execute(&self) -> Vec<JournalFile> {
-        let mut results: Vec<JournalFile> = self
+    pub fn execute(&self) -> Vec<RegistryFile> {
+        let mut results: Vec<RegistryFile> = self
             .registry
             .files
             .read()
@@ -644,7 +642,7 @@ impl<'a> JournalQuery<'a> {
     }
 
     /// Internal: Check if a file matches all filters
-    fn matches(&self, file: &JournalFile) -> bool {
+    fn matches(&self, file: &RegistryFile) -> bool {
         // Check source type
         if let Some(ref types) = self.source_types {
             if !types.contains(&file.source_type) {

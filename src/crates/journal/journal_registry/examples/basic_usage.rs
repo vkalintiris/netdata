@@ -1,4 +1,4 @@
-use journal_registry::{JournalRegistry, JournalSourceType, SortBy, SortOrder};
+use journal_registry::{JournalRegistry, SortBy, SortOrder, SourceType};
 use std::time::{Duration, SystemTime};
 use tracing::{info, warn};
 
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== System Journal Files (sorted by size) ===");
     let system_files = registry
         .query()
-        .source(JournalSourceType::System)
+        .source(SourceType::System)
         .sort_by(SortBy::Size(SortOrder::Descending))
         .execute();
 
@@ -86,11 +86,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Group files by source type
     println!("\n=== Files by Source Type ===");
     for source_type in &[
-        JournalSourceType::System,
-        JournalSourceType::User,
-        JournalSourceType::Remote,
-        JournalSourceType::Namespace,
-        JournalSourceType::Other,
+        SourceType::System,
+        SourceType::User,
+        SourceType::Remote,
+        SourceType::Namespace,
+        SourceType::Other,
     ] {
         let files = registry.query().source(*source_type).execute();
         let total_size = registry.query().source(*source_type).total_size();
