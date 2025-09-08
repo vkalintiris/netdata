@@ -14,6 +14,7 @@ members = [
     "netdata-plugin/protocol",
     "netdata-plugin/runtime",
     "netdata-plugin/schema",
+    "ndr",
 ]
 
 [workspace.package]

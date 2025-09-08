@@ -50,26 +50,54 @@ typedef enum {
 } SD_JOURNAL_FILE_SOURCE_TYPE;
 
 struct nd_journal_file {
+    // ---- File identification fields ----
+    // Full path to the journal file on disk
     const char *filename;
+    // Length of the filename string for optimization
     size_t filename_len;
+    // Source identifier string derived from filename (e.g., "remote-hostname" or "system")
     STRING *source;
+    // Categorization of the journal file source (local system, user, remote, etc.)
     SD_JOURNAL_FILE_SOURCE_TYPE source_type;
+
+    // ---- Timing and metadata fields ----
+    // Last modification timestamp of the journal file (microseconds since epoch)
     usec_t file_last_modified_ut;
+    // Timestamp of the first message in this journal file (microseconds since epoch)
     usec_t msg_first_ut;
+    // Timestamp of the last message in this journal file (microseconds since epoch)
     usec_t msg_last_ut;
+    // File size in bytes
     size_t size;
+
+    // ---- Error tracking fields ----
+    // Flag to prevent repeated logging of journal file opening failures
     bool logged_failure;
+    // Flag to prevent repeated logging of journalctl execution failures
     bool logged_journalctl_failure;
+
+    // ---- Time synchronization tracking ----
+    // Maximum observed delta between journal timestamps and realtime (for time synchronization tracking)
     usec_t max_journal_vs_realtime_delta_ut;
 
+    // ---- Scan optimization fields ----
+    // Monotonic timestamp when this file was last scanned for changes
     usec_t last_scan_monotonic_ut;
+    // File modification timestamp when header was last scanned (used to avoid redundant header reads)
     usec_t last_scan_header_vs_last_modified_ut;
 
+    // ---- Journal sequence tracking ----
+    // First sequence number of messages in this journal file
     uint64_t first_seqnum;
+    // Last sequence number of messages in this journal file
     uint64_t last_seqnum;
+    // Writer ID that created the first message in this file
     NsdId128 first_writer_id;
+    // Writer ID that created the last message in this file
     NsdId128 last_writer_id;
 
+    // ---- Message counting ----
+    // Total count of log messages contained in this journal file
     uint64_t messages_in_file;
 };
 
