@@ -14,7 +14,7 @@ members = [
     "netdata-plugin/protocol",
     "netdata-plugin/runtime",
     "netdata-plugin/schema",
-    "ndr",
+    "journal/journal_registry",
 ]
 
 [workspace.package]
