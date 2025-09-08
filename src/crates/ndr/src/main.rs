@@ -11,6 +11,58 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
+use std::convert::TryFrom;
+
+#[derive(Debug, Error)]
+pub enum SourceTypeError {
+    #[error("Path contains invalid UTF-8")]
+    InvalidUtf8,
+
+    #[error("Path is empty")]
+    EmptyPath,
+
+    #[error("Cannot determine source type from path: {0}")]
+    Indeterminate(PathBuf),
+}
+
+impl TryFrom<&Path> for JournalSourceType {
+    type Error = SourceTypeError;
+
+    fn try_from(path: &Path) -> std::result::Result<Self, Self::Error> {
+        // Check if path is empty
+        if path.as_os_str().is_empty() {
+            return Err(SourceTypeError::EmptyPath);
+        }
+
+        let path_str = path.to_string_lossy();
+
+        // Determine the source type
+        let source_type = if path_str.contains("/remote/") {
+            JournalSourceType::Remote
+        } else if path_str.contains("/system") || path_str.contains("/system.journal") {
+            JournalSourceType::System
+        } else if path_str.contains("/user") || path_str.contains("/user-") {
+            JournalSourceType::User
+        } else if path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().contains('.'))
+            .unwrap_or(false)
+        {
+            JournalSourceType::Namespace
+        } else {
+            // Instead of defaulting to "Other", you could make this explicit
+            // by checking if it's actually a valid journal path
+            if !path_str.contains("/journal") && !path_str.ends_with(".journal") {
+                return Err(SourceTypeError::Indeterminate(path.to_path_buf()));
+            }
+            JournalSourceType::Other
+        };
+
+        Ok(source_type)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum JournalRegistryError {
     #[error("IO error: {0}")]
@@ -86,48 +138,6 @@ impl std::fmt::Display for JournalSourceType {
     }
 }
 
-/// Parser for journal filenames using regex
-struct JournalFilenameParser {
-    // Matches: name@machine_id-seqnum-timestamp.journal
-    full_pattern: Regex,
-    // Matches: system@machine_id-seqnum-timestamp.journal (without name prefix)
-    system_pattern: Regex,
-}
-
-impl JournalFilenameParser {
-    fn new() -> Self {
-        Self {
-            full_pattern: Regex::new(
-                r"^(?P<name>[^@]+)@(?P<machine>[a-f0-9]+)-(?P<seq>[a-f0-9]+)-(?P<ts>[a-f0-9]+)\.journal(?:~)?$"
-            ).unwrap(),
-            system_pattern: Regex::new(
-                r"^system@(?P<machine>[a-f0-9]+)-(?P<seq>[a-f0-9]+)-(?P<ts>[a-f0-9]+)\.journal(?:~)?$"
-            ).unwrap(),
-        }
-    }
-
-    fn parse(&self, filename: &str) -> (Option<String>, Option<u64>, Option<u64>) {
-        if let Some(caps) = self.full_pattern.captures(filename) {
-            let machine_id = caps.name("machine").map(|m| m.as_str().to_string());
-            let sequence_number = caps
-                .name("seq")
-                .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
-            let first_timestamp = caps
-                .name("ts")
-                .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
-
-            return (machine_id, sequence_number, first_timestamp);
-        }
-
-        // Try simpler patterns for special cases
-        if filename == "system.journal" || filename == "user.journal" {
-            return (None, None, None);
-        }
-
-        (None, None, None)
-    }
-}
-
 impl JournalFile {
     /// Parse a journal file path and extract metadata
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
@@ -139,15 +149,10 @@ impl JournalFile {
                 source: e,
             })?;
 
-        let source_type = Self::determine_source_type(path);
+        let source_type = JournalSourceType::try_from(path)
+            .map_err(|e| JournalRegistryError::InvalidFilename(e.to_string()))?;
 
-        // Use regex parser for filename parsing
-        let parser = JournalFilenameParser::new();
-        let (machine_id, sequence_number, first_timestamp) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|filename| parser.parse(filename))
-            .unwrap_or((None, None, None));
+        let (machine_id, sequence_number, first_timestamp) = Self::parse_filename(path);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -160,25 +165,27 @@ impl JournalFile {
         })
     }
 
-    fn determine_source_type(path: &Path) -> JournalSourceType {
-        let path_str = path.to_string_lossy();
+    fn parse_filename(path: &Path) -> (Option<String>, Option<u64>, Option<u64>) {
+        let jr = Regex::new(
+                r"(?:^|/)(?:[^@/]+@)?(?P<machine>[a-f0-9]+)-(?P<seq>[a-f0-9]+)-(?P<ts>[a-f0-9]+)\.journal(?:~)?$"
+            ).unwrap();
 
-        if path_str.contains("/remote/") {
-            JournalSourceType::Remote
-        } else if path_str.contains("/system") || path_str.contains("/system.journal") {
-            JournalSourceType::System
-        } else if path_str.contains("/user") || path_str.contains("/user-") {
-            JournalSourceType::User
-        } else if path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().contains('.'))
-            .unwrap_or(false)
-        {
-            JournalSourceType::Namespace
-        } else {
-            JournalSourceType::Other
-        }
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|filename| {
+                jr.captures(filename).map(|caps| {
+                    let machine_id = caps.name("machine").map(|m| m.as_str().to_string());
+                    let sequence_number = caps
+                        .name("seq")
+                        .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
+                    let first_timestamp = caps
+                        .name("ts")
+                        .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
+
+                    (machine_id, sequence_number, first_timestamp)
+                })
+            })
+            .unwrap_or((None, None, None))
     }
 
     /// Check if a path looks like a journal file
@@ -364,50 +371,6 @@ impl JournalRegistry {
         self.files.read().values().cloned().collect()
     }
 
-    /// Get journal files filtered by source type
-    pub fn get_files_by_source(&self, source_type: JournalSourceType) -> Vec<JournalFile> {
-        self.files
-            .read()
-            .values()
-            .filter(|f| f.source_type == source_type)
-            .cloned()
-            .collect()
-    }
-
-    /// Get journal files within a time range
-    pub fn get_files_in_range(&self, start: SystemTime, end: SystemTime) -> Vec<JournalFile> {
-        self.files
-            .read()
-            .values()
-            .filter(|f| f.modified >= start && f.modified <= end)
-            .cloned()
-            .collect()
-    }
-
-    /// Get journal files by machine ID
-    pub fn get_files_by_machine(&self, machine_id: &str) -> Vec<JournalFile> {
-        self.files
-            .read()
-            .values()
-            .filter(|f| f.machine_id.as_deref() == Some(machine_id))
-            .cloned()
-            .collect()
-    }
-
-    /// Get total size of all journal files
-    pub fn get_total_size(&self) -> u64 {
-        self.files.read().values().map(|f| f.size).sum()
-    }
-
-    /// Get count of files by source type
-    pub fn get_file_counts(&self) -> HashMap<JournalSourceType, usize> {
-        let mut counts = HashMap::new();
-        for file in self.files.read().values() {
-            *counts.entry(file.source_type).or_insert(0) += 1;
-        }
-        counts
-    }
-
     /// Internal: Scan directory for existing files
     fn scan_directory(&self, dir: &Path) -> Result<()> {
         for entry in WalkDir::new(dir)
@@ -535,6 +498,11 @@ impl JournalRegistry {
         let mut txs = event_tx.write();
         txs.retain(|tx| tx.send(event.clone()).is_ok());
     }
+
+    /// Create a new query builder for this registry
+    pub fn query(&self) -> JournalQuery {
+        JournalQuery::new(self)
+    }
 }
 
 impl Drop for JournalRegistry {
@@ -545,6 +513,251 @@ impl Drop for JournalRegistry {
                 handle.abort();
             }
         }
+    }
+}
+
+/// A builder for querying journal files with various filters
+pub struct JournalQuery<'a> {
+    registry: &'a JournalRegistry,
+    source_types: Option<Vec<JournalSourceType>>,
+    machine_ids: Option<Vec<String>>,
+    time_range: Option<(Option<SystemTime>, Option<SystemTime>)>,
+    size_range: Option<(Option<u64>, Option<u64>)>,
+    path_pattern: Option<Regex>,
+    limit: Option<usize>,
+    sort_by: Option<SortBy>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SortBy {
+    Modified(SortOrder),
+    Size(SortOrder),
+    Path(SortOrder),
+    Sequence(SortOrder),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
+
+impl<'a> JournalQuery<'a> {
+    fn new(registry: &'a JournalRegistry) -> Self {
+        Self {
+            registry,
+            source_types: None,
+            machine_ids: None,
+            time_range: None,
+            size_range: None,
+            path_pattern: None,
+            limit: None,
+            sort_by: None,
+        }
+    }
+
+    /// Filter by source type(s)
+    pub fn source(mut self, source_type: JournalSourceType) -> Self {
+        self.source_types
+            .get_or_insert_with(Vec::new)
+            .push(source_type);
+        self
+    }
+
+    /// Filter by multiple source types
+    pub fn sources(mut self, types: impl IntoIterator<Item = JournalSourceType>) -> Self {
+        self.source_types = Some(types.into_iter().collect());
+        self
+    }
+
+    /// Filter by machine ID
+    pub fn machine(mut self, machine_id: impl Into<String>) -> Self {
+        self.machine_ids
+            .get_or_insert_with(Vec::new)
+            .push(machine_id.into());
+        self
+    }
+
+    /// Filter by multiple machine IDs
+    pub fn machines(mut self, ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.machine_ids = Some(ids.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Filter by modification time range
+    pub fn modified_between(mut self, start: SystemTime, end: SystemTime) -> Self {
+        self.time_range = Some((Some(start), Some(end)));
+        self
+    }
+
+    /// Filter by files modified after a specific time
+    pub fn modified_after(mut self, time: SystemTime) -> Self {
+        self.time_range = Some((Some(time), None));
+        self
+    }
+
+    /// Filter by files modified before a specific time
+    pub fn modified_before(mut self, time: SystemTime) -> Self {
+        self.time_range = Some((None, Some(time)));
+        self
+    }
+
+    /// Filter by file size range
+    pub fn size_between(mut self, min: u64, max: u64) -> Self {
+        self.size_range = Some((Some(min), Some(max)));
+        self
+    }
+
+    /// Filter by minimum file size
+    pub fn min_size(mut self, size: u64) -> Self {
+        self.size_range = Some((Some(size), None));
+        self
+    }
+
+    /// Filter by maximum file size
+    pub fn max_size(mut self, size: u64) -> Self {
+        self.size_range = Some((None, Some(size)));
+        self
+    }
+
+    /// Sort results
+    pub fn sort_by(mut self, sort: SortBy) -> Self {
+        self.sort_by = Some(sort);
+        self
+    }
+
+    /// Limit the number of results
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Execute the query and return matching files
+    pub fn execute(&self) -> Vec<JournalFile> {
+        let mut results: Vec<JournalFile> = self
+            .registry
+            .files
+            .read()
+            .values()
+            .filter(|file| self.matches(file))
+            .cloned()
+            .collect();
+
+        // Apply sorting
+        if let Some(sort_by) = &self.sort_by {
+            match sort_by {
+                SortBy::Modified(order) => match order {
+                    SortOrder::Ascending => results.sort_by_key(|f| f.modified),
+                    SortOrder::Descending => results.sort_by_key(|f| std::cmp::Reverse(f.modified)),
+                },
+                SortBy::Size(order) => match order {
+                    SortOrder::Ascending => results.sort_by_key(|f| f.size),
+                    SortOrder::Descending => results.sort_by_key(|f| std::cmp::Reverse(f.size)),
+                },
+                SortBy::Path(order) => match order {
+                    SortOrder::Ascending => results.sort_by(|a, b| a.path.cmp(&b.path)),
+                    SortOrder::Descending => results.sort_by(|a, b| b.path.cmp(&a.path)),
+                },
+                SortBy::Sequence(order) => match order {
+                    SortOrder::Ascending => results.sort_by_key(|f| f.sequence_number.unwrap_or(0)),
+                    SortOrder::Descending => {
+                        results.sort_by_key(|f| std::cmp::Reverse(f.sequence_number.unwrap_or(0)))
+                    }
+                },
+            }
+        }
+
+        // Apply limit
+        if let Some(limit) = self.limit {
+            results.truncate(limit);
+        }
+
+        results
+    }
+
+    /// Count matching files without returning them
+    pub fn count(&self) -> usize {
+        self.registry
+            .files
+            .read()
+            .values()
+            .filter(|file| self.matches(file))
+            .count()
+    }
+
+    /// Get total size of matching files
+    pub fn total_size(&self) -> u64 {
+        self.registry
+            .files
+            .read()
+            .values()
+            .filter(|file| self.matches(file))
+            .map(|f| f.size)
+            .sum()
+    }
+
+    /// Check if any files match the query
+    pub fn exists(&self) -> bool {
+        self.registry
+            .files
+            .read()
+            .values()
+            .any(|file| self.matches(file))
+    }
+
+    /// Internal: Check if a file matches all filters
+    fn matches(&self, file: &JournalFile) -> bool {
+        // Check source type
+        if let Some(ref types) = self.source_types {
+            if !types.contains(&file.source_type) {
+                return false;
+            }
+        }
+
+        // Check machine ID
+        if let Some(ref ids) = self.machine_ids {
+            match &file.machine_id {
+                Some(id) if ids.contains(id) => {}
+                _ => return false,
+            }
+        }
+
+        // Check time range
+        if let Some((start, end)) = self.time_range {
+            if let Some(start) = start {
+                if file.modified < start {
+                    return false;
+                }
+            }
+            if let Some(end) = end {
+                if file.modified > end {
+                    return false;
+                }
+            }
+        }
+
+        // Check size range
+        if let Some((min, max)) = self.size_range {
+            if let Some(min) = min {
+                if file.size < min {
+                    return false;
+                }
+            }
+            if let Some(max) = max {
+                if file.size > max {
+                    return false;
+                }
+            }
+        }
+
+        // Check path pattern
+        if let Some(ref pattern) = self.path_pattern {
+            if !pattern.is_match(&file.path.to_string_lossy()) {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -574,8 +787,120 @@ async fn main() -> Result<()> {
 
     // Display initial statistics
     println!("\n=== Journal Files Statistics ===");
-    let all_files = registry.get_files();
-    println!("Total files: {}", all_files.len());
+    println!("Total files: {}", registry.query().count());
+    println!(
+        "Total size: {:.2} MB",
+        registry.query().total_size() as f64 / (1024.0 * 1024.0)
+    );
+
+    // Query 1: Get system journal files sorted by size
+    println!("\n=== Query 1: System Journal Files (sorted by size) ===");
+    let system_files = registry
+        .query()
+        .source(JournalSourceType::System)
+        .sort_by(SortBy::Size(SortOrder::Descending))
+        .execute();
+
+    println!("Found {} system journal files:", system_files.len());
+    for (idx, file) in system_files.iter().take(5).enumerate() {
+        println!(
+            "  [{}] {} ({:.2} MB) - modified: {:?}",
+            idx,
+            file.path.display(),
+            file.size as f64 / (1024.0 * 1024.0),
+            file.modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| {
+                    let secs = d.as_secs();
+                    format!(
+                        "{} hours ago",
+                        (SystemTime::now()
+                            .duration_since(file.modified)
+                            .unwrap_or_default()
+                            .as_secs()
+                            / 3600)
+                    )
+                })
+                .unwrap_or_else(|_| "unknown".to_string())
+        );
+    }
+
+    // Recent large files (modified in last 24 hours, > 1MB)
+    println!("\n=== Recent Large Files (last 24h, >1MB) ===");
+    let recent_large = registry
+        .query()
+        .modified_after(SystemTime::now() - Duration::from_hours(24))
+        .min_size(1024 * 1024) // 1MB
+        .sort_by(SortBy::Modified(SortOrder::Descending))
+        .limit(10)
+        .execute();
+
+    if recent_large.is_empty() {
+        println!("No large files modified in the last 24 hours");
+    } else {
+        println!(
+            "Found {} large files modified recently:",
+            recent_large.len()
+        );
+        for file in &recent_large {
+            println!(
+                "  {} ({:.2} MB) - {}",
+                file.path.file_name().unwrap_or_default().to_string_lossy(),
+                file.size as f64 / (1024.0 * 1024.0),
+                file.source_type
+            );
+        }
+    }
+
+    // Group files by source type
+    println!("\n=== Files by Source Type ===");
+    for source_type in &[
+        JournalSourceType::System,
+        JournalSourceType::User,
+        JournalSourceType::Remote,
+        JournalSourceType::Namespace,
+        JournalSourceType::Other,
+    ] {
+        let files = registry.query().source(*source_type).execute();
+        let total_size = registry.query().source(*source_type).total_size();
+
+        if !files.is_empty() {
+            println!(
+                "  {:10} - {} files, {:.2} MB total",
+                source_type.to_string(),
+                files.len(),
+                total_size as f64 / (1024.0 * 1024.0)
+            );
+        }
+    }
+
+    // Find files by machine ID (if any exist)
+    println!("\n=== Files by Machine ID ===");
+    let all_files = registry.query().execute();
+    let machine_ids: std::collections::HashSet<_> = all_files
+        .iter()
+        .filter_map(|f| f.machine_id.as_ref())
+        .cloned()
+        .collect();
+
+    if machine_ids.is_empty() {
+        println!("No files with machine IDs found");
+    } else {
+        for (idx, machine_id) in machine_ids.iter().take(3).enumerate() {
+            let machine_files = registry
+                .query()
+                .machine(machine_id)
+                .sort_by(SortBy::Sequence(SortOrder::Ascending))
+                .execute();
+
+            println!(
+                "  Machine {} ({}...): {} files",
+                idx + 1,
+                &machine_id[..8.min(machine_id.len())],
+                machine_files.len()
+            );
+        }
+    }
 
     Ok(())
 }
