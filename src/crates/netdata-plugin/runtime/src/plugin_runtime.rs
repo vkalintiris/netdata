@@ -127,6 +127,41 @@ impl PluginRuntime {
 
             self.register_function(declaration, handler).await.unwrap();
         }
+
+        if cmds.contains(DynCfgCmds::ADD) {
+            // setup function handler for retrieving config value
+            let id = String::from(cfg.id());
+            let name = format!("config {} add", id);
+            let help = format!("Add configuration value for '{}'", id);
+
+            let declaration = FunctionDeclaration {
+                name,
+                help,
+                global: false,
+                timeout: 10,
+                tags: None,
+                access: None,
+                priority: None,
+                version: None,
+            };
+
+            let handler = async |plugin_ctx: PluginContext, fn_ctx: FunctionContext| {
+                let id = fn_ctx.function_name().split_whitespace().nth(1).unwrap();
+                let cfg = plugin_ctx.get_config(id).await.unwrap();
+                let instance = cfg.instance::<T>().expect("WTF?").unwrap();
+                let payload = serde_json::to_vec_pretty(&instance).unwrap();
+
+                FunctionResult {
+                    transaction: fn_ctx.transaction_id().clone(),
+                    status: 200,
+                    format: "application/json".to_string(),
+                    expires: 0,
+                    payload,
+                }
+            };
+
+            self.register_function(declaration, handler).await.unwrap();
+        }
     }
 
     pub async fn register_config<T>(&self, initial_value: Option<T>) -> Result<()>
