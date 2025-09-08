@@ -90,7 +90,7 @@ pub enum JournalRegistryError {
 type Result<T> = std::result::Result<T, JournalRegistryError>;
 
 /// Represents a systemd journal file with parsed metadata
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct JournalFile {
     /// Full path to the journal file
     pub path: PathBuf,
