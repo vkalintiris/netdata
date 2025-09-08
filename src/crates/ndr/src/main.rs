@@ -50,8 +50,6 @@ impl TryFrom<&Path> for JournalSourceType {
         {
             JournalSourceType::Namespace
         } else {
-            // Instead of defaulting to "Other", you could make this explicit
-            // by checking if it's actually a valid journal path
             if !path_str.contains("/journal") && !path_str.ends_with(".journal") {
                 return Err(SourceTypeError::Indeterminate(path.to_path_buf()));
             }
