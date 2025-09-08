@@ -7,7 +7,6 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use parking_lot::RwLock;
 use regex::Regex;
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
@@ -197,16 +196,6 @@ impl JournalFile {
     }
 }
 
-/// Events emitted by the journal registry
-#[derive(Debug, Clone)]
-pub enum JournalEvent {
-    FileAdded(JournalFile),
-    FileModified(JournalFile),
-    FileRemoved(PathBuf),
-    DirectoryAdded(PathBuf),
-    DirectoryRemoved(PathBuf),
-}
-
 /// Internal watcher state
 struct WatcherState {
     watcher: RecommendedWatcher,
@@ -221,9 +210,6 @@ pub struct JournalRegistry {
     /// Directories being monitored
     watch_dirs: Arc<RwLock<HashSet<PathBuf>>>,
 
-    /// Event listeners
-    event_tx: Arc<RwLock<Vec<mpsc::UnboundedSender<JournalEvent>>>>,
-
     /// Internal watcher state
     watcher_state: Arc<RwLock<Option<WatcherState>>>,
 }
@@ -234,7 +220,6 @@ impl JournalRegistry {
         let registry = Self {
             files: Arc::new(RwLock::new(HashMap::new())),
             watch_dirs: Arc::new(RwLock::new(HashSet::new())),
-            event_tx: Arc::new(RwLock::new(Vec::new())),
             watcher_state: Arc::new(RwLock::new(None)),
         };
 
@@ -259,7 +244,6 @@ impl JournalRegistry {
         // Clone what we need for the background task
         let files = Arc::clone(&self.files);
         let watch_dirs = Arc::clone(&self.watch_dirs);
-        let event_tx = Arc::clone(&self.event_tx);
 
         // Spawn background task to process events
         let task_handle = tokio::spawn(async move {
@@ -270,8 +254,7 @@ impl JournalRegistry {
                 while let Ok(event_result) = rx.try_recv() {
                     match event_result {
                         Ok(event) => {
-                            if let Err(e) =
-                                Self::handle_event_internal(&files, &watch_dirs, &event_tx, event)
+                            if let Err(e) = Self::handle_event_internal(&files, &watch_dirs, event)
                             {
                                 error!("Error handling event: {}", e);
                             }
@@ -328,7 +311,6 @@ impl JournalRegistry {
 
         // Add to watch list
         self.watch_dirs.write().insert(canonical_dir.clone());
-        self.emit_event(JournalEvent::DirectoryAdded(canonical_dir));
 
         Ok(())
     }
@@ -359,10 +341,8 @@ impl JournalRegistry {
 
         for path in removed_files {
             files.remove(&path);
-            self.emit_event(JournalEvent::FileRemoved(path));
         }
 
-        self.emit_event(JournalEvent::DirectoryRemoved(canonical_dir));
         Ok(())
     }
 
@@ -391,17 +371,9 @@ impl JournalRegistry {
     fn add_journal_file(&self, path: &Path) -> Result<()> {
         match JournalFile::from_path(path) {
             Ok(journal_file) => {
-                let is_new = !self.files.read().contains_key(path);
                 let mut files = self.files.write();
                 files.insert(path.to_path_buf(), journal_file.clone());
 
-                if is_new {
-                    debug!("Added journal file: {:?}", path);
-                    self.emit_event(JournalEvent::FileAdded(journal_file));
-                } else {
-                    debug!("Modified journal file: {:?}", path);
-                    self.emit_event(JournalEvent::FileModified(journal_file));
-                }
                 Ok(())
             }
             Err(e) => {
@@ -411,17 +383,10 @@ impl JournalRegistry {
         }
     }
 
-    /// Internal: Emit an event to all subscribers
-    fn emit_event(&self, event: JournalEvent) {
-        let mut txs = self.event_tx.write();
-        txs.retain(|tx| tx.send(event.clone()).is_ok());
-    }
-
     /// Internal: Handle filesystem events
     fn handle_event_internal(
         files: &Arc<RwLock<HashMap<PathBuf, JournalFile>>>,
         watch_dirs: &Arc<RwLock<HashSet<PathBuf>>>,
-        event_tx: &Arc<RwLock<Vec<mpsc::UnboundedSender<JournalEvent>>>>,
         event: Event,
     ) -> Result<()> {
         for path in event.paths {
@@ -430,7 +395,6 @@ impl JournalRegistry {
                     if path.is_dir() {
                         info!("New directory created: {:?}", path);
                         watch_dirs.write().insert(path.clone());
-                        Self::emit_event_internal(event_tx, JournalEvent::DirectoryAdded(path));
                     } else if JournalFile::is_journal_file(&path) {
                         if let Ok(journal_file) = JournalFile::from_path(&path) {
                             let is_new = !files.read().contains_key(&path);
@@ -438,10 +402,6 @@ impl JournalRegistry {
 
                             if is_new {
                                 debug!("Added journal file: {:?}", path);
-                                Self::emit_event_internal(
-                                    event_tx,
-                                    JournalEvent::FileAdded(journal_file),
-                                );
                             }
                         }
                     }
@@ -460,16 +420,9 @@ impl JournalRegistry {
 
                         for file_path in removed {
                             files_lock.remove(&file_path);
-                            Self::emit_event_internal(
-                                event_tx,
-                                JournalEvent::FileRemoved(file_path),
-                            );
                         }
-
-                        Self::emit_event_internal(event_tx, JournalEvent::DirectoryRemoved(path));
                     } else if files.write().remove(&path).is_some() {
                         debug!("Removed journal file: {:?}", path);
-                        Self::emit_event_internal(event_tx, JournalEvent::FileRemoved(path));
                     }
                 }
                 EventKind::Modify(_) => {
@@ -477,10 +430,6 @@ impl JournalRegistry {
                         if let Ok(journal_file) = JournalFile::from_path(&path) {
                             files.write().insert(path.clone(), journal_file.clone());
                             debug!("Modified journal file: {:?}", path);
-                            Self::emit_event_internal(
-                                event_tx,
-                                JournalEvent::FileModified(journal_file),
-                            );
                         }
                     }
                 }
@@ -490,17 +439,8 @@ impl JournalRegistry {
         Ok(())
     }
 
-    /// Internal: Emit event helper
-    fn emit_event_internal(
-        event_tx: &Arc<RwLock<Vec<mpsc::UnboundedSender<JournalEvent>>>>,
-        event: JournalEvent,
-    ) {
-        let mut txs = event_tx.write();
-        txs.retain(|tx| tx.send(event.clone()).is_ok());
-    }
-
     /// Create a new query builder for this registry
-    pub fn query(&self) -> JournalQuery {
+    pub fn query(&self) -> JournalQuery<'_> {
         JournalQuery::new(self)
     }
 }
@@ -768,22 +708,15 @@ async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    // Create the registry - it automatically starts monitoring
     let registry = JournalRegistry::new()?;
     info!("Journal registry initialized");
 
-    // Add directories to monitor
-    let dirs = vec!["/var/log/journal", "/run/log/journal"];
-
-    for dir in &dirs {
+    for dir in ["/var/log/journal", "/run/log/journal"] {
         match registry.add_directory(dir) {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
         }
     }
-
-    // Give it a moment to scan existing files
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Display initial statistics
     println!("\n=== Journal Files Statistics ===");
@@ -793,8 +726,8 @@ async fn main() -> Result<()> {
         registry.query().total_size() as f64 / (1024.0 * 1024.0)
     );
 
-    // Query 1: Get system journal files sorted by size
-    println!("\n=== Query 1: System Journal Files (sorted by size) ===");
+    // Get system journal files sorted by size
+    println!("\n=== System Journal Files (sorted by size) ===");
     let system_files = registry
         .query()
         .source(JournalSourceType::System)
@@ -810,8 +743,7 @@ async fn main() -> Result<()> {
             file.size as f64 / (1024.0 * 1024.0),
             file.modified
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|d| {
-                    let secs = d.as_secs();
+                .map(|_| {
                     format!(
                         "{} hours ago",
                         (SystemTime::now()
@@ -829,7 +761,7 @@ async fn main() -> Result<()> {
     println!("\n=== Recent Large Files (last 24h, >1MB) ===");
     let recent_large = registry
         .query()
-        .modified_after(SystemTime::now() - Duration::from_hours(24))
+        .modified_after(SystemTime::now() - Duration::from_secs(24 * 60 * 60))
         .min_size(1024 * 1024) // 1MB
         .sort_by(SortBy::Modified(SortOrder::Descending))
         .limit(10)
