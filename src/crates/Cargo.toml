@@ -15,6 +15,7 @@ members = [
     "netdata-plugin/runtime",
     "netdata-plugin/schema",
     "journal/journal_registry",
+    "journal-datafusion",
 ]
 
 [workspace.package]
@@ -76,4 +77,6 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 
 [profile.release]
 lto = true
+opt-level = "z"
+# strip = true
 codegen-units = 1
