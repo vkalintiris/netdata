@@ -11,6 +11,7 @@ use std::num::NonZero;
 use std::num::NonZeroI128;
 use std::num::NonZeroU64;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use window_manager::{MemoryMap, MemoryMapMut, WindowManager};
 use zerocopy::{ByteSlice, FromBytes, SplitByteSlice, SplitByteSliceMut};
 
@@ -667,6 +668,43 @@ impl<M: MemoryMap> JournalFile<M> {
             field_occupied,
             field_total,
         })
+    }
+
+    pub fn head_entry_time(&self) -> Option<SystemTime> {
+        let header = self.journal_header_ref();
+        if header.head_entry_realtime == 0 {
+            None
+        } else {
+            Some(UNIX_EPOCH + Duration::from_micros(header.head_entry_realtime))
+        }
+    }
+
+    /// Get the SystemTime of the last entry in the journal
+    pub fn tail_entry_time(&self) -> Option<SystemTime> {
+        let header = self.journal_header_ref();
+        if header.tail_entry_realtime == 0 {
+            None
+        } else {
+            Some(UNIX_EPOCH + Duration::from_micros(header.tail_entry_realtime))
+        }
+    }
+
+    /// Get the duration covered by all entries in the journal
+    /// Returns None if the journal is empty or contains only one entry
+    pub fn duration(&self) -> Option<Duration> {
+        let header = self.journal_header_ref();
+
+        if header.head_entry_realtime == 0 || header.tail_entry_realtime == 0 {
+            return None;
+        }
+
+        if header.tail_entry_realtime <= header.head_entry_realtime {
+            // Single entry or invalid state
+            return None;
+        }
+
+        let duration_micros = header.tail_entry_realtime - header.head_entry_realtime;
+        Some(Duration::from_micros(duration_micros))
     }
 }
 

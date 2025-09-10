@@ -1,4 +1,5 @@
 use crate::{
+    EntryItemsType,
     cursor::{JournalCursor, Location},
     file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
     filter::{JournalFilter, LogicalOp},
@@ -190,5 +191,33 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn entry_data_offsets(
+        &self,
+        journal_file: &'a JournalFile<M>,
+        data_offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        let entry_offset = self.cursor.position()?;
+        let entry_guard = journal_file.entry_ref(entry_offset)?;
+
+        match &entry_guard.items {
+            EntryItemsType::Regular(items) => {
+                for item in items.iter() {
+                    if let Some(offset) = NonZeroU64::new(item.object_offset) {
+                        data_offsets.push(offset);
+                    }
+                }
+            }
+            EntryItemsType::Compact(items) => {
+                for item in items.iter() {
+                    if let Some(offset) = NonZeroU64::new(item.object_offset as u64) {
+                        data_offsets.push(offset);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }

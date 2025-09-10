@@ -14,6 +14,7 @@ walkdir = "2.4"
 tokio = { version = "1.35", features = ["full"] }
 crossbeam-channel = "0.5"
 regex = { workspace = true }
+journal_file = { path = "../journal_file" }
 
 [[example]]
 name = "basic_usage"
