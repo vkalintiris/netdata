@@ -171,46 +171,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
 
-    // let mut total_entries = 0;
-    // let mut total_objects = 0;
-    // let mut total_data = 0;
-    // let mut total_field = 0;
+    let mut total_entries = 0;
+    let mut my_total = 0;
 
+    let mut offsets = Vec::new();
     #[allow(clippy::never_loop)]
     for file in files.iter().rev() {
+        offsets.clear();
+
         println!("Processing file: {:#?}", file);
         let window_size = 8 * 1024 * 1024;
         let jf = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
-        // let jh = jf.journal_header_ref();
-        // total_entries += jh.n_entries;
-        // total_objects += jh.n_objects;
 
-        // let n_data = count_data_objects(&jf).unwrap();
-        // total_data += n_data;
-        // let n_field = count_field_objects(&jf).unwrap();
-        // total_field += n_field;
+        let jh = jf.journal_header_ref();
+        total_entries += jh.n_entries;
 
-        // println!(
-        //     "e: {:#?}, o: {:#?}, d: {:#?}, f: {:#?}, file: {:#?}",
-        //     jh.n_entries, jh.n_objects, n_data, n_field, file.path
+        println!("header entries: {:#?}", jh.n_entries);
+
+        if let Some(e) = jf.entry_list() {
+            e.collect_offsets(&jf, &mut offsets).unwrap();
+
+            my_total += offsets.len();
+
+            println!("collected entries: {:#?}", offsets.len());
+        }
+
+        // let start = Instant::now();
+        // let histogram = Histogram::create(&jf, &["PRIORITY"]);
+        // let duration = start.elapsed();
+        // info!(
+        //     "histogram built in {:#?} seconds with {:#?} buckets",
+        //     duration.as_secs_f32(),
+        //     histogram.buckets.len()
         // );
 
-        let start = Instant::now();
-        let histogram = Histogram::create(&jf, &["PRIORITY"]);
-        let duration = start.elapsed();
-        info!(
-            "histogram built in {:#?} seconds with {:#?} buckets",
-            duration.as_secs_f32(),
-            histogram.buckets.len()
-        );
-
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        // tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 
-    // println!("Total entries: {:#?}", total_entries);
-    // println!("Total objects: {:#?}", total_objects);
-    // println!("Total data: {:#?}", total_data);
-    // println!("Total field: {:#?}", total_field);
+    println!("Total entries: {:#?}", total_entries);
+    println!("My total entries: {:#?}", my_total);
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());

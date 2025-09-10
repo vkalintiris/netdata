@@ -294,6 +294,32 @@ impl List {
         // No match found in any array
         Ok(None)
     }
+
+    /// Collect all offsets in the entire list into the given vector
+    pub fn collect_offsets<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        offsets.reserve(self.total_items.get());
+
+        let mut node = self.head(journal_file)?;
+
+        loop {
+            {
+                let array = journal_file.offset_array_ref(node.offset())?;
+                let remaining_items = node.remaining_items.get();
+                array.collect_offsets(0, remaining_items, offsets)?;
+            }
+
+            match node.next(journal_file)? {
+                Some(next) => node = next,
+                None => break,
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// A cursor pointing to a specific position within an offset array chain
@@ -438,6 +464,31 @@ impl Cursor {
         }
 
         Err(JournalError::InvalidOffsetArrayOffset)
+    }
+
+    pub fn collect_offsets<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        let mut node = self.node(journal_file)?;
+
+        // Copy from position in the current array
+        {
+            let array = journal_file.offset_array_ref(node.offset())?;
+            let remaining_items = node.remaining_items.get();
+            array.collect_offsets(self.array_index, remaining_items, offsets)?;
+        }
+
+        // Copy from subsequent arrays
+        while let Some(next_node) = node.next(journal_file)? {
+            let array = journal_file.offset_array_ref(next_node.offset())?;
+            let remaining_items = node.remaining_items.get();
+            array.collect_offsets(0, remaining_items, offsets)?;
+            node = next_node;
+        }
+
+        Ok(())
     }
 }
 
@@ -682,5 +733,26 @@ impl InlinedCursor {
         }
 
         Ok(best_match)
+    }
+
+    pub fn collect_offsets<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        // Handle the inline offset first if we're at it
+        if self.at_inlined_offset {
+            offsets.push(self.inlined_offset);
+
+            // If we have a cursor, collect all offsets from the beginning
+            if let Some(cursor) = self.cursor {
+                cursor.list.collect_offsets(journal_file, offsets)?;
+            }
+        } else if let Some(cursor) = self.cursor {
+            // We're somewhere in the array chain, collect from current position
+            cursor.collect_offsets(journal_file, offsets)?;
+        }
+
+        Ok(())
     }
 }

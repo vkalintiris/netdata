@@ -489,6 +489,34 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
 
         Ok(self.items.get(index))
     }
+
+    pub fn collect_offsets(
+        &self,
+        start_index: usize,
+        remaining_items: usize,
+        offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        let len = self.len(remaining_items);
+
+        if start_index >= len {
+            return Err(JournalError::InvalidOffsetArrayIndex);
+        }
+
+        match &self.items {
+            OffsetsType::Regular(s) => {
+                offsets.extend(s[start_index..len].iter().filter_map(|&opt| opt));
+            }
+            OffsetsType::Compact(s) => {
+                offsets.extend(
+                    s[start_index..len]
+                        .iter()
+                        .filter_map(|&opt| opt.map(NonZeroU64::from)),
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl<B: ByteSliceMut> OffsetArrayObject<B> {

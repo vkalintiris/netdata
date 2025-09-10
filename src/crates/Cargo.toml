@@ -15,7 +15,6 @@ members = [
     "netdata-plugin/runtime",
     "netdata-plugin/schema",
     "journal/journal_registry",
-    "journal-datafusion",
 ]
 
 [workspace.package]
