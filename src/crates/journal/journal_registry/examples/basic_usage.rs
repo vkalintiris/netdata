@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 use journal_file::Direction;
 use journal_file::JournalFile;
@@ -6,154 +6,381 @@ use journal_file::JournalReader;
 use journal_file::Location;
 use journal_file::Mmap;
 use journal_registry::{JournalRegistry, SortBy, SortOrder, SourceType};
+use std::num::NonZeroU64;
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
-fn count_data_objects(jf: &JournalFile<Mmap>) -> Result<usize, Box<dyn std::error::Error>> {
-    let Some(data_hash_table) = jf.data_hash_table_ref() else {
-        return Ok(0);
-    };
-
-    let mut count = 0;
-
-    // Iterate through each bucket in the hash table
-    for bucket in data_hash_table.items.iter() {
-        let mut current_offset = bucket.head_hash_offset;
-
-        // Follow the chain of data objects in this bucket
-        while let Some(offset) = current_offset {
-            count += 1;
-
-            // Get the next object in the chain
-            let data_guard = jf.data_ref(offset)?;
-            current_offset = data_guard.header.next_hash_offset;
-        }
-    }
-
-    Ok(count)
-}
-
-fn count_field_objects(jf: &JournalFile<Mmap>) -> Result<usize, Box<dyn std::error::Error>> {
-    let Some(field_hash_table) = jf.field_hash_table_ref() else {
-        return Ok(0);
-    };
+#[instrument(skip(files))]
+fn baseline(files: &[journal_registry::RegistryFile]) {
+    let start_time = Instant::now();
 
     let mut count = 0;
+    let mut offsets = Vec::new();
 
-    // Iterate through each bucket in the hash table
-    for bucket in field_hash_table.items.iter() {
-        let mut current_offset = bucket.head_hash_offset;
+    #[allow(clippy::never_loop)]
+    for file in files.iter().rev() {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-        // Follow the chain of field objects in this bucket
-        while let Some(offset) = current_offset {
-            count += 1;
+        offsets.clear();
 
-            // Get the next object in the chain
-            let field_guard = jf.field_ref(offset)?;
-            current_offset = field_guard.header.next_hash_offset;
-        }
-    }
-
-    Ok(count)
-}
-
-use std::collections::{HashMap, HashSet};
-use std::num::NonZeroU64;
-
-/// Represents a single bucket in the histogram
-#[derive(Debug, Clone, Default)]
-pub struct Bucket {
-    /// key = data object offset
-    /// value = vector of entry object offsets that contain this data object offset
-    pub items: HashMap<NonZeroU64, Vec<NonZeroU64>>,
-}
-
-/// Built up from each log entry in the journal file
-#[derive(Debug, Clone)]
-pub struct Histogram {
-    pub buckets: Vec<Bucket>,
-}
-
-impl Histogram {
-    fn calculate_bucket_index(
-        entry_time: SystemTime,
-        start_time: SystemTime,
-        num_buckets: usize,
-    ) -> Option<usize> {
-        let elapsed = entry_time.duration_since(start_time).ok()?;
-
-        // Each bucket represents 60 seconds
-        let bucket_index = elapsed.as_secs() as usize / 60;
-
-        // println!(
-        //     "entry time: {:#?}, start_time: {:#?}, bucket_index: {:#?}",
-        //     entry_time, start_time, bucket_index
-        // );
-
-        // Ensure we don't exceed the number of buckets
-        if bucket_index < num_buckets {
-            Some(bucket_index)
-        } else {
-            None
-        }
-    }
-
-    /// Create a histogram with the specified number of buckets for the given fields
-    pub fn create(jf: &JournalFile<Mmap>, field_names: &[&str]) -> Self {
-        let duration = jf.duration().unwrap_or(Duration::from_secs(60));
-        println!(
-            "Duration of journal file: {:#?} minutes",
-            duration.as_secs() / 60
-        );
-        let num_buckets = (duration.as_secs() as usize + 60) / 60;
-
-        let mut histogram = Self {
-            buckets: vec![Bucket::default(); num_buckets],
+        let Some(entry_list) = journal_file.entry_list() else {
+            continue;
         };
 
-        let mut field_offsets = HashSet::with_capacity(field_names.len());
-        for f in jf.fields() {
-            let f = f.unwrap();
-            f.offset();
-            field_offsets.insert(f.offset());
-        }
+        entry_list
+            .collect_offsets(&journal_file, &mut offsets)
+            .unwrap();
 
-        let start_time = jf.head_entry_time().unwrap();
-        let mut data_offsets = Vec::with_capacity(64);
+        count += offsets.len();
+    }
 
-        let mut reader = JournalReader::default();
-        while reader.step(jf, Direction::Forward).unwrap() {
-            let entry_offset = reader.get_entry_offset().unwrap();
-            let entry_time = std::time::UNIX_EPOCH
-                + std::time::Duration::from_micros(reader.get_realtime_usec(jf).unwrap());
+    let elapsed = start_time.elapsed();
+    info!(
+        "{:#?} entry offsets in {:#?} msec",
+        count,
+        elapsed.as_millis()
+    );
+}
 
-            data_offsets.clear();
-            reader.entry_data_offsets(jf, &mut data_offsets).unwrap();
+#[instrument(skip(files))]
+fn sequential(files: &[journal_registry::RegistryFile]) {
+    let start_time = Instant::now();
 
-            let bucket_index =
-                Histogram::calculate_bucket_index(entry_time, start_time, num_buckets).unwrap();
+    let mut count = 0;
+    let mut offsets = Vec::new();
 
-            let bucket = &mut histogram.buckets[bucket_index];
+    let mut minute_index = Vec::new();
+    let mut midx_count = 0;
 
-            // For each data offset in this entry, add the entry offset to its vector
-            for &data_offset in &data_offsets {
-                let data_object = bucket
-                    .items
-                    .entry(data_offset)
-                    .or_insert_with(Vec::new)
-                    .push(entry_offset);
+    #[allow(clippy::never_loop)]
+    for file in files.iter().rev() {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+
+        offsets.clear();
+
+        let Some(entry_list) = journal_file.entry_list() else {
+            continue;
+        };
+
+        entry_list
+            .collect_offsets(&journal_file, &mut offsets)
+            .unwrap();
+
+        let first_timestamp = offsets
+            .first()
+            .and_then(|eo| journal_file.entry_ref(*eo).ok())
+            .map(|entry| entry.header.realtime);
+
+        let Some(first_timestamp) = first_timestamp else {
+            continue;
+        };
+
+        let first_minute = first_timestamp / (60 * 1_000_000);
+
+        // Build a compact minute index with only actual minute changes
+        minute_index.clear();
+        let mut current_minute = first_timestamp / (60 * 1_000_000);
+        // First minute starts at offset 0
+        minute_index.push((current_minute, 0));
+
+        for (idx, &offset) in offsets.iter().enumerate().skip(1) {
+            let entry = journal_file.entry_ref(offset).unwrap();
+            let entry_minute = entry.header.realtime / (60 * 1_000_000);
+
+            if entry_minute > current_minute {
+                // We've crossed into a new minute
+                minute_index.push((entry_minute, idx));
+                current_minute = entry_minute;
             }
         }
 
-        histogram
+        midx_count += minute_index.len();
+
+        // Print the compact minute index
+        println!("\n=== [A] Compact Minute Index ({:#?})", file.path);
+        println!(
+            "{:<10} {:<15} {:<15} {:<30}",
+            "Entry#", "Minute", "Offset Index", "Timestamp"
+        );
+        println!("{}", "-".repeat(70));
+
+        for (i, &(minute, offset_idx)) in minute_index.iter().take(10).enumerate() {
+            if offset_idx < offsets.len() {
+                let entry = journal_file.entry_ref(offsets[offset_idx]).unwrap();
+
+                println!(
+                    "{:<10} {:<15} {:<15} {} (minute {})",
+                    i,
+                    minute - first_minute, // Relative minute for readability
+                    offset_idx,
+                    format_timestamp(entry.header.realtime),
+                    minute
+                );
+            }
+        }
+
+        count += offsets.len();
+    }
+
+    let elapsed = start_time.elapsed();
+    info!(
+        "{:#?} entry offsets in {:#?} msec (midx: {:#?})",
+        count,
+        elapsed.as_millis(),
+        midx_count,
+    );
+}
+
+#[instrument(skip(files))]
+fn interpolation_minute_index(files: &[journal_registry::RegistryFile]) {
+    let start_time = Instant::now();
+
+    let mut count = 0;
+    let mut offsets = Vec::new();
+    let mut minute_index = Vec::new();
+    let mut midx_count = 0;
+    let mut total_lookups = 0;
+
+    for file in files.iter().rev() {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+
+        offsets.clear();
+
+        let Some(entry_list) = journal_file.entry_list() else {
+            continue;
+        };
+
+        entry_list
+            .collect_offsets(&journal_file, &mut offsets)
+            .unwrap();
+
+        if offsets.is_empty() {
+            continue;
+        }
+
+        // Get time boundaries (2 lookups)
+        let first_timestamp = offsets
+            .first()
+            .and_then(|eo| journal_file.entry_ref(*eo).ok())
+            .map(|entry| entry.header.realtime);
+
+        let Some(first_timestamp) = first_timestamp else {
+            continue;
+        };
+        let last_timestamp = offsets
+            .last()
+            .and_then(|eo| journal_file.entry_ref(*eo).ok())
+            .map(|entry| entry.header.realtime);
+
+        let Some(last_timestamp) = last_timestamp else {
+            continue;
+        };
+
+        total_lookups += 2;
+
+        let start_minute = first_timestamp / (60 * 1_000_000);
+        let end_minute = last_timestamp / (60 * 1_000_000);
+
+        if start_minute == end_minute {
+            // Only one minute in this file
+            minute_index.push((start_minute, 0));
+            midx_count += 1;
+            count += offsets.len();
+            continue;
+        }
+
+        let total_minutes = (end_minute - start_minute + 1) as usize;
+
+        // Sample X equally-spaced points (one per expected minute)
+        let mut sampled_points = Vec::with_capacity(total_minutes + 1);
+        for i in 0..=total_minutes {
+            let offset_idx = (i * (offsets.len() - 1)) / total_minutes;
+
+            let entry = journal_file.entry_ref(offsets[offset_idx]).unwrap();
+            let timestamp = entry.header.realtime;
+            let minute = timestamp / (60 * 1_000_000);
+            sampled_points.push((offset_idx, timestamp, minute));
+            total_lookups += 1;
+        }
+
+        // Build minute index using interpolation search between sampled points
+        minute_index.clear();
+        let mut processed_minutes = std::collections::HashSet::new();
+
+        for i in 0..sampled_points.len() - 1 {
+            let (left_idx, left_ts, left_minute) = sampled_points[i];
+            let (right_idx, right_ts, right_minute) = sampled_points[i + 1];
+
+            // Find all minute boundaries in this segment
+            for target_minute in left_minute..=right_minute {
+                if processed_minutes.contains(&target_minute) {
+                    continue;
+                }
+
+                let minute_idx = find_minute_boundary_interpolation(
+                    &journal_file,
+                    &offsets,
+                    left_idx,
+                    right_idx,
+                    left_ts,
+                    right_ts,
+                    target_minute,
+                    &mut total_lookups,
+                );
+
+                if let Some(idx) = minute_idx {
+                    minute_index.push((target_minute, idx));
+                    processed_minutes.insert(target_minute);
+                }
+            }
+        }
+
+        // Sort by minute (in case we found them out of order)
+        minute_index.sort_by_key(|&(minute, _)| minute);
+
+        // Print the compact minute index
+        println!("\n=== [B] Compact Minute Index ({:#?})", file.path);
+        println!(
+            "{:<10} {:<15} {:<15} {:<30}",
+            "Entry#", "Minute", "Offset Index", "Timestamp"
+        );
+        println!("{}", "-".repeat(70));
+
+        for (i, &(minute, offset_idx)) in minute_index.iter().take(10).enumerate() {
+            if offset_idx < offsets.len() {
+                let entry = journal_file.entry_ref(offsets[offset_idx]).unwrap();
+
+                println!(
+                    "{:<10} {:<15} {:<15} {} (minute {})",
+                    i,
+                    minute - start_minute, // Relative minute for readability
+                    offset_idx,
+                    format_timestamp(entry.header.realtime),
+                    minute
+                );
+            }
+        }
+
+        midx_count += minute_index.len();
+        count += offsets.len();
+    }
+
+    let elapsed = start_time.elapsed();
+    info!(
+        "Interpolation: {} entry offsets, {} minute indices in {} ms ({} timestamp lookups vs {} for sequential)",
+        count,
+        midx_count,
+        elapsed.as_millis(),
+        total_lookups,
+        count
+    );
+}
+
+/// Find the first entry of a target minute using interpolation search
+#[allow(clippy::too_many_arguments)]
+fn find_minute_boundary_interpolation(
+    journal_file: &JournalFile<Mmap>,
+    offsets: &[NonZeroU64],
+    mut left: usize,
+    mut right: usize,
+    left_ts: u64,
+    right_ts: u64,
+    target_minute: u64,
+    lookups: &mut usize,
+) -> Option<usize> {
+    let target_ts_start = target_minute * 60 * 1_000_000;
+    let target_ts_end = (target_minute + 1) * 60 * 1_000_000;
+
+    // First, check if the target minute exists in this range
+    if left_ts >= target_ts_end || right_ts < target_ts_start {
+        return None;
+    }
+
+    // Use interpolation search to find an entry within the target minute
+    let mut found_in_minute = None;
+
+    while left <= right {
+        let mid = if right_ts > left_ts {
+            // Interpolate position based on timestamp distribution
+            let fraction =
+                (target_ts_start.saturating_sub(left_ts)) as f64 / (right_ts - left_ts) as f64;
+            let estimated = left + ((right - left) as f64 * fraction) as usize;
+            estimated.min(right).max(left)
+        } else {
+            (left + right) / 2
+        };
+
+        let entry = journal_file.entry_ref(offsets[mid]).unwrap();
+        let timestamp = entry.header.realtime;
+        *lookups += 1;
+
+        if timestamp >= target_ts_start && timestamp < target_ts_end {
+            // Found an entry in the target minute
+            found_in_minute = Some(mid);
+            break;
+        } else if timestamp < target_ts_start {
+            left = mid + 1;
+        } else {
+            right = mid.saturating_sub(1);
+        }
+
+        if left > right {
+            break;
+        }
+    }
+
+    // If we found an entry in the minute, binary search backwards to find the first one
+    if let Some(idx) = found_in_minute {
+        let mut first_idx = idx;
+
+        // Check backwards for the first entry of this minute
+        let mut check_idx = idx.saturating_sub(1);
+        while check_idx < idx {
+            let entry = journal_file.entry_ref(offsets[check_idx]).unwrap();
+            let timestamp = entry.header.realtime;
+            *lookups += 1;
+
+            if timestamp >= target_ts_start && timestamp < target_ts_end {
+                first_idx = check_idx;
+                if check_idx == 0 {
+                    break;
+                }
+                check_idx = check_idx.saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+
+        Some(first_idx)
+    } else {
+        None
+    }
+}
+
+fn format_timestamp(timestamp_us: u64) -> String {
+    use chrono::{DateTime, Local, TimeZone};
+
+    let seconds = (timestamp_us / 1_000_000) as i64;
+    let nanoseconds = ((timestamp_us % 1_000_000) * 1000) as u32;
+
+    // Assuming the timestamp is Unix epoch in microseconds
+    if let Some(dt) = Local.timestamp_opt(seconds, nanoseconds).single() {
+        dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+    } else {
+        format!("{}μs", timestamp_us)
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
     let registry = JournalRegistry::new()?;
     info!("Journal registry initialized");
@@ -165,51 +392,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
     let mut files = registry.query().execute();
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
 
-    let mut total_entries = 0;
-    let mut my_total = 0;
-
-    let mut offsets = Vec::new();
-    #[allow(clippy::never_loop)]
-    for file in files.iter().rev() {
-        offsets.clear();
-
-        println!("Processing file: {:#?}", file);
-        let window_size = 8 * 1024 * 1024;
-        let jf = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
-
-        let jh = jf.journal_header_ref();
-        total_entries += jh.n_entries;
-
-        println!("header entries: {:#?}", jh.n_entries);
-
-        if let Some(e) = jf.entry_list() {
-            e.collect_offsets(&jf, &mut offsets).unwrap();
-
-            my_total += offsets.len();
-
-            println!("collected entries: {:#?}", offsets.len());
-        }
-
-        // let start = Instant::now();
-        // let histogram = Histogram::create(&jf, &["PRIORITY"]);
-        // let duration = start.elapsed();
-        // info!(
-        //     "histogram built in {:#?} seconds with {:#?} buckets",
-        //     duration.as_secs_f32(),
-        //     histogram.buckets.len()
-        // );
-
-        // tokio::time::sleep(Duration::from_secs(3600)).await;
-    }
-
-    println!("Total entries: {:#?}", total_entries);
-    println!("My total entries: {:#?}", my_total);
+    baseline(&files);
+    sequential(&files);
+    interpolation_minute_index(&files);
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());
@@ -217,124 +406,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Total size: {:.2} MB",
         registry.query().total_size() as f64 / (1024.0 * 1024.0)
     );
-
-    if false {
-        // Display initial statistics
-        println!("\n=== Journal Files Statistics ===");
-        println!("Total files: {}", registry.query().count());
-        println!(
-            "Total size: {:.2} MB",
-            registry.query().total_size() as f64 / (1024.0 * 1024.0)
-        );
-
-        // Get system journal files sorted by size
-        println!("\n=== System Journal Files (sorted by size) ===");
-        let system_files = registry
-            .query()
-            .source(SourceType::System)
-            .sort_by(SortBy::Size(SortOrder::Descending))
-            .execute();
-
-        println!("Found {} system journal files:", system_files.len());
-        for (idx, file) in system_files.iter().take(5).enumerate() {
-            println!(
-                "  [{}] {} ({:.2} MB) - modified: {:?}",
-                idx,
-                file.path.display(),
-                file.size as f64 / (1024.0 * 1024.0),
-                file.modified
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|_| {
-                        format!(
-                            "{} hours ago",
-                            (SystemTime::now()
-                                .duration_since(file.modified)
-                                .unwrap_or_default()
-                                .as_secs()
-                                / 3600)
-                        )
-                    })
-                    .unwrap_or_else(|_| "unknown".to_string())
-            );
-        }
-
-        // Recent large files (modified in last 24 hours, > 1MB)
-        println!("\n=== Recent Large Files (last 24h, >1MB) ===");
-        let recent_large = registry
-            .query()
-            .modified_after(SystemTime::now() - Duration::from_secs(24 * 60 * 60))
-            .min_size(1024 * 1024) // 1MB
-            .sort_by(SortBy::Modified(SortOrder::Descending))
-            .limit(10)
-            .execute();
-
-        if recent_large.is_empty() {
-            println!("No large files modified in the last 24 hours");
-        } else {
-            println!(
-                "Found {} large files modified recently:",
-                recent_large.len()
-            );
-            for file in &recent_large {
-                println!(
-                    "  {} ({:.2} MB) - {}",
-                    file.path.file_name().unwrap_or_default().to_string_lossy(),
-                    file.size as f64 / (1024.0 * 1024.0),
-                    file.source_type
-                );
-            }
-        }
-
-        // Group files by source type
-        println!("\n=== Files by Source Type ===");
-        for source_type in &[
-            SourceType::System,
-            SourceType::User,
-            SourceType::Remote,
-            SourceType::Namespace,
-            SourceType::Other,
-        ] {
-            let files = registry.query().source(*source_type).execute();
-            let total_size = registry.query().source(*source_type).total_size();
-
-            if !files.is_empty() {
-                println!(
-                    "  {:10} - {} files, {:.2} MB total",
-                    source_type.to_string(),
-                    files.len(),
-                    total_size as f64 / (1024.0 * 1024.0)
-                );
-            }
-        }
-
-        // Find files by machine ID (if any exist)
-        println!("\n=== Files by Machine ID ===");
-        let all_files = registry.query().execute();
-        let machine_ids: std::collections::HashSet<_> = all_files
-            .iter()
-            .filter_map(|f| f.machine_id.as_ref())
-            .cloned()
-            .collect();
-
-        if machine_ids.is_empty() {
-            println!("No files with machine IDs found");
-        } else {
-            for (idx, machine_id) in machine_ids.iter().take(3).enumerate() {
-                let machine_files = registry
-                    .query()
-                    .machine(machine_id)
-                    .sort_by(SortBy::Sequence(SortOrder::Ascending))
-                    .execute();
-
-                println!(
-                    "  Machine {} ({}...): {} files",
-                    idx + 1,
-                    &machine_id[..8.min(machine_id.len())],
-                    machine_files.len()
-                );
-            }
-        }
-    }
 
     Ok(())
 }

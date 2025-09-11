@@ -8,87 +8,89 @@ use window_manager::MemoryMap;
 
 #[derive(Clone, Debug)]
 pub enum FilterExpr {
-    Match(u64, Option<InlinedCursor>),
+    None,
+    Match(NonZeroU64, InlinedCursor),
     Conjunction(Vec<FilterExpr>),
     Disjunction(Vec<FilterExpr>),
 }
 
 impl FilterExpr {
-    pub fn lookup<M: MemoryMap>(
-        &self,
-        journal_file: &JournalFile<M>,
-        needle_offset: u64,
-        direction: Direction,
-    ) -> Result<Option<u64>> {
-        let Some(needle_offset) = NonZeroU64::new(needle_offset) else {
-            return Err(JournalError::InvalidOffset);
-        };
+    // pub fn lookup<M: MemoryMap>(
+    //     &self,
+    //     journal_file: &JournalFile<M>,
+    //     needle_offset: u64,
+    //     direction: Direction,
+    // ) -> Result<Option<u64>> {
+    //     let Some(needle_offset) = NonZeroU64::new(needle_offset) else {
+    //         return Err(JournalError::InvalidOffset);
+    //     };
 
-        let predicate =
-            move |entry_offset: NonZeroU64| -> Result<bool> { Ok(entry_offset < needle_offset) };
+    //     let predicate =
+    //         move |entry_offset: NonZeroU64| -> Result<bool> { Ok(entry_offset < needle_offset) };
 
-        match self {
-            FilterExpr::Match(data_offset, _) => {
-                let Some(data_offset) = NonZeroU64::new(*data_offset) else {
-                    return Err(JournalError::InvalidOffset);
-                };
-                let entry_offset = journal_file.data_object_directed_partition_point(
-                    data_offset,
-                    predicate,
-                    direction,
-                )?;
-                Ok(entry_offset.map(|x| x.get()))
-            }
-            FilterExpr::Conjunction(filter_exprs) => {
-                let mut current_offset = needle_offset;
+    //     match self {
+    //         FilterExpr::Match(data_offset, _) => {
+    //             let Some(data_offset) = NonZeroU64::new(*data_offset) else {
+    //                 return Err(JournalError::InvalidOffset);
+    //             };
+    //             let entry_offset = journal_file.data_object_directed_partition_point(
+    //                 data_offset,
+    //                 predicate,
+    //                 direction,
+    //             )?;
+    //             Ok(entry_offset.map(|x| x.get()))
+    //         }
+    //         FilterExpr::Conjunction(filter_exprs) => {
+    //             let mut current_offset = needle_offset;
 
-                loop {
-                    let previous_offset = current_offset;
+    //             loop {
+    //                 let previous_offset = current_offset;
 
-                    for filter_expr in filter_exprs {
-                        if direction == Direction::Backward {
-                            current_offset = current_offset.saturating_add(1);
-                        }
+    //                 for filter_expr in filter_exprs {
+    //                     if direction == Direction::Backward {
+    //                         current_offset = current_offset.saturating_add(1);
+    //                     }
 
-                        match filter_expr.lookup(journal_file, current_offset.get(), direction)? {
-                            Some(new_offset) => {
-                                if new_offset == 0 {
-                                    panic!("Wtf");
-                                }
-                                current_offset = NonZeroU64::new(new_offset).unwrap();
-                            }
-                            None => return Ok(None),
-                        }
-                    }
+    //                     match filter_expr.lookup(journal_file, current_offset.get(), direction)? {
+    //                         Some(new_offset) => {
+    //                             if new_offset == 0 {
+    //                                 panic!("Wtf");
+    //                             }
+    //                             current_offset = NonZeroU64::new(new_offset).unwrap();
+    //                         }
+    //                         None => return Ok(None),
+    //                     }
+    //                 }
 
-                    if current_offset == previous_offset {
-                        return Ok(Some(current_offset.get()));
-                    }
-                }
-            }
-            FilterExpr::Disjunction(filter_exprs) => {
-                let cmp = match direction {
-                    Direction::Forward => std::cmp::min,
-                    Direction::Backward => std::cmp::max,
-                };
+    //                 if current_offset == previous_offset {
+    //                     return Ok(Some(current_offset.get()));
+    //                 }
+    //             }
+    //         }
+    //         FilterExpr::Disjunction(filter_exprs) => {
+    //             let cmp = match direction {
+    //                 Direction::Forward => std::cmp::min,
+    //                 Direction::Backward => std::cmp::max,
+    //             };
 
-                filter_exprs.iter().try_fold(None, |acc, expr| {
-                    let result = expr.lookup(journal_file, needle_offset.get(), direction)?;
+    //             filter_exprs.iter().try_fold(None, |acc, expr| {
+    //                 let result = expr.lookup(journal_file, needle_offset.get(), direction)?;
 
-                    Ok(match (acc, result) {
-                        (None, Some(offset)) => Some(offset),
-                        (Some(best), Some(offset)) => Some(cmp(best, offset)),
-                        (acc, None) => acc,
-                    })
-                })
-            }
-        }
-    }
+    //                 Ok(match (acc, result) {
+    //                     (None, Some(offset)) => Some(offset),
+    //                     (Some(best), Some(offset)) => Some(cmp(best, offset)),
+    //                     (acc, None) => acc,
+    //                 })
+    //             })
+    //         }
+    //         FilterExpr::None => Ok(None),
+    //     }
+    // }
 
     pub fn head(&mut self) -> &mut Self {
         match self {
-            FilterExpr::Match(_, None) => (),
-            FilterExpr::Match(_, Some(ic)) => {
+            FilterExpr::None => (),
+            FilterExpr::Match(_, ic) => {
                 *ic = ic.head();
             }
             FilterExpr::Conjunction(filter_exprs) => {
@@ -108,8 +110,8 @@ impl FilterExpr {
 
     pub fn tail<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<&mut Self> {
         match self {
-            FilterExpr::Match(_, None) => (),
-            FilterExpr::Match(_, Some(ic)) => {
+            FilterExpr::None => {}
+            FilterExpr::Match(_, ic) => {
                 *ic = ic.tail(journal_file)?;
             }
             FilterExpr::Conjunction(filter_exprs) => {
@@ -135,8 +137,8 @@ impl FilterExpr {
         needle_offset: NonZeroU64,
     ) -> Result<Option<NonZeroU64>> {
         match self {
-            FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(ic)) => ic.next_until(journal_file, needle_offset),
+            FilterExpr::None => Ok(None),
+            FilterExpr::Match(_, ic) => ic.next_until(journal_file, needle_offset),
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -181,8 +183,8 @@ impl FilterExpr {
         needle_offset: NonZeroU64,
     ) -> Result<Option<NonZeroU64>> {
         match self {
-            FilterExpr::Match(_, None) => Ok(None),
-            FilterExpr::Match(_, Some(ic)) => ic.previous_until(journal_file, needle_offset),
+            FilterExpr::None => Ok(None),
+            FilterExpr::Match(_, ic) => ic.previous_until(journal_file, needle_offset),
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -217,63 +219,6 @@ impl FilterExpr {
                 Ok(best_offset)
             }
         }
-    }
-
-    pub fn dump<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<String> {
-        let mut output = String::new();
-        self.dump_internal(journal_file, 0, &mut output)?;
-        Ok(output)
-    }
-
-    /// Helper function for format_data_objects that handles nested expressions and indentation
-    fn dump_internal<M: MemoryMap>(
-        &self,
-        journal_file: &JournalFile<M>,
-        indent_level: usize,
-        output: &mut String,
-    ) -> Result<()> {
-        let indent = "  ".repeat(indent_level);
-
-        match self {
-            FilterExpr::Match(data_offset, inlined_cursor) => {
-                // Load the data object
-                let Some(data_offset) = NonZeroU64::new(*data_offset) else {
-                    return Err(JournalError::InvalidOffset);
-                };
-                let data_object = journal_file.data_ref(data_offset)?;
-
-                // Get the payload as a string if possible
-                let payload_bytes = data_object.payload_bytes();
-                let payload_str = String::from_utf8_lossy(payload_bytes);
-
-                // Format the data offset and payload
-                output.push_str(&format!(
-                    "{}Match[offset=0x{:x}]: {}\n",
-                    indent, data_offset, payload_str
-                ));
-
-                // Format cursor information if available
-                if let Some(ic) = inlined_cursor {
-                    output.push_str(&format!("{}  Cursor: {:?}\n", indent, ic));
-                }
-            }
-            FilterExpr::Conjunction(filter_exprs) => {
-                output.push_str(&format!("{}Conjunction (AND) {{\n", indent));
-                for expr in filter_exprs {
-                    expr.dump_internal(journal_file, indent_level + 1, output)?;
-                }
-                output.push_str(&format!("{}}}\n", indent));
-            }
-            FilterExpr::Disjunction(filter_exprs) => {
-                output.push_str(&format!("{}Disjunction (OR) {{\n", indent));
-                for expr in filter_exprs {
-                    expr.dump_internal(journal_file, indent_level + 1, output)?;
-                }
-                output.push_str(&format!("{}}}\n", indent));
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -337,25 +282,29 @@ impl JournalFilter {
                 for idx in start..i {
                     let data = self.current_matches[idx].as_slice();
                     let hash = journal_file.hash(data);
-                    let Some(offset) = journal_file.find_data_offset(hash, data)? else {
-                        // TODO: should we really return an error?
-                        return Err(JournalError::InvalidOffset);
-                    };
 
-                    let ic = journal_file.data_ref(offset)?.inlined_cursor();
-                    matches.push(FilterExpr::Match(offset.get(), ic));
+                    let match_expr = match journal_file.find_data_offset(hash, data)? {
+                        Some(offset) => match journal_file.data_ref(offset)?.inlined_cursor() {
+                            Some(ic) => FilterExpr::Match(offset, ic),
+                            None => FilterExpr::None,
+                        },
+                        None => FilterExpr::None,
+                    };
+                    matches.push(match_expr);
                 }
                 elements.push(FilterExpr::Disjunction(matches));
             } else {
                 let data = self.current_matches[start].as_slice();
                 let hash = journal_file.hash(data);
-                let Some(offset) = journal_file.find_data_offset(hash, data)? else {
-                    // TODO: should we really return an error?
-                    return Err(JournalError::InvalidOffset);
-                };
 
-                let ic = journal_file.data_ref(offset)?.inlined_cursor();
-                elements.push(FilterExpr::Match(offset.get(), ic));
+                let match_expr = match journal_file.find_data_offset(hash, data)? {
+                    Some(offset) => match journal_file.data_ref(offset)?.inlined_cursor() {
+                        Some(ic) => FilterExpr::Match(offset, ic),
+                        None => FilterExpr::None,
+                    },
+                    None => FilterExpr::None,
+                };
+                elements.push(match_expr);
             }
         }
 
