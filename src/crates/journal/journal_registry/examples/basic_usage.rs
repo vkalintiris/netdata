@@ -6,7 +6,7 @@ use tracing::{info, instrument, warn};
 
 /// A single entry in the time histogram index representing a minute boundary.
 #[derive(Debug, Clone, Copy)]
-struct BucketEntry {
+struct HistogramBucket {
     /// Index into the offsets vector where this minute's entries begin.
     offset_index: usize,
     /// The absolute minute value (microseconds / 60_000_000) since epoch.
@@ -19,34 +19,34 @@ struct BucketEntry {
 /// enabling O(log n) lookups for time ranges and histogram generation with configurable
 /// bucket sizes (1-minute, 10-minute, etc.).
 #[derive(Clone)]
-struct TimeHistogramIndex {
+struct HistogramIndex {
     /// The first minute in the dataset, used as reference for relative calculations.
     base_minute: u64,
     /// Sparse vector containing only minute boundaries where changes occur.
-    entries: Vec<BucketEntry>,
+    buckets: Vec<HistogramBucket>,
 }
 
-impl TimeHistogramIndex {
+impl HistogramIndex {
     fn new(base_minute: u64) -> Self {
         Self {
-            entries: Vec::new(),
+            buckets: Vec::new(),
             base_minute,
         }
     }
 
     fn push(&mut self, minute: u64, offset_index: usize) {
-        self.entries.push(BucketEntry {
+        self.buckets.push(HistogramBucket {
             minute,
             offset_index,
         });
     }
 
     fn len(&self) -> usize {
-        self.entries.len()
+        self.buckets.len()
     }
 }
 
-impl std::fmt::Debug for TimeHistogramIndex {
+impl std::fmt::Debug for HistogramIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
@@ -55,7 +55,7 @@ impl std::fmt::Debug for TimeHistogramIndex {
         )?;
         writeln!(f, "{}", "-".repeat(70))?;
 
-        for (i, entry) in self.entries.iter().take(10).enumerate() {
+        for (i, entry) in self.buckets.iter().take(10).enumerate() {
             writeln!(
                 f,
                 "{:<10} {:<15} {:<15} minute {}",
@@ -66,16 +66,16 @@ impl std::fmt::Debug for TimeHistogramIndex {
             )?;
         }
 
-        if self.entries.len() > 10 {
-            writeln!(f, "... and {} more entries", self.entries.len() - 10)?;
+        if self.buckets.len() > 10 {
+            writeln!(f, "... and {} more entries", self.buckets.len() - 10)?;
         }
         Ok(())
     }
 }
 
-impl std::fmt::Display for TimeHistogramIndex {
+impl std::fmt::Display for HistogramIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.entries.is_empty() {
+        if self.buckets.is_empty() {
             return write!(f, "Empty index");
         }
 
@@ -83,7 +83,7 @@ impl std::fmt::Display for TimeHistogramIndex {
         writeln!(f, "{:<30} {:<10}", "Range", "Count")?;
         writeln!(f, "{}", "-".repeat(40))?;
 
-        for window in self.entries.windows(2) {
+        for window in self.buckets.windows(2) {
             let start_minute = window[0].minute;
             let end_minute = window[1].minute;
             let count = window[1].offset_index - window[0].offset_index;
@@ -104,7 +104,7 @@ impl std::fmt::Display for TimeHistogramIndex {
 }
 
 #[instrument(skip(files))]
-fn sequential_v1(files: &[journal_registry::RegistryFile]) {
+fn sequential(files: &[journal_registry::RegistryFile]) {
     let start_time = Instant::now();
 
     let mut count = 0;
@@ -138,7 +138,7 @@ fn sequential_v1(files: &[journal_registry::RegistryFile]) {
         let first_minute = first_timestamp / (60 * 1_000_000);
 
         // Use the new type
-        let mut minute_index = TimeHistogramIndex::new(first_minute);
+        let mut minute_index = HistogramIndex::new(first_minute);
         let mut current_minute = first_minute;
         minute_index.push(current_minute, 0);
 
@@ -187,8 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
     files.reverse();
+    files.truncate(5);
 
-    sequential_v1(&files);
+    sequential(&files);
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());
