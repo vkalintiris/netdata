@@ -2,13 +2,13 @@ use crate::JournalFile;
 use crate::Mmap;
 use error::Result;
 
-/// A single entry in the time histogram index representing a minute boundary.
+/// A minute-aligned bucket in the histogram index.
 #[derive(Debug, Clone, Copy)]
 struct HistogramBucket {
-    /// Index into the offsets vector where this minute's entries begin.
-    offset_index: usize,
-    /// The absolute minute value (microseconds / 60_000_000) since epoch.
+    /// Minute-aligned seconds since EPOCH.
     minute: u64,
+    /// Index into the global entry offsets array.
+    offset_index: usize,
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
@@ -31,40 +31,41 @@ impl HistogramIndex {
         let mut offsets = Vec::new();
         entry_list.collect_offsets(jf, &mut offsets)?;
 
-        let first_timestamp = offsets
-            .first()
-            .map(|eo| jf.entry_ref(*eo).map(|entry| entry.header.realtime))
-            .transpose()?;
-
-        let Some(first_timestamp) = first_timestamp else {
+        if offsets.is_empty() {
             return Ok(None);
-        };
+        }
 
-        let mut current_minute = first_timestamp / (60 * 1_000_000);
+        let mut buckets = Vec::new();
+        let mut current_minute = None;
 
-        let mut histogram_index = HistogramIndex {
-            buckets: Vec::new(),
-        };
-        histogram_index.push(current_minute, 0);
+        for (offset_index, &offset) in offsets.iter().enumerate() {
+            let entry = jf.entry_ref(offset)?;
+            let minute = entry.header.realtime / (60 * 1_000_000);
 
-        for (idx, &offset) in offsets.iter().enumerate().skip(1) {
-            let entry = jf.entry_ref(offset).unwrap();
-            let entry_minute = entry.header.realtime / (60 * 1_000_000);
+            match current_minute {
+                None => {
+                    // First entry
+                    debug_assert_eq!(offset_index, 0);
 
-            if entry_minute > current_minute {
-                histogram_index.push(entry_minute, idx);
-                current_minute = entry_minute;
+                    buckets.push(HistogramBucket {
+                        minute,
+                        offset_index: 0,
+                    });
+                    current_minute = Some(minute);
+                }
+                Some(prev_minute) if minute > prev_minute => {
+                    // New minute boundary
+                    buckets.push(HistogramBucket {
+                        minute,
+                        offset_index,
+                    });
+                    current_minute = Some(minute);
+                }
+                _ => {} // Same minute, skip
             }
         }
 
-        Ok(Some(histogram_index))
-    }
-
-    fn push(&mut self, minute: u64, offset_index: usize) {
-        self.buckets.push(HistogramBucket {
-            minute,
-            offset_index,
-        });
+        Ok(Some(HistogramIndex { buckets }))
     }
 
     pub fn len(&self) -> usize {
