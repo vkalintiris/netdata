@@ -3,6 +3,7 @@ pub mod cursor;
 pub mod file;
 pub mod filter;
 mod hash;
+pub mod histogram;
 mod object;
 pub mod offset_array;
 pub mod reader;
@@ -10,7 +11,7 @@ mod value_guard;
 pub mod writer;
 
 // Core functionality
-pub use file::{load_boot_id, BucketUtilization, JournalFile, JournalFileOptions};
+pub use file::{BucketUtilization, JournalFile, JournalFileOptions, load_boot_id};
 pub use reader::JournalReader;
 pub use writer::JournalWriter;
 
