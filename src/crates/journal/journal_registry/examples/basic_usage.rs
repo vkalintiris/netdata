@@ -6,166 +6,34 @@ use journal_registry::JournalRegistry;
 use roaring::RoaringBitmap;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, instrument, warn};
-
-use bitvec::prelude::*;
-
-pub struct GorillaEncoder {
-    buffer: BitVec<u8, bitvec::order::Msb0>,
-    prev_value: Option<u32>,
-    prev_leading_zeros: u32,
-    prev_trailing_zeros: u32,
-}
-
-impl GorillaEncoder {
-    pub fn new() -> Self {
-        Self {
-            buffer: BitVec::new(),
-            prev_value: None,
-            prev_leading_zeros: 0,
-            prev_trailing_zeros: 0,
-        }
-    }
-
-    pub fn encode(&mut self, values: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
-        for &value in values {
-            self.encode_value(value)?;
-        }
-        Ok(())
-    }
-
-    pub fn encode_value(&mut self, value: u32) -> Result<(), Box<dyn std::error::Error>> {
-        match self.prev_value {
-            None => {
-                self.encode_first_value(value);
-            }
-            Some(prev) => {
-                self.encode_delta_value(prev, value);
-            }
-        }
-        self.prev_value = Some(value);
-        Ok(())
-    }
-
-    pub fn encode_iter<I>(&mut self, values: I) -> Result<(), Box<dyn std::error::Error>>
-    where
-        I: IntoIterator<Item = u32>,
-    {
-        for value in values {
-            self.encode_value(value)?;
-        }
-        Ok(())
-    }
-
-    fn encode_first_value(&mut self, value: u32) {
-        for i in (0..32).rev() {
-            self.buffer.push((value >> i) & 1 != 0);
-        }
-    }
-
-    fn encode_delta_value(&mut self, prev_value: u32, current_value: u32) {
-        let xor = prev_value ^ current_value;
-
-        if xor == 0 {
-            self.buffer.push(false);
-            return;
-        }
-
-        self.buffer.push(true);
-
-        let leading_zeros = xor.leading_zeros();
-        let trailing_zeros = xor.trailing_zeros();
-
-        if leading_zeros >= self.prev_leading_zeros && trailing_zeros >= self.prev_trailing_zeros {
-            self.buffer.push(false);
-
-            let meaningful_start = self.prev_leading_zeros;
-            let meaningful_end = 32 - self.prev_trailing_zeros;
-            let meaningful_bits = meaningful_end - meaningful_start;
-
-            let shifted_xor = xor >> self.prev_trailing_zeros;
-            for i in (0..meaningful_bits).rev() {
-                self.buffer.push((shifted_xor >> i) & 1 != 0);
-            }
-        } else {
-            self.buffer.push(true);
-
-            for i in (0..5).rev() {
-                self.buffer.push((leading_zeros >> i) & 1 != 0);
-            }
-
-            for i in (0..5).rev() {
-                self.buffer.push((trailing_zeros >> i) & 1 != 0);
-            }
-
-            self.prev_leading_zeros = leading_zeros;
-            self.prev_trailing_zeros = trailing_zeros;
-
-            let meaningful_bits = 32 - leading_zeros - trailing_zeros;
-            let meaningful_value = xor >> trailing_zeros;
-            for i in (0..meaningful_bits).rev() {
-                self.buffer.push((meaningful_value >> i) & 1 != 0);
-            }
-        }
-    }
-
-    pub fn finish(self) -> Vec<u8> {
-        let mut result = vec![0u8; (self.buffer.len() + 7) / 8];
-        for (i, bit) in self.buffer.iter().enumerate() {
-            if *bit {
-                result[i / 8] |= 1 << (7 - (i % 8));
-            }
-        }
-        result
-    }
-
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
-    }
-}
-
-impl Default for GorillaEncoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[derive(Allocative, Debug, Clone)]
 struct FileIndex {
     histogram_index: HistogramIndex,
-    data_indexes: HashMap<String, Vec<u32>>,
-    roaring_indexes: HashMap<String, Vec<u8>>,
-    gorilla_indexes: HashMap<String, Vec<u8>>,
-    lz4_data_indexes: HashMap<String, Vec<u8>>,
     lz4_roaring_indexes: HashMap<String, Vec<u8>>,
-    lz4_gorilla_indexes: HashMap<String, Vec<u8>>,
 }
 
 fn get_matching_indices(
     entry_offsets: &Vec<NonZeroU64>,
     data_offsets: &Vec<NonZeroU64>,
-) -> Vec<u32> {
-    let mut indices = Vec::new();
+    data_indices: &mut Vec<u32>,
+) {
     let mut data_iter = data_offsets.iter();
     let mut current_data = data_iter.next();
 
     for (i, entry) in entry_offsets.iter().enumerate() {
         if let Some(data) = current_data {
             if entry == data {
-                indices.push(i as u32);
+                data_indices.push(i as u32);
                 current_data = data_iter.next();
             }
         } else {
             break; // No more data_offsets to match
         }
     }
-
-    indices
 }
 
 fn compute_delta(indices: &[u32]) -> Vec<u32> {
@@ -176,6 +44,158 @@ fn compute_delta(indices: &[u32]) -> Vec<u32> {
     std::iter::once(indices[0])
         .chain(indices.windows(2).map(|pair| pair[1] - pair[0]))
         .collect()
+}
+
+fn parallel(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
+    use rayon::prelude::*;
+    let start_time = Instant::now();
+
+    // Use par_iter() instead of iter() and collect results in parallel
+    let file_indexes: Vec<FileIndex> = files
+        .par_iter()
+        .rev()
+        .filter_map(|file| {
+            println!("File: {:#?}", file.path);
+
+            let window_size = 8 * 1024 * 1024;
+            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
+
+            let histogram_index = HistogramIndex::from(&journal_file).ok()??;
+
+            let mut lz4_roaring_indexes = HashMap::new();
+
+            let entry_offsets = {
+                let mut entry_offsets = Vec::new();
+                let entry_list = journal_file.entry_list().unwrap();
+                entry_list
+                    .collect_offsets(&journal_file, &mut entry_offsets)
+                    .ok()?;
+                entry_offsets
+            };
+
+            let systemd_keys: Vec<&str> = vec![
+                // --- USER JOURNAL FIELDS ---
+                "MESSAGE_ID",
+                "PRIORITY",
+                "CODE_FILE",
+                "CODE_FUNC",
+                "ERRNO",
+                "SYSLOG_FACILITY",
+                "SYSLOG_IDENTIFIER",
+                "UNIT",
+                "USER_UNIT",
+                "UNIT_RESULT",
+                // --- TRUSTED JOURNAL FIELDS ---
+                "_UID",
+                "_GID",
+                "_COMM",
+                "_EXE",
+                "_CAP_EFFECTIVE",
+                "_AUDIT_LOGINUID",
+                "_SYSTEMD_CGROUP",
+                "_SYSTEMD_SLICE",
+                "_SYSTEMD_UNIT",
+                "_SYSTEMD_USER_UNIT",
+                "_SYSTEMD_USER_SLICE",
+                "_SYSTEMD_SESSION",
+                "_SYSTEMD_OWNER_UID",
+                "_SELINUX_CONTEXT",
+                "_BOOT_ID",
+                "_MACHINE_ID",
+                "_HOSTNAME",
+                "_TRANSPORT",
+                "_STREAM_ID",
+                "_NAMESPACE",
+                "_RUNTIME_SCOPE",
+                // --- KERNEL JOURNAL FIELDS ---
+                "_KERNEL_SUBSYSTEM",
+                "_UDEV_DEVNODE",
+                // --- LOGGING ON BEHALF ---
+                "OBJECT_UID",
+                "OBJECT_GID",
+                "OBJECT_COMM",
+                "OBJECT_EXE",
+                "OBJECT_AUDIT_LOGINUID",
+                "OBJECT_SYSTEMD_CGROUP",
+                "OBJECT_SYSTEMD_SESSION",
+                "OBJECT_SYSTEMD_OWNER_UID",
+                "OBJECT_SYSTEMD_UNIT",
+                "OBJECT_SYSTEMD_USER_UNIT",
+                // --- CORE DUMPS ---
+                "COREDUMP_COMM",
+                "COREDUMP_UNIT",
+                "COREDUMP_USER_UNIT",
+                "COREDUMP_SIGNAL_NAME",
+                "COREDUMP_CGROUP",
+                // --- DOCKER ---
+                "CONTAINER_ID",
+                "CONTAINER_NAME",
+                "CONTAINER_TAG",
+                "IMAGE_NAME",
+                // --- NETDATA ---
+                "ND_NIDL_NODE",
+                "ND_NIDL_CONTEXT",
+                "ND_LOG_SOURCE",
+                "ND_ALERT_NAME",
+                "ND_ALERT_CLASS",
+                "ND_ALERT_COMPONENT",
+                "ND_ALERT_TYPE",
+                "ND_ALERT_STATUS",
+            ];
+
+            let mut data_offsets = Vec::new();
+            let mut data_indices = Vec::new();
+
+            for f in systemd_keys {
+                let field_data_iterator = journal_file.field_data_objects(f.as_bytes()).ok()?;
+
+                for item in field_data_iterator {
+                    data_offsets.clear();
+                    data_indices.clear();
+
+                    let name = {
+                        let item = item.ok()?;
+
+                        let ic = item.inlined_cursor()?;
+                        let name = String::from_utf8_lossy(item.payload_bytes()).into_owned();
+                        drop(item);
+
+                        ic.collect_offsets(&journal_file, &mut data_offsets).ok()?;
+                        name
+                    };
+
+                    get_matching_indices(&entry_offsets, &data_offsets, &mut data_indices);
+
+                    let mut roffsets =
+                        RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).ok()?;
+                    roffsets.optimize();
+                    let mut serialized = Vec::new();
+                    roffsets.serialize_into(&mut serialized).ok()?;
+
+                    let compressed_roaring =
+                        lz4::block::compress(&serialized[..], None, false).ok()?;
+                    lz4_roaring_indexes.insert(name.clone(), compressed_roaring);
+                }
+            }
+
+            Some(FileIndex {
+                histogram_index,
+                lz4_roaring_indexes,
+            })
+        })
+        .collect();
+
+    // Count midx_count after parallel processing
+    let midx_count: usize = file_indexes.iter().map(|fi| fi.histogram_index.len()).sum();
+
+    let elapsed = start_time.elapsed();
+    info!(
+        "{:#?} histogram index buckets in {:#?} msec",
+        midx_count,
+        elapsed.as_millis(),
+    );
+
+    file_indexes
 }
 
 #[instrument(skip(files))]
@@ -197,13 +217,7 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
             continue;
         };
 
-        let mut data_indexes = HashMap::new();
-        let mut roaring_indexes = HashMap::new();
-        let mut gorilla_indexes = HashMap::new();
-        let mut lz4_data_indexes = HashMap::new();
         let mut lz4_roaring_indexes = HashMap::new();
-        let mut lz4_gorilla_indexes = HashMap::new();
-        let mut data_offsets = Vec::new();
 
         let entry_offsets = {
             let mut entry_offsets = Vec::new();
@@ -214,17 +228,92 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
             entry_offsets
         };
 
-        let v = vec!["PRIORITY"];
-        for f in v {
+        let systemd_keys: Vec<&str> = vec![
+            // --- USER JOURNAL FIELDS ---
+            "MESSAGE_ID",
+            "PRIORITY",
+            "CODE_FILE",
+            "CODE_FUNC",
+            "ERRNO",
+            "SYSLOG_FACILITY",
+            "SYSLOG_IDENTIFIER",
+            "UNIT",
+            "USER_UNIT",
+            "UNIT_RESULT",
+            // --- TRUSTED JOURNAL FIELDS ---
+            "_UID",
+            "_GID",
+            "_COMM",
+            "_EXE",
+            "_CAP_EFFECTIVE",
+            "_AUDIT_LOGINUID",
+            "_SYSTEMD_CGROUP",
+            "_SYSTEMD_SLICE",
+            "_SYSTEMD_UNIT",
+            "_SYSTEMD_USER_UNIT",
+            "_SYSTEMD_USER_SLICE",
+            "_SYSTEMD_SESSION",
+            "_SYSTEMD_OWNER_UID",
+            "_SELINUX_CONTEXT",
+            "_BOOT_ID",
+            "_MACHINE_ID",
+            "_HOSTNAME",
+            "_TRANSPORT",
+            "_STREAM_ID",
+            "_NAMESPACE",
+            "_RUNTIME_SCOPE",
+            // --- KERNEL JOURNAL FIELDS ---
+            "_KERNEL_SUBSYSTEM",
+            "_UDEV_DEVNODE",
+            // --- LOGGING ON BEHALF ---
+            "OBJECT_UID",
+            "OBJECT_GID",
+            "OBJECT_COMM",
+            "OBJECT_EXE",
+            "OBJECT_AUDIT_LOGINUID",
+            "OBJECT_SYSTEMD_CGROUP",
+            "OBJECT_SYSTEMD_SESSION",
+            "OBJECT_SYSTEMD_OWNER_UID",
+            "OBJECT_SYSTEMD_UNIT",
+            "OBJECT_SYSTEMD_USER_UNIT",
+            // --- CORE DUMPS ---
+            "COREDUMP_COMM",
+            "COREDUMP_UNIT",
+            "COREDUMP_USER_UNIT",
+            "COREDUMP_SIGNAL_NAME",
+            "COREDUMP_CGROUP",
+            // --- DOCKER ---
+            "CONTAINER_ID",
+            "CONTAINER_NAME",
+            "CONTAINER_TAG",
+            "IMAGE_NAME",
+            // --- NETDATA ---
+            "ND_NIDL_NODE",
+            "ND_NIDL_CONTEXT",
+            "ND_LOG_SOURCE",
+            "ND_ALERT_NAME",
+            "ND_ALERT_CLASS",
+            "ND_ALERT_COMPONENT",
+            "ND_ALERT_TYPE",
+            "ND_ALERT_STATUS",
+        ];
+
+        let mut data_offsets = Vec::new();
+        let mut data_indices = Vec::new();
+
+        for f in systemd_keys {
             let field_data_iterator = journal_file.field_data_objects(f.as_bytes()).unwrap();
 
             for item in field_data_iterator {
                 data_offsets.clear();
+                data_indices.clear();
 
                 let name = {
                     let item = item.unwrap();
 
-                    let ic = item.inlined_cursor().unwrap();
+                    let Some(ic) = item.inlined_cursor() else {
+                        continue;
+                    };
                     let name = String::from_utf8_lossy(item.payload_bytes()).into_owned();
                     drop(item);
 
@@ -233,30 +322,10 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
                     name
                 };
 
-                let offsets = get_matching_indices(&entry_offsets, &data_offsets);
-                let offsets = compute_delta(&offsets);
+                get_matching_indices(&entry_offsets, &data_offsets, &mut data_indices);
 
-                let mut gb = GorillaEncoder::new();
-                gb.encode_iter(offsets.clone()).unwrap();
-                let gorilla_data = gb.finish();
-                gorilla_indexes.insert(name.clone(), gorilla_data.clone());
-
-                // Compress raw data indexes with LZ4
-                let raw_data_bytes: Vec<u8> = offsets
-                    .iter()
-                    .flat_map(|offset| offset.to_le_bytes())
-                    .collect();
-                let compressed_raw = lz4::block::compress(&raw_data_bytes[..], None, false)
-                    .map_err(|e| format!("LZ4 compression failed: {}", e))
-                    .unwrap();
-                lz4_data_indexes.insert(name.clone(), compressed_raw);
-
-                data_indexes.insert(name.clone(), offsets.clone());
-                // let mut roffsets = RoaringBitmap::from_sorted_iter(offsets.iter().map(|x| *x)).unwrap();
-                let mut roffsets = RoaringBitmap::new();
-                for df in offsets.iter() {
-                    roffsets.insert(*df);
-                }
+                let mut roffsets =
+                    RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
                 roffsets.optimize();
                 let mut serialized = Vec::new();
                 roffsets.serialize_into(&mut serialized).unwrap();
@@ -266,14 +335,6 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
                     .map_err(|e| format!("LZ4 compression failed: {}", e))
                     .unwrap();
                 lz4_roaring_indexes.insert(name.clone(), compressed_roaring);
-
-                roaring_indexes.insert(name.clone(), serialized);
-
-                // Compress gorilla encoded data with LZ4
-                let compressed_gorilla = lz4::block::compress(&gorilla_data[..], None, false)
-                    .map_err(|e| format!("LZ4 compression failed: {}", e))
-                    .unwrap();
-                lz4_gorilla_indexes.insert(name, compressed_gorilla);
             }
         }
 
@@ -281,12 +342,7 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
 
         file_indexes.push(FileIndex {
             histogram_index,
-            data_indexes,
-            roaring_indexes,
-            gorilla_indexes,
-            lz4_data_indexes,
             lz4_roaring_indexes,
-            lz4_gorilla_indexes,
         });
     }
 
@@ -323,7 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.reverse();
     // files.truncate(5);
 
-    let v = sequential(&files);
+    let v = parallel(&files);
 
     let mut flamegraph = FlameGraphBuilder::default();
     flamegraph.visit_root(&v);
@@ -332,75 +388,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Calculate and report compression ratios
     println!("\n=== Compression Ratios ===");
-    let mut total_raw_size = 0usize;
-    let mut total_gorilla_size = 0usize;
-    let mut total_roaring_size = 0usize;
-    let mut total_lz4_raw_size = 0usize;
-    let mut total_lz4_gorilla_size = 0usize;
     let mut total_lz4_roaring_size = 0usize;
 
     for file_index in &v {
-        for (name, raw_data) in &file_index.data_indexes {
-            let raw_size = raw_data.len() * std::mem::size_of::<NonZeroU64>();
-            total_raw_size += raw_size;
-
-            if let Some(lz4_compressed) = file_index.lz4_data_indexes.get(name) {
-                total_lz4_raw_size += lz4_compressed.len();
-            }
-        }
-
-        for (name, gorilla_data) in &file_index.gorilla_indexes {
-            total_gorilla_size += gorilla_data.len();
-
-            if let Some(lz4_compressed) = file_index.lz4_gorilla_indexes.get(name) {
-                total_lz4_gorilla_size += lz4_compressed.len();
-            }
-        }
-
-        for (name, roaring_data) in &file_index.roaring_indexes {
-            total_roaring_size += roaring_data.len();
-
-            if let Some(lz4_compressed) = file_index.lz4_roaring_indexes.get(name) {
-                total_lz4_roaring_size += lz4_compressed.len();
-            }
+        for roaring_data in file_index.lz4_roaring_indexes.values() {
+            total_lz4_roaring_size += roaring_data.len();
         }
     }
 
-    println!("Raw data:");
-    println!("  Original size: {} bytes", total_raw_size);
-    println!("  LZ4 compressed: {} bytes", total_lz4_raw_size);
-    println!(
-        "  Compression ratio: {:.2}:1",
-        total_raw_size as f64 / total_lz4_raw_size as f64
-    );
-    println!(
-        "  Space saved: {:.1}%",
-        (1.0 - total_lz4_raw_size as f64 / total_raw_size as f64) * 100.0
-    );
-
-    println!("\nGorilla encoded data:");
-    println!("  Original size: {} bytes", total_gorilla_size);
-    println!("  LZ4 compressed: {} bytes", total_lz4_gorilla_size);
-    println!(
-        "  Compression ratio: {:.2}:1",
-        total_gorilla_size as f64 / total_lz4_gorilla_size as f64
-    );
-    println!(
-        "  Space saved: {:.1}%",
-        (1.0 - total_lz4_gorilla_size as f64 / total_gorilla_size as f64) * 100.0
-    );
-
     println!("\nRoaring bitmap data:");
-    println!("  Original size: {} bytes", total_roaring_size);
     println!("  LZ4 compressed: {} bytes", total_lz4_roaring_size);
-    println!(
-        "  Compression ratio: {:.2}:1",
-        total_roaring_size as f64 / total_lz4_roaring_size as f64
-    );
-    println!(
-        "  Space saved: {:.1}%",
-        (1.0 - total_lz4_roaring_size as f64 / total_roaring_size as f64) * 100.0
-    );
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());
@@ -408,6 +405,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Total size: {:.2} MB",
         registry.query().total_size() as f64 / (1024.0 * 1024.0)
     );
+
+    tokio::time::sleep(Duration::from_secs(100)).await;
 
     Ok(())
 }
