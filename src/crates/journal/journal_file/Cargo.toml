@@ -13,6 +13,7 @@ twox-hash = { workspace = true }
 zerocopy = { workspace =  true }
 hex = { workspace = true }
 rand = { workspace = true }
+allocative = "0.3.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,12 +1,12 @@
 use error::{JournalError, Result};
 use journal_file::{
-    load_boot_id, BucketUtilization, JournalFile, JournalFileOptions, JournalWriter,
+    BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
-use window_manager::MmapMut;
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use window_manager::MmapMut;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalFileInfo {

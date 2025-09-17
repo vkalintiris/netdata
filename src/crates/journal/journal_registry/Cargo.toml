@@ -17,6 +17,9 @@ regex = { workspace = true }
 journal_file = { path = "../journal_file" }
 roaring = { workspace = true }
 chrono = { workspace = true }
+allocative = "0.3.4"
+bitvec = "1.0.1"
+lz4 = { workspace = true }
 
 [[example]]
 name = "basic_usage"
