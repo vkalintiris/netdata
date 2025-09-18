@@ -445,6 +445,16 @@ impl<M: MemoryMap> JournalFile<M> {
         })
     }
 
+    pub fn entry_offsets(&self) -> Result<Vec<NonZeroU64>> {
+        let mut offsets = Vec::new();
+
+        if let Some(entry_list) = self.entry_list() {
+            entry_list.collect_offsets(self, &mut offsets)?;
+        }
+
+        Ok(offsets)
+    }
+
     pub fn journal_header_ref(&self) -> &JournalHeader {
         JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
     }

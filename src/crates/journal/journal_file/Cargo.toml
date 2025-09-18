@@ -16,6 +16,7 @@ rand = { workspace = true }
 allocative = "0.3.4"
 roaring = { workspace = true }
 lz4 = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

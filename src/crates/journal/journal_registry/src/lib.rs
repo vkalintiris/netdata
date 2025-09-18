@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use journal_file::index::HistogramIndex;
+use journal_file::index::Histogram;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use regex::Regex;
@@ -118,7 +118,7 @@ pub struct RegistryFile {
 /// Represents the histogram information for a systemd journal file
 #[derive(Debug, Clone)]
 pub struct RegistryFileHistogram {
-    histogram_index: HistogramIndex,
+    histogram_index: Histogram,
     facet_entries: HashMap<String, Vec<u8>>,
 }
 

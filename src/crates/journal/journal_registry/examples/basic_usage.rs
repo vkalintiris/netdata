@@ -1,13 +1,13 @@
 use allocative::FlameGraphBuilder;
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::index::FileIndex;
+use journal_file::index::JournalFileIndex;
 use journal_registry::JournalRegistry;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn parallel(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
+fn parallel(files: &[journal_registry::RegistryFile]) -> Vec<JournalFileIndex> {
     use rayon::prelude::*;
     let start_time = Instant::now();
 
@@ -80,29 +80,41 @@ fn parallel(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
         b"ND_ALERT_TYPE",
         b"ND_ALERT_STATUS",
     ];
+    let mut total_index_size = 0;
 
-    // Use par_iter() instead of iter() and collect results in parallel
-    let file_indexes: Vec<FileIndex> = files
-        .par_iter()
-        .rev()
-        .filter_map(|file| {
-            println!("File: {:#?}", file.path);
+    let mut file_indexes = Vec::new();
+    for file in files {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-            let window_size = 8 * 1024 * 1024;
-            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
+        let Ok(jfi) = JournalFileIndex::from(&journal_file, systemd_keys.as_slice()) else {
+            continue;
+        };
 
-            FileIndex::from(&journal_file, systemd_keys.as_slice()).unwrap()
-        })
-        .collect();
+        let mut index_size = 0;
+        for (data_payload, entry_indices) in jfi.entry_indices.iter() {
+            index_size += data_payload.len() + entry_indices.len();
+        }
+
+        info!(file = file.path.to_string_lossy().into_owned(), index_size);
+
+        total_index_size += index_size;
+
+        file_indexes.push(jfi);
+    }
 
     // Count midx_count after parallel processing
-    let midx_count: usize = file_indexes.iter().map(|fi| fi.histogram_index.len()).sum();
+    let midx_count: usize = file_indexes.iter().map(|fi| fi.histogram.len()).sum();
 
     let elapsed = start_time.elapsed();
     info!(
         "{:#?} histogram index buckets in {:#?} msec",
         midx_count,
         elapsed.as_millis(),
+    );
+    info!(
+        "total index size: {:#?} MiB",
+        total_index_size / (1024 * 1024)
     );
 
     file_indexes
@@ -143,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_lz4_roaring_size = 0usize;
 
     for file_index in &v {
-        for roaring_data in file_index.lz4_roaring_indexes.values() {
+        for roaring_data in file_index.entry_indices.values() {
             total_lz4_roaring_size += roaring_data.len();
         }
     }

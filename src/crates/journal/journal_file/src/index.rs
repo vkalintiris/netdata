@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 /// A minute-aligned bucket in the histogram index.
-#[derive(Allocative, Debug, Clone, Copy)]
-struct HistogramBucket {
+#[derive(Allocative, Debug, Clone, Copy, Default)]
+struct Bucket {
     /// Minute-aligned seconds since EPOCH.
     minute: u64,
     /// Index into the global entry offsets array.
@@ -20,29 +20,21 @@ struct HistogramBucket {
 /// This structure stores minute boundaries and their corresponding offset indices,
 /// enabling O(log n) lookups for time ranges and histogram generation with configurable
 /// bucket sizes (1-minute, 10-minute, etc.).
-#[derive(Allocative, Clone, Debug)]
-pub struct HistogramIndex {
+#[derive(Allocative, Clone, Debug, Default)]
+pub struct Histogram {
     /// Sparse vector containing only minute boundaries where changes occur.
-    buckets: Vec<HistogramBucket>,
+    buckets: Vec<Bucket>,
 }
 
-impl HistogramIndex {
-    pub fn from(journal_file: &JournalFile<Mmap>) -> Result<Option<HistogramIndex>> {
-        let Some(entry_list) = journal_file.entry_list() else {
-            return Ok(None);
-        };
-
-        let mut offsets = Vec::new();
-        entry_list.collect_offsets(journal_file, &mut offsets)?;
-
-        if offsets.is_empty() {
-            return Ok(None);
-        }
-
+impl Histogram {
+    pub fn from(
+        journal_file: &JournalFile<Mmap>,
+        entry_offsets: &[NonZeroU64],
+    ) -> Result<Histogram> {
         let mut buckets = Vec::new();
         let mut current_minute = None;
 
-        for (offset_index, &offset) in offsets.iter().enumerate() {
+        for (offset_index, &offset) in entry_offsets.iter().enumerate() {
             let entry = journal_file.entry_ref(offset)?;
             let minute = entry.header.realtime / (60 * 1_000_000);
 
@@ -51,7 +43,7 @@ impl HistogramIndex {
                     // First entry
                     debug_assert_eq!(offset_index, 0);
 
-                    buckets.push(HistogramBucket {
+                    buckets.push(Bucket {
                         minute,
                         offset_index: 0,
                     });
@@ -59,7 +51,7 @@ impl HistogramIndex {
                 }
                 Some(prev_minute) if minute > prev_minute => {
                     // New minute boundary
-                    buckets.push(HistogramBucket {
+                    buckets.push(Bucket {
                         minute,
                         offset_index,
                     });
@@ -69,7 +61,7 @@ impl HistogramIndex {
             }
         }
 
-        Ok(Some(HistogramIndex { buckets }))
+        Ok(Histogram { buckets })
     }
 
     pub fn len(&self) -> usize {
@@ -81,7 +73,7 @@ impl HistogramIndex {
     }
 }
 
-impl std::fmt::Display for HistogramIndex {
+impl std::fmt::Display for Histogram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.buckets.is_empty() {
             return write!(f, "Empty index");
@@ -131,76 +123,71 @@ fn get_matching_indices(
     }
 }
 
-#[derive(Allocative, Debug, Clone)]
-pub struct FileIndex {
-    pub histogram_index: HistogramIndex,
-    pub lz4_roaring_indexes: HashMap<String, Vec<u8>>,
+use tracing::{debug, instrument, trace, warn};
+
+#[derive(Allocative, Debug, Clone, Default)]
+pub struct JournalFileIndex {
+    pub histogram: Histogram,
+    pub entry_indices: HashMap<String, Vec<u8>>,
 }
 
-impl FileIndex {
+impl JournalFileIndex {
+    #[instrument(skip(journal_file), fields(field_count = field_names.len()))]
     pub fn from(
         journal_file: &JournalFile<Mmap>,
         field_names: &[&[u8]],
-    ) -> Result<Option<FileIndex>> {
-        let mut lz4_roaring_indexes = HashMap::new();
+    ) -> Result<JournalFileIndex> {
+        let mut index = JournalFileIndex::default();
 
-        let entry_offsets = {
-            let mut entry_offsets = Vec::new();
-            let Some(entry_list) = journal_file.entry_list() else {
-                return Ok(None);
-            };
-            entry_list
-                .collect_offsets(journal_file, &mut entry_offsets)
-                .unwrap();
-            entry_offsets
-        };
-
-        let Some(histogram_index) = HistogramIndex::from(journal_file)? else {
-            return Ok(None);
-        };
+        let entry_offsets = journal_file.entry_offsets()?;
+        index.histogram = Histogram::from(journal_file, &entry_offsets)?;
 
         let mut data_offsets = Vec::new();
         let mut data_indices = Vec::new();
+        let mut rb_serialized = Vec::new();
 
         for field_name in field_names {
             let field_data_iterator = journal_file.field_data_objects(field_name)?;
 
             for data_object in field_data_iterator {
-                data_offsets.clear();
-                data_indices.clear();
+                let (data_payload, ic) = {
+                    let Ok(data_object) = data_object else {
+                        continue;
+                    };
 
-                let name = {
-                    let data_object = data_object.unwrap();
-
+                    let data_payload =
+                        String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
                     let Some(ic) = data_object.inlined_cursor() else {
                         continue;
                     };
-                    let name = String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
-                    drop(data_object);
 
-                    ic.collect_offsets(journal_file, &mut data_offsets).unwrap();
-                    name
+                    (data_payload, ic)
                 };
 
+                data_offsets.clear();
+                if ic.collect_offsets(journal_file, &mut data_offsets).is_err() {
+                    continue;
+                }
+
+                data_indices.clear();
                 get_matching_indices(&entry_offsets, &data_offsets, &mut data_indices);
 
-                let mut roffsets =
-                    RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
-                roffsets.optimize();
-                let mut serialized = Vec::new();
-                roffsets.serialize_into(&mut serialized).unwrap();
+                let mut rb = RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
+                rb.optimize();
 
-                // Compress roaring bitmap data with LZ4
-                let compressed_roaring = lz4::block::compress(&serialized[..], None, false)
+                rb_serialized.clear();
+                rb.serialize_into(&mut rb_serialized).unwrap();
+
+                let compressed_roaring = lz4::block::compress(&rb_serialized[..], None, false)
                     .map_err(|e| format!("LZ4 compression failed: {}", e))
                     .unwrap();
-                lz4_roaring_indexes.insert(name.clone(), compressed_roaring);
+
+                index
+                    .entry_indices
+                    .insert(data_payload.clone(), compressed_roaring);
             }
         }
 
-        Ok(Some(FileIndex {
-            histogram_index,
-            lz4_roaring_indexes,
-        }))
+        Ok(index)
     }
 }
