@@ -24,13 +24,13 @@ pub struct HistogramIndex {
 }
 
 impl HistogramIndex {
-    pub fn from(jf: &JournalFile<Mmap>) -> Result<Option<HistogramIndex>> {
-        let Some(entry_list) = jf.entry_list() else {
+    pub fn from(journal_file: &JournalFile<Mmap>) -> Result<Option<HistogramIndex>> {
+        let Some(entry_list) = journal_file.entry_list() else {
             return Ok(None);
         };
 
         let mut offsets = Vec::new();
-        entry_list.collect_offsets(jf, &mut offsets)?;
+        entry_list.collect_offsets(journal_file, &mut offsets)?;
 
         if offsets.is_empty() {
             return Ok(None);
@@ -40,7 +40,7 @@ impl HistogramIndex {
         let mut current_minute = None;
 
         for (offset_index, &offset) in offsets.iter().enumerate() {
-            let entry = jf.entry_ref(offset)?;
+            let entry = journal_file.entry_ref(offset)?;
             let minute = entry.header.realtime / (60 * 1_000_000);
 
             match current_minute {
