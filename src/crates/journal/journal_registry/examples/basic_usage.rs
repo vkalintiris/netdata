@@ -7,8 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn parallel(files: &[journal_registry::RegistryFile]) -> Vec<JournalFileIndex> {
-    use rayon::prelude::*;
+fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<JournalFileIndex> {
     let start_time = Instant::now();
 
     let systemd_keys: Vec<&[u8]> = vec![
@@ -143,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.reverse();
     // files.truncate(5);
 
-    let v = parallel(&files);
+    let v = sequential(&files);
 
     let mut flamegraph = FlameGraphBuilder::default();
     flamegraph.visit_root(&v);
