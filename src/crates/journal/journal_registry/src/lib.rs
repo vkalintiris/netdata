@@ -13,6 +13,8 @@ use walkdir::WalkDir;
 
 use std::convert::TryFrom;
 
+pub mod cache;
+
 #[derive(Debug, Error)]
 pub enum SourceTypeError {
     #[error("Path contains invalid UTF-8")]

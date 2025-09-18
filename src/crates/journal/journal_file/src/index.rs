@@ -3,11 +3,12 @@ use crate::Mmap;
 use allocative::Allocative;
 use error::Result;
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 /// A minute-aligned bucket in the histogram index.
-#[derive(Allocative, Debug, Clone, Copy, Default)]
+#[derive(Allocative, Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct Bucket {
     /// Minute-aligned seconds since EPOCH.
     minute: u64,
@@ -20,7 +21,7 @@ struct Bucket {
 /// This structure stores minute boundaries and their corresponding offset indices,
 /// enabling O(log n) lookups for time ranges and histogram generation with configurable
 /// bucket sizes (1-minute, 10-minute, etc.).
-#[derive(Allocative, Clone, Debug, Default)]
+#[derive(Allocative, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Histogram {
     /// Sparse vector containing only minute boundaries where changes occur.
     buckets: Vec<Bucket>,
@@ -125,7 +126,7 @@ fn get_matching_indices(
 
 use tracing::{debug, instrument, trace, warn};
 
-#[derive(Allocative, Debug, Clone, Default)]
+#[derive(Allocative, Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JournalFileIndex {
     pub histogram: Histogram,
     pub entry_indices: HashMap<String, Vec<u8>>,
