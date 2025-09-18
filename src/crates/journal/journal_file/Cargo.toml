@@ -14,6 +14,8 @@ zerocopy = { workspace =  true }
 hex = { workspace = true }
 rand = { workspace = true }
 allocative = "0.3.4"
+roaring = { workspace = true }
+lz4 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

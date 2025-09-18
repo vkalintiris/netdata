@@ -2,6 +2,9 @@ use crate::JournalFile;
 use crate::Mmap;
 use allocative::Allocative;
 use error::Result;
+use roaring::RoaringBitmap;
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 
 /// A minute-aligned bucket in the histogram index.
 #[derive(Allocative, Debug, Clone, Copy)]
@@ -105,5 +108,99 @@ impl std::fmt::Display for HistogramIndex {
             )?;
         }
         Ok(())
+    }
+}
+
+fn get_matching_indices(
+    entry_offsets: &[NonZeroU64],
+    data_offsets: &[NonZeroU64],
+    data_indices: &mut Vec<u32>,
+) {
+    let mut data_iter = data_offsets.iter();
+    let mut current_data = data_iter.next();
+
+    for (i, entry) in entry_offsets.iter().enumerate() {
+        if let Some(data) = current_data {
+            if entry == data {
+                data_indices.push(i as u32);
+                current_data = data_iter.next();
+            }
+        } else {
+            break; // No more data_offsets to match
+        }
+    }
+}
+
+#[derive(Allocative, Debug, Clone)]
+pub struct FileIndex {
+    pub histogram_index: HistogramIndex,
+    pub lz4_roaring_indexes: HashMap<String, Vec<u8>>,
+}
+
+impl FileIndex {
+    pub fn from(
+        journal_file: &JournalFile<Mmap>,
+        field_names: &[&[u8]],
+    ) -> Result<Option<FileIndex>> {
+        let mut lz4_roaring_indexes = HashMap::new();
+
+        let entry_offsets = {
+            let mut entry_offsets = Vec::new();
+            let Some(entry_list) = journal_file.entry_list() else {
+                return Ok(None);
+            };
+            entry_list
+                .collect_offsets(journal_file, &mut entry_offsets)
+                .unwrap();
+            entry_offsets
+        };
+
+        let Some(histogram_index) = HistogramIndex::from(journal_file)? else {
+            return Ok(None);
+        };
+
+        let mut data_offsets = Vec::new();
+        let mut data_indices = Vec::new();
+
+        for field_name in field_names {
+            let field_data_iterator = journal_file.field_data_objects(field_name)?;
+
+            for data_object in field_data_iterator {
+                data_offsets.clear();
+                data_indices.clear();
+
+                let name = {
+                    let data_object = data_object.unwrap();
+
+                    let Some(ic) = data_object.inlined_cursor() else {
+                        continue;
+                    };
+                    let name = String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
+                    drop(data_object);
+
+                    ic.collect_offsets(journal_file, &mut data_offsets).unwrap();
+                    name
+                };
+
+                get_matching_indices(&entry_offsets, &data_offsets, &mut data_indices);
+
+                let mut roffsets =
+                    RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
+                roffsets.optimize();
+                let mut serialized = Vec::new();
+                roffsets.serialize_into(&mut serialized).unwrap();
+
+                // Compress roaring bitmap data with LZ4
+                let compressed_roaring = lz4::block::compress(&serialized[..], None, false)
+                    .map_err(|e| format!("LZ4 compression failed: {}", e))
+                    .unwrap();
+                lz4_roaring_indexes.insert(name.clone(), compressed_roaring);
+            }
+        }
+
+        Ok(Some(FileIndex {
+            histogram_index,
+            lz4_roaring_indexes,
+        }))
     }
 }
