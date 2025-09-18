@@ -3,7 +3,7 @@ pub mod cursor;
 pub mod file;
 pub mod filter;
 mod hash;
-pub mod histogram;
+pub mod index;
 mod object;
 pub mod offset_array;
 pub mod reader;

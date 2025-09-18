@@ -1,7 +1,7 @@
 use allocative::FlameGraphBuilder;
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::histogram::FileIndex;
+use journal_file::index::FileIndex;
 use journal_registry::JournalRegistry;
 use std::time::Duration;
 use std::time::Instant;
