@@ -1,13 +1,12 @@
-use allocative::FlameGraphBuilder;
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::index::FileIndex;
+use journal_file::index::{FileIndex, MinuteIndex};
 use journal_registry::JournalRegistry;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
+fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<(String, FileIndex)> {
     let start_time = Instant::now();
 
     let systemd_keys: Vec<&[u8]> = vec![
@@ -99,11 +98,14 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
 
         total_index_size += index_size;
 
-        file_indexes.push(jfi);
+        file_indexes.push((file.path.to_string_lossy().into_owned(), jfi));
     }
 
     // Count midx_count after parallel processing
-    let midx_count: usize = file_indexes.iter().map(|fi| fi.histogram.len()).sum();
+    let midx_count: usize = file_indexes
+        .iter()
+        .map(|fi| fi.1.file_histogram.len())
+        .sum();
 
     let elapsed = start_time.elapsed();
     info!(
@@ -117,6 +119,122 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
     );
 
     file_indexes
+}
+
+fn inverted(files: &[journal_registry::RegistryFile]) -> MinuteIndex {
+    let start_time = Instant::now();
+
+    let systemd_keys: Vec<&[u8]> = vec![
+        // --- USER JOURNAL FIELDS ---
+        b"MESSAGE_ID",
+        b"PRIORITY",
+        b"CODE_FILE",
+        b"CODE_FUNC",
+        b"ERRNO",
+        b"SYSLOG_FACILITY",
+        b"SYSLOG_IDENTIFIER",
+        b"UNIT",
+        b"USER_UNIT",
+        b"UNIT_RESULT",
+        // --- TRUSTED JOURNAL FIELDS ---
+        b"_UID",
+        b"_GID",
+        b"_COMM",
+        b"_EXE",
+        b"_CAP_EFFECTIVE",
+        b"_AUDIT_LOGINUID",
+        b"_SYSTEMD_CGROUP",
+        b"_SYSTEMD_SLICE",
+        b"_SYSTEMD_UNIT",
+        b"_SYSTEMD_USER_UNIT",
+        b"_SYSTEMD_USER_SLICE",
+        b"_SYSTEMD_SESSION",
+        b"_SYSTEMD_OWNER_UID",
+        b"_SELINUX_CONTEXT",
+        b"_BOOT_ID",
+        b"_MACHINE_ID",
+        b"_HOSTNAME",
+        b"_TRANSPORT",
+        b"_STREAM_ID",
+        b"_NAMESPACE",
+        b"_RUNTIME_SCOPE",
+        // --- KERNEL JOURNAL FIELDS ---
+        b"_KERNEL_SUBSYSTEM",
+        b"_UDEV_DEVNODE",
+        // --- LOGGING ON BEHALF ---
+        b"OBJECT_UID",
+        b"OBJECT_GID",
+        b"OBJECT_COMM",
+        b"OBJECT_EXE",
+        b"OBJECT_AUDIT_LOGINUID",
+        b"OBJECT_SYSTEMD_CGROUP",
+        b"OBJECT_SYSTEMD_SESSION",
+        b"OBJECT_SYSTEMD_OWNER_UID",
+        b"OBJECT_SYSTEMD_UNIT",
+        b"OBJECT_SYSTEMD_USER_UNIT",
+        // --- CORE DUMPS ---
+        b"COREDUMP_COMM",
+        b"COREDUMP_UNIT",
+        b"COREDUMP_USER_UNIT",
+        b"COREDUMP_SIGNAL_NAME",
+        b"COREDUMP_CGROUP",
+        // --- DOCKER ---
+        b"CONTAINER_ID",
+        b"CONTAINER_NAME",
+        b"CONTAINER_TAG",
+        b"IMAGE_NAME",
+        // --- NETDATA ---
+        b"ND_NIDL_NODE",
+        b"ND_NIDL_CONTEXT",
+        b"ND_LOG_SOURCE",
+        b"ND_ALERT_NAME",
+        b"ND_ALERT_CLASS",
+        b"ND_ALERT_COMPONENT",
+        b"ND_ALERT_TYPE",
+        b"ND_ALERT_STATUS",
+    ];
+
+    let mut minute_index = MinuteIndex::default();
+
+    for file in files {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+
+        let Ok(jfi) = FileIndex::from(&journal_file, systemd_keys.as_slice()) else {
+            continue;
+        };
+
+        println!("{}", file.path.to_string_lossy().into_owned());
+
+        minute_index.merge_file_index(&file.path.to_string_lossy(), jfi);
+    }
+
+    let elapsed = start_time.elapsed();
+    let serialized = minute_index.ser();
+    let compressed = lz4::block::compress(&serialized[..], None, false)
+        .map_err(|e| format!("LZ4 compression failed: {}", e))
+        .unwrap();
+
+    info!("Created minute index in {:#?} msec", elapsed.as_millis());
+    info!(
+        "Minute index contains {:#?} entries",
+        minute_index.minute_info.len()
+    );
+    info!(
+        "Minute index size is {:#?} MiB",
+        serialized.len() / (1024 * 1024)
+    );
+    info!(
+        "Compressed minute index size is {:#?} MiB",
+        compressed.len() / (1024 * 1024)
+    );
+    info!(
+        "Per minute compressed index size is {:#?} MiB",
+        minute_index.per_minute_compressed_len() / (1024 * 1024)
+    );
+
+    // file_indexes
+    minute_index
 }
 
 #[tokio::main]
@@ -140,27 +258,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
     files.reverse();
-    // files.truncate(5);
 
-    let v = sequential(&files);
-
-    let mut flamegraph = FlameGraphBuilder::default();
-    flamegraph.visit_root(&v);
-    let flamegraph_src = flamegraph.finish().flamegraph().write();
-    std::fs::write("/tmp/flamegraph.txt", flamegraph_src).unwrap();
-
-    // Calculate and report compression ratios
-    println!("\n=== Compression Ratios ===");
-    let mut total_lz4_roaring_size = 0usize;
-
-    for file_index in &v {
-        for roaring_data in file_index.entry_indices.values() {
-            total_lz4_roaring_size += roaring_data.len() as usize;
-        }
-    }
-
-    println!("\nRoaring bitmap data:");
-    println!("  LZ4 compressed: {} bytes", total_lz4_roaring_size);
+    let _ = inverted(&files);
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());

@@ -168,7 +168,7 @@ async fn sequential_with_cache(
     }
 
     // Count histogram buckets after processing
-    let midx_count: usize = file_indexes.iter().map(|fi| fi.histogram.len()).sum();
+    let midx_count: usize = file_indexes.iter().map(|fi| fi.file_histogram.len()).sum();
 
     let elapsed = start_time.elapsed();
     info!(
