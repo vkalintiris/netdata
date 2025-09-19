@@ -1,13 +1,13 @@
 use allocative::FlameGraphBuilder;
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::index::JournalFileIndex;
+use journal_file::index::FileIndex;
 use journal_registry::JournalRegistry;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<JournalFileIndex> {
+fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
     let start_time = Instant::now();
 
     let systemd_keys: Vec<&[u8]> = vec![
@@ -86,7 +86,7 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<JournalFileIndex>
         let window_size = 8 * 1024 * 1024;
         let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-        let Ok(jfi) = JournalFileIndex::from(&journal_file, systemd_keys.as_slice()) else {
+        let Ok(jfi) = FileIndex::from(&journal_file, systemd_keys.as_slice()) else {
             continue;
         };
 

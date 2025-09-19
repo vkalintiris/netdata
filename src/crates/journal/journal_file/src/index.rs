@@ -9,7 +9,7 @@ use std::num::NonZeroU64;
 
 /// A minute-aligned bucket in the histogram index.
 #[derive(Allocative, Debug, Clone, Copy, Default, Serialize, Deserialize)]
-struct Bucket {
+struct FileBucket {
     /// Minute-aligned seconds since EPOCH.
     minute: u64,
     /// Index into the global entry offsets array.
@@ -22,16 +22,16 @@ struct Bucket {
 /// enabling O(log n) lookups for time ranges and histogram generation with configurable
 /// bucket sizes (1-minute, 10-minute, etc.).
 #[derive(Allocative, Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Histogram {
+pub struct FileHistogram {
     /// Sparse vector containing only minute boundaries where changes occur.
-    buckets: Vec<Bucket>,
+    buckets: Vec<FileBucket>,
 }
 
-impl Histogram {
+impl FileHistogram {
     pub fn from(
         journal_file: &JournalFile<Mmap>,
         entry_offsets: &[NonZeroU64],
-    ) -> Result<Histogram> {
+    ) -> Result<FileHistogram> {
         let mut buckets = Vec::new();
         let mut current_minute = None;
 
@@ -44,7 +44,7 @@ impl Histogram {
                     // First entry
                     debug_assert_eq!(offset_index, 0);
 
-                    buckets.push(Bucket {
+                    buckets.push(FileBucket {
                         minute,
                         offset_index: 0,
                     });
@@ -52,7 +52,7 @@ impl Histogram {
                 }
                 Some(prev_minute) if minute > prev_minute => {
                     // New minute boundary
-                    buckets.push(Bucket {
+                    buckets.push(FileBucket {
                         minute,
                         offset_index,
                     });
@@ -62,7 +62,7 @@ impl Histogram {
             }
         }
 
-        Ok(Histogram { buckets })
+        Ok(FileHistogram { buckets })
     }
 
     pub fn len(&self) -> usize {
@@ -74,7 +74,7 @@ impl Histogram {
     }
 }
 
-impl std::fmt::Display for Histogram {
+impl std::fmt::Display for FileHistogram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.buckets.is_empty() {
             return write!(f, "Empty index");
@@ -127,21 +127,18 @@ fn get_matching_indices(
 use tracing::{debug, instrument, trace, warn};
 
 #[derive(Allocative, Debug, Clone, Default, Serialize, Deserialize)]
-pub struct JournalFileIndex {
-    pub histogram: Histogram,
+pub struct FileIndex {
+    pub histogram: FileHistogram,
     pub entry_indices: HashMap<String, Vec<u8>>,
 }
 
-impl JournalFileIndex {
+impl FileIndex {
     #[instrument(skip(journal_file), fields(field_count = field_names.len()))]
-    pub fn from(
-        journal_file: &JournalFile<Mmap>,
-        field_names: &[&[u8]],
-    ) -> Result<JournalFileIndex> {
-        let mut index = JournalFileIndex::default();
+    pub fn from(journal_file: &JournalFile<Mmap>, field_names: &[&[u8]]) -> Result<FileIndex> {
+        let mut index = FileIndex::default();
 
         let entry_offsets = journal_file.entry_offsets()?;
-        index.histogram = Histogram::from(journal_file, &entry_offsets)?;
+        index.histogram = FileHistogram::from(journal_file, &entry_offsets)?;
 
         let mut data_offsets = Vec::new();
         let mut data_indices = Vec::new();

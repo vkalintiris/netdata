@@ -1,5 +1,5 @@
 use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
-use journal_file::index::JournalFileIndex;
+use journal_file::index::FileIndex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 /// A hybrid cache for storing JournalFileIndex with configurable disk storage limit
 pub struct JournalIndexCache {
-    cache: HybridCache<String, JournalFileIndex>,
+    cache: HybridCache<String, FileIndex>,
 }
 
 impl JournalIndexCache {
@@ -40,7 +40,7 @@ impl JournalIndexCache {
             .build()?;
 
         // Build hybrid cache with block-based storage
-        let cache: HybridCache<String, JournalFileIndex> = HybridCacheBuilder::new()
+        let cache: HybridCache<String, FileIndex> = HybridCacheBuilder::new()
             .with_name("journal-index-cache")
             .memory(memory_size.try_into().unwrap())
             .storage()
@@ -56,7 +56,7 @@ impl JournalIndexCache {
     /// # Arguments
     /// * `file_path` - Path to the journal file (used as cache key)
     /// * `index` - The JournalFileIndex to cache
-    pub fn insert<P: AsRef<Path>>(&self, file_path: P, index: JournalFileIndex) {
+    pub fn insert<P: AsRef<Path>>(&self, file_path: P, index: FileIndex) {
         let key = file_path.as_ref().to_string_lossy().to_string();
         self.cache.insert(key, index);
     }
@@ -69,10 +69,7 @@ impl JournalIndexCache {
     /// # Returns
     /// * `Some(JournalFileIndex)` if found in cache
     /// * `None` if not found
-    pub async fn get<P: AsRef<Path>>(
-        &self,
-        file_path: P,
-    ) -> anyhow::Result<Option<JournalFileIndex>> {
+    pub async fn get<P: AsRef<Path>>(&self, file_path: P) -> anyhow::Result<Option<FileIndex>> {
         let key = file_path.as_ref().to_string_lossy().to_string();
         match self.cache.get(&key).await? {
             Some(entry) => Ok(Some(entry.value().clone())),

@@ -1,7 +1,7 @@
 use allocative::FlameGraphBuilder;
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::index::JournalFileIndex;
+use journal_file::index::FileIndex;
 use journal_registry::JournalRegistry;
 use journal_registry::cache::JournalIndexCache;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use tracing::{info, warn};
 async fn sequential_with_cache(
     files: &[journal_registry::RegistryFile],
     cache: &JournalIndexCache,
-) -> Vec<JournalFileIndex> {
+) -> Vec<FileIndex> {
     let start_time = Instant::now();
 
     let systemd_keys: Vec<&[u8]> = vec![
@@ -117,7 +117,7 @@ async fn sequential_with_cache(
                 let window_size = 8 * 1024 * 1024;
                 let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-                let Ok(jfi) = JournalFileIndex::from(&journal_file, systemd_keys.as_slice()) else {
+                let Ok(jfi) = FileIndex::from(&journal_file, systemd_keys.as_slice()) else {
                     continue;
                 };
 
@@ -146,7 +146,7 @@ async fn sequential_with_cache(
                 let window_size = 8 * 1024 * 1024;
                 let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-                let Ok(jfi) = JournalFileIndex::from(&journal_file, systemd_keys.as_slice()) else {
+                let Ok(jfi) = FileIndex::from(&journal_file, systemd_keys.as_slice()) else {
                     continue;
                 };
 
