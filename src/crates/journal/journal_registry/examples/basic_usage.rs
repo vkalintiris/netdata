@@ -142,6 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
     files.reverse();
+    files.truncate(5);
+
+    println!("Files: {:#?}", files);
+    return Ok(());
 
     let _ = sequential(&files);
 

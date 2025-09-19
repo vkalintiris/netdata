@@ -33,3 +33,7 @@ path = "examples/basic_usage.rs"
 [[example]]
 name = "basic_usage_with_cache"
 path = "examples/basic_usage_with_cache.rs"
+
+[[example]]
+name = "histogram_viewer"
+path = "examples/histogram_viewer.rs"
