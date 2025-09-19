@@ -71,7 +71,7 @@ walkdir = "2"
 zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
 schemars = "1.0"
 bitflags = "2.9"
-roaring = "0.11.2"
+roaring = { version = "0.11.2", features = ["serde"] }
 lz4 = "1.25"
 
 flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }

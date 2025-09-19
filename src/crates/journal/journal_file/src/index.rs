@@ -126,10 +126,38 @@ fn get_matching_indices(
 
 use tracing::{debug, instrument, trace, warn};
 
-#[derive(Allocative, Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
     pub histogram: FileHistogram,
-    pub entry_indices: HashMap<String, Vec<u8>>,
+    pub entry_indices: HashMap<String, RoaringBitmap>,
+}
+
+impl Allocative for FileIndex {
+    fn visit<'a, 'b: 'a>(&self, visitor: &'a mut allocative::Visitor<'b>) {
+        let mut visitor = visitor.enter_self_sized::<Self>();
+
+        visitor.visit_field(allocative::ident_key!(histogram), &self.histogram);
+
+        visitor.visit_field_with(
+            allocative::ident_key!(entry_indices),
+            std::mem::size_of_val(&self.entry_indices),
+            |visitor| {
+                for (key, bitmap) in &self.entry_indices {
+                    visitor.visit_field(allocative::Key::new("key"), key);
+                    visitor.visit_field_with(
+                        allocative::Key::new("bitmap"),
+                        std::mem::size_of_val(bitmap),
+                        |_visitor| {
+                            // RoaringBitmap doesn't implement Allocative,
+                            // so we just account for its size
+                        }
+                    );
+                }
+            }
+        );
+
+        visitor.exit();
+    }
 }
 
 impl FileIndex {
@@ -142,7 +170,6 @@ impl FileIndex {
 
         let mut data_offsets = Vec::new();
         let mut data_indices = Vec::new();
-        let mut rb_serialized = Vec::new();
 
         for field_name in field_names {
             let field_data_iterator = journal_file.field_data_objects(field_name)?;
@@ -173,16 +200,7 @@ impl FileIndex {
                 let mut rb = RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
                 rb.optimize();
 
-                rb_serialized.clear();
-                rb.serialize_into(&mut rb_serialized).unwrap();
-
-                let compressed_roaring = lz4::block::compress(&rb_serialized[..], None, false)
-                    .map_err(|e| format!("LZ4 compression failed: {}", e))
-                    .unwrap();
-
-                index
-                    .entry_indices
-                    .insert(data_payload.clone(), compressed_roaring);
+                index.entry_indices.insert(data_payload.clone(), rb);
             }
         }
 

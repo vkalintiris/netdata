@@ -98,7 +98,7 @@ async fn sequential_with_cache(
 
                 let mut index_size = 0;
                 for (data_payload, entry_indices) in cached_index.entry_indices.iter() {
-                    index_size += data_payload.len() + entry_indices.len();
+                    index_size += data_payload.len() + entry_indices.len() as usize;
                 }
 
                 // info!(
@@ -123,7 +123,7 @@ async fn sequential_with_cache(
 
                 let mut index_size = 0;
                 for (data_payload, entry_indices) in jfi.entry_indices.iter() {
-                    index_size += data_payload.len() + entry_indices.len();
+                    index_size += data_payload.len() + entry_indices.len() as usize;
                 }
 
                 // info!(
@@ -152,7 +152,7 @@ async fn sequential_with_cache(
 
                 let mut index_size = 0;
                 for (data_payload, entry_indices) in jfi.entry_indices.iter() {
-                    index_size += data_payload.len() + entry_indices.len();
+                    index_size += data_payload.len() + entry_indices.len() as usize;
                 }
 
                 info!(
@@ -240,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for file_index in &v2 {
         // Use second run results
         for roaring_data in file_index.entry_indices.values() {
-            total_lz4_roaring_size += roaring_data.len();
+            total_lz4_roaring_size += roaring_data.len() as usize;
         }
     }
 
@@ -264,6 +264,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Properly close the cache
     cache.close().await?;
+
+    tokio::time::sleep(Duration::from_secs(3600)).await;
 
     Ok(())
 }

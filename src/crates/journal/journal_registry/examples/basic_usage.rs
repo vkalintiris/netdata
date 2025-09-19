@@ -92,7 +92,7 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<FileIndex> {
 
         let mut index_size = 0;
         for (data_payload, entry_indices) in jfi.entry_indices.iter() {
-            index_size += data_payload.len() + entry_indices.len();
+            index_size += data_payload.len() + entry_indices.len() as usize;
         }
 
         info!(file = file.path.to_string_lossy().into_owned(), index_size);
@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for file_index in &v {
         for roaring_data in file_index.entry_indices.values() {
-            total_lz4_roaring_size += roaring_data.len();
+            total_lz4_roaring_size += roaring_data.len() as usize;
         }
     }
 
