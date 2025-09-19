@@ -6,23 +6,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
-/// A minute-aligned bucket in the histogram index.
+/// A time-aligned bucket in the histogram index.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct FileBucket {
-    /// Minute-aligned seconds since EPOCH.
-    minute: u64,
+    /// Bucket-aligned seconds since EPOCH.
+    /// (e.g., for 30s buckets, this would be 0, 30, 60, 90...)
+    bucket_seconds: u64,
     /// Index into the global entry offsets array.
     last_offset_index: usize,
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
-///
-/// This structure stores minute boundaries and their corresponding offset indices,
-/// enabling O(log n) lookups for time ranges and histogram generation with configurable
-/// bucket sizes (1-minute, 10-minute, etc.).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FileHistogram {
-    /// Sparse vector containing only minute boundaries where changes occur.
+    /// The bucket size in seconds (e.g., 30, 60, 120)
+    bucket_size_seconds: u64,
+    /// Sparse vector containing only bucket boundaries where changes occur.
     buckets: Vec<FileBucket>,
 }
 
@@ -30,44 +29,104 @@ impl FileHistogram {
     pub fn from(
         journal_file: &JournalFile<Mmap>,
         entry_offsets: &[NonZeroU64],
+        bucket_size_seconds: u64,
     ) -> Result<FileHistogram> {
+        debug_assert_ne!(bucket_size_seconds, 0);
+
         let mut buckets = Vec::new();
-        let mut current_minute = None;
+        let mut current_bucket = None;
+
+        // Convert microseconds to seconds for bucket size
+        let bucket_size_micros = bucket_size_seconds * 1_000_000;
 
         for (offset_index, &offset) in entry_offsets.iter().enumerate() {
             let entry = journal_file.entry_ref(offset)?;
-            let minute = entry.header.realtime / (60 * 1_000_000);
+            // Calculate which bucket this timestamp falls into
+            let bucket = (entry.header.realtime / bucket_size_micros) * bucket_size_seconds;
 
-            match current_minute {
+            match current_bucket {
                 None => {
-                    // First entry - don't create bucket yet, just track the minute
+                    // First entry - don't create bucket yet, just track the bucket
                     debug_assert_eq!(offset_index, 0);
-                    current_minute = Some(minute);
+                    current_bucket = Some(bucket);
                 }
-                Some(prev_minute) if minute > prev_minute => {
-                    // New minute boundary - save the LAST index of the previous minute
+                Some(prev_bucket) if bucket > prev_bucket => {
+                    // New bucket boundary - save the LAST index of the previous bucket
                     buckets.push(FileBucket {
-                        minute: prev_minute,
-                        last_offset_index: offset_index - 1, // Changed from offset_index to last_index
+                        bucket_seconds: prev_bucket,
+                        last_offset_index: offset_index - 1,
                     });
-                    current_minute = Some(minute);
+                    current_bucket = Some(bucket);
                 }
-                _ => {} // Same minute, continue
+                _ => {} // Same bucket, continue
             }
         }
 
         // Don't forget the last bucket!
-        // This is crucial - we need to save the final minute's entries
-        if let Some(last_minute) = current_minute {
+        if let Some(last_bucket) = current_bucket {
             buckets.push(FileBucket {
-                minute: last_minute,
+                bucket_seconds: last_bucket,
                 last_offset_index: entry_offsets.len() - 1,
             });
         }
 
-        Ok(FileHistogram { buckets })
+        Ok(FileHistogram {
+            bucket_size_seconds,
+            buckets,
+        })
     }
 
+    /// Get the end time of the histogram in microseconds since epoch
+    pub fn end_time_micros(&self) -> Option<u64> {
+        self.buckets.last().map(|bucket| {
+            // The last bucket starts at bucket_seconds, and spans bucket_size_seconds
+            // So the end time is the start of the bucket plus the bucket size
+            (bucket.bucket_seconds + self.bucket_size_seconds) * 1_000_000
+        })
+    }
+
+    /// Get the start time of the histogram in microseconds since epoch
+    pub fn start_time_micros(&self) -> Option<u64> {
+        self.buckets
+            .first()
+            .map(|bucket| bucket.bucket_seconds * 1_000_000)
+    }
+
+    /// Get the time range covered by this histogram
+    pub fn time_range(&self) -> Option<(u64, u64)> {
+        match (self.buckets.first(), self.buckets.last()) {
+            (Some(first), Some(last)) => {
+                let start = first.bucket_seconds * 1_000_000;
+                let end = (last.bucket_seconds + self.bucket_size_seconds) * 1_000_000;
+
+                Some((start, end))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the duration covered by this histogram in seconds
+    pub fn duration_seconds(&self) -> Option<u64> {
+        match (self.buckets.first(), self.buckets.last()) {
+            (Some(first), Some(last)) => {
+                Some(last.bucket_seconds - first.bucket_seconds + self.bucket_size_seconds)
+            }
+            _ => None,
+        }
+    }
+
+    /// Helper method to convert a timestamp to its bucket boundary
+    pub fn timestamp_to_bucket(&self, timestamp_micros: u64) -> u64 {
+        let bucket_size_micros = self.bucket_size_seconds * 1_000_000;
+        (timestamp_micros / bucket_size_micros) * self.bucket_size_seconds
+    }
+
+    /// Get the bucket size in seconds
+    pub fn bucket_size(&self) -> u64 {
+        self.bucket_size_seconds
+    }
+
+    // Rest of the methods remain the same...
     pub fn len(&self) -> usize {
         self.buckets.len()
     }
@@ -76,7 +135,6 @@ impl FileHistogram {
         self.buckets.is_empty()
     }
 
-    // New helper method - now we can easily get total entry count!
     pub fn total_entries(&self) -> usize {
         self.buckets
             .last()
@@ -84,7 +142,6 @@ impl FileHistogram {
             .unwrap_or(0)
     }
 
-    // Helper to get entry range for a specific bucket
     pub fn get_entry_range(&self, bucket_index: usize) -> Option<(u32, u32)> {
         let bucket = self.buckets.get(bucket_index)?;
         let start = if bucket_index == 0 {
@@ -130,7 +187,7 @@ impl FileIndex {
         let mut index = FileIndex::default();
 
         let entry_offsets = journal_file.entry_offsets()?;
-        index.file_histogram = FileHistogram::from(journal_file, &entry_offsets)?;
+        index.file_histogram = FileHistogram::from(journal_file, &entry_offsets, 60)?;
 
         let mut data_offsets = Vec::new();
         let mut data_indices = Vec::new();
@@ -169,523 +226,5 @@ impl FileIndex {
         }
 
         Ok(index)
-    }
-}
-
-// #[derive(Debug, Clone)]
-// pub struct MinuteIndex {
-//     pub minutes_info: HashMap<u64, Vec<MinuteInfo>>,
-// }
-
-// impl MinuteIndex {
-//     pub fn from_file_index(filename: &str, file_index: &FileIndex) -> Self {
-//         let mut minutes_info: HashMap<u64, Vec<MinuteInfo>> = HashMap::new();
-
-//         let buckets = &file_index.file_histogram.buckets;
-
-//         let first_minute = buckets.first().unwrap().minute;
-
-//         // Process each bucket (minute)
-//         let mut cells = Vec::new();
-//         for (i, _) in buckets.iter().enumerate() {
-//             let range = file_index.file_histogram.get_entry_range(i).unwrap();
-//             cells.push(format!(
-//                 "@{} - [{}, {}]",
-//                 buckets[i].minute - first_minute,
-//                 range.0,
-//                 range.1,
-//             ));
-//         }
-
-//         use term_grid::{Direction, Filling, Grid, GridOptions};
-
-//         let grid = Grid::new(
-//             cells,
-//             GridOptions {
-//                 filling: Filling::Spaces(1),
-//                 direction: Direction::LeftToRight,
-//                 width: 240,
-//             },
-//         );
-
-//         println!("{grid}");
-
-//         MinuteIndex { minutes_info }
-//     }
-// }
-
-/// NOTE %%%%%%%%%%%%%%%% WORKS %%%%%%%%%%%%%%%%%%%%%%%
-/// A reverse index that maps minutes to the field values that appear in those minutes,
-/// along with the entry indices for each field value.
-// #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-// pub struct MinuteIndex {
-//     /// Maps minute timestamps to another map of (field_value -> entry indices in that minute)
-//     pub minute_to_field_entries: HashMap<u64, HashMap<String, RoaringBitmap>>,
-// }
-
-// impl MinuteIndex {
-//     /// Build a MinuteIndex from a FileIndex
-//     pub fn from_file_index(file_index: &FileIndex) -> Self {
-//         let mut minute_to_field_entries: HashMap<u64, HashMap<String, RoaringBitmap>> =
-//             HashMap::new();
-
-//         // First, build a map of minute -> all entries in that minute
-//         let mut minute_to_all_entries: HashMap<u64, RoaringBitmap> = HashMap::new();
-
-//         for (bucket_index, bucket) in file_index.file_histogram.buckets.iter().enumerate() {
-//             if let Some((start, end)) = file_index.file_histogram.get_entry_range(bucket_index) {
-//                 let mut minute_bitmap = RoaringBitmap::new();
-//                 minute_bitmap.insert_range(start..=end);
-//                 println!("U: {:#?}", minute_bitmap.statistics());
-//                 minute_bitmap.optimize();
-//                 println!("O: {:#?}", minute_bitmap.statistics());
-//                 // for entry_idx in start..=end {
-//                 //     minute_bitmap.insert(entry_idx as u32);
-//                 // }
-//                 minute_to_all_entries.insert(bucket.minute, minute_bitmap);
-//             }
-//         }
-
-//         // Now, for each field value in the FileIndex, intersect with each minute's entries
-//         for (field_value, field_entries) in &file_index.entry_indices {
-//             for (&minute, minute_entries) in &minute_to_all_entries {
-//                 // Find entries that have this field value AND are in this minute
-//                 let intersection = field_entries & minute_entries;
-
-//                 if !intersection.is_empty() {
-//                     minute_to_field_entries
-//                         .entry(minute)
-//                         .or_insert_with(HashMap::new)
-//                         .insert(field_value.clone(), intersection);
-//                 }
-//             }
-//         }
-
-//         MinuteIndex {
-//             minute_to_field_entries,
-//         }
-//     }
-
-//     /// Get all field values and their entries for a specific minute
-//     pub fn get_minute_data(&self, minute: u64) -> Option<&HashMap<String, RoaringBitmap>> {
-//         self.minute_to_field_entries.get(&minute)
-//     }
-
-//     /// Get all entries for a specific field value within a specific minute
-//     pub fn get_field_entries_for_minute(
-//         &self,
-//         minute: u64,
-//         field_value: &str,
-//     ) -> Option<&RoaringBitmap> {
-//         self.minute_to_field_entries
-//             .get(&minute)
-//             .and_then(|fields| fields.get(field_value))
-//     }
-
-//     /// Get all unique field values that appear in a specific minute
-//     pub fn get_field_values_for_minute(&self, minute: u64) -> Vec<String> {
-//         self.minute_to_field_entries
-//             .get(&minute)
-//             .map(|fields| fields.keys().cloned().collect())
-//             .unwrap_or_default()
-//     }
-
-//     /// Get all entries for a field value across a time range
-//     pub fn get_field_entries_in_range(
-//         &self,
-//         field_value: &str,
-//         start_minute: u64,
-//         end_minute: u64,
-//     ) -> RoaringBitmap {
-//         let mut result = RoaringBitmap::new();
-
-//         for (&minute, fields) in &self.minute_to_field_entries {
-//             if minute >= start_minute && minute <= end_minute {
-//                 if let Some(entries) = fields.get(field_value) {
-//                     result |= entries;
-//                 }
-//             }
-//         }
-
-//         result.optimize();
-//         result
-//     }
-
-//     /// Get histogram of a specific field value over time
-//     pub fn get_field_histogram(
-//         &self,
-//         field_value: &str,
-//         start_minute: u64,
-//         end_minute: u64,
-//         bucket_size_minutes: u64,
-//     ) -> Vec<(u64, usize)> {
-//         let mut histogram = Vec::new();
-//         let mut current_bucket_start = (start_minute / bucket_size_minutes) * bucket_size_minutes;
-
-//         while current_bucket_start <= end_minute {
-//             let bucket_end = current_bucket_start + bucket_size_minutes - 1;
-//             let entries = self.get_field_entries_in_range(
-//                 field_value,
-//                 current_bucket_start.max(start_minute),
-//                 bucket_end.min(end_minute),
-//             );
-
-//             if entries.len() > 0 {
-//                 histogram.push((current_bucket_start, entries.len() as usize));
-//             }
-
-//             current_bucket_start += bucket_size_minutes;
-//         }
-
-//         histogram
-//     }
-
-//     /// Get counts of all field values within a time range
-//     pub fn get_field_value_counts_in_range(
-//         &self,
-//         start_minute: u64,
-//         end_minute: u64,
-//     ) -> HashMap<String, usize> {
-//         let mut counts = HashMap::new();
-
-//         for (&minute, fields) in &self.minute_to_field_entries {
-//             if minute >= start_minute && minute <= end_minute {
-//                 for (field_value, entries) in fields {
-//                     *counts.entry(field_value.clone()).or_insert(0) += entries.len() as usize;
-//                 }
-//             }
-//         }
-
-//         counts
-//     }
-
-//     /// Get top N field values by entry count within a time range
-//     pub fn get_top_field_values_in_range(
-//         &self,
-//         start_minute: u64,
-//         end_minute: u64,
-//         top_n: usize,
-//     ) -> Vec<(String, usize)> {
-//         let counts = self.get_field_value_counts_in_range(start_minute, end_minute);
-//         let mut sorted: Vec<_> = counts.into_iter().collect();
-//         sorted.sort_by(|a, b| b.1.cmp(&a.1));
-//         sorted.truncate(top_n);
-//         sorted
-//     }
-
-//     /// Get statistics about the index
-//     pub fn stats(&self) -> MinuteIndexStats {
-//         let total_minutes = self.minute_to_field_entries.len();
-//         let mut total_field_values = 0;
-//         let mut total_entries = 0;
-
-//         for fields in self.minute_to_field_entries.values() {
-//             total_field_values += fields.len();
-//             for entries in fields.values() {
-//                 total_entries += entries.len() as usize;
-//             }
-//         }
-
-//         MinuteIndexStats {
-//             total_minutes,
-//             total_field_values,
-//             total_entries,
-//             avg_field_values_per_minute: if total_minutes > 0 {
-//                 total_field_values as f64 / total_minutes as f64
-//             } else {
-//                 0.0
-//             },
-//         }
-//     }
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct MinuteIndexStats {
-//     pub total_minutes: usize,
-//     pub total_field_values: usize,
-//     pub total_entries: usize,
-//     pub avg_field_values_per_minute: f64,
-// }
-
-// // Extension to FileIndex
-// impl FileIndex {
-//     /// Build a MinuteIndex for this FileIndex
-//     pub fn build_minute_index(&self) -> MinuteIndex {
-//         MinuteIndex::from_file_index(self)
-//     }
-// }
-use tracing::info;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileInfo {
-    pub filename: String,
-    pub entry_indices: HashMap<String, RoaringBitmap>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MinuteInfo {
-    pub minute: u64,
-    pub files_info: Vec<FileInfo>,
-}
-
-/// A reverse index that maps minutes to file information and field values within those minutes
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MinuteIndex {
-    pub minute_info: HashMap<u64, MinuteInfo>,
-}
-
-impl MinuteIndex {
-    pub fn merge_file_index(&mut self, filename: &str, file_index: FileIndex) {
-        // First, build a map of minute -> all entries in that minute
-        let mut minute_to_all_entries: HashMap<u64, RoaringBitmap> = HashMap::new();
-
-        for (bucket_index, bucket) in file_index.file_histogram.buckets.iter().enumerate() {
-            if let Some((start, end)) = file_index.file_histogram.get_entry_range(bucket_index) {
-                let mut minute_bitmap = RoaringBitmap::new();
-                minute_bitmap.insert_range(start..=end);
-                minute_to_all_entries.insert(bucket.minute, minute_bitmap);
-            }
-        }
-
-        // Now, for each minute, find which field values appear in it
-        for (&minute, minute_entries) in &minute_to_all_entries {
-            let mut entry_indices = HashMap::new();
-
-            // For each field value in the FileIndex, check if it appears in this minute
-            for (field_value, field_entries) in &file_index.entry_indices {
-                // Find entries that have this field value AND are in this minute
-                let intersection = field_entries & minute_entries;
-
-                if !intersection.is_empty() {
-                    entry_indices.insert(field_value.clone(), intersection);
-                }
-            }
-
-            // Only create FileInfo if there are entries for this minute
-            if !entry_indices.is_empty() {
-                let file_info = FileInfo {
-                    filename: filename.to_string(),
-                    entry_indices,
-                };
-
-                if let Some(minute_info) = self.minute_info.get_mut(&minute) {
-                    minute_info.files_info.push(file_info);
-                } else {
-                    self.minute_info.insert(
-                        minute,
-                        MinuteInfo {
-                            minute,
-                            files_info: vec![file_info],
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    // pub fn from_file_index(filename: &str, file_index: &FileIndex) -> Self {
-    //     let mut minute_to_file_info: HashMap<u64, FileInfo> = HashMap::new();
-
-    //     // First, build a map of minute -> all entries in that minute
-    //     let mut minute_to_all_entries: HashMap<u64, RoaringBitmap> = HashMap::new();
-
-    //     for (bucket_index, bucket) in file_index.file_histogram.buckets.iter().enumerate() {
-    //         if let Some((start, end)) = file_index.file_histogram.get_entry_range(bucket_index) {
-    //             let mut minute_bitmap = RoaringBitmap::new();
-    //             minute_bitmap.insert_range(start..=end);
-    //             minute_to_all_entries.insert(bucket.minute, minute_bitmap);
-    //         }
-    //     }
-
-    //     // Now, for each minute, find which field values appear in it
-    //     for (&minute, minute_entries) in &minute_to_all_entries {
-    //         let mut entry_indices = HashMap::new();
-
-    //         // For each field value in the FileIndex, check if it appears in this minute
-    //         for (field_value, field_entries) in &file_index.entry_indices {
-    //             // Find entries that have this field value AND are in this minute
-    //             let intersection = field_entries & minute_entries;
-
-    //             if !intersection.is_empty() {
-    //                 entry_indices.insert(field_value.clone(), intersection);
-    //             }
-    //         }
-
-    //         // Only create FileInfo if there are entries for this minute
-    //         if !entry_indices.is_empty() {
-    //             minute_to_file_info.insert(
-    //                 minute,
-    //                 FileInfo {
-    //                     filename: filename.to_string(),
-    //                     entry_indices,
-    //                 },
-    //             );
-    //         }
-    //     }
-
-    //     MinuteIndex {
-    //         minute_to_file_info,
-    //     }
-    // }
-
-    // /// Get file info for a specific minute
-    // pub fn get_minute_info(&self, minute: u64) -> Option<&FileInfo> {
-    //     self.minute_info.get(&minute)
-    // }
-
-    // /// Get all entries for a specific field value within a specific minute
-    // pub fn get_field_entries_for_minute(
-    //     &self,
-    //     minute: u64,
-    //     field_value: &str,
-    // ) -> Option<&RoaringBitmap> {
-    //     self.minute_info
-    //         .get(&minute)
-    //         .and_then(|info| info.entry_indices.get(field_value))
-    // }
-
-    // /// Get all unique field values that appear in a specific minute
-    // pub fn get_field_values_for_minute(&self, minute: u64) -> Vec<String> {
-    //     self.minute_info
-    //         .get(&minute)
-    //         .map(|info| info.entry_indices.keys().cloned().collect())
-    //         .unwrap_or_default()
-    // }
-
-    // /// Get all entries for a field value across a time range
-    // pub fn get_field_entries_in_range(
-    //     &self,
-    //     field_value: &str,
-    //     start_minute: u64,
-    //     end_minute: u64,
-    // ) -> RoaringBitmap {
-    //     let mut result = RoaringBitmap::new();
-
-    //     for (&minute, file_info) in &self.minute_info {
-    //         if minute >= start_minute && minute <= end_minute {
-    //             if let Some(entries) = file_info.entry_indices.get(field_value) {
-    //                 result |= entries;
-    //             }
-    //         }
-    //     }
-
-    //     result.optimize();
-    //     result
-    // }
-
-    // /// Get histogram of a specific field value over time
-    // pub fn get_field_histogram(
-    //     &self,
-    //     field_value: &str,
-    //     start_minute: u64,
-    //     end_minute: u64,
-    //     bucket_size_minutes: u64,
-    // ) -> Vec<(u64, usize)> {
-    //     let mut histogram = Vec::new();
-    //     let mut current_bucket_start = (start_minute / bucket_size_minutes) * bucket_size_minutes;
-
-    //     while current_bucket_start <= end_minute {
-    //         let bucket_end = current_bucket_start + bucket_size_minutes - 1;
-    //         let entries = self.get_field_entries_in_range(
-    //             field_value,
-    //             current_bucket_start.max(start_minute),
-    //             bucket_end.min(end_minute),
-    //         );
-
-    //         if !entries.is_empty() {
-    //             histogram.push((current_bucket_start, entries.len() as usize));
-    //         }
-
-    //         current_bucket_start += bucket_size_minutes;
-    //     }
-
-    //     histogram
-    // }
-
-    // /// Get counts of all field values within a time range
-    // pub fn get_field_value_counts_in_range(
-    //     &self,
-    //     start_minute: u64,
-    //     end_minute: u64,
-    // ) -> HashMap<String, usize> {
-    //     let mut counts = HashMap::new();
-
-    //     for (&minute, file_info) in &self.minute_info {
-    //         if minute >= start_minute && minute <= end_minute {
-    //             for (field_value, entries) in &file_info.entry_indices {
-    //                 *counts.entry(field_value.clone()).or_insert(0) += entries.len() as usize;
-    //             }
-    //         }
-    //     }
-
-    //     counts
-    // }
-
-    /// Get all minutes that contain data
-    pub fn get_minutes(&self) -> Vec<u64> {
-        let mut minutes: Vec<_> = self.minute_info.keys().copied().collect();
-        minutes.sort_unstable();
-        minutes
-    }
-
-    /// Get time bounds (earliest and latest minutes)
-    pub fn time_bounds(&self) -> Option<(u64, u64)> {
-        let minutes = self.get_minutes();
-        if minutes.is_empty() {
-            None
-        } else {
-            Some((minutes[0], minutes[minutes.len() - 1]))
-        }
-    }
-}
-
-// Extension to FileIndex
-
-impl FileIndex {
-    /// Calculate the approximate memory size in bytes consumed by this FileIndex
-    pub fn memory_size(&self) -> usize {
-        let mut total = 0;
-
-        // FileHistogram: struct + vector of buckets
-        total += std::mem::size_of::<FileHistogram>();
-        total += self.file_histogram.buckets.capacity() * std::mem::size_of::<FileBucket>();
-
-        // HashMap overhead
-        total += self.entry_indices.capacity() * std::mem::size_of::<(*const u8, usize)>();
-
-        // HashMap contents: keys + bitmaps
-        for (key, bitmap) in &self.entry_indices {
-            total += key.capacity();
-            total += bitmap.serialized_size();
-        }
-
-        total
-    }
-}
-
-impl MinuteIndex {
-    /// Calculate the approximate memory size in bytes consumed by this MinuteIndex
-    pub fn memory_size(&self) -> usize {
-        0
-    }
-
-    pub fn ser(&self) -> Vec<u8> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard()).unwrap()
-        // let length = bincode::serde::encode_to_vec(self, &mut slice, bincode::config::standard());
-    }
-
-    pub fn per_minute_compressed_len(&self) -> usize {
-        let mut n = 0;
-        for index in self.minute_info.values() {
-            let serialized =
-                bincode::serde::encode_to_vec(index, bincode::config::standard()).unwrap();
-            // let serialized = minute_index.ser();
-            let compressed = lz4::block::compress(&serialized[..], None, false)
-                .map_err(|e| format!("LZ4 compression failed: {}", e))
-                .unwrap();
-
-            n += compressed.len();
-        }
-        n
     }
 }
