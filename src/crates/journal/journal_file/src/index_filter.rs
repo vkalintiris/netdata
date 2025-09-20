@@ -67,7 +67,11 @@ impl IndexFilterExpr {
     }
 
     /// Get matching indices within specific histogram bucket
-    pub fn matching_indices_in_bucket(&self, file_index: &FileIndex, bucket_index: usize) -> Option<RoaringBitmap> {
+    pub fn matching_indices_in_bucket(
+        &self,
+        file_index: &FileIndex,
+        bucket_index: usize,
+    ) -> Option<RoaringBitmap> {
         let (start, end) = file_index.file_histogram.get_entry_range(bucket_index)?;
         Some(self.matching_indices_in_range(start, end))
     }
@@ -282,22 +286,30 @@ impl IndexFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::{FileHistogram, FileIndex};
     use roaring::RoaringBitmap;
     use std::collections::HashMap;
-    use crate::index::{FileIndex, FileHistogram};
 
     fn create_test_file_index() -> FileIndex {
         let mut entry_indices = HashMap::new();
 
         // Add some test data
-        entry_indices.insert("_SYSTEMD_UNIT=ssh.service".to_string(),
-                           RoaringBitmap::from_sorted_iter([1, 3, 5, 7]).unwrap());
-        entry_indices.insert("_SYSTEMD_UNIT=nginx.service".to_string(),
-                           RoaringBitmap::from_sorted_iter([2, 4, 6, 8]).unwrap());
-        entry_indices.insert("PRIORITY=6".to_string(),
-                           RoaringBitmap::from_sorted_iter([1, 2, 9, 10]).unwrap());
-        entry_indices.insert("PRIORITY=3".to_string(),
-                           RoaringBitmap::from_sorted_iter([3, 4, 5]).unwrap());
+        entry_indices.insert(
+            "_SYSTEMD_UNIT=ssh.service".to_string(),
+            RoaringBitmap::from_sorted_iter([1, 3, 5, 7]).unwrap(),
+        );
+        entry_indices.insert(
+            "_SYSTEMD_UNIT=nginx.service".to_string(),
+            RoaringBitmap::from_sorted_iter([2, 4, 6, 8]).unwrap(),
+        );
+        entry_indices.insert(
+            "PRIORITY=6".to_string(),
+            RoaringBitmap::from_sorted_iter([1, 2, 9, 10]).unwrap(),
+        );
+        entry_indices.insert(
+            "PRIORITY=3".to_string(),
+            RoaringBitmap::from_sorted_iter([3, 4, 5]).unwrap(),
+        );
 
         FileIndex {
             file_histogram: FileHistogram::default(),
@@ -317,10 +329,8 @@ mod tests {
     #[test]
     fn test_conjunction() {
         let file_index = create_test_file_index();
-        let filter = IndexFilter::conjunction(&file_index, &[
-            "_SYSTEMD_UNIT=ssh.service",
-            "PRIORITY=6"
-        ]);
+        let filter =
+            IndexFilter::conjunction(&file_index, &["_SYSTEMD_UNIT=ssh.service", "PRIORITY=6"]);
 
         let matches = filter.matching_indices();
         assert_eq!(matches.iter().collect::<Vec<_>>(), vec![1]); // Only entry 1 matches both
@@ -329,13 +339,16 @@ mod tests {
     #[test]
     fn test_disjunction() {
         let file_index = create_test_file_index();
-        let filter = IndexFilter::disjunction(&file_index, &[
-            "_SYSTEMD_UNIT=ssh.service",
-            "_SYSTEMD_UNIT=nginx.service"
-        ]);
+        let filter = IndexFilter::disjunction(
+            &file_index,
+            &["_SYSTEMD_UNIT=ssh.service", "_SYSTEMD_UNIT=nginx.service"],
+        );
 
         let matches = filter.matching_indices();
-        assert_eq!(matches.iter().collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            matches.iter().collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
     }
 
     #[test]
