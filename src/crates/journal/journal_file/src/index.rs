@@ -1,5 +1,7 @@
+use crate::DataObject;
 use crate::JournalFile;
 use crate::Mmap;
+use error::JournalError;
 use error::Result;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
@@ -181,9 +183,99 @@ pub struct FileIndex {
     pub entry_indices: HashMap<String, RoaringBitmap>,
 }
 
+fn parse_source_realtime_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
+    const PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+
+    // Get the payload bytes
+    let payload = data_object.payload_bytes();
+
+    // Check if it starts with the expected prefix
+    if !payload.starts_with(PREFIX) {
+        return Err(JournalError::InvalidField);
+    }
+
+    // Get the timestamp portion after the '='
+    let timestamp_bytes = &payload[PREFIX.len()..];
+
+    // Convert to string and parse
+    let timestamp_str =
+        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalError::InvalidField)?;
+
+    let timestamp = timestamp_str
+        .parse::<u64>()
+        .map_err(|_| JournalError::InvalidField)?;
+
+    Ok(timestamp)
+}
+
 impl FileIndex {
+    /// Creates a sorted vector of entry offsets ordered by _SOURCE_REALTIME_TIMESTAMP field
+    /// instead of the journal's default realtime ordering. This is useful when the source
+    /// realtime differs from the journal realtime (e.g., when entries are received out of order).
+    ///
+    /// Returns a vector of entry offsets sorted by their _SOURCE_REALTIME_TIMESTAMP value.
+    /// If the field is not found or entries don't have this field, returns an empty vector.
+    pub fn entries_sorted_by_source_realtime(
+        journal_file: &JournalFile<Mmap>,
+        entries_hashmap: &mut HashMap<u64, u64>,
+    ) -> Result<()> {
+        let field_name = b"_SOURCE_REALTIME_TIMESTAMP";
+
+        // Get the field data objects for _SOURCE_REALTIME_TIMESTAMP
+        let field_data_iterator = journal_file.field_data_objects(field_name)?;
+
+        // Each pair holds the timestamp and the inlined cursor so that we
+        // can iterate/collect the entry offsets that have that timestamp.
+        let mut tic = Vec::with_capacity(journal_file.journal_header_ref().n_entries as usize);
+
+        for data_object_result in field_data_iterator {
+            let Ok(data_object) = data_object_result else {
+                panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 1");
+                // continue;
+            };
+
+            let Ok(source_timestamp) = parse_source_realtime_timestamp(&data_object) else {
+                panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 2");
+                // continue;
+            };
+
+            let Some(ic) = data_object.inlined_cursor() else {
+                // panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 3");
+                println!("Data object does not have an inlined cursor");
+                continue;
+            };
+
+            tic.push((source_timestamp, ic));
+        }
+
+        let mut timestamp_entries = Vec::new();
+
+        let mut offsets: Vec<NonZeroU64> = Vec::with_capacity(8);
+        for (ts, ic) in tic {
+            offsets.clear();
+            ic.collect_offsets(journal_file, &mut offsets).ok();
+
+            for offset in &offsets {
+                timestamp_entries.push((ts, offset.get()));
+            }
+        }
+
+        timestamp_entries.sort();
+
+        entries_hashmap.reserve(timestamp_entries.len());
+        for (idx, (_, entry_offset)) in timestamp_entries.iter().enumerate() {
+            entries_hashmap.insert(*entry_offset, idx as _);
+        }
+
+        Ok(())
+    }
+
     #[instrument(skip(journal_file), fields(field_count = field_names.len()))]
-    pub fn from(journal_file: &JournalFile<Mmap>, field_names: &[&[u8]]) -> Result<FileIndex> {
+    pub fn from(
+        journal_file: &JournalFile<Mmap>,
+        field_names: &[&[u8]],
+        hm: &mut HashMap<u64, u64>,
+    ) -> Result<FileIndex> {
         let mut index = FileIndex::default();
 
         let entry_offsets = journal_file.entry_offsets()?;
@@ -224,6 +316,9 @@ impl FileIndex {
                 index.entry_indices.insert(data_payload.clone(), rb);
             }
         }
+
+        Self::entries_sorted_by_source_realtime(journal_file, hm).unwrap();
+        // println!("foo length {:#?}", index.foo.len());
 
         Ok(index)
     }

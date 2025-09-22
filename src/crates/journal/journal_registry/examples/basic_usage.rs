@@ -2,14 +2,68 @@ use journal_file::JournalFile;
 use journal_file::Mmap;
 use journal_file::index::FileIndex;
 use journal_registry::JournalRegistry;
+use std::collections::HashMap;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<(String, FileIndex)> {
+fn sequential(
+    files: &[journal_registry::RegistryFile],
+    facets: &[&[u8]],
+) -> Vec<(String, FileIndex)> {
     let start_time = Instant::now();
 
-    let systemd_keys: Vec<&[u8]> = vec![
+    let mut total_index_size = 0;
+
+    let mut file_indexes = Vec::new();
+
+    // map from entry offset -> source time entry offset array _index_
+    let mut hm = HashMap::new();
+
+    for file in files {
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+
+        hm.clear();
+        let Ok(jfi) = FileIndex::from(&journal_file, facets, &mut hm) else {
+            continue;
+        };
+
+        let mut index_size = 0;
+        for (data_payload, entry_indices) in jfi.entry_indices.iter() {
+            index_size += data_payload.len() + entry_indices.serialized_size();
+        }
+
+        info!(file = file.path.to_string_lossy().into_owned(), index_size);
+
+        total_index_size += index_size;
+
+        file_indexes.push((file.path.to_string_lossy().into_owned(), jfi));
+    }
+
+    // Count midx_count after parallel processing
+    let midx_count: usize = file_indexes
+        .iter()
+        .map(|fi| fi.1.file_histogram.len())
+        .sum();
+
+    let elapsed = start_time.elapsed();
+    info!(
+        "{:#?} histogram index buckets in {:#?} msec",
+        midx_count,
+        elapsed.as_millis(),
+    );
+    info!(
+        "total index size: {:#?} MiB",
+        total_index_size / (1024 * 1024)
+    );
+
+    file_indexes
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let facets: Vec<&[u8]> = vec![
         // --- USER JOURNAL FIELDS ---
         b"MESSAGE_ID",
         b"PRIORITY",
@@ -78,51 +132,7 @@ fn sequential(files: &[journal_registry::RegistryFile]) -> Vec<(String, FileInde
         b"ND_ALERT_TYPE",
         b"ND_ALERT_STATUS",
     ];
-    let mut total_index_size = 0;
 
-    let mut file_indexes = Vec::new();
-    for file in files {
-        let window_size = 8 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
-
-        let Ok(jfi) = FileIndex::from(&journal_file, systemd_keys.as_slice()) else {
-            continue;
-        };
-
-        let mut index_size = 0;
-        for (data_payload, entry_indices) in jfi.entry_indices.iter() {
-            index_size += data_payload.len() + entry_indices.serialized_size();
-        }
-
-        info!(file = file.path.to_string_lossy().into_owned(), index_size);
-
-        total_index_size += index_size;
-
-        file_indexes.push((file.path.to_string_lossy().into_owned(), jfi));
-    }
-
-    // Count midx_count after parallel processing
-    let midx_count: usize = file_indexes
-        .iter()
-        .map(|fi| fi.1.file_histogram.len())
-        .sum();
-
-    let elapsed = start_time.elapsed();
-    info!(
-        "{:#?} histogram index buckets in {:#?} msec",
-        midx_count,
-        elapsed.as_millis(),
-    );
-    info!(
-        "total index size: {:#?} MiB",
-        total_index_size / (1024 * 1024)
-    );
-
-    file_indexes
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -142,12 +152,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|x| x.path.clone());
     files.sort_by_key(|x| x.size);
     files.reverse();
-    files.truncate(5);
+    // files.truncate(5);
 
-    println!("Files: {:#?}", files);
-    return Ok(());
-
-    let _ = sequential(&files);
+    let _ = sequential(&files, facets.as_slice());
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());
