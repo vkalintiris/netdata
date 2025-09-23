@@ -56,56 +56,6 @@ pub struct FileHistogram {
 }
 
 impl FileHistogram {
-    pub fn from_journal_file(
-        journal_file: &JournalFile<Mmap>,
-        entry_offsets: &[NonZeroU64],
-        bucket_size_seconds: u64,
-    ) -> Result<FileHistogram> {
-        debug_assert_ne!(bucket_size_seconds, 0);
-
-        let mut buckets = Vec::new();
-        let mut current_bucket = None;
-
-        // Convert microseconds to seconds for bucket size
-        let bucket_size_micros = bucket_size_seconds * 1_000_000;
-
-        for (offset_index, &offset) in entry_offsets.iter().enumerate() {
-            let entry = journal_file.entry_ref(offset)?;
-            // Calculate which bucket this timestamp falls into
-            let bucket = (entry.header.realtime / bucket_size_micros) * bucket_size_seconds;
-
-            match current_bucket {
-                None => {
-                    // First entry - don't create bucket yet, just track the bucket
-                    debug_assert_eq!(offset_index, 0);
-                    current_bucket = Some(bucket);
-                }
-                Some(prev_bucket) if bucket > prev_bucket => {
-                    // New bucket boundary - save the LAST index of the previous bucket
-                    buckets.push(FileBucket {
-                        bucket_seconds: prev_bucket,
-                        last_offset_index: offset_index - 1,
-                    });
-                    current_bucket = Some(bucket);
-                }
-                _ => {} // Same bucket, continue
-            }
-        }
-
-        // Don't forget the last bucket!
-        if let Some(last_bucket) = current_bucket {
-            buckets.push(FileBucket {
-                bucket_seconds: last_bucket,
-                last_offset_index: entry_offsets.len() - 1,
-            });
-        }
-
-        Ok(FileHistogram {
-            bucket_size_seconds,
-            buckets,
-        })
-    }
-
     pub fn from_timestamp_offset_pairs(
         timestamp_offset_pairs: &[(u64, NonZeroU64)],
         bucket_size_seconds: u64,
