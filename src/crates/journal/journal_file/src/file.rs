@@ -404,7 +404,7 @@ impl<M: MemoryMap> JournalFile<M> {
         )?;
 
         // Create window manager for the rest of the objects
-        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 32)?);
+        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 16)?);
 
         Ok(JournalFile {
             header_map,

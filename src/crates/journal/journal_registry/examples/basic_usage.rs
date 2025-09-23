@@ -59,6 +59,67 @@ fn sequential(
     file_indexes
 }
 
+use rayon::prelude::*;
+
+fn parallel(
+    files: &[journal_registry::RegistryFile],
+    field_names: &[&[u8]],
+) -> Vec<(String, FileIndex)> {
+    let start_time = Instant::now();
+
+    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+
+    // Process files in parallel
+    let file_indexes: Vec<_> = files
+        .par_iter() // Create parallel iterator
+        .filter_map(|file| {
+            // Each thread gets its own FileIndexer
+            let mut file_indexer = FileIndexer::default();
+            let window_size = 8 * 1024 * 1024;
+
+            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
+
+            let jfi = file_indexer
+                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names)
+                .ok()?;
+
+            let mut index_size = 0;
+            for (data_payload, entry_indices) in jfi.entries_index.iter() {
+                index_size += data_payload.len() + entry_indices.serialized_size();
+            }
+
+            info!(file = file.path.to_string_lossy().into_owned(), index_size);
+
+            Some((file.path.to_string_lossy().into_owned(), jfi, index_size))
+        })
+        .collect();
+
+    // Calculate totals after parallel processing
+    let total_index_size: usize = file_indexes.iter().map(|(_, _, size)| size).sum();
+
+    let midx_count: usize = file_indexes
+        .iter()
+        .map(|(_, fi, _)| fi.file_histogram.len())
+        .sum();
+
+    let elapsed = start_time.elapsed();
+    info!(
+        "{:#?} histogram index buckets in {:#?} msec",
+        midx_count,
+        elapsed.as_millis(),
+    );
+    info!(
+        "total index size: {:#?} MiB",
+        total_index_size / (1024 * 1024)
+    );
+
+    // Return without the size component
+    file_indexes
+        .into_iter()
+        .map(|(path, index, _)| (path, index))
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let facets: Vec<&[u8]> = vec![
@@ -152,7 +213,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.reverse();
     // files.truncate(5);
 
-    let _ = sequential(&files, facets.as_slice());
+    // let _ = sequential(&files, facets.as_slice());
+    let _ = parallel(&files, facets.as_slice());
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", registry.query().count());
