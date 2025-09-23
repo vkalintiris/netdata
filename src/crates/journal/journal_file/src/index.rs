@@ -1,12 +1,40 @@
 use crate::DataObject;
 use crate::JournalFile;
 use crate::Mmap;
+use crate::offset_array::InlinedCursor;
 use error::JournalError;
 use error::Result;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use tracing::{debug, error, instrument, trace, warn};
+
+// TODO: pass the field name that should be used to extract the source timestamp
+fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
+    const PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+
+    // Get the payload bytes
+    let payload = data_object.payload_bytes();
+
+    // Check if it starts with the expected prefix
+    if !payload.starts_with(PREFIX) {
+        return Err(JournalError::InvalidField);
+    }
+
+    // Get the timestamp portion after the '='
+    let timestamp_bytes = &payload[PREFIX.len()..];
+
+    // Convert to string and parse
+    let timestamp_str =
+        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalError::InvalidField)?;
+
+    let timestamp = timestamp_str
+        .parse::<u64>()
+        .map_err(|_| JournalError::InvalidField)?;
+
+    Ok(timestamp)
+}
 
 /// A time-aligned bucket in the histogram index.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -79,7 +107,7 @@ impl FileHistogram {
     }
 
     pub fn from_timestamp_offset_pairs(
-        timestamp_offset_pairs: &[(u64, u64)],
+        timestamp_offset_pairs: &[(u64, NonZeroU64)],
         bucket_size_seconds: u64,
     ) -> FileHistogram {
         debug_assert!(timestamp_offset_pairs.is_sorted());
@@ -226,201 +254,224 @@ fn get_matching_indices(
     }
 }
 
-use tracing::{debug, instrument, trace, warn};
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
     pub file_histogram: FileHistogram,
-    pub entry_indices: HashMap<String, RoaringBitmap>,
+    pub entries_index: HashMap<String, RoaringBitmap>,
 }
 
-fn parse_source_realtime_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
-    const PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+#[derive(Debug, Default)]
+pub struct FileIndexer {
+    // Associates a source timestamp value with its inlined cursor
+    source_timestamp_cursor_pairs: Vec<(u64, InlinedCursor)>,
 
-    // Get the payload bytes
-    let payload = data_object.payload_bytes();
+    // Scratch buffer to collect entry offsets from the inlined cursor of a
+    // a source timestamp value, or the global entry offset array
+    entry_offsets: Vec<NonZeroU64>,
 
-    // Check if it starts with the expected prefix
-    if !payload.starts_with(PREFIX) {
-        return Err(JournalError::InvalidField);
-    }
+    // Associates a source timestamp value with its entry offset
+    source_timestamp_entry_offset_pairs: Vec<(u64, NonZeroU64)>,
 
-    // Get the timestamp portion after the '='
-    let timestamp_bytes = &payload[PREFIX.len()..];
+    // Associates a journal file's entry realtime value with its offset
+    realtime_entry_offset_pairs: Vec<(u64, NonZeroU64)>,
 
-    // Convert to string and parse
-    let timestamp_str =
-        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalError::InvalidField)?;
+    // Scratch buffer to collect the indices of entries in which a data
+    // object appears
+    entry_indices: Vec<u32>,
 
-    let timestamp = timestamp_str
-        .parse::<u64>()
-        .map_err(|_| JournalError::InvalidField)?;
-
-    Ok(timestamp)
+    /// Maps entry offsets to an index of an implicitly defined time-ordered
+    /// array of entries.
+    entry_offset_index: HashMap<NonZeroU64, u64>,
 }
 
-impl FileIndex {
-    /// Creates a sorted vector of entry offsets ordered by _SOURCE_REALTIME_TIMESTAMP field
-    /// instead of the journal's default realtime ordering. This is useful when the source
-    /// realtime differs from the journal realtime (e.g., when entries are received out of order).
-    ///
-    /// Returns a vector of entry offsets sorted by their _SOURCE_REALTIME_TIMESTAMP value.
-    /// If the field is not found or entries don't have this field, returns an empty vector.
-    pub fn from_source(
+impl FileIndexer {
+    pub fn index(
+        &mut self,
         journal_file: &JournalFile<Mmap>,
+        source_timestamp_field: &[u8],
         field_names: &[&[u8]],
-        entries_hashmap: &mut HashMap<u64, u64>,
     ) -> Result<FileIndex> {
-        let mut index = FileIndex::default();
+        let n_entries = journal_file.journal_header_ref().n_entries as _;
+        self.source_timestamp_cursor_pairs.reserve(n_entries);
+        self.source_timestamp_entry_offset_pairs.reserve(n_entries);
+        self.realtime_entry_offset_pairs.reserve(n_entries);
+        self.entry_indices.reserve(n_entries / 2);
+        self.entry_offsets.reserve(8);
+        self.entry_offset_index.reserve(n_entries);
 
-        let field_name = b"_SOURCE_REALTIME_TIMESTAMP";
+        let file_histogram = self.build_file_histogram(journal_file, source_timestamp_field)?;
+        let entries_index = self.build_entries_index(journal_file, field_names)?;
 
-        // Get the field data objects for _SOURCE_REALTIME_TIMESTAMP
-        let field_data_iterator = journal_file.field_data_objects(field_name)?;
-
-        // Each pair holds the timestamp and the inlined cursor so that we
-        // can iterate/collect the entry offsets that have that timestamp.
-        let mut tic = Vec::with_capacity(journal_file.journal_header_ref().n_entries as usize);
-
-        for data_object_result in field_data_iterator {
-            let Ok(data_object) = data_object_result else {
-                panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 1");
-                // continue;
-            };
-
-            let Ok(source_timestamp) = parse_source_realtime_timestamp(&data_object) else {
-                panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 2");
-                // continue;
-            };
-
-            let Some(ic) = data_object.inlined_cursor() else {
-                // panic!(">>>>>>>>>>>>>>>>>>>>>>>>>> 3");
-                println!("Data object does not have an inlined cursor");
-                continue;
-            };
-
-            tic.push((source_timestamp, ic));
-        }
-
-        let mut timestamp_entries = Vec::new();
-
-        let mut offsets: Vec<NonZeroU64> = Vec::with_capacity(8);
-        for (ts, ic) in tic {
-            offsets.clear();
-            ic.collect_offsets(journal_file, &mut offsets).ok();
-
-            for offset in &offsets {
-                timestamp_entries.push((ts, offset.get()));
-            }
-        }
-
-        timestamp_entries.sort();
-
-        index.file_histogram =
-            FileHistogram::from_timestamp_offset_pairs(timestamp_entries.as_slice(), 60);
-
-        entries_hashmap.reserve(timestamp_entries.len());
-        for (idx, (_, entry_offset)) in timestamp_entries.iter().enumerate() {
-            entries_hashmap.insert(*entry_offset, idx as _);
-        }
-
-        // second part
-        {
-            let mut ic_offsets = Vec::new();
-            let mut data_indices = Vec::new();
-
-            for field_name in field_names {
-                let field_data_iterator = journal_file.field_data_objects(field_name)?;
-
-                for data_object in field_data_iterator {
-                    let (data_payload, ic) = {
-                        let Ok(data_object) = data_object else {
-                            continue;
-                        };
-
-                        let data_payload =
-                            String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
-                        let Some(ic) = data_object.inlined_cursor() else {
-                            continue;
-                        };
-
-                        (data_payload, ic)
-                    };
-
-                    ic_offsets.clear();
-                    if ic.collect_offsets(journal_file, &mut ic_offsets).is_err() {
-                        continue;
-                    }
-
-                    data_indices.clear();
-                    for entry_offset in ic_offsets.iter() {
-                        let Some(entry_index) = entries_hashmap.get(&entry_offset.get()) else {
-                            continue;
-                        };
-                        data_indices.push(*entry_index as u32);
-                    }
-
-                    data_indices.sort();
-
-                    let mut rb =
-                        RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
-                    rb.optimize();
-
-                    index.entry_indices.insert(data_payload.clone(), rb);
-                }
-            }
-        }
-
-        Ok(index)
+        Ok(FileIndex {
+            file_histogram,
+            entries_index,
+        })
     }
 
-    #[instrument(skip(journal_file), fields(field_count = field_names.len()))]
-    pub fn from(
+    fn build_entries_index(
+        &mut self,
         journal_file: &JournalFile<Mmap>,
         field_names: &[&[u8]],
-        hm: &mut HashMap<u64, u64>,
-    ) -> Result<FileIndex> {
-        let mut index = FileIndex::default();
-
-        let entry_offsets = journal_file.entry_offsets()?;
-        index.file_histogram = FileHistogram::from_journal_file(journal_file, &entry_offsets, 60)?;
-
-        let mut data_offsets = Vec::new();
-        let mut data_indices = Vec::new();
+    ) -> Result<HashMap<String, RoaringBitmap>> {
+        let mut entries_index = HashMap::new();
 
         for field_name in field_names {
-            let field_data_iterator = journal_file.field_data_objects(field_name)?;
+            // Get the data object iterator for this field
+            let field_data_iterator = match journal_file.field_data_objects(field_name) {
+                Ok(field_data_iterator) => field_data_iterator,
+                Err(e) => {
+                    warn!("failed to iterate field data objects {:#?}", e);
+                    continue;
+                }
+            };
 
             for data_object in field_data_iterator {
-                let (data_payload, ic) = {
+                // Get the payload and the inlined cursor for this data object
+                let (data_payload, inlined_cursor) = {
                     let Ok(data_object) = data_object else {
                         continue;
                     };
 
                     let data_payload =
                         String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
-                    let Some(ic) = data_object.inlined_cursor() else {
+                    let Some(inlined_cursor) = data_object.inlined_cursor() else {
                         continue;
                     };
 
-                    (data_payload, ic)
+                    (data_payload, inlined_cursor)
                 };
 
-                data_offsets.clear();
-                if ic.collect_offsets(journal_file, &mut data_offsets).is_err() {
+                // Collect the offset of entries where this data object appears
+                self.entry_offsets.clear();
+                if inlined_cursor
+                    .collect_offsets(journal_file, &mut self.entry_offsets)
+                    .is_err()
+                {
                     continue;
                 }
 
-                data_indices.clear();
-                get_matching_indices(&entry_offsets, &data_offsets, &mut data_indices);
+                // Map entry offsets where this data object appears to
+                // entry indices
+                self.entry_indices.clear();
+                for entry_offset in self.entry_offsets.iter() {
+                    let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
+                        continue;
+                    };
+                    self.entry_indices.push(*entry_index as u32);
+                }
+                self.entry_indices.sort_unstable();
 
-                let mut rb = RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
+                // Create the roaring bitmap for the entry indices
+                let mut rb =
+                    RoaringBitmap::from_sorted_iter(self.entry_indices.iter().copied()).unwrap();
                 rb.optimize();
 
-                index.entry_indices.insert(data_payload.clone(), rb);
+                entries_index.insert(data_payload.clone(), rb);
             }
         }
 
-        Ok(index)
+        Ok(entries_index)
+    }
+
+    fn build_file_histogram(
+        &mut self,
+        journal_file: &JournalFile<Mmap>,
+        source_timestamp_field: &[u8],
+    ) -> Result<FileHistogram> {
+        if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field) {
+            // Collect the inlined cursors of the source timestamp field
+            self.source_timestamp_cursor_pairs.clear();
+            for data_object_result in field_data_iterator {
+                let Ok(data_object) = data_object_result else {
+                    warn!("loading data object failed");
+                    continue;
+                };
+
+                let Ok(source_timestamp) = parse_source_timestamp(&data_object) else {
+                    warn!("parsing source timestamp failed");
+                    continue;
+                };
+
+                let Some(ic) = data_object.inlined_cursor() else {
+                    warn!(
+                        "missing inlined cursor for source timestamp {:?}",
+                        source_timestamp
+                    );
+                    continue;
+                };
+
+                self.source_timestamp_cursor_pairs
+                    .push((source_timestamp, ic));
+            }
+
+            // Collect the source timestamp value and offset pairs
+            self.source_timestamp_entry_offset_pairs.clear();
+            for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
+                self.entry_offsets.clear();
+
+                match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("failed to collect offsets from source timestamp: {}", e);
+                        continue;
+                    }
+                }
+
+                for entry_offset in &self.entry_offsets {
+                    self.source_timestamp_entry_offset_pairs
+                        .push((*ts, *entry_offset));
+                }
+            }
+            self.source_timestamp_entry_offset_pairs.sort_unstable();
+
+            // Map each entry offset to its position in the pair vector
+            for (idx, (_, entry_offset)) in
+                self.source_timestamp_entry_offset_pairs.iter().enumerate()
+            {
+                self.entry_offset_index.insert(*entry_offset, idx as _);
+            }
+        }
+
+        // Load the global entry offset array
+        self.entry_offsets.clear();
+        journal_file.entry_offsets(&mut self.entry_offsets)?;
+
+        // Fill any missing entry offset keys
+        self.realtime_entry_offset_pairs.clear();
+        for entry_offset in self.entry_offsets.iter() {
+            if self.entry_offset_index.contains_key(entry_offset) {
+                continue;
+            }
+
+            let timestamp = {
+                let entry = journal_file.entry_ref(*entry_offset)?;
+                entry.header.realtime
+            };
+
+            self.realtime_entry_offset_pairs
+                .push((timestamp, *entry_offset));
+        }
+
+        // Reconstruct our indexes if we have entries whose time does not
+        // come from the source timestamp
+        if !self.realtime_entry_offset_pairs.is_empty() {
+            self.source_timestamp_entry_offset_pairs
+                .append(&mut self.realtime_entry_offset_pairs);
+            self.source_timestamp_entry_offset_pairs.sort_unstable();
+
+            // Map again each entry offset to its position in the pair vector
+            self.entry_offset_index.clear();
+            for (idx, (_, entry_offset)) in
+                self.source_timestamp_entry_offset_pairs.iter().enumerate()
+            {
+                self.entry_offset_index.insert(*entry_offset, idx as _);
+            }
+        }
+
+        // Now we can build the file histogram
+        Ok(FileHistogram::from_timestamp_offset_pairs(
+            self.source_timestamp_entry_offset_pairs.as_slice(),
+            60,
+        ))
     }
 }

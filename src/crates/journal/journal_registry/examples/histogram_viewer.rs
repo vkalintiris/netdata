@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local, Utc};
-use journal_file::{JournalFile, Mmap};
 use journal_file::index::FileIndex;
+use journal_file::{JournalFile, Mmap};
 use std::env;
 use std::num::NonZeroU64;
 use tracing::info;
@@ -126,14 +126,19 @@ fn print_histogram(
             .unwrap_or_else(|| Utc::now())
             .with_timezone(&Local);
 
-        println!("Time range: {} to {}",
+        println!(
+            "Time range: {} to {}",
             start_dt.format("%Y-%m-%d %H:%M:%S"),
-            end_dt.format("%Y-%m-%d %H:%M:%S"));
+            end_dt.format("%Y-%m-%d %H:%M:%S")
+        );
     }
 
     if let Some(duration) = histogram.duration_seconds() {
-        println!("Duration: {} seconds ({:.1} minutes)",
-            duration, duration as f64 / 60.0);
+        println!(
+            "Duration: {} seconds ({:.1} minutes)",
+            duration,
+            duration as f64 / 60.0
+        );
     }
 
     println!("\n=== BUCKET DETAILS ===");
@@ -161,7 +166,8 @@ fn print_histogram(
         buckets
     };
 
-    let entry_offsets = journal_file.entry_offsets()?;
+    let mut entry_offsets = Vec::new();
+    journal_file.entry_offsets(&mut entry_offsets)?;
 
     for bucket_idx in buckets_to_show {
         print_bucket_info(histogram, bucket_idx, &entry_offsets, journal_file)?;
@@ -216,7 +222,8 @@ fn print_bucket_info(
             .unwrap_or_else(|| Utc::now())
             .with_timezone(&Local);
 
-        println!("Bucket #{}: {} entries ({} - {})",
+        println!(
+            "Bucket #{}: {} entries ({} - {})",
             bucket_idx,
             entry_count,
             start_dt.format("%Y-%m-%d %H:%M:%S"),
@@ -231,24 +238,25 @@ fn print_bucket_info(
             let entry_idx = start_idx + i as u32;
             if let Some(offset) = entry_offsets.get(entry_idx as usize) {
                 if let Ok(entry_obj) = journal_file.entry_ref(*offset) {
-                    let timestamp = DateTime::from_timestamp_micros(entry_obj.header.realtime as i64)
-                        .unwrap_or_else(|| Utc::now())
-                        .with_timezone(&Local);
+                    let timestamp =
+                        DateTime::from_timestamp_micros(entry_obj.header.realtime as i64)
+                            .unwrap_or_else(|| Utc::now())
+                            .with_timezone(&Local);
 
                     // For now, just show entry timestamp and basic info
                     // TODO: Add MESSAGE field extraction when memory management issues are resolved
                     let message = format!("Entry #{}", entry_idx);
 
-                    println!("    [{}] {}",
-                        timestamp.format("%H:%M:%S"),
-                        message
-                    );
+                    println!("    [{}] {}", timestamp.format("%H:%M:%S"), message);
                 }
             }
         }
 
         if entry_count > sample_count as u32 {
-            println!("    ... and {} more entries", entry_count - sample_count as u32);
+            println!(
+                "    ... and {} more entries",
+                entry_count - sample_count as u32
+            );
         }
         println!();
     }

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local, Utc};
-use journal_file::{JournalFile, Mmap};
 use journal_file::index::FileIndex;
 use journal_file::index_filter::{IndexFilter, IndexFilterExpr};
+use journal_file::{JournalFile, Mmap};
 use std::env;
 use std::num::NonZeroU64;
 use tracing::info;
@@ -15,11 +15,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get filename from command line arguments
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <journal_file_path> [filter_field=value]...", args[0]);
+        eprintln!(
+            "Usage: {} <journal_file_path> [filter_field=value]...",
+            args[0]
+        );
         eprintln!("Examples:");
         eprintln!("  {} /var/log/journal/.../system.journal", args[0]);
-        eprintln!("  {} /var/log/journal/.../system.journal _SYSTEMD_UNIT=ssh.service", args[0]);
-        eprintln!("  {} /var/log/journal/.../system.journal PRIORITY=3 PRIORITY=4", args[0]);
+        eprintln!(
+            "  {} /var/log/journal/.../system.journal _SYSTEMD_UNIT=ssh.service",
+            args[0]
+        );
+        eprintln!(
+            "  {} /var/log/journal/.../system.journal PRIORITY=3 PRIORITY=4",
+            args[0]
+        );
         std::process::exit(1);
     }
 
@@ -156,9 +165,11 @@ fn print_filtered_histogram(
     if let Some(filter) = filter {
         let filtered_count = filter.count();
         let total_count = histogram.total_entries();
-        println!("Filtered entries: {} ({:.1}% of total)",
-                filtered_count,
-                (filtered_count as f64 / total_count as f64) * 100.0);
+        println!(
+            "Filtered entries: {} ({:.1}% of total)",
+            filtered_count,
+            (filtered_count as f64 / total_count as f64) * 100.0
+        );
     }
 
     if let Some((start_time, end_time)) = histogram.time_range() {
@@ -169,14 +180,19 @@ fn print_filtered_histogram(
             .unwrap_or_else(|| Utc::now())
             .with_timezone(&Local);
 
-        println!("Time range: {} to {}",
+        println!(
+            "Time range: {} to {}",
             start_dt.format("%Y-%m-%d %H:%M:%S"),
-            end_dt.format("%Y-%m-%d %H:%M:%S"));
+            end_dt.format("%Y-%m-%d %H:%M:%S")
+        );
     }
 
     if let Some(duration) = histogram.duration_seconds() {
-        println!("Duration: {} seconds ({:.1} minutes)",
-            duration, duration as f64 / 60.0);
+        println!(
+            "Duration: {} seconds ({:.1} minutes)",
+            duration,
+            duration as f64 / 60.0
+        );
     }
 
     println!("\n=== BUCKET DETAILS ===");
@@ -204,7 +220,8 @@ fn print_filtered_histogram(
         buckets
     };
 
-    let entry_offsets = journal_file.entry_offsets()?;
+    let mut entry_offsets = Vec::new();
+    journal_file.entry_offsets(&mut entry_offsets)?;
 
     for bucket_idx in buckets_to_show {
         print_bucket_info(histogram, bucket_idx, &entry_offsets, journal_file, filter)?;
@@ -269,7 +286,8 @@ fn print_bucket_info(
             .with_timezone(&Local);
 
         if let Some(_filter) = filter {
-            println!("Bucket #{}: {}/{} entries match ({} - {})",
+            println!(
+                "Bucket #{}: {}/{} entries match ({} - {})",
                 bucket_idx,
                 filtered_entry_count,
                 total_entry_count,
@@ -277,7 +295,8 @@ fn print_bucket_info(
                 end_dt.format("%Y-%m-%d %H:%M:%S")
             );
         } else {
-            println!("Bucket #{}: {} entries ({} - {})",
+            println!(
+                "Bucket #{}: {} entries ({} - {})",
                 bucket_idx,
                 total_entry_count,
                 start_dt.format("%Y-%m-%d %H:%M:%S"),
@@ -300,11 +319,13 @@ fn print_bucket_info(
             for entry_idx in sample_indices {
                 if let Some(offset) = entry_offsets.get(entry_idx as usize) {
                     if let Ok(entry_obj) = journal_file.entry_ref(*offset) {
-                        let timestamp = DateTime::from_timestamp_micros(entry_obj.header.realtime as i64)
-                            .unwrap_or_else(|| Utc::now())
-                            .with_timezone(&Local);
+                        let timestamp =
+                            DateTime::from_timestamp_micros(entry_obj.header.realtime as i64)
+                                .unwrap_or_else(|| Utc::now())
+                                .with_timezone(&Local);
 
-                        println!("    [{}] Entry #{}",
+                        println!(
+                            "    [{}] Entry #{}",
                             timestamp.format("%H:%M:%S"),
                             entry_idx
                         );
@@ -313,7 +334,10 @@ fn print_bucket_info(
             }
 
             if filtered_entry_count > 3 {
-                println!("    ... and {} more matching entries", filtered_entry_count - 3);
+                println!(
+                    "    ... and {} more matching entries",
+                    filtered_entry_count - 3
+                );
             }
         }
         println!();
@@ -327,14 +351,17 @@ fn print_available_field_values(file_index: &FileIndex) {
     println!("Available field values (showing first 5 per field):");
 
     // Group by field name
-    let mut field_groups: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut field_groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
 
-    for (field_value, bitmap) in &file_index.entry_indices {
+    for (field_value, bitmap) in &file_index.entries_index {
         if let Some(eq_pos) = field_value.find('=') {
             let field_name = &field_value[..eq_pos];
             let value = &field_value[eq_pos + 1..];
 
-            let entry = field_groups.entry(field_name.to_string()).or_insert_with(Vec::new);
+            let entry = field_groups
+                .entry(field_name.to_string())
+                .or_insert_with(Vec::new);
             if entry.len() < 5 {
                 entry.push(format!("{}={} ({})", field_name, value, bitmap.len()));
             }
@@ -346,7 +373,14 @@ fn print_available_field_values(file_index: &FileIndex) {
         for value in values {
             println!("    {}", value);
         }
-        if values.len() == 5 && file_index.entry_indices.keys().filter(|k| k.starts_with(field_name)).count() > 5 {
+        if values.len() == 5
+            && file_index
+                .entries_index
+                .keys()
+                .filter(|k| k.starts_with(field_name))
+                .count()
+                > 5
+        {
             println!("    ... and more");
         }
         println!();

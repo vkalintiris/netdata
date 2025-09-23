@@ -1,15 +1,14 @@
 use journal_file::JournalFile;
 use journal_file::Mmap;
-use journal_file::index::FileIndex;
+use journal_file::index::{FileIndex, FileIndexer};
 use journal_registry::JournalRegistry;
-use std::collections::HashMap;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
 fn sequential(
     files: &[journal_registry::RegistryFile],
-    facets: &[&[u8]],
+    field_names: &[&[u8]],
 ) -> Vec<(String, FileIndex)> {
     let start_time = Instant::now();
 
@@ -17,20 +16,19 @@ fn sequential(
 
     let mut file_indexes = Vec::new();
 
-    // map from entry offset -> source time entry offset array _index_
-    let mut hm = HashMap::new();
+    let mut file_indexer = FileIndexer::default();
+    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
         let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-        hm.clear();
-        let Ok(jfi) = FileIndex::from_source(&journal_file, facets, &mut hm) else {
+        let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names) else {
             continue;
         };
 
         let mut index_size = 0;
-        for (data_payload, entry_indices) in jfi.entry_indices.iter() {
+        for (data_payload, entry_indices) in jfi.entries_index.iter() {
             index_size += data_payload.len() + entry_indices.serialized_size();
         }
 

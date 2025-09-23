@@ -143,7 +143,7 @@ impl IndexFilter {
                 let mut matches = Vec::with_capacity(i - start);
                 for idx in start..i {
                     let field_value = &self.current_matches[idx];
-                    if let Some(bitmap) = file_index.entry_indices.get(field_value) {
+                    if let Some(bitmap) = file_index.entries_index.get(field_value) {
                         matches.push(IndexFilterExpr::Match(bitmap.clone()));
                     } else {
                         matches.push(IndexFilterExpr::None);
@@ -152,7 +152,7 @@ impl IndexFilter {
                 elements.push(IndexFilterExpr::Disjunction(matches));
             } else {
                 let field_value = &self.current_matches[start];
-                if let Some(bitmap) = file_index.entry_indices.get(field_value) {
+                if let Some(bitmap) = file_index.entries_index.get(field_value) {
                     elements.push(IndexFilterExpr::Match(bitmap.clone()));
                 } else {
                     elements.push(IndexFilterExpr::None);
@@ -250,7 +250,7 @@ impl IndexFilter {
 
     /// Convenience method to create a simple match filter
     pub fn simple_match(file_index: &FileIndex, field_value: &str) -> IndexFilterExpr {
-        if let Some(bitmap) = file_index.entry_indices.get(field_value) {
+        if let Some(bitmap) = file_index.entries_index.get(field_value) {
             IndexFilterExpr::Match(bitmap.clone())
         } else {
             IndexFilterExpr::None
@@ -313,7 +313,7 @@ mod tests {
 
         FileIndex {
             file_histogram: FileHistogram::default(),
-            entry_indices,
+            entries_index: entry_indices,
         }
     }
 
