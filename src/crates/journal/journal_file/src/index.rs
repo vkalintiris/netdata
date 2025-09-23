@@ -56,6 +56,39 @@ pub struct FileHistogram {
 }
 
 impl FileHistogram {
+    pub fn from_bitmap(&self, rb: &RoaringBitmap) -> Vec<(u64, u32)> {
+        let mut result = Vec::new();
+
+        if self.buckets.is_empty() || rb.is_empty() {
+            return result;
+        }
+
+        let mut prev_count = 0;
+
+        for bucket in self.buckets.iter() {
+            let FileBucket {
+                bucket_seconds,
+                last_offset_index,
+            } = bucket;
+
+            // Count all values <= last_offset_index
+            let total_count = rb
+                .iter()
+                .take_while(|&x| x <= *last_offset_index as u32)
+                .count();
+
+            let bucket_count = total_count - prev_count;
+
+            if bucket_count > 0 {
+                result.push((*bucket_seconds, bucket_count as u32));
+            }
+
+            prev_count = total_count;
+        }
+
+        result
+    }
+
     pub fn from_timestamp_offset_pairs(
         timestamp_offset_pairs: &[(u64, NonZeroU64)],
         bucket_size_seconds: u64,
@@ -304,7 +337,7 @@ impl FileIndexer {
                 // entry indices
                 self.entry_indices.clear();
                 for entry_offset in self.entry_offsets.iter() {
-                    let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
+                    let Some(entry_index) = self.entry_offset_index.get(entry_offset) else {
                         continue;
                     };
                     self.entry_indices.push(*entry_index as u32);
@@ -421,7 +454,7 @@ impl FileIndexer {
         // Now we can build the file histogram
         Ok(FileHistogram::from_timestamp_offset_pairs(
             self.source_timestamp_entry_offset_pairs.as_slice(),
-            60,
+            1,
         ))
     }
 }

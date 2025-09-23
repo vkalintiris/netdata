@@ -17,7 +17,7 @@ fn sequential(
     let mut file_indexes = Vec::new();
 
     let mut file_indexer = FileIndexer::default();
-    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
@@ -67,7 +67,7 @@ fn parallel(
 ) -> Vec<(String, FileIndex)> {
     let start_time = Instant::now();
 
-    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 
     // Process files in parallel
     let file_indexes: Vec<_> = files

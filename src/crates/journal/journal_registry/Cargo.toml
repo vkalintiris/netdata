@@ -23,6 +23,8 @@ lz4 = { workspace = true }
 rayon = "1.11.0"
 foyer = { path = "/home/vk/repos/crates/foyer/foyer", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
 tempfile = { workspace = true }
 anyhow = "1.0"
 
@@ -41,3 +43,7 @@ path = "examples/histogram_viewer.rs"
 [[example]]
 name = "filtered_histogram_viewer"
 path = "examples/filtered_histogram_viewer.rs"
+
+[[example]]
+name = "file_index"
+path = "examples/file_index.rs"

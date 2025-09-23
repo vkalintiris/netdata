@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local, Utc};
-use journal_file::index::FileIndex;
+use journal_file::index::{FileIndex, FileIndexer};
 use journal_file::{JournalFile, Mmap};
 use std::env;
 use std::num::NonZeroU64;
@@ -98,7 +98,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Journal file opened successfully");
 
     // Create the FileIndex
-    let file_index = FileIndex::from(&journal_file, systemd_keys.as_slice())?;
+    let mut file_indexer = FileIndexer::default();
+    let file_index = file_indexer.index(
+        &journal_file,
+        b"_SOURCE_REALTIME_TIMESTAMP",
+        systemd_keys.as_slice(),
+    )?;
     info!("FileIndex created successfully");
 
     // Pretty print the FileHistogram
