@@ -28,7 +28,7 @@ pub struct FileHistogram {
 }
 
 impl FileHistogram {
-    pub fn from(
+    pub fn from_journal_file(
         journal_file: &JournalFile<Mmap>,
         entry_offsets: &[NonZeroU64],
         bucket_size_seconds: u64,
@@ -76,6 +76,57 @@ impl FileHistogram {
             bucket_size_seconds,
             buckets,
         })
+    }
+
+    pub fn from_timestamp_offset_pairs(
+        timestamp_offset_pairs: &[(u64, u64)],
+        bucket_size_seconds: u64,
+    ) -> FileHistogram {
+        debug_assert!(timestamp_offset_pairs.is_sorted());
+        debug_assert_ne!(bucket_size_seconds, 0);
+
+        let mut buckets = Vec::new();
+        let mut current_bucket = None;
+
+        // Convert seconds to microseconds for bucket size
+        let bucket_size_micros = bucket_size_seconds * 1_000_000;
+
+        for (offset_index, &(timestamp_micros, _offset)) in
+            timestamp_offset_pairs.iter().enumerate()
+        {
+            // Calculate which bucket this timestamp falls into
+            let bucket = (timestamp_micros / bucket_size_micros) * bucket_size_seconds;
+
+            match current_bucket {
+                None => {
+                    // First entry - don't create bucket yet, just track the bucket
+                    debug_assert_eq!(offset_index, 0);
+                    current_bucket = Some(bucket);
+                }
+                Some(prev_bucket) if bucket > prev_bucket => {
+                    // New bucket boundary - save the LAST index of the previous bucket
+                    buckets.push(FileBucket {
+                        bucket_seconds: prev_bucket,
+                        last_offset_index: offset_index - 1,
+                    });
+                    current_bucket = Some(bucket);
+                }
+                _ => {} // Same bucket, continue
+            }
+        }
+
+        // Don't forget the last bucket!
+        if let Some(last_bucket) = current_bucket {
+            buckets.push(FileBucket {
+                bucket_seconds: last_bucket,
+                last_offset_index: timestamp_offset_pairs.len() - 1,
+            });
+        }
+
+        FileHistogram {
+            bucket_size_seconds,
+            buckets,
+        }
     }
 
     /// Get the end time of the histogram in microseconds since epoch
@@ -215,10 +266,13 @@ impl FileIndex {
     ///
     /// Returns a vector of entry offsets sorted by their _SOURCE_REALTIME_TIMESTAMP value.
     /// If the field is not found or entries don't have this field, returns an empty vector.
-    pub fn entries_sorted_by_source_realtime(
+    pub fn from_source(
         journal_file: &JournalFile<Mmap>,
+        field_names: &[&[u8]],
         entries_hashmap: &mut HashMap<u64, u64>,
-    ) -> Result<()> {
+    ) -> Result<FileIndex> {
+        let mut index = FileIndex::default();
+
         let field_name = b"_SOURCE_REALTIME_TIMESTAMP";
 
         // Get the field data objects for _SOURCE_REALTIME_TIMESTAMP
@@ -262,12 +316,62 @@ impl FileIndex {
 
         timestamp_entries.sort();
 
+        index.file_histogram =
+            FileHistogram::from_timestamp_offset_pairs(timestamp_entries.as_slice(), 60);
+
         entries_hashmap.reserve(timestamp_entries.len());
         for (idx, (_, entry_offset)) in timestamp_entries.iter().enumerate() {
             entries_hashmap.insert(*entry_offset, idx as _);
         }
 
-        Ok(())
+        // second part
+        {
+            let mut ic_offsets = Vec::new();
+            let mut data_indices = Vec::new();
+
+            for field_name in field_names {
+                let field_data_iterator = journal_file.field_data_objects(field_name)?;
+
+                for data_object in field_data_iterator {
+                    let (data_payload, ic) = {
+                        let Ok(data_object) = data_object else {
+                            continue;
+                        };
+
+                        let data_payload =
+                            String::from_utf8_lossy(data_object.payload_bytes()).into_owned();
+                        let Some(ic) = data_object.inlined_cursor() else {
+                            continue;
+                        };
+
+                        (data_payload, ic)
+                    };
+
+                    ic_offsets.clear();
+                    if ic.collect_offsets(journal_file, &mut ic_offsets).is_err() {
+                        continue;
+                    }
+
+                    data_indices.clear();
+                    for entry_offset in ic_offsets.iter() {
+                        let Some(entry_index) = entries_hashmap.get(&entry_offset.get()) else {
+                            continue;
+                        };
+                        data_indices.push(*entry_index as u32);
+                    }
+
+                    data_indices.sort();
+
+                    let mut rb =
+                        RoaringBitmap::from_sorted_iter(data_indices.iter().copied()).unwrap();
+                    rb.optimize();
+
+                    index.entry_indices.insert(data_payload.clone(), rb);
+                }
+            }
+        }
+
+        Ok(index)
     }
 
     #[instrument(skip(journal_file), fields(field_count = field_names.len()))]
@@ -279,7 +383,7 @@ impl FileIndex {
         let mut index = FileIndex::default();
 
         let entry_offsets = journal_file.entry_offsets()?;
-        index.file_histogram = FileHistogram::from(journal_file, &entry_offsets, 60)?;
+        index.file_histogram = FileHistogram::from_journal_file(journal_file, &entry_offsets, 60)?;
 
         let mut data_offsets = Vec::new();
         let mut data_indices = Vec::new();
@@ -316,9 +420,6 @@ impl FileIndex {
                 index.entry_indices.insert(data_payload.clone(), rb);
             }
         }
-
-        Self::entries_sorted_by_source_realtime(journal_file, hm).unwrap();
-        // println!("foo length {:#?}", index.foo.len());
 
         Ok(index)
     }

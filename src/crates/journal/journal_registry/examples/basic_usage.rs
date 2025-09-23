@@ -25,7 +25,7 @@ fn sequential(
         let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
         hm.clear();
-        let Ok(jfi) = FileIndex::from(&journal_file, facets, &mut hm) else {
+        let Ok(jfi) = FileIndex::from_source(&journal_file, facets, &mut hm) else {
             continue;
         };
 
