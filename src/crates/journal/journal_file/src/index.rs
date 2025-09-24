@@ -57,43 +57,37 @@ pub struct FileHistogram {
 
 impl FileHistogram {
     pub fn from_bitmap(&self, rb: &RoaringBitmap) -> Vec<(u64, u32)> {
-        let mut result = Vec::new();
         if self.buckets.is_empty() || rb.is_empty() {
-            return result;
+            return Vec::new();
         }
 
-        let mut bitmap_iter = rb.iter();
-        let mut current_value = bitmap_iter.next();
+        let mut rb_histogram = Vec::new();
+        let mut rb_iter = rb.iter().peekable();
 
-        for bucket in self.buckets.iter() {
-            let FileBucket {
-                bucket_seconds,
-                last_offset_index,
-            } = bucket;
+        for bucket in &self.buckets {
+            let mut count = 0;
 
-            let mut bucket_count = 0;
-
-            // Consume values that belong to this bucket
-            while let Some(value) = current_value {
-                if value <= *last_offset_index as u32 {
-                    bucket_count += 1;
-                    current_value = bitmap_iter.next();
+            // Count values in this bucket
+            while let Some(&value) = rb_iter.peek() {
+                if value <= bucket.last_offset_index as u32 {
+                    count += 1;
+                    rb_iter.next();
                 } else {
                     break;
                 }
             }
 
-            if bucket_count > 0 {
-                result.push((*bucket_seconds, bucket_count as u32));
+            if count > 0 {
+                rb_histogram.push((bucket.bucket_seconds, count));
             }
 
-            // Early exit if we've processed all values
-            if current_value.is_none() {
+            // All values processed
+            if rb_iter.peek().is_none() {
                 break;
             }
         }
 
-        result
+        rb_histogram
     }
 
     pub fn from_timestamp_offset_pairs(
