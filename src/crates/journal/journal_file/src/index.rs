@@ -58,12 +58,12 @@ pub struct FileHistogram {
 impl FileHistogram {
     pub fn from_bitmap(&self, rb: &RoaringBitmap) -> Vec<(u64, u32)> {
         let mut result = Vec::new();
-
         if self.buckets.is_empty() || rb.is_empty() {
             return result;
         }
 
-        let mut prev_count = 0;
+        let mut bitmap_iter = rb.iter();
+        let mut current_value = bitmap_iter.next();
 
         for bucket in self.buckets.iter() {
             let FileBucket {
@@ -71,19 +71,26 @@ impl FileHistogram {
                 last_offset_index,
             } = bucket;
 
-            // Count all values <= last_offset_index
-            let total_count = rb
-                .iter()
-                .take_while(|&x| x <= *last_offset_index as u32)
-                .count();
+            let mut bucket_count = 0;
 
-            let bucket_count = total_count - prev_count;
+            // Consume values that belong to this bucket
+            while let Some(value) = current_value {
+                if value <= *last_offset_index as u32 {
+                    bucket_count += 1;
+                    current_value = bitmap_iter.next();
+                } else {
+                    break;
+                }
+            }
 
             if bucket_count > 0 {
                 result.push((*bucket_seconds, bucket_count as u32));
             }
 
-            prev_count = total_count;
+            // Early exit if we've processed all values
+            if current_value.is_none() {
+                break;
+            }
         }
 
         result
@@ -283,7 +290,8 @@ impl FileIndexer {
         self.entry_offsets.reserve(8);
         self.entry_offset_index.reserve(n_entries);
 
-        let file_histogram = self.build_file_histogram(journal_file, source_timestamp_field, bucket_size_seconds)?;
+        let file_histogram =
+            self.build_file_histogram(journal_file, source_timestamp_field, bucket_size_seconds)?;
         let entries_index = self.build_entries_index(journal_file, field_names)?;
 
         Ok(FileIndex {
