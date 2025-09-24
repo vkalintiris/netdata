@@ -23,7 +23,8 @@ fn sequential(
         let window_size = 8 * 1024 * 1024;
         let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-        let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names) else {
+        let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
+        else {
             continue;
         };
 
@@ -80,7 +81,7 @@ fn parallel(
             let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
             let jfi = file_indexer
-                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names)
+                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
                 .ok()?;
 
             let mut index_size = 0;

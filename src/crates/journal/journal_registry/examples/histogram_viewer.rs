@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &journal_file,
         b"_SOURCE_REALTIME_TIMESTAMP",
         systemd_keys.as_slice(),
+        60,
     )?;
     info!("FileIndex created successfully");
 

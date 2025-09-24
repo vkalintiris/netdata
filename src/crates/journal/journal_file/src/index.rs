@@ -8,7 +8,7 @@ use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{error, warn};
 
 // TODO: pass the field name that should be used to extract the source timestamp
 fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
@@ -215,26 +215,6 @@ impl FileHistogram {
             self.buckets[bucket_index - 1].last_offset_index + 1
         };
         Some((start as u32, bucket.last_offset_index as u32))
-    }
-}
-
-fn get_matching_indices(
-    entry_offsets: &[NonZeroU64],
-    data_offsets: &[NonZeroU64],
-    data_indices: &mut Vec<u32>,
-) {
-    let mut data_iter = data_offsets.iter();
-    let mut current_data = data_iter.next();
-
-    for (i, entry) in entry_offsets.iter().enumerate() {
-        if let Some(data) = current_data {
-            if entry == data {
-                data_indices.push(i as u32);
-                current_data = data_iter.next();
-            }
-        } else {
-            break; // No more data_offsets to match
-        }
     }
 }
 

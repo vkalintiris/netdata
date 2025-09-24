@@ -1,8 +1,6 @@
 use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
 use journal_file::index::FileIndex;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tempfile::TempDir;
 use tracing::{info, warn};
 
 /// A hybrid cache for storing JournalFileIndex with configurable disk storage limit
