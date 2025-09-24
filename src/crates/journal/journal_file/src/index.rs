@@ -273,6 +273,7 @@ impl FileIndexer {
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field: &[u8],
         field_names: &[&[u8]],
+        bucket_size_seconds: u64,
     ) -> Result<FileIndex> {
         let n_entries = journal_file.journal_header_ref().n_entries as _;
         self.source_timestamp_cursor_pairs.reserve(n_entries);
@@ -282,7 +283,7 @@ impl FileIndexer {
         self.entry_offsets.reserve(8);
         self.entry_offset_index.reserve(n_entries);
 
-        let file_histogram = self.build_file_histogram(journal_file, source_timestamp_field)?;
+        let file_histogram = self.build_file_histogram(journal_file, source_timestamp_field, bucket_size_seconds)?;
         let entries_index = self.build_entries_index(journal_file, field_names)?;
 
         Ok(FileIndex {
@@ -360,6 +361,7 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field: &[u8],
+        bucket_size_seconds: u64,
     ) -> Result<FileHistogram> {
         if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field) {
             // Collect the inlined cursors of the source timestamp field
@@ -454,7 +456,7 @@ impl FileIndexer {
         // Now we can build the file histogram
         Ok(FileHistogram::from_timestamp_offset_pairs(
             self.source_timestamp_entry_offset_pairs.as_slice(),
-            1,
+            bucket_size_seconds,
         ))
     }
 }

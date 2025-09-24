@@ -109,7 +109,7 @@ fn demonstrate_file_index(journal_path: &Path) -> Result<(), Box<dyn std::error:
         b"TEST_FIELD".as_slice(),
     ];
 
-    let file_index = file_indexer.index(&journal_file_read, b"TEST_FIELD", &field_names)?;
+    let file_index = file_indexer.index(&journal_file_read, b"TEST_FIELD", &field_names, 1)?;
 
     // Print some basic info about the file index
     let histogram = &file_index.file_histogram;
