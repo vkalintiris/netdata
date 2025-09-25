@@ -6,10 +6,9 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
-fn sequential(
-    files: &[journal_registry::RegistryFile],
-    field_names: &[&[u8]],
-) -> Vec<(String, FileIndex)> {
+use journal_registry::RegistryFile;
+
+fn sequential(files: &[RegistryFile], field_names: &[&[u8]]) -> Vec<(RegistryFile, FileIndex)> {
     let start_time = Instant::now();
 
     let mut total_index_size = 0;
@@ -21,7 +20,7 @@ fn sequential(
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+        let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).unwrap();
 
         let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
         else {
@@ -33,11 +32,11 @@ fn sequential(
             index_size += data_payload.len() + entry_indices.serialized_size();
         }
 
-        info!(file = file.path.to_string_lossy().into_owned(), index_size);
+        info!(file = file.path(), index_size);
 
         total_index_size += index_size;
 
-        file_indexes.push((file.path.to_string_lossy().into_owned(), jfi));
+        file_indexes.push((file.clone(), jfi));
     }
 
     // Count midx_count after parallel processing
@@ -65,7 +64,7 @@ use rayon::prelude::*;
 fn parallel(
     files: &[journal_registry::RegistryFile],
     field_names: &[&[u8]],
-) -> Vec<(String, FileIndex)> {
+) -> Vec<(RegistryFile, FileIndex)> {
     let start_time = Instant::now();
 
     const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
@@ -78,7 +77,7 @@ fn parallel(
             let mut file_indexer = FileIndexer::default();
             let window_size = 8 * 1024 * 1024;
 
-            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
+            let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
 
             let jfi = file_indexer
                 .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
@@ -89,9 +88,9 @@ fn parallel(
                 index_size += data_payload.len() + entry_indices.serialized_size();
             }
 
-            info!(file = file.path.to_string_lossy().into_owned(), index_size);
+            info!(file = file.path(), index_size);
 
-            Some((file.path.to_string_lossy().into_owned(), jfi, index_size))
+            Some((file, jfi, index_size))
         })
         .collect();
 
@@ -117,7 +116,7 @@ fn parallel(
     // Return without the size component
     file_indexes
         .into_iter()
-        .map(|(path, index, _)| (path, index))
+        .map(|(path, index, _)| (path.clone(), index))
         .collect()
 }
 
@@ -209,8 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut files = registry.query().execute();
-    files.sort_by_key(|x| x.path.clone());
-    files.sort_by_key(|x| x.size);
+    files.sort_by_key(|x| String::from(x.path()));
+    files.sort_by_key(|x| x.size());
     files.reverse();
     // files.truncate(5);
 

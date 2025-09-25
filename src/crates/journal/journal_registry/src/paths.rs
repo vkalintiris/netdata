@@ -4,7 +4,7 @@
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum JournalFileStatus {
+pub(crate) enum JournalFileStatus {
     Active,
     Archived {
         seqnum_id: Uuid,
@@ -66,31 +66,31 @@ impl JournalFileStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum JournalSource {
+pub(crate) enum JournalFileSource {
     System,
     User(u32),
     Remote(String),
     Unknown(String),
 }
 
-impl JournalSource {
+impl JournalFileSource {
     /// Parse the journal basename from the end of the path, returning the basename and the remaining path
     fn parse(path: &str) -> Option<(Self, &str)> {
         // Split on the last '/' to get directory and basename
         let (dir_path, basename) = path.rsplit_once('/')?;
 
         let journal_type = if basename == "system" {
-            JournalSource::System
+            JournalFileSource::System
         } else if let Some(uid_str) = basename.strip_prefix("user-") {
             if let Ok(uid) = uid_str.parse::<u32>() {
-                JournalSource::User(uid)
+                JournalFileSource::User(uid)
             } else {
-                JournalSource::Unknown(basename.to_string())
+                JournalFileSource::Unknown(basename.to_string())
             }
         } else if let Some(remote_host) = basename.strip_prefix("remote-") {
-            JournalSource::Remote(remote_host.to_string())
+            JournalFileSource::Remote(remote_host.to_string())
         } else {
-            JournalSource::Unknown(basename.to_string())
+            JournalFileSource::Unknown(basename.to_string())
         };
 
         Some((journal_type, dir_path))
@@ -100,11 +100,10 @@ impl JournalSource {
 /// Parse a journal file path into its components
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct JournalFileInfo {
-    path: String,
-    status: JournalFileStatus,
-    source: JournalSource,
-    machine_id: Option<Uuid>,
-    namespace: Option<String>,
+    pub status: JournalFileStatus,
+    pub source: JournalFileSource,
+    pub machine_id: Option<Uuid>,
+    pub namespace: Option<String>,
 }
 
 impl JournalFileInfo {
@@ -115,7 +114,7 @@ impl JournalFileInfo {
 
         // Parse from right to left
         let (status, path_after_status) = JournalFileStatus::parse(path)?;
-        let (source, path_after_source) = JournalSource::parse(path_after_status)?;
+        let (source, path_after_source) = JournalFileSource::parse(path_after_status)?;
 
         // Try to parse machine ID and namespace from the directory name
         let (machine_id, namespace) = if !path_after_source.is_empty() {
@@ -140,7 +139,6 @@ impl JournalFileInfo {
         };
 
         Some(JournalFileInfo {
-            path: String::from(path),
             status,
             source,
             machine_id,
@@ -153,15 +151,34 @@ impl JournalFileInfo {
         matches!(self.status, JournalFileStatus::Active)
     }
 
+    /// Check if this is an archived journal file
+    pub fn is_archived(&self) -> bool {
+        matches!(self.status, JournalFileStatus::Archived { .. })
+    }
+
     /// Check if this is a corrupted/disposed journal file
     pub fn is_disposed(&self) -> bool {
         matches!(self.status, JournalFileStatus::Disposed { .. })
     }
 
+    /// Check if this contains logs from users
+    pub fn is_user(&self) -> bool {
+        matches!(self.source, JournalFileSource::User(_))
+    }
+
+    /// Check if this contains logs from system
+    pub fn is_system(&self) -> bool {
+        matches!(self.source, JournalFileSource::System)
+    }
+
+    pub fn is_remote(&self) -> bool {
+        matches!(self.source, JournalFileSource::Remote(_))
+    }
+
     /// Get the user ID if this is a user journal
     pub fn user_id(&self) -> Option<u32> {
         match &self.source {
-            JournalSource::User(uid) => Some(*uid),
+            JournalFileSource::User(uid) => Some(*uid),
             _ => None,
         }
     }
@@ -169,7 +186,7 @@ impl JournalFileInfo {
     /// Get the remote host if this is a remote journal
     pub fn remote_host(&self) -> Option<&str> {
         match &self.source {
-            JournalSource::Remote(host) => Some(host.as_str()),
+            JournalFileSource::Remote(host) => Some(host.as_str()),
             _ => None,
         }
     }
@@ -177,29 +194,5 @@ impl JournalFileInfo {
     /// Get the namespace if this journal belongs to a namespace
     pub fn namespace(&self) -> Option<&str> {
         self.namespace.as_deref()
-    }
-}
-
-fn main() {
-    let test_paths = vec![
-        "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e/user-1000@00062f970122eeee-c3edad506a68f0fd.journal~",
-        "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e.netdata/system@3a5ff40d19de4cfab05abfec1d132479-00000000010dcee9-00062f669854c4d3.journal",
-        "/var/log/remote/remote-10.20.1.98@1c510f67f51d4ebbb61e96571bfb8967-0000000000b13cb6-00063f6d9d99c2d8.journal",
-        "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e/system.journal",
-        "/var/log/journal/system.journal",
-    ];
-
-    for path in test_paths {
-        println!("\nParsing: {}", path);
-
-        if let Some(parsed) = JournalFileInfo::parse(path) {
-            println!("  Path: {:?}", parsed.path);
-            println!("  Status: {:?}", parsed.status);
-            println!("  Source: {:?}", parsed.source);
-            println!("  Machine ID: {:?}", parsed.machine_id);
-            println!("  Namespace: {:?}", parsed.namespace);
-        } else {
-            println!("  Failed to parse!");
-        }
     }
 }

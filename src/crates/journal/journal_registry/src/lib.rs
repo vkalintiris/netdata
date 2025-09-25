@@ -5,15 +5,15 @@ use std::time::SystemTime;
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
-use regex::Regex;
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
 pub mod cache;
-pub mod paths;
+mod paths;
+use uuid::Uuid;
 
-use crate::paths::JournalFileInfo;
+use crate::paths::{JournalFileInfo, JournalFileStatus};
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -47,14 +47,16 @@ pub type Result<T> = std::result::Result<T, RegistryError>;
 /// Represents a systemd journal file with parsed metadata
 #[derive(Debug, Clone)]
 pub struct RegistryFile {
+    path: String,
+
     /// Parsed journal file information
-    pub info: JournalFileInfo,
+    info: JournalFileInfo,
 
     /// Last modification time
-    pub modified: SystemTime,
+    modified: SystemTime,
 
     /// File size in bytes
-    pub size: u64,
+    size: u64,
 }
 
 impl RegistryFile {
@@ -76,33 +78,19 @@ impl RegistryFile {
         })?;
 
         Ok(Self {
+            path: String::from(path_str),
             info,
             size: metadata.len(),
             modified: metadata.modified()?,
         })
     }
 
-    fn parse_filename(path: &Path) -> (Option<String>, Option<u64>, Option<u64>) {
-        let jr = Regex::new(
-                r"(?:^|/)(?:[^@/]+@)?(?P<machine>[a-f0-9]+)-(?P<seq>[a-f0-9]+)-(?P<ts>[a-f0-9]+)\.journal(?:~)?$"
-            ).unwrap();
+    pub fn path(&self) -> &str {
+        &self.path
+    }
 
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|filename| {
-                jr.captures(filename).map(|caps| {
-                    let machine_id = caps.name("machine").map(|m| m.as_str().to_string());
-                    let sequence_number = caps
-                        .name("seq")
-                        .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
-                    let first_timestamp = caps
-                        .name("ts")
-                        .and_then(|m| u64::from_str_radix(m.as_str(), 16).ok());
-
-                    (machine_id, sequence_number, first_timestamp)
-                })
-            })
-            .unwrap_or((None, None, None))
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     /// Check if a path looks like a journal file
@@ -125,23 +113,17 @@ impl RegistryFile {
 
     /// Get the user ID if this is a user journal
     pub fn user_id(&self) -> Option<u32> {
-        match &self.file_info.source {
-            JournalSource::User(uid) => Some(*uid),
-            _ => None,
-        }
+        self.info.user_id()
     }
 
     /// Get the remote host if this is a remote journal
     pub fn remote_host(&self) -> Option<&str> {
-        match &self.file_info.source {
-            JournalSource::Remote(host) => Some(host.as_str()),
-            _ => None,
-        }
+        self.info.remote_host()
     }
 
     /// Get the namespace if this journal belongs to a namespace
     pub fn namespace(&self) -> Option<&str> {
-        self.file_info.namespace.as_deref()
+        self.info.namespace()
     }
 }
 
@@ -405,24 +387,11 @@ impl Drop for JournalRegistry {
     }
 }
 
-/// A builder for querying journal files with various filters
-pub struct RegistryQuery<'a> {
-    registry: &'a JournalRegistry,
-    source_types: Option<Vec<SourceType>>,
-    machine_ids: Option<Vec<String>>,
-    time_range: Option<(Option<SystemTime>, Option<SystemTime>)>,
-    size_range: Option<(Option<u64>, Option<u64>)>,
-    path_pattern: Option<Regex>,
-    limit: Option<usize>,
-    sort_by: Option<SortBy>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum SortBy {
     Modified(SortOrder),
     Size(SortOrder),
     Path(SortOrder),
-    Sequence(SortOrder),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -431,45 +400,105 @@ pub enum SortOrder {
     Descending,
 }
 
+/// A builder for querying journal files with various filters
+pub struct RegistryQuery<'a> {
+    registry: &'a JournalRegistry,
+    source_filter: Option<SourceFilter>, // Changed this
+    statuses: Option<Vec<JournalFileStatus>>,
+    machine_ids: Option<Vec<Uuid>>,
+    namespaces: Option<Vec<String>>,
+    time_range: Option<(Option<SystemTime>, Option<SystemTime>)>,
+    size_range: Option<(Option<u64>, Option<u64>)>,
+    limit: Option<usize>,
+    sort_by: Option<SortBy>,
+    include_disposed: bool,
+}
+
+/// Filter for journal sources
+#[derive(Debug, Clone)]
+enum SourceFilter {
+    /// Match any system journal
+    AnySystem,
+    /// Match any user journal
+    AnyUser,
+    /// Match a specific user's journals
+    SpecificUser(u32),
+    /// Match any remote journal
+    AnyRemote,
+    /// Match a specific remote host's journals
+    SpecificRemote(String),
+}
+
 impl<'a> RegistryQuery<'a> {
     fn new(registry: &'a JournalRegistry) -> Self {
         Self {
             registry,
-            source_types: None,
+            source_filter: None,
+            statuses: None,
             machine_ids: None,
+            namespaces: None,
             time_range: None,
             size_range: None,
-            path_pattern: None,
             limit: None,
             sort_by: None,
+            include_disposed: false,
         }
     }
 
-    /// Filter by source type(s)
-    pub fn source(mut self, source_type: SourceType) -> Self {
-        self.source_types
-            .get_or_insert_with(Vec::new)
-            .push(source_type);
+    /// Filter for system journals only
+    pub fn system(mut self) -> Self {
+        self.source_filter = Some(SourceFilter::AnySystem);
         self
     }
 
-    /// Filter by multiple source types
-    pub fn sources(mut self, types: impl IntoIterator<Item = SourceType>) -> Self {
-        self.source_types = Some(types.into_iter().collect());
+    /// Filter for user journals (optionally for a specific user)
+    pub fn user(mut self, uid: Option<u32>) -> Self {
+        self.source_filter = Some(match uid {
+            Some(uid) => SourceFilter::SpecificUser(uid),
+            None => SourceFilter::AnyUser,
+        });
+        self
+    }
+
+    /// Filter for remote journals (optionally for a specific host)
+    pub fn remote(mut self, host: Option<String>) -> Self {
+        self.source_filter = Some(match host {
+            Some(host) => SourceFilter::SpecificRemote(host),
+            None => SourceFilter::AnyRemote,
+        });
+        self
+    }
+
+    /// Filter by journal status
+    fn status(mut self, status: JournalFileStatus) -> Self {
+        self.statuses.get_or_insert_with(Vec::new).push(status);
+        self
+    }
+
+    /// Only include active journals
+    pub fn active_only(self) -> Self {
+        self.status(JournalFileStatus::Active)
+    }
+
+    /// Include disposed/corrupted journals
+    pub fn include_disposed(mut self) -> Self {
+        self.include_disposed = true;
         self
     }
 
     /// Filter by machine ID
-    pub fn machine(mut self, machine_id: impl Into<String>) -> Self {
+    pub fn machine(mut self, machine_id: Uuid) -> Self {
         self.machine_ids
             .get_or_insert_with(Vec::new)
-            .push(machine_id.into());
+            .push(machine_id);
         self
     }
 
-    /// Filter by multiple machine IDs
-    pub fn machines(mut self, ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.machine_ids = Some(ids.into_iter().map(Into::into).collect());
+    /// Filter by namespace
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespaces
+            .get_or_insert_with(Vec::new)
+            .push(namespace.into());
         self
     }
 
@@ -547,12 +576,6 @@ impl<'a> RegistryQuery<'a> {
                     SortOrder::Ascending => results.sort_by(|a, b| a.path.cmp(&b.path)),
                     SortOrder::Descending => results.sort_by(|a, b| b.path.cmp(&a.path)),
                 },
-                SortBy::Sequence(order) => match order {
-                    SortOrder::Ascending => results.sort_by_key(|f| f.sequence_number.unwrap_or(0)),
-                    SortOrder::Descending => {
-                        results.sort_by_key(|f| std::cmp::Reverse(f.sequence_number.unwrap_or(0)))
-                    }
-                },
             }
         }
 
@@ -596,17 +619,37 @@ impl<'a> RegistryQuery<'a> {
 
     /// Internal: Check if a file matches all filters
     fn matches(&self, file: &RegistryFile) -> bool {
-        // Check source type
-        if let Some(ref types) = self.source_types {
-            if !types.contains(&file.source_type) {
+        // Check if disposed files should be excluded
+        if !self.include_disposed && file.info.is_disposed() {
+            return false;
+        }
+
+        // Check source filter
+        if let Some(ref filter) = self.source_filter {
+            if !self.matches_source_filter(filter, file) {
+                return false;
+            }
+        }
+
+        // Check status
+        if let Some(ref statuses) = self.statuses {
+            if !statuses.contains(&file.info.status) {
                 return false;
             }
         }
 
         // Check machine ID
         if let Some(ref ids) = self.machine_ids {
-            match &file.machine_id {
+            match &file.info.machine_id {
                 Some(id) if ids.contains(id) => {}
+                _ => return false,
+            }
+        }
+
+        // Check namespace
+        if let Some(ref namespaces) = self.namespaces {
+            match &file.info.namespace {
+                Some(ns) if namespaces.contains(ns) => {}
                 _ => return false,
             }
         }
@@ -639,13 +682,17 @@ impl<'a> RegistryQuery<'a> {
             }
         }
 
-        // Check path pattern
-        if let Some(ref pattern) = self.path_pattern {
-            if !pattern.is_match(&file.path.to_string_lossy()) {
-                return false;
-            }
-        }
-
         true
+    }
+
+    /// Check if a file matches the source filter
+    fn matches_source_filter(&self, filter: &SourceFilter, file: &RegistryFile) -> bool {
+        match filter {
+            SourceFilter::AnySystem => file.info.is_system(),
+            SourceFilter::AnyUser => file.info.is_user(),
+            SourceFilter::SpecificUser(uid) => file.info.user_id() == Some(*uid),
+            SourceFilter::AnyRemote => file.info.is_remote(),
+            SourceFilter::SpecificRemote(host) => file.info.remote_host() == Some(host.as_str()),
+        }
     }
 }
