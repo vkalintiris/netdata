@@ -28,6 +28,7 @@ rand = "0.8"
 tempfile = { workspace = true }
 anyhow = "1.0"
 arbitrary = "1.3"
+uuid = { workspace = true }
 
 [[example]]
 name = "basic_usage"
@@ -52,3 +53,7 @@ path = "examples/file_index.rs"
 [[example]]
 name = "fuzzy_histogram_test"
 path = "examples/fuzzy_histogram_test.rs"
+
+[[example]]
+name = "paths"
+path = "examples/paths.rs"
