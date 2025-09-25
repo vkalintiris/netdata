@@ -96,11 +96,13 @@ impl JournalBasename {
     fn new(jfs: &JournalFileStatus, path: &str) -> Option<Self> {
         let basename = strip_journal_file_status(jfs, path)?;
 
-        if basename == "system" {
+        let (_, basename) = basename.rsplit_once('/')?;
+
+        if basename.ends_with("system") {
             return Some(JournalBasename::System);
         }
 
-        if let Some(uid_str) = basename.strip_prefix("user-") {
+        if let Some(uid_str) = basename.strip_suffix("user-") {
             if let Ok(uid) = uid_str.parse::<u32>() {
                 return Some(JournalBasename::User(uid));
             }
@@ -114,18 +116,74 @@ impl JournalBasename {
     }
 }
 
+fn strip_journal_base_name<'a>(
+    jbs: &JournalBasename,
+    jfs: &JournalFileStatus,
+    path: &'a str,
+) -> Option<&'a str> {
+    let path = strip_journal_file_status(jfs, path)?;
+    println!("Tsimpa....... {:#?}", path);
+
+    println!("The fuck?");
+    match jbs {
+        JournalBasename::System => {
+            let r = path.strip_suffix("system");
+            println!("r: {:#?}, path: {:#?}", r, path);
+            return r;
+        }
+        JournalBasename::User(uid) => path.strip_suffix(format!("user-{}", uid).as_str()),
+        JournalBasename::Remote(remote) => path.strip_suffix(remote.as_str()),
+        JournalBasename::Unkonwn(unknown) => path.strip_suffix(unknown.as_str()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineNamespace {
+    machine_id: Uuid,
+    namespace: Option<String>,
+}
+
+impl MachineNamespace {
+    fn new(jbs: &JournalBasename, jfs: &JournalFileStatus, path: &str) -> Option<Self> {
+        use std::path::{Path, PathBuf};
+
+        let p = Path::new(path);
+        let dirname = p
+            .parent()
+            .and_then(|x| x.file_name())
+            .and_then(|x| x.to_str())?;
+
+        if let Some((id_str, ns)) = dirname.split_once('.') {
+            // Has namespace
+            let machine_id = Uuid::try_parse(id_str).ok()?;
+            Some(MachineNamespace {
+                machine_id,
+                namespace: Some(ns.to_string()),
+            })
+        } else {
+            // No namespace, just machine ID
+            let machine_id = Uuid::try_parse(dirname).ok()?;
+            Some(MachineNamespace {
+                machine_id,
+                namespace: None,
+            })
+        }
+    }
+}
+
 fn main() {
-    let p = "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e/user-1000@00062f970122eeee-c3edad506a68f0fd.journal~";
-    let s = JournalFileStatus::from_path(p).unwrap();
-    println!("{:#?}", s);
+    // let path = "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e/user-1000@00062f970122eeee-c3edad506a68f0fd.journal~";
+    // let path = "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e.netdata/system@3a5ff40d19de4cfab05abfec1d132479-00000000010dcee9-00062f669854c4d3.journal";
 
-    let p = "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e.netdata/system@3a5ff40d19de4cfab05abfec1d132479-00000000010dcee9-00062f669854c4d3.journal";
-    let s = JournalFileStatus::from_path(p).unwrap();
-    println!("{:#?}", s);
+    // let path = "/var/log/remote/remote-10.20.1.98@1c510f67f51d4ebbb61e96571bfb8967-0000000000b13cb6-00063f6d9d99c2d8.journal";
+    let path = "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e.netdata/system@3a5ff40d19de4cfab05abfec1d132479-00000000010dcee9-00062f669854c4d3.journal";
+    let jfs = JournalFileStatus::from_path(path).unwrap();
+    let jbs = JournalBasename::new(&jfs, path).unwrap();
 
-    let p = "remote-10.20.1.98@1c510f67f51d4ebbb61e96571bfb8967-0000000000b13cb6-00063f6d9d99c2d8.journal";
-    let s = JournalFileStatus::from_path(p).unwrap();
-    println!("{:#?}", s);
+    let mn = MachineNamespace::new(&jbs, &jfs, path);
 
-    println!("basename: {:#?}", JournalBasename::new(&s, p));
+    println!("{:#?}", path);
+    println!("jfs: {:#?}", jfs);
+    println!("jbs: {:#?}", jbs);
+    println!("mn: {:#?}", mn);
 }
