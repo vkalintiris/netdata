@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use journal_file::index::FileHistogram;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use regex::Regex;
@@ -11,57 +10,10 @@ use thiserror::Error;
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
-use std::convert::TryFrom;
-
 pub mod cache;
+pub mod paths;
 
-#[derive(Debug, Error)]
-pub enum SourceTypeError {
-    #[error("Path contains invalid UTF-8")]
-    InvalidUtf8,
-
-    #[error("Path is empty")]
-    EmptyPath,
-
-    #[error("Cannot determine source type from path: {0}")]
-    Indeterminate(PathBuf),
-}
-
-impl TryFrom<&Path> for SourceType {
-    type Error = SourceTypeError;
-
-    fn try_from(path: &Path) -> std::result::Result<Self, Self::Error> {
-        // Check if path is empty
-        if path.as_os_str().is_empty() {
-            return Err(SourceTypeError::EmptyPath);
-        }
-
-        let path_str = path.to_string_lossy();
-
-        // Determine the source type
-        let source_type = if path_str.contains("/remote/") {
-            SourceType::Remote
-        } else if path_str.contains("/system") || path_str.contains("/system.journal") {
-            SourceType::System
-        } else if path_str.contains("/user") || path_str.contains("/user-") {
-            SourceType::User
-        } else if path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().contains('.'))
-            .unwrap_or(false)
-        {
-            SourceType::Namespace
-        } else {
-            if !path_str.contains("/journal") && !path_str.ends_with(".journal") {
-                return Err(SourceTypeError::Indeterminate(path.to_path_buf()));
-            }
-            SourceType::Other
-        };
-
-        Ok(source_type)
-    }
-}
+use crate::paths::JournalFileInfo;
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -95,54 +47,14 @@ pub type Result<T> = std::result::Result<T, RegistryError>;
 /// Represents a systemd journal file with parsed metadata
 #[derive(Debug, Clone)]
 pub struct RegistryFile {
-    /// Full path to the journal file
-    pub path: PathBuf,
-
-    /// File size in bytes
-    pub size: u64,
+    /// Parsed journal file information
+    pub info: JournalFileInfo,
 
     /// Last modification time
     pub modified: SystemTime,
 
-    /// Source type based on directory location
-    pub source_type: SourceType,
-
-    /// Machine ID or writer ID if extractable from filename
-    pub machine_id: Option<String>,
-
-    /// Sequence number if extractable from filename
-    pub sequence_number: Option<u64>,
-
-    /// First message timestamp if extractable from filename
-    pub first_timestamp: Option<u64>,
-}
-
-/// Represents the histogram information for a systemd journal file
-#[derive(Debug, Clone)]
-pub struct RegistryFileHistogram {
-    histogram_index: FileHistogram,
-    facet_entries: HashMap<String, Vec<u8>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceType {
-    System,
-    User,
-    Remote,
-    Namespace,
-    Other,
-}
-
-impl std::fmt::Display for SourceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::System => write!(f, "system"),
-            Self::User => write!(f, "user"),
-            Self::Remote => write!(f, "remote"),
-            Self::Namespace => write!(f, "namespace"),
-            Self::Other => write!(f, "other"),
-        }
-    }
+    /// File size in bytes
+    pub size: u64,
 }
 
 impl RegistryFile {
@@ -154,19 +66,19 @@ impl RegistryFile {
             source: e,
         })?;
 
-        let source_type = SourceType::try_from(path)
-            .map_err(|e| RegistryError::InvalidFilename(e.to_string()))?;
+        // Parse the path using JournalFileInfo
+        let path_str = path.to_str().ok_or_else(|| {
+            RegistryError::InvalidFilename("Path contains invalid UTF-8".to_string())
+        })?;
 
-        let (machine_id, sequence_number, first_timestamp) = Self::parse_filename(path);
+        let info = JournalFileInfo::parse(path_str).ok_or_else(|| {
+            RegistryError::InvalidFilename(format!("Cannot parse journal file path: {}", path_str))
+        })?;
 
         Ok(Self {
-            path: path.to_path_buf(),
+            info,
             size: metadata.len(),
             modified: metadata.modified()?,
-            source_type,
-            machine_id,
-            sequence_number,
-            first_timestamp,
         })
     }
 
@@ -201,7 +113,36 @@ impl RegistryFile {
             .unwrap_or(false)
     }
 
-    // pub fn histogram(&self) -> RegistryFileHistogram {}
+    /// Check if this is an active journal file
+    pub fn is_active(&self) -> bool {
+        self.info.is_active()
+    }
+
+    /// Check if this is a disposed/corrupted journal file
+    pub fn is_disposed(&self) -> bool {
+        self.info.is_disposed()
+    }
+
+    /// Get the user ID if this is a user journal
+    pub fn user_id(&self) -> Option<u32> {
+        match &self.file_info.source {
+            JournalSource::User(uid) => Some(*uid),
+            _ => None,
+        }
+    }
+
+    /// Get the remote host if this is a remote journal
+    pub fn remote_host(&self) -> Option<&str> {
+        match &self.file_info.source {
+            JournalSource::Remote(host) => Some(host.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Get the namespace if this journal belongs to a namespace
+    pub fn namespace(&self) -> Option<&str> {
+        self.file_info.namespace.as_deref()
+    }
 }
 
 /// Internal watcher state
