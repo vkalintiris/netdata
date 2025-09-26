@@ -356,14 +356,6 @@ impl JournalRegistry {
                         debug!("Removed journal file: {:?}", path);
                     }
                 }
-                EventKind::Modify(_) => {
-                    if !path.is_dir() && RegistryFile::is_journal_file(&path) {
-                        if let Ok(journal_file) = RegistryFile::from_path(&path) {
-                            files.write().insert(path.clone(), journal_file.clone());
-                            debug!("Modified journal file: {:?}", path);
-                        }
-                    }
-                }
                 _ => {}
             }
         }
