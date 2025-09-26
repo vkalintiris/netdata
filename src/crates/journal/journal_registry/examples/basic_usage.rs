@@ -223,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registry.query().total_size() as f64 / (1024.0 * 1024.0)
     );
 
-    tokio::time::sleep(Duration::from_secs(100)).await;
+    // tokio::time::sleep(Duration::from_secs(100)).await;
 
     Ok(())
 }
