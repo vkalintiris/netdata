@@ -166,6 +166,7 @@ fn main() {
         "/var/log/remote/remote-10.20.1.98@1c510f67f51d4ebbb61e96571bfb8967-0000000000b13cb6-00063f6d9d99c2d8.journal",
         "/var/log/journal/dd6fe19058f643f9bd46d5d3aafa8c0e/system.journal",
         "/var/log/journal/system.journal",
+        "/var/log/remote/remote-10.20.1.98.journal",
     ];
 
     for path in test_paths {
