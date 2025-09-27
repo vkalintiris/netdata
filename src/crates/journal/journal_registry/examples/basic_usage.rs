@@ -7,9 +7,9 @@ use journal_registry::JournalRegistry;
 use std::time::Instant;
 use tracing::{info, warn};
 
-use journal_registry::RegistryFile;
+use journal_registry::log;
 
-fn sequential(files: &[RegistryFile], field_names: &[&[u8]]) -> Vec<(RegistryFile, FileIndex)> {
+fn sequential(files: &[log::File], field_names: &[&[u8]]) -> Vec<(log::File, FileIndex)> {
     let start_time = Instant::now();
 
     let mut total_index_size = 0;
@@ -21,7 +21,7 @@ fn sequential(files: &[RegistryFile], field_names: &[&[u8]]) -> Vec<(RegistryFil
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).unwrap();
+        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
         let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
         else {
@@ -33,7 +33,7 @@ fn sequential(files: &[RegistryFile], field_names: &[&[u8]]) -> Vec<(RegistryFil
             index_size += data_payload.len() + entry_indices.serialized_size();
         }
 
-        info!(file = file.path(), index_size);
+        info!(file.path, index_size);
 
         total_index_size += index_size;
 
@@ -62,10 +62,7 @@ fn sequential(files: &[RegistryFile], field_names: &[&[u8]]) -> Vec<(RegistryFil
 
 use rayon::prelude::*;
 
-fn parallel(
-    files: &[journal_registry::RegistryFile],
-    field_names: &[&[u8]],
-) -> Vec<(RegistryFile, FileIndex)> {
+fn parallel(files: &[log::File], field_names: &[&[u8]]) -> Vec<(log::File, FileIndex)> {
     let start_time = Instant::now();
 
     const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
@@ -78,7 +75,7 @@ fn parallel(
             let mut file_indexer = FileIndexer::default();
             let window_size = 8 * 1024 * 1024;
 
-            let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
+            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
             let jfi = file_indexer
                 .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
@@ -89,7 +86,7 @@ fn parallel(
                 index_size += data_payload.len() + entry_indices.serialized_size();
             }
 
-            info!(file = file.path(), index_size);
+            info!(file.path, index_size);
 
             Some((file, jfi, index_size))
         })
@@ -209,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut files = registry.get_files();
-    files.sort_by_key(|x| String::from(x.path()));
+    files.sort_by_key(|f| String::from(&f.path));
     files.reverse();
     // files.truncate(5);
 

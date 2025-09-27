@@ -5,13 +5,13 @@ use std::sync::Arc;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
 pub mod cache;
-mod paths;
+pub mod paths;
 
-use crate::paths::JournalFile;
+pub use crate::paths as log;
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -42,68 +42,6 @@ pub enum RegistryError {
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
 
-/// Represents a systemd journal file with parsed metadata
-#[derive(Debug, Clone)]
-pub struct RegistryFile {
-    /// Parsed journal file information
-    info: JournalFile,
-}
-
-impl RegistryFile {
-    /// Parse a journal file path and extract metadata
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-
-        // Parse the path using JournalFileInfo
-        let path_str = path.to_str().ok_or_else(|| {
-            RegistryError::InvalidFilename("Path contains invalid UTF-8".to_string())
-        })?;
-
-        let info = JournalFile::parse(path_str).ok_or_else(|| {
-            RegistryError::InvalidFilename(format!("Cannot parse journal file path: {}", path_str))
-        })?;
-
-        Ok(Self { info })
-    }
-
-    pub fn path(&self) -> &str {
-        &self.info.path
-    }
-
-    /// Check if a path looks like a journal file
-    pub fn is_journal_file(path: &Path) -> bool {
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext == "journal" || ext == "journal~")
-            .unwrap_or(false)
-    }
-
-    /// Check if this is an active journal file
-    pub fn is_active(&self) -> bool {
-        self.info.is_active()
-    }
-
-    /// Check if this is a disposed/corrupted journal file
-    pub fn is_disposed(&self) -> bool {
-        self.info.is_disposed()
-    }
-
-    /// Get the user ID if this is a user journal
-    pub fn user_id(&self) -> Option<u32> {
-        self.info.user_id()
-    }
-
-    /// Get the remote host if this is a remote journal
-    pub fn remote_host(&self) -> Option<&str> {
-        self.info.remote_host()
-    }
-
-    /// Get the namespace if this journal belongs to a namespace
-    pub fn namespace(&self) -> Option<&str> {
-        self.info.namespace()
-    }
-}
-
 /// Internal watcher state
 struct WatcherState {
     watcher: RecommendedWatcher,
@@ -113,7 +51,7 @@ struct WatcherState {
 /// Registry of journal files with automatic file system monitoring
 pub struct JournalRegistry {
     /// Currently tracked journal files
-    files: Arc<RwLock<HashMap<PathBuf, RegistryFile>>>,
+    files: Arc<RwLock<HashMap<String, log::File>>>,
 
     /// Directories being monitored
     watch_dirs: Arc<RwLock<HashSet<PathBuf>>>,
@@ -122,10 +60,10 @@ pub struct JournalRegistry {
     watcher_state: Arc<RwLock<Option<WatcherState>>>,
 
     /// Newly discovered files
-    new_files: Arc<RwLock<Vec<RegistryFile>>>,
+    new_files: Arc<RwLock<Vec<log::File>>>,
 
     /// Newly discovered files
-    deleted_files: Arc<RwLock<Vec<RegistryFile>>>,
+    deleted_files: Arc<RwLock<Vec<log::File>>>,
 }
 
 impl JournalRegistry {
@@ -166,6 +104,7 @@ impl JournalRegistry {
         // Spawn background task to process events
         let task_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(250));
+
             loop {
                 interval.tick().await;
 
@@ -255,97 +194,53 @@ impl JournalRegistry {
         self.watch_dirs.write().remove(&canonical_dir);
 
         // Remove all files under this directory
-        let mut files = self.files.write();
-        let removed_files: Vec<_> = files
-            .keys()
-            .filter(|path| path.starts_with(&canonical_dir))
-            .cloned()
-            .collect();
-
-        for path in removed_files {
-            files.remove(&path);
-        }
-
-        Ok(())
+        todo!();
     }
 
     /// Get a snapshot of all current journal files
-    pub fn get_files(&self) -> Vec<RegistryFile> {
+    pub fn get_files(&self) -> Vec<log::File> {
         self.files.read().values().cloned().collect()
     }
 
     /// Internal: Scan directory for existing files
     fn scan_directory(&self, dir: &Path) -> Result<()> {
-        for entry in WalkDir::new(dir)
+        let entries = WalkDir::new(dir)
             .follow_links(true)
             .into_iter()
             .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
+            .filter(|e| e.file_type().is_file());
 
-            if !entry.file_type().is_dir() && RegistryFile::is_journal_file(path) {
-                self.add_journal_file(path)?;
-            }
+        for entry in entries {
+            let Some(path) = entry.path().to_str() else {
+                continue;
+            };
+
+            let Some(file) = log::File::from_str(path) else {
+                continue;
+            };
+
+            let mut files = self.files.write();
+            files.insert(file.path.clone(), file.clone());
         }
+
         Ok(())
-    }
-
-    /// Internal: Add or update a journal file
-    fn add_journal_file(&self, path: &Path) -> Result<()> {
-        match RegistryFile::from_path(path) {
-            Ok(journal_file) => {
-                let mut files = self.files.write();
-                files.insert(path.to_path_buf(), journal_file.clone());
-
-                Ok(())
-            }
-            Err(e) => {
-                warn!("Failed to add journal file {:?}: {}", path, e);
-                Ok(())
-            }
-        }
     }
 
     /// Internal: Handle filesystem events
     fn handle_event_internal(
-        files: &Arc<RwLock<HashMap<PathBuf, RegistryFile>>>,
-        watch_dirs: &Arc<RwLock<HashSet<PathBuf>>>,
+        _files: &Arc<RwLock<HashMap<String, log::File>>>,
+        _watch_dirs: &Arc<RwLock<HashSet<PathBuf>>>,
         event: Event,
-        new_files: &Arc<RwLock<Vec<RegistryFile>>>,
-        _deleted_files: &Arc<RwLock<Vec<RegistryFile>>>,
+        _new_files: &Arc<RwLock<Vec<log::File>>>,
+        _deleted_files: &Arc<RwLock<Vec<log::File>>>,
     ) -> Result<()> {
-        for path in event.paths {
+        for _path in event.paths {
             match event.kind {
                 EventKind::Create(_) => {
-                    if path.is_dir() {
-                        info!("New directory created: {:?}", path);
-                        watch_dirs.write().insert(path.clone());
-
-                        /* TODO */
-                    } else if RegistryFile::is_journal_file(&path) {
-                        if let Ok(journal_file) = RegistryFile::from_path(&path) {
-                            new_files.write().push(journal_file);
-                        }
-                    }
+                    todo!()
                 }
                 EventKind::Remove(_) => {
-                    if path.is_dir() {
-                        watch_dirs.write().remove(&path);
-
-                        // Remove all files under this directory
-                        let mut files_lock = files.write();
-                        let removed: Vec<_> = files_lock
-                            .keys()
-                            .filter(|p| p.starts_with(&path))
-                            .cloned()
-                            .collect();
-
-                        for file_path in removed {
-                            files_lock.remove(&file_path);
-                        }
-                    } else if files.write().remove(&path).is_some() {
-                        debug!("Removed journal file: {:?}", path);
-                    }
+                    todo!()
                 }
                 _ => {}
             }

@@ -1,10 +1,11 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use std::path::Path;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum Status {
+pub enum Status {
     Active,
     Archived {
         seqnum_id: Uuid,
@@ -66,7 +67,7 @@ impl Status {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum Source {
+pub enum Source {
     System,
     User(u32),
     Remote(String),
@@ -98,21 +99,26 @@ impl Source {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Origin {
+pub struct Origin {
     pub machine_id: Option<Uuid>,
     pub namespace: Option<String>,
     pub source: Source,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct JournalFile {
+pub struct File {
     pub path: String,
     pub origin: Origin,
     pub status: Status,
 }
 
-impl JournalFile {
-    pub fn parse(path: &str) -> Option<Self> {
+impl File {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        Self::from_str(path.to_str()?)
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(path: &str) -> Option<Self> {
         // We only accept an absolute path and we are not lenient when it comes
         // to parsing it.
         assert!(path.starts_with("/"));
@@ -149,11 +155,16 @@ impl JournalFile {
             source,
         };
 
-        Some(JournalFile {
+        Some(File {
             path: String::from(path),
             origin: chain,
             status,
         })
+    }
+
+    /// Check if a path looks like a journal file
+    pub fn is_journal_file(path: &str) -> bool {
+        path.ends_with(".journal") || path.ends_with(".journal~")
     }
 
     /// Check if this is an active journal file that's currently being written to
@@ -206,3 +217,58 @@ impl JournalFile {
         self.origin.namespace.as_deref()
     }
 }
+
+// impl RegistryFile {
+// /// Parse a journal file path and extract metadata
+// pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+//     let path = path.as_ref();
+
+//     // Parse the path using JournalFileInfo
+//     let path_str = path.to_str().ok_or_else(|| {
+//         RegistryError::InvalidFilename("Path contains invalid UTF-8".to_string())
+//     })?;
+
+//     let info = File::parse(path_str).ok_or_else(|| {
+//         RegistryError::InvalidFilename(format!("Cannot parse journal file path: {}", path_str))
+//     })?;
+
+//     Ok(Self { file: info })
+// }
+
+// pub fn path(&self) -> &str {
+//     &self.file.path
+// }
+
+// /// Check if a path looks like a journal file
+// pub fn is_journal_file(path: &Path) -> bool {
+//     path.extension()
+//         .and_then(|ext| ext.to_str())
+//         .map(|ext| ext == "journal" || ext == "journal~")
+//         .unwrap_or(false)
+// }
+
+// /// Check if this is an active journal file
+// pub fn is_active(&self) -> bool {
+//     self.file.is_active()
+// }
+
+// /// Check if this is a disposed/corrupted journal file
+// pub fn is_disposed(&self) -> bool {
+//     self.file.is_disposed()
+// }
+
+// /// Get the user ID if this is a user journal
+// pub fn user_id(&self) -> Option<u32> {
+//     self.file.user_id()
+// }
+
+// /// Get the remote host if this is a remote journal
+// pub fn remote_host(&self) -> Option<&str> {
+//     self.file.remote_host()
+// }
+
+// /// Get the namespace if this journal belongs to a namespace
+// pub fn namespace(&self) -> Option<&str> {
+//     self.file.namespace()
+// }
+// }
