@@ -1,8 +1,9 @@
+#![allow(dead_code)]
+
 use journal_file::JournalFile;
 use journal_file::Mmap;
 use journal_file::index::{FileIndex, FileIndexer};
 use journal_registry::JournalRegistry;
-use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 

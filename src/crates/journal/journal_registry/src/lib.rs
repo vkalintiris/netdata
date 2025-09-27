@@ -143,6 +143,12 @@ pub struct JournalRegistry {
 
     /// Internal watcher state
     watcher_state: Arc<RwLock<Option<WatcherState>>>,
+
+    /// Newly discovered files
+    new_files: Arc<RwLock<Vec<RegistryFile>>>,
+
+    /// Newly discovered files
+    deleted_files: Arc<RwLock<Vec<RegistryFile>>>,
 }
 
 impl JournalRegistry {
@@ -152,6 +158,8 @@ impl JournalRegistry {
             files: Arc::new(RwLock::new(HashMap::new())),
             watch_dirs: Arc::new(RwLock::new(HashSet::new())),
             watcher_state: Arc::new(RwLock::new(None)),
+            new_files: Arc::new(RwLock::new(Vec::new())),
+            deleted_files: Arc::new(RwLock::new(Vec::new())),
         };
 
         registry.start_internal_watcher()?;
@@ -174,6 +182,8 @@ impl JournalRegistry {
 
         // Clone what we need for the background task
         let files = Arc::clone(&self.files);
+        let new_files = Arc::clone(&self.new_files);
+        let deleted_files = Arc::clone(&self.deleted_files);
         let watch_dirs = Arc::clone(&self.watch_dirs);
 
         // Spawn background task to process events
@@ -185,8 +195,13 @@ impl JournalRegistry {
                 while let Ok(event_result) = rx.try_recv() {
                     match event_result {
                         Ok(event) => {
-                            if let Err(e) = Self::handle_event_internal(&files, &watch_dirs, event)
-                            {
+                            if let Err(e) = Self::handle_event_internal(
+                                &files,
+                                &watch_dirs,
+                                event,
+                                &new_files,
+                                &deleted_files,
+                            ) {
                                 error!("Error handling event: {}", e);
                             }
                         }
@@ -319,6 +334,8 @@ impl JournalRegistry {
         files: &Arc<RwLock<HashMap<PathBuf, RegistryFile>>>,
         watch_dirs: &Arc<RwLock<HashSet<PathBuf>>>,
         event: Event,
+        new_files: &Arc<RwLock<Vec<RegistryFile>>>,
+        deleted_files: &Arc<RwLock<Vec<RegistryFile>>>,
     ) -> Result<()> {
         for path in event.paths {
             match event.kind {
@@ -326,14 +343,11 @@ impl JournalRegistry {
                     if path.is_dir() {
                         info!("New directory created: {:?}", path);
                         watch_dirs.write().insert(path.clone());
+
+                        /* TODO */
                     } else if RegistryFile::is_journal_file(&path) {
                         if let Ok(journal_file) = RegistryFile::from_path(&path) {
-                            let is_new = !files.read().contains_key(&path);
-                            files.write().insert(path.clone(), journal_file.clone());
-
-                            if is_new {
-                                debug!("Added journal file: {:?}", path);
-                            }
+                            new_files.write().push(journal_file);
                         }
                     }
                 }

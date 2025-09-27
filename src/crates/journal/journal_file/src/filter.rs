@@ -1,7 +1,4 @@
-use crate::{
-    file::JournalFile,
-    offset_array::{Direction, InlinedCursor},
-};
+use crate::{file::JournalFile, offset_array::InlinedCursor};
 use error::{JournalError, Result};
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
