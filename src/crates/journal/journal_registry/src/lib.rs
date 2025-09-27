@@ -632,7 +632,7 @@ impl<'a> RegistryQuery<'a> {
 
         // Check machine ID
         if let Some(ref ids) = self.machine_ids {
-            match &file.info.machine_id {
+            match &file.info.chain.machine_id {
                 Some(id) if ids.contains(id) => {}
                 _ => return false,
             }
@@ -640,7 +640,7 @@ impl<'a> RegistryQuery<'a> {
 
         // Check namespace
         if let Some(ref namespaces) = self.namespaces {
-            match &file.info.namespace {
+            match &file.info.chain.namespace {
                 Some(ns) if namespaces.contains(ns) => {}
                 _ => return false,
             }

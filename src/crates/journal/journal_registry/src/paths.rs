@@ -97,13 +97,18 @@ impl JournalFileSource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct JournalFileChain {
+    pub machine_id: Option<Uuid>,
+    pub namespace: Option<String>,
+    pub source: JournalFileSource,
+}
+
 /// Parse a journal file path into its components
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct JournalFileInfo {
+    pub chain: JournalFileChain,
     pub status: JournalFileStatus,
-    pub source: JournalFileSource,
-    pub machine_id: Option<Uuid>,
-    pub namespace: Option<String>,
 }
 
 impl JournalFileInfo {
@@ -138,12 +143,13 @@ impl JournalFileInfo {
             (None, None)
         };
 
-        Some(JournalFileInfo {
-            status,
-            source,
+        let chain = JournalFileChain {
             machine_id,
             namespace,
-        })
+            source,
+        };
+
+        Some(JournalFileInfo { chain, status })
     }
 
     /// Check if this is an active journal file that's currently being written to
@@ -163,21 +169,21 @@ impl JournalFileInfo {
 
     /// Check if this contains logs from users
     pub fn is_user(&self) -> bool {
-        matches!(self.source, JournalFileSource::User(_))
+        matches!(self.chain.source, JournalFileSource::User(_))
     }
 
     /// Check if this contains logs from system
     pub fn is_system(&self) -> bool {
-        matches!(self.source, JournalFileSource::System)
+        matches!(self.chain.source, JournalFileSource::System)
     }
 
     pub fn is_remote(&self) -> bool {
-        matches!(self.source, JournalFileSource::Remote(_))
+        matches!(self.chain.source, JournalFileSource::Remote(_))
     }
 
     /// Get the user ID if this is a user journal
     pub fn user_id(&self) -> Option<u32> {
-        match &self.source {
+        match &self.chain.source {
             JournalFileSource::User(uid) => Some(*uid),
             _ => None,
         }
@@ -185,7 +191,7 @@ impl JournalFileInfo {
 
     /// Get the remote host if this is a remote journal
     pub fn remote_host(&self) -> Option<&str> {
-        match &self.source {
+        match &self.chain.source {
             JournalFileSource::Remote(host) => Some(host.as_str()),
             _ => None,
         }
@@ -193,6 +199,6 @@ impl JournalFileInfo {
 
     /// Get the namespace if this journal belongs to a namespace
     pub fn namespace(&self) -> Option<&str> {
-        self.namespace.as_deref()
+        self.chain.namespace.as_deref()
     }
 }
