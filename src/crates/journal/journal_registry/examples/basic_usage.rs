@@ -208,9 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut files = registry.query().execute();
+    let mut files = registry.get_files();
     files.sort_by_key(|x| String::from(x.path()));
-    files.sort_by_key(|x| x.size());
     files.reverse();
     // files.truncate(5);
 
@@ -218,11 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = parallel(&files, facets.as_slice());
 
     println!("\n=== Journal Files Statistics ===");
-    println!("Total files: {}", registry.query().count());
-    println!(
-        "Total size: {:.2} MB",
-        registry.query().total_size() as f64 / (1024.0 * 1024.0)
-    );
+    println!("Total files: {}", files.len());
 
     // tokio::time::sleep(Duration::from_secs(100)).await;
 
