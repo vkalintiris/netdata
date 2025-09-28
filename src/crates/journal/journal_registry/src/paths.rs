@@ -297,6 +297,12 @@ pub struct Chain {
 }
 
 impl Chain {
+    pub fn active_file(&self) -> Option<&File> {
+        self.files
+            .back()
+            .and_then(|f| if f.is_active() { Some(f) } else { None })
+    }
+
     pub fn insert_files(&mut self, files: &[File]) {
         let new_files = files.iter().filter(|f| f.origin == self.origin);
 
