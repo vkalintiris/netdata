@@ -1,6 +1,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use std::cmp::Ordering;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -16,6 +17,58 @@ pub enum Status {
         timestamp: u64,
         number: u64,
     },
+}
+
+impl Ord for Status {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            // Disposed files come first, sorted by timestamp then number
+            (
+                Status::Disposed {
+                    timestamp: t1,
+                    number: n1,
+                },
+                Status::Disposed {
+                    timestamp: t2,
+                    number: n2,
+                },
+            ) => t1.cmp(t2).then_with(|| n1.cmp(n2)),
+
+            // Disposed always comes before non-disposed
+            (Status::Disposed { .. }, _) => Ordering::Less,
+            (_, Status::Disposed { .. }) => Ordering::Greater,
+
+            // Archived files sorted by head_realtime (then seqnum for stability)
+            (
+                Status::Archived {
+                    seqnum_id: lhs_senqum_id,
+                    head_seqnum: lhs_head_seqnum,
+                    head_realtime: lhs_head_realtime,
+                },
+                Status::Archived {
+                    seqnum_id: rhs_seqnum_id,
+                    head_seqnum: rhs_head_seqnum,
+                    head_realtime: rhs_head_realtime,
+                },
+            ) => lhs_head_realtime
+                .cmp(rhs_head_realtime)
+                .then_with(|| lhs_senqum_id.cmp(rhs_seqnum_id))
+                .then_with(|| lhs_head_seqnum.cmp(rhs_head_seqnum)),
+
+            // Archived comes before Active
+            (Status::Archived { .. }, Status::Active) => Ordering::Less,
+            (Status::Active, Status::Archived { .. }) => Ordering::Greater,
+
+            // Active files are equal in terms of status ordering
+            (Status::Active, Status::Active) => Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for Status {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Status {
@@ -218,57 +271,139 @@ impl File {
     }
 }
 
-// impl RegistryFile {
-// /// Parse a journal file path and extract metadata
-// pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-//     let path = path.as_ref();
+impl Ord for File {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // First compare by status, then by path for stability
+        self.status
+            .cmp(&other.status)
+            .then_with(|| self.path.cmp(&other.path))
+    }
+}
 
-//     // Parse the path using JournalFileInfo
-//     let path_str = path.to_str().ok_or_else(|| {
-//         RegistryError::InvalidFilename("Path contains invalid UTF-8".to_string())
-//     })?;
+impl PartialOrd for File {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
-//     let info = File::parse(path_str).ok_or_else(|| {
-//         RegistryError::InvalidFilename(format!("Cannot parse journal file path: {}", path_str))
-//     })?;
+pub struct Chain {
+    pub origin: Origin,
 
-//     Ok(Self { file: info })
-// }
+    // Invariant: the deque is always contiguous and sorted:
+    //  - any disposed files are at the beginning
+    //  - any archived files follow with increasing head realtime
+    //  - the active file (if any) is at the end
+    pub files: std::collections::VecDeque<File>,
+}
 
-// pub fn path(&self) -> &str {
-//     &self.file.path
-// }
+impl Chain {
+    pub fn insert_files(&mut self, files: &[File]) {
+        let new_files = files.iter().filter(|f| f.origin == self.origin);
 
-// /// Check if a path looks like a journal file
-// pub fn is_journal_file(path: &Path) -> bool {
-//     path.extension()
-//         .and_then(|ext| ext.to_str())
-//         .map(|ext| ext == "journal" || ext == "journal~")
-//         .unwrap_or(false)
-// }
+        for file in new_files {
+            let pos = self.files.partition_point(|f| f < file);
+            self.files.insert(pos, file.clone());
+        }
 
-// /// Check if this is an active journal file
-// pub fn is_active(&self) -> bool {
-//     self.file.is_active()
-// }
+        self.files.make_contiguous();
+    }
 
-// /// Check if this is a disposed/corrupted journal file
-// pub fn is_disposed(&self) -> bool {
-//     self.file.is_disposed()
-// }
+    pub fn remove_files(&mut self, files: &[File]) {
+        // Filter to only files matching this chain's origin
+        let removed_files = files.iter().filter(|f| f.origin == self.origin);
 
-// /// Get the user ID if this is a user journal
-// pub fn user_id(&self) -> Option<u32> {
-//     self.file.user_id()
-// }
+        // Remove each matching file
+        for file in removed_files {
+            // Use partition_point to find where the file would be
+            let pos = self.files.partition_point(|f| f < file);
 
-// /// Get the remote host if this is a remote journal
-// pub fn remote_host(&self) -> Option<&str> {
-//     self.file.remote_host()
-// }
+            // Check if the file at this position matches the one we want to remove
+            if pos < self.files.len() && &self.files[pos] == file {
+                self.files.remove(pos);
+            }
+        }
 
-// /// Get the namespace if this journal belongs to a namespace
-// pub fn namespace(&self) -> Option<&str> {
-//     self.file.namespace()
-// }
-// }
+        self.files.make_contiguous();
+    }
+
+    /// Append files that overlap with the time range [start, end) to the provided vector.
+    pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
+        if self.files.is_empty() || start >= end {
+            return;
+        }
+
+        // TODO: collect files whose time range overlaps.
+        // NOTE:
+        // 1. The tail_realtime of an active file is assumed to be u64::MAX.
+        // 2. The head_realtime of an active file is assumed to be:
+        //    - the head_realtime of the last seen archived file,
+        //    - u64::MIN if there's no last seen archived file.
+        // 3. The iterator should not produce any disposed files.
+        // 4. The iterator should produce any number (inc. zero) of archived files.
+        // 5. Only the last item of the iterator might be an active file.
+        // Track the head_realtime of the last archived file we've seen
+
+        let (files, _) = self.files.as_slices();
+
+        let mut iter = files.iter().skip_while(|f| f.is_disposed()).peekable();
+        let mut prev_head_realtime: Option<u64> = None;
+
+        while let Some(file) = iter.next() {
+            match &file.status {
+                Status::Archived { head_realtime, .. } => {
+                    // Peek at the next file to determine tail_realtime
+                    let tail_realtime = if let Some(next_file) = iter.peek() {
+                        match &next_file.status {
+                            Status::Active => {
+                                // We don't know the tail_realtime of the active file
+                                u64::MAX
+                            }
+                            Status::Archived {
+                                head_realtime: tail_realtime,
+                                ..
+                            } => *tail_realtime,
+                            Status::Disposed { .. } => {
+                                // This shouldn't happen given our ordering, but handle it
+                                panic!(
+                                    "Tried to lookup tail_realtime of disposed file: {:#?}",
+                                    next_file
+                                );
+                            }
+                        }
+                    } else {
+                        // This is the last file and it's archived
+                        u64::MAX
+                    };
+
+                    // Check if [head_realtime, tail_realtime) overlaps with [start, end)
+                    // Overlap occurs when: head_realtime < end && tail_realtime > start
+                    if *head_realtime < end && tail_realtime > start {
+                        output.push(file.clone());
+                    }
+
+                    // Remember this head_realtime for potential active file
+                    prev_head_realtime = Some(*head_realtime);
+                }
+                Status::Active => {
+                    // For active files:
+                    // - tail_realtime is assumed to be u64::MAX (still being written)
+                    // - head_realtime is either the previous archived file's head_realtime or u64::MIN
+
+                    let head_realtime = prev_head_realtime.unwrap_or(u64::MIN);
+                    let tail_realtime = u64::MAX;
+
+                    // Check overlap: active_head < end && active_tail > start
+                    if head_realtime < end && tail_realtime > start {
+                        output.push(file.clone());
+                    }
+
+                    // There should only be one active file at the end
+                    break;
+                }
+                Status::Disposed { .. } => {
+                    panic!("Found disposed file: {:#?}", file);
+                }
+            }
+        }
+    }
+}
