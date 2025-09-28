@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local, Utc};
-use journal_file::index::FileIndex;
+use journal_file::index::{FileIndex, FileIndexer};
 use journal_file::index_filter::{IndexFilter, IndexFilterExpr};
 use journal_file::{JournalFile, Mmap};
 use std::env;
@@ -113,8 +113,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let journal_file = JournalFile::<Mmap>::open(file_path, window_size)?;
     info!("Journal file opened successfully");
 
+    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
+
     // Create the FileIndex
-    let file_index = FileIndex::from(&journal_file, systemd_keys.as_slice())?;
+    let mut file_indexer = FileIndexer::default();
+    let file_index = file_indexer.index(
+        &journal_file,
+        SOURCE_TIMESTAMP_FIELD,
+        systemd_keys.as_slice(),
+        10,
+    )?;
     info!("FileIndex created successfully");
 
     // Create filter if filter arguments were provided
