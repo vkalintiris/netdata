@@ -96,42 +96,6 @@ pub enum JournalError {
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);
 
-impl JournalError {
-    pub fn to_error_code(&self) -> i32 {
-        match self {
-            JournalError::InvalidMagicNumber => -1,
-            JournalError::InvalidJournalFileState => -2,
-            JournalError::InvalidObjectType => -3,
-            JournalError::InvalidObjectLocation => -4,
-            JournalError::InvalidZeroCopySize => -5,
-            JournalError::ValueGuardInUse => -6,
-            JournalError::Io(_) => -7,
-            JournalError::MissingHashTable => -8,
-            JournalError::MissingObjectFromHashTable => -9,
-            JournalError::InvalidOffsetArrayOffset => -10,
-            JournalError::InvalidOffsetArrayIndex => -11,
-            JournalError::EmptyOffsetArrayList => -12,
-            JournalError::EmptyOffsetArrayNode => -13,
-            JournalError::EmptyInlineCursor => -14,
-            JournalError::UnsetCursor => -15,
-            JournalError::MalformedFilter => -16,
-            JournalError::InvalidField => -17,
-            JournalError::DecompressorError => -18,
-            JournalError::OutOfBoundsIndex => -19,
-            JournalError::InvalidOffset => -20,
-            JournalError::ZerocopyFailure => -21,
-            JournalError::SigbusHandlerError => -22,
-            JournalError::UnknownCompressionMethod => -23,
-            JournalError::InvalidFfiOp => -24,
-            JournalError::UuidSerde => -25,
-            JournalError::InvalidFilename => -26,
-            JournalError::SystemTimeError => -27,
-            JournalError::DirectoryNotFound => -28,
-            JournalError::NotADirectory => -29,
-        }
-    }
-}
-
 impl<T: zerocopy::KnownLayout> From<zerocopy::SizeError<&[u8], T>> for JournalError {
     fn from(_: zerocopy::SizeError<&[u8], T>) -> Self {
         JournalError::InvalidZeroCopySize
