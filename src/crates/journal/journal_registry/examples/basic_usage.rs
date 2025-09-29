@@ -3,13 +3,13 @@
 use journal_file::JournalFile;
 use journal_file::Mmap;
 use journal_file::index::{FileIndex, FileIndexer};
-use journal_registry::JournalRegistry;
 use std::time::Instant;
 use tracing::{info, warn};
 
-use journal_registry::log;
-
-fn sequential(files: &[log::File], field_names: &[&[u8]]) -> Vec<(log::File, FileIndex)> {
+fn sequential(
+    files: &[journal_registry::File],
+    field_names: &[&[u8]],
+) -> Vec<(journal_registry::File, FileIndex)> {
     let start_time = Instant::now();
 
     let mut total_index_size = 0;
@@ -62,7 +62,10 @@ fn sequential(files: &[log::File], field_names: &[&[u8]]) -> Vec<(log::File, Fil
 
 use rayon::prelude::*;
 
-fn parallel(files: &[log::File], field_names: &[&[u8]]) -> Vec<(log::File, FileIndex)> {
+fn parallel(
+    files: &[journal_registry::File],
+    field_names: &[&[u8]],
+) -> Vec<(journal_registry::File, FileIndex)> {
     let start_time = Instant::now();
 
     const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
@@ -195,17 +198,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let registry = JournalRegistry::new()?;
+    let mut registry = journal_registry::Registry::new()?;
     info!("Journal registry initialized");
 
     for dir in ["/var/log/journal", "/run/log/journal"] {
-        match registry.add_directory(dir) {
+        match registry.watch_directory(dir).await {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
         }
     }
 
-    let mut files = registry.get_files();
+    let mut files = Vec::new();
+    registry.find_files_in_range(0, u64::MAX, &mut files);
     files.sort_by_key(|f| String::from(&f.path));
     files.reverse();
     // files.truncate(5);
