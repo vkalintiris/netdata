@@ -9,6 +9,7 @@ use tracing::{debug, error, warn};
 use walkdir::WalkDir;
 
 pub mod cache;
+pub(crate) mod monitor;
 pub mod paths;
 
 pub use crate::paths as log;
