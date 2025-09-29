@@ -203,7 +203,7 @@ impl File {
             (None, None)
         };
 
-        let chain = Origin {
+        let origin = Origin {
             machine_id,
             namespace,
             source,
@@ -211,7 +211,7 @@ impl File {
 
         Some(File {
             path: String::from(path),
-            origin: chain,
+            origin,
             status,
         })
     }
