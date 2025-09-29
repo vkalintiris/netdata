@@ -485,6 +485,11 @@ impl Registry {
         }
     }
 
+    pub fn rename_file(&mut self, from: &File, to: &File) {
+        self.remove_file(from);
+        self.insert_file(to);
+    }
+
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
         for directory in self.directories.values() {
             for chain in directory.chains.values() {
