@@ -303,9 +303,6 @@ impl PartialOrd for File {
 
 #[derive(Debug, Clone)]
 pub struct Chain {
-    // The origin generating journal files for this chain
-    origin: Origin,
-
     // Invariant: the deque is always sorted:
     //  - any disposed files are at the beginning
     //  - any archived files follow with increasing head realtime
@@ -316,7 +313,6 @@ pub struct Chain {
 impl Chain {
     pub fn new(origin: Origin) -> Self {
         Self {
-            origin,
             files: VecDeque::default(),
         }
     }
@@ -435,7 +431,7 @@ impl Chain {
 }
 
 #[derive(Default)]
-pub struct Directory {
+struct Directory {
     chains: HashMap<Origin, Chain>,
 }
 
@@ -446,7 +442,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    fn insert_file(&mut self, file: &File) {
+    pub fn insert_file(&mut self, file: &File) {
         if let Some(directory) = self.directories.get_mut(file.dir()) {
             if let Some(chain) = directory.chains.get_mut(&file.origin) {
                 chain.insert_file(file);
@@ -466,7 +462,9 @@ impl Registry {
         }
     }
 
-    fn remove_file(&mut self, file: &File) {
+    pub fn remove_file(&mut self, file: &File) {
+        let mut remove_directory = false;
+
         if let Some(directory) = self.directories.get_mut(file.dir()) {
             let mut remove_chain = false;
 
@@ -478,7 +476,13 @@ impl Registry {
             if remove_chain {
                 directory.chains.remove(&file.origin);
             }
+
+            remove_directory = directory.chains.is_empty();
         };
+
+        if remove_directory {
+            self.directories.remove(file.dir());
+        }
     }
 
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
@@ -533,9 +537,7 @@ mod tests {
 
     #[test]
     fn test_find_files_in_range_empty_chain() {
-        let origin = create_test_origin();
         let chain = Chain {
-            origin,
             files: VecDeque::new(),
         };
 
@@ -548,7 +550,6 @@ mod tests {
     fn test_find_files_in_range_invalid_range() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -569,7 +570,6 @@ mod tests {
     fn test_find_files_in_range_single_archived() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -608,7 +608,6 @@ mod tests {
     fn test_find_files_in_range_multiple_archived() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -655,7 +654,6 @@ mod tests {
     fn test_find_files_in_range_with_active() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -694,7 +692,6 @@ mod tests {
     fn test_find_files_in_range_only_active() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -717,7 +714,6 @@ mod tests {
     fn test_find_files_in_range_with_disposed() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -744,7 +740,6 @@ mod tests {
     fn test_find_files_in_range_edge_cases() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
@@ -789,7 +784,6 @@ mod tests {
     fn test_find_files_in_range_complex_scenario() {
         let origin = create_test_origin();
         let mut chain = Chain {
-            origin: origin.clone(),
             files: VecDeque::new(),
         };
 
