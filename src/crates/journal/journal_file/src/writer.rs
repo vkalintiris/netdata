@@ -7,7 +7,7 @@ use crate::{
     HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
     ObjectHeader, ObjectType, RegularEntryItem,
 };
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use window_manager::MmapMut;
 use rand::{seq::IndexedRandom, Rng};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -48,7 +48,7 @@ impl JournalWriter {
             let header = journal_file.journal_header_ref();
 
             let Some(tail_object_offset) = header.tail_object_offset else {
-                return Err(JournalError::InvalidMagicNumber);
+                return Err(JournalFileError::InvalidMagicNumber);
             };
 
             let tail_object = journal_file.object_header_ref(tail_object_offset)?;
@@ -304,7 +304,7 @@ impl JournalWriter {
             let tail_node = {
                 let entry_list = journal_file
                     .entry_list()
-                    .ok_or(JournalError::EmptyOffsetArrayList)?;
+                    .ok_or(JournalFileError::EmptyOffsetArrayList)?;
                 entry_list.tail(journal_file)?
             };
 
@@ -360,7 +360,7 @@ impl JournalWriter {
 
             let Some(next_offset) = array_guard.header.next_offset_array else {
                 // This shouldn't happen if counts are correct
-                return Err(JournalError::InvalidOffsetArrayOffset);
+                return Err(JournalFileError::InvalidOffsetArrayOffset);
             };
 
             array_offset = next_offset;
@@ -492,7 +492,7 @@ mod tests {
         test_data.insert("_PID", vec!["1234", "5678", "9999"]);
 
         // Create a temporary file for the journal
-        let temp_file = NamedTempFile::new().map_err(JournalError::Io).unwrap();
+        let temp_file = NamedTempFile::new().map_err(JournalFileError::Io).unwrap();
         let journal_path = temp_file.path();
 
         // Step 1: Create and write to the journal
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn test_field_enumeration() -> Result<()> {
         // Create a simple journal with known fields
-        let temp_file = NamedTempFile::new().map_err(JournalError::Io)?;
+        let temp_file = NamedTempFile::new().map_err(JournalFileError::Io)?;
         let journal_path = temp_file.path();
 
         let test_fields = vec!["MESSAGE", "PRIORITY", "_SYSTEMD_UNIT"];

@@ -1,5 +1,5 @@
 use crate::{file::JournalFile, filter::FilterExpr, offset_array, offset_array::Direction};
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
@@ -75,7 +75,7 @@ impl JournalCursor {
     pub fn position(&self) -> Result<NonZeroU64> {
         match self.location {
             Location::ResolvedEntry(entry_offset) => Ok(entry_offset),
-            _ => Err(JournalError::UnsetCursor),
+            _ => Err(JournalFileError::UnsetCursor),
         }
     }
 
@@ -88,7 +88,7 @@ impl JournalCursor {
             (Location::Head, Direction::Forward) => {
                 let entry_list = journal_file
                     .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                    .ok_or(JournalFileError::InvalidOffsetArrayOffset)?;
 
                 let cursor = entry_list.cursor_head();
                 if let Some(offset) = cursor.value(journal_file)? {
@@ -103,7 +103,7 @@ impl JournalCursor {
             (Location::Tail, Direction::Backward) => {
                 let entry_list = journal_file
                     .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                    .ok_or(JournalFileError::InvalidOffsetArrayOffset)?;
 
                 let cursor = entry_list.cursor_tail(journal_file)?;
                 if let Some(offset) = cursor.value(journal_file)? {
@@ -116,7 +116,7 @@ impl JournalCursor {
             (Location::Realtime(realtime), _) => {
                 let entry_list = journal_file
                     .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                    .ok_or(JournalFileError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
                     let entry_object = journal_file.entry_ref(entry_offset)?;
@@ -188,7 +188,7 @@ impl JournalCursor {
             (Location::Realtime(realtime), direction) => {
                 let entry_list = journal_file
                     .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                    .ok_or(JournalFileError::InvalidOffsetArrayOffset)?;
 
                 let predicate = |entry_offset| {
                     let entry_object = journal_file.entry_ref(entry_offset)?;

@@ -1,4 +1,4 @@
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use journal_file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
@@ -22,7 +22,7 @@ impl JournalFileInfo {
         let filename = path
             .file_name()
             .and_then(OsStr::to_str)
-            .ok_or(JournalError::InvalidFilename)?;
+            .ok_or(JournalFileError::InvalidFilename)?;
 
         let (timestamp, counter) = Self::parse_filename(filename)?;
 
@@ -41,7 +41,7 @@ impl JournalFileInfo {
     ) -> Result<JournalFileInfo> {
         let duration = timestamp
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| JournalError::SystemTimeError)?;
+            .map_err(|_| JournalFileError::SystemTimeError)?;
         let micros = duration.as_secs() * 1_000_000 + duration.subsec_micros() as u64;
         let path = PathBuf::from(format!("journal-{}-{}.journal", micros, counter));
 
@@ -63,17 +63,17 @@ impl JournalFileInfo {
             if parts.len() == 2 {
                 let timestamp_micros: u64 = parts[0]
                     .parse()
-                    .map_err(|_| JournalError::InvalidFilename)?;
+                    .map_err(|_| JournalFileError::InvalidFilename)?;
                 let counter: u64 = parts[1]
                     .parse()
-                    .map_err(|_| JournalError::InvalidFilename)?;
+                    .map_err(|_| JournalFileError::InvalidFilename)?;
 
                 let timestamp = UNIX_EPOCH + Duration::from_micros(timestamp_micros);
                 return Ok((timestamp, counter));
             }
         }
 
-        Err(JournalError::InvalidFilename)
+        Err(JournalFileError::InvalidFilename)
     }
 
     /// Get file size, loading from filesystem if not cached
@@ -202,7 +202,7 @@ impl JournalDirectory {
         if !config.directory.exists() {
             std::fs::create_dir_all(&config.directory)?;
         } else if !config.directory.is_dir() {
-            return Err(JournalError::NotADirectory);
+            return Err(JournalFileError::NotADirectory);
         }
 
         let mut journal_directory = Self {

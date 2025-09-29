@@ -1,4 +1,4 @@
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
@@ -43,7 +43,7 @@ pub fn install_handler() -> Result<()> {
     });
 
     match rc {
-        -1 => Err(JournalError::SigbusHandlerError),
+        -1 => Err(JournalFileError::SigbusHandlerError),
         _ => Ok(()),
     }
 }

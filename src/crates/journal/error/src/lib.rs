@@ -5,7 +5,7 @@ use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum JournalError {
+pub enum JournalFileError {
     #[error("invalid magic number")]
     InvalidMagicNumber,
 
@@ -94,12 +94,12 @@ pub enum JournalError {
     NotADirectory,
 }
 
-const_assert!(std::mem::size_of::<JournalError>() <= 16);
+const_assert!(std::mem::size_of::<JournalFileError>() <= 16);
 
-impl<T: zerocopy::KnownLayout> From<zerocopy::SizeError<&[u8], T>> for JournalError {
+impl<T: zerocopy::KnownLayout> From<zerocopy::SizeError<&[u8], T>> for JournalFileError {
     fn from(_: zerocopy::SizeError<&[u8], T>) -> Self {
-        JournalError::InvalidZeroCopySize
+        JournalFileError::InvalidZeroCopySize
     }
 }
 
-pub type Result<T> = std::result::Result<T, JournalError>;
+pub type Result<T> = std::result::Result<T, JournalFileError>;

@@ -3,7 +3,7 @@
 use crate::hash;
 use crate::object::*;
 use crate::offset_array;
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
@@ -46,7 +46,7 @@ pub fn load_machine_id() -> Result<[u8; 16]> {
     let output = Command::new("system_profiler")
         .arg("SPHardwareDataType")
         .output()
-        .map_err(|_| JournalError::UuidSerde)?;
+        .map_err(|_| JournalFileError::UuidSerde)?;
 
     if output.status.success() {
         let output_str = String::from_utf8_lossy(&output.stdout);
@@ -61,7 +61,7 @@ pub fn load_machine_id() -> Result<[u8; 16]> {
                         for i in 0..16 {
                             let hex_pair = &hex_str[i * 2..i * 2 + 2];
                             bytes[i] = u8::from_str_radix(hex_pair, 16)
-                                .map_err(|_| JournalError::UuidSerde)?;
+                                .map_err(|_| JournalFileError::UuidSerde)?;
                         }
                         return Ok(bytes);
                     }
@@ -70,12 +70,12 @@ pub fn load_machine_id() -> Result<[u8; 16]> {
         }
     }
 
-    Err(JournalError::UuidSerde)
+    Err(JournalFileError::UuidSerde)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn load_machine_id() -> Result<[u8; 16]> {
-    Err(JournalError::UuidSerde)
+    Err(JournalFileError::UuidSerde)
 }
 
 #[cfg(target_os = "linux")]
@@ -86,13 +86,13 @@ pub fn load_boot_id() -> Result<[u8; 16]> {
     let hex_str: String = uuid_str.chars().filter(|c| *c != '-').collect();
 
     if hex_str.len() != 32 {
-        return Err(JournalError::UuidSerde);
+        return Err(JournalFileError::UuidSerde);
     }
 
     let mut bytes = [0u8; 16];
     for i in 0..16 {
         let hex_pair = &hex_str[i * 2..i * 2 + 2];
-        bytes[i] = u8::from_str_radix(hex_pair, 16).map_err(|_| JournalError::UuidSerde)?;
+        bytes[i] = u8::from_str_radix(hex_pair, 16).map_err(|_| JournalFileError::UuidSerde)?;
     }
 
     Ok(bytes)
@@ -106,7 +106,7 @@ pub fn load_boot_id() -> Result<[u8; 16]> {
         .arg("-n")
         .arg("kern.boottime")
         .output()
-        .map_err(|_| JournalError::UuidSerde)?;
+        .map_err(|_| JournalFileError::UuidSerde)?;
 
     if output.status.success() {
         let output_str = String::from_utf8_lossy(&output.stdout);
@@ -135,12 +135,12 @@ pub fn load_boot_id() -> Result<[u8; 16]> {
         }
     }
 
-    Err(JournalError::UuidSerde)
+    Err(JournalFileError::UuidSerde)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn load_boot_id() -> Result<[u8; 16]> {
-    Err(JournalError::UuidSerde)
+    Err(JournalFileError::UuidSerde)
 }
 
 // Size to pad objects to (8 bytes)
@@ -338,10 +338,10 @@ fn map_hash_table<M: MemoryMap>(
     };
 
     if offset.get() <= std::mem::size_of::<JournalHeader>() as u64 {
-        return Err(JournalError::InvalidObjectLocation);
+        return Err(JournalFileError::InvalidObjectLocation);
     }
     if size.get() <= std::mem::size_of::<ObjectHeader>() as u64 {
-        return Err(JournalError::InvalidObjectLocation);
+        return Err(JournalFileError::InvalidObjectLocation);
     }
 
     let offset = offset.get() - std::mem::size_of::<ObjectHeader>() as u64;
@@ -360,7 +360,7 @@ impl<M: MemoryMap> JournalFile<M> {
         H: HashTable<Object = V::Object>,
         V: BucketVisitor<'a>,
     {
-        let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
+        let hash_table = hash_table.ok_or(JournalFileError::MissingHashTable)?;
         let bucket = hash_table.hash_item_ref(hash);
         let mut object_offset = bucket.head_hash_offset;
 
@@ -388,7 +388,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let header_map = M::create(&file, 0, header_size)?;
         let header = JournalHeader::ref_from_prefix(&header_map).unwrap().0;
         if header.signature != *b"LPKSHHRH" {
-            return Err(JournalError::InvalidMagicNumber);
+            return Err(JournalFileError::InvalidMagicNumber);
         }
 
         // Initialize the hash table maps if they exist
@@ -504,7 +504,7 @@ impl<M: MemoryMap> JournalFile<M> {
                     self.prev_backtrace.borrow().to_string()
                 );
             }
-            return Err(JournalError::ValueGuardInUse);
+            return Err(JournalFileError::ValueGuardInUse);
         }
 
         #[cfg(debug_assertions)]
@@ -524,7 +524,7 @@ impl<M: MemoryMap> JournalFile<M> {
 
         let data = self.object_data_ref(offset, size_needed)?;
         let Some(value) = T::from_data(data, is_compact) else {
-            return Err(JournalError::ZerocopyFailure);
+            return Err(JournalFileError::ZerocopyFailure);
         };
 
         // Mark as in use
@@ -891,7 +891,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
                     self.prev_backtrace.borrow().to_string()
                 );
             }
-            return Err(JournalError::ValueGuardInUse);
+            return Err(JournalFileError::ValueGuardInUse);
         }
 
         #[cfg(debug_assertions)]
@@ -914,14 +914,14 @@ impl<M: MemoryMapMut> JournalFile<M> {
             None => {
                 let header = self.object_header_ref(offset)?;
                 if header.type_ != type_ as u8 {
-                    return Err(JournalError::InvalidObjectType);
+                    return Err(JournalFileError::InvalidObjectType);
                 }
                 header.size
             }
         };
 
         let data = self.object_data_mut(offset, size_needed)?;
-        let value = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
+        let value = T::from_data_mut(data, is_compact).ok_or(JournalFileError::ZerocopyFailure)?;
 
         // Mark as in use
         *is_in_use = true;
@@ -1002,7 +1002,7 @@ macro_rules! impl_hash_table_set_tail_offset {
         pub fn $method_name(&mut self, hash: u64, object_offset: NonZeroU64) -> Result<()> {
             let hash_item = {
                 let Some(ht) = self.$hash_table_ref() else {
-                    return Err(JournalError::MissingHashTable);
+                    return Err(JournalFileError::MissingHashTable);
                 };
                 *ht.hash_item_ref(hash)
             };
@@ -1013,7 +1013,7 @@ macro_rules! impl_hash_table_set_tail_offset {
             }
 
             let Some(mut ht) = self.$hash_table_mut() else {
-                return Err(JournalError::MissingHashTable);
+                return Err(JournalFileError::MissingHashTable);
             };
 
             let hash_item = ht.hash_item_mut(hash);

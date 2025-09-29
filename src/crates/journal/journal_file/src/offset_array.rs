@@ -1,5 +1,5 @@
 use crate::file::JournalFile;
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::num::{NonZeroU64, NonZeroUsize};
 use window_manager::MemoryMap;
 
@@ -27,7 +27,7 @@ impl Node {
     ) -> Result<Self> {
         let array = journal_file.offset_array_ref(offset)?;
         let capacity =
-            NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
+            NonZeroUsize::new(array.capacity()).ok_or(JournalFileError::EmptyOffsetArrayNode)?;
 
         Ok(Self {
             offset,
@@ -66,7 +66,7 @@ impl Node {
         let next_offset = self.next_offset.unwrap();
         let remaining_items = {
             let n = self.remaining_items.get().saturating_sub(self.len().get());
-            NonZeroUsize::new(n).ok_or(JournalError::EmptyOffsetArrayNode)?
+            NonZeroUsize::new(n).ok_or(JournalFileError::EmptyOffsetArrayNode)?
         };
         let node = Self::new(journal_file, next_offset, remaining_items);
 
@@ -80,7 +80,7 @@ impl Node {
         index: usize,
     ) -> Result<Option<NonZeroU64>> {
         if index >= self.len().get() {
-            return Err(JournalError::InvalidOffsetArrayIndex);
+            return Err(JournalFileError::InvalidOffsetArrayIndex);
         }
 
         let array = journal_file.offset_array_ref(self.offset)?;
@@ -109,7 +109,7 @@ impl Node {
         while left != right {
             let mid = left.midpoint(right);
             let Some(offset) = self.get(journal_file, mid)? else {
-                return Err(JournalError::InvalidOffset);
+                return Err(JournalFileError::InvalidOffset);
             };
 
             if predicate(offset)? {
@@ -377,7 +377,7 @@ impl Cursor {
 
         // Verify the index is valid
         if array_index >= array.len().get() {
-            return Err(JournalError::InvalidOffsetArrayIndex);
+            return Err(JournalFileError::InvalidOffsetArrayIndex);
         }
 
         Ok(Self {
@@ -463,7 +463,7 @@ impl Cursor {
             node = node.next(journal_file)?.unwrap();
         }
 
-        Err(JournalError::InvalidOffsetArrayOffset)
+        Err(JournalFileError::InvalidOffsetArrayOffset)
     }
 
     pub fn collect_offsets<M: MemoryMap>(

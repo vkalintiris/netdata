@@ -1,5 +1,5 @@
 use crate::{file::JournalFile, offset_array::InlinedCursor};
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::num::NonZeroU64;
 use window_manager::MemoryMap;
 
@@ -19,7 +19,7 @@ impl FilterExpr {
     //     direction: Direction,
     // ) -> Result<Option<u64>> {
     //     let Some(needle_offset) = NonZeroU64::new(needle_offset) else {
-    //         return Err(JournalError::InvalidOffset);
+    //         return Err(JournalFileError::InvalidOffset);
     //     };
 
     //     let predicate =
@@ -28,7 +28,7 @@ impl FilterExpr {
     //     match self {
     //         FilterExpr::Match(data_offset, _) => {
     //             let Some(data_offset) = NonZeroU64::new(*data_offset) else {
-    //                 return Err(JournalError::InvalidOffset);
+    //                 return Err(JournalFileError::InvalidOffset);
     //             };
     //             let entry_offset = journal_file.data_object_directed_partition_point(
     //                 data_offset,
@@ -379,6 +379,6 @@ impl JournalFilter {
 
         self.current_matches.clear();
         self.current_op = LogicalOp::Conjunction;
-        self.filter_expr.take().ok_or(JournalError::MalformedFilter)
+        self.filter_expr.take().ok_or(JournalFileError::MalformedFilter)
     }
 }

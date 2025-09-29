@@ -1,5 +1,5 @@
 use crate::offset_array::{Cursor, InlinedCursor, List};
-use error::{JournalError, Result};
+use error::{JournalFileError, Result};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use zerocopy::{
     ByteSlice, ByteSliceMut, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice,
@@ -248,14 +248,14 @@ pub enum JournalState {
 }
 
 impl TryFrom<u8> for JournalState {
-    type Error = JournalError;
+    type Error = JournalFileError;
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
             0 => Ok(JournalState::Offline),
             1 => Ok(JournalState::Online),
             2 => Ok(JournalState::Archived),
-            _ => Err(JournalError::InvalidJournalFileState),
+            _ => Err(JournalFileError::InvalidJournalFileState),
         }
     }
 }
@@ -338,7 +338,7 @@ pub enum ObjectType {
 }
 
 impl TryFrom<u8> for ObjectType {
-    type Error = JournalError;
+    type Error = JournalFileError;
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
@@ -350,7 +350,7 @@ impl TryFrom<u8> for ObjectType {
             5 => Ok(ObjectType::FieldHashTable),
             6 => Ok(ObjectType::EntryArray),
             7 => Ok(ObjectType::Tag),
-            _ => Err(JournalError::InvalidObjectType),
+            _ => Err(JournalFileError::InvalidObjectType),
         }
     }
 }
@@ -484,7 +484,7 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
 
     pub fn get(&self, index: usize, remaining_items: usize) -> Result<Option<NonZeroU64>> {
         if self.is_empty(remaining_items) {
-            return Err(JournalError::EmptyOffsetArrayNode);
+            return Err(JournalFileError::EmptyOffsetArrayNode);
         }
 
         Ok(self.items.get(index))
@@ -499,7 +499,7 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
         let len = self.len(remaining_items);
 
         if start_index >= len {
-            return Err(JournalError::InvalidOffsetArrayIndex);
+            return Err(JournalFileError::InvalidOffsetArrayIndex);
         }
 
         match &self.items {
@@ -522,7 +522,7 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
 impl<B: ByteSliceMut> OffsetArrayObject<B> {
     pub fn set(&mut self, index: usize, offset: NonZeroU64) -> Result<()> {
         if index >= self.capacity() {
-            return Err(JournalError::OutOfBoundsIndex);
+            return Err(JournalFileError::OutOfBoundsIndex);
         }
 
         self.items.set(index, offset);
@@ -907,14 +907,14 @@ impl<B: ByteSlice> DataObject<B> {
 
             let payload = self.payload_bytes();
             let mut decoder =
-                StreamingDecoder::new(payload).map_err(|_| JournalError::DecompressorError)?;
+                StreamingDecoder::new(payload).map_err(|_| JournalFileError::DecompressorError)?;
 
             buf.clear();
             decoder
                 .read_to_end(buf)
-                .map_err(|_| JournalError::DecompressorError)
+                .map_err(|_| JournalFileError::DecompressorError)
         } else {
-            Err(JournalError::UnknownCompressionMethod)
+            Err(JournalFileError::UnknownCompressionMethod)
         }
     }
 }

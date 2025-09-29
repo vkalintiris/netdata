@@ -2,7 +2,7 @@ use crate::DataObject;
 use crate::JournalFile;
 use crate::Mmap;
 use crate::offset_array::InlinedCursor;
-use error::JournalError;
+use error::JournalFileError;
 use error::Result;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
 
     // Check if it starts with the expected prefix
     if !payload.starts_with(PREFIX) {
-        return Err(JournalError::InvalidField);
+        return Err(JournalFileError::InvalidField);
     }
 
     // Get the timestamp portion after the '='
@@ -27,11 +27,11 @@ fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
 
     // Convert to string and parse
     let timestamp_str =
-        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalError::InvalidField)?;
+        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalFileError::InvalidField)?;
 
     let timestamp = timestamp_str
         .parse::<u64>()
-        .map_err(|_| JournalError::InvalidField)?;
+        .map_err(|_| JournalFileError::InvalidField)?;
 
     Ok(timestamp)
 }
