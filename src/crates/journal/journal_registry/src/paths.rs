@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -215,6 +216,20 @@ impl File {
         })
     }
 
+    pub fn dir(&self) -> &str {
+        Path::new(&self.path)
+            .parent()
+            .and_then(|p| {
+                if self.origin.machine_id.is_some() {
+                    p.parent()
+                } else {
+                    Some(p)
+                }
+            })
+            .and_then(|p| p.to_str())
+            .expect("A valid UTF-8 directory path")
+    }
+
     /// Check if a path looks like a journal file
     pub fn is_journal_file(path: &str) -> bool {
         path.ends_with(".journal") || path.ends_with(".journal~")
@@ -286,45 +301,49 @@ impl PartialOrd for File {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Chain {
-    pub origin: Origin,
+    // The origin generating journal files for this chain
+    origin: Origin,
 
     // Invariant: the deque is always sorted:
     //  - any disposed files are at the beginning
     //  - any archived files follow with increasing head realtime
     //  - the active file (if any) is at the end
-    pub files: std::collections::VecDeque<File>,
+    pub files: VecDeque<File>,
 }
 
 impl Chain {
+    pub fn new(origin: Origin) -> Self {
+        Self {
+            origin,
+            files: VecDeque::default(),
+        }
+    }
+
     pub fn active_file(&self) -> Option<&File> {
         self.files
             .back()
             .and_then(|f| if f.is_active() { Some(f) } else { None })
     }
 
-    pub fn insert_files(&mut self, files: &[File]) {
-        let new_files = files.iter().filter(|f| f.origin == self.origin);
+    pub fn insert_file(&mut self, file: &File) {
+        let pos = self.files.partition_point(|f| f < file);
+        self.files.insert(pos, file.clone());
+    }
 
-        for file in new_files {
-            let pos = self.files.partition_point(|f| f < file);
-            self.files.insert(pos, file.clone());
+    pub fn remove_file(&mut self, file: &File) {
+        // Use partition_point to find where the file would be
+        let pos = self.files.partition_point(|f| f < file);
+
+        // Check if the file at this position matches the one we want to remove
+        if pos < self.files.len() && &self.files[pos] == file {
+            self.files.remove(pos);
         }
     }
 
-    pub fn remove_files(&mut self, files: &[File]) {
-        let removed_files = files.iter().filter(|f| f.origin == self.origin);
-
-        // Remove each matching file
-        for file in removed_files {
-            // Use partition_point to find where the file would be
-            let pos = self.files.partition_point(|f| f < file);
-
-            // Check if the file at this position matches the one we want to remove
-            if pos < self.files.len() && &self.files[pos] == file {
-                self.files.remove(pos);
-            }
-        }
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
     }
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
@@ -410,6 +429,62 @@ impl Chain {
                     // us in a disposed file position.
                     continue;
                 }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Directory {
+    chains: HashMap<Origin, Chain>,
+}
+
+#[derive(Default)]
+pub struct Registry {
+    // Maps a journal directory to the chains it contains
+    directories: HashMap<String, Directory>,
+}
+
+impl Registry {
+    fn insert_file(&mut self, file: &File) {
+        if let Some(directory) = self.directories.get_mut(file.dir()) {
+            if let Some(chain) = directory.chains.get_mut(&file.origin) {
+                chain.insert_file(file);
+            } else {
+                let mut chain = Chain::new(file.origin.clone());
+                chain.insert_file(file);
+                directory.chains.insert(file.origin.clone(), chain);
+            }
+        } else {
+            let mut chain = Chain::new(file.origin.clone());
+            chain.insert_file(file);
+
+            let mut directory = Directory::default();
+            directory.chains.insert(file.origin.clone(), chain);
+
+            self.directories.insert(String::from(file.dir()), directory);
+        }
+    }
+
+    fn remove_file(&mut self, file: &File) {
+        if let Some(directory) = self.directories.get_mut(file.dir()) {
+            let mut remove_chain = false;
+
+            if let Some(chain) = directory.chains.get_mut(&file.origin) {
+                chain.remove_file(file);
+                remove_chain = chain.is_empty();
+            };
+
+            if remove_chain {
+                directory.chains.remove(&file.origin);
+            }
+        };
+    }
+
+    pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
+        for directory in self.directories.values() {
+            for chain in directory.chains.values() {
+                chain.find_files_in_range(start, end, output);
             }
         }
     }
