@@ -41,7 +41,7 @@ impl Ord for Status {
             // Archived files sorted by head_realtime (then seqnum for stability)
             (
                 Status::Archived {
-                    seqnum_id: lhs_senqum_id,
+                    seqnum_id: lhs_seqnum_id,
                     head_seqnum: lhs_head_seqnum,
                     head_realtime: lhs_head_realtime,
                 },
@@ -52,7 +52,7 @@ impl Ord for Status {
                 },
             ) => lhs_head_realtime
                 .cmp(rhs_head_realtime)
-                .then_with(|| lhs_senqum_id.cmp(rhs_seqnum_id))
+                .then_with(|| lhs_seqnum_id.cmp(rhs_seqnum_id))
                 .then_with(|| lhs_head_seqnum.cmp(rhs_head_seqnum)),
 
             // Archived comes before Active

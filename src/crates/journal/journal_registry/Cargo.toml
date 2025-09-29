@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-notify = "6.1"
+notify = "8.2"
 parking_lot = "0.12"
 thiserror = "1.0"
 tracing = "0.1"
