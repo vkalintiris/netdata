@@ -1,11 +1,6 @@
-#![allow(unused_imports, dead_code)]
-
-use notify::{
-    Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
-    event::{ModifyKind, RenameMode},
-};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
