@@ -1,6 +1,3 @@
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -301,7 +298,7 @@ impl PartialOrd for File {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Chain {
     // Invariant: the deque is always sorted:
     //  - any disposed files are at the beginning
@@ -311,12 +308,6 @@ pub struct Chain {
 }
 
 impl Chain {
-    pub fn new() -> Self {
-        Self {
-            files: VecDeque::default(),
-        }
-    }
-
     pub fn active_file(&self) -> Option<&File> {
         self.files
             .back()
@@ -436,26 +427,26 @@ struct Directory {
 }
 
 #[derive(Default)]
-pub struct Registry {
+pub struct RegistryInner {
     // Maps a journal directory to the chains it contains
     directories: HashMap<String, Directory>,
 }
 
-impl Registry {
+impl RegistryInner {
     pub fn insert_file(&mut self, file: File) {
         if let Some(directory) = self.directories.get_mut(file.dir()) {
             if let Some(chain) = directory.chains.get_mut(&file.origin) {
                 chain.insert_file(file);
             } else {
                 let origin = file.origin.clone();
-                let mut chain = Chain::new();
+                let mut chain = Chain::default();
                 chain.insert_file(file);
                 directory.chains.insert(origin, chain);
             }
         } else {
             let dir = String::from(file.dir());
             let origin = file.origin.clone();
-            let mut chain = Chain::new();
+            let mut chain = Chain::default();
             chain.insert_file(file);
 
             let mut directory = Directory::default();
@@ -472,7 +463,7 @@ impl Registry {
             let mut remove_chain = false;
 
             if let Some(chain) = directory.chains.get_mut(&file.origin) {
-                chain.remove_file(&file);
+                chain.remove_file(file);
                 remove_chain = chain.is_empty();
             };
 
@@ -508,18 +499,18 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 
-pub struct JournalRegistry {
+pub struct Registry {
     monitor: Monitor,
     events: Vec<Event>,
-    registry: Registry,
+    inner: RegistryInner,
 }
 
-impl JournalRegistry {
+impl Registry {
     pub fn new() -> Result<Self, notify::Error> {
         Ok(Self {
             monitor: Monitor::new()?,
             events: Default::default(),
-            registry: Default::default(),
+            inner: Default::default(),
         })
     }
 
@@ -535,7 +526,7 @@ impl JournalRegistry {
     }
 
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
-        self.registry.find_files_in_range(start, end, output);
+        self.inner.find_files_in_range(start, end, output);
     }
 
     pub async fn process_events(&mut self) {
@@ -546,14 +537,14 @@ impl JournalRegistry {
                 EventKind::Create(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.registry.insert_file(file);
+                            self.inner.insert_file(file);
                         }
                     }
                 }
                 EventKind::Remove(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.registry.remove_file(&file);
+                            self.inner.remove_file(&file);
                         }
                     }
                 }
@@ -561,10 +552,10 @@ impl JournalRegistry {
                     // Handle renames: remove old, add new
                     if event.paths.len() >= 2 {
                         if let Some(old_file) = File::from_path(&event.paths[0]) {
-                            self.registry.remove_file(&old_file);
+                            self.inner.remove_file(&old_file);
                         }
                         if let Some(new_file) = File::from_path(&event.paths[1]) {
-                            self.registry.insert_file(new_file);
+                            self.inner.insert_file(new_file);
                         }
                     }
                 }
@@ -606,7 +597,7 @@ impl JournalRegistry {
         self.scan_directory_recursive(path, &mut files).await?;
 
         for file in files {
-            self.registry.insert_file(file);
+            self.inner.insert_file(file);
         }
 
         Ok(())
