@@ -1,4 +1,5 @@
-use crate::{FunctionCall, FunctionContext, FunctionDeclaration, FunctionResult, PluginContext};
+use crate::{FunctionContext, PluginContext};
+use netdata_plugin_protocol::{FunctionCall, FunctionDeclaration, FunctionResult};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

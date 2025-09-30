@@ -1,6 +1,5 @@
-use crate::ConfigDeclaration;
 use netdata_plugin_error::{NetdataPluginError, Result};
-use netdata_plugin_protocol::DynCfgCmds;
+use netdata_plugin_protocol::{ConfigDeclaration, DynCfgCmds};
 use netdata_plugin_schema::NetdataSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;

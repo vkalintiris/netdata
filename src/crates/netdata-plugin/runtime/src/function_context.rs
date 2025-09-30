@@ -1,4 +1,5 @@
-use crate::{FunctionCall, HttpAccess, TransactionId};
+use crate::TransactionId;
+use netdata_plugin_protocol::{FunctionCall, HttpAccess};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 

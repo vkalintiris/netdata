@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use crate::config_registry::{Config, ConfigRegistry};
 use crate::{
-    ConfigDeclarable, FunctionCall, FunctionCancel, FunctionContext, FunctionDeclaration,
-    FunctionRegistry, FunctionResult, PluginContext, Result,
+    ConfigDeclarable, FunctionContext, FunctionRegistry, PluginContext, Result,
+    config_registry::{Config, ConfigRegistry},
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
+use netdata_plugin_protocol::{FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;

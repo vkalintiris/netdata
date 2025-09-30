@@ -97,9 +97,3 @@ pub use function_context::FunctionContext;
 pub use function_registry::FunctionRegistry;
 pub use plugin_context::{PluginContext, PluginStats, Transaction, TransactionId};
 pub use plugin_runtime::PluginRuntime;
-
-// Re-export commonly used types from proto
-pub use netdata_plugin_protocol::{
-    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionCall,
-    FunctionCancel, FunctionDeclaration, FunctionResult, HttpAccess,
-};

@@ -9,10 +9,11 @@
 //! - Manage transactions and cancellations
 //! - Access plugin statistics
 
-use netdata_plugin_runtime::{
-    ConfigDeclarable, ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType,
-    FunctionContext, FunctionDeclaration, FunctionResult, HttpAccess, PluginContext, PluginRuntime,
+use netdata_plugin_protocol::{
+    ConfigDeclaration, DynCfgCmds, DynCfgSourceType, DynCfgStatus, DynCfgType, FunctionDeclaration,
+    FunctionResult, HttpAccess,
 };
+use netdata_plugin_runtime::{ConfigDeclarable, FunctionContext, PluginContext, PluginRuntime};
 use netdata_plugin_schema::NetdataSchema;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -287,9 +288,7 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
 
 pub async fn register_configs(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
     let initial_value = Some(MyConfig::new("https://www.google.com", 80));
-    runtime
-        .register_config::<MyConfig>(initial_value)
-        .await?;
+    runtime.register_config::<MyConfig>(initial_value).await?;
     Ok(())
 }
 
@@ -328,7 +327,6 @@ struct MyConfig {
     )]
     port: u16,
 }
-
 
 impl MyConfig {
     pub fn new(url: &str, port: u16) -> Self {
