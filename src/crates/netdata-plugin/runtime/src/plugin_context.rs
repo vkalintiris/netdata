@@ -43,7 +43,7 @@ impl Transaction {
 
     /// Check if the transaction has expired
     pub fn is_expired(&self) -> bool {
-        self.started_at.elapsed() > self.timeout
+        self.started_at.elapsed() >= self.timeout
     }
 
     /// Get elapsed time since transaction started
@@ -94,10 +94,6 @@ impl TransactionRegistry {
         }
 
         expired
-    }
-
-    fn len(&self) -> usize {
-        self.transactions.len()
     }
 
     fn values(&self) -> impl Iterator<Item = &Transaction> {

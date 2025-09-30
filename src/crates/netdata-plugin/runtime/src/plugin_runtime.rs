@@ -2,7 +2,7 @@
 
 use crate::{
     ConfigDeclarable, FunctionContext, FunctionRegistry, PluginContext, Result,
-    config_registry::{Config, ConfigRegistry},
+    config_registry::Config,
 };
 use futures::StreamExt;
 use netdata_plugin_protocol::{DynCfgCmds, Message, MessageReader, MessageWriter};
@@ -17,7 +17,6 @@ use tracing::{debug, error, info, warn};
 /// The main plugin runtime that handles Netdata protocol messages
 pub struct PluginRuntime {
     plugin_name: String,
-    config_registry: ConfigRegistry,
     function_registry: FunctionRegistry,
     plugin_context: PluginContext,
     reader: MessageReader<tokio::io::Stdin>,
@@ -32,7 +31,6 @@ impl PluginRuntime {
     pub fn new(plugin_name: impl Into<String>) -> Self {
         let plugin_name = plugin_name.into();
         let plugin_context = PluginContext::new(plugin_name.clone());
-        let config_registry = ConfigRegistry::default();
         let function_registry = FunctionRegistry::new();
         let reader = MessageReader::new(tokio::io::stdin());
         let writer = Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout())));
@@ -42,7 +40,6 @@ impl PluginRuntime {
 
         Self {
             plugin_name,
-            config_registry,
             function_registry,
             plugin_context,
             reader,
