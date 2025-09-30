@@ -52,17 +52,6 @@ impl Transaction {
     }
 }
 
-/// Plugin statistics
-#[derive(Debug, Default, Clone)]
-pub struct PluginStats {
-    pub total_calls: u64,
-    pub successful_calls: u64,
-    pub failed_calls: u64,
-    pub cancelled_calls: u64,
-    pub timed_out_calls: u64,
-    pub active_transactions: usize,
-}
-
 /// Transaction registry for managing active function calls
 struct TransactionRegistry {
     transactions: HashMap<TransactionId, Transaction>,
@@ -121,7 +110,6 @@ pub struct PluginContextInner {
     plugin_name: String,
     config_registry: RwLock<ConfigRegistry>,
     transaction_registry: RwLock<TransactionRegistry>,
-    stats: RwLock<PluginStats>,
 }
 
 #[derive(Clone)]
@@ -137,7 +125,6 @@ impl PluginContext {
                 config_registry: RwLock::default(),
                 plugin_name: plugin_name.into(),
                 transaction_registry: RwLock::new(TransactionRegistry::new()),
-                stats: RwLock::new(PluginStats::default()),
             }),
         }
     }
@@ -186,18 +173,11 @@ impl PluginContext {
         }
 
         registry.insert(transaction);
-
-        let mut stats = self.inner.stats.write().await;
-        stats.total_calls += 1;
-        stats.active_transactions = registry.len();
-
         true
     }
 
     /// Complete a transaction successfully
     pub async fn complete_transaction(&self, transaction_id: &TransactionId) {
-        debug!("Completing transaction: {}", transaction_id);
-
         let mut registry = self.inner.transaction_registry.write().await;
         if let Some(transaction) = registry.remove(transaction_id) {
             info!(
@@ -205,10 +185,6 @@ impl PluginContext {
                 transaction_id,
                 transaction.elapsed()
             );
-
-            let mut stats = self.inner.stats.write().await;
-            stats.successful_calls += 1;
-            stats.active_transactions = registry.len();
         }
     }
 
@@ -223,10 +199,6 @@ impl PluginContext {
                 transaction_id,
                 transaction.elapsed()
             );
-
-            let mut stats = self.inner.stats.write().await;
-            stats.failed_calls += 1;
-            stats.active_transactions = registry.len();
         }
     }
 
@@ -245,9 +217,6 @@ impl PluginContext {
 
             // Note: We don't remove it immediately as the handler might still be running
             // It will be cleaned up on completion or during cleanup_expired_transactions
-
-            let mut stats = self.inner.stats.write().await;
-            stats.cancelled_calls += 1;
         }
     }
 
@@ -278,29 +247,9 @@ impl PluginContext {
         let expired = registry.cleanup_expired();
 
         if !expired.is_empty() {
-            let mut stats = self.inner.stats.write().await;
-            stats.timed_out_calls += expired.len() as u64;
-            stats.active_transactions = registry.len();
-
             for id in expired {
                 warn!("Transaction {} timed out", id);
             }
         }
-    }
-
-    /// Get current plugin statistics
-    pub async fn get_stats(&self) -> PluginStats {
-        let stats = self.inner.stats.read().await;
-        stats.clone()
-    }
-
-    /// Reset plugin statistics
-    pub async fn reset_stats(&self) {
-        let mut stats = self.inner.stats.write().await;
-        let registry = self.inner.transaction_registry.read().await;
-        *stats = PluginStats {
-            active_transactions: registry.len(),
-            ..Default::default()
-        };
     }
 }

@@ -28,28 +28,16 @@ async fn hello_function(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> F
         fn_ctx.source()
     );
 
-    // Get plugin statistics
-    let stats = plugin_ctx.get_stats().await;
-
     let response = format!(
         "Hello from {}!\n\
          Transaction: {}\n\
          Function: {}\n\
          Source: {}\n\
-         Plugin Stats:\n\
-         - Total calls: {}\n\
-         - Successful: {}\n\
-         - Failed: {}\n\
-         - Active: {}\n\
-         - Elapsed: {:?}",
+         Elapsed: {:?}",
         plugin_ctx.plugin_name(),
         fn_ctx.transaction_id(),
         fn_ctx.function_name(),
         fn_ctx.source().unwrap_or("unknown"),
-        stats.total_calls,
-        stats.successful_calls,
-        stats.failed_calls,
-        stats.active_transactions,
         fn_ctx.elapsed(),
     );
 
@@ -188,19 +176,6 @@ async fn get_transactions(plugin_ctx: PluginContext, fn_ctx: FunctionContext) ->
     }
 }
 
-/// Reset plugin statistics
-async fn reset_stats(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> FunctionResult {
-    plugin_ctx.reset_stats().await;
-
-    FunctionResult {
-        transaction: fn_ctx.transaction_id().clone(),
-        status: 200,
-        format: "text/plain".to_string(),
-        expires: 0,
-        payload: b"Statistics reset successfully".to_vec(),
-    }
-}
-
 pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
     let hello_func_decl = FunctionDeclaration::new(
         "hello",
@@ -224,11 +199,6 @@ pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn s
         FunctionDeclaration::new("transactions", "Get list of active transactions");
     runtime
         .register_function(transactions_func_decl, get_transactions)
-        .await?;
-
-    let reset_stats_func_decl = FunctionDeclaration::new("reset-stats", "Reset plugin statistics");
-    runtime
-        .register_function(reset_stats_func_decl, reset_stats)
         .await?;
 
     Ok(())
