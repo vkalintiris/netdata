@@ -557,7 +557,12 @@ impl Registry {
                         if let Some(new_file) = File::from_path(&event.paths[1]) {
                             self.inner.insert_file(new_file);
                         }
+                    } else {
+                        eprintln!("Uncaught rename event: {:#?}", event.paths);
                     }
+                }
+                EventKind::Modify(ModifyKind::Name(rename_mode)) => {
+                    eprintln!("Unhandled rename mode: {:#?}", rename_mode);
                 }
                 _ => {} // Ignore other events
             }
