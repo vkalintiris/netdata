@@ -202,85 +202,33 @@ async fn reset_stats(plugin_ctx: PluginContext, fn_ctx: FunctionContext) -> Func
 }
 
 pub async fn register_functions(runtime: &PluginRuntime) -> Result<(), Box<dyn std::error::Error>> {
-    // Register functions
+    let hello_func_decl = FunctionDeclaration::new(
+        "hello",
+        "Returns a friendly greeting with plugin statistics",
+    );
     runtime
-        .register_function(
-            FunctionDeclaration {
-                name: "hello".to_string(),
-                help: "Returns a friendly greeting with plugin statistics".to_string(),
-                timeout: 10,
-                tags: Some("greeting,info".to_string()),
-                access: Some(HttpAccess::from_u32(0)),
-                priority: Some(100),
-                version: Some(1),
-                global: false,
-            },
-            hello_function,
-        )
+        .register_function(hello_func_decl, hello_function)
         .await?;
 
+    let process_func_decl = FunctionDeclaration::new("process", "Processes data from the payload");
     runtime
-        .register_function(
-            FunctionDeclaration {
-                name: "process".to_string(),
-                help: "Processes data from the payload".to_string(),
-                timeout: 30,
-                tags: Some("data,processing".to_string()),
-                access: Some(HttpAccess::from_u32(0)),
-                priority: Some(90),
-                version: Some(1),
-                global: false,
-            },
-            process_data,
-        )
+        .register_function(process_func_decl, process_data)
         .await?;
 
+    let slow_func_decl = FunctionDeclaration::new("slow", "A slow operation that can be cancelled");
     runtime
-        .register_function(
-            FunctionDeclaration {
-                name: "slow".to_string(),
-                help: "A slow operation that can be cancelled".to_string(),
-                timeout: 60,
-                tags: Some("slow,cancellable".to_string()),
-                access: Some(HttpAccess::from_u32(0)),
-                priority: Some(50),
-                version: Some(1),
-                global: false,
-            },
-            slow_function,
-        )
+        .register_function(slow_func_decl, slow_function)
         .await?;
 
+    let transactions_func_decl =
+        FunctionDeclaration::new("transactions", "Get list of active transactions");
     runtime
-        .register_function(
-            FunctionDeclaration {
-                name: "transactions".to_string(),
-                help: "Get list of active transactions".to_string(),
-                timeout: 5,
-                tags: Some("admin,debug".to_string()),
-                access: Some(HttpAccess::from_u32(0)),
-                priority: Some(200),
-                version: Some(1),
-                global: false,
-            },
-            get_transactions,
-        )
+        .register_function(transactions_func_decl, get_transactions)
         .await?;
 
+    let reset_stats_func_decl = FunctionDeclaration::new("reset-stats", "Reset plugin statistics");
     runtime
-        .register_function(
-            FunctionDeclaration {
-                name: "reset-stats".to_string(),
-                help: "Reset plugin statistics".to_string(),
-                timeout: 5,
-                tags: Some("admin".to_string()),
-                access: Some(HttpAccess::from_u32(0)),
-                priority: Some(200),
-                version: Some(1),
-                global: false,
-            },
-            reset_stats,
-        )
+        .register_function(reset_stats_func_decl, reset_stats)
         .await?;
 
     Ok(())

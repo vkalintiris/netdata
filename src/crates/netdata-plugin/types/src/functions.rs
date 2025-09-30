@@ -21,6 +21,21 @@ pub struct FunctionDeclaration {
     pub version: Option<u32>,
 }
 
+impl FunctionDeclaration {
+    pub fn new(name: &str, help: &str) -> Self {
+        Self {
+            name: String::from(name),
+            help: String::from(help),
+            timeout: 10,
+            tags: Some("admin,debug".to_string()),
+            access: Some(HttpAccess::from_u32(0)),
+            priority: Some(200),
+            version: Some(1),
+            global: false,
+        }
+    }
+}
+
 /// A function call message for invoking functions
 #[derive(Debug, Clone)]
 pub struct FunctionCall {
