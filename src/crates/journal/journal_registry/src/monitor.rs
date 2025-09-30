@@ -1,16 +1,15 @@
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::mpsc;
 
 pub struct Monitor {
     /// Set of directories currently being watched
-    watched_dirs: Arc<RwLock<HashSet<String>>>,
+    watched_dirs: HashSet<String>,
     /// The watcher instance
-    watcher: Arc<Mutex<RecommendedWatcher>>,
+    watcher: RecommendedWatcher,
     /// Channel for events
-    event_receiver: Arc<Mutex<mpsc::UnboundedReceiver<Event>>>,
+    event_receiver: mpsc::UnboundedReceiver<Event>,
 }
 
 impl Monitor {
@@ -28,40 +27,37 @@ impl Monitor {
 
         Ok(Self {
             watched_dirs: Default::default(),
-            watcher: Arc::new(Mutex::new(watcher)),
-            event_receiver: Arc::new(Mutex::new(event_receiver)),
+            watcher,
+            event_receiver,
         })
     }
 
-    pub async fn watch_directory(&self, path: &str) -> Result<(), notify::Error> {
+    pub fn watch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
         // Start watching with notify
         self.watcher
-            .lock()
-            .await
             .watch(Path::new(path), RecursiveMode::NonRecursive)?;
 
         // Track the directory
-        self.watched_dirs.write().await.insert(String::from(path));
+        self.watched_dirs.insert(String::from(path));
 
         Ok(())
     }
 
-    pub async fn unwatch_directory(&self, path: &str) -> Result<(), notify::Error> {
+    pub fn unwatch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
         // Stop watching
-        self.watcher.lock().await.unwatch(Path::new(path))?;
+        self.watcher.unwatch(Path::new(path))?;
 
         // Remove from tracked set
-        self.watched_dirs.write().await.remove(path);
+        self.watched_dirs.remove(path);
 
         Ok(())
     }
 
     /// Collect all events from the queue
-    pub async fn collect(&self, events: &mut Vec<Event>) {
+    pub async fn collect(&mut self, events: &mut Vec<Event>) {
         events.clear();
 
-        let mut receiver = self.event_receiver.lock().await;
-        while let Ok(event) = receiver.try_recv() {
+        while let Ok(event) = self.event_receiver.try_recv() {
             events.push(event);
         }
     }

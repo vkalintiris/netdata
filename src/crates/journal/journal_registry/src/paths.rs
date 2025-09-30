@@ -515,13 +515,13 @@ impl Registry {
     }
 
     pub async fn watch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
-        self.monitor.watch_directory(path).await.unwrap();
+        self.monitor.watch_directory(path).unwrap();
         self.scan_directory(path).await.unwrap();
         Ok(())
     }
 
-    pub async fn unwatch_directory(&self, path: &str) -> Result<(), notify::Error> {
-        self.monitor.unwatch_directory(path).await.unwrap();
+    pub async fn unwatch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
+        self.monitor.unwatch_directory(path).unwrap();
         Ok(())
     }
 
