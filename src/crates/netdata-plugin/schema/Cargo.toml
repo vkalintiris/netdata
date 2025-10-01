@@ -6,6 +6,9 @@ rust-version.workspace = true
 description = "Library for generating Netdata-compatible JSON Schema with UI annotations"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 netdata-plugin-error = { path = "../error" }
 netdata-plugin-types = { path = "../types" }

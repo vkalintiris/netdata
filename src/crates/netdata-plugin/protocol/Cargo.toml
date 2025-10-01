@@ -3,6 +3,9 @@ name = "netdata-plugin-protocol"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 netdata-plugin-error = { path = "../error" }
 netdata-plugin-types = { path = "../types" }

@@ -2,16 +2,16 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::{
     FunctionCall, FunctionDeclaration, FunctionResult, Message, MessageReader, MessageWriter,
 };
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -29,6 +29,8 @@ pub struct FunctionContext {
     pub function_call: Box<FunctionCall>,
     pub control_rx: mpsc::Receiver<ControlMessage>,
 }
+
+type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 
 #[async_trait]
 pub trait FunctionHandler: Send + Sync {
@@ -48,11 +50,9 @@ pub struct PluginRuntime {
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
 
     function_handlers: HashMap<String, Arc<dyn FunctionHandler>>,
-    function_progress: HashMap<String, Arc<dyn FunctionHandler>>,
 
     transaction_registry: HashMap<String, Arc<Transaction>>,
-    futures:
-        FuturesUnordered<Pin<Box<dyn futures::Future<Output = (String, FunctionResult)> + Send>>>,
+    futures: FuturesUnordered<FunctionFuture>,
 
     shutdown_token: CancellationToken,
 }
@@ -65,8 +65,6 @@ impl PluginRuntime {
             writer: Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout()))),
 
             function_handlers: HashMap::new(),
-            function_progress: HashMap::new(),
-
             transaction_registry: HashMap::new(),
             futures: FuturesUnordered::new(),
 

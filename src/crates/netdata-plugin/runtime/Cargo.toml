@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "Runtime layer that simplifies writing Netdata plugins with gRPC services"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Local crates
 netdata-plugin-error = { path = "../error" }
