@@ -307,6 +307,7 @@ impl LineParser {
                 Command::FunctionPayloadBegin { args }
             }
             Some(Token::FunctionPayloadEnd) => Command::FunctionPayload { args },
+            Some(Token::FunctionProgress) => Command::FunctionProgress { args },
             Some(Token::FunctionCancel) => Command::FunctionCancel { args },
             Some(Token::Json) => {
                 self.state = ParserState::JsonPayload;

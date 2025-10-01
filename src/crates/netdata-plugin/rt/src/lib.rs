@@ -27,7 +27,7 @@ struct Transaction {
 
 pub struct FunctionContext {
     pub function_call: Box<FunctionCall>,
-    pub control_rx: mpsc::Receiver<ControlMessage>,
+    pub control_rx: Mutex<mpsc::Receiver<ControlMessage>>,
 }
 
 type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
@@ -124,41 +124,30 @@ impl PluginRuntime {
         Ok(())
     }
 
-    fn handle_function_call(&mut self, function_call: Box<FunctionCall>) {
-        if self
-            .transaction_registry
-            .contains_key(&function_call.transaction)
-        {
-            warn!(
-                "Ignoring existing transaction {:#?} for function {:#?}",
-                function_call.transaction, function_call.name
-            );
-            return;
+    /// Main message processing loop
+    async fn process_messages(&mut self) -> Result<()> {
+        info!("Starting message processing loop");
+
+        loop {
+            tokio::select! {
+                // Make the shutdown signal higher priority by putting it first
+                _ = self.shutdown_token.cancelled() => {
+                    info!("Shutdown requested... Stop processing messages from stdin");
+                    // Reader will be dropped here, closing stdin
+                    break;
+                }
+                message = self.reader.next() => {
+                    if self.handle_message(message).await? {
+                        break;
+                    }
+                }
+                Some((transaction, result)) = self.futures.next() => {
+                    self.handle_completed(transaction, result).await?;
+                }
+            }
         }
 
-        let Some(handler) = self.function_handlers.get(&function_call.name) else {
-            error!("Could not find function {:#?}", function_call.name);
-            return;
-        };
-        let handler = handler.clone();
-
-        let (control_tx, control_rx) = mpsc::channel(4);
-
-        let function_context = Arc::new(FunctionContext {
-            function_call,
-            control_rx,
-        });
-
-        let id = function_context.function_call.transaction.clone();
-        let transaction = Arc::new(Transaction { id, control_tx });
-        self.transaction_registry
-            .insert(transaction.id.clone(), transaction.clone());
-
-        let future = Box::pin(async move {
-            let result = handler.handle(function_context).await;
-            (transaction.id.clone(), result)
-        });
-        self.futures.push(future);
+        Ok(())
     }
 
     async fn handle_message(&mut self, message: Option<Result<Message>>) -> Result<bool> {
@@ -202,6 +191,43 @@ impl PluginRuntime {
         Ok(false)
     }
 
+    fn handle_function_call(&mut self, function_call: Box<FunctionCall>) {
+        if self
+            .transaction_registry
+            .contains_key(&function_call.transaction)
+        {
+            warn!(
+                "Ignoring existing transaction {:#?} for function {:#?}",
+                function_call.transaction, function_call.name
+            );
+            return;
+        }
+
+        let Some(handler) = self.function_handlers.get(&function_call.name) else {
+            error!("Could not find function {:#?}", function_call.name);
+            return;
+        };
+        let handler = handler.clone();
+
+        let (control_tx, control_rx) = mpsc::channel(4);
+
+        let function_context = Arc::new(FunctionContext {
+            function_call,
+            control_rx: Mutex::new(control_rx),
+        });
+
+        let id = function_context.function_call.transaction.clone();
+        let transaction = Arc::new(Transaction { id, control_tx });
+        self.transaction_registry
+            .insert(transaction.id.clone(), transaction.clone());
+
+        let future = Box::pin(async move {
+            let result = handler.handle(function_context).await;
+            (transaction.id.clone(), result)
+        });
+        self.futures.push(future);
+    }
+
     async fn handle_completed(
         &mut self,
         transaction: String,
@@ -213,32 +239,6 @@ impl PluginRuntime {
             .await
             .send(Message::FunctionResult(Box::new(result)))
             .await?;
-        Ok(())
-    }
-
-    /// Main message processing loop
-    async fn process_messages(&mut self) -> Result<()> {
-        info!("Starting message processing loop");
-
-        loop {
-            tokio::select! {
-                // Make the shutdown signal higher priority by putting it first
-                _ = self.shutdown_token.cancelled() => {
-                    info!("Shutdown requested... Stop processing messages from stdin");
-                    // Reader will be dropped here, closing stdin
-                    break;
-                }
-                message = self.reader.next() => {
-                    if self.handle_message(message).await? {
-                        break;
-                    }
-                }
-                Some((transaction, result)) = self.futures.next() => {
-                    self.handle_completed(transaction, result).await?;
-                }
-            }
-        }
-
         Ok(())
     }
 
