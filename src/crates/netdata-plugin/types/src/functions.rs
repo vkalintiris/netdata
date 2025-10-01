@@ -74,3 +74,10 @@ pub struct FunctionCancel {
     /// Transaction ID of the function call to cancel
     pub transaction: String,
 }
+
+/// A message for reporting function call progress
+#[derive(Debug, Clone)]
+pub struct FunctionProgress {
+    /// Transaction ID of the function call that should report the progress
+    pub transaction: String,
+}

@@ -199,6 +199,9 @@ impl Encoder<Message> for MessageParser {
                     .as_bytes(),
                 );
             }
+            Message::FunctionProgress(_) => {
+                unimplemented!()
+            }
         }
 
         Ok(())

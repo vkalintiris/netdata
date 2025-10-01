@@ -102,6 +102,7 @@ pub enum Command<'a> {
     FunctionResultBegin { args: &'a [u8] },
     FunctionResultEnd { args: &'a [u8] },
     FunctionCancel { args: &'a [u8] },
+    FunctionProgress { args: &'a [u8] },
 
     // Label commands
     Clabel { args: &'a [u8] },
@@ -183,6 +184,10 @@ impl core::fmt::Debug for Command<'_> {
                 .finish(),
             Command::FunctionCancel { args } => f
                 .debug_struct("FunctionCancel")
+                .field("args", &ByteStr(args))
+                .finish(),
+            Command::FunctionProgress { args } => f
+                .debug_struct("FunctionProgress")
                 .field("args", &ByteStr(args))
                 .finish(),
         }

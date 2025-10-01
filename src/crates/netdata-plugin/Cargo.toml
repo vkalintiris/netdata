@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "error",
     "protocol",
+    "rt",
     "runtime",
     "schema",
     "types",
@@ -29,3 +30,4 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tokio = { version = "1.45", features = ["rt-multi-thread", "process", "io-util"] }
 tracing = "0.1"
 schemars = "1.0"
+async-trait = "0.1.89"

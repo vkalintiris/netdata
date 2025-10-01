@@ -31,6 +31,7 @@ pub enum Message {
     FunctionCall(Box<FunctionCall>),
     FunctionResult(Box<FunctionResult>),
     FunctionCancel(Box<FunctionCancel>),
+    FunctionProgress(Box<FunctionProgress>),
     ConfigDeclaration(Box<ConfigDeclaration>),
 }
 
@@ -98,6 +99,11 @@ impl MessageParser {
 
             Command::FunctionCancel { args } => {
                 self.current_message = self.parse_function_cancel(args);
+                self.current_message.take()
+            }
+
+            Command::FunctionProgress { args } => {
+                self.current_message = self.parse_function_progress(args);
                 self.current_message.take()
             }
 
@@ -233,5 +239,16 @@ impl MessageParser {
         let function_cancel = Box::new(FunctionCancel { transaction });
 
         Some(Message::FunctionCancel(function_cancel))
+    }
+
+    /// Parse FUNCTION_PROGRESS command
+    /// Expected format: FUNCTION_PROGRESS transaction
+    fn parse_function_progress(&self, args: &[u8]) -> Option<Message> {
+        let mut words = WordIterator::new(args);
+
+        let transaction = words.next_string()?;
+        let function_progress = Box::new(FunctionProgress { transaction });
+
+        Some(Message::FunctionProgress(function_progress))
     }
 }

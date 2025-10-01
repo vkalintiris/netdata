@@ -17,5 +17,7 @@ pub use dyncfg_source_type::DynCfgSourceType;
 pub use dyncfg_status::DynCfgStatus;
 pub use dyncfg_type::DynCfgType;
 
-pub use functions::{FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult};
+pub use functions::{
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgress, FunctionResult,
+};
 pub use http_access::HttpAccess;
