@@ -90,6 +90,7 @@ impl FunctionHandler for HelloSlowHandler {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             std::env::var("RUST_LOG")
                 .unwrap_or_else(|_| "info,netdata_plugin_channels=debug".to_string()),
