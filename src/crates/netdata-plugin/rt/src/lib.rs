@@ -9,6 +9,8 @@ use netdata_plugin_protocol::{
     FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult, Message, MessageReader,
     MessageWriter,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,15 +34,151 @@ pub struct FunctionContext {
     pub control_rx: Mutex<mpsc::Receiver<ControlMessage>>,
 }
 
+pub struct FunctionRequest<T> {
+    pub context: Arc<FunctionContext>,
+    pub payload: T,
+}
+
 type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 
+/// Trait for implementing function handlers with automatic cancellation and progress management
 #[async_trait]
 pub trait FunctionHandler: Send + Sync {
-    /// Handle a function call
-    async fn handle(&self, ctx: Arc<FunctionContext>) -> FunctionResult;
+    /// The request payload type that will be deserialized from JSON
+    type Request: DeserializeOwned + Send;
+
+    /// The response type that will be serialized to JSON
+    type Response: Serialize + Send;
+
+    /// Called when the function is invoked - contains the main computation
+    /// Returns a future that produces the response
+    async fn on_call(&self, request: Self::Request) -> Result<Self::Response>;
+
+    /// Called when cancellation is requested while on_call is running
+    async fn on_cancellation(&self) -> Result<Self::Response>;
+
+    /// Called when progress report is requested while on_call is running
+    async fn on_progress(&self);
 
     /// Get the function declaration for this handler
     fn declaration(&self) -> FunctionDeclaration;
+}
+
+/// Internal trait that handles raw function calls with serialization/deserialization
+#[async_trait]
+trait FunctionHandlerInternal: Send + Sync {
+    async fn handle_raw(&self, ctx: Arc<FunctionContext>) -> FunctionResult;
+    fn declaration(&self) -> FunctionDeclaration;
+}
+
+/// Adapter that wraps a FunctionHandler and provides serialization/deserialization
+struct HandlerAdapter<H: FunctionHandler> {
+    handler: Arc<H>,
+}
+
+#[async_trait]
+impl<H: FunctionHandler> FunctionHandlerInternal for HandlerAdapter<H> {
+    async fn handle_raw(&self, ctx: Arc<FunctionContext>) -> FunctionResult {
+        let transaction = ctx.function_call.transaction.clone();
+
+        // Deserialize the request payload
+        let payload: H::Request = match &ctx.function_call.payload {
+            Some(bytes) => match serde_json::from_slice(bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to deserialize request payload: {}", e);
+                    return FunctionResult {
+                        transaction,
+                        status: 400,
+                        expires: 0,
+                        format: "text/plain".to_string(),
+                        payload: format!("Invalid request: {}", e).as_bytes().to_vec(),
+                    };
+                }
+            },
+            None => match serde_json::from_slice(b"{}") {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to deserialize empty payload: {}", e);
+                    return FunctionResult {
+                        transaction,
+                        status: 400,
+                        expires: 0,
+                        format: "text/plain".to_string(),
+                        payload: format!("Invalid request: {}", e).as_bytes().to_vec(),
+                    };
+                }
+            },
+        };
+
+        // Drive the handler with cancellation and progress handling
+        let handler = self.handler.clone();
+        let handler_for_call = handler.clone();
+
+        let mut call_future = Box::pin(handler_for_call.on_call(payload));
+        let mut control_rx = ctx.control_rx.lock().await;
+
+        let result = loop {
+            tokio::select! {
+                // Poll the main computation
+                result = &mut call_future => {
+                    break result;
+                }
+                // Handle progress requests
+                Some(msg) = control_rx.recv() => {
+                    match msg {
+                        ControlMessage::Progress => {
+                            handler.on_progress().await;
+                        }
+                    }
+                }
+                // Handle cancellation
+                _ = ctx.cancellation_token.cancelled() => {
+                    break handler.on_cancellation().await;
+                }
+            }
+        };
+
+        // Process the result
+        match result {
+            Ok(response) => {
+                // Serialize the response
+                match serde_json::to_vec(&response) {
+                    Ok(payload) => FunctionResult {
+                        transaction,
+                        status: 200,
+                        expires: 0,
+                        format: "application/json".to_string(),
+                        payload,
+                    },
+                    Err(e) => {
+                        error!("Failed to serialize response: {}", e);
+                        FunctionResult {
+                            transaction,
+                            status: 500,
+                            expires: 0,
+                            format: "text/plain".to_string(),
+                            payload: format!("Serialization error: {}", e).as_bytes().to_vec(),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Handler error: {}", e);
+                FunctionResult {
+                    transaction,
+                    status: 500,
+                    expires: 0,
+                    format: "text/plain".to_string(),
+                    payload: format!("Handler error: {}", e).as_bytes().to_vec(),
+                }
+            }
+        }
+    }
+
+    fn declaration(&self) -> FunctionDeclaration {
+        self.handler.declaration()
+    }
 }
 
 pub struct PluginRuntime {
@@ -48,7 +186,7 @@ pub struct PluginRuntime {
     reader: MessageReader<tokio::io::Stdin>,
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
 
-    function_handlers: HashMap<String, Arc<dyn FunctionHandler>>,
+    function_handlers: HashMap<String, Arc<dyn FunctionHandlerInternal>>,
 
     transaction_registry: HashMap<String, Arc<Transaction>>,
     futures: FuturesUnordered<FunctionFuture>,
@@ -71,9 +209,13 @@ impl PluginRuntime {
         }
     }
 
-    pub fn register_handler(&mut self, handler: Arc<dyn FunctionHandler>) {
-        let name = handler.declaration().name;
-        self.function_handlers.insert(name, handler);
+    pub fn register_handler<H: FunctionHandler + 'static>(&mut self, handler: H) {
+        let handler_arc = Arc::new(handler);
+        let adapter = HandlerAdapter {
+            handler: handler_arc,
+        };
+        let name = adapter.declaration().name.clone();
+        self.function_handlers.insert(name, Arc::new(adapter));
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -217,7 +359,7 @@ impl PluginRuntime {
             .insert(transaction.id.clone(), transaction.clone());
 
         let future = Box::pin(async move {
-            let result = handler.handle(function_context).await;
+            let result = handler.handle_raw(function_context).await;
             (transaction.id.clone(), result)
         });
         self.futures.push(future);

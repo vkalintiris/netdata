@@ -1,27 +1,43 @@
 use async_trait::async_trait;
-use netdata_plugin_protocol::{FunctionDeclaration, FunctionResult};
-use rt::{ControlMessage, FunctionContext, FunctionHandler, PluginRuntime};
-use std::sync::Arc;
+use netdata_plugin_error::Result;
+use netdata_plugin_protocol::FunctionDeclaration;
+use rt::{FunctionHandler, PluginRuntime};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{info, warn};
+
+#[derive(Deserialize)]
+struct EmptyRequest {}
+
+#[derive(Serialize)]
+struct HelloFastResponse {
+    message: String,
+}
 
 struct HelloFastHandler;
 
 #[async_trait]
 impl FunctionHandler for HelloFastHandler {
-    async fn handle(&self, ctx: Arc<FunctionContext>) -> FunctionResult {
-        info!(
-            "Fast function called with transaction: {}",
-            ctx.function_call.transaction
-        );
+    type Request = EmptyRequest;
+    type Response = HelloFastResponse;
 
-        FunctionResult {
-            transaction: ctx.function_call.transaction.clone(),
-            status: 200,
-            expires: 0,
-            format: "text/plain".to_string(),
-            payload: "Fast response!".as_bytes().to_vec(),
-        }
+    async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
+        info!("Fast function called");
+
+        Ok(HelloFastResponse {
+            message: "Fast response!".to_string(),
+        })
+    }
+
+    async fn on_cancellation(&self) -> Result<Self::Response> {
+        // Fast function doesn't really need cancellation handling
+        Err(netdata_plugin_error::NetdataPluginError::Other {
+            message: "Cancelled".to_string(),
+        })
+    }
+
+    async fn on_progress(&self) {
+        info!("Progress requested for fast function");
     }
 
     fn declaration(&self) -> FunctionDeclaration {
@@ -29,53 +45,45 @@ impl FunctionHandler for HelloFastHandler {
     }
 }
 
+#[derive(Serialize)]
+struct HelloSlowResponse {
+    message: String,
+    progress: u32,
+}
+
 struct HelloSlowHandler;
 
 #[async_trait]
 impl FunctionHandler for HelloSlowHandler {
-    async fn handle(&self, ctx: Arc<FunctionContext>) -> FunctionResult {
-        info!(
-            "Slow function called with transaction: {}",
-            ctx.function_call.transaction
-        );
+    type Request = EmptyRequest;
+    type Response = HelloSlowResponse;
 
-        let transaction = ctx.function_call.transaction.clone();
-        let mut control_rx = ctx.control_rx.lock().await;
+    async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
+        info!("Slow function started - simulating 10 seconds of work");
 
-        // Simulate slow work - 10 seconds total, check for cancellation every 500ms
+        // Simulate slow work - 10 seconds total
+        // The framework will automatically handle cancellation and progress
         for i in 0..20 {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                    info!("Slow function progress: {}%", (i + 1) * 5);
-                }
-                Some(msg) = control_rx.recv() => {
-                    match msg {
-                        ControlMessage::Progress => {
-                            info!("Called progress");
-                        }
-                    }
-                }
-                _ = ctx.cancellation_token.cancelled() => {
-                    warn!("Slow function cancelled at {}%", (i + 1) * 5);
-                    return FunctionResult {
-                        transaction,
-                        status: 499,
-                        expires: 0,
-                        format: "text/plain".to_string(),
-                        payload: format!("Cancelled after {:.1} seconds", (i + 1) as f32 * 0.5).as_bytes().to_vec(),
-                    };
-                }
-            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            info!("Slow function progress: {}%", (i + 1) * 5);
         }
 
         info!("Slow function completed");
-        FunctionResult {
-            transaction,
-            status: 200,
-            expires: 0,
-            format: "text/plain".to_string(),
-            payload: "Slow work completed successfully!".as_bytes().to_vec(),
-        }
+        Ok(HelloSlowResponse {
+            message: "Slow work completed successfully!".to_string(),
+            progress: 100,
+        })
+    }
+
+    async fn on_cancellation(&self) -> Result<Self::Response> {
+        warn!("Slow function was cancelled!");
+        Err(netdata_plugin_error::NetdataPluginError::Other {
+            message: "Operation cancelled by user".to_string(),
+        })
+    }
+
+    async fn on_progress(&self) {
+        info!("Progress report requested for slow function");
     }
 
     fn declaration(&self) -> FunctionDeclaration {
@@ -87,7 +95,7 @@ impl FunctionHandler for HelloSlowHandler {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -100,8 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting example plugin");
 
     let mut runtime = PluginRuntime::new("example");
-    runtime.register_handler(Arc::new(HelloFastHandler));
-    runtime.register_handler(Arc::new(HelloSlowHandler));
+    runtime.register_handler(HelloFastHandler);
+    runtime.register_handler(HelloSlowHandler);
     runtime.run().await?;
 
     Ok(())

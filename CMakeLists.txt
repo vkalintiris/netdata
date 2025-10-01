@@ -192,8 +192,8 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL)
         GIT_TAG f3b91559efca32c6b54837866ef35ba98ff5b2ca # stable/v0.5
     )
     FetchContent_MakeAvailable(Corrosion)
-    corrosion_import_crate(MANIFEST_PATH src/crates/Cargo.toml
-                           CRATES journal_reader_ffi otel-plugin)
+    corrosion_import_crate(MANIFEST_PATH src/crates/netdata-otel/Cargo.toml
+                           CRATES otel-plugin)
 endif()
 
 option(ENABLE_MIMALLOC "Enable mimalloc allocator" OFF)
@@ -3147,11 +3147,11 @@ if(ENABLE_PLUGIN_OTEL)
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
                       COMPONENT plugin-otel)
 
-    install(FILES src/crates/otel-plugin/configs/otel.yml
+    install(FILES src/crates/netdata-otel/otel-plugin/configs/otel.yml
             COMPONENT plugin-otel
             DESTINATION usr/lib/netdata/conf.d)
 
-    install(FILES src/crates/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yml
+    install(FILES src/crates/netdata-otel/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yml
             COMPONENT plugin-otel
             DESTINATION usr/lib/netdata/conf.d/otel.d/v1/metrics)
 
@@ -3630,7 +3630,6 @@ endif()
 
 # confs
 install(FILES
-        src/collectors/systemd-journal.plugin/schema.d/systemd-journal%3Amonitored-directories.json
         src/health/schema.d/health%3Aalert%3Aprototype.json
         COMPONENT netdata
         DESTINATION usr/lib/netdata/conf.d/schema.d)
