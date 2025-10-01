@@ -6,7 +6,8 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::{
-    FunctionCall, FunctionDeclaration, FunctionResult, Message, MessageReader, MessageWriter,
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult, Message, MessageReader,
+    MessageWriter,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,16 +18,17 @@ use tracing::{debug, error, info, warn};
 
 pub enum ControlMessage {
     Progress,
-    Cancel,
 }
 
 struct Transaction {
     id: String,
     control_tx: mpsc::Sender<ControlMessage>,
+    cancellation_token: CancellationToken,
 }
 
 pub struct FunctionContext {
     pub function_call: Box<FunctionCall>,
+    pub cancellation_token: CancellationToken,
     pub control_rx: Mutex<mpsc::Receiver<ControlMessage>>,
 }
 
@@ -36,9 +38,6 @@ type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 pub trait FunctionHandler: Send + Sync {
     /// Handle a function call
     async fn handle(&self, ctx: Arc<FunctionContext>) -> FunctionResult;
-
-    /// Report progress
-    async fn progress(&self, ctx: FunctionContext) -> FunctionResult;
 
     /// Get the function declaration for this handler
     fn declaration(&self) -> FunctionDeclaration;
@@ -156,24 +155,14 @@ impl PluginRuntime {
                 self.handle_function_call(function_call);
             }
             Some(Ok(Message::FunctionCancel(function_cancel))) => {
-                if let Some(function_context) =
-                    self.transaction_registry.get(&function_cancel.transaction)
-                {
-                    let _ = function_context
-                        .control_tx
-                        .send(ControlMessage::Cancel)
-                        .await;
-                }
+                self.handle_function_cancel(function_cancel.as_ref());
             }
             Some(Ok(Message::FunctionProgress(function_progress))) => {
-                if let Some(function_context) = self
+                if let Some(transaction) = self
                     .transaction_registry
                     .get(&function_progress.transaction)
                 {
-                    let _ = function_context
-                        .control_tx
-                        .send(ControlMessage::Progress)
-                        .await;
+                    let _ = transaction.control_tx.send(ControlMessage::Progress).await;
                 }
             }
             Some(Ok(msg)) => {
@@ -210,14 +199,20 @@ impl PluginRuntime {
         let handler = handler.clone();
 
         let (control_tx, control_rx) = mpsc::channel(4);
+        let cancellation_token = CancellationToken::new();
 
         let function_context = Arc::new(FunctionContext {
             function_call,
+            cancellation_token: cancellation_token.clone(),
             control_rx: Mutex::new(control_rx),
         });
 
         let id = function_context.function_call.transaction.clone();
-        let transaction = Arc::new(Transaction { id, control_tx });
+        let transaction = Arc::new(Transaction {
+            id,
+            cancellation_token,
+            control_tx,
+        });
         self.transaction_registry
             .insert(transaction.id.clone(), transaction.clone());
 
@@ -226,6 +221,19 @@ impl PluginRuntime {
             (transaction.id.clone(), result)
         });
         self.futures.push(future);
+    }
+
+    fn handle_function_cancel(&mut self, function_cancel: &FunctionCancel) {
+        let Some(transaction) = self.transaction_registry.get(&function_cancel.transaction) else {
+            warn!(
+                "Can not cancel non-existing transaction {}",
+                function_cancel.transaction
+            );
+            return;
+        };
+
+        info!("Cancelling transaction {}", function_cancel.transaction);
+        transaction.cancellation_token.cancel();
     }
 
     async fn handle_completed(
@@ -255,7 +263,7 @@ impl PluginRuntime {
 
         // Send cancel to all active transactions
         for transaction in self.transaction_registry.values() {
-            let _ = transaction.control_tx.send(ControlMessage::Cancel).await;
+            transaction.cancellation_token.cancel();
         }
 
         // Wait for functions to complete with a timeout

@@ -24,16 +24,6 @@ impl FunctionHandler for HelloFastHandler {
         }
     }
 
-    async fn progress(&self, _ctx: FunctionContext) -> FunctionResult {
-        FunctionResult {
-            transaction: String::new(),
-            status: 501,
-            expires: 0,
-            format: "text/plain".to_string(),
-            payload: "Progress not supported".as_bytes().to_vec(),
-        }
-    }
-
     fn declaration(&self) -> FunctionDeclaration {
         FunctionDeclaration::new("hello_fast", "A fast function that responds immediately")
     }
@@ -60,20 +50,20 @@ impl FunctionHandler for HelloSlowHandler {
                 }
                 Some(msg) = control_rx.recv() => {
                     match msg {
-                        ControlMessage::Cancel => {
-                            warn!("Slow function cancelled at {}%", (i + 1) * 5);
-                            return FunctionResult {
-                                transaction,
-                                status: 499,
-                                expires: 0,
-                                format: "text/plain".to_string(),
-                                payload: format!("Cancelled after {:.1} seconds", (i + 1) as f32 * 0.5).as_bytes().to_vec(),
-                            };
-                        }
                         ControlMessage::Progress => {
-                            info!("Progress requested at {}%", (i + 1) * 5);
+                            info!("Called progress");
                         }
                     }
+                }
+                _ = ctx.cancellation_token.cancelled() => {
+                    warn!("Slow function cancelled at {}%", (i + 1) * 5);
+                    return FunctionResult {
+                        transaction,
+                        status: 499,
+                        expires: 0,
+                        format: "text/plain".to_string(),
+                        payload: format!("Cancelled after {:.1} seconds", (i + 1) as f32 * 0.5).as_bytes().to_vec(),
+                    };
                 }
             }
         }
@@ -85,16 +75,6 @@ impl FunctionHandler for HelloSlowHandler {
             expires: 0,
             format: "text/plain".to_string(),
             payload: "Slow work completed successfully!".as_bytes().to_vec(),
-        }
-    }
-
-    async fn progress(&self, _ctx: FunctionContext) -> FunctionResult {
-        FunctionResult {
-            transaction: String::new(),
-            status: 501,
-            expires: 0,
-            format: "text/plain".to_string(),
-            payload: "Progress not supported".as_bytes().to_vec(),
         }
     }
 
