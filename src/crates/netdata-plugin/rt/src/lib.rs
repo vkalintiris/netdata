@@ -20,9 +20,13 @@ pub enum ControlMessage {
     Cancel,
 }
 
+struct Transaction {
+    id: String,
+    control_tx: mpsc::Sender<ControlMessage>,
+}
+
 pub struct FunctionContext {
     pub function_call: Box<FunctionCall>,
-    pub control_tx: mpsc::Sender<ControlMessage>,
     pub control_rx: mpsc::Receiver<ControlMessage>,
 }
 
@@ -46,7 +50,7 @@ pub struct PluginRuntime {
     function_handlers: HashMap<String, Arc<dyn FunctionHandler>>,
     function_progress: HashMap<String, Arc<dyn FunctionHandler>>,
 
-    call_registry: HashMap<String, Arc<FunctionContext>>,
+    transaction_registry: HashMap<String, Arc<Transaction>>,
     futures:
         FuturesUnordered<Pin<Box<dyn futures::Future<Output = (String, FunctionResult)> + Send>>>,
 
@@ -63,7 +67,7 @@ impl PluginRuntime {
             function_handlers: HashMap::new(),
             function_progress: HashMap::new(),
 
-            call_registry: HashMap::new(),
+            transaction_registry: HashMap::new(),
             futures: FuturesUnordered::new(),
 
             shutdown_token: CancellationToken::default(),
@@ -81,6 +85,7 @@ impl PluginRuntime {
         self.handle_ctr_c();
         self.declare_functions().await?;
         self.process_messages().await?;
+        self.shutdown().await?;
 
         Ok(())
     }
@@ -122,7 +127,10 @@ impl PluginRuntime {
     }
 
     fn handle_function_call(&mut self, function_call: Box<FunctionCall>) {
-        if self.call_registry.contains_key(&function_call.transaction) {
+        if self
+            .transaction_registry
+            .contains_key(&function_call.transaction)
+        {
             warn!(
                 "Ignoring existing transaction {:#?} for function {:#?}",
                 function_call.transaction, function_call.name
@@ -140,16 +148,17 @@ impl PluginRuntime {
 
         let function_context = Arc::new(FunctionContext {
             function_call,
-            control_tx,
             control_rx,
         });
-        let transaction = function_context.function_call.transaction.clone();
-        self.call_registry
-            .insert(transaction.clone(), function_context.clone());
+
+        let id = function_context.function_call.transaction.clone();
+        let transaction = Arc::new(Transaction { id, control_tx });
+        self.transaction_registry
+            .insert(transaction.id.clone(), transaction.clone());
 
         let future = Box::pin(async move {
             let result = handler.handle(function_context).await;
-            (transaction, result)
+            (transaction.id.clone(), result)
         });
         self.futures.push(future);
     }
@@ -160,7 +169,8 @@ impl PluginRuntime {
                 self.handle_function_call(function_call);
             }
             Some(Ok(Message::FunctionCancel(function_cancel))) => {
-                if let Some(function_context) = self.call_registry.get(&function_cancel.transaction)
+                if let Some(function_context) =
+                    self.transaction_registry.get(&function_cancel.transaction)
                 {
                     let _ = function_context
                         .control_tx
@@ -169,8 +179,9 @@ impl PluginRuntime {
                 }
             }
             Some(Ok(Message::FunctionProgress(function_progress))) => {
-                if let Some(function_context) =
-                    self.call_registry.get(&function_progress.transaction)
+                if let Some(function_context) = self
+                    .transaction_registry
+                    .get(&function_progress.transaction)
                 {
                     let _ = function_context
                         .control_tx
@@ -198,7 +209,7 @@ impl PluginRuntime {
         transaction: String,
         result: FunctionResult,
     ) -> Result<()> {
-        self.call_registry.remove(&transaction);
+        self.transaction_registry.remove(&transaction);
         self.writer
             .lock()
             .await
@@ -227,6 +238,51 @@ impl PluginRuntime {
                 Some((transaction, result)) = self.futures.next() => {
                     self.handle_completed(transaction, result).await?;
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Shutdown the runtime gracefully with a timeout
+    async fn shutdown(&mut self) -> Result<()> {
+        let in_flight = self.transaction_registry.len();
+
+        if in_flight == 0 {
+            info!("Clean shutdown - no in-flight functions");
+            return Ok(());
+        }
+
+        info!("Shutting down with {} in-flight functions...", in_flight);
+
+        // Send cancel to all active transactions
+        for transaction in self.transaction_registry.values() {
+            let _ = transaction.control_tx.send(ControlMessage::Cancel).await;
+        }
+
+        // Wait for functions to complete with a timeout
+        let timeout = Duration::from_secs(10);
+        let mut completed = 0;
+
+        match tokio::time::timeout(timeout, async {
+            while let Some((transaction, result)) = self.futures.next().await {
+                if let Err(e) = self.handle_completed(transaction, result).await {
+                    error!("Error handling completed function during shutdown: {}", e);
+                }
+                completed += 1;
+            }
+        })
+        .await
+        {
+            Ok(()) => {
+                info!("Clean shutdown - all {} functions completed", completed);
+            }
+            Err(_) => {
+                let aborted = in_flight - completed;
+                warn!(
+                    "Shutdown timeout - {} functions completed, {} aborted",
+                    completed, aborted
+                );
             }
         }
 
