@@ -35,6 +35,49 @@ pub enum Message {
     ConfigDeclaration(Box<ConfigDeclaration>),
 }
 
+pub fn name_and_args(buffer: &[u8]) -> Option<(String, Vec<String>)> {
+    let mut words = WordIterator::new(buffer);
+    let name = words.next_string()?;
+
+    let mut args = Vec::new();
+    for word in words {
+        args.push(String::from_utf8_lossy(word).into_owned());
+    }
+
+    Some((name, args))
+}
+
+fn add_args_to_payload(existing_payload: Option<&[u8]>, args: &[String]) -> Option<Vec<u8>> {
+    match existing_payload {
+        Some(payload) => {
+            // Try to parse and modify existing payload
+            match serde_json::from_slice::<serde_json::Value>(payload) {
+                Ok(mut json_obj) => {
+                    // Add args if it's a JSON object and args is non-empty
+                    if let serde_json::Value::Object(ref mut map) = json_obj {
+                        if !args.is_empty() {
+                            map.insert("args".to_string(), serde_json::json!(args));
+                        }
+                    }
+                    serde_json::to_vec(&json_obj).ok()
+                }
+                Err(e) => {
+                    eprintln!("failed to parse existing payload: {:#?}", e);
+                    None
+                }
+            }
+        }
+        None => {
+            // No existing payload, create new one if args exist
+            if !args.is_empty() {
+                serde_json::to_vec(&serde_json::json!({"args": args})).ok()
+            } else {
+                None
+            }
+        }
+    }
+}
+
 impl MessageParser {
     /// Create a new message parser with the specified direction
     fn new(direction: ParserDirection) -> Self {
@@ -82,6 +125,11 @@ impl MessageParser {
                     } else {
                         func_call.payload = Some(data.to_vec());
                     }
+
+                    let existing_payload = func_call.payload.as_deref();
+                    func_call.payload = add_args_to_payload(existing_payload, &func_call.args);
+
+                    // Decode payload as json, add "args" key
                 }
                 self.current_message.take()
             }
@@ -170,17 +218,31 @@ impl MessageParser {
 
         let transaction = words.next_string()?;
         let timeout = words.next_u32()?;
-        let name = words.next_string()?;
+        let (name, args) = {
+            let buffer = words.next_str()?.as_bytes();
+            name_and_args(buffer)?
+        };
         let access = words.next().map(HttpAccess::from_slice);
         let source = words.next_string();
+
+        // Encode args as JSON payload: {"args": [...]}
+        let payload = if !args.is_empty() {
+            let json_obj = serde_json::json!({
+                "args": args
+            });
+            serde_json::to_vec(&json_obj).ok()
+        } else {
+            None
+        };
 
         let function_call = Box::new(FunctionCall {
             transaction,
             timeout,
             name,
+            args,
             access,
             source,
-            payload: None,
+            payload,
         });
 
         Some(Message::FunctionCall(function_call))
@@ -214,7 +276,10 @@ impl MessageParser {
 
         let transaction = words.next_string()?;
         let timeout = words.next_u32()?;
-        let name = words.next_string()?;
+        let (name, args) = {
+            let buffer = words.next_str()?.as_bytes();
+            name_and_args(buffer)?
+        };
         let access = words.next().map(HttpAccess::from_slice);
         let source = words.next_string();
 
@@ -222,6 +287,7 @@ impl MessageParser {
             transaction,
             timeout,
             name,
+            args,
             access,
             source,
             payload: Some(Vec::new()),

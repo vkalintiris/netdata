@@ -45,6 +45,8 @@ pub struct FunctionCall {
     pub timeout: u32,
     /// Function name to call
     pub name: String,
+    /// Function arguments
+    pub args: Vec<String>,
     /// Access control flags for the function
     pub access: Option<HttpAccess>,
     /// Source information containing caller details
