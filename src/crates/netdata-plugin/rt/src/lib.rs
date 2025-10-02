@@ -18,20 +18,20 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-pub enum ControlMessage {
+pub enum RuntimeSignal {
     Progress,
 }
 
 struct Transaction {
     id: String,
-    control_tx: mpsc::Sender<ControlMessage>,
+    control_tx: mpsc::Sender<RuntimeSignal>,
     cancellation_token: CancellationToken,
 }
 
 pub struct FunctionContext {
     pub function_call: Box<FunctionCall>,
     pub cancellation_token: CancellationToken,
-    pub control_rx: Mutex<mpsc::Receiver<ControlMessage>>,
+    pub control_rx: Mutex<mpsc::Receiver<RuntimeSignal>>,
 }
 
 pub struct FunctionRequest<T> {
@@ -66,7 +66,7 @@ pub trait FunctionHandler: Send + Sync + 'static {
 
 /// Internal trait that handles raw function calls with serialization/deserialization
 #[async_trait]
-trait FunctionHandlerInternal: Send + Sync {
+trait RawFunctionHandler: Send + Sync {
     async fn handle_raw(&self, ctx: Arc<FunctionContext>) -> FunctionResult;
     fn declaration(&self) -> FunctionDeclaration;
 }
@@ -77,7 +77,7 @@ struct HandlerAdapter<H: FunctionHandler> {
 }
 
 #[async_trait]
-impl<H: FunctionHandler> FunctionHandlerInternal for HandlerAdapter<H> {
+impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
     async fn handle_raw(&self, ctx: Arc<FunctionContext>) -> FunctionResult {
         let transaction = ctx.function_call.transaction.clone();
 
@@ -126,7 +126,7 @@ impl<H: FunctionHandler> FunctionHandlerInternal for HandlerAdapter<H> {
                 // Handle progress requests
                 Some(msg) = control_rx.recv() => {
                     match msg {
-                        ControlMessage::Progress => {
+                        RuntimeSignal::Progress => {
                             handler.on_progress().await;
                         }
                     }
@@ -185,7 +185,7 @@ pub struct PluginRuntime {
     reader: MessageReader<tokio::io::Stdin>,
     writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
 
-    function_handlers: HashMap<String, Arc<dyn FunctionHandlerInternal>>,
+    function_handlers: HashMap<String, Arc<dyn RawFunctionHandler>>,
 
     transaction_registry: HashMap<String, Arc<Transaction>>,
     futures: FuturesUnordered<FunctionFuture>,
@@ -390,7 +390,7 @@ impl PluginRuntime {
             "Requesting progress of transaction {}",
             function_progress.transaction
         );
-        let _ = transaction.control_tx.send(ControlMessage::Progress).await;
+        let _ = transaction.control_tx.send(RuntimeSignal::Progress).await;
     }
 
     async fn handle_completed(
