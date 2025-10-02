@@ -45,6 +45,11 @@ impl FunctionHandler for HelloFastHandler {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HelloSlowRequest {
+    args: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct HelloSlowResponse {
     message: String,
@@ -55,11 +60,12 @@ struct HelloSlowHandler;
 
 #[async_trait]
 impl FunctionHandler for HelloSlowHandler {
-    type Request = EmptyRequest;
+    type Request = HelloSlowRequest;
     type Response = HelloSlowResponse;
 
-    async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
-        info!("Slow function started - simulating 10 seconds of work");
+    async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
+        info!("Slow function request: {:#?}", request);
+        // info!("Slow function started - simulating 10 seconds of work");
 
         // Simulate slow work - 10 seconds total
         // The framework will automatically handle cancellation and progress
