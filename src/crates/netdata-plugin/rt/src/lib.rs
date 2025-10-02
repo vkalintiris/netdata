@@ -6,11 +6,11 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::{
-    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionResult, Message, MessageReader,
-    MessageWriter,
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgress, FunctionResult, Message,
+    MessageReader, MessageWriter,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,9 +113,8 @@ impl<H: FunctionHandler> FunctionHandlerInternal for HandlerAdapter<H> {
 
         // Drive the handler with cancellation and progress handling
         let handler = self.handler.clone();
-        let handler_for_call = handler.clone();
 
-        let mut call_future = Box::pin(handler_for_call.on_call(payload));
+        let mut call_future = Box::pin(handler.on_call(payload));
         let mut control_rx = ctx.control_rx.lock().await;
 
         let result = loop {
@@ -210,9 +209,8 @@ impl PluginRuntime {
     }
 
     pub fn register_handler<H: FunctionHandler + 'static>(&mut self, handler: H) {
-        let handler_arc = Arc::new(handler);
         let adapter = HandlerAdapter {
-            handler: handler_arc,
+            handler: Arc::new(handler),
         };
         let name = adapter.declaration().name.clone();
         self.function_handlers.insert(name, Arc::new(adapter));
@@ -300,12 +298,7 @@ impl PluginRuntime {
                 self.handle_function_cancel(function_cancel.as_ref());
             }
             Some(Ok(Message::FunctionProgress(function_progress))) => {
-                if let Some(transaction) = self
-                    .transaction_registry
-                    .get(&function_progress.transaction)
-                {
-                    let _ = transaction.control_tx.send(ControlMessage::Progress).await;
-                }
+                self.handle_function_progress(&function_progress).await;
             }
             Some(Ok(msg)) => {
                 debug!("Received message: {:?}", msg);
@@ -334,12 +327,13 @@ impl PluginRuntime {
             return;
         }
 
-        let Some(handler) = self.function_handlers.get(&function_call.name) else {
+        // Get handler
+        let Some(handler) = self.function_handlers.get(&function_call.name).cloned() else {
             error!("Could not find function {:#?}", function_call.name);
             return;
         };
-        let handler = handler.clone();
 
+        // Create a new function context
         let (control_tx, control_rx) = mpsc::channel(4);
         let cancellation_token = CancellationToken::new();
 
@@ -349,6 +343,7 @@ impl PluginRuntime {
             control_rx: Mutex::new(control_rx),
         });
 
+        // Create new transaction
         let id = function_context.function_call.transaction.clone();
         let transaction = Arc::new(Transaction {
             id,
@@ -358,6 +353,7 @@ impl PluginRuntime {
         self.transaction_registry
             .insert(transaction.id.clone(), transaction.clone());
 
+        // Create future
         let future = Box::pin(async move {
             let result = handler.handle_raw(function_context).await;
             (transaction.id.clone(), result)
@@ -376,6 +372,25 @@ impl PluginRuntime {
 
         info!("Cancelling transaction {}", function_cancel.transaction);
         transaction.cancellation_token.cancel();
+    }
+
+    async fn handle_function_progress(&mut self, function_progress: &FunctionProgress) {
+        let Some(transaction) = self
+            .transaction_registry
+            .get(&function_progress.transaction)
+        else {
+            warn!(
+                "Can not get progress of non-existing transaction {}",
+                function_progress.transaction
+            );
+            return;
+        };
+
+        info!(
+            "Requesting progress of transaction {}",
+            function_progress.transaction
+        );
+        let _ = transaction.control_tx.send(ControlMessage::Progress).await;
     }
 
     async fn handle_completed(
