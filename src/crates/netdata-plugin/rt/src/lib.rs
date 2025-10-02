@@ -43,7 +43,7 @@ type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 
 /// Trait for implementing function handlers with automatic cancellation and progress management
 #[async_trait]
-pub trait FunctionHandler: Send + Sync {
+pub trait FunctionHandler: Send + Sync + 'static {
     /// The request payload type that will be deserialized from JSON
     type Request: DeserializeOwned + Send;
 
