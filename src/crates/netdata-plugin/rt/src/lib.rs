@@ -337,7 +337,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
         let handler = self.handler.clone();
 
         let mut call_future = Box::pin(handler.on_call(payload));
-        let mut control_rx = ctx.signal_rx.lock().await;
+        let mut signal_rx = ctx.signal_rx.lock().await;
 
         let result = loop {
             tokio::select! {
@@ -346,7 +346,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                     break result;
                 }
                 // Handle progress requests
-                Some(msg) = control_rx.recv() => {
+                Some(msg) = signal_rx.recv() => {
                     match msg {
                         RuntimeSignal::Progress => {
                             handler.on_progress().await;
