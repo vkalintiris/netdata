@@ -1,8 +1,11 @@
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::FunctionDeclaration;
 use rt::{FunctionHandler, PluginRuntime};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -45,9 +48,52 @@ impl FunctionHandler for HelloFastHandler {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct HelloSlowRequest {
-    args: Vec<String>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JournalRequest {
+    pub info: bool,
+
+    /// Unix timestamp for the start of the time range
+    pub after: i64,
+
+    /// Unix timestamp for the end of the time range
+    pub before: i64,
+
+    /// Maximum number of results to return
+    pub last: Option<u32>,
+
+    /// List of facets to include in the response
+    #[serde(default)]
+    pub facets: Vec<String>,
+
+    /// Whether to slice the results
+    pub slice: Option<bool>,
+
+    /// Query string (empty in your example)
+    #[serde(default)]
+    pub query: String,
+
+    /// Selection filters
+    #[serde(default)]
+    pub selections: HashMap<String, Vec<String>>,
+
+    /// Timeout in milliseconds
+    pub timeout: Option<u32>,
+}
+
+impl Default for JournalRequest {
+    fn default() -> Self {
+        Self {
+            info: true,
+            after: 0,
+            before: 0,
+            last: Some(200),
+            facets: Vec::new(),
+            slice: None,
+            query: String::new(),
+            selections: HashMap::new(),
+            timeout: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -56,11 +102,11 @@ struct HelloSlowResponse {
     progress: u32,
 }
 
-struct HelloSlowHandler;
+struct Journal;
 
 #[async_trait]
-impl FunctionHandler for HelloSlowHandler {
-    type Request = HelloSlowRequest;
+impl FunctionHandler for Journal {
+    type Request = JournalRequest;
     type Response = HelloSlowResponse;
 
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
@@ -94,7 +140,7 @@ impl FunctionHandler for HelloSlowHandler {
 
     fn declaration(&self) -> FunctionDeclaration {
         FunctionDeclaration::new(
-            "hello_slow",
+            "systemd-journal",
             "A slow function that takes 10 seconds and respects cancellation",
         )
     }
@@ -115,7 +161,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let mut runtime = PluginRuntime::new("example");
     runtime.register_handler(HelloFastHandler);
-    runtime.register_handler(HelloSlowHandler);
+    runtime.register_handler(Journal);
     runtime.run().await?;
 
     Ok(())

@@ -629,6 +629,30 @@ impl PluginRuntime {
             return;
         }
 
+        // patch function-call for systemd-journal. will remove this once
+        // we convert the frontend request from a GET to POST.
+        let mut function_call = function_call;
+        {
+            if function_call.name == "systemd-journal" {
+                if !function_call.args.is_empty() {
+                    let after_str = function_call.args[1].strip_prefix("after:").unwrap();
+                    let after = after_str.parse::<u64>().unwrap();
+
+                    let before_str = function_call.args[2].strip_prefix("before:").unwrap();
+                    let before = before_str.parse::<u64>().unwrap();
+
+                    let json = serde_json::json!({
+                        "info": true,
+                        "after": after,
+                        "before": before,
+                    });
+
+                    let payload = serde_json::to_vec(&json).unwrap();
+                    function_call.payload = Some(payload);
+                }
+            }
+        }
+
         // Get handler
         let Some(handler) = self.function_handlers.get(&function_call.name).cloned() else {
             error!("Could not find function {:#?}", function_call.name);
