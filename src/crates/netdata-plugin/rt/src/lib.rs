@@ -102,6 +102,7 @@ use netdata_plugin_protocol::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -322,13 +323,17 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
             None => match serde_json::from_slice(b"{}") {
                 Ok(p) => p,
                 Err(e) => {
+                    let payload =
+                        serde_json::to_vec(&json!({ "error": "Request payload is empty", }))
+                            .expect("serializing a json value to work");
+
                     error!("Failed to deserialize empty payload: {}", e);
                     return FunctionResult {
                         transaction,
                         status: 400,
                         expires: 0,
                         format: "text/plain".to_string(),
-                        payload: format!("Invalid request: {}", e).as_bytes().to_vec(),
+                        payload,
                     };
                 }
             },
