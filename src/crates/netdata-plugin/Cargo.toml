@@ -30,7 +30,7 @@ serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio = { version = "1.45", features = ["rt-multi-thread", "process", "io-util"] }
+tokio = { version = "1.45", features = ["full"] }
 schemars = "1.0"
 async-trait = "0.1.89"
 notify = "8.2"

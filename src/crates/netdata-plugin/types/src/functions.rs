@@ -27,7 +27,7 @@ impl FunctionDeclaration {
             name: String::from(name),
             help: String::from(help),
             timeout: 10,
-            tags: Some("admin,debug".to_string()),
+            tags: Some("logs".to_string()),
             access: Some(HttpAccess::from_u32(0)),
             priority: Some(200),
             version: Some(1),

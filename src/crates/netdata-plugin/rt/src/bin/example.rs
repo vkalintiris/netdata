@@ -50,6 +50,7 @@ impl FunctionHandler for HelloFastHandler {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JournalRequest {
+    #[serde(default)]
     pub info: bool,
 
     /// Unix timestamp for the start of the time range
@@ -111,13 +112,11 @@ impl FunctionHandler for Journal {
 
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
         info!("Slow function request: {:#?}", request);
-        // info!("Slow function started - simulating 10 seconds of work");
 
-        // Simulate slow work - 10 seconds total
-        // The framework will automatically handle cancellation and progress
-        for i in 0..20 {
+        // Simulate slow work - 2 seconds total
+        for i in 0..4 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            info!("Slow function progress: {}%", (i + 1) * 5);
+            info!("Slow function progress: {i}",);
         }
 
         info!("Slow function completed");
@@ -139,10 +138,13 @@ impl FunctionHandler for Journal {
     }
 
     fn declaration(&self) -> FunctionDeclaration {
-        FunctionDeclaration::new(
+        let mut func_decl = FunctionDeclaration::new(
             "systemd-journal",
             "A slow function that takes 10 seconds and respects cancellation",
-        )
+        );
+        func_decl.global = true;
+        func_decl.tags = Some(String::from("logs"));
+        func_decl
     }
 }
 
@@ -159,7 +161,42 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting example plugin");
 
+    // Check if we should use TCP or stdio based on command line argument
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--tcp" {
+        // TCP mode: expect address as second argument
+        let addr = args.get(2).unwrap_or(&"127.0.0.1:9999".to_string()).clone();
+        info!("Running in TCP mode, connecting to {}", addr);
+        run_tcp_mode(&addr).await?;
+    } else {
+        // Default stdio mode
+        info!("Running in stdio mode");
+        run_stdio_mode().await?;
+    }
+
+    Ok(())
+}
+
+/// Run the plugin using stdin/stdout (default Netdata mode)
+async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
+    runtime.register_handler(HelloFastHandler);
+    runtime.register_handler(Journal);
+    runtime.run().await?;
+    Ok(())
+}
+
+/// Run the plugin using a TCP connection
+async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tokio::net::TcpStream;
+
+    info!("Connecting to TCP server at {}", addr);
+    let stream = TcpStream::connect(addr).await?;
+    info!("Connected to TCP server");
+
+    let (reader, writer) = stream.into_split();
+
+    let mut runtime = PluginRuntime::with_streams("example", reader, writer);
     runtime.register_handler(HelloFastHandler);
     runtime.register_handler(Journal);
     runtime.run().await?;

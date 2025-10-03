@@ -105,6 +105,7 @@ use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -406,10 +407,15 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
 ///
 /// The `PluginRuntime` orchestrates all aspects of a Netdata plugin's lifecycle:
 /// - Registering function handlers
-/// - Communicating with Netdata via stdin/stdout
+/// - Communicating with Netdata via streams (stdio, TCP, etc.)
 /// - Managing concurrent function executions
 /// - Handling cancellation and progress requests
 /// - Graceful shutdown on signals
+///
+/// # Type Parameters
+///
+/// * `R` - The reader type (must implement `AsyncRead + Unpin`)
+/// * `W` - The writer type (must implement `AsyncWrite + Unpin`)
 ///
 /// # Example
 ///
@@ -424,13 +430,17 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
 ///     Ok(())
 /// }
 /// ```
-pub struct PluginRuntime {
+pub struct PluginRuntime<R, W>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     /// Name of this plugin (used for identification).
     plugin_name: String,
-    /// Reader for incoming messages from Netdata (via stdin).
-    reader: MessageReader<tokio::io::Stdin>,
-    /// Writer for outgoing messages to Netdata (via stdout).
-    writer: Arc<Mutex<MessageWriter<tokio::io::Stdout>>>,
+    /// Reader for incoming messages from Netdata.
+    reader: MessageReader<R>,
+    /// Writer for outgoing messages to Netdata.
+    writer: Arc<Mutex<MessageWriter<W>>>,
 
     /// Registry of all available function handlers.
     function_handlers: HashMap<String, Arc<dyn RawFunctionHandler>>,
@@ -444,8 +454,11 @@ pub struct PluginRuntime {
     shutdown_token: CancellationToken,
 }
 
-impl PluginRuntime {
-    /// Create a new plugin runtime with the given name.
+impl PluginRuntime<tokio::io::Stdin, tokio::io::Stdout> {
+    /// Create a new plugin runtime with the given name using stdin/stdout.
+    ///
+    /// This is the default constructor that creates a runtime communicating
+    /// via standard input and output streams.
     ///
     /// # Arguments
     ///
@@ -455,10 +468,53 @@ impl PluginRuntime {
     ///
     /// A new `PluginRuntime` instance ready to accept handler registrations.
     pub fn new(name: &str) -> Self {
+        Self::with_streams(name, tokio::io::stdin(), tokio::io::stdout())
+    }
+}
+
+impl<R, W> PluginRuntime<R, W>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    /// Create a new plugin runtime with custom reader and writer streams.
+    ///
+    /// This allows the runtime to work with any streams that implement
+    /// `AsyncRead` and `AsyncWrite`, such as TCP connections, Unix sockets,
+    /// or in-memory buffers.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the plugin (used for identification in logs)
+    /// * `reader` - The input stream to read messages from
+    /// * `writer` - The output stream to write messages to
+    ///
+    /// # Returns
+    ///
+    /// A new `PluginRuntime` instance ready to accept handler registrations.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use rt::PluginRuntime;
+    /// use tokio::net::TcpStream;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    ///     let (reader, writer) = stream.into_split();
+    ///
+    ///     let mut runtime = PluginRuntime::with_streams("my_plugin", reader, writer);
+    ///     // Register handlers here
+    ///     runtime.run().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn with_streams(name: &str, reader: R, writer: W) -> Self {
         Self {
             plugin_name: String::from(name),
-            reader: MessageReader::new(tokio::io::stdin()),
-            writer: Arc::new(Mutex::new(MessageWriter::new(tokio::io::stdout()))),
+            reader: MessageReader::new(reader),
+            writer: Arc::new(Mutex::new(MessageWriter::new(writer))),
 
             function_handlers: HashMap::new(),
             transaction_registry: HashMap::new(),
