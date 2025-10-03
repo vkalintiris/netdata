@@ -366,39 +366,168 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
             }
         };
 
+        let response = r#"
+{
+  "_request": {
+    "info": true,
+    "slice": true,
+    "data_only": false,
+    "delta": false,
+    "tail": false,
+    "sampling": 1000000,
+    "source_type": 1,
+    "after": 1759399965,
+    "before": 1759400865,
+    "if_modified_since": 0,
+    "anchor": 0,
+    "direction": "backward",
+    "last": 200,
+    "query": null,
+    "histogram": null
+  },
+  "versions": {
+    "sources": 1759388971000496
+  },
+  "v": 3,
+  "accepted_params": [
+    "info",
+    "__logs_sources",
+    "after",
+    "before",
+    "anchor",
+    "direction",
+    "last",
+    "query",
+    "facets",
+    "histogram",
+    "if_modified_since",
+    "data_only",
+    "delta",
+    "tail",
+    "sampling",
+    "slice"
+  ],
+  "required_params": [
+    {
+      "id": "__logs_sources",
+      "name": "Journal Sources",
+      "help": "Select the logs source to query",
+      "type": "multiselect",
+      "options": [
+        {
+          "id": "all",
+          "name": "all",
+          "pill": "37.86GiB",
+          "info": "496 files, total size 37.86GiB, covering 1y 6mo 21d 20h 49m 35s, last entry at 2025-10-02T10:27:44Z"
+        },
+        {
+          "id": "all-local-logs",
+          "name": "all-local-logs",
+          "pill": "37.86GiB",
+          "info": "496 files, total size 37.86GiB, covering 1y 6mo 21d 20h 49m 35s, last entry at 2025-10-02T10:27:44Z"
+        },
+        {
+          "id": "all-local-namespaces",
+          "name": "all-local-namespaces",
+          "pill": "37.35GiB",
+          "info": "463 files, total size 37.35GiB, covering 1y 6mo 21d 20h 49m 35s, last entry at 2025-10-02T10:27:44Z"
+        },
+        {
+          "id": "all-local-system-logs",
+          "name": "all-local-system-logs",
+          "pill": "384MiB",
+          "info": "15 files, total size 384MiB, covering 7mo 19d 22h 24m 32s, last entry at 2025-10-02T10:25:01Z"
+        },
+        {
+          "id": "all-local-user-logs",
+          "name": "all-local-user-logs",
+          "pill": "144MiB",
+          "info": "18 files, total size 144MiB, covering 7mo 19d 3h 34m 52s, last entry at 2025-10-01T15:40:02Z"
+        },
+        {
+          "id": "namespace-agent-events",
+          "name": "namespace-agent-events",
+          "pill": "35.2GiB",
+          "info": "414 files, total size 35.2GiB, covering 3mo 11d 6h 35m 25s, last entry at 2025-10-02T10:27:43Z"
+        },
+        {
+          "id": "namespace-cac",
+          "name": "namespace-cac",
+          "pill": "160MiB",
+          "info": "5 files, total size 160MiB, covering 1mo 1d 6h 52m 1s, last entry at 2025-03-21T11:52:08Z"
+        },
+        {
+          "id": "namespace-nd-privacy",
+          "name": "namespace-nd-privacy",
+          "pill": "1.67GiB",
+          "info": "33 files, total size 1.67GiB, covering 1y 6mo 20d 17h 4m 14s, last entry at 2025-10-01T06:42:23Z"
+        },
+        {
+          "id": "namespace-netdata",
+          "name": "namespace-netdata",
+          "pill": "328MiB",
+          "info": "11 files, total size 328MiB, covering 12d 12h 18m, last entry at 2025-10-02T10:27:44Z"
+        }
+      ]
+    }
+  ],
+  "show_ids": false,
+  "has_history": true,
+  "pagination": {
+    "enabled": true,
+    "key": "anchor",
+    "column": "timestamp",
+    "units": "timestamp_usec"
+  },
+  "status": 200,
+  "type": "table",
+  "help": "View, search and analyze systemd journal entries."
+}
+"#;
+
         // Process the result
-        match result {
-            Ok(response) => {
-                // Serialize the response
-                match serde_json::to_vec(&response) {
-                    Ok(payload) => FunctionResult {
-                        transaction,
-                        status: 200,
-                        expires: 0,
-                        format: "application/json".to_string(),
-                        payload,
-                    },
-                    Err(e) => {
-                        error!("Failed to serialize response: {}", e);
-                        FunctionResult {
+        if false {
+            match result {
+                Ok(response) => {
+                    // Serialize the response
+                    match serde_json::to_vec(&response) {
+                        Ok(payload) => FunctionResult {
                             transaction,
-                            status: 500,
+                            status: 200,
                             expires: 0,
-                            format: "text/plain".to_string(),
-                            payload: format!("Serialization error: {}", e).as_bytes().to_vec(),
+                            format: "application/json".to_string(),
+                            payload,
+                        },
+                        Err(e) => {
+                            error!("Failed to serialize response: {}", e);
+                            FunctionResult {
+                                transaction,
+                                status: 500,
+                                expires: 0,
+                                format: "text/plain".to_string(),
+                                payload: format!("Serialization error: {}", e).as_bytes().to_vec(),
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                error!("Handler error: {}", e);
-                FunctionResult {
-                    transaction,
-                    status: 500,
-                    expires: 0,
-                    format: "text/plain".to_string(),
-                    payload: format!("Handler error: {}", e).as_bytes().to_vec(),
+                Err(e) => {
+                    error!("Handler error: {}", e);
+                    FunctionResult {
+                        transaction,
+                        status: 500,
+                        expires: 0,
+                        format: "text/plain".to_string(),
+                        payload: format!("Handler error: {}", e).as_bytes().to_vec(),
+                    }
                 }
+            }
+        } else {
+            FunctionResult {
+                transaction,
+                status: 200,
+                expires: 0,
+                format: "application/json".to_string(),
+                payload: Vec::from(response),
             }
         }
     }
@@ -694,20 +823,25 @@ where
         // we convert the frontend request from a GET to POST.
         let mut function_call = function_call;
         {
+            eprintln!("Function call {:#?}", function_call);
             if function_call.name == "systemd-journal" {
                 if !function_call.args.is_empty() {
-                    let after_str = function_call.args[1].strip_prefix("after:").unwrap();
-                    let after = after_str.parse::<u64>().unwrap();
+                    let mut map = serde_json::Map::new();
+                    map.insert("info".to_string(), serde_json::json!(true));
 
-                    let before_str = function_call.args[2].strip_prefix("before:").unwrap();
-                    let before = before_str.parse::<u64>().unwrap();
+                    for arg in &function_call.args {
+                        if let Some(after_str) = arg.strip_prefix("after:") {
+                            if let Ok(after_val) = after_str.parse::<u64>() {
+                                map.insert("after".to_string(), serde_json::json!(after_val));
+                            }
+                        } else if let Some(before_str) = arg.strip_prefix("before:") {
+                            if let Ok(before_val) = before_str.parse::<u64>() {
+                                map.insert("before".to_string(), serde_json::json!(before_val));
+                            }
+                        }
+                    }
 
-                    let json = serde_json::json!({
-                        "info": true,
-                        "after": after,
-                        "before": before,
-                    });
-
+                    let json = serde_json::Value::Object(map);
                     let payload = serde_json::to_vec(&json).unwrap();
                     function_call.payload = Some(payload);
                 }

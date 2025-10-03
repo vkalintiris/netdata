@@ -114,10 +114,10 @@ impl FunctionHandler for Journal {
         info!("Slow function request: {:#?}", request);
 
         // Simulate slow work - 2 seconds total
-        for i in 0..4 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            info!("Slow function progress: {i}",);
-        }
+        // for i in 0..4 {
+        //     tokio::time::sleep(Duration::from_millis(500)).await;
+        //     info!("Slow function progress: {i}",);
+        // }
 
         info!("Slow function completed");
         Ok(HelloSlowResponse {
