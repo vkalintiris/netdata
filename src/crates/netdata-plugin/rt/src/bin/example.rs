@@ -6,7 +6,6 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use rt::{FunctionHandler, PluginRuntime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Duration;
 use tracing::{info, warn};
 
 #[derive(Deserialize)]
@@ -97,18 +96,79 @@ impl Default for JournalRequest {
     }
 }
 
-#[derive(Serialize)]
-struct HelloSlowResponse {
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AcceptedParams {
+    Info,
+    #[serde(rename = "__logs_sources")]
+    LogsSources,
+    After,
+    Before,
+    Anchor,
+    Direction,
+    Last,
+    Query,
+    Facets,
+    Histogram,
+    IfModifiedSince,
+    DataOnly,
+    Delta,
+    Tail,
+    Sampling,
+    Slice,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Version(u32);
+
+impl Default for Version {
+    fn default() -> Self {
+        Self(3)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct JournalResponse {
+    version: Version,
+
+    accepted_params: Vec<AcceptedParams>,
+
     message: String,
+
     progress: u32,
 }
 
 struct Journal;
 
+impl Journal {
+    pub const ACCEPTED_PARAMS: &'static [AcceptedParams] = &[
+        AcceptedParams::Info,
+        AcceptedParams::LogsSources,
+        AcceptedParams::After,
+        AcceptedParams::Before,
+        AcceptedParams::Anchor,
+        AcceptedParams::Direction,
+        AcceptedParams::Last,
+        AcceptedParams::Query,
+        AcceptedParams::Facets,
+        AcceptedParams::Histogram,
+        AcceptedParams::IfModifiedSince,
+        AcceptedParams::DataOnly,
+        AcceptedParams::Delta,
+        AcceptedParams::Tail,
+        AcceptedParams::Sampling,
+        AcceptedParams::Slice,
+    ];
+
+    pub fn accepted_params() -> Vec<AcceptedParams> {
+        Self::ACCEPTED_PARAMS.to_vec()
+    }
+}
+
 #[async_trait]
 impl FunctionHandler for Journal {
     type Request = JournalRequest;
-    type Response = HelloSlowResponse;
+    type Response = JournalResponse;
 
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
         info!("Slow function request: {:#?}", request);
@@ -120,7 +180,9 @@ impl FunctionHandler for Journal {
         // }
 
         info!("Slow function completed");
-        Ok(HelloSlowResponse {
+        Ok(JournalResponse {
+            version: Version::default(),
+            accepted_params: Self::accepted_params(),
             message: "Slow work completed successfully!".to_string(),
             progress: 100,
         })
