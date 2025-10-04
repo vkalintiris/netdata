@@ -98,7 +98,7 @@ impl Default for JournalRequest {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum AcceptedParam {
+enum RequestParam {
     Info,
     #[serde(rename = "__logs_sources")]
     LogsSources,
@@ -118,7 +118,37 @@ enum AcceptedParam {
     Slice,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+struct MultiSelectionOption {
+    id: String,
+    name: String,
+    pill: String,
+    info: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MultiSelection {
+    id: RequestParam,
+    name: String,
+    help: String,
+    #[serde(rename = "type", default = "MultiSelection::default_type")]
+    type_: String,
+    options: Vec<MultiSelectionOption>,
+}
+
+impl MultiSelection {
+    fn default_type() -> String {
+        "multiselect".to_string()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum RequiredParam {
+    MultiSelection(MultiSelection),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Version(u32);
 
 impl Default for Version {
@@ -130,7 +160,7 @@ impl Default for Version {
 #[derive(Serialize, Deserialize)]
 struct Pagination {
     enabled: bool,
-    key: AcceptedParam,
+    key: RequestParam,
     column: String,
     units: String,
 }
@@ -139,7 +169,7 @@ impl Default for Pagination {
     fn default() -> Self {
         Self {
             enabled: true,
-            key: AcceptedParam::Anchor,
+            key: RequestParam::Anchor,
             column: String::from("timestamp"),
             units: String::from("timestamp_usec"),
         }
@@ -147,10 +177,16 @@ impl Default for Pagination {
 }
 
 #[derive(Serialize, Deserialize)]
+struct Versions {
+    sources: u64,
+}
+
+#[derive(Serialize, Deserialize)]
 struct JournalResponse {
     version: Version,
 
-    accepted_params: Vec<AcceptedParam>,
+    accepted_params: Vec<RequestParam>,
+    required_params: Vec<RequiredParam>,
 
     // Hard-coded stuff
     show_ids: bool,
@@ -161,35 +197,62 @@ struct JournalResponse {
     help: String,
     pagination: Pagination,
 
-    message: String,
-
-    progress: u32,
+    versions: Versions,
 }
 
 struct Journal;
 
 impl Journal {
-    pub const ACCEPTED_PARAMS: &'static [AcceptedParam] = &[
-        AcceptedParam::Info,
-        AcceptedParam::LogsSources,
-        AcceptedParam::After,
-        AcceptedParam::Before,
-        AcceptedParam::Anchor,
-        AcceptedParam::Direction,
-        AcceptedParam::Last,
-        AcceptedParam::Query,
-        AcceptedParam::Facets,
-        AcceptedParam::Histogram,
-        AcceptedParam::IfModifiedSince,
-        AcceptedParam::DataOnly,
-        AcceptedParam::Delta,
-        AcceptedParam::Tail,
-        AcceptedParam::Sampling,
-        AcceptedParam::Slice,
+    pub const ACCEPTED_PARAMS: &'static [RequestParam] = &[
+        RequestParam::Info,
+        RequestParam::LogsSources,
+        RequestParam::After,
+        RequestParam::Before,
+        RequestParam::Anchor,
+        RequestParam::Direction,
+        RequestParam::Last,
+        RequestParam::Query,
+        RequestParam::Facets,
+        RequestParam::Histogram,
+        RequestParam::IfModifiedSince,
+        RequestParam::DataOnly,
+        RequestParam::Delta,
+        RequestParam::Tail,
+        RequestParam::Sampling,
+        RequestParam::Slice,
     ];
 
-    pub fn accepted_params() -> Vec<AcceptedParam> {
+    pub fn accepted_params() -> Vec<RequestParam> {
         Self::ACCEPTED_PARAMS.to_vec()
+    }
+
+    pub fn required_params() -> Vec<RequiredParam> {
+        let mut v = Vec::new();
+
+        let id = RequestParam::LogsSources;
+        let name = String::from("Journal Sources");
+        let help = String::from("Select the logs source to query");
+        let type_ = String::from("multiselect");
+        let mut options = Vec::new();
+
+        let o1 = MultiSelectionOption {
+            id: String::from("all"),
+            name: String::from("all"),
+            pill: String::from("100GiB"),
+            info: String::from("All the logs"),
+        };
+        options.push(o1);
+
+        let required_param = RequiredParam::MultiSelection(MultiSelection {
+            id,
+            name,
+            help,
+            type_,
+            options,
+        });
+
+        v.push(required_param);
+        v
     }
 }
 
@@ -204,6 +267,7 @@ impl FunctionHandler for Journal {
         Ok(JournalResponse {
             version: Version::default(),
             accepted_params: Self::accepted_params(),
+            required_params: Self::required_params(),
 
             // Hard coded stuff
             show_ids: false,
@@ -213,8 +277,9 @@ impl FunctionHandler for Journal {
             help: String::from("View, search and analyze systemd journal entries."),
             pagination: Pagination::default(),
 
-            message: "Slow work completed successfully!".to_string(),
-            progress: 100,
+            versions: Versions {
+                sources: 1759475589000512,
+            },
         })
     }
 
@@ -272,7 +337,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 /// Run the plugin using stdin/stdout (default Netdata mode)
 async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
-    runtime.register_handler(HelloFastHandler);
     runtime.register_handler(Journal);
     runtime.run().await?;
     Ok(())
@@ -289,7 +353,6 @@ async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error:
     let (reader, writer) = stream.into_split();
 
     let mut runtime = PluginRuntime::with_streams("example", reader, writer);
-    runtime.register_handler(HelloFastHandler);
     runtime.register_handler(Journal);
     runtime.run().await?;
 

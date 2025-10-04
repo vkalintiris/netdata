@@ -211,7 +211,7 @@ impl MessageParser {
         let transaction = words.next_string()?;
         let status = words.next_u32()?;
         let format = HttpContent::from_str_or_default(words.next_str()?).to_string();
-        let expires = words.next_u32()?;
+        let expires = words.next_u64()?;
 
         let function_result = Box::new(FunctionResult {
             transaction,

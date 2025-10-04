@@ -65,7 +65,7 @@ pub struct FunctionResult {
     /// Content type of the result (e.g., "application/json", "text/plain")
     pub format: String,
     /// Expires timestamp
-    pub expires: u32,
+    pub expires: u64,
     /// Result payload data
     pub payload: Vec<u8>,
 }

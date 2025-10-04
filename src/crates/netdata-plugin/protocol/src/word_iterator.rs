@@ -44,6 +44,12 @@ impl<'a> WordIterator<'a> {
         atoi(s)
     }
 
+    pub(crate) fn next_u64(&mut self) -> Option<u64> {
+        let s = self.next()?;
+
+        atoi(s)
+    }
+
     pub(crate) fn next_str(&mut self) -> Option<&str> {
         let s = self.next()?;
         std::str::from_utf8(s).ok()

@@ -366,6 +366,14 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
             }
         };
 
+        let current_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as u64;
+
+        // Add 1 hour (3,600,000 milliseconds)
+        let expires: u64 = current_timestamp + 3_600_000;
+
         // Process the result
         match result {
             Ok(response) => {
@@ -374,7 +382,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                     Ok(payload) => FunctionResult {
                         transaction,
                         status: 200,
-                        expires: 0,
+                        expires,
                         format: "application/json".to_string(),
                         payload,
                     },
