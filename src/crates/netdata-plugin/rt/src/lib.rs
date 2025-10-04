@@ -370,7 +370,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
         match result {
             Ok(response) => {
                 // Serialize the response
-                match serde_json::to_vec(&response) {
+                match serde_json::to_vec_pretty(&response) {
                     Ok(payload) => FunctionResult {
                         transaction,
                         status: 200,

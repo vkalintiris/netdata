@@ -98,7 +98,7 @@ impl Default for JournalRequest {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum AcceptedParams {
+enum AcceptedParam {
     Info,
     #[serde(rename = "__logs_sources")]
     LogsSources,
@@ -128,10 +128,38 @@ impl Default for Version {
 }
 
 #[derive(Serialize, Deserialize)]
+struct Pagination {
+    enabled: bool,
+    key: AcceptedParam,
+    column: String,
+    units: String,
+}
+
+impl Default for Pagination {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            key: AcceptedParam::Anchor,
+            column: String::from("timestamp"),
+            units: String::from("timestamp_usec"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 struct JournalResponse {
     version: Version,
 
-    accepted_params: Vec<AcceptedParams>,
+    accepted_params: Vec<AcceptedParam>,
+
+    // Hard-coded stuff
+    show_ids: bool,
+    has_history: bool,
+    status: u32,
+    #[serde(rename = "type")]
+    response_type: String,
+    help: String,
+    pagination: Pagination,
 
     message: String,
 
@@ -141,26 +169,26 @@ struct JournalResponse {
 struct Journal;
 
 impl Journal {
-    pub const ACCEPTED_PARAMS: &'static [AcceptedParams] = &[
-        AcceptedParams::Info,
-        AcceptedParams::LogsSources,
-        AcceptedParams::After,
-        AcceptedParams::Before,
-        AcceptedParams::Anchor,
-        AcceptedParams::Direction,
-        AcceptedParams::Last,
-        AcceptedParams::Query,
-        AcceptedParams::Facets,
-        AcceptedParams::Histogram,
-        AcceptedParams::IfModifiedSince,
-        AcceptedParams::DataOnly,
-        AcceptedParams::Delta,
-        AcceptedParams::Tail,
-        AcceptedParams::Sampling,
-        AcceptedParams::Slice,
+    pub const ACCEPTED_PARAMS: &'static [AcceptedParam] = &[
+        AcceptedParam::Info,
+        AcceptedParam::LogsSources,
+        AcceptedParam::After,
+        AcceptedParam::Before,
+        AcceptedParam::Anchor,
+        AcceptedParam::Direction,
+        AcceptedParam::Last,
+        AcceptedParam::Query,
+        AcceptedParam::Facets,
+        AcceptedParam::Histogram,
+        AcceptedParam::IfModifiedSince,
+        AcceptedParam::DataOnly,
+        AcceptedParam::Delta,
+        AcceptedParam::Tail,
+        AcceptedParam::Sampling,
+        AcceptedParam::Slice,
     ];
 
-    pub fn accepted_params() -> Vec<AcceptedParams> {
+    pub fn accepted_params() -> Vec<AcceptedParam> {
         Self::ACCEPTED_PARAMS.to_vec()
     }
 }
@@ -173,16 +201,18 @@ impl FunctionHandler for Journal {
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
         info!("Slow function request: {:#?}", request);
 
-        // Simulate slow work - 2 seconds total
-        // for i in 0..4 {
-        //     tokio::time::sleep(Duration::from_millis(500)).await;
-        //     info!("Slow function progress: {i}",);
-        // }
-
-        info!("Slow function completed");
         Ok(JournalResponse {
             version: Version::default(),
             accepted_params: Self::accepted_params(),
+
+            // Hard coded stuff
+            show_ids: false,
+            has_history: true,
+            status: 200,
+            response_type: String::from("table"),
+            help: String::from("View, search and analyze systemd journal entries."),
+            pagination: Pagination::default(),
+
             message: "Slow work completed successfully!".to_string(),
             progress: 100,
         })
