@@ -196,8 +196,7 @@ struct JournalResponse {
     response_type: String,
     help: String,
     pagination: Pagination,
-
-    versions: Versions,
+    // versions: Versions,
 }
 
 struct Journal;
@@ -276,10 +275,9 @@ impl FunctionHandler for Journal {
             response_type: String::from("table"),
             help: String::from("View, search and analyze systemd journal entries."),
             pagination: Pagination::default(),
-
-            versions: Versions {
-                sources: 1759475589000512,
-            },
+            // versions: Versions {
+            //     sources: 1759475589000512,
+            // },
         })
     }
 
