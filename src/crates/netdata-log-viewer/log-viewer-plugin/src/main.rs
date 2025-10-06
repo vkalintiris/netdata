@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::FunctionDeclaration;
+use netdata_plugin_schema::HttpAccess;
 use rt::{FunctionHandler, PluginRuntime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -183,6 +184,7 @@ struct Versions {
 
 #[derive(Serialize, Deserialize)]
 struct JournalResponse {
+    #[serde(rename = "v")]
     version: Version,
 
     accepted_params: Vec<RequestParam>,
@@ -275,9 +277,6 @@ impl FunctionHandler for Journal {
             response_type: String::from("table"),
             help: String::from("View, search and analyze systemd journal entries."),
             pagination: Pagination::default(),
-            // versions: Versions {
-            //     sources: 1759475589000512,
-            // },
         })
     }
 
@@ -299,6 +298,8 @@ impl FunctionHandler for Journal {
         );
         func_decl.global = true;
         func_decl.tags = Some(String::from("logs"));
+        func_decl.access =
+            Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
         func_decl
     }
 }
