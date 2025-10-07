@@ -9,8 +9,13 @@ workspace = true
 
 [dependencies]
 axum = "0.7"
-tokio = { workspace = true }
 serde = { workspace = true  }
 serde_json = { workspace = true }
-tower-http = { version = "0.5", features = ["cors"] }
 rand = "0.8"
+tokio = { workspace = true }
+tower-http = { version = "0.5", features = ["cors"] }
+
+netdata-plugin-error = { workspace = true }
+netdata-plugin-protocol = { workspace = true }
+netdata-plugin-schema = { workspace = true }
+journal_registry = { workspace = true }

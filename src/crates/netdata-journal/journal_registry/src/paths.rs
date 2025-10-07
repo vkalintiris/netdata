@@ -335,7 +335,10 @@ impl Chain {
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
+        eprintln!("Files: {:#?}", self.files.len());
+
         if self.files.is_empty() || start >= end {
+            eprintln!("Είσαι ηλίθιος");
             return;
         }
 
@@ -421,7 +424,7 @@ impl Chain {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Directory {
     chains: HashMap<Origin, Chain>,
 }

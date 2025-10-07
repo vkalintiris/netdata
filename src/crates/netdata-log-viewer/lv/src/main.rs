@@ -1,9 +1,42 @@
-use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    Router,
+    extract::Query,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+
+/// Pretty-printed JSON response wrapper
+struct PrettyJson<T>(T);
+
+impl<T> IntoResponse for PrettyJson<T>
+where
+    T: Serialize,
+{
+    fn into_response(self) -> Response {
+        match serde_json::to_string_pretty(&self.0) {
+            Ok(json) => (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                json,
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to serialize response",
+            )
+                .into_response(),
+        }
+    }
+}
 
 /// Query parameters for the histogram endpoint
 #[derive(Debug, Deserialize)]
@@ -129,7 +162,7 @@ async fn histogram_handler(Query(params): Query<HistogramQuery>) -> impl IntoRes
     if params.after >= params.before {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
+            PrettyJson(ErrorResponse {
                 error: "after must be less than before".to_string(),
             }),
         )
@@ -139,7 +172,7 @@ async fn histogram_handler(Query(params): Query<HistogramQuery>) -> impl IntoRes
     // Generate histogram data
     let buckets = generate_histogram_data(params.after, params.before);
 
-    (StatusCode::OK, Json(HistogramResponse { buckets })).into_response()
+    PrettyJson(HistogramResponse { buckets }).into_response()
 }
 
 /// GET /health endpoint handler
@@ -153,26 +186,131 @@ async fn health_handler() -> impl IntoResponse {
     response.insert("status", "ok".to_string());
     response.insert("timestamp", current_time.to_string());
 
-    (StatusCode::OK, Json(response))
+    PrettyJson(response).into_response()
+}
+
+struct AppState {
+    registry: Arc<RwLock<journal_registry::Registry>>,
+}
+
+impl AppState {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let registry = Arc::new(RwLock::new(journal_registry::Registry::new().unwrap()));
+
+        Ok(Self { registry })
+    }
+
+    /// Watch a new directory for journal files
+    pub async fn watch_directory(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.registry
+            .write()
+            .await
+            .watch_directory(path)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
+
+    /// Find files in the given time range (Unix timestamps in microseconds)
+    pub async fn find_files_in_range(&self, start: u64, end: u64) -> Vec<journal_registry::File> {
+        let mut output = Vec::new();
+        self.registry
+            .read()
+            .await
+            .find_files_in_range(start, end, &mut output);
+        output
+    }
+}
+
+/// Query parameters for the watch_directory endpoint
+#[derive(Debug, Deserialize)]
+struct WatchDirectoryQuery {
+    /// Directory path to watch
+    path: String,
+}
+
+/// Query parameters for the find_files endpoint
+#[derive(Debug, Deserialize)]
+struct FindFilesQuery {
+    /// Start timestamp in microseconds (inclusive)
+    start: u64,
+    /// End timestamp in microseconds (exclusive)
+    end: u64,
+}
+
+/// Response format for the find_files endpoint
+#[derive(Debug, Serialize)]
+struct FindFilesResponse {
+    files: Vec<FileInfo>,
+}
+
+/// File information returned to the client
+#[derive(Debug, Serialize)]
+struct FileInfo {
+    path: String,
+}
+
+/// POST /watch_directory endpoint handler
+///
+/// Accepts 'path' query parameter to add a new directory to watch
+async fn watch_directory_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<WatchDirectoryQuery>,
+) -> impl IntoResponse {
+    match state.watch_directory(&params.path).await {
+        Ok(_) => {
+            let mut response = HashMap::new();
+            response.insert("status", "ok".to_string());
+            response.insert("path", params.path);
+            PrettyJson(response).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            PrettyJson(ErrorResponse {
+                error: format!("Failed to watch directory: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /find_files endpoint handler
+///
+/// Accepts 'start' and 'end' query parameters (Unix timestamps in microseconds)
+/// Returns list of journal files that cover the given time range
+async fn find_files_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<FindFilesQuery>,
+) -> impl IntoResponse {
+    let files = state.find_files_in_range(params.start, params.end).await;
+
+    let file_infos: Vec<FileInfo> = files
+        .into_iter()
+        .map(|file| FileInfo { path: file.path })
+        .collect();
+
+    PrettyJson(FindFilesResponse { files: file_infos }).into_response()
 }
 
 #[tokio::main]
 async fn main() {
+    let state = AppState::new().unwrap();
+
     // Build router with CORS support
     let app = Router::new()
-        .route("/histogram", get(histogram_handler))
         .route("/health", get(health_handler))
+        .route("/histogram", get(histogram_handler))
+        .route("/watch_directory", post(watch_directory_handler))
+        .route("/find_files", get(find_files_handler))
+        .with_state(Arc::new(state))
         .layer(CorsLayer::permissive());
 
-    // Bind to port 8080
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
 
     println!("Starting Rust backend service on http://localhost:8080");
+    println!("Health endpoint: http://localhost:8080/health");
     println!(
         "Histogram endpoint: http://localhost:8080/histogram?after=<timestamp>&before=<timestamp>"
     );
-    println!("Health endpoint: http://localhost:8080/health");
 
-    // Start server
     axum::serve(listener, app).await.unwrap();
 }
