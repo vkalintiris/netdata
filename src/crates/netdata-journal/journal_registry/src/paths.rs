@@ -1,3 +1,4 @@
+use crate::error::{RegistryError, Result};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -213,7 +214,7 @@ impl File {
         })
     }
 
-    pub fn dir(&self) -> &str {
+    pub fn dir(&self) -> Result<&str> {
         Path::new(&self.path)
             .parent()
             .and_then(|p| {
@@ -224,7 +225,9 @@ impl File {
                 }
             })
             .and_then(|p| p.to_str())
-            .expect("A valid UTF-8 directory path")
+            .ok_or_else(|| RegistryError::InvalidUtf8 {
+                path: Path::new(&self.path).to_path_buf(),
+            })
     }
 
     /// Check if a path looks like a journal file
@@ -436,8 +439,10 @@ pub struct RegistryInner {
 }
 
 impl RegistryInner {
-    pub fn insert_file(&mut self, file: File) {
-        if let Some(directory) = self.directories.get_mut(file.dir()) {
+    pub fn insert_file(&mut self, file: File) -> Result<()> {
+        let dir = file.dir()?.to_string();
+
+        if let Some(directory) = self.directories.get_mut(&dir) {
             if let Some(chain) = directory.chains.get_mut(&file.origin) {
                 chain.insert_file(file);
             } else {
@@ -447,7 +452,6 @@ impl RegistryInner {
                 directory.chains.insert(origin, chain);
             }
         } else {
-            let dir = String::from(file.dir());
             let origin = file.origin.clone();
             let mut chain = Chain::default();
             chain.insert_file(file);
@@ -457,12 +461,14 @@ impl RegistryInner {
 
             self.directories.insert(dir, directory);
         }
+        Ok(())
     }
 
-    pub fn remove_file(&mut self, file: &File) {
+    pub fn remove_file(&mut self, file: &File) -> Result<()> {
+        let dir = file.dir()?;
         let mut remove_directory = false;
 
-        if let Some(directory) = self.directories.get_mut(file.dir()) {
+        if let Some(directory) = self.directories.get_mut(dir) {
             let mut remove_chain = false;
 
             if let Some(chain) = directory.chains.get_mut(&file.origin) {
@@ -478,13 +484,15 @@ impl RegistryInner {
         };
 
         if remove_directory {
-            self.directories.remove(file.dir());
+            self.directories.remove(dir);
         }
+        Ok(())
     }
 
-    pub fn rename_file(&mut self, from: &File, to: File) {
-        self.remove_file(from);
-        self.insert_file(to);
+    pub fn rename_file(&mut self, from: &File, to: File) -> Result<()> {
+        self.remove_file(from)?;
+        self.insert_file(to)?;
+        Ok(())
     }
 
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
@@ -509,7 +517,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new() -> Result<Self, notify::Error> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             monitor: Monitor::new()?,
             events: Default::default(),
@@ -517,14 +525,14 @@ impl Registry {
         })
     }
 
-    pub async fn watch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
-        self.monitor.watch_directory(path).unwrap();
-        self.scan_directory(path).await.unwrap();
+    pub async fn watch_directory(&mut self, path: &str) -> Result<()> {
+        self.monitor.watch_directory(path)?;
+        self.scan_directory(path).await?;
         Ok(())
     }
 
-    pub async fn unwatch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
-        self.monitor.unwatch_directory(path).unwrap();
+    pub async fn unwatch_directory(&mut self, path: &str) -> Result<()> {
+        self.monitor.unwatch_directory(path)?;
         Ok(())
     }
 
@@ -532,7 +540,7 @@ impl Registry {
         self.inner.find_files_in_range(start, end, output);
     }
 
-    pub async fn process_events(&mut self) {
+    pub async fn process_events(&mut self) -> Result<()> {
         self.monitor.collect(&mut self.events).await;
 
         for event in &self.events {
@@ -540,14 +548,14 @@ impl Registry {
                 EventKind::Create(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.inner.insert_file(file);
+                            self.inner.insert_file(file)?;
                         }
                     }
                 }
                 EventKind::Remove(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.inner.remove_file(&file);
+                            self.inner.remove_file(&file)?;
                         }
                     }
                 }
@@ -555,10 +563,10 @@ impl Registry {
                     // Handle renames: remove old, add new
                     if event.paths.len() >= 2 {
                         if let Some(old_file) = File::from_path(&event.paths[0]) {
-                            self.inner.remove_file(&old_file);
+                            self.inner.remove_file(&old_file)?;
                         }
                         if let Some(new_file) = File::from_path(&event.paths[1]) {
-                            self.inner.insert_file(new_file);
+                            self.inner.insert_file(new_file)?;
                         }
                     } else {
                         eprintln!("Uncaught rename event: {:#?}", event.paths);
@@ -570,13 +578,14 @@ impl Registry {
                 _ => {} // Ignore other events
             }
         }
+        Ok(())
     }
 
     async fn scan_directory_recursive(
         &self,
         path: &str,
         files: &mut Vec<File>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         let entries = std::fs::read_dir(path)?;
 
         for entry in entries {
@@ -600,12 +609,12 @@ impl Registry {
         Ok(())
     }
 
-    async fn scan_directory(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn scan_directory(&mut self, path: &str) -> Result<()> {
         let mut files = Vec::new();
         self.scan_directory_recursive(path, &mut files).await?;
 
         for file in files {
-            self.inner.insert_file(file);
+            self.inner.insert_file(file)?;
         }
 
         Ok(())

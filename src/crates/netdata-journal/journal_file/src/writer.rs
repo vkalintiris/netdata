@@ -1,18 +1,18 @@
 #![allow(unused_imports, dead_code)]
 
 use crate::{
-    journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
-    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
-    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
-    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
-    ObjectHeader, ObjectType, RegularEntryItem,
+    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
+    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
+    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
+    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
+    journal_hash_data,
 };
 use error::{JournalFileError, Result};
-use window_manager::MmapMut;
-use rand::{seq::IndexedRandom, Rng};
+use rand::{Rng, seq::IndexedRandom};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use window_manager::MemoryMapMut;
+use window_manager::MmapMut;
 use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
@@ -465,10 +465,10 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{load_boot_id, Direction, JournalFile, JournalReader, Location};
-    use window_manager::Mmap;
+    use crate::{Direction, JournalFile, JournalReader, Location, load_boot_id};
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
+    use window_manager::Mmap;
 
     fn generate_uuid() -> [u8; 16] {
         use rand::Rng;
@@ -544,8 +544,6 @@ mod tests {
 
             let mut entries_read = 0;
             while reader.step(&journal_file, Direction::Forward)? {
-                println!("Reading entry {}", entries_read);
-
                 // Verify timestamps
                 let realtime = reader.get_realtime_usec(&journal_file)?;
                 let expected_realtime = 1000000 + ((entries_read % 3) * 1000);

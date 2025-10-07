@@ -1,3 +1,4 @@
+use crate::error::{RegistryError, Result};
 use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
 use journal_file::index::FileIndex;
 use std::path::{Path, PathBuf};
@@ -16,14 +17,24 @@ impl JournalIndexCache {
     /// * `memory_capacity` - Memory cache size in bytes (default: 8 MiB)
     ///
     /// # Example
-    /// ```rust
-    /// let cache = JournalIndexCache::new(32 * 1024 * 1024, Some(8 * 1024 * 1024)).await?;
+    /// ```rust,no_run
+    /// use journal_registry::cache::JournalIndexCache;
+    /// use std::path::PathBuf;
+    ///
+    /// # async fn example() -> journal_registry::Result<()> {
+    /// let cache = JournalIndexCache::new(
+    ///     PathBuf::from("/tmp/cache"),
+    ///     32 * 1024 * 1024,
+    ///     Some(8 * 1024 * 1024)
+    /// ).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn new(
         path: PathBuf,
         disk_capacity: u64,
         memory_capacity: Option<u64>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self> {
         // let temp_dir = Arc::new(tempfile::tempdir()?);
         let memory_size = memory_capacity.unwrap_or(8 * 1024 * 1024); // Default 8 MiB
 
@@ -34,13 +45,21 @@ impl JournalIndexCache {
 
         // Create filesystem device with specified capacity
         let device = FsDeviceBuilder::new(path)
-            .with_capacity(disk_capacity.try_into().unwrap())
+            .with_capacity(
+                disk_capacity
+                    .try_into()
+                    .map_err(|e| RegistryError::NumericConversion(format!("disk_capacity: {}", e)))?,
+            )
             .build()?;
 
         // Build hybrid cache with block-based storage
         let cache: HybridCache<String, FileIndex> = HybridCacheBuilder::new()
             .with_name("journal-index-cache")
-            .memory(memory_size.try_into().unwrap())
+            .memory(
+                memory_size
+                    .try_into()
+                    .map_err(|e| RegistryError::NumericConversion(format!("memory_size: {}", e)))?,
+            )
             .storage()
             .with_engine_config(BlockEngineBuilder::new(device).with_block_size(1024 * 1024))
             .build()
@@ -67,7 +86,7 @@ impl JournalIndexCache {
     /// # Returns
     /// * `Some(JournalFileIndex)` if found in cache
     /// * `None` if not found
-    pub async fn get<P: AsRef<Path>>(&self, file_path: P) -> anyhow::Result<Option<FileIndex>> {
+    pub async fn get<P: AsRef<Path>>(&self, file_path: P) -> Result<Option<FileIndex>> {
         let key = file_path.as_ref().to_string_lossy().to_string();
         match self.cache.get(&key).await? {
             Some(entry) => Ok(Some(entry.value().clone())),
@@ -76,7 +95,7 @@ impl JournalIndexCache {
     }
 
     /// Check if a file path exists in the cache
-    pub async fn contains<P: AsRef<Path>>(&self, file_path: P) -> anyhow::Result<bool> {
+    pub async fn contains<P: AsRef<Path>>(&self, file_path: P) -> Result<bool> {
         let key = file_path.as_ref().to_string_lossy().to_string();
         Ok(self.cache.get(&key).await?.is_some())
     }
@@ -95,7 +114,7 @@ impl JournalIndexCache {
     }
 
     /// Clear the entire cache
-    pub async fn clear(&self) -> anyhow::Result<()> {
+    pub async fn clear(&self) -> Result<()> {
         // foyer doesn't have a direct clear method, so we'd need to track keys
         // or recreate the cache instance
         warn!("Cache clear not implemented - would require recreating cache instance");
@@ -103,7 +122,7 @@ impl JournalIndexCache {
     }
 
     /// Close the cache and clean up resources
-    pub async fn close(self) -> anyhow::Result<()> {
+    pub async fn close(self) -> Result<()> {
         self.cache.close().await?;
         Ok(())
     }

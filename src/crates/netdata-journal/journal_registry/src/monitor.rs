@@ -1,3 +1,4 @@
+use crate::error::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::Path;
@@ -13,7 +14,7 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    pub fn new() -> Result<Self, notify::Error> {
+    pub fn new() -> Result<Self> {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         let watcher = RecommendedWatcher::new(
@@ -32,7 +33,7 @@ impl Monitor {
         })
     }
 
-    pub fn watch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
+    pub fn watch_directory(&mut self, path: &str) -> Result<()> {
         // Start watching with notify
         self.watcher
             .watch(Path::new(path), RecursiveMode::NonRecursive)?;
@@ -43,7 +44,7 @@ impl Monitor {
         Ok(())
     }
 
-    pub fn unwatch_directory(&mut self, path: &str) -> Result<(), notify::Error> {
+    pub fn unwatch_directory(&mut self, path: &str) -> Result<()> {
         // Stop watching
         self.watcher.unwatch(Path::new(path))?;
 
