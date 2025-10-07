@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "log-viewer-plugin",
+    "watcher-plugin",
 ]
 
 [workspace.package]
@@ -36,3 +37,11 @@ rt = { path = "../netdata-plugin/rt" }
 netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "../netdata-plugin/schema" }
+
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
