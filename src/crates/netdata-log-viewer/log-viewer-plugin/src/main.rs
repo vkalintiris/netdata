@@ -317,17 +317,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting example plugin");
 
-    // Check if we should use TCP or stdio based on command line argument
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "--tcp" {
-        // TCP mode: expect address as second argument
-        let addr = args.get(2).unwrap_or(&"127.0.0.1:9999".to_string()).clone();
-        info!("Running in TCP mode, connecting to {}", addr);
-        run_tcp_mode(&addr).await?;
-    } else {
-        // Default stdio mode
-        info!("Running in stdio mode");
-        run_stdio_mode().await?;
+    if true {
+        // Check if we should use TCP or stdio based on command line argument
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() > 1 && args[1] == "--tcp" {
+            // TCP mode: expect address as second argument
+            let addr = args.get(2).unwrap_or(&"127.0.0.1:9999".to_string()).clone();
+            info!("Running in TCP mode, connecting to {}", addr);
+            run_tcp_mode(&addr).await?;
+        } else {
+            // Default stdio mode
+            info!("Running in stdio mode");
+            run_stdio_mode().await?;
+        }
     }
 
     Ok(())
