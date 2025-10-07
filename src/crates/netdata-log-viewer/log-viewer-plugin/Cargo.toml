@@ -12,10 +12,12 @@ netdata-plugin-error = { workspace = true }
 netdata-plugin-protocol = { workspace = true }
 netdata-plugin-schema = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 polars = { workspace = true }
+rand = "0.9.2"
 
 [lints]
 workspace = true

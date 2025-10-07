@@ -190,6 +190,11 @@ struct JournalResponse {
     accepted_params: Vec<RequestParam>,
     required_params: Vec<RequiredParam>,
 
+    available_histograms: serde_json::Value,
+    histogram: serde_json::Value,
+    data: Vec<u32>,
+    default_charts: Vec<u32>,
+
     // Hard-coded stuff
     show_ids: bool,
     has_history: bool,
@@ -201,7 +206,196 @@ struct JournalResponse {
     // versions: Versions,
 }
 
-struct Journal;
+use polars::prelude as polars;
+use rand::Rng;
+
+pub struct Histogram {
+    id: String,
+    name: String,
+    after: i64,
+    before: i64,
+    interval: i64,
+    df: polars::DataFrame,
+}
+
+impl Histogram {
+    pub fn new(id: String, name: String, df: polars::DataFrame) -> Self {
+        Self {
+            id,
+            name,
+            interval: 1,
+            after: 0,
+            before: 0,
+            df,
+        }
+    }
+
+    /// Creates a dummy histogram with randomly generated counts
+    ///
+    /// # Arguments
+    /// * `id` - Histogram identifier
+    /// * `name` - Histogram name
+    /// * `after` - Start timestamp in seconds
+    /// * `before` - End timestamp in seconds
+    /// * `rng` - Random number generator for generating counts
+    ///
+    /// # Returns
+    /// A Histogram with up to 60 buckets covering the time range with random counts
+    pub fn new_dummy_with_counts<R: Rng>(
+        id: String,
+        name: String,
+        after: i64,
+        before: i64,
+        rng: &mut R,
+    ) -> polars::PolarsResult<Self> {
+        // Calculate the number of buckets (up to 60)
+        let total_duration = before - after;
+        let num_buckets = std::cmp::min(60, total_duration.max(1));
+
+        // Calculate the interval between buckets
+        let interval = total_duration / num_buckets;
+
+        // Generate timestamps
+        let timestamps: Vec<i64> = (0..num_buckets).map(|i| after + (i * interval)).collect();
+
+        // Generate random counts for each label
+        let error_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.random_range(0..10))
+            .collect();
+        let warn_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.random_range(0..20))
+            .collect();
+        let info_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.random_range(0..50))
+            .collect();
+
+        // Create DataFrame
+        let df = polars::df! {
+            "time" => timestamps,
+            "ERROR" => error_counts,
+            "WARN" => warn_counts,
+            "INFO" => info_counts,
+        }?;
+
+        Ok(Self {
+            id,
+            name,
+            after,
+            before,
+            interval,
+            df,
+        })
+    }
+
+    /// Get the histogram's ID
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get the histogram's name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get a reference to the underlying DataFrame
+    pub fn dataframe(&self) -> &polars::DataFrame {
+        &self.df
+    }
+
+    pub fn labels(&self) -> Vec<String> {
+        self.df
+            .get_columns()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect()
+    }
+
+    /// Convert to JSON Value
+    pub fn to_json(&self) -> serde_json::Value {
+        let columns = self.df.get_columns();
+
+        let labels: Vec<String> = self.labels();
+
+        // Build data rows
+        let mut data = Vec::new();
+        let height = self.df.height();
+
+        for row_idx in 0..height {
+            let mut row_values: Vec<serde_json::Value> = Vec::new();
+
+            // First value is the timestamp
+            if let Some(timestamp_col) = columns.first() {
+                let timestamp = timestamp_col.get(row_idx).unwrap();
+                row_values.push(anyvalue_to_json(&timestamp));
+            }
+
+            // Remaining values are the label data (as arrays of u32)
+            for col in columns.iter().skip(1) {
+                let mut v = Vec::new();
+                v.push(serde_json::Value::Number(0.into()));
+                v.push(serde_json::Value::Number(0.into()));
+
+                let value = col.get(row_idx).unwrap();
+                v.push(anyvalue_to_json(&value));
+                row_values.push(serde_json::Value::Array(v));
+            }
+
+            data.push(serde_json::Value::Array(row_values));
+        }
+
+        serde_json::json!({
+            // "histogram": {
+                "id": self.id,
+                "name": self.name,
+                "chart": {
+                    "result": {
+                        "labels": labels,
+                        "data": data
+                    },
+                    "view": {
+                        "title": "Events Distribution by PRIORITY",
+                        "update_every": self.interval,
+                        "after": self.after,
+                        "before": self.before,
+                        "units": "events",
+                        "chart_type": "stackedBar",
+                        "dimensions": {
+                            "ids": ["3", "4", "6"],
+                            "names": ["error", "warning", "info"]
+                        }
+                    }
+                }
+            // }
+        })
+    }
+}
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Default)]
+struct Journal {
+    histogram: Arc<RwLock<Option<Histogram>>>,
+}
+
+fn anyvalue_to_json(value: &polars::AnyValue) -> serde_json::Value {
+    match value {
+        polars::AnyValue::Null => serde_json::Value::Null,
+        polars::AnyValue::Boolean(b) => serde_json::Value::Bool(*b),
+        polars::AnyValue::Int64(i) => serde_json::Value::Number((*i).into()),
+        polars::AnyValue::UInt32(u) => serde_json::Value::Number((*u).into()),
+        polars::AnyValue::Float64(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        polars::AnyValue::String(s) => serde_json::Value::String(s.to_string()),
+        polars::AnyValue::List(series) => {
+            let values: Vec<serde_json::Value> =
+                series.iter().map(|v| anyvalue_to_json(&v)).collect();
+            serde_json::Value::Array(values)
+        }
+        _ => serde_json::Value::String(format!("{:?}", value)),
+    }
+}
 
 impl Journal {
     pub const ACCEPTED_PARAMS: &'static [RequestParam] = &[
@@ -222,6 +416,12 @@ impl Journal {
         RequestParam::Sampling,
         RequestParam::Slice,
     ];
+
+    fn new(histogram: Histogram) -> Self {
+        Self {
+            histogram: Arc::new(RwLock::new(Some(histogram))),
+        }
+    }
 
     pub fn accepted_params() -> Vec<RequestParam> {
         Self::ACCEPTED_PARAMS.to_vec()
@@ -263,13 +463,46 @@ impl FunctionHandler for Journal {
     type Response = JournalResponse;
 
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
-        info!("Slow function request: {:#?}", request);
+        info!("systemd-journal function request: {:#?}", request);
+
+        let histogram_json = {
+            let mut guard = self.histogram.write().await;
+
+            if let Some(histogram) = guard.as_mut() {
+                let id = String::from("PRIORITY");
+                let name = id.clone();
+                let after = request.after;
+                let before = request.before;
+                let mut rng = rand::rng();
+
+                *histogram =
+                    Histogram::new_dummy_with_counts(id, name, after, before, &mut rng).unwrap();
+            } else {
+                let id = String::from("PRIORITY");
+                let name = id.clone();
+                let after = request.after;
+                let before = request.before;
+                let mut rng = rand::rng();
+
+                let histogram =
+                    Histogram::new_dummy_with_counts(id, name, after, before, &mut rng).unwrap();
+                guard.replace(histogram);
+            }
+
+            let histogram = guard.as_mut().unwrap();
+            histogram.to_json()
+        };
 
         Ok(JournalResponse {
             version: Version::default(),
             accepted_params: Self::accepted_params(),
             required_params: Self::required_params(),
-
+            histogram: histogram_json,
+            available_histograms: serde_json::json!(
+                [ { "id": "PRIORITY", "name": "PRIORITY", "order": 1 } ]
+            ),
+            data: Vec::new(),
+            default_charts: Vec::new(),
             // Hard coded stuff
             show_ids: false,
             has_history: true,
@@ -338,7 +571,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 /// Run the plugin using stdin/stdout (default Netdata mode)
 async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
-    runtime.register_handler(Journal);
+    runtime.register_handler(Journal::default());
     runtime.run().await?;
     Ok(())
 }
@@ -354,7 +587,7 @@ async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error:
     let (reader, writer) = stream.into_split();
 
     let mut runtime = PluginRuntime::with_streams("example", reader, writer);
-    runtime.register_handler(Journal);
+    runtime.register_handler(Journal::default());
     runtime.run().await?;
 
     Ok(())
