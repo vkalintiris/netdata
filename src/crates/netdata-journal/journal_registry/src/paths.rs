@@ -338,10 +338,7 @@ impl Chain {
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
-        eprintln!("Files: {:#?}", self.files.len());
-
         if self.files.is_empty() || start >= end {
-            eprintln!("Είσαι ηλίθιος");
             return;
         }
 
@@ -581,11 +578,7 @@ impl Registry {
         Ok(())
     }
 
-    async fn scan_directory_recursive(
-        &self,
-        path: &str,
-        files: &mut Vec<File>,
-    ) -> Result<()> {
+    async fn scan_directory_recursive(&self, path: &str, files: &mut Vec<File>) -> Result<()> {
         let entries = std::fs::read_dir(path)?;
 
         for entry in entries {
