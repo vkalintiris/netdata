@@ -42,9 +42,9 @@ where
 #[derive(Debug, Deserialize)]
 struct HistogramQuery {
     /// Unix timestamp in seconds - start of time range (inclusive)
-    after: i64,
+    after: u64,
     /// Unix timestamp in seconds - end of time range (exclusive)
-    before: i64,
+    before: u64,
 }
 
 /// Multi-series data for a single time bucket
@@ -59,7 +59,7 @@ struct BucketData {
 #[derive(Debug, Serialize)]
 struct Bucket {
     /// Unix timestamp in seconds
-    time: i64,
+    time: u64,
     /// Multi-series histogram data
     data: BucketData,
 }
@@ -80,7 +80,7 @@ struct ErrorResponse {
 ///
 /// Returns buckets with timestamps and multiple data series (info, warning, error)
 /// simulating log priority counts with realistic patterns and live activity spikes.
-fn generate_histogram_data(after: i64, before: i64) -> Vec<Bucket> {
+fn generate_histogram_data(after: u64, before: u64) -> Vec<Bucket> {
     let mut rng = rand::thread_rng();
 
     // Create buckets - aim for ~50-100 data points
@@ -91,12 +91,12 @@ fn generate_histogram_data(after: i64, before: i64) -> Vec<Bucket> {
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64;
+        .as_secs();
 
     let mut buckets = Vec::with_capacity(num_buckets);
 
     for i in 0..num_buckets {
-        let bucket_time = after + (i as f64 * bucket_size) as i64;
+        let bucket_time = after + (i as f64 * bucket_size) as u64;
 
         // Generate values for different series with different patterns
         let time_factor = ((bucket_time % 86400) as f64) / 86400.0; // Position in day
@@ -157,7 +157,10 @@ fn generate_histogram_data(after: i64, before: i64) -> Vec<Bucket> {
 ///   ]
 /// }
 /// ```
-async fn histogram_handler(Query(params): Query<HistogramQuery>) -> impl IntoResponse {
+async fn histogram_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HistogramQuery>,
+) -> impl IntoResponse {
     // Validate parameters
     if params.after >= params.before {
         return (
@@ -167,6 +170,15 @@ async fn histogram_handler(Query(params): Query<HistogramQuery>) -> impl IntoRes
             }),
         )
             .into_response();
+    }
+
+    let start = 1000 * 1000 * params.after;
+    let end = 1000 * 1000 * params.before;
+    let files = state.find_files_in_range(start, end).await;
+
+    println!("Found {} files", files.len());
+    for (idx, file) in files.iter().enumerate() {
+        println!("file[{}]: {}", idx, file.path);
     }
 
     // Generate histogram data
