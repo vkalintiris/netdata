@@ -281,7 +281,9 @@ async fn find_files_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FindFilesQuery>,
 ) -> impl IntoResponse {
-    let files = state.find_files_in_range(params.start, params.end).await;
+    let start = 1000 * 1000 * params.start;
+    let end = 1000 * 1000 * params.end;
+    let files = state.find_files_in_range(start, end).await;
 
     let file_infos: Vec<FileInfo> = files
         .into_iter()
