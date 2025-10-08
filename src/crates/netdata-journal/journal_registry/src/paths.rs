@@ -1,6 +1,6 @@
 use crate::error::{RegistryError, Result};
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -319,6 +319,11 @@ impl Chain {
 
     pub fn insert_file(&mut self, file: File) {
         let pos = self.files.partition_point(|f| *f < file);
+
+        if pos < self.files.len() && self.files[pos] == file {
+            return;
+        }
+
         self.files.insert(pos, file.clone());
     }
 
@@ -461,6 +466,10 @@ impl RegistryInner {
         Ok(())
     }
 
+    pub fn remove_directory_files(&mut self, path: &str) {
+        self.directories.remove(path);
+    }
+
     pub fn remove_file(&mut self, file: &File) -> Result<()> {
         let dir = file.dir()?;
         let mut remove_directory = false;
@@ -508,6 +517,7 @@ use notify::{
 };
 
 pub struct Registry {
+    directories: HashSet<String>,
     monitor: Monitor,
     events: Vec<Event>,
     inner: RegistryInner,
@@ -516,6 +526,7 @@ pub struct Registry {
 impl Registry {
     pub fn new() -> Result<Self> {
         Ok(Self {
+            directories: Default::default(),
             monitor: Monitor::new()?,
             events: Default::default(),
             inner: Default::default(),
@@ -523,13 +534,30 @@ impl Registry {
     }
 
     pub async fn watch_directory(&mut self, path: &str) -> Result<()> {
+        if self.directories.contains(path) {
+            return Ok(());
+        }
+
+        let files = scan_journal_files(path).await?;
+
         self.monitor.watch_directory(path)?;
-        self.scan_directory(path).await?;
+        self.directories.insert(String::from(path));
+
+        for file in files {
+            self.inner.insert_file(file)?;
+        }
+
         Ok(())
     }
 
     pub async fn unwatch_directory(&mut self, path: &str) -> Result<()> {
+        if !self.directories.contains(path) {
+            return Ok(());
+        }
+
         self.monitor.unwatch_directory(path)?;
+        self.inner.remove_directory_files(path);
+
         Ok(())
     }
 
@@ -577,41 +605,36 @@ impl Registry {
         }
         Ok(())
     }
+}
 
-    async fn scan_directory_recursive(&self, path: &str, files: &mut Vec<File>) -> Result<()> {
-        let entries = std::fs::read_dir(path)?;
+async fn scan_directory_recursive(path: &str, files: &mut Vec<File>) -> Result<()> {
+    let entries = std::fs::read_dir(path)?;
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let Some(path_str) = path.as_os_str().to_str() else {
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(path_str) = path.as_os_str().to_str() else {
+            continue;
+        };
+
+        if path.is_dir() {
+            Box::pin(scan_directory_recursive(path_str, files)).await?;
+        } else if path.is_file() {
+            let Some(file) = File::from_path(&path) else {
                 continue;
             };
 
-            if path.is_dir() {
-                Box::pin(self.scan_directory_recursive(path_str, files)).await?;
-            } else if path.is_file() {
-                let Some(file) = File::from_path(&path) else {
-                    continue;
-                };
-
-                files.push(file);
-            }
+            files.push(file);
         }
-
-        Ok(())
     }
 
-    async fn scan_directory(&mut self, path: &str) -> Result<()> {
-        let mut files = Vec::new();
-        self.scan_directory_recursive(path, &mut files).await?;
+    Ok(())
+}
 
-        for file in files {
-            self.inner.insert_file(file)?;
-        }
-
-        Ok(())
-    }
+pub async fn scan_journal_files(path: &str) -> Result<Vec<File>> {
+    let mut files = Vec::new();
+    scan_directory_recursive(path, &mut files).await?;
+    Ok(files)
 }
 
 #[cfg(test)]

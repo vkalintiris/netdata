@@ -1,12 +1,9 @@
 use crate::error::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
 use std::path::Path;
 use tokio::sync::mpsc;
 
 pub struct Monitor {
-    /// Set of directories currently being watched
-    watched_dirs: HashSet<String>,
     /// The watcher instance
     watcher: RecommendedWatcher,
     /// Channel for events
@@ -27,7 +24,6 @@ impl Monitor {
         )?;
 
         Ok(Self {
-            watched_dirs: Default::default(),
             watcher,
             event_receiver,
         })
@@ -38,19 +34,12 @@ impl Monitor {
         self.watcher
             .watch(Path::new(path), RecursiveMode::NonRecursive)?;
 
-        // Track the directory
-        self.watched_dirs.insert(String::from(path));
-
         Ok(())
     }
 
     pub fn unwatch_directory(&mut self, path: &str) -> Result<()> {
         // Stop watching
         self.watcher.unwatch(Path::new(path))?;
-
-        // Remove from tracked set
-        self.watched_dirs.remove(path);
-
         Ok(())
     }
 
