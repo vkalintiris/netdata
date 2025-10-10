@@ -6,6 +6,7 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_schema::HttpAccess;
 use rt::{FunctionHandler, PluginRuntime};
 use tracing::{Level, info, instrument, span, warn};
+use tracing_futures::Instrument;
 use types::{EmptyRequest, HealthResponse, JournalRequest, JournalResponse};
 
 #[derive(Debug, Default)]
@@ -149,16 +150,13 @@ fn initialize_tracing() {
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     initialize_tracing();
 
-    // Check if we should use TCP or stdio based on command line argument
     let args: Vec<String> = std::env::args().collect();
+
     if args.len() > 1 && args[1] == "--tcp" {
-        // TCP mode: expect address as second argument
         let addr = args.get(2).unwrap_or(&"127.0.0.1:9999".to_string()).clone();
         info!("Running in TCP mode, connecting to {}", addr);
         run_tcp_mode(&addr).await?;
     } else {
-        // Default stdio mode
-        info!("Running in stdio mode");
         run_stdio_mode().await?;
     }
 
@@ -166,19 +164,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run the plugin using stdin/stdout (default Netdata mode)
-#[instrument(skip_all)]
 async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
 
-    {
-        let _ = span!(Level::INFO, "register_handlers").entered();
-        runtime.register_handler(Journal::default());
-        runtime.register_handler(HealthHandler {});
-    }
+    runtime.register_handler(Journal::default());
+    runtime.register_handler(HealthHandler {});
 
-    {
-        runtime.run().await?;
-    }
+    runtime.run().await?;
+
     Ok(())
 }
 

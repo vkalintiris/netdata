@@ -25,7 +25,7 @@ polars = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"]}
 types = { path = "../types" }
-
+tracing-futures = { workspace = true }
 
 [lints]
 workspace = true

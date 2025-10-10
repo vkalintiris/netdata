@@ -39,6 +39,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-perfetto = "0.1.5"
 tracing-opentelemetry = "0.32.0"
+tracing-futures = "0.2.5"
 opentelemetry = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 opentelemetry-otlp = "0.31.0"
