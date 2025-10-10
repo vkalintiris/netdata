@@ -12,9 +12,10 @@ use tracing::{info, warn};
 #[derive(Deserialize)]
 struct EmptyRequest {}
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct HealthResponse {
-    message: String,
+    status: String,
+    timestamp: String,
 }
 
 #[derive(Default)]
@@ -28,9 +29,11 @@ impl FunctionHandler for HealthHandler {
     async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
         info!("Health function called");
 
-        Ok(HealthResponse {
-            message: "Health response!".to_string(),
-        })
+        let response = reqwest::get("http://localhost:8080/health").await.unwrap();
+        let resp = response.json::<HealthResponse>().await.unwrap();
+        println!("Response: {:?}", resp);
+
+        Ok(resp)
     }
 
     async fn on_cancellation(&self) -> Result<Self::Response> {
