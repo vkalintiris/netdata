@@ -183,6 +183,9 @@ struct Versions {
 }
 
 #[derive(Serialize, Deserialize)]
+struct Columns {}
+
+#[derive(Serialize, Deserialize)]
 struct JournalResponse {
     #[serde(rename = "v")]
     version: Version,
@@ -192,6 +195,8 @@ struct JournalResponse {
 
     available_histograms: serde_json::Value,
     histogram: serde_json::Value,
+    // FIXME: columns do not contain u32s
+    columns: Columns,
     data: Vec<u32>,
     default_charts: Vec<u32>,
 
@@ -256,7 +261,9 @@ impl Histogram {
         let interval = total_duration / num_buckets;
 
         // Generate timestamps
-        let timestamps: Vec<i64> = (0..num_buckets).map(|i| after + (i * interval)).collect();
+        let timestamps: Vec<i64> = (0..num_buckets)
+            .map(|i| (after + (i * interval)) * 1000)
+            .collect();
 
         // Generate random counts for each label
         let error_counts: Vec<u32> = (0..num_buckets as usize)
@@ -272,9 +279,9 @@ impl Histogram {
         // Create DataFrame
         let df = polars::df! {
             "time" => timestamps,
-            "ERROR" => error_counts,
-            "WARN" => warn_counts,
-            "INFO" => info_counts,
+            "error" => error_counts,
+            "warning" => warn_counts,
+            "info" => info_counts,
         }?;
 
         Ok(Self {
@@ -350,7 +357,8 @@ impl Histogram {
                 "chart": {
                     "result": {
                         "labels": labels,
-                        "data": data
+                        "data": data,
+                        "point": { "value": 2, "arp": 0, "pa": 1 }
                     },
                     "view": {
                         "title": "Events Distribution by PRIORITY",
@@ -501,6 +509,7 @@ impl FunctionHandler for Journal {
             available_histograms: serde_json::json!(
                 [ { "id": "PRIORITY", "name": "PRIORITY", "order": 1 } ]
             ),
+            columns: Columns {},
             data: Vec::new(),
             default_charts: Vec::new(),
             // Hard coded stuff
