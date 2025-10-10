@@ -19,3 +19,4 @@ netdata-plugin-error = { workspace = true }
 netdata-plugin-protocol = { workspace = true }
 netdata-plugin-schema = { workspace = true }
 journal_registry = { workspace = true }
+types = { path = "../types" }

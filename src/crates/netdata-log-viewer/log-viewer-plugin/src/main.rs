@@ -8,15 +8,10 @@ use rt::{FunctionHandler, PluginRuntime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{info, warn};
+use types::HealthResponse;
 
 #[derive(Deserialize)]
 struct EmptyRequest {}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct HealthResponse {
-    status: String,
-    timestamp: String,
-}
 
 #[derive(Default)]
 struct HealthHandler;

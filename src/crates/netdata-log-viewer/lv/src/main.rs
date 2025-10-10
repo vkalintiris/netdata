@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use types::HealthResponse;
 
 /// Pretty-printed JSON response wrapper
 struct PrettyJson<T>(T);
@@ -185,12 +186,6 @@ async fn histogram_handler(
     let buckets = generate_histogram_data(params.after, params.before);
 
     PrettyJson(HistogramResponse { buckets }).into_response()
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HealthResponse {
-    status: String,
-    timestamp: String,
 }
 
 /// GET /health endpoint handler

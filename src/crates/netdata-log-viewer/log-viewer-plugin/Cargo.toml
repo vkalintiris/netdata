@@ -19,6 +19,7 @@ tokio = { workspace = true }
 polars = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"]}
+types = { path = "../types" }
 
 [lints]
 workspace = true
