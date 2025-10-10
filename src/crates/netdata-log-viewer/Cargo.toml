@@ -43,6 +43,9 @@ tracing-futures = "0.2.5"
 opentelemetry = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 opentelemetry-otlp = "0.31.0"
+axum = "0.7"
+axum-tracing-opentelemetry = "0.32.0"
+tower-http = { version = "0.5" }
 
 rt = { path = "../netdata-plugin/rt" }
 netdata-plugin-error = { path = "../netdata-plugin/error" }

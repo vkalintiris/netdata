@@ -5,8 +5,7 @@ use netdata_plugin_error::Result;
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_schema::HttpAccess;
 use rt::{FunctionHandler, PluginRuntime};
-use tracing::{Level, info, instrument, span, warn};
-use tracing_futures::Instrument;
+use tracing::{info, instrument, warn};
 use types::{EmptyRequest, HealthResponse, JournalRequest, JournalResponse};
 
 #[derive(Debug, Default)]
@@ -103,13 +102,7 @@ impl FunctionHandler for Journal {
 fn initialize_tracing() {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_otlp::WithExportConfig;
-    use tracing_perfetto::PerfettoLayer;
     use tracing_subscriber::{EnvFilter, prelude::*};
-
-    // Create the Perfetto layer
-    let perfetto_layer = PerfettoLayer::new(std::sync::Mutex::new(
-        std::fs::File::create("/tmp/test.pftrace").unwrap(),
-    ));
 
     // Create Otel layer
     let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -141,7 +134,6 @@ fn initialize_tracing() {
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
-        .with(perfetto_layer)
         .with(telemetry_layer)
         .init();
 }

@@ -85,7 +85,7 @@ struct ErrorResponse {
 /// Returns buckets with timestamps and multiple data series (info, warning, error)
 /// simulating log priority counts with realistic patterns and live activity spikes.
 fn generate_histogram_data(after: u64, before: u64) -> Vec<Bucket> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Create buckets - aim for ~50-100 data points
     let total_duration = before - after;
@@ -107,24 +107,24 @@ fn generate_histogram_data(after: u64, before: u64) -> Vec<Bucket> {
 
         // Info logs: high baseline with daily variation
         let info_base = 80.0 + 30.0 * (time_factor * 2.0 * std::f64::consts::PI).sin();
-        let mut info_value = info_base + rng.gen_range(-10.0..10.0);
+        let mut info_value = info_base + rng.random_range(-10.0..10.0);
 
         // Warning logs: medium baseline with spikes
         let warning_base = 30.0 + 20.0 * ((time_factor * 2.0 * std::f64::consts::PI) + 1.0).sin();
-        let mut warning_value = warning_base + rng.gen_range(-8.0..15.0);
+        let mut warning_value = warning_base + rng.random_range(-8.0..15.0);
 
         // Error logs: low baseline with occasional spikes
         let error_base = 10.0 + 8.0 * ((time_factor * 2.0 * std::f64::consts::PI) + 2.0).sin();
-        let mut error_value = error_base + rng.gen_range(-5.0..10.0);
+        let mut error_value = error_base + rng.random_range(-5.0..10.0);
 
         // Add spikes if this bucket is recent (simulate live activity)
         if current_time - bucket_time < 300 {
             // Last 5 minutes
-            info_value += rng.gen_range(10.0..30.0);
-            warning_value += rng.gen_range(5.0..20.0);
-            if rng.gen_bool(0.3) {
+            info_value += rng.random_range(10.0..30.0);
+            warning_value += rng.random_range(5.0..20.0);
+            if rng.random_bool(0.3) {
                 // 30% chance of error spike
-                error_value += rng.gen_range(10.0..25.0);
+                error_value += rng.random_range(10.0..25.0);
             }
         }
 
@@ -141,6 +141,7 @@ fn generate_histogram_data(after: u64, before: u64) -> Vec<Bucket> {
     buckets
 }
 
+#[tracing::instrument]
 async fn health_handler() -> impl IntoResponse {
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -155,6 +156,7 @@ async fn health_handler() -> impl IntoResponse {
     PrettyJson(response).into_response()
 }
 
+#[tracing::instrument(skip(state))]
 async fn histogram_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HistogramQuery>,
@@ -185,13 +187,14 @@ async fn histogram_handler(
     PrettyJson(HistogramResponse { buckets }).into_response()
 }
 
+#[tracing::instrument(skip(state))]
 async fn journal_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<JournalRequest>,
 ) -> impl IntoResponse {
     let histogram_json = {
         let mut guard = state.histogram.write().await;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         if let Some(histogram) = guard.as_mut() {
             let id = String::from("PRIORITY");
@@ -291,13 +294,13 @@ impl Histogram {
 
         // Generate random counts for each label
         let error_counts: Vec<u32> = (0..num_buckets as usize)
-            .map(|_| rng.gen_range(0..10))
+            .map(|_| rng.random_range(0..10))
             .collect();
         let warn_counts: Vec<u32> = (0..num_buckets as usize)
-            .map(|_| rng.gen_range(0..20))
+            .map(|_| rng.random_range(0..20))
             .collect();
         let info_counts: Vec<u32> = (0..num_buckets as usize)
-            .map(|_| rng.gen_range(0..50))
+            .map(|_| rng.random_range(0..50))
             .collect();
 
         // Create DataFrame
@@ -502,17 +505,60 @@ impl AppState {
     }
 }
 
+fn initialize_tracing() {
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_otlp::WithExportConfig;
+    use tracing_subscriber::{EnvFilter, prelude::*};
+
+    // Create Otel layer
+    let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint("http://localhost:4317")
+        .build()
+        .expect("Failed to build OTLP exporter");
+
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name("histogram-backent")
+        .build();
+
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(otlp_exporter)
+        .with_resource(resource)
+        .build();
+
+    let tracer = tracer_provider.tracer("histogram-backend");
+    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Create the fmt layer with your existing configuration
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+    // Create the environment filter
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("debug,histogram-backend=debug"));
+
+    // Combine all layers
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(telemetry_layer)
+        .init();
+}
+
 #[tokio::main]
 async fn main() {
+    initialize_tracing();
+
     let state = AppState::new().unwrap();
 
     // Build router with CORS support
     let app = Router::new()
+        .layer(CorsLayer::permissive())
+        .layer(axum_tracing_opentelemetry::middleware::OtelInResponseLayer::default())
         .route("/health", routing::get(health_handler))
         .route("/histogram", routing::get(histogram_handler))
         .route("/journal", routing::post(journal_handler))
-        .with_state(Arc::new(state))
-        .layer(CorsLayer::permissive());
+        .layer(axum_tracing_opentelemetry::middleware::OtelAxumLayer::default())
+        .with_state(Arc::new(state));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
 
