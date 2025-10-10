@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "log-viewer-plugin",
-    "lv",
+    "lv", "types",
     "watcher-plugin",
 ]
 
