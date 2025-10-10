@@ -18,6 +18,9 @@ use types::{
     Pagination, RequestParam, RequiredParam, Version,
 };
 
+// Import console_subscriber - the tokio-console crate exports this module
+use console_subscriber;
+
 /// Pretty-printed JSON response wrapper
 struct PrettyJson<T>(T);
 
@@ -218,6 +221,10 @@ async fn journal_handler(
         let histogram = guard.as_mut().unwrap();
         histogram.to_json()
     };
+
+    let start = 1000 * 1000 * request.after as u64;
+    let end = 1000 * 1000 * request.before as u64;
+    let _ = state.find_files_in_range(start, end).await;
 
     PrettyJson(JournalResponse {
         version: Version::default(),
@@ -495,13 +502,27 @@ impl AppState {
     }
 
     /// Find files in the given time range (Unix timestamps in microseconds)
+    ///
+    #[tracing::instrument(skip(self), fields(file_count))]
     pub async fn find_files_in_range(&self, start: u64, end: u64) -> Vec<journal_registry::File> {
         let mut output = Vec::new();
         self.registry
             .read()
             .await
             .find_files_in_range(start, end, &mut output);
+        tracing::Span::current().record("file_count", output.len());
         output
+    }
+
+    pub async fn watch_directory(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.registry
+            .write()
+            .await
+            .watch_directory("/var/log/journal")
+            .await
+            .unwrap();
+
+        Ok(())
     }
 }
 
@@ -518,7 +539,7 @@ fn initialize_tracing() {
         .expect("Failed to build OTLP exporter");
 
     let resource = opentelemetry_sdk::Resource::builder()
-        .with_service_name("histogram-backent")
+        .with_service_name("histogram-backend")
         .build();
 
     let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -533,14 +554,18 @@ fn initialize_tracing() {
     let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
     // Create the environment filter
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("debug,histogram-backend=debug"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("debug,histogram-backend=debug,tokio=trace,runtime=trace")
+    });
+
+    let console_layer = console_subscriber::spawn();
 
     // Combine all layers
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
         .with(telemetry_layer)
+        .with(console_layer)
         .init();
 }
 
@@ -549,6 +574,7 @@ async fn main() {
     initialize_tracing();
 
     let state = AppState::new().unwrap();
+    state.watch_directory("/var/log/journal").await.unwrap();
 
     // Build router with CORS support
     let app = Router::new()

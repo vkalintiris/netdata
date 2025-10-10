@@ -22,7 +22,7 @@ impl FunctionHandler for HealthHandler {
 
         let response = reqwest::get("http://localhost:8080/health").await.unwrap();
         let resp = response.json::<HealthResponse>().await.unwrap();
-        println!("Response: {:?}", resp);
+        // println!("Response: {:?}", resp);
 
         Ok(resp)
     }
@@ -57,9 +57,9 @@ impl FunctionHandler for Journal {
     type Request = JournalRequest;
     type Response = JournalResponse;
 
-    #[instrument(name = "journal_call", skip(self))]
+    #[instrument(name = "journal_call", skip_all)]
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
-        info!("Systemd journal function called: {:#?}", request);
+        // info!("Systemd journal function called: {:#?}", request);
 
         let client = reqwest::Client::new();
         let response = client
@@ -69,7 +69,7 @@ impl FunctionHandler for Journal {
             .await
             .unwrap();
         let resp = response.json::<JournalResponse>().await.unwrap();
-        println!("Response: {:?}", resp);
+        // println!("Response: {:?}", resp);
 
         Ok(resp)
     }
