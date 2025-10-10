@@ -5,7 +5,7 @@ use netdata_plugin_error::Result;
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_schema::HttpAccess;
 use rt::{FunctionHandler, PluginRuntime};
-use tracing::{info, instrument, warn};
+use tracing::{Level, info, instrument, span, warn};
 use types::{EmptyRequest, HealthResponse, JournalRequest, JournalResponse};
 
 #[derive(Debug, Default)]
@@ -117,8 +117,13 @@ fn initialize_tracing() {
         .build()
         .expect("Failed to build OTLP exporter");
 
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name("log-viewer-plugin")
+        .build();
+
     let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_batch_exporter(otlp_exporter)
+        .with_resource(resource)
         .build();
 
     let tracer = tracer_provider.tracer("log-viewer-plugin");
@@ -161,12 +166,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run the plugin using stdin/stdout (default Netdata mode)
+#[instrument(skip_all)]
 async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
 
-    runtime.register_handler(Journal::default());
-    runtime.register_handler(HealthHandler {});
-    runtime.run().await?;
+    {
+        let _ = span!(Level::INFO, "register_handlers").entered();
+        runtime.register_handler(Journal::default());
+        runtime.register_handler(HealthHandler {});
+    }
+
+    {
+        runtime.run().await?;
+    }
     Ok(())
 }
 
