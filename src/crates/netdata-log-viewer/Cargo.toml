@@ -32,6 +32,8 @@ schemars = "1.0"
 async-trait = "0.1.89"
 notify = "8.2"
 polars = { version = "0.51", default-features = false }
+rand = "0.9.2"
+reqwest = "0.12.23"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
