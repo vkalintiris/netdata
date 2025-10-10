@@ -1,19 +1,22 @@
 use axum::{
-    Router,
+    Json, Router,
     extract::Query,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing,
 };
+use polars::prelude as polars;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
-use types::HealthResponse;
+use types::{
+    Columns, HealthResponse, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption,
+    Pagination, RequestParam, RequiredParam, Version,
+};
 
 /// Pretty-printed JSON response wrapper
 struct PrettyJson<T>(T);
@@ -138,26 +141,20 @@ fn generate_histogram_data(after: u64, before: u64) -> Vec<Bucket> {
     buckets
 }
 
-/// GET /histogram endpoint handler
-///
-/// Accepts 'after' and 'before' query parameters (Unix timestamps in seconds)
-/// Returns histogram data with multiple series per time bucket
-///
-/// # Example Response
-/// ```json
-/// {
-///   "buckets": [
-///     {
-///       "time": 1759837000,
-///       "data": {
-///         "info": 82.5,
-///         "warning": 25.3,
-///         "error": 8.2
-///       }
-///     }
-///   ]
-/// }
-/// ```
+async fn health_handler() -> impl IntoResponse {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let response = HealthResponse {
+        status: String::from("I'm healthy baby"),
+        timestamp: current_time.to_string(),
+    };
+
+    PrettyJson(response).into_response()
+}
+
 async fn histogram_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HistogramQuery>,
@@ -188,40 +185,310 @@ async fn histogram_handler(
     PrettyJson(HistogramResponse { buckets }).into_response()
 }
 
-/// GET /health endpoint handler
-async fn health_handler() -> impl IntoResponse {
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+async fn journal_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<JournalRequest>,
+) -> impl IntoResponse {
+    let histogram_json = {
+        let mut guard = state.histogram.write().await;
+        let mut rng = rand::thread_rng();
 
-    let response = HealthResponse {
-        status: String::from("I'm healthy baby"),
-        timestamp: current_time.to_string(),
+        if let Some(histogram) = guard.as_mut() {
+            let id = String::from("PRIORITY");
+            let name = id.clone();
+            let after = request.after;
+            let before = request.before;
+
+            *histogram =
+                Histogram::new_dummy_with_counts(id, name, after, before, &mut rng).unwrap();
+        } else {
+            let id = String::from("PRIORITY");
+            let name = id.clone();
+            let after = request.after;
+            let before = request.before;
+
+            let histogram =
+                Histogram::new_dummy_with_counts(id, name, after, before, &mut rng).unwrap();
+            guard.replace(histogram);
+        }
+
+        let histogram = guard.as_mut().unwrap();
+        histogram.to_json()
     };
 
-    PrettyJson(response).into_response()
+    PrettyJson(JournalResponse {
+        version: Version::default(),
+        accepted_params: AppState::accepted_params(),
+        required_params: AppState::required_params(),
+        histogram: histogram_json,
+        available_histograms: serde_json::json!(
+            [ { "id": "PRIORITY", "name": "PRIORITY", "order": 1 } ]
+        ),
+        columns: Columns {},
+        data: Vec::new(),
+        default_charts: Vec::new(),
+        // Hard coded stuff
+        show_ids: false,
+        has_history: true,
+        status: 200,
+        response_type: String::from("table"),
+        help: String::from("View, search and analyze systemd journal entries."),
+        pagination: Pagination::default(),
+    })
+    .into_response()
+}
+
+pub struct Histogram {
+    id: String,
+    name: String,
+    after: i64,
+    before: i64,
+    interval: i64,
+    df: polars::DataFrame,
+}
+
+impl Histogram {
+    pub fn new(id: String, name: String, df: polars::DataFrame) -> Self {
+        Self {
+            id,
+            name,
+            interval: 1,
+            after: 0,
+            before: 0,
+            df,
+        }
+    }
+
+    /// Creates a dummy histogram with randomly generated counts
+    ///
+    /// # Arguments
+    /// * `id` - Histogram identifier
+    /// * `name` - Histogram name
+    /// * `after` - Start timestamp in seconds
+    /// * `before` - End timestamp in seconds
+    /// * `rng` - Random number generator for generating counts
+    ///
+    /// # Returns
+    /// A Histogram with up to 60 buckets covering the time range with random counts
+    pub fn new_dummy_with_counts<R: Rng>(
+        id: String,
+        name: String,
+        after: i64,
+        before: i64,
+        rng: &mut R,
+    ) -> polars::PolarsResult<Self> {
+        // Calculate the number of buckets (up to 60)
+        let total_duration = before - after;
+        let num_buckets = std::cmp::min(60, total_duration.max(1));
+
+        // Calculate the interval between buckets
+        let interval = total_duration / num_buckets;
+
+        // Generate timestamps
+        let timestamps: Vec<i64> = (0..num_buckets)
+            .map(|i| (after + (i * interval)) * 1000)
+            .collect();
+
+        // Generate random counts for each label
+        let error_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.gen_range(0..10))
+            .collect();
+        let warn_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.gen_range(0..20))
+            .collect();
+        let info_counts: Vec<u32> = (0..num_buckets as usize)
+            .map(|_| rng.gen_range(0..50))
+            .collect();
+
+        // Create DataFrame
+        let df = polars::df! {
+            "time" => timestamps,
+            "error" => error_counts,
+            "warning" => warn_counts,
+            "info" => info_counts,
+        }?;
+
+        Ok(Self {
+            id,
+            name,
+            after,
+            before,
+            interval,
+            df,
+        })
+    }
+
+    /// Get the histogram's ID
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get the histogram's name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get a reference to the underlying DataFrame
+    pub fn dataframe(&self) -> &polars::DataFrame {
+        &self.df
+    }
+
+    pub fn labels(&self) -> Vec<String> {
+        self.df
+            .get_columns()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect()
+    }
+
+    /// Convert to JSON Value
+    pub fn to_json(&self) -> serde_json::Value {
+        let columns = self.df.get_columns();
+
+        let labels: Vec<String> = self.labels();
+
+        // Build data rows
+        let mut data = Vec::new();
+        let height = self.df.height();
+
+        for row_idx in 0..height {
+            let mut row_values: Vec<serde_json::Value> = Vec::new();
+
+            // First value is the timestamp
+            if let Some(timestamp_col) = columns.first() {
+                let timestamp = timestamp_col.get(row_idx).unwrap();
+                row_values.push(anyvalue_to_json(&timestamp));
+            }
+
+            // Remaining values are the label data (as arrays of u32)
+            for col in columns.iter().skip(1) {
+                let mut v = Vec::new();
+                v.push(serde_json::Value::Number(0.into()));
+                v.push(serde_json::Value::Number(0.into()));
+
+                let value = col.get(row_idx).unwrap();
+                v.push(anyvalue_to_json(&value));
+                row_values.push(serde_json::Value::Array(v));
+            }
+
+            data.push(serde_json::Value::Array(row_values));
+        }
+
+        serde_json::json!({
+            // "histogram": {
+                "id": self.id,
+                "name": self.name,
+                "chart": {
+                    "result": {
+                        "labels": labels,
+                        "data": data,
+                        "point": { "value": 2, "arp": 0, "pa": 1 }
+                    },
+                    "view": {
+                        "title": "Events Distribution by PRIORITY",
+                        "update_every": self.interval,
+                        "after": self.after,
+                        "before": self.before,
+                        "units": "events",
+                        "chart_type": "stackedBar",
+                        "dimensions": {
+                            "ids": ["3", "4", "6"],
+                            "names": ["error", "warning", "info"]
+                        }
+                    }
+                }
+            // }
+        })
+    }
+}
+
+fn anyvalue_to_json(value: &polars::AnyValue) -> serde_json::Value {
+    match value {
+        polars::AnyValue::Null => serde_json::Value::Null,
+        polars::AnyValue::Boolean(b) => serde_json::Value::Bool(*b),
+        polars::AnyValue::Int64(i) => serde_json::Value::Number((*i).into()),
+        polars::AnyValue::UInt32(u) => serde_json::Value::Number((*u).into()),
+        polars::AnyValue::Float64(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        polars::AnyValue::String(s) => serde_json::Value::String(s.to_string()),
+        polars::AnyValue::List(series) => {
+            let values: Vec<serde_json::Value> =
+                series.iter().map(|v| anyvalue_to_json(&v)).collect();
+            serde_json::Value::Array(values)
+        }
+        _ => serde_json::Value::String(format!("{:?}", value)),
+    }
 }
 
 struct AppState {
     registry: Arc<RwLock<journal_registry::Registry>>,
+    histogram: Arc<RwLock<Option<Histogram>>>,
+}
+
+impl AppState {
+    pub const ACCEPTED_PARAMS: &'static [RequestParam] = &[
+        RequestParam::Info,
+        RequestParam::LogsSources,
+        RequestParam::After,
+        RequestParam::Before,
+        RequestParam::Anchor,
+        RequestParam::Direction,
+        RequestParam::Last,
+        RequestParam::Query,
+        RequestParam::Facets,
+        RequestParam::Histogram,
+        RequestParam::IfModifiedSince,
+        RequestParam::DataOnly,
+        RequestParam::Delta,
+        RequestParam::Tail,
+        RequestParam::Sampling,
+        RequestParam::Slice,
+    ];
+
+    pub fn accepted_params() -> Vec<RequestParam> {
+        Self::ACCEPTED_PARAMS.to_vec()
+    }
+
+    pub fn required_params() -> Vec<RequiredParam> {
+        let mut v = Vec::new();
+
+        let id = RequestParam::LogsSources;
+        let name = String::from("Journal Sources");
+        let help = String::from("Select the logs source to query");
+        let type_ = String::from("multiselect");
+        let mut options = Vec::new();
+
+        let o1 = MultiSelectionOption {
+            id: String::from("all"),
+            name: String::from("all"),
+            pill: String::from("100GiB"),
+            info: String::from("All the logs"),
+        };
+        options.push(o1);
+
+        let required_param = RequiredParam::MultiSelection(MultiSelection {
+            id,
+            name,
+            help,
+            type_,
+            options,
+        });
+
+        v.push(required_param);
+        v
+    }
 }
 
 impl AppState {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let registry = Arc::new(RwLock::new(journal_registry::Registry::new().unwrap()));
+        let histogram = Arc::new(RwLock::new(None));
 
-        Ok(Self { registry })
-    }
-
-    /// Watch a new directory for journal files
-    pub async fn watch_directory(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.registry
-            .write()
-            .await
-            .watch_directory(path)
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        Ok(Self {
+            registry,
+            histogram,
+        })
     }
 
     /// Find files in the given time range (Unix timestamps in microseconds)
@@ -235,88 +502,15 @@ impl AppState {
     }
 }
 
-/// Query parameters for the watch_directory endpoint
-#[derive(Debug, Deserialize)]
-struct WatchDirectoryQuery {
-    /// Directory path to watch
-    path: String,
-}
-
-/// Query parameters for the find_files endpoint
-#[derive(Debug, Deserialize)]
-struct FindFilesQuery {
-    /// Start timestamp in microseconds (inclusive)
-    start: u64,
-    /// End timestamp in microseconds (exclusive)
-    end: u64,
-}
-
-/// Response format for the find_files endpoint
-#[derive(Debug, Serialize)]
-struct FindFilesResponse {
-    files: Vec<FileInfo>,
-}
-
-/// File information returned to the client
-#[derive(Debug, Serialize)]
-struct FileInfo {
-    path: String,
-}
-
-/// POST /watch_directory endpoint handler
-///
-/// Accepts 'path' query parameter to add a new directory to watch
-async fn watch_directory_handler(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<WatchDirectoryQuery>,
-) -> impl IntoResponse {
-    match state.watch_directory(&params.path).await {
-        Ok(_) => {
-            let mut response = HashMap::new();
-            response.insert("status", "ok".to_string());
-            response.insert("path", params.path);
-            PrettyJson(response).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            PrettyJson(ErrorResponse {
-                error: format!("Failed to watch directory: {}", e),
-            }),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /find_files endpoint handler
-///
-/// Accepts 'start' and 'end' query parameters (Unix timestamps in microseconds)
-/// Returns list of journal files that cover the given time range
-async fn find_files_handler(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<FindFilesQuery>,
-) -> impl IntoResponse {
-    let start = 1000 * 1000 * params.start;
-    let end = 1000 * 1000 * params.end;
-    let files = state.find_files_in_range(start, end).await;
-
-    let file_infos: Vec<FileInfo> = files
-        .into_iter()
-        .map(|file| FileInfo { path: file.path })
-        .collect();
-
-    PrettyJson(FindFilesResponse { files: file_infos }).into_response()
-}
-
 #[tokio::main]
 async fn main() {
     let state = AppState::new().unwrap();
 
     // Build router with CORS support
     let app = Router::new()
-        .route("/health", get(health_handler))
-        .route("/histogram", get(histogram_handler))
-        .route("/watch_directory", post(watch_directory_handler))
-        .route("/find_files", get(find_files_handler))
+        .route("/health", routing::get(health_handler))
+        .route("/histogram", routing::get(histogram_handler))
+        .route("/journal", routing::post(journal_handler))
         .with_state(Arc::new(state))
         .layer(CorsLayer::permissive());
 
