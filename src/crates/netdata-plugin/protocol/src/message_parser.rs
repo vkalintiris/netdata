@@ -13,6 +13,7 @@ enum ParserDirection {
 }
 
 /// High-level message parser that groups related commands
+#[derive(Debug)]
 pub struct MessageParser {
     pub(crate) line_parser: LineParser,
     current_message: Option<Message>,

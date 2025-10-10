@@ -10,6 +10,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 pub type TransportError = NetdataPluginError;
 
 /// Reader for receiving Netdata protocol messages
+#[derive(Debug)]
 pub struct MessageReader<R>
 where
     R: AsyncRead + Unpin,
@@ -30,10 +31,11 @@ where
 
     /// Receive the next message
     pub async fn recv(&mut self) -> Option<Result<Message>> {
-        self.reader
-            .next()
-            .await
-            .map(|result| result.map_err(|e| NetdataPluginError::Protocol { message: format!("{:?}", e) }))
+        self.reader.next().await.map(|result| {
+            result.map_err(|e| NetdataPluginError::Protocol {
+                message: format!("{:?}", e),
+            })
+        })
     }
 }
 
@@ -45,12 +47,17 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.reader.poll_next_unpin(cx).map(|opt| {
-            opt.map(|result| result.map_err(|e| NetdataPluginError::Protocol { message: format!("{:?}", e) }))
+            opt.map(|result| {
+                result.map_err(|e| NetdataPluginError::Protocol {
+                    message: format!("{:?}", e),
+                })
+            })
         })
     }
 }
 
 /// Writer for sending Netdata protocol messages
+#[derive(Debug)]
 pub struct MessageWriter<W>
 where
     W: AsyncWrite + Unpin,

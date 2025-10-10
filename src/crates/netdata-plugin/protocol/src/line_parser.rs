@@ -245,7 +245,7 @@ impl Default for ParserState {
 }
 
 /// Low-level line parser
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct LineParser {
     state: ParserState,
     /// Position where the current payload block started

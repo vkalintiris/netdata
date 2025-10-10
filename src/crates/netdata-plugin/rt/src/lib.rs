@@ -109,7 +109,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Internal control signals sent to running functions.
 enum RuntimeSignal {
@@ -571,6 +571,7 @@ where
     /// # Note
     ///
     /// This method runs indefinitely until shutdown is requested (via Ctrl-C or stdin closing).
+    #[instrument(skip_all)]
     pub async fn run(mut self) -> Result<()> {
         info!("Starting plugin runtime: {}", self.plugin_name);
 
@@ -603,6 +604,7 @@ where
     ///
     /// Sends a [`FunctionDeclaration`] message for each registered handler,
     /// informing Netdata about available functions and their metadata.
+    #[instrument(skip_all)]
     async fn declare_functions(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;
 
