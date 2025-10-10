@@ -187,6 +187,12 @@ async fn histogram_handler(
     PrettyJson(HistogramResponse { buckets }).into_response()
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HealthResponse {
+    status: String,
+    timestamp: String,
+}
+
 /// GET /health endpoint handler
 async fn health_handler() -> impl IntoResponse {
     let current_time = SystemTime::now()
@@ -194,9 +200,10 @@ async fn health_handler() -> impl IntoResponse {
         .unwrap()
         .as_secs();
 
-    let mut response = HashMap::new();
-    response.insert("status", "ok".to_string());
-    response.insert("timestamp", current_time.to_string());
+    let response = HealthResponse {
+        status: String::from("I'm healthy baby"),
+        timestamp: current_time.to_string(),
+    };
 
     PrettyJson(response).into_response()
 }
