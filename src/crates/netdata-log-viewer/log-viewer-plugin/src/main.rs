@@ -13,38 +13,44 @@ use tracing::{info, warn};
 struct EmptyRequest {}
 
 #[derive(Serialize)]
-struct HelloFastResponse {
+struct HealthResponse {
     message: String,
 }
 
-struct HelloFastHandler;
+#[derive(Default)]
+struct HealthHandler;
 
 #[async_trait]
-impl FunctionHandler for HelloFastHandler {
+impl FunctionHandler for HealthHandler {
     type Request = EmptyRequest;
-    type Response = HelloFastResponse;
+    type Response = HealthResponse;
 
     async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
-        info!("Fast function called");
+        info!("Health function called");
 
-        Ok(HelloFastResponse {
-            message: "Fast response!".to_string(),
+        Ok(HealthResponse {
+            message: "Health response!".to_string(),
         })
     }
 
     async fn on_cancellation(&self) -> Result<Self::Response> {
-        // Fast function doesn't really need cancellation handling
+        // Health  function doesn't really need cancellation handling
         Err(netdata_plugin_error::NetdataPluginError::Other {
             message: "Cancelled".to_string(),
         })
     }
 
     async fn on_progress(&self) {
-        info!("Progress requested for fast function");
+        info!("Progress requested for health function");
     }
 
     fn declaration(&self) -> FunctionDeclaration {
-        FunctionDeclaration::new("hello_fast", "A fast function that responds immediately")
+        let mut func_decl =
+            FunctionDeclaration::new("health", "A health function that responds immediately");
+        func_decl.global = true;
+        func_decl.access =
+            Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
+        func_decl
     }
 }
 
@@ -597,6 +603,7 @@ async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error:
 
     let mut runtime = PluginRuntime::with_streams("example", reader, writer);
     runtime.register_handler(Journal::default());
+    runtime.register_handler(HealthHandler {});
     runtime.run().await?;
 
     Ok(())
