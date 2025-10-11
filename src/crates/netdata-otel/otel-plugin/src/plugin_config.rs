@@ -90,6 +90,11 @@ fn parse_bytesize(s: &str) -> Result<ByteSize, String> {
     })
 }
 
+/// Default value for entries_of_journal_file
+fn default_entries_of_journal_file() -> usize {
+    50000
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogsConfig {
@@ -111,6 +116,7 @@ pub struct LogsConfig {
         long = "otel-logs-rotation-entries-of-journal-file",
         default_value = "50000"
     )]
+    #[serde(default = "default_entries_of_journal_file")]
     pub entries_of_journal_file: usize,
 
     /// Maximum number of journal files to keep
