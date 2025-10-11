@@ -22,5 +22,5 @@ serde_yaml = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["gzip", "tls-ring"] }
 
-journal_log = { workspace = true }
+journal = { workspace = true }
 flatten_otel = { path = "../flatten_otel" }
