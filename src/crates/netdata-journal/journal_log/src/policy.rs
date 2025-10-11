@@ -6,11 +6,11 @@ use std::time::Duration;
 /// files never rotate automatically.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct RotationPolicy {
-    /// Maximum file size before rotating (in bytes)
+    /// Maximum file size
     pub size_of_journal_file: Option<u64>,
-    /// Maximum duration that entries in a single file can span
+    /// Maximum duration of head/tail entries
     pub duration_of_journal_file: Option<Duration>,
-    /// Maximum number of entries before rotating
+    /// Maximum number of log entries
     pub number_of_entries: Option<usize>,
 }
 

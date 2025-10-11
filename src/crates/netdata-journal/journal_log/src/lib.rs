@@ -87,6 +87,46 @@ fn generate_uuid() -> [u8; 16] {
     uuid::Uuid::new_v4().into_bytes()
 }
 
+/// Calculate optimal bucket sizes based on previous file utilization or rotation policy
+fn calculate_bucket_sizes(
+    previous_utilization: Option<&BucketUtilization>,
+    rotation_policy: &RotationPolicy,
+) -> (usize, usize) {
+    if let Some(utilization) = previous_utilization {
+        let data_utilization = utilization.data_utilization();
+        let field_utilization = utilization.field_utilization();
+
+        let data_buckets = if data_utilization > 0.75 {
+            (utilization.data_total * 2).next_power_of_two()
+        } else if data_utilization < 0.25 && utilization.data_total > 4096 {
+            (utilization.data_total / 2).next_power_of_two()
+        } else {
+            utilization.data_total
+        };
+
+        let field_buckets = if field_utilization > 0.75 {
+            (utilization.field_total * 2).next_power_of_two()
+        } else if field_utilization < 0.25 && utilization.field_total > 512 {
+            (utilization.field_total / 2).next_power_of_two()
+        } else {
+            utilization.field_total
+        };
+
+        (data_buckets, field_buckets)
+    } else {
+        // Initial sizing based on rotation policy max file size
+        let max_file_size = rotation_policy
+            .size_of_journal_file
+            .unwrap_or(8 * 1024 * 1024);
+
+        // 16 MiB -> 4096 data buckets
+        let data_buckets = (max_file_size / 4096).max(1024).next_power_of_two() as usize;
+        let field_buckets = 128; // Assume ~8:1 data:field ratio
+
+        (data_buckets, field_buckets)
+    }
+}
+
 /// Configuration for [`JournalLog`].
 ///
 /// Provides sensible defaults:
@@ -147,46 +187,6 @@ pub struct JournalLog {
     next_file_head_seqnum: u64,
 }
 
-/// Calculate optimal bucket sizes based on previous file utilization or rotation policy
-fn calculate_bucket_sizes(
-    previous_utilization: Option<&BucketUtilization>,
-    rotation_policy: &RotationPolicy,
-) -> (usize, usize) {
-    if let Some(utilization) = previous_utilization {
-        let data_utilization = utilization.data_utilization();
-        let field_utilization = utilization.field_utilization();
-
-        let data_buckets = if data_utilization > 0.75 {
-            (utilization.data_total * 2).next_power_of_two()
-        } else if data_utilization < 0.25 && utilization.data_total > 4096 {
-            (utilization.data_total / 2).next_power_of_two()
-        } else {
-            utilization.data_total
-        };
-
-        let field_buckets = if field_utilization > 0.75 {
-            (utilization.field_total * 2).next_power_of_two()
-        } else if field_utilization < 0.25 && utilization.field_total > 512 {
-            (utilization.field_total / 2).next_power_of_two()
-        } else {
-            utilization.field_total
-        };
-
-        (data_buckets, field_buckets)
-    } else {
-        // Initial sizing based on rotation policy max file size
-        let max_file_size = rotation_policy
-            .size_of_journal_file
-            .unwrap_or(8 * 1024 * 1024);
-
-        // 16 MiB -> 4096 data buckets
-        let data_buckets = (max_file_size / 4096).max(1024).next_power_of_two() as usize;
-        let field_buckets = 128; // Assume ~8:1 data:field ratio
-
-        (data_buckets, field_buckets)
-    }
-}
-
 impl JournalLog {
     /// Creates a new journal log.
     ///
@@ -226,6 +226,51 @@ impl JournalLog {
         })
     }
 
+    /// Writes a journal entry.
+    ///
+    /// Each item should be a field in the format `FIELD_NAME=value`. Automatically
+    /// handles file rotation and retention policy enforcement.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use journal_log::{JournalLog, JournalLogConfig};
+    /// # fn example(journal: &mut JournalLog) -> Result<(), Box<dyn std::error::Error>> {
+    /// journal.write_entry(&[
+    ///     b"MESSAGE=System started",
+    ///     b"PRIORITY=6",
+    ///     b"SYSLOG_FACILITY=3",
+    /// ])?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        self.ensure_active_journal()?;
+
+        let journal_file = self.current_file.as_mut().unwrap();
+        let writer = self.current_writer.as_mut().unwrap();
+
+        let now = SystemTime::now();
+        let realtime = now
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        // Use realtime for monotonic as well for simplicity
+        let monotonic = realtime;
+
+        writer.add_entry(journal_file, items, realtime, monotonic, self.boot_id)?;
+
+        // Increment entry counter
+        self.entries_since_rotation += 1;
+
+        Ok(())
+    }
+
     fn ensure_active_journal(&mut self) -> Result<()> {
         // Check if rotation is needed before writing
         if let Some(writer) = &self.current_writer {
@@ -251,12 +296,9 @@ impl JournalLog {
             let seqnum_uuid = Uuid::from_bytes(self.seqnum_id);
 
             // Create a new journal file entry
-            let file_info = self.directory.new_file(
-                machine_uuid,
-                seqnum_uuid,
-                head_seqnum,
-                head_realtime,
-            )?;
+            let file_info =
+                self.directory
+                    .new_file(machine_uuid, seqnum_uuid, head_seqnum, head_realtime)?;
 
             // Get the full path for the journal file
             let file_path = self.directory.get_full_path(&file_info);
@@ -365,7 +407,9 @@ impl JournalLog {
                 .copied()
                 .unwrap_or(0);
 
-            self.directory.file_sizes.insert(file_info.path.clone(), current_size);
+            self.directory
+                .file_sizes
+                .insert(file_info.path.clone(), current_size);
 
             // Update total size tracking
             self.directory.total_size = self
@@ -384,51 +428,6 @@ impl JournalLog {
         self.entries_since_rotation = 0;
 
         // Next call to ensure_active_journal() will create new file
-        Ok(())
-    }
-
-    /// Writes a journal entry.
-    ///
-    /// Each item should be a field in the format `FIELD_NAME=value`. Automatically
-    /// handles file rotation and retention policy enforcement.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use journal_log::{JournalLog, JournalLogConfig};
-    /// # fn example(journal: &mut JournalLog) -> Result<(), Box<dyn std::error::Error>> {
-    /// journal.write_entry(&[
-    ///     b"MESSAGE=System started",
-    ///     b"PRIORITY=6",
-    ///     b"SYSLOG_FACILITY=3",
-    /// ])?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        self.ensure_active_journal()?;
-
-        let journal_file = self.current_file.as_mut().unwrap();
-        let writer = self.current_writer.as_mut().unwrap();
-
-        let now = SystemTime::now();
-        let realtime = now
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-
-        // Use realtime for monotonic as well for simplicity
-        let monotonic = realtime;
-
-        writer.add_entry(journal_file, items, realtime, monotonic, self.boot_id)?;
-
-        // Increment entry counter
-        self.entries_since_rotation += 1;
-
         Ok(())
     }
 }
