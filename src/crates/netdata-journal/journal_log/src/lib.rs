@@ -111,7 +111,7 @@ pub struct RotationPolicy {
     /// Maximum duration that entries in a single file can span
     pub duration_of_journal_file: Option<Duration>,
     /// Maximum number of entries before rotating
-    pub number_of_entries: Option<u64>,
+    pub number_of_entries: Option<usize>,
 }
 
 impl RotationPolicy {
@@ -125,7 +125,7 @@ impl RotationPolicy {
         self
     }
 
-    pub fn with_number_of_entries(mut self, number_of_entries: u64) -> Self {
+    pub fn with_number_of_entries(mut self, number_of_entries: usize) -> Self {
         self.number_of_entries = Some(number_of_entries);
         self
     }
@@ -417,7 +417,7 @@ pub struct JournalLog {
     boot_id: [u8; 16],
     seqnum_id: [u8; 16],
     previous_bucket_utilization: Option<BucketUtilization>,
-    entries_since_rotation: u64,
+    entries_since_rotation: usize,
 }
 
 /// Calculate optimal bucket sizes based on previous file utilization or rotation policy

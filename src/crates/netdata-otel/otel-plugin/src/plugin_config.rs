@@ -106,6 +106,13 @@ pub struct LogsConfig {
     #[serde(with = "bytesize_serde")]
     pub size_of_journal_file: ByteSize,
 
+    /// Maximum number of entries in journal files
+    #[arg(
+        long = "otel-logs-rotation-entries-of-journal-file",
+        default_value = "50000"
+    )]
+    pub entries_of_journal_file: usize,
+
     /// Maximum number of journal files to keep
     #[arg(
         long = "otel-logs-retention-number-of-journal-files",
@@ -146,6 +153,7 @@ impl Default for LogsConfig {
         Self {
             journal_dir: String::from("/tmp/netdata-journals"),
             size_of_journal_file: ByteSize::mb(100),
+            entries_of_journal_file: 50000,
             number_of_journal_files: 10,
             size_of_journal_files: ByteSize::gb(1),
             duration_of_journal_files: Duration::from_secs(7 * 24 * 60 * 60), // 7 days

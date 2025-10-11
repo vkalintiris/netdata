@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
 use journal_log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
 use opentelemetry_proto::tonic::collector::logs::v1::{
-    logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
+    ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,8 @@ impl NetdataLogsService {
 
         let rotation_policy = RotationPolicy::default()
             .with_size_of_journal_file(logs_config.size_of_journal_file.as_u64())
-            .with_duration_of_journal_file(logs_config.duration_of_journal_file);
+            .with_duration_of_journal_file(logs_config.duration_of_journal_file)
+            .with_number_of_entries(logs_config.entries_of_journal_file);
 
         let retention_policy = RetentionPolicy::default()
             .with_number_of_journal_files(logs_config.number_of_journal_files)
