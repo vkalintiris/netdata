@@ -110,6 +110,8 @@ pub struct RotationPolicy {
     pub size_of_journal_file: Option<u64>,
     /// Maximum duration that entries in a single file can span
     pub duration_of_journal_file: Option<Duration>,
+    /// Maximum number of entries before rotating
+    pub number_of_entries: Option<u64>,
 }
 
 impl RotationPolicy {
@@ -120,6 +122,11 @@ impl RotationPolicy {
 
     pub fn with_duration_of_journal_file(mut self, duration_of_journal_file: Duration) -> Self {
         self.duration_of_journal_file = Some(duration_of_journal_file);
+        self
+    }
+
+    pub fn with_number_of_entries(mut self, number_of_entries: u64) -> Self {
+        self.number_of_entries = Some(number_of_entries);
         self
     }
 }
@@ -410,6 +417,7 @@ pub struct JournalLog {
     boot_id: [u8; 16],
     seqnum_id: [u8; 16],
     previous_bucket_utilization: Option<BucketUtilization>,
+    entries_since_rotation: u64,
 }
 
 /// Calculate optimal bucket sizes based on previous file utilization or rotation policy
@@ -477,6 +485,7 @@ impl JournalLog {
             boot_id,
             seqnum_id,
             previous_bucket_utilization: None,
+            entries_since_rotation: 0,
         })
     }
 
@@ -527,13 +536,20 @@ impl JournalLog {
     }
 
     /// Checks if we have to rotate. Prioritizes file size over file creation
-    /// time.
+    /// time, then entry count, then duration.
     fn should_rotate(&self, writer: &JournalWriter) -> bool {
         let policy = self.directory.config.rotation_policy;
 
         // Check if the file size went over the limit
         if let Some(max_size) = policy.size_of_journal_file {
             if writer.current_file_size() >= max_size {
+                return true;
+            }
+        }
+
+        // Check if the entry count went over the limit
+        if let Some(max_entries) = policy.number_of_entries {
+            if self.entries_since_rotation >= max_entries {
                 return true;
             }
         }
@@ -602,6 +618,9 @@ impl JournalLog {
         self.current_writer = None;
         self.current_file_info = None;
 
+        // Reset entry counter for the new file
+        self.entries_since_rotation = 0;
+
         // Next call to ensure_active_journal() will create new file
         Ok(())
     }
@@ -626,6 +645,9 @@ impl JournalLog {
         let monotonic = realtime;
 
         writer.add_entry(journal_file, items, realtime, monotonic, self.boot_id)?;
+
+        // Increment entry counter
+        self.entries_since_rotation += 1;
 
         Ok(())
     }
