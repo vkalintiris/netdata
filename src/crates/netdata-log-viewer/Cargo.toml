@@ -51,7 +51,7 @@ rt = { path = "../netdata-plugin/rt" }
 netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "../netdata-plugin/schema" }
-journal_registry = { path = "../netdata-journal/journal_registry" }
+journal = { path = "../journal" }
 
 [profile.release-min]
 inherits = "release"

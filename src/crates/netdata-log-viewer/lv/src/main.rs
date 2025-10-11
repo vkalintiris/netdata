@@ -432,7 +432,7 @@ fn anyvalue_to_json(value: &polars::AnyValue) -> serde_json::Value {
 }
 
 struct AppState {
-    registry: Arc<RwLock<journal_registry::Registry>>,
+    registry: Arc<RwLock<journal::registry::Registry>>,
     histogram: Arc<RwLock<Option<Histogram>>>,
 }
 
@@ -492,7 +492,7 @@ impl AppState {
 
 impl AppState {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let registry = Arc::new(RwLock::new(journal_registry::Registry::new().unwrap()));
+        let registry = Arc::new(RwLock::new(journal::registry::Registry::new().unwrap()));
         let histogram = Arc::new(RwLock::new(None));
 
         Ok(Self {
@@ -504,7 +504,7 @@ impl AppState {
     /// Find files in the given time range (Unix timestamps in microseconds)
     ///
     #[tracing::instrument(skip(self), fields(file_count))]
-    pub async fn find_files_in_range(&self, start: u64, end: u64) -> Vec<journal_registry::File> {
+    pub async fn find_files_in_range(&self, start: u64, end: u64) -> Vec<journal::registry::File> {
         let mut output = Vec::new();
         self.registry
             .read()

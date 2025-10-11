@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
-use journal::log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
+use journal::log::{Log, LogConfig, RetentionPolicy, RotationPolicy};
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
@@ -11,7 +11,7 @@ use tonic::{Request, Response, Status};
 use crate::plugin_config::PluginConfig;
 
 pub struct NetdataLogsService {
-    journal_log: Arc<Mutex<JournalLog>>,
+    log: Arc<Mutex<Log>>,
 }
 
 impl NetdataLogsService {
@@ -28,19 +28,17 @@ impl NetdataLogsService {
             .with_size_of_journal_files(logs_config.size_of_journal_files.as_u64())
             .with_duration_of_journal_files(logs_config.duration_of_journal_files);
 
-        let journal_config = JournalLogConfig::new(&logs_config.journal_dir)
+        let journal_config = LogConfig::new(&logs_config.journal_dir)
             .with_rotation_policy(rotation_policy)
             .with_retention_policy(retention_policy);
 
-        let journal_log = Arc::new(Mutex::new(JournalLog::new(journal_config).with_context(
-            || {
-                format!(
-                    "Failed to create journal log for directory: {}",
-                    logs_config.journal_dir
-                )
-            },
-        )?));
-        Ok(NetdataLogsService { journal_log })
+        let journal_log = Arc::new(Mutex::new(Log::new(journal_config).with_context(|| {
+            format!(
+                "Failed to create journal log for directory: {}",
+                logs_config.journal_dir
+            )
+        })?));
+        Ok(NetdataLogsService { log: journal_log })
     }
 
     fn json_to_entry_data(&self, json_value: &Value) -> Vec<Vec<u8>> {
@@ -80,7 +78,7 @@ impl LogsService for NetdataLogsService {
                 let entry_data = self.json_to_entry_data(&entry);
                 if !entry_data.is_empty() {
                     let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-                    if let Err(e) = self.journal_log.lock().unwrap().write_entry(&entry_refs) {
+                    if let Err(e) = self.log.lock().unwrap().write_entry(&entry_refs) {
                         eprintln!("Failed to write log entry: {}", e);
                         return Err(Status::internal(format!(
                             "Failed to write log entry: {}",

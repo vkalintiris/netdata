@@ -48,7 +48,7 @@ pub use file::{
 };
 
 // Log module re-exports
-pub use log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
+// pub use log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
 
 // Registry module re-exports
 pub use registry::{Registry, RegistryError};

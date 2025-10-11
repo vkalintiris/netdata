@@ -67,7 +67,10 @@
 //! - `duration_of_journal_files` - maximum age of files
 
 mod directory;
+use directory::{JournalDirectory, JournalDirectoryConfig};
+
 mod policy;
+pub use policy::{RetentionPolicy, RotationPolicy};
 
 use crate::error::Result;
 use crate::file::mmap::MmapMut;
@@ -78,10 +81,6 @@ use crate::registry::File as JournalFile_;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-
-// Re-export public types
-pub use directory::{JournalDirectory, JournalDirectoryConfig};
-pub use policy::{RetentionPolicy, RotationPolicy};
 
 fn generate_uuid() -> [u8; 16] {
     uuid::Uuid::new_v4().into_bytes()
@@ -133,7 +132,7 @@ fn calculate_bucket_sizes(
 /// - Rotation: 100MB files, 2 hour spans
 /// - Retention: 10 files, 1GB total, 7 day history
 #[derive(Debug, Clone)]
-pub struct JournalLogConfig {
+pub struct LogConfig {
     /// Directory where journal files are stored
     pub journal_dir: PathBuf,
     /// Policy for when to rotate active files
@@ -142,7 +141,7 @@ pub struct JournalLogConfig {
     pub retention_policy: RetentionPolicy,
 }
 
-impl JournalLogConfig {
+impl LogConfig {
     /// Creates a new configuration with default policies.
     pub fn new(journal_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -173,7 +172,7 @@ impl JournalLogConfig {
 /// Creates journal files in systemd format under `{journal_dir}/{machine_id}/`.
 /// Files are automatically rotated based on configured policies, and old files
 /// are deleted to satisfy retention limits.
-pub struct JournalLog {
+pub struct Log {
     directory: JournalDirectory,
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
@@ -187,11 +186,11 @@ pub struct JournalLog {
     next_file_head_seqnum: u64,
 }
 
-impl JournalLog {
+impl Log {
     /// Creates a new journal log.
     ///
     /// Scans for existing journal files and enforces retention policies on startup.
-    pub fn new(config: JournalLogConfig) -> Result<Self> {
+    pub fn new(config: LogConfig) -> Result<Self> {
         let machine_id = crate::file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
         // TODO: Use NETDATA_INVOCATION_ID
@@ -212,7 +211,7 @@ impl JournalLog {
         // Enforce retention policy on startup to clean up any old files
         directory.enforce_retention_policy()?;
 
-        Ok(JournalLog {
+        Ok(Log {
             directory,
             current_file: None,
             current_writer: None,
