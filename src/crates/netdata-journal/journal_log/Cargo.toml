@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 error = { path = "../error" }
 journal_file = { path = "../journal_file" }
+journal_registry = { path = "../journal_registry" }
 uuid = { workspace = true }
 window_manager = { path = "../window_manager" }
 

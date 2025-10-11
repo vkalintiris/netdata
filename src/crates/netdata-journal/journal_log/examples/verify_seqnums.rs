@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=======================================\n");
 
     // Collect and sort files by seqnum
-    use journal_log::JournalFileInfo;
+    use journal_registry::{File, Status};
     let mut all_files = Vec::new();
 
     for entry in std::fs::read_dir(journal_path)? {
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let file_path = file_entry.path();
 
                 if file_path.extension().and_then(|s| s.to_str()) == Some("journal") {
-                    if let Ok(info) = JournalFileInfo::from_path(&file_path) {
+                    if let Some(info) = File::from_path(&file_path) {
                         all_files.push(info);
                     }
                 }
@@ -55,18 +55,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Sort by head_seqnum
-    all_files.sort_by_key(|f| f.head_seqnum);
+    // Sort by head_seqnum (File already implements Ord which sorts correctly)
+    all_files.sort();
 
     for (idx, file) in all_files.iter().enumerate() {
-        println!(
-            "File {}: seqnum={}, realtime={:016x}",
-            idx + 1,
-            file.head_seqnum,
-            file.head_realtime
-        );
-        println!("  {}", file.path.display());
-        println!();
+        if let Status::Archived {
+            head_seqnum,
+            head_realtime,
+            ..
+        } = file.status
+        {
+            println!(
+                "File {}: seqnum={}, realtime={:016x}",
+                idx + 1,
+                head_seqnum,
+                head_realtime
+            );
+            println!("  {}", file.path);
+            println!();
+        }
     }
 
     println!("Expected sequence:");

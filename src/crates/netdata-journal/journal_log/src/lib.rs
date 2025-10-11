@@ -1,415 +1,97 @@
-use error::{JournalFileError, Result};
+//! High-level journaling API for structured log storage.
+//!
+//! Provides automatic file rotation, retention policy enforcement, and compatibility with
+//! systemd journal format. Journal files use the systemd naming convention:
+//! `{journal_dir}/{machine_id}/system@{seqnum_id}-{head_seqnum}-{head_realtime}.journal`
+//!
+//! # Example
+//!
+//! ```no_run
+//! use journal_log::{JournalLog, JournalLogConfig, RotationPolicy};
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!
+//! let config = JournalLogConfig::new("/var/log/journal")
+//!     .with_rotation_policy(
+//!         RotationPolicy::default()
+//!             .with_size_of_journal_file(100 * 1024 * 1024) // 100MB
+//!     );
+//!
+//! let mut journal = JournalLog::new(config)?;
+//! journal.write_entry(&[b"MESSAGE=Hello, world!"])?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Operation Flow
+//!
+//! ## Initialization
+//!
+//! When [`JournalLog::new`] is called:
+//! 1. Loads system identifiers (machine_id, boot_id) and generates a seqnum_id
+//! 2. Creates the journal directory: `{journal_dir}/{machine_id}/`
+//! 3. Scans for existing `.journal` files, parsing their metadata from filenames
+//! 4. Sorts files by sequence number and timestamp (oldest first)
+//! 5. Enforces retention policy, deleting old files if limits are exceeded
+//!
+//! ## Writing Entries
+//!
+//! On each [`write_entry`](JournalLog::write_entry) call:
+//! 1. Checks if an active file exists; if not, creates a new one
+//! 2. Checks if rotation is needed based on configured policies
+//! 3. If rotation needed: closes current file, creates new file with incremented seqnum
+//! 4. Writes entry to the active file
+//! 5. Enforces retention policy after creating new files
+//!
+//! ## File Rotation
+//!
+//! Rotation occurs when any configured limit is exceeded:
+//! - File size reaches `size_of_journal_file`
+//! - Entry count reaches `number_of_entries`
+//! - Time span between first and last entry reaches `duration_of_journal_file`
+//!
+//! During rotation:
+//! 1. Captures the next sequence number from the current writer
+//! 2. Updates file size tracking
+//! 3. Closes the current file
+//! 4. Creates a new file with the captured sequence number as its `head_seqnum`
+//!
+//! ## Retention Enforcement
+//!
+//! Retention policies are enforced at two points:
+//! - On startup (cleans up files from previous runs)
+//! - After creating new files (prevents unbounded growth)
+//!
+//! Files are removed oldest-first until all limits are satisfied:
+//! - `number_of_journal_files` - maximum file count
+//! - `size_of_journal_files` - maximum total size across all files
+//! - `duration_of_journal_files` - maximum age of files
+
+mod directory;
+mod policy;
+
+use error::Result;
 use journal_file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
-use std::cmp::Ordering;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use journal_registry::File as JournalFile_;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use window_manager::MmapMut;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JournalFileInfo {
-    pub path: PathBuf,
-    pub seqnum_id: Uuid,
-    pub head_seqnum: u64,
-    pub head_realtime: u64,
-    pub size: Option<u64>,
-}
-
-impl JournalFileInfo {
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let filename = path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or(JournalFileError::InvalidFilename)?;
-
-        let (seqnum_id, head_seqnum, head_realtime) = Self::parse_filename(filename)?;
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            seqnum_id,
-            head_seqnum,
-            head_realtime,
-            size: None,
-        })
-    }
-
-    pub fn from_parts(
-        seqnum_id: Uuid,
-        head_seqnum: u64,
-        head_realtime: u64,
-        size: Option<u64>,
-    ) -> Result<JournalFileInfo> {
-        // Format UUID without dashes (simple format) and pad numbers to 16 hex digits
-        let path = PathBuf::from(format!(
-            "system@{}-{:016x}-{:016x}.journal",
-            seqnum_id.simple(),
-            head_seqnum,
-            head_realtime
-        ));
-
-        Ok(Self {
-            path,
-            seqnum_id,
-            head_seqnum,
-            head_realtime,
-            size,
-        })
-    }
-
-    /// Parse seqnum_id, head_seqnum, and head_realtime from filename
-    /// Expected format: "system@{seqnum_id}-{head_seqnum}-{head_realtime}.journal"
-    fn parse_filename(filename: &str) -> Result<(Uuid, u64, u64)> {
-        let name = filename
-            .strip_suffix(".journal")
-            .ok_or(JournalFileError::InvalidFilename)?;
-
-        // Extract the part after '@'
-        let suffix = name
-            .strip_prefix("system@")
-            .ok_or(JournalFileError::InvalidFilename)?;
-
-        // Split by '-' to get seqnum_id, head_seqnum, head_realtime
-        let parts: Vec<&str> = suffix.split('-').collect();
-        if parts.len() != 3 {
-            return Err(JournalFileError::InvalidFilename);
-        }
-
-        let seqnum_id = Uuid::try_parse(parts[0])
-            .map_err(|_| JournalFileError::InvalidFilename)?;
-        let head_seqnum = u64::from_str_radix(parts[1], 16)
-            .map_err(|_| JournalFileError::InvalidFilename)?;
-        let head_realtime = u64::from_str_radix(parts[2], 16)
-            .map_err(|_| JournalFileError::InvalidFilename)?;
-
-        Ok((seqnum_id, head_seqnum, head_realtime))
-    }
-
-    /// Get file size, loading from filesystem if not cached
-    pub fn get_size(&mut self) -> Result<u64> {
-        if let Some(size) = self.size {
-            Ok(size)
-        } else {
-            let metadata = std::fs::metadata(&self.path)?;
-            let size = metadata.len();
-            self.size = Some(size);
-            Ok(size)
-        }
-    }
-}
-
-// Implement ordering based on head_realtime and head_seqnum (similar to systemd journal)
-impl Ord for JournalFileInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Order by head_realtime first, then by head_seqnum for stability
-        self.head_realtime
-            .cmp(&other.head_realtime)
-            .then_with(|| self.head_seqnum.cmp(&other.head_seqnum))
-    }
-}
-
-impl PartialOrd for JournalFileInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Determines when an active journal file should be sealed
-#[derive(Debug, Copy, Clone, Default)]
-pub struct RotationPolicy {
-    /// Maximum file size before rotating (in bytes)
-    pub size_of_journal_file: Option<u64>,
-    /// Maximum duration that entries in a single file can span
-    pub duration_of_journal_file: Option<Duration>,
-    /// Maximum number of entries before rotating
-    pub number_of_entries: Option<usize>,
-}
-
-impl RotationPolicy {
-    pub fn with_size_of_journal_file(mut self, size_of_journal_file: u64) -> Self {
-        self.size_of_journal_file = Some(size_of_journal_file);
-        self
-    }
-
-    pub fn with_duration_of_journal_file(mut self, duration_of_journal_file: Duration) -> Self {
-        self.duration_of_journal_file = Some(duration_of_journal_file);
-        self
-    }
-
-    pub fn with_number_of_entries(mut self, number_of_entries: usize) -> Self {
-        self.number_of_entries = Some(number_of_entries);
-        self
-    }
-}
-
-/// Retention policy - determines when files should be removed
-#[derive(Debug, Copy, Clone, Default)]
-pub struct RetentionPolicy {
-    /// Maximum number of journal files to keep
-    pub number_of_journal_files: Option<usize>,
-    /// Maximum total size of all journal files (in bytes)
-    pub size_of_journal_files: Option<u64>,
-    /// Maximum age of files to keep
-    pub duration_of_journal_files: Option<Duration>,
-}
-
-impl RetentionPolicy {
-    pub fn with_number_of_journal_files(mut self, number_of_journal_files: usize) -> Self {
-        self.number_of_journal_files = Some(number_of_journal_files);
-        self
-    }
-
-    pub fn with_size_of_journal_files(mut self, size_of_journal_files: u64) -> Self {
-        self.size_of_journal_files = Some(size_of_journal_files);
-        self
-    }
-
-    pub fn with_duration_of_journal_files(mut self, duration_of_journal_files: Duration) -> Self {
-        self.duration_of_journal_files = Some(duration_of_journal_files);
-        self
-    }
-}
-
-/// Configuration for journal directory management
-#[derive(Debug, Clone)]
-pub struct JournalDirectoryConfig {
-    /// Directory path where journal files are stored
-    pub directory: PathBuf,
-    /// Policy for when to rotate active files
-    pub rotation_policy: RotationPolicy,
-    /// Policy for when to remove old files
-    pub retention_policy: RetentionPolicy,
-}
-
-impl JournalDirectoryConfig {
-    pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self {
-            directory: directory.into(),
-            rotation_policy: RotationPolicy::default(),
-            retention_policy: RetentionPolicy::default(),
-        }
-    }
-
-    pub fn with_sealing_policy(mut self, policy: RotationPolicy) -> Self {
-        self.rotation_policy = policy;
-        self
-    }
-
-    pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Self {
-        self.retention_policy = policy;
-        self
-    }
-}
-
-/// Manages a directory of journal files with automatic cleanup and sealing
-#[derive(Debug)]
-pub struct JournalDirectory {
-    config: JournalDirectoryConfig,
-    /// Files ordered by head_realtime and head_seqnum (oldest first)
-    files: Vec<JournalFileInfo>,
-    /// Cached total size of all files
-    total_size: u64,
-}
-
-impl JournalDirectory {
-    /// Scan the directory and load existing journal files
-    pub fn with_config(config: JournalDirectoryConfig) -> Result<Self> {
-        // Create directory if it does not already exist.
-        if !config.directory.exists() {
-            std::fs::create_dir_all(&config.directory)?;
-        } else if !config.directory.is_dir() {
-            return Err(JournalFileError::NotADirectory);
-        }
-
-        let mut journal_directory = Self {
-            config,
-            files: Vec::new(),
-            total_size: 0,
-        };
-
-        // Read all .journal files from directory recursively (to handle machine_id subdirs)
-        for entry in std::fs::read_dir(&journal_directory.config.directory)? {
-            let entry = entry?;
-            let file_path = entry.path();
-
-            if file_path.is_dir() {
-                // Scan subdirectories for journal files
-                for subentry in std::fs::read_dir(&file_path)? {
-                    let subentry = subentry?;
-                    let subpath = subentry.path();
-
-                    if subpath.extension() != Some(OsStr::new("journal")) {
-                        continue;
-                    }
-
-                    match JournalFileInfo::from_path(&subpath) {
-                        Ok(mut file_info) => {
-                            let file_size = file_info.get_size().unwrap_or(0);
-                            journal_directory.total_size += file_size;
-                            journal_directory.files.push(file_info);
-                        }
-                        Err(_) => {
-                            // Skip files with invalid names
-                            continue;
-                        }
-                    }
-                }
-            } else if file_path.extension() == Some(OsStr::new("journal")) {
-                // Handle journal files in the root directory (for backward compatibility)
-                match JournalFileInfo::from_path(&file_path) {
-                    Ok(mut file_info) => {
-                        let file_size = file_info.get_size().unwrap_or(0);
-                        journal_directory.total_size += file_size;
-                        journal_directory.files.push(file_info);
-                    }
-                    Err(_) => {
-                        continue;
-                    }
-                }
-            }
-        }
-
-        // Sort files by head_realtime and head_seqnum to maintain order
-        journal_directory.files.sort();
-
-        Ok(journal_directory)
-    }
-
-    pub fn directory_path(&self) -> &Path {
-        &self.config.directory
-    }
-
-    pub fn get_full_path(&self, file_info: &JournalFileInfo) -> PathBuf {
-        if file_info.path.is_absolute() {
-            file_info.path.clone()
-        } else {
-            self.config.directory.join(&file_info.path)
-        }
-    }
-
-    // Get information about all the files in the journal directory
-    pub fn files(&self) -> Vec<JournalFileInfo> {
-        self.files.clone()
-    }
-
-    /// Add a new journal file to the directory representation
-    pub fn new_file(
-        &mut self,
-        seqnum_id: Uuid,
-        head_seqnum: u64,
-        head_realtime: u64,
-        existing_file: Option<JournalFileInfo>,
-    ) -> Result<JournalFileInfo> {
-        let new_file = JournalFileInfo::from_parts(seqnum_id, head_seqnum, head_realtime, None)?;
-
-        self.files.push(new_file.clone());
-
-        if let Some(existing_file) = existing_file {
-            self.total_size += existing_file.size.unwrap_or(0);
-        }
-
-        Ok(new_file)
-    }
-
-    /// Remove the oldest file (by head_realtime/head_seqnum) from both filesystem and tracking
-    fn remove_oldest_file(&mut self) -> Result<()> {
-        if let Some(oldest_file) = self.files.first() {
-            let file_path = self.get_full_path(oldest_file);
-            let file_size = oldest_file.size.unwrap_or(0);
-
-            // Remove from filesystem
-            if let Err(e) = std::fs::remove_file(&file_path) {
-                // Log error but continue cleanup - file might already be deleted
-                eprintln!(
-                    "Warning: Failed to remove journal file {:?}: {}",
-                    file_path, e
-                );
-            }
-
-            // Remove from tracking and update total size
-            self.files.remove(0);
-            self.total_size = self.total_size.saturating_sub(file_size);
-        }
-
-        Ok(())
-    }
-
-    /// Remove files older than the specified cutoff time
-    fn remove_files_older_than(&mut self, cutoff_time: SystemTime) -> Result<()> {
-        let cutoff_micros = cutoff_time
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-
-        // Find files older than cutoff time (head_realtime is in microseconds since epoch)
-        let mut files_to_remove = Vec::new();
-        for (index, file) in self.files.iter().enumerate() {
-            if file.head_realtime <= cutoff_micros {
-                files_to_remove.push(index);
-            }
-        }
-
-        // Remove files in reverse order to maintain indices
-        for &index in files_to_remove.iter().rev() {
-            let file = &self.files[index];
-            let file_path = self.get_full_path(file);
-            let file_size = file.size.unwrap_or(0);
-
-            // Remove from filesystem
-            if let Err(e) = std::fs::remove_file(&file_path) {
-                // Log error but continue cleanup
-                eprintln!(
-                    "Warning: Failed to remove journal file {:?}: {}",
-                    file_path, e
-                );
-            }
-
-            // Remove from tracking and update total size
-            self.files.remove(index);
-            self.total_size = self.total_size.saturating_sub(file_size);
-        }
-
-        Ok(())
-    }
-
-    /// Enforce the retention policy by removing old files
-    pub fn enforce_retention_policy(&mut self) -> Result<()> {
-        let policy = self.config.retention_policy;
-
-        // 1. Remove by file count limit
-        if let Some(max_files) = policy.number_of_journal_files {
-            while self.files.len() > max_files {
-                self.remove_oldest_file()?;
-            }
-        }
-
-        // 2. Remove by total size limit
-        if let Some(max_total_size) = policy.size_of_journal_files {
-            while self.total_size > max_total_size && !self.files.is_empty() {
-                self.remove_oldest_file()?;
-            }
-        }
-
-        // 3. Remove by entry age limit
-        if let Some(max_entry_age) = policy.duration_of_journal_files {
-            let cutoff_time = SystemTime::now()
-                .checked_sub(max_entry_age)
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            self.remove_files_older_than(cutoff_time)?;
-        }
-
-        Ok(())
-    }
-}
+// Re-export public types
+pub use directory::{JournalDirectory, JournalDirectoryConfig};
+pub use policy::{RetentionPolicy, RotationPolicy};
 
 fn generate_uuid() -> [u8; 16] {
     uuid::Uuid::new_v4().into_bytes()
 }
 
-/// Configuration for JournalLog
+/// Configuration for [`JournalLog`].
+///
+/// Provides sensible defaults:
+/// - Rotation: 100MB files, 2 hour spans
+/// - Retention: 10 files, 1GB total, 7 day history
 #[derive(Debug, Clone)]
 pub struct JournalLogConfig {
     /// Directory where journal files are stored
@@ -421,6 +103,7 @@ pub struct JournalLogConfig {
 }
 
 impl JournalLogConfig {
+    /// Creates a new configuration with default policies.
     pub fn new(journal_dir: impl Into<PathBuf>) -> Self {
         Self {
             journal_dir: journal_dir.into(),
@@ -445,11 +128,16 @@ impl JournalLogConfig {
     }
 }
 
+/// High-level journal writer with automatic rotation and retention.
+///
+/// Creates journal files in systemd format under `{journal_dir}/{machine_id}/`.
+/// Files are automatically rotated based on configured policies, and old files
+/// are deleted to satisfy retention limits.
 pub struct JournalLog {
     directory: JournalDirectory,
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
-    current_file_info: Option<JournalFileInfo>,
+    current_file_info: Option<JournalFile_>,
     machine_id: [u8; 16],
     boot_id: [u8; 16],
     seqnum_id: [u8; 16],
@@ -500,6 +188,9 @@ fn calculate_bucket_sizes(
 }
 
 impl JournalLog {
+    /// Creates a new journal log.
+    ///
+    /// Scans for existing journal files and enforces retention policies on startup.
     pub fn new(config: JournalLogConfig) -> Result<Self> {
         let machine_id = journal_file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
@@ -555,13 +246,17 @@ impl JournalLog {
             // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
             let head_seqnum = self.next_file_head_seqnum;
 
-            // Convert seqnum_id to Uuid for filename
+            // Convert IDs to Uuid for filename
+            let machine_uuid = Uuid::from_bytes(self.machine_id);
             let seqnum_uuid = Uuid::from_bytes(self.seqnum_id);
 
             // Create a new journal file entry
-            let file_info =
-                self.directory
-                    .new_file(seqnum_uuid, head_seqnum, head_realtime, None)?;
+            let file_info = self.directory.new_file(
+                machine_uuid,
+                seqnum_uuid,
+                head_seqnum,
+                head_realtime,
+            )?;
 
             // Get the full path for the journal file
             let file_path = self.directory.get_full_path(&file_info);
@@ -659,30 +354,25 @@ impl JournalLog {
         }
 
         // Update the current file's size in our tracking before closing
-        if let (Some(file_info), Some(writer)) = (&mut self.current_file_info, &self.current_writer)
-        {
+        if let (Some(file_info), Some(writer)) = (&self.current_file_info, &self.current_writer) {
             let current_size = writer.current_file_size();
-            file_info.size = Some(current_size);
 
-            // Update the size in the directory's file list
-            if let Some(tracked_file) = self
+            // Update the size in the directory's file_sizes HashMap
+            let old_size = self
                 .directory
-                .files
-                .iter_mut()
-                .find(|f| {
-                    f.seqnum_id == file_info.seqnum_id && f.head_seqnum == file_info.head_seqnum
-                })
-            {
-                let old_size = tracked_file.size.unwrap_or(0);
-                tracked_file.size = Some(current_size);
+                .file_sizes
+                .get(&file_info.path)
+                .copied()
+                .unwrap_or(0);
 
-                // Update total size tracking
-                self.directory.total_size = self
-                    .directory
-                    .total_size
-                    .saturating_sub(old_size)
-                    .saturating_add(current_size);
-            }
+            self.directory.file_sizes.insert(file_info.path.clone(), current_size);
+
+            // Update total size tracking
+            self.directory.total_size = self
+                .directory
+                .total_size
+                .saturating_sub(old_size)
+                .saturating_add(current_size);
         }
 
         // Close current file
@@ -697,6 +387,24 @@ impl JournalLog {
         Ok(())
     }
 
+    /// Writes a journal entry.
+    ///
+    /// Each item should be a field in the format `FIELD_NAME=value`. Automatically
+    /// handles file rotation and retention policy enforcement.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use journal_log::{JournalLog, JournalLogConfig};
+    /// # fn example(journal: &mut JournalLog) -> Result<(), Box<dyn std::error::Error>> {
+    /// journal.write_entry(&[
+    ///     b"MESSAGE=System started",
+    ///     b"PRIORITY=6",
+    ///     b"SYSLOG_FACILITY=3",
+    /// ])?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
