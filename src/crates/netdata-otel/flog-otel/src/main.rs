@@ -149,8 +149,8 @@ fn flog_to_otel(entry: FlogEntry) -> Result<LogRecord> {
         },
     ];
 
-    let trace_id_bytes = Uuid::new_v4().as_u128().to_be_bytes().to_vec();
-    let span_id_bytes = (Uuid::new_v4().as_u128() as u64).to_be_bytes().to_vec();
+    // let trace_id_bytes = Uuid::new_v4().as_u128().to_be_bytes().to_vec();
+    // let span_id_bytes = (Uuid::new_v4().as_u128() as u64).to_be_bytes().to_vec();
 
     Ok(LogRecord {
         time_unix_nano,
@@ -162,8 +162,8 @@ fn flog_to_otel(entry: FlogEntry) -> Result<LogRecord> {
         attributes,
         dropped_attributes_count: 0,
         flags: 0,
-        trace_id: trace_id_bytes,
-        span_id: span_id_bytes,
+        trace_id: Vec::new(),
+        span_id: Vec::new(),
         ..Default::default()
     })
 }
