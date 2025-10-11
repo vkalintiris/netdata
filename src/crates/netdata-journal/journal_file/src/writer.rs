@@ -43,6 +43,16 @@ impl JournalWriter {
         self.first_entry_monotonic
     }
 
+    /// Get the next sequence number that will be used for the next entry
+    pub fn next_seqnum(&self) -> u64 {
+        self.next_seqnum
+    }
+
+    /// Override the next sequence number (for continuing sequence across file rotations)
+    pub fn set_next_seqnum(&mut self, seqnum: u64) {
+        self.next_seqnum = seqnum;
+    }
+
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
         let (append_offset, next_seqnum) = {
             let header = journal_file.journal_header_ref();

@@ -6,13 +6,15 @@ use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 use window_manager::MmapMut;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalFileInfo {
     pub path: PathBuf,
-    pub timestamp: SystemTime,
-    pub counter: u64,
+    pub seqnum_id: Uuid,
+    pub head_seqnum: u64,
+    pub head_realtime: u64,
     pub size: Option<u64>,
 }
 
@@ -24,56 +26,66 @@ impl JournalFileInfo {
             .and_then(OsStr::to_str)
             .ok_or(JournalFileError::InvalidFilename)?;
 
-        let (timestamp, counter) = Self::parse_filename(filename)?;
+        let (seqnum_id, head_seqnum, head_realtime) = Self::parse_filename(filename)?;
 
         Ok(Self {
             path: path.to_path_buf(),
-            timestamp,
-            counter,
+            seqnum_id,
+            head_seqnum,
+            head_realtime,
             size: None,
         })
     }
 
     pub fn from_parts(
-        timestamp: SystemTime,
-        counter: u64,
+        seqnum_id: Uuid,
+        head_seqnum: u64,
+        head_realtime: u64,
         size: Option<u64>,
     ) -> Result<JournalFileInfo> {
-        let duration = timestamp
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| JournalFileError::SystemTimeError)?;
-        let micros = duration.as_secs() * 1_000_000 + duration.subsec_micros() as u64;
-        let path = PathBuf::from(format!("journal-{}-{}.journal", micros, counter));
+        // Format UUID without dashes (simple format) and pad numbers to 16 hex digits
+        let path = PathBuf::from(format!(
+            "system@{}-{:016x}-{:016x}.journal",
+            seqnum_id.simple(),
+            head_seqnum,
+            head_realtime
+        ));
 
         Ok(Self {
             path,
-            timestamp,
-            counter,
+            seqnum_id,
+            head_seqnum,
+            head_realtime,
             size,
         })
     }
 
-    /// Parse timestamp and counter from filename
-    /// Expected format: "journal-{timestamp_micros}-{counter}.journal"
-    fn parse_filename(filename: &str) -> Result<(SystemTime, u64)> {
-        let name = filename.strip_suffix(".journal").unwrap_or(filename);
+    /// Parse seqnum_id, head_seqnum, and head_realtime from filename
+    /// Expected format: "system@{seqnum_id}-{head_seqnum}-{head_realtime}.journal"
+    fn parse_filename(filename: &str) -> Result<(Uuid, u64, u64)> {
+        let name = filename
+            .strip_suffix(".journal")
+            .ok_or(JournalFileError::InvalidFilename)?;
 
-        if let Some(stripped) = name.strip_prefix("journal-") {
-            let parts: Vec<&str> = stripped.split('-').collect();
-            if parts.len() == 2 {
-                let timestamp_micros: u64 = parts[0]
-                    .parse()
-                    .map_err(|_| JournalFileError::InvalidFilename)?;
-                let counter: u64 = parts[1]
-                    .parse()
-                    .map_err(|_| JournalFileError::InvalidFilename)?;
+        // Extract the part after '@'
+        let suffix = name
+            .strip_prefix("system@")
+            .ok_or(JournalFileError::InvalidFilename)?;
 
-                let timestamp = UNIX_EPOCH + Duration::from_micros(timestamp_micros);
-                return Ok((timestamp, counter));
-            }
+        // Split by '-' to get seqnum_id, head_seqnum, head_realtime
+        let parts: Vec<&str> = suffix.split('-').collect();
+        if parts.len() != 3 {
+            return Err(JournalFileError::InvalidFilename);
         }
 
-        Err(JournalFileError::InvalidFilename)
+        let seqnum_id = Uuid::try_parse(parts[0])
+            .map_err(|_| JournalFileError::InvalidFilename)?;
+        let head_seqnum = u64::from_str_radix(parts[1], 16)
+            .map_err(|_| JournalFileError::InvalidFilename)?;
+        let head_realtime = u64::from_str_radix(parts[2], 16)
+            .map_err(|_| JournalFileError::InvalidFilename)?;
+
+        Ok((seqnum_id, head_seqnum, head_realtime))
     }
 
     /// Get file size, loading from filesystem if not cached
@@ -89,11 +101,13 @@ impl JournalFileInfo {
     }
 }
 
-// Implement ordering based on counter (for detecting duplicates and ordering)
+// Implement ordering based on head_realtime and head_seqnum (similar to systemd journal)
 impl Ord for JournalFileInfo {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Order by counter only - this enables duplicate detection
-        self.counter.cmp(&other.counter)
+        // Order by head_realtime first, then by head_seqnum for stability
+        self.head_realtime
+            .cmp(&other.head_realtime)
+            .then_with(|| self.head_seqnum.cmp(&other.head_seqnum))
     }
 }
 
@@ -194,10 +208,8 @@ impl JournalDirectoryConfig {
 #[derive(Debug)]
 pub struct JournalDirectory {
     config: JournalDirectoryConfig,
-    /// Files ordered by counter (oldest counter first)
+    /// Files ordered by head_realtime and head_seqnum (oldest first)
     files: Vec<JournalFileInfo>,
-    /// Next counter value for new files
-    next_counter: u64,
     /// Cached total size of all files
     total_size: u64,
 }
@@ -215,36 +227,52 @@ impl JournalDirectory {
         let mut journal_directory = Self {
             config,
             files: Vec::new(),
-            next_counter: 0,
             total_size: 0,
         };
 
-        // Read all .journal files from directory
+        // Read all .journal files from directory recursively (to handle machine_id subdirs)
         for entry in std::fs::read_dir(&journal_directory.config.directory)? {
             let entry = entry?;
             let file_path = entry.path();
 
-            if file_path.extension() != Some(OsStr::new("journal")) {
-                continue;
-            }
+            if file_path.is_dir() {
+                // Scan subdirectories for journal files
+                for subentry in std::fs::read_dir(&file_path)? {
+                    let subentry = subentry?;
+                    let subpath = subentry.path();
 
-            match JournalFileInfo::from_path(&file_path) {
-                Ok(mut file_info) => {
-                    // Load the actual file size from filesystem
-                    let file_size = file_info.get_size().unwrap_or(0);
-                    journal_directory.total_size += file_size;
-                    journal_directory.next_counter =
-                        journal_directory.next_counter.max(file_info.counter + 1);
-                    journal_directory.files.push(file_info);
+                    if subpath.extension() != Some(OsStr::new("journal")) {
+                        continue;
+                    }
+
+                    match JournalFileInfo::from_path(&subpath) {
+                        Ok(mut file_info) => {
+                            let file_size = file_info.get_size().unwrap_or(0);
+                            journal_directory.total_size += file_size;
+                            journal_directory.files.push(file_info);
+                        }
+                        Err(_) => {
+                            // Skip files with invalid names
+                            continue;
+                        }
+                    }
                 }
-                Err(_) => {
-                    // Skip files with invalid names
-                    continue;
+            } else if file_path.extension() == Some(OsStr::new("journal")) {
+                // Handle journal files in the root directory (for backward compatibility)
+                match JournalFileInfo::from_path(&file_path) {
+                    Ok(mut file_info) => {
+                        let file_size = file_info.get_size().unwrap_or(0);
+                        journal_directory.total_size += file_size;
+                        journal_directory.files.push(file_info);
+                    }
+                    Err(_) => {
+                        continue;
+                    }
                 }
             }
         }
 
-        // Sort files by counter to maintain order
+        // Sort files by head_realtime and head_seqnum to maintain order
         journal_directory.files.sort();
 
         Ok(journal_directory)
@@ -268,12 +296,16 @@ impl JournalDirectory {
     }
 
     /// Add a new journal file to the directory representation
-    pub fn new_file(&mut self, existing_file: Option<JournalFileInfo>) -> Result<JournalFileInfo> {
-        let timestamp = SystemTime::now();
-        let new_file = JournalFileInfo::from_parts(timestamp, self.next_counter, None)?;
+    pub fn new_file(
+        &mut self,
+        seqnum_id: Uuid,
+        head_seqnum: u64,
+        head_realtime: u64,
+        existing_file: Option<JournalFileInfo>,
+    ) -> Result<JournalFileInfo> {
+        let new_file = JournalFileInfo::from_parts(seqnum_id, head_seqnum, head_realtime, None)?;
 
         self.files.push(new_file.clone());
-        self.next_counter += 1;
 
         if let Some(existing_file) = existing_file {
             self.total_size += existing_file.size.unwrap_or(0);
@@ -282,7 +314,7 @@ impl JournalDirectory {
         Ok(new_file)
     }
 
-    /// Remove the oldest file (by counter) from both filesystem and tracking
+    /// Remove the oldest file (by head_realtime/head_seqnum) from both filesystem and tracking
     fn remove_oldest_file(&mut self) -> Result<()> {
         if let Some(oldest_file) = self.files.first() {
             let file_path = self.get_full_path(oldest_file);
@@ -307,10 +339,15 @@ impl JournalDirectory {
 
     /// Remove files older than the specified cutoff time
     fn remove_files_older_than(&mut self, cutoff_time: SystemTime) -> Result<()> {
-        // Find files older than cutoff time
+        let cutoff_micros = cutoff_time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        // Find files older than cutoff time (head_realtime is in microseconds since epoch)
         let mut files_to_remove = Vec::new();
         for (index, file) in self.files.iter().enumerate() {
-            if file.timestamp <= cutoff_time {
+            if file.head_realtime <= cutoff_micros {
                 files_to_remove.push(index);
             }
         }
@@ -418,6 +455,8 @@ pub struct JournalLog {
     seqnum_id: [u8; 16],
     previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
+    /// The sequence number that the next file will start with
+    next_file_head_seqnum: u64,
 }
 
 /// Calculate optimal bucket sizes based on previous file utilization or rotation policy
@@ -462,7 +501,18 @@ fn calculate_bucket_sizes(
 
 impl JournalLog {
     pub fn new(config: JournalLogConfig) -> Result<Self> {
-        let journal_config = JournalDirectoryConfig::new(&config.journal_dir)
+        let machine_id = journal_file::file::load_machine_id()?;
+        let boot_id = load_boot_id()?;
+        // TODO: Use NETDATA_INVOCATION_ID
+        let seqnum_id = generate_uuid();
+
+        // Convert machine_id to UUID for directory name
+        let machine_uuid = Uuid::from_bytes(machine_id);
+
+        // Create the machine_id subdirectory: {journal_dir}/{machine_id}/
+        let machine_dir = config.journal_dir.join(machine_uuid.to_string());
+
+        let journal_config = JournalDirectoryConfig::new(&machine_dir)
             .with_sealing_policy(config.rotation_policy)
             .with_retention_policy(config.retention_policy);
 
@@ -470,11 +520,6 @@ impl JournalLog {
 
         // Enforce retention policy on startup to clean up any old files
         directory.enforce_retention_policy()?;
-
-        let machine_id = journal_file::file::load_machine_id()?;
-        let boot_id = load_boot_id()?;
-        // TODO: Use NETDATA_INVOCATION_ID
-        let seqnum_id = generate_uuid();
 
         Ok(JournalLog {
             directory,
@@ -486,6 +531,7 @@ impl JournalLog {
             seqnum_id,
             previous_bucket_utilization: None,
             entries_since_rotation: 0,
+            next_file_head_seqnum: 1, // First file starts with seqnum 1
         })
     }
 
@@ -498,8 +544,24 @@ impl JournalLog {
         }
 
         if self.current_file.is_none() {
-            // Create a new journal file
-            let file_info = self.directory.new_file(None)?;
+            // Compute head values for the new file
+            // head_realtime: current time in microseconds since epoch
+            let now = SystemTime::now();
+            let head_realtime = now
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
+
+            // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
+            let head_seqnum = self.next_file_head_seqnum;
+
+            // Convert seqnum_id to Uuid for filename
+            let seqnum_uuid = Uuid::from_bytes(self.seqnum_id);
+
+            // Create a new journal file entry
+            let file_info =
+                self.directory
+                    .new_file(seqnum_uuid, head_seqnum, head_realtime, None)?;
 
             // Get the full path for the journal file
             let file_path = self.directory.get_full_path(&file_info);
@@ -522,7 +584,10 @@ impl JournalLog {
             .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file_path, options)?;
-            let writer = JournalWriter::new(&mut journal_file)?;
+            let mut writer = JournalWriter::new(&mut journal_file)?;
+
+            // Set the correct initial sequence number for this file
+            writer.set_next_seqnum(head_seqnum);
 
             self.current_file = Some(journal_file);
             self.current_writer = Some(writer);
@@ -583,9 +648,14 @@ impl JournalLog {
     }
 
     fn rotate_current_file(&mut self) -> Result<()> {
-        // Capture bucket utilization before closing the file
+        // Capture bucket utilization and next seqnum before closing the file
         if let Some(file) = &self.current_file {
             self.previous_bucket_utilization = file.bucket_utilization();
+        }
+
+        // Capture the next sequence number for the new file
+        if let Some(writer) = &self.current_writer {
+            self.next_file_head_seqnum = writer.next_seqnum();
         }
 
         // Update the current file's size in our tracking before closing
@@ -599,7 +669,9 @@ impl JournalLog {
                 .directory
                 .files
                 .iter_mut()
-                .find(|f| f.counter == file_info.counter)
+                .find(|f| {
+                    f.seqnum_id == file_info.seqnum_id && f.head_seqnum == file_info.head_seqnum
+                })
             {
                 let old_size = tracked_file.size.unwrap_or(0);
                 tracked_file.size = Some(current_size);
