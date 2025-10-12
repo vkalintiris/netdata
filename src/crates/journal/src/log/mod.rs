@@ -10,6 +10,7 @@ use crate::file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
 use crate::registry::File as JournalFile_;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Calculate optimal bucket sizes based on previous file utilization or rotation policy
@@ -63,7 +64,6 @@ pub struct Log {
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
     current_file_info: Option<JournalFile_>,
-    machine_id: uuid::Uuid,
     boot_id: uuid::Uuid,
     seqnum_id: uuid::Uuid,
     previous_bucket_utilization: Option<BucketUtilization>,
@@ -74,33 +74,24 @@ pub struct Log {
 
 impl Log {
     /// Creates a new journal log.
-    pub fn new(path: String, config: Config) -> Result<Self> {
+    pub fn new(path: &Path, config: Config) -> Result<Self> {
         let machine_id = crate::file::file::load_machine_id()?;
-        let boot_id = load_boot_id()?;
-        let seqnum_id = uuid::Uuid::new_v4();
 
-        // Create the machine_id subdirectory: {journal_dir}/{machine_id}/
-        let mut origin_dir = path.clone();
-        origin_dir.push_str(&machine_id.to_string());
-
-        let path = std::path::PathBuf::from(origin_dir);
-
-        // Create directory if it does not already exist.
-        {
-            if !path.exists() {
-                std::fs::create_dir_all(&path)?;
-            } else if !path.is_dir() {
-                return Err(JournalError::NotADirectory);
-            }
-
-            path.canonicalize()
-                .map_err(|_| JournalError::DirectoryNotFound)?;
+        if path.exists() && !path.is_dir() {
+            return Err(JournalError::NotADirectory);
         }
+        let path = PathBuf::from(path).join(machine_id.as_simple().to_string());
+        path.canonicalize()
+            .map_err(|_| JournalError::NotADirectory)?;
+        std::fs::create_dir_all(&path)?;
 
-        let mut chain = Chain::new(path)?;
+        let mut chain = Chain::new(path, machine_id)?;
 
         // Enforce retention policy on startup to clean up any old files
         chain.retain(&config.retention_policy)?;
+
+        let boot_id = load_boot_id()?;
+        let seqnum_id = uuid::Uuid::new_v4();
 
         Ok(Log {
             chain,
@@ -108,7 +99,6 @@ impl Log {
             current_file: None,
             current_writer: None,
             current_file_info: None,
-            machine_id,
             boot_id,
             seqnum_id,
             previous_bucket_utilization: None,
@@ -183,12 +173,9 @@ impl Log {
             let head_seqnum = self.next_file_head_seqnum;
 
             // Create a new journal file entry
-            let file = self.chain.create_file(
-                self.machine_id,
-                self.seqnum_id,
-                head_seqnum,
-                head_realtime,
-            )?;
+            let file = self
+                .chain
+                .create_file(self.seqnum_id, head_seqnum, head_realtime)?;
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
@@ -198,12 +185,16 @@ impl Log {
 
             let file_id = uuid::Uuid::new_v4();
 
-            let options =
-                JournalFileOptions::new(self.machine_id, self.boot_id, self.seqnum_id, file_id)
-                    .with_window_size(8 * 1024 * 1024)
-                    .with_data_hash_table_buckets(data_buckets)
-                    .with_field_hash_table_buckets(field_buckets)
-                    .with_keyed_hash(true);
+            let options = JournalFileOptions::new(
+                self.chain.machine_id,
+                self.boot_id,
+                self.seqnum_id,
+                file_id,
+            )
+            .with_window_size(8 * 1024 * 1024)
+            .with_data_hash_table_buckets(data_buckets)
+            .with_field_hash_table_buckets(field_buckets)
+            .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file.path, options)?;
             let mut writer = JournalWriter::new(&mut journal_file)?;

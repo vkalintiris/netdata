@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::log::RetentionPolicy;
 use crate::registry::{File as RegistryFile, Origin, Source, Status, paths};
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -40,12 +40,6 @@ pub(crate) fn create_chain_file(
     }
 }
 
-// Helper to get file size
-fn get_file_size(path: impl AsRef<Path>) -> Result<u64> {
-    let metadata = std::fs::metadata(path)?;
-    Ok(metadata.len())
-}
-
 /// Manages a directory of journal files with automatic cleanup.
 ///
 /// Scans the directory for existing files, tracks their sizes, and enforces retention
@@ -53,6 +47,8 @@ fn get_file_size(path: impl AsRef<Path>) -> Result<u64> {
 #[derive(Debug)]
 pub struct Chain {
     pub(crate) path: PathBuf,
+    pub(crate) machine_id: Uuid,
+
     pub(crate) inner: paths::Chain,
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
     pub(crate) total_size: u64,
@@ -62,64 +58,51 @@ impl Chain {
     /// Creates a new directory manager, scanning for existing journal files.
     ///
     /// Creates the directory if it doesn't exist.
-    pub fn new(path: PathBuf) -> Result<Self> {
-        debug_assert!(path.exists() && path.is_dir());
+    pub fn new(path: PathBuf, machine_id: Uuid) -> Result<Self> {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(path.exists() && path.is_dir());
 
-        let mut journal_directory = Self {
+            let parent = path.parent().unwrap();
+            let filename = parent.file_name().unwrap().as_bytes();
+            debug_assert_eq!(Ok(machine_id), Uuid::try_parse_ascii(filename));
+        }
+
+        let mut chain = Self {
             path,
+            machine_id,
             inner: paths::Chain::default(),
             file_sizes: std::collections::HashMap::new(),
             total_size: 0,
         };
 
-        for entry in std::fs::read_dir(&journal_directory.path)? {
-            let entry = entry?;
-            let file_path = entry.path();
+        for entry in std::fs::read_dir(&chain.path)? {
+            let file_path = entry?.path();
 
-            if file_path.is_dir() {
-                // Scan subdirectories for journal files
-                for subentry in std::fs::read_dir(&file_path)? {
-                    let subentry = subentry?;
-                    let subpath = subentry.path();
+            let Some(file) = RegistryFile::from_path(&file_path) else {
+                continue;
+            };
 
-                    if subpath.extension() != Some(OsStr::new("journal")) {
-                        continue;
-                    }
+            let Ok(size) = std::fs::metadata(&file.path).map(|m| m.len()) else {
+                continue;
+            };
 
-                    if let Some(file) = RegistryFile::from_path(&subpath) {
-                        let file_size = get_file_size(&subpath).unwrap_or(0);
-                        journal_directory.total_size += file_size;
-                        journal_directory
-                            .file_sizes
-                            .insert(file.path.clone(), file_size);
-                        journal_directory.inner.insert_file(file);
-                    }
-                }
-            } else if file_path.extension() == Some(OsStr::new("journal")) {
-                // Handle journal files in the root directory (for backward compatibility)
-                if let Some(file) = RegistryFile::from_path(&file_path) {
-                    let file_size = get_file_size(&file_path).unwrap_or(0);
-                    journal_directory.total_size += file_size;
-                    journal_directory
-                        .file_sizes
-                        .insert(file.path.clone(), file_size);
-                    journal_directory.inner.insert_file(file);
-                }
-            }
+            chain.total_size += size;
+            chain.file_sizes.insert(file.path.clone(), size);
+            chain.inner.insert_file(file);
         }
 
-        Ok(journal_directory)
+        Ok(chain)
     }
 
     /// Registers a new journal file with the directory.
     pub fn create_file(
         &mut self,
-        machine_id: Uuid,
         seqnum_id: Uuid,
         head_seqnum: u64,
         head_realtime: u64,
     ) -> Result<RegistryFile> {
-        let file = create_chain_file(machine_id, seqnum_id, head_seqnum, head_realtime);
+        let file = create_chain_file(self.machine_id, seqnum_id, head_seqnum, head_realtime);
         self.inner.insert_file(file.clone());
         Ok(file)
     }
