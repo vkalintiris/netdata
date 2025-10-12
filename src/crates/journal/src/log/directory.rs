@@ -1,6 +1,6 @@
 use super::config::{RetentionPolicy, RotationPolicy};
 use crate::error::{JournalError, Result};
-use crate::registry::{File as JournalFile_, Origin, Source, Status};
+use crate::registry::{File as RegistryFile, Origin, Source, Status};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +12,7 @@ pub(crate) fn create_journal_file(
     seqnum_id: Uuid,
     head_seqnum: u64,
     head_realtime: u64,
-) -> JournalFile_ {
+) -> RegistryFile {
     let origin = Origin {
         machine_id: Some(machine_id),
         namespace: None,
@@ -33,7 +33,7 @@ pub(crate) fn create_journal_file(
         head_realtime
     );
 
-    JournalFile_ {
+    RegistryFile {
         path,
         origin,
         status,
@@ -87,7 +87,7 @@ impl JournalDirectoryConfig {
 pub struct JournalDirectory {
     pub(crate) config: JournalDirectoryConfig,
     /// Files ordered by head_realtime and head_seqnum (oldest first)
-    pub(crate) files: Vec<JournalFile_>,
+    pub(crate) files: Vec<RegistryFile>,
     /// Cached file sizes (path -> size)
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
     /// Cached total size of all files
@@ -129,7 +129,7 @@ impl JournalDirectory {
                     }
 
                     // Use journal_registry::File::from_path for parsing
-                    if let Some(file_info) = JournalFile_::from_path(&subpath) {
+                    if let Some(file_info) = RegistryFile::from_path(&subpath) {
                         let file_size = get_file_size(&subpath).unwrap_or(0);
                         journal_directory.total_size += file_size;
                         journal_directory
@@ -140,7 +140,7 @@ impl JournalDirectory {
                 }
             } else if file_path.extension() == Some(OsStr::new("journal")) {
                 // Handle journal files in the root directory (for backward compatibility)
-                if let Some(file_info) = JournalFile_::from_path(&file_path) {
+                if let Some(file_info) = RegistryFile::from_path(&file_path) {
                     let file_size = get_file_size(&file_path).unwrap_or(0);
                     journal_directory.total_size += file_size;
                     journal_directory
@@ -157,7 +157,7 @@ impl JournalDirectory {
         Ok(journal_directory)
     }
 
-    pub fn get_full_path(&self, file_info: &JournalFile_) -> PathBuf {
+    pub fn get_full_path(&self, file_info: &RegistryFile) -> PathBuf {
         let path = Path::new(&file_info.path);
         if path.is_absolute() {
             path.to_path_buf()
@@ -175,7 +175,7 @@ impl JournalDirectory {
         seqnum_id: Uuid,
         head_seqnum: u64,
         head_realtime: u64,
-    ) -> Result<JournalFile_> {
+    ) -> Result<RegistryFile> {
         let new_file = create_journal_file(machine_id, seqnum_id, head_seqnum, head_realtime);
         self.files.push(new_file.clone());
         Ok(new_file)
