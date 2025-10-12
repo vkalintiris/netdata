@@ -170,15 +170,12 @@ impl Log {
             let head_seqnum = self.next_file_head_seqnum;
 
             // Create a new journal file entry
-            let file_info = self.directory.new_file(
+            let file = self.directory.new_file(
                 self.machine_id,
                 self.seqnum_id,
                 head_seqnum,
                 head_realtime,
             )?;
-
-            // Get the full path for the journal file
-            let file_path = self.directory.get_full_path(&file_info);
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
@@ -195,7 +192,7 @@ impl Log {
                     .with_field_hash_table_buckets(field_buckets)
                     .with_keyed_hash(true);
 
-            let mut journal_file = JournalFile::create(&file_path, options)?;
+            let mut journal_file = JournalFile::create(&file.path, options)?;
             let mut writer = JournalWriter::new(&mut journal_file)?;
 
             // Set the correct initial sequence number for this file
@@ -203,7 +200,7 @@ impl Log {
 
             self.current_file = Some(journal_file);
             self.current_writer = Some(writer);
-            self.current_file_info = Some(file_info);
+            self.current_file_info = Some(file);
 
             // Enforce retention policy after creating new file to account for the new file count
             self.directory.enforce_retention_policy()?;

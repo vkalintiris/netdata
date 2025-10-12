@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // Helper function to create a File with archived status
-pub(crate) fn create_journal_file(
+pub(crate) fn create_chain_file(
     machine_id: Uuid,
     seqnum_id: Uuid,
     head_seqnum: u64,
@@ -123,18 +123,7 @@ impl JournalDirectory {
         Ok(journal_directory)
     }
 
-    pub fn get_full_path(&self, file_info: &RegistryFile) -> PathBuf {
-        let path = Path::new(&file_info.path);
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.path.join(&file_info.path)
-        }
-    }
-
     /// Registers a new journal file with the directory.
-    ///
-    /// Does not create the physical file - use [`JournalFile::create`](journal_file::JournalFile::create).
     pub fn new_file(
         &mut self,
         machine_id: Uuid,
@@ -142,7 +131,7 @@ impl JournalDirectory {
         head_seqnum: u64,
         head_realtime: u64,
     ) -> Result<RegistryFile> {
-        let file = create_journal_file(machine_id, seqnum_id, head_seqnum, head_realtime);
+        let file = create_chain_file(machine_id, seqnum_id, head_seqnum, head_realtime);
         self.chain.insert_file(file.clone());
         Ok(file)
     }
