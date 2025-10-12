@@ -148,7 +148,7 @@ impl JournalWriter {
             journal_file.journal_header_mut(),
             realtime,
             monotonic,
-            &boot_id,
+            boot_id,
         );
 
         Ok(())

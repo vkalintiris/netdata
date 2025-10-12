@@ -1,4 +1,4 @@
-use crate::error::{JournalError, Result};
+use crate::error::Result;
 use crate::log::RetentionPolicy;
 use crate::registry::{File as RegistryFile, Origin, Source, Status, paths};
 use std::ffi::OsStr;
@@ -63,12 +63,7 @@ impl Chain {
     ///
     /// Creates the directory if it doesn't exist.
     pub fn new(path: PathBuf) -> Result<Self> {
-        // Create directory if it does not already exist.
-        if !path.exists() {
-            std::fs::create_dir_all(&path)?;
-        } else if !path.is_dir() {
-            return Err(JournalError::NotADirectory);
-        }
+        debug_assert!(path.exists() && path.is_dir());
 
         let mut journal_directory = Self {
             path,

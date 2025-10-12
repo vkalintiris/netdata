@@ -4,7 +4,7 @@ use chain::Chain;
 mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
 
-use crate::error::Result;
+use crate::error::{JournalError, Result};
 use crate::file::mmap::MmapMut;
 use crate::file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
@@ -74,8 +74,6 @@ pub struct Log {
 
 impl Log {
     /// Creates a new journal log.
-    ///
-    /// Scans for existing journal files and enforces retention policies on startup.
     pub fn new(path: String, config: Config) -> Result<Self> {
         let machine_id = crate::file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
@@ -85,7 +83,21 @@ impl Log {
         let mut origin_dir = path.clone();
         origin_dir.push_str(&machine_id.to_string());
 
-        let mut chain = Chain::new(std::path::PathBuf::from(origin_dir))?;
+        let path = std::path::PathBuf::from(origin_dir);
+
+        // Create directory if it does not already exist.
+        {
+            if !path.exists() {
+                std::fs::create_dir_all(&path)?;
+            } else if !path.is_dir() {
+                return Err(JournalError::NotADirectory);
+            }
+
+            path.canonicalize()
+                .map_err(|_| JournalError::DirectoryNotFound)?;
+        }
+
+        let mut chain = Chain::new(path)?;
 
         // Enforce retention policy on startup to clean up any old files
         chain.retain(&config.retention_policy)?;
