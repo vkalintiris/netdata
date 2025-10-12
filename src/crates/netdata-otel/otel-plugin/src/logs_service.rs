@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
-use journal::log::{Log, LogConfig, RetentionPolicy, RotationPolicy};
+use journal::log::{Config, Log, RetentionPolicy, RotationPolicy};
+use journal::registry::Origin;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
@@ -28,16 +29,24 @@ impl NetdataLogsService {
             .with_size_of_journal_files(logs_config.size_of_journal_files.as_u64())
             .with_duration_of_journal_files(logs_config.duration_of_journal_files);
 
-        let journal_config = LogConfig::new(&logs_config.journal_dir)
-            .with_rotation_policy(rotation_policy)
-            .with_retention_policy(retention_policy);
+        let machine_id = journal::file::file::load_machine_id()?;
+        let origin = Origin {
+            machine_id: Some(machine_id),
+            namespace: None,
+            source: journal::registry::Source::System,
+        };
 
-        let journal_log = Arc::new(Mutex::new(Log::new(journal_config).with_context(|| {
-            format!(
-                "Failed to create journal log for directory: {}",
-                logs_config.journal_dir
-            )
-        })?));
+        let path = std::path::Path::new(&logs_config.journal_dir);
+        let journal_config = Config::new(origin, rotation_policy, retention_policy);
+
+        let journal_log = Arc::new(Mutex::new(Log::new(path, journal_config).with_context(
+            || {
+                format!(
+                    "Failed to create journal log for directory: {}",
+                    logs_config.journal_dir
+                )
+            },
+        )?));
         Ok(NetdataLogsService { log: journal_log })
     }
 

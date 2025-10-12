@@ -1,43 +1,30 @@
-use crate::error::Result;
+use crate::JournalFile;
+use crate::error::{JournalError, Result};
+use crate::file::Mmap;
 use crate::log::RetentionPolicy;
-use crate::registry::{File as RegistryFile, Origin, Source, Status, paths};
-use std::os::unix::ffi::OsStrExt;
+use crate::registry::{File as RegistryFile, paths};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // Helper function to create a File with archived status
 pub(crate) fn create_chain_file(
-    machine_id: Uuid,
+    path: &PathBuf,
     seqnum_id: Uuid,
     head_seqnum: u64,
     head_realtime: u64,
-) -> RegistryFile {
-    let origin = Origin {
-        machine_id: Some(machine_id),
-        namespace: None,
-        source: Source::System,
-    };
-
-    let status = Status::Archived {
-        seqnum_id,
-        head_seqnum,
-        head_realtime,
-    };
-
+) -> Option<RegistryFile> {
     // Format the path using the same logic as journal_registry
-    let path = format!(
+    let filename = format!(
         "system@{}-{:016x}-{:016x}.journal",
         seqnum_id.simple(),
         head_seqnum,
         head_realtime
     );
 
-    RegistryFile {
-        path,
-        origin,
-        status,
-    }
+    let path = path.join(filename);
+
+    RegistryFile::from_path(&path)
 }
 
 /// Manages a directory of journal files with automatic cleanup.
@@ -61,10 +48,11 @@ impl Chain {
     pub fn new(path: PathBuf, machine_id: Uuid) -> Result<Self> {
         #[cfg(debug_assertions)]
         {
+            use std::os::unix::ffi::OsStrExt;
+
             debug_assert!(path.exists() && path.is_dir());
 
-            let parent = path.parent().unwrap();
-            let filename = parent.file_name().unwrap().as_bytes();
+            let filename = path.file_name().unwrap().as_bytes();
             debug_assert_eq!(Ok(machine_id), Uuid::try_parse_ascii(filename));
         }
 
@@ -95,6 +83,17 @@ impl Chain {
         Ok(chain)
     }
 
+    pub fn tail_seqnum(&self) -> Result<u64> {
+        let Some(file) = self.inner.back() else {
+            return Ok(0);
+        };
+
+        let window_size = 4096;
+        let jf = JournalFile::<Mmap>::open(&file.path, window_size)?;
+
+        Ok(jf.journal_header_ref().tail_entry_seqnum)
+    }
+
     /// Registers a new journal file with the directory.
     pub fn create_file(
         &mut self,
@@ -102,7 +101,10 @@ impl Chain {
         head_seqnum: u64,
         head_realtime: u64,
     ) -> Result<RegistryFile> {
-        let file = create_chain_file(self.machine_id, seqnum_id, head_seqnum, head_realtime);
+        let Some(file) = create_chain_file(&self.path, seqnum_id, head_seqnum, head_realtime)
+        else {
+            return Err(JournalError::InvalidFilename);
+        };
         self.inner.insert_file(file.clone());
         Ok(file)
     }

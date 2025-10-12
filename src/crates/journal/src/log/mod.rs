@@ -9,7 +9,7 @@ use crate::file::mmap::MmapMut;
 use crate::file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
-use crate::registry::File as JournalFile_;
+use crate::registry::File as RegistryFile;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -63,13 +63,12 @@ pub struct Log {
     config: Config,
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
-    current_file_info: Option<JournalFile_>,
+    current_file_info: Option<RegistryFile>,
     boot_id: uuid::Uuid,
     seqnum_id: uuid::Uuid,
     previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
-    /// The sequence number that the next file will start with
-    next_file_head_seqnum: u64,
+    current_tail_seqnum: u64,
 }
 
 impl Log {
@@ -81,10 +80,23 @@ impl Log {
             if path.exists() && !path.is_dir() {
                 return Err(JournalError::NotADirectory);
             }
+
+            if path.to_str().is_none() {
+                return Err(JournalError::InvalidFilename);
+            }
+
             let path = PathBuf::from(path).join(machine_id.as_simple().to_string());
+            if path.to_str().is_none() {
+                return Err(JournalError::InvalidFilename);
+            }
+
+            std::fs::create_dir_all(&path)?;
+
             path.canonicalize()
                 .map_err(|_| JournalError::NotADirectory)?;
-            std::fs::create_dir_all(&path)?;
+            if path.to_str().is_none() {
+                return Err(JournalError::InvalidFilename);
+            }
 
             Chain::new(path, machine_id)?
         };
@@ -94,6 +106,7 @@ impl Log {
 
         let boot_id = load_boot_id()?;
         let seqnum_id = uuid::Uuid::new_v4();
+        let next_file_head_seqnum = chain.tail_seqnum()? + 1;
 
         Ok(Log {
             chain,
@@ -105,7 +118,7 @@ impl Log {
             seqnum_id,
             previous_bucket_utilization: None,
             entries_since_rotation: 0,
-            next_file_head_seqnum: 1, // First file starts with seqnum 1
+            current_tail_seqnum: next_file_head_seqnum,
         })
     }
 
@@ -172,7 +185,7 @@ impl Log {
                 .as_micros() as u64;
 
             // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
-            let head_seqnum = self.next_file_head_seqnum;
+            let head_seqnum = self.current_tail_seqnum;
 
             // Create a new journal file entry
             let file = self
@@ -270,7 +283,7 @@ impl Log {
 
         // Capture the next sequence number for the new file
         if let Some(writer) = &self.current_writer {
-            self.next_file_head_seqnum = writer.next_seqnum();
+            self.current_tail_seqnum = writer.next_seqnum();
         }
 
         // Update the current file's size in our tracking before closing

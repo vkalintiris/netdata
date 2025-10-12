@@ -342,6 +342,10 @@ impl Chain {
         self.files.pop_back()
     }
 
+    pub fn back(&self) -> Option<&File> {
+        self.files.back()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }

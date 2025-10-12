@@ -15,9 +15,6 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zerocopy::{ByteSlice, FromBytes, SplitByteSlice, SplitByteSliceMut};
 
-#[cfg(debug_assertions)]
-use std::backtrace::Backtrace;
-
 use crate::file::value_guard::ValueGuard;
 
 fn read_host_file(filename: &str) -> Result<String> {
@@ -35,7 +32,7 @@ fn read_host_file(filename: &str) -> Result<String> {
 pub fn load_machine_id() -> Result<uuid::Uuid> {
     use std::str::FromStr;
     let content = read_host_file("/etc/machine-id")?;
-    uuid::Uuid::try_parse(&content).map_err(|_| JournalError::UuidSerde)
+    uuid::Uuid::try_parse(content.trim()).map_err(|_| JournalError::UuidSerde)
 }
 
 #[cfg(target_os = "macos")]
@@ -80,7 +77,7 @@ pub fn load_machine_id() -> Result<[u8; 16]> {
 #[cfg(target_os = "linux")]
 pub fn load_boot_id() -> Result<uuid::Uuid> {
     let content = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    uuid::Uuid::try_parse(&content).map_err(|_| JournalError::UuidSerde)
+    uuid::Uuid::try_parse(content.trim()).map_err(|_| JournalError::UuidSerde)
 }
 
 #[cfg(target_os = "macos")]
@@ -306,11 +303,6 @@ pub struct JournalFile<M: MemoryMap> {
 
     // Flag to track if any object is in use
     object_in_use: RefCell<bool>,
-
-    #[cfg(debug_assertions)]
-    prev_backtrace: RefCell<Backtrace>,
-    #[cfg(debug_assertions)]
-    backtrace: RefCell<Backtrace>,
 }
 
 fn map_hash_table<M: MemoryMap>(
@@ -397,11 +389,6 @@ impl<M: MemoryMap> JournalFile<M> {
             field_hash_table_map,
             window_manager,
             object_in_use: RefCell::new(false),
-
-            #[cfg(debug_assertions)]
-            prev_backtrace: RefCell::new(Backtrace::capture()),
-            #[cfg(debug_assertions)]
-            backtrace: RefCell::new(Backtrace::capture()),
         })
     }
 
@@ -481,21 +468,7 @@ impl<M: MemoryMap> JournalFile<M> {
         // Check if any object is already in use
         let mut is_in_use = self.object_in_use.borrow_mut();
         if *is_in_use {
-            #[cfg(debug_assertions)]
-            {
-                eprintln!(
-                    "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
-                    self.backtrace.borrow().to_string(),
-                    self.prev_backtrace.borrow().to_string()
-                );
-            }
             return Err(JournalError::ValueGuardInUse);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            self.backtrace.swap(&self.prev_backtrace);
-            let _ = self.backtrace.replace(Backtrace::force_capture());
         }
 
         let is_compact = self
@@ -783,11 +756,6 @@ impl<M: MemoryMapMut> JournalFile<M> {
             field_hash_table_map,
             window_manager,
             object_in_use: RefCell::new(false),
-
-            #[cfg(debug_assertions)]
-            prev_backtrace: RefCell::new(Backtrace::capture()),
-            #[cfg(debug_assertions)]
-            backtrace: RefCell::new(Backtrace::capture()),
         };
 
         // write data hash table object header info
@@ -868,21 +836,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         // Check if any object is already in use
         let mut is_in_use = self.object_in_use.borrow_mut();
         if *is_in_use {
-            #[cfg(debug_assertions)]
-            {
-                eprintln!(
-                    "Value is in use. Current Backtrace: {:?}, Previous Backtrace: {:?}",
-                    self.backtrace.borrow().to_string(),
-                    self.prev_backtrace.borrow().to_string()
-                );
-            }
             return Err(JournalError::ValueGuardInUse);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            self.backtrace.swap(&self.prev_backtrace);
-            let _ = self.backtrace.replace(Backtrace::force_capture());
         }
 
         let is_compact = self
