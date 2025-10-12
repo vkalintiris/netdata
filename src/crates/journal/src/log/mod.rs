@@ -70,7 +70,7 @@ mod directory;
 use directory::{JournalDirectory, JournalDirectoryConfig};
 
 mod policy;
-pub use policy::{RetentionPolicy, RotationPolicy};
+pub use policy::{LogConfig, RetentionPolicy, RotationPolicy};
 
 use crate::error::Result;
 use crate::file::mmap::MmapMut;
@@ -78,7 +78,6 @@ use crate::file::{
     BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
 };
 use crate::registry::File as JournalFile_;
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -123,47 +122,6 @@ fn calculate_bucket_sizes(
         let field_buckets = 128; // Assume ~8:1 data:field ratio
 
         (data_buckets, field_buckets)
-    }
-}
-
-/// Configuration for [`JournalLog`].
-///
-/// Provides sensible defaults:
-/// - Rotation: 100MB files, 2 hour spans
-/// - Retention: 10 files, 1GB total, 7 day history
-#[derive(Debug, Clone)]
-pub struct LogConfig {
-    /// Directory where journal files are stored
-    pub journal_dir: PathBuf,
-    /// Policy for when to rotate active files
-    pub rotation_policy: RotationPolicy,
-    /// Policy for when to remove old files
-    pub retention_policy: RetentionPolicy,
-}
-
-impl LogConfig {
-    /// Creates a new configuration with default policies.
-    pub fn new(journal_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            journal_dir: journal_dir.into(),
-            rotation_policy: RotationPolicy::default()
-                .with_size_of_journal_file(100 * 1024 * 1024) // 100MB
-                .with_duration_of_journal_file(Duration::from_secs(2 * 3600)), // 2 hours
-            retention_policy: RetentionPolicy::default()
-                .with_number_of_journal_files(10) // 10 files
-                .with_size_of_journal_files(1024 * 1024 * 1024) // 1GB
-                .with_duration_of_journal_files(Duration::from_secs(7 * 24 * 3600)), // 7 days
-        }
-    }
-
-    pub fn with_rotation_policy(mut self, policy: RotationPolicy) -> Self {
-        self.rotation_policy = policy;
-        self
-    }
-
-    pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Self {
-        self.retention_policy = policy;
-        self
     }
 }
 

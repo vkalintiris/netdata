@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Controls when journal files should be rotated
@@ -64,6 +65,44 @@ impl RetentionPolicy {
     /// Specifies maximum duration of journal files.
     pub fn with_duration_of_journal_files(mut self, duration_of_journal_files: Duration) -> Self {
         self.duration_of_journal_files = Some(duration_of_journal_files);
+        self
+    }
+}
+
+/// Configuration for a journal log.
+#[derive(Debug, Clone)]
+pub struct LogConfig {
+    /// Directory where journal files are stored
+    pub journal_dir: PathBuf,
+    /// Policy for when to rotate active files
+    pub rotation_policy: RotationPolicy,
+    /// Policy for when to remove old files
+    pub retention_policy: RetentionPolicy,
+}
+
+impl LogConfig {
+    /// Creates a new log configuration.
+    pub fn new(
+        journal_dir: impl Into<PathBuf>,
+        rotation_policy: RotationPolicy,
+        retention_policy: RetentionPolicy,
+    ) -> Self {
+        Self {
+            journal_dir: journal_dir.into(),
+            rotation_policy,
+            retention_policy,
+        }
+    }
+
+    /// Specifies the rotation policy of the log directory
+    pub fn with_rotation_policy(mut self, policy: RotationPolicy) -> Self {
+        self.rotation_policy = policy;
+        self
+    }
+
+    /// Specifies the retention policy of the log directory
+    pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Self {
+        self.retention_policy = policy;
         self
     }
 }
