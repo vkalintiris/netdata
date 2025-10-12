@@ -338,8 +338,8 @@ impl Chain {
         }
     }
 
-    pub fn pop_back(&mut self) -> Option<File> {
-        self.files.pop_back()
+    pub fn pop_front(&mut self) -> Option<File> {
+        self.files.pop_front()
     }
 
     pub fn back(&self) -> Option<&File> {

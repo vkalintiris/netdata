@@ -127,7 +127,7 @@ impl Chain {
 
         // Remove by entry age limit
         if let Some(max_entry_age) = retention_policy.duration_of_journal_files {
-            self.delete_files_older_than(max_entry_age)?;
+            // self.delete_files_older_than(max_entry_age)?;
         }
 
         Ok(())
@@ -135,7 +135,7 @@ impl Chain {
 
     /// Remove the oldest file
     fn delete_oldest_file(&mut self) -> Result<()> {
-        let Some(file) = self.inner.pop_back() else {
+        let Some(file) = self.inner.pop_front() else {
             return Ok(());
         };
 
