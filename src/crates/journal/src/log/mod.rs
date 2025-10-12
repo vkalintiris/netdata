@@ -69,8 +69,8 @@
 mod directory;
 use directory::{JournalDirectory, JournalDirectoryConfig};
 
-mod policy;
-pub use policy::{LogConfig, RetentionPolicy, RotationPolicy};
+mod config;
+pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::error::Result;
 use crate::file::mmap::MmapMut;
@@ -148,7 +148,7 @@ impl Log {
     /// Creates a new journal log.
     ///
     /// Scans for existing journal files and enforces retention policies on startup.
-    pub fn new(config: LogConfig) -> Result<Self> {
+    pub fn new(config: Config) -> Result<Self> {
         let machine_id = crate::file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
         // TODO: Use NETDATA_INVOCATION_ID

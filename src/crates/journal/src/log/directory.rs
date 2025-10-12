@@ -1,4 +1,4 @@
-use super::policy::{RetentionPolicy, RotationPolicy};
+use super::config::{RetentionPolicy, RotationPolicy};
 use crate::error::{JournalError, Result};
 use crate::registry::{File as JournalFile_, Origin, Source, Status};
 use std::ffi::OsStr;
@@ -132,7 +132,9 @@ impl JournalDirectory {
                     if let Some(file_info) = JournalFile_::from_path(&subpath) {
                         let file_size = get_file_size(&subpath).unwrap_or(0);
                         journal_directory.total_size += file_size;
-                        journal_directory.file_sizes.insert(file_info.path.clone(), file_size);
+                        journal_directory
+                            .file_sizes
+                            .insert(file_info.path.clone(), file_size);
                         journal_directory.files.push(file_info);
                     }
                 }
@@ -141,7 +143,9 @@ impl JournalDirectory {
                 if let Some(file_info) = JournalFile_::from_path(&file_path) {
                     let file_size = get_file_size(&file_path).unwrap_or(0);
                     journal_directory.total_size += file_size;
-                    journal_directory.file_sizes.insert(file_info.path.clone(), file_size);
+                    journal_directory
+                        .file_sizes
+                        .insert(file_info.path.clone(), file_size);
                     journal_directory.files.push(file_info);
                 }
             }
@@ -153,10 +157,6 @@ impl JournalDirectory {
         Ok(journal_directory)
     }
 
-    pub fn directory_path(&self) -> &Path {
-        &self.config.directory
-    }
-
     pub fn get_full_path(&self, file_info: &JournalFile_) -> PathBuf {
         let path = Path::new(&file_info.path);
         if path.is_absolute() {
@@ -164,11 +164,6 @@ impl JournalDirectory {
         } else {
             self.config.directory.join(&file_info.path)
         }
-    }
-
-    /// Returns all journal files in the directory, sorted oldest-first.
-    pub fn files(&self) -> Vec<JournalFile_> {
-        self.files.clone()
     }
 
     /// Registers a new journal file with the directory.
