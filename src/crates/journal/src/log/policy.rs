@@ -15,16 +15,19 @@ pub struct RotationPolicy {
 }
 
 impl RotationPolicy {
+    /// Specify the maximum journal file size
     pub fn with_size_of_journal_file(mut self, size_of_journal_file: u64) -> Self {
         self.size_of_journal_file = Some(size_of_journal_file);
         self
     }
 
+    /// Specify the maximum duration between head/tail entry
     pub fn with_duration_of_journal_file(mut self, duration_of_journal_file: Duration) -> Self {
         self.duration_of_journal_file = Some(duration_of_journal_file);
         self
     }
 
+    /// Specify maximum number of entries
     pub fn with_number_of_entries(mut self, number_of_entries: usize) -> Self {
         self.number_of_entries = Some(number_of_entries);
         self
