@@ -142,7 +142,7 @@ impl Log {
         // Use realtime for monotonic as well for simplicity
         let monotonic = realtime;
 
-        writer.add_entry(journal_file, items, realtime, monotonic, &self.boot_id)?;
+        writer.add_entry(journal_file, items, realtime, monotonic)?;
 
         self.entries_since_rotation += 1;
         self.current_seqnum += 1;
@@ -197,7 +197,7 @@ impl Log {
             .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file.path, options)?;
-            let writer = JournalWriter::new(&mut journal_file, head_seqnum)?;
+            let writer = JournalWriter::new(&mut journal_file, head_seqnum, self.boot_id)?;
 
             self.current_file = Some(journal_file);
             self.current_writer = Some(writer);

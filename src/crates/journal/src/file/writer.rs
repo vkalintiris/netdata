@@ -30,6 +30,7 @@ pub struct JournalWriter {
     num_written_objects: u64,
     entry_items: Vec<EntryItem>,
     first_entry_monotonic: Option<u64>,
+    boot_id: uuid::Uuid,
 }
 
 impl JournalWriter {
@@ -43,7 +44,11 @@ impl JournalWriter {
         self.first_entry_monotonic
     }
 
-    pub fn new(journal_file: &mut JournalFile<MmapMut>, next_seqnum: u64) -> Result<Self> {
+    pub fn new(
+        journal_file: &mut JournalFile<MmapMut>,
+        next_seqnum: u64,
+        boot_id: uuid::Uuid,
+    ) -> Result<Self> {
         let append_offset = {
             let header = journal_file.journal_header_ref();
 
@@ -66,6 +71,7 @@ impl JournalWriter {
             num_written_objects: 0,
             entry_items: Vec::with_capacity(128),
             first_entry_monotonic: None,
+            boot_id,
         })
     }
 
@@ -75,7 +81,6 @@ impl JournalWriter {
         items: &[&[u8]],
         realtime: u64,
         monotonic: u64,
-        boot_id: &uuid::Uuid,
     ) -> Result<()> {
         let header = journal_file.journal_header_ref();
         assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
@@ -111,7 +116,7 @@ impl JournalWriter {
 
             entry_guard.header.seqnum = self.next_seqnum;
             entry_guard.header.xor_hash = xor_hash;
-            entry_guard.header.boot_id = boot_id.into_bytes();
+            entry_guard.header.boot_id = *self.boot_id.as_bytes();
             entry_guard.header.monotonic = monotonic;
             entry_guard.header.realtime = realtime;
 
@@ -131,12 +136,7 @@ impl JournalWriter {
             self.link_data_to_entry(journal_file, entry_offset, entry_item_index)?;
         }
 
-        self.entry_added(
-            journal_file.journal_header_mut(),
-            realtime,
-            monotonic,
-            boot_id,
-        );
+        self.entry_added(journal_file.journal_header_mut(), realtime, monotonic);
 
         Ok(())
     }
@@ -147,13 +147,7 @@ impl JournalWriter {
         self.num_written_objects += 1;
     }
 
-    fn entry_added(
-        &mut self,
-        header: &mut JournalHeader,
-        realtime: u64,
-        monotonic: u64,
-        boot_id: &uuid::Uuid,
-    ) {
+    fn entry_added(&mut self, header: &mut JournalHeader, realtime: u64, monotonic: u64) {
         header.n_entries += 1;
         header.n_objects += self.num_written_objects;
         header.tail_object_offset = Some(self.tail_object_offset);
@@ -172,7 +166,7 @@ impl JournalWriter {
         header.tail_entry_seqnum = self.next_seqnum;
         header.tail_entry_realtime = realtime;
         header.tail_entry_monotonic = monotonic;
-        header.tail_entry_boot_id = *boot_id.as_bytes();
+        header.tail_entry_boot_id = *self.boot_id.as_bytes();
 
         self.next_seqnum += 1;
         self.num_written_objects = 0;
