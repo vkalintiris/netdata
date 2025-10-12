@@ -128,19 +128,16 @@ impl Log {
             return Ok(());
         }
 
+        let realtime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let monotonic = realtime;
+
         self.ensure_active_journal()?;
 
         let journal_file = self.current_file.as_mut().unwrap();
         let writer = self.current_writer.as_mut().unwrap();
-
-        let now = SystemTime::now();
-        let realtime = now
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-
-        // Use realtime for monotonic as well for simplicity
-        let monotonic = realtime;
 
         writer.add_entry(journal_file, items, realtime, monotonic)?;
 
@@ -159,23 +156,15 @@ impl Log {
         }
 
         if self.current_file.is_none() {
-            // Compute head values for the new file
-            // head_realtime: current time in microseconds since epoch
-            let now = SystemTime::now();
-            let head_realtime = now
+            let head_seqnum = self.current_seqnum + 1;
+            let head_realtime = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_micros() as u64;
 
-            // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
-            let head_seqnum = self.current_seqnum + 1;
-
-            // Create a new journal file entry
             let file = self
                 .chain
                 .create_file(self.seqnum_id, head_seqnum, head_realtime)?;
-
-            println!("Created new file with head_seqnum: {:#?}", head_seqnum);
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
@@ -183,20 +172,14 @@ impl Log {
                 &self.config.rotation_policy,
             );
 
-            let file_id = uuid::Uuid::new_v4();
-
-            let options = JournalFileOptions::new(
-                self.chain.machine_id,
-                self.boot_id,
-                self.seqnum_id,
-                file_id,
-            )
-            .with_window_size(8 * 1024 * 1024)
-            .with_data_hash_table_buckets(data_buckets)
-            .with_field_hash_table_buckets(field_buckets)
-            .with_keyed_hash(true);
-
+            let options =
+                JournalFileOptions::new(self.chain.machine_id, self.boot_id, self.seqnum_id)
+                    .with_window_size(8 * 1024 * 1024)
+                    .with_data_hash_table_buckets(data_buckets)
+                    .with_field_hash_table_buckets(field_buckets)
+                    .with_keyed_hash(true);
             let mut journal_file = JournalFile::create(&file.path, options)?;
+
             let writer = JournalWriter::new(&mut journal_file, head_seqnum, self.boot_id)?;
 
             self.current_file = Some(journal_file);

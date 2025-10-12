@@ -192,12 +192,9 @@ pub struct JournalFileOptions {
 }
 
 impl JournalFileOptions {
-    pub fn new(
-        machine_id: uuid::Uuid,
-        boot_id: uuid::Uuid,
-        seqnum_id: uuid::Uuid,
-        file_id: uuid::Uuid,
-    ) -> Self {
+    pub fn new(machine_id: uuid::Uuid, boot_id: uuid::Uuid, seqnum_id: uuid::Uuid) -> Self {
+        let file_id = uuid::Uuid::new_v4();
+
         Self {
             machine_id,
             boot_id,
