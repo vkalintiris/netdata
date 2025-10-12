@@ -1,6 +1,6 @@
-use super::config::Config;
 use crate::error::{JournalError, Result};
-use crate::registry::{File as RegistryFile, Origin, Source, Status, paths::Chain};
+use crate::log::RetentionPolicy;
+use crate::registry::{File as RegistryFile, Origin, Source, Status, paths};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,22 +51,21 @@ fn get_file_size(path: impl AsRef<Path>) -> Result<u64> {
 /// Scans the directory for existing files, tracks their sizes, and enforces retention
 /// policies. Typically not used directly - see [`JournalLog`](crate::JournalLog) instead.
 #[derive(Debug)]
-pub struct JournalDirectory {
+pub struct Chain {
     pub(crate) path: PathBuf,
-    pub(crate) config: Config,
     /// Files ordered by head_realtime and head_seqnum (oldest first)
-    pub(crate) chain: Chain,
+    pub(crate) chain: paths::Chain,
     /// Cached file sizes (path -> size)
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
     /// Cached total size of all files
     pub(crate) total_size: u64,
 }
 
-impl JournalDirectory {
+impl Chain {
     /// Creates a new directory manager, scanning for existing journal files.
     ///
     /// Creates the directory if it doesn't exist.
-    pub fn with_config(path: PathBuf, config: Config) -> Result<Self> {
+    pub fn new(path: PathBuf) -> Result<Self> {
         // Create directory if it does not already exist.
         if !path.exists() {
             std::fs::create_dir_all(&path)?;
@@ -76,8 +75,7 @@ impl JournalDirectory {
 
         let mut journal_directory = Self {
             path,
-            config,
-            chain: Chain::default(),
+            chain: paths::Chain::default(),
             file_sizes: std::collections::HashMap::new(),
             total_size: 0,
         };
@@ -124,7 +122,7 @@ impl JournalDirectory {
     }
 
     /// Registers a new journal file with the directory.
-    pub fn new_file(
+    pub fn create_file(
         &mut self,
         machine_id: Uuid,
         seqnum_id: Uuid,
@@ -191,25 +189,23 @@ impl JournalDirectory {
     /// Deletes old files to satisfy retention policy limits.
     ///
     /// Removes oldest files first until all limits are met.
-    pub fn enforce_retention_policy(&mut self) -> Result<()> {
-        let policy = self.config.retention_policy;
-
+    pub fn retain(&mut self, retention_policy: &RetentionPolicy) -> Result<()> {
         // Remove by file count limit
-        if let Some(max_files) = policy.number_of_journal_files {
+        if let Some(max_files) = retention_policy.number_of_journal_files {
             while self.chain.len() > max_files {
                 self.remove_oldest_file()?;
             }
         }
 
         // Remove by total size limit
-        if let Some(max_total_size) = policy.size_of_journal_files {
+        if let Some(max_total_size) = retention_policy.size_of_journal_files {
             while self.total_size > max_total_size && !self.chain.is_empty() {
                 self.remove_oldest_file()?;
             }
         }
 
         // Remove by entry age limit
-        if let Some(max_entry_age) = policy.duration_of_journal_files {
+        if let Some(max_entry_age) = retention_policy.duration_of_journal_files {
             self.remove_files_older_than(max_entry_age)?;
         }
 

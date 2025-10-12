@@ -1,5 +1,5 @@
-mod directory;
-use directory::JournalDirectory;
+mod chain;
+use chain::Chain;
 
 mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
@@ -58,7 +58,8 @@ fn calculate_bucket_sizes(
 /// Files are automatically rotated based on configured policies, and old files
 /// are deleted to satisfy retention limits.
 pub struct Log {
-    directory: JournalDirectory,
+    chain: Chain,
+    config: Config,
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
     current_file_info: Option<JournalFile_>,
@@ -84,14 +85,14 @@ impl Log {
         let mut origin_dir = path.clone();
         origin_dir.push_str(&machine_id.to_string());
 
-        let mut directory =
-            JournalDirectory::with_config(std::path::PathBuf::from(origin_dir), config)?;
+        let mut chain = Chain::new(std::path::PathBuf::from(origin_dir))?;
 
         // Enforce retention policy on startup to clean up any old files
-        directory.enforce_retention_policy()?;
+        chain.retain(&config.retention_policy)?;
 
         Ok(Log {
-            directory,
+            chain,
+            config,
             current_file: None,
             current_writer: None,
             current_file_info: None,
@@ -170,7 +171,7 @@ impl Log {
             let head_seqnum = self.next_file_head_seqnum;
 
             // Create a new journal file entry
-            let file = self.directory.new_file(
+            let file = self.chain.create_file(
                 self.machine_id,
                 self.seqnum_id,
                 head_seqnum,
@@ -180,7 +181,7 @@ impl Log {
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
                 self.previous_bucket_utilization.as_ref(),
-                &self.directory.config.rotation_policy,
+                &self.config.rotation_policy,
             );
 
             let file_id = uuid::Uuid::new_v4();
@@ -203,7 +204,7 @@ impl Log {
             self.current_file_info = Some(file);
 
             // Enforce retention policy after creating new file to account for the new file count
-            self.directory.enforce_retention_policy()?;
+            self.chain.retain(&self.config.retention_policy)?;
         }
 
         Ok(())
@@ -212,7 +213,7 @@ impl Log {
     /// Checks if we have to rotate. Prioritizes file size over file creation
     /// time, then entry count, then duration.
     fn should_rotate(&self, writer: &JournalWriter) -> bool {
-        let policy = self.directory.config.rotation_policy;
+        let policy = self.config.rotation_policy;
 
         // Check if the file size went over the limit
         if let Some(max_size) = policy.size_of_journal_file {
@@ -273,19 +274,19 @@ impl Log {
 
             // Update the size in the directory's file_sizes HashMap
             let old_size = self
-                .directory
+                .chain
                 .file_sizes
                 .get(&file_info.path)
                 .copied()
                 .unwrap_or(0);
 
-            self.directory
+            self.chain
                 .file_sizes
                 .insert(file_info.path.clone(), current_size);
 
             // Update total size tracking
-            self.directory.total_size = self
-                .directory
+            self.chain.total_size = self
+                .chain
                 .total_size
                 .saturating_sub(old_size)
                 .saturating_add(current_size);
