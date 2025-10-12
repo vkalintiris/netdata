@@ -53,11 +53,8 @@ fn get_file_size(path: impl AsRef<Path>) -> Result<u64> {
 #[derive(Debug)]
 pub struct Chain {
     pub(crate) path: PathBuf,
-    /// Files ordered by head_realtime and head_seqnum (oldest first)
-    pub(crate) chain: paths::Chain,
-    /// Cached file sizes (path -> size)
+    pub(crate) inner: paths::Chain,
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
-    /// Cached total size of all files
     pub(crate) total_size: u64,
 }
 
@@ -75,12 +72,11 @@ impl Chain {
 
         let mut journal_directory = Self {
             path,
-            chain: paths::Chain::default(),
+            inner: paths::Chain::default(),
             file_sizes: std::collections::HashMap::new(),
             total_size: 0,
         };
 
-        // Read all .journal files from directory recursively (to handle machine_id subdirs)
         for entry in std::fs::read_dir(&journal_directory.path)? {
             let entry = entry?;
             let file_path = entry.path();
@@ -95,14 +91,13 @@ impl Chain {
                         continue;
                     }
 
-                    // Use journal_registry::File::from_path for parsing
                     if let Some(file) = RegistryFile::from_path(&subpath) {
                         let file_size = get_file_size(&subpath).unwrap_or(0);
                         journal_directory.total_size += file_size;
                         journal_directory
                             .file_sizes
                             .insert(file.path.clone(), file_size);
-                        journal_directory.chain.insert_file(file);
+                        journal_directory.inner.insert_file(file);
                     }
                 }
             } else if file_path.extension() == Some(OsStr::new("journal")) {
@@ -113,7 +108,7 @@ impl Chain {
                     journal_directory
                         .file_sizes
                         .insert(file.path.clone(), file_size);
-                    journal_directory.chain.insert_file(file);
+                    journal_directory.inner.insert_file(file);
                 }
             }
         }
@@ -130,13 +125,37 @@ impl Chain {
         head_realtime: u64,
     ) -> Result<RegistryFile> {
         let file = create_chain_file(machine_id, seqnum_id, head_seqnum, head_realtime);
-        self.chain.insert_file(file.clone());
+        self.inner.insert_file(file.clone());
         Ok(file)
     }
 
-    /// Remove the oldest file (by head_realtime/head_seqnum) from both filesystem and tracking
-    fn remove_oldest_file(&mut self) -> Result<()> {
-        let Some(file) = self.chain.pop_back() else {
+    /// Retains the files that satisfy retention policy limits.
+    pub fn retain(&mut self, retention_policy: &RetentionPolicy) -> Result<()> {
+        // Remove by file count limit
+        if let Some(max_files) = retention_policy.number_of_journal_files {
+            while self.inner.len() > max_files {
+                self.delete_oldest_file()?;
+            }
+        }
+
+        // Remove by total size limit
+        if let Some(max_total_size) = retention_policy.size_of_journal_files {
+            while self.total_size > max_total_size && !self.inner.is_empty() {
+                self.delete_oldest_file()?;
+            }
+        }
+
+        // Remove by entry age limit
+        if let Some(max_entry_age) = retention_policy.duration_of_journal_files {
+            self.delete_files_older_than(max_entry_age)?;
+        }
+
+        Ok(())
+    }
+
+    /// Remove the oldest file
+    fn delete_oldest_file(&mut self) -> Result<()> {
+        let Some(file) = self.inner.pop_back() else {
             return Ok(());
         };
 
@@ -157,7 +176,7 @@ impl Chain {
     }
 
     /// Remove files older than the specified cutoff time
-    fn remove_files_older_than(&mut self, max_entry_age: std::time::Duration) -> Result<()> {
+    fn delete_files_older_than(&mut self, max_entry_age: std::time::Duration) -> Result<()> {
         let cutoff_time = SystemTime::now()
             .checked_sub(max_entry_age)
             .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -167,7 +186,7 @@ impl Chain {
             .unwrap_or_default()
             .as_micros() as u64;
 
-        for file in self.chain.drain(cutoff_time) {
+        for file in self.inner.drain(cutoff_time) {
             let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
 
             // Remove from filesystem
@@ -181,32 +200,6 @@ impl Chain {
 
             self.file_sizes.remove(&file.path);
             self.total_size = self.total_size.saturating_sub(file_size);
-        }
-
-        Ok(())
-    }
-
-    /// Deletes old files to satisfy retention policy limits.
-    ///
-    /// Removes oldest files first until all limits are met.
-    pub fn retain(&mut self, retention_policy: &RetentionPolicy) -> Result<()> {
-        // Remove by file count limit
-        if let Some(max_files) = retention_policy.number_of_journal_files {
-            while self.chain.len() > max_files {
-                self.remove_oldest_file()?;
-            }
-        }
-
-        // Remove by total size limit
-        if let Some(max_total_size) = retention_policy.size_of_journal_files {
-            while self.total_size > max_total_size && !self.chain.is_empty() {
-                self.remove_oldest_file()?;
-            }
-        }
-
-        // Remove by entry age limit
-        if let Some(max_entry_age) = retention_policy.duration_of_journal_files {
-            self.remove_files_older_than(max_entry_age)?;
         }
 
         Ok(())
