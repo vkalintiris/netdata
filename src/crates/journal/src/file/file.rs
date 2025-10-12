@@ -1,9 +1,10 @@
 #![allow(unused_imports, clippy::field_reassign_with_default)]
 
+use super::mmap::{MemoryMap, MemoryMapMut, WindowManager};
+use crate::error::{JournalError, Result};
 use crate::file::hash;
 use crate::file::object::*;
 use crate::file::offset_array;
-use crate::error::{JournalError, Result};
 use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
@@ -12,7 +13,6 @@ use std::num::NonZeroI128;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use super::mmap::{MemoryMap, MemoryMapMut, WindowManager};
 use zerocopy::{ByteSlice, FromBytes, SplitByteSlice, SplitByteSliceMut};
 
 #[cfg(debug_assertions)]
@@ -32,13 +32,10 @@ fn read_host_file(filename: &str) -> Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn load_machine_id() -> Result<[u8; 16]> {
+pub fn load_machine_id() -> Result<uuid::Uuid> {
+    use std::str::FromStr;
     let content = read_host_file("/etc/machine-id")?;
-    let decoded = hex::decode(content.trim()).map_err(|_| JournalError::UuidSerde)?;
-    let bytes: [u8; 16] = decoded
-        .try_into()
-        .map_err(|_| JournalError::UuidSerde)?;
-    Ok(bytes)
+    uuid::Uuid::try_parse(&content).map_err(|_| JournalError::UuidSerde)
 }
 
 #[cfg(target_os = "macos")]
@@ -81,23 +78,9 @@ pub fn load_machine_id() -> Result<[u8; 16]> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn load_boot_id() -> Result<[u8; 16]> {
+pub fn load_boot_id() -> Result<uuid::Uuid> {
     let content = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-
-    let uuid_str = content.trim();
-    let hex_str: String = uuid_str.chars().filter(|c| *c != '-').collect();
-
-    if hex_str.len() != 32 {
-        return Err(JournalError::UuidSerde);
-    }
-
-    let mut bytes = [0u8; 16];
-    for i in 0..16 {
-        let hex_pair = &hex_str[i * 2..i * 2 + 2];
-        bytes[i] = u8::from_str_radix(hex_pair, 16).map_err(|_| JournalError::UuidSerde)?;
-    }
-
-    Ok(bytes)
+    uuid::Uuid::try_parse(&content).map_err(|_| JournalError::UuidSerde)
 }
 
 #[cfg(target_os = "macos")]
@@ -201,10 +184,10 @@ where
 
 #[derive(Debug, Clone)]
 pub struct JournalFileOptions {
-    machine_id: [u8; 16],
-    boot_id: [u8; 16],
-    seqnum_id: [u8; 16],
-    file_id: [u8; 16],
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+    file_id: uuid::Uuid,
     window_size: u64,
     data_hash_table_buckets: usize,
     field_hash_table_buckets: usize,
@@ -213,10 +196,10 @@ pub struct JournalFileOptions {
 
 impl JournalFileOptions {
     pub fn new(
-        machine_id: [u8; 16],
-        boot_id: [u8; 16],
-        seqnum_id: [u8; 16],
-        file_id: [u8; 16],
+        machine_id: uuid::Uuid,
+        boot_id: uuid::Uuid,
+        seqnum_id: uuid::Uuid,
+        file_id: uuid::Uuid,
     ) -> Self {
         Self {
             machine_id,
@@ -766,10 +749,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
             field_hash_table_offset + field_hash_table_size as u64 - header.header_size;
 
         // Set IDs from options
-        header.machine_id = options.machine_id;
-        header.tail_entry_boot_id = options.boot_id;
-        header.file_id = options.file_id;
-        header.seqnum_id = options.seqnum_id;
+        header.machine_id = *options.machine_id.as_bytes();
+        header.tail_entry_boot_id = *options.boot_id.as_bytes();
+        header.file_id = *options.file_id.as_bytes();
+        header.seqnum_id = *options.seqnum_id.as_bytes();
 
         // Create memory maps for hash tables
         let data_hash_table_map = map_hash_table(

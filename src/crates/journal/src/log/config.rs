@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use crate::registry::Origin;
 use std::time::Duration;
 
 /// Controls when journal files should be rotated
@@ -72,8 +72,7 @@ impl RetentionPolicy {
 /// Configuration for a journal log.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Directory where journal files are stored
-    pub journal_dir: PathBuf,
+    pub origin: Origin,
     /// Policy for when to rotate active files
     pub rotation_policy: RotationPolicy,
     /// Policy for when to remove old files
@@ -83,12 +82,12 @@ pub struct Config {
 impl Config {
     /// Creates a new log configuration.
     pub fn new(
-        journal_dir: impl Into<PathBuf>,
+        origin: Origin,
         rotation_policy: RotationPolicy,
         retention_policy: RetentionPolicy,
     ) -> Self {
         Self {
-            journal_dir: journal_dir.into(),
+            origin,
             rotation_policy,
             retention_policy,
         }

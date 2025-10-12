@@ -1,71 +1,3 @@
-//! High-level journaling API for structured log storage.
-//!
-//! Provides automatic file rotation, retention policy enforcement, and compatibility with
-//! systemd journal format. Journal files use the systemd naming convention:
-//! `{journal_dir}/{machine_id}/system@{seqnum_id}-{head_seqnum}-{head_realtime}.journal`
-//!
-//! # Example
-//!
-//! ```no_run
-//! use journal_log::{JournalLog, JournalLogConfig, RotationPolicy};
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!
-//! let config = JournalLogConfig::new("/var/log/journal")
-//!     .with_rotation_policy(
-//!         RotationPolicy::default()
-//!             .with_size_of_journal_file(100 * 1024 * 1024) // 100MB
-//!     );
-//!
-//! let mut journal = JournalLog::new(config)?;
-//! journal.write_entry(&[b"MESSAGE=Hello, world!"])?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # Operation Flow
-//!
-//! ## Initialization
-//!
-//! When [`JournalLog::new`] is called:
-//! 1. Loads system identifiers (machine_id, boot_id) and generates a seqnum_id
-//! 2. Creates the journal directory: `{journal_dir}/{machine_id}/`
-//! 3. Scans for existing `.journal` files, parsing their metadata from filenames
-//! 4. Sorts files by sequence number and timestamp (oldest first)
-//! 5. Enforces retention policy, deleting old files if limits are exceeded
-//!
-//! ## Writing Entries
-//!
-//! On each [`write_entry`](JournalLog::write_entry) call:
-//! 1. Checks if an active file exists; if not, creates a new one
-//! 2. Checks if rotation is needed based on configured policies
-//! 3. If rotation needed: closes current file, creates new file with incremented seqnum
-//! 4. Writes entry to the active file
-//! 5. Enforces retention policy after creating new files
-//!
-//! ## File Rotation
-//!
-//! Rotation occurs when any configured limit is exceeded:
-//! - File size reaches `size_of_journal_file`
-//! - Entry count reaches `number_of_entries`
-//! - Time span between first and last entry reaches `duration_of_journal_file`
-//!
-//! During rotation:
-//! 1. Captures the next sequence number from the current writer
-//! 2. Updates file size tracking
-//! 3. Closes the current file
-//! 4. Creates a new file with the captured sequence number as its `head_seqnum`
-//!
-//! ## Retention Enforcement
-//!
-//! Retention policies are enforced at two points:
-//! - On startup (cleans up files from previous runs)
-//! - After creating new files (prevents unbounded growth)
-//!
-//! Files are removed oldest-first until all limits are satisfied:
-//! - `number_of_journal_files` - maximum file count
-//! - `size_of_journal_files` - maximum total size across all files
-//! - `duration_of_journal_files` - maximum age of files
-
 mod directory;
 use directory::{JournalDirectory, JournalDirectoryConfig};
 
@@ -79,11 +11,6 @@ use crate::file::{
 };
 use crate::registry::File as JournalFile_;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
-
-fn generate_uuid() -> [u8; 16] {
-    uuid::Uuid::new_v4().into_bytes()
-}
 
 /// Calculate optimal bucket sizes based on previous file utilization or rotation policy
 fn calculate_bucket_sizes(
@@ -135,9 +62,9 @@ pub struct Log {
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
     current_file_info: Option<JournalFile_>,
-    machine_id: [u8; 16],
-    boot_id: [u8; 16],
-    seqnum_id: [u8; 16],
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
     previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
     /// The sequence number that the next file will start with
@@ -148,19 +75,16 @@ impl Log {
     /// Creates a new journal log.
     ///
     /// Scans for existing journal files and enforces retention policies on startup.
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(path: String, config: Config) -> Result<Self> {
         let machine_id = crate::file::file::load_machine_id()?;
         let boot_id = load_boot_id()?;
-        // TODO: Use NETDATA_INVOCATION_ID
-        let seqnum_id = generate_uuid();
-
-        // Convert machine_id to UUID for directory name
-        let machine_uuid = Uuid::from_bytes(machine_id);
+        let seqnum_id = uuid::Uuid::new_v4();
 
         // Create the machine_id subdirectory: {journal_dir}/{machine_id}/
-        let machine_dir = config.journal_dir.join(machine_uuid.to_string());
+        let mut origin_dir = path.clone();
+        origin_dir.push_str(&machine_id.to_string());
 
-        let journal_config = JournalDirectoryConfig::new(&machine_dir)
+        let journal_config = JournalDirectoryConfig::new(&origin_dir)
             .with_sealing_policy(config.rotation_policy)
             .with_retention_policy(config.retention_policy);
 
@@ -220,7 +144,7 @@ impl Log {
         // Use realtime for monotonic as well for simplicity
         let monotonic = realtime;
 
-        writer.add_entry(journal_file, items, realtime, monotonic, self.boot_id)?;
+        writer.add_entry(journal_file, items, realtime, monotonic, &self.boot_id)?;
 
         // Increment entry counter
         self.entries_since_rotation += 1;
@@ -248,14 +172,13 @@ impl Log {
             // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
             let head_seqnum = self.next_file_head_seqnum;
 
-            // Convert IDs to Uuid for filename
-            let machine_uuid = Uuid::from_bytes(self.machine_id);
-            let seqnum_uuid = Uuid::from_bytes(self.seqnum_id);
-
             // Create a new journal file entry
-            let file_info =
-                self.directory
-                    .new_file(machine_uuid, seqnum_uuid, head_seqnum, head_realtime)?;
+            let file_info = self.directory.new_file(
+                self.machine_id,
+                self.seqnum_id,
+                head_seqnum,
+                head_realtime,
+            )?;
 
             // Get the full path for the journal file
             let file_path = self.directory.get_full_path(&file_info);
@@ -266,16 +189,14 @@ impl Log {
                 &self.directory.config.rotation_policy,
             );
 
-            let options = JournalFileOptions::new(
-                self.machine_id,
-                self.boot_id,
-                self.seqnum_id,
-                generate_uuid(),
-            )
-            .with_window_size(8 * 1024 * 1024)
-            .with_data_hash_table_buckets(data_buckets)
-            .with_field_hash_table_buckets(field_buckets)
-            .with_keyed_hash(true);
+            let file_id = uuid::Uuid::new_v4();
+
+            let options =
+                JournalFileOptions::new(self.machine_id, self.boot_id, self.seqnum_id, file_id)
+                    .with_window_size(8 * 1024 * 1024)
+                    .with_data_hash_table_buckets(data_buckets)
+                    .with_field_hash_table_buckets(field_buckets)
+                    .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file_path, options)?;
             let mut writer = JournalWriter::new(&mut journal_file)?;
