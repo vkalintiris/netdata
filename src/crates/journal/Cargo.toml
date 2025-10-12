@@ -3,6 +3,9 @@ name = "journal"
 version = "0.1.0"
 edition = "2024"
 
+[lints.clippy]
+collapsible_if = "allow"
+
 [dependencies]
 # Core dependencies
 static_assertions = "1.1"

@@ -311,6 +311,7 @@ pub struct Chain {
 }
 
 impl Chain {
+    #[allow(dead_code)]
     pub fn active_file(&self) -> Option<&File> {
         self.files
             .back()
@@ -495,6 +496,7 @@ impl RegistryInner {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn rename_file(&mut self, from: &File, to: File) -> Result<()> {
         self.remove_file(from)?;
         self.insert_file(to)?;

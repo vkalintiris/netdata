@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use crate::error::{JournalError, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 static SIGBUS_OCCURRED: AtomicBool = AtomicBool::new(false);
 static HANDLER_INSTALLED: OnceLock<i32> = OnceLock::new();
