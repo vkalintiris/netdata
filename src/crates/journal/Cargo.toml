@@ -74,3 +74,7 @@ path = "examples/fuzzy_histogram_test.rs"
 [[example]]
 name = "paths"
 path = "examples/paths.rs"
+
+[[example]]
+name = "head_tail_seqnum"
+path = "examples/head_tail_seqnum.rs"

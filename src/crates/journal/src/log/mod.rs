@@ -63,12 +63,12 @@ pub struct Log {
     config: Config,
     current_file: Option<JournalFile<MmapMut>>,
     current_writer: Option<JournalWriter>,
-    current_file_info: Option<RegistryFile>,
+    current_registry_file: Option<RegistryFile>,
     boot_id: uuid::Uuid,
     seqnum_id: uuid::Uuid,
     previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
-    current_tail_seqnum: u64,
+    current_seqnum: u64,
 }
 
 impl Log {
@@ -106,40 +106,23 @@ impl Log {
 
         let boot_id = load_boot_id()?;
         let seqnum_id = uuid::Uuid::new_v4();
-        let next_file_head_seqnum = chain.tail_seqnum()? + 1;
+        let current_seqnum = chain.tail_seqnum()?;
 
         Ok(Log {
             chain,
             config,
             current_file: None,
             current_writer: None,
-            current_file_info: None,
+            current_registry_file: None,
             boot_id,
             seqnum_id,
             previous_bucket_utilization: None,
             entries_since_rotation: 0,
-            current_tail_seqnum: next_file_head_seqnum,
+            current_seqnum,
         })
     }
 
     /// Writes a journal entry.
-    ///
-    /// Each item should be a field in the format `FIELD_NAME=value`. Automatically
-    /// handles file rotation and retention policy enforcement.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use journal_log::{JournalLog, JournalLogConfig};
-    /// # fn example(journal: &mut JournalLog) -> Result<(), Box<dyn std::error::Error>> {
-    /// journal.write_entry(&[
-    ///     b"MESSAGE=System started",
-    ///     b"PRIORITY=6",
-    ///     b"SYSLOG_FACILITY=3",
-    /// ])?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
@@ -161,8 +144,8 @@ impl Log {
 
         writer.add_entry(journal_file, items, realtime, monotonic, &self.boot_id)?;
 
-        // Increment entry counter
         self.entries_since_rotation += 1;
+        self.current_seqnum += 1;
 
         Ok(())
     }
@@ -185,12 +168,14 @@ impl Log {
                 .as_micros() as u64;
 
             // head_seqnum: use the tracked value (which was set during rotation or is 1 for first file)
-            let head_seqnum = self.current_tail_seqnum;
+            let head_seqnum = self.current_seqnum + 1;
 
             // Create a new journal file entry
             let file = self
                 .chain
                 .create_file(self.seqnum_id, head_seqnum, head_realtime)?;
+
+            println!("Created new file with head_seqnum: {:#?}", head_seqnum);
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
@@ -212,14 +197,11 @@ impl Log {
             .with_keyed_hash(true);
 
             let mut journal_file = JournalFile::create(&file.path, options)?;
-            let mut writer = JournalWriter::new(&mut journal_file)?;
-
-            // Set the correct initial sequence number for this file
-            writer.set_next_seqnum(head_seqnum);
+            let writer = JournalWriter::new(&mut journal_file, head_seqnum)?;
 
             self.current_file = Some(journal_file);
             self.current_writer = Some(writer);
-            self.current_file_info = Some(file);
+            self.current_registry_file = Some(file);
 
             // Enforce retention policy after creating new file to account for the new file count
             self.chain.retain(&self.config.retention_policy)?;
@@ -281,26 +263,16 @@ impl Log {
             self.previous_bucket_utilization = file.bucket_utilization();
         }
 
-        // Capture the next sequence number for the new file
-        if let Some(writer) = &self.current_writer {
-            self.current_tail_seqnum = writer.next_seqnum();
-        }
-
         // Update the current file's size in our tracking before closing
-        if let (Some(file_info), Some(writer)) = (&self.current_file_info, &self.current_writer) {
+        if let (Some(file), Some(writer)) = (&self.current_registry_file, &self.current_writer) {
             let current_size = writer.current_file_size();
 
             // Update the size in the directory's file_sizes HashMap
-            let old_size = self
-                .chain
-                .file_sizes
-                .get(&file_info.path)
-                .copied()
-                .unwrap_or(0);
+            let old_size = self.chain.file_sizes.get(&file.path).copied().unwrap_or(0);
 
             self.chain
                 .file_sizes
-                .insert(file_info.path.clone(), current_size);
+                .insert(file.path.clone(), current_size);
 
             // Update total size tracking
             self.chain.total_size = self
@@ -313,7 +285,7 @@ impl Log {
         // Close current file
         self.current_file = None;
         self.current_writer = None;
-        self.current_file_info = None;
+        self.current_registry_file = None;
 
         // Reset entry counter for the new file
         self.entries_since_rotation = 0;
