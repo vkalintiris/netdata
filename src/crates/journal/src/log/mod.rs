@@ -1,5 +1,5 @@
 mod directory;
-use directory::{JournalDirectory, JournalDirectoryConfig};
+use directory::JournalDirectory;
 
 mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
@@ -84,11 +84,8 @@ impl Log {
         let mut origin_dir = path.clone();
         origin_dir.push_str(&machine_id.to_string());
 
-        let journal_config = JournalDirectoryConfig::new(&origin_dir)
-            .with_sealing_policy(config.rotation_policy)
-            .with_retention_policy(config.retention_policy);
-
-        let mut directory = JournalDirectory::with_config(journal_config)?;
+        let mut directory =
+            JournalDirectory::with_config(std::path::PathBuf::from(origin_dir), config)?;
 
         // Enforce retention policy on startup to clean up any old files
         directory.enforce_retention_policy()?;

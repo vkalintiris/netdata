@@ -1,4 +1,4 @@
-use super::config::{RetentionPolicy, RotationPolicy};
+use super::config::Config;
 use crate::error::{JournalError, Result};
 use crate::registry::{File as RegistryFile, Origin, Source, Status};
 use std::ffi::OsStr;
@@ -46,46 +46,14 @@ fn get_file_size(path: impl AsRef<Path>) -> Result<u64> {
     Ok(metadata.len())
 }
 
-/// Configuration for managing a directory of journal files.
-///
-/// Typically not used directly - see [`JournalLogConfig`](crate::JournalLogConfig) instead.
-#[derive(Debug, Clone)]
-pub struct JournalDirectoryConfig {
-    /// Directory path where journal files are stored
-    pub directory: PathBuf,
-    /// Policy for when to rotate active files
-    pub rotation_policy: RotationPolicy,
-    /// Policy for when to remove old files
-    pub retention_policy: RetentionPolicy,
-}
-
-impl JournalDirectoryConfig {
-    pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self {
-            directory: directory.into(),
-            rotation_policy: RotationPolicy::default(),
-            retention_policy: RetentionPolicy::default(),
-        }
-    }
-
-    pub fn with_sealing_policy(mut self, policy: RotationPolicy) -> Self {
-        self.rotation_policy = policy;
-        self
-    }
-
-    pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Self {
-        self.retention_policy = policy;
-        self
-    }
-}
-
 /// Manages a directory of journal files with automatic cleanup.
 ///
 /// Scans the directory for existing files, tracks their sizes, and enforces retention
 /// policies. Typically not used directly - see [`JournalLog`](crate::JournalLog) instead.
 #[derive(Debug)]
 pub struct JournalDirectory {
-    pub(crate) config: JournalDirectoryConfig,
+    pub(crate) path: PathBuf,
+    pub(crate) config: Config,
     /// Files ordered by head_realtime and head_seqnum (oldest first)
     pub(crate) files: Vec<RegistryFile>,
     /// Cached file sizes (path -> size)
@@ -98,15 +66,16 @@ impl JournalDirectory {
     /// Creates a new directory manager, scanning for existing journal files.
     ///
     /// Creates the directory if it doesn't exist.
-    pub fn with_config(config: JournalDirectoryConfig) -> Result<Self> {
+    pub fn with_config(path: PathBuf, config: Config) -> Result<Self> {
         // Create directory if it does not already exist.
-        if !config.directory.exists() {
-            std::fs::create_dir_all(&config.directory)?;
-        } else if !config.directory.is_dir() {
+        if !path.exists() {
+            std::fs::create_dir_all(&path)?;
+        } else if !path.is_dir() {
             return Err(JournalError::NotADirectory);
         }
 
         let mut journal_directory = Self {
+            path,
             config,
             files: Vec::new(),
             file_sizes: std::collections::HashMap::new(),
@@ -114,7 +83,7 @@ impl JournalDirectory {
         };
 
         // Read all .journal files from directory recursively (to handle machine_id subdirs)
-        for entry in std::fs::read_dir(&journal_directory.config.directory)? {
+        for entry in std::fs::read_dir(&journal_directory.path)? {
             let entry = entry?;
             let file_path = entry.path();
 
@@ -162,7 +131,7 @@ impl JournalDirectory {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.config.directory.join(&file_info.path)
+            self.path.join(&file_info.path)
         }
     }
 
