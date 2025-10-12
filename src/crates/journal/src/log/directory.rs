@@ -1,6 +1,6 @@
 use super::config::Config;
 use crate::error::{JournalError, Result};
-use crate::registry::{File as RegistryFile, Origin, Source, Status};
+use crate::registry::{File as RegistryFile, Origin, Source, Status, paths::Chain};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,7 +55,7 @@ pub struct JournalDirectory {
     pub(crate) path: PathBuf,
     pub(crate) config: Config,
     /// Files ordered by head_realtime and head_seqnum (oldest first)
-    pub(crate) files: Vec<RegistryFile>,
+    pub(crate) chain: Chain,
     /// Cached file sizes (path -> size)
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
     /// Cached total size of all files
@@ -77,7 +77,7 @@ impl JournalDirectory {
         let mut journal_directory = Self {
             path,
             config,
-            files: Vec::new(),
+            chain: Chain::default(),
             file_sizes: std::collections::HashMap::new(),
             total_size: 0,
         };
@@ -98,30 +98,27 @@ impl JournalDirectory {
                     }
 
                     // Use journal_registry::File::from_path for parsing
-                    if let Some(file_info) = RegistryFile::from_path(&subpath) {
+                    if let Some(file) = RegistryFile::from_path(&subpath) {
                         let file_size = get_file_size(&subpath).unwrap_or(0);
                         journal_directory.total_size += file_size;
                         journal_directory
                             .file_sizes
-                            .insert(file_info.path.clone(), file_size);
-                        journal_directory.files.push(file_info);
+                            .insert(file.path.clone(), file_size);
+                        journal_directory.chain.insert_file(file);
                     }
                 }
             } else if file_path.extension() == Some(OsStr::new("journal")) {
                 // Handle journal files in the root directory (for backward compatibility)
-                if let Some(file_info) = RegistryFile::from_path(&file_path) {
+                if let Some(file) = RegistryFile::from_path(&file_path) {
                     let file_size = get_file_size(&file_path).unwrap_or(0);
                     journal_directory.total_size += file_size;
                     journal_directory
                         .file_sizes
-                        .insert(file_info.path.clone(), file_size);
-                    journal_directory.files.push(file_info);
+                        .insert(file.path.clone(), file_size);
+                    journal_directory.chain.insert_file(file);
                 }
             }
         }
-
-        // Sort files - File already implements Ord
-        journal_directory.files.sort();
 
         Ok(journal_directory)
     }
@@ -145,71 +142,57 @@ impl JournalDirectory {
         head_seqnum: u64,
         head_realtime: u64,
     ) -> Result<RegistryFile> {
-        let new_file = create_journal_file(machine_id, seqnum_id, head_seqnum, head_realtime);
-        self.files.push(new_file.clone());
-        Ok(new_file)
+        let file = create_journal_file(machine_id, seqnum_id, head_seqnum, head_realtime);
+        self.chain.insert_file(file.clone());
+        Ok(file)
     }
 
     /// Remove the oldest file (by head_realtime/head_seqnum) from both filesystem and tracking
     fn remove_oldest_file(&mut self) -> Result<()> {
-        if let Some(oldest_file) = self.files.first() {
-            let file_path = self.get_full_path(oldest_file);
-            let file_size = self.file_sizes.get(&oldest_file.path).copied().unwrap_or(0);
+        let Some(file) = self.chain.pop_back() else {
+            return Ok(());
+        };
 
-            // Remove from filesystem
-            if let Err(e) = std::fs::remove_file(&file_path) {
-                // Log error but continue cleanup - file might already be deleted
-                eprintln!(
-                    "Warning: Failed to remove journal file {:?}: {}",
-                    file_path, e
-                );
-            }
+        let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
 
-            // Remove from tracking and update total size
-            let removed_file = self.files.remove(0);
-            self.file_sizes.remove(&removed_file.path);
-            self.total_size = self.total_size.saturating_sub(file_size);
+        // Remove from filesystem
+        if let Err(e) = std::fs::remove_file(&file.path) {
+            // Log error but continue cleanup - file might already be deleted
+            eprintln!(
+                "Warning: Failed to remove journal file {:?}: {}",
+                file.path, e
+            );
         }
 
+        self.file_sizes.remove(&file.path);
+        self.total_size = self.total_size.saturating_sub(file_size);
         Ok(())
     }
 
     /// Remove files older than the specified cutoff time
-    fn remove_files_older_than(&mut self, cutoff_time: SystemTime) -> Result<()> {
-        let cutoff_micros = cutoff_time
+    fn remove_files_older_than(&mut self, max_entry_age: std::time::Duration) -> Result<()> {
+        let cutoff_time = SystemTime::now()
+            .checked_sub(max_entry_age)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        let cutoff_time = cutoff_time
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
 
-        // Find files older than cutoff time (head_realtime is in microseconds since epoch)
-        let mut files_to_remove = Vec::new();
-        for (index, file) in self.files.iter().enumerate() {
-            // Extract head_realtime from Status
-            if let Status::Archived { head_realtime, .. } = file.status {
-                if head_realtime <= cutoff_micros {
-                    files_to_remove.push(index);
-                }
-            }
-        }
-
-        // Remove files in reverse order to maintain indices
-        for &index in files_to_remove.iter().rev() {
-            let file = &self.files[index];
-            let file_path = self.get_full_path(file);
+        for file in self.chain.drain(cutoff_time) {
             let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
 
             // Remove from filesystem
-            if let Err(e) = std::fs::remove_file(&file_path) {
+            if let Err(e) = std::fs::remove_file(&file.path) {
                 // Log error but continue cleanup
                 eprintln!(
                     "Warning: Failed to remove journal file {:?}: {}",
-                    file_path, e
+                    file.path, e
                 );
             }
 
-            // Remove from tracking and update total size
-            let removed_file = self.files.remove(index);
-            self.file_sizes.remove(&removed_file.path);
+            self.file_sizes.remove(&file.path);
             self.total_size = self.total_size.saturating_sub(file_size);
         }
 
@@ -222,26 +205,23 @@ impl JournalDirectory {
     pub fn enforce_retention_policy(&mut self) -> Result<()> {
         let policy = self.config.retention_policy;
 
-        // 1. Remove by file count limit
+        // Remove by file count limit
         if let Some(max_files) = policy.number_of_journal_files {
-            while self.files.len() > max_files {
+            while self.chain.len() > max_files {
                 self.remove_oldest_file()?;
             }
         }
 
-        // 2. Remove by total size limit
+        // Remove by total size limit
         if let Some(max_total_size) = policy.size_of_journal_files {
-            while self.total_size > max_total_size && !self.files.is_empty() {
+            while self.total_size > max_total_size && !self.chain.is_empty() {
                 self.remove_oldest_file()?;
             }
         }
 
-        // 3. Remove by entry age limit
+        // Remove by entry age limit
         if let Some(max_entry_age) = policy.duration_of_journal_files {
-            let cutoff_time = SystemTime::now()
-                .checked_sub(max_entry_age)
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            self.remove_files_older_than(cutoff_time)?;
+            self.remove_files_older_than(max_entry_age)?;
         }
 
         Ok(())

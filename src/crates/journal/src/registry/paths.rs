@@ -338,8 +338,26 @@ impl Chain {
         }
     }
 
+    pub fn pop_back(&mut self) -> Option<File> {
+        self.files.pop_back()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn drain(&mut self, cutoff_time: u64) -> impl Iterator<Item = File> + '_ {
+        let pos = self.files.partition_point(|file| match file.status {
+            Status::Active => false,
+            Status::Archived { head_realtime, .. } => head_realtime <= cutoff_time,
+            Status::Disposed { timestamp, .. } => timestamp <= cutoff_time,
+        });
+
+        self.files.drain(..pos)
     }
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
