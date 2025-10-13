@@ -26,8 +26,6 @@ roaring = { version = "0.11.2", features = ["serde"] }
 lz4 = "1.25"
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
-uutils_term_grid = "0.7.0"
-bincode = { version = "2.0.1", features = ["serde"] }
 
 # Registry dependencies
 notify = "8.2"

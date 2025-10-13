@@ -55,5 +55,5 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 [profile.release]
 lto = true
 opt-level = "z"
-# strip = true
+strip = true
 codegen-units = 1
