@@ -136,7 +136,7 @@ impl Chain {
 
         // Remove by entry age limit
         if let Some(max_entry_age) = retention_policy.duration_of_journal_files {
-            // self.delete_files_older_than(max_entry_age)?;
+            self.delete_files_older_than(max_entry_age)?;
         }
 
         Ok(())
