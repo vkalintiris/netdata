@@ -19,9 +19,7 @@ uuid = { version = "1.0", features = ["v4", "rng"] }
 ruzstd = "0.8"
 siphasher = "1.0"
 twox-hash = { version = "2.1", default-features = false, features = ["std"] }
-hex = "0.4"
 rand = "0.9"
-allocative = "0.3.4"
 roaring = { version = "0.11.2", features = ["serde"] }
 lz4 = "1.25"
 tracing = "0.1"
