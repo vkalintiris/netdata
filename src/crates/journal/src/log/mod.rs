@@ -84,14 +84,28 @@ pub struct ChainWriter {
     pub registry_file: Option<RegistryFile>,
     pub journal_file: Option<JournalFile<MmapMut>>,
     pub journal_writer: Option<JournalWriter>,
+    pub boot_id: uuid::Uuid,
+    pub seqnum_id: uuid::Uuid,
+    pub current_seqnum: u64,
+}
+
+impl ChainWriter {
+    pub fn new(boot_id: uuid::Uuid, current_seqnum: u64) -> Self {
+        Self {
+            registry_file: None,
+            journal_file: None,
+            journal_writer: None,
+            boot_id,
+            seqnum_id: uuid::Uuid::new_v4(),
+            current_seqnum,
+        }
+    }
 }
 
 pub struct Log {
     chain: Chain,
     config: Config,
     chain_writer: ChainWriter,
-    boot_id: uuid::Uuid,
-    seqnum_id: uuid::Uuid,
     previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
     current_seqnum: u64,
@@ -101,26 +115,16 @@ impl Log {
     /// Creates a new journal log.
     pub fn new(path: &Path, config: Config) -> Result<Self> {
         let mut chain = create_chain(path)?;
-
-        // Enforce retention policy on startup to clean up any old files
         chain.retain(&config.retention_policy)?;
 
-        let boot_id = load_boot_id()?;
-        let seqnum_id = uuid::Uuid::new_v4();
         let current_seqnum = chain.tail_seqnum()?;
-
-        let chain_writer = ChainWriter {
-            registry_file: None,
-            journal_file: None,
-            journal_writer: None,
-        };
+        let boot_id = load_boot_id()?;
+        let chain_writer = ChainWriter::new(boot_id, current_seqnum);
 
         Ok(Log {
             chain,
             config,
             chain_writer,
-            boot_id,
-            seqnum_id,
             previous_bucket_utilization: None,
             entries_since_rotation: 0,
             current_seqnum,
@@ -169,7 +173,7 @@ impl Log {
 
             let registry_file =
                 self.chain
-                    .create_file(self.seqnum_id, head_seqnum, head_realtime)?;
+                    .create_file(self.chain_writer.seqnum_id, head_seqnum, head_realtime)?;
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
@@ -177,15 +181,19 @@ impl Log {
                 &self.config.rotation_policy,
             );
 
-            let options =
-                JournalFileOptions::new(self.chain.machine_id, self.boot_id, self.seqnum_id)
-                    .with_window_size(8 * 1024 * 1024)
-                    .with_data_hash_table_buckets(data_buckets)
-                    .with_field_hash_table_buckets(field_buckets)
-                    .with_keyed_hash(true);
+            let options = JournalFileOptions::new(
+                self.chain.machine_id,
+                self.chain_writer.boot_id,
+                self.chain_writer.seqnum_id,
+            )
+            .with_window_size(8 * 1024 * 1024)
+            .with_data_hash_table_buckets(data_buckets)
+            .with_field_hash_table_buckets(field_buckets)
+            .with_keyed_hash(true);
             let mut journal_file = JournalFile::create(&registry_file.path, options)?;
 
-            let writer = JournalWriter::new(&mut journal_file, head_seqnum, self.boot_id)?;
+            let writer =
+                JournalWriter::new(&mut journal_file, head_seqnum, self.chain_writer.boot_id)?;
 
             self.chain_writer.journal_file = Some(journal_file);
             self.chain_writer.journal_writer = Some(writer);
