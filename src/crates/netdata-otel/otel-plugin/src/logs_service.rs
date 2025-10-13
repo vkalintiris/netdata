@@ -74,6 +74,7 @@ impl NetdataLogsService {
 
 #[tonic::async_trait]
 impl LogsService for NetdataLogsService {
+    #[tracing::instrument(skip_all, fields(received_logs))]
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
@@ -83,17 +84,21 @@ impl LogsService for NetdataLogsService {
         let json_array = json_from_export_logs_service_request(&req);
 
         if let Value::Array(entries) = json_array {
+            tracing::Span::current().record("received_logs", entries.len());
+
             for entry in entries {
                 let entry_data = self.json_to_entry_data(&entry);
                 if !entry_data.is_empty() {
-                    let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-                    if let Err(e) = self.log.lock().unwrap().write_entry(&entry_refs) {
-                        eprintln!("Failed to write log entry: {}", e);
-                        return Err(Status::internal(format!(
-                            "Failed to write log entry: {}",
-                            e
-                        )));
-                    }
+                    continue;
+                }
+
+                let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
+                if let Err(e) = self.log.lock().unwrap().write_entry(&entry_refs) {
+                    eprintln!("Failed to write log entry: {}", e);
+                    return Err(Status::internal(format!(
+                        "Failed to write log entry: {}",
+                        e
+                    )));
                 }
             }
         }

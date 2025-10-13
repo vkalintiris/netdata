@@ -43,7 +43,7 @@ fn initialize_tracing() {
         .expect("Failed to build OTLP exporter");
 
     let resource = opentelemetry_sdk::Resource::builder()
-        .with_service_name("histogram-backend")
+        .with_service_name("otel-plugin")
         .build();
 
     let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -51,7 +51,7 @@ fn initialize_tracing() {
         .with_resource(resource)
         .build();
 
-    let tracer = tracer_provider.tracer("histogram-backend");
+    let tracer = tracer_provider.tracer("otel-plugin");
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     // Create the fmt layer with your existing configuration

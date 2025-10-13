@@ -34,7 +34,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9.34"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1.45", features = ["rt-multi-thread", "process", "io-util"] }
+tokio = { version = "1.45", features = ["rt-multi-thread", "process", "io-util", "macros"] }
 tonic = "0.14"
 tower = "0.5"
 uuid = { version = "1.0", features = ["v4", "rng"] }

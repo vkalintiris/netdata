@@ -11,6 +11,9 @@ use crate::registry::File as RegistryFile;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(unused_imports)]
+use tracing::{debug, error, info, instrument, span, warn};
+
 fn create_chain(path: &Path) -> Result<Chain> {
     let machine_id = crate::file::file::load_machine_id()?;
 
@@ -213,6 +216,7 @@ impl Log {
         self.active_file.is_none() || self.rotation_state.should_rotate()
     }
 
+    #[tracing::instrument(skip_all, fields(active_file))]
     fn rotate(&mut self) -> Result<()> {
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
@@ -238,6 +242,8 @@ impl Log {
                 max_file_size,
             )?
         };
+
+        tracing::Span::current().record("new_file", &new_file.registry_file.path);
 
         self.active_file = Some(new_file);
         self.rotation_state.reset();

@@ -1,11 +1,9 @@
 use anyhow::Result;
 use chrono::DateTime;
 use clap::Parser;
-use opentelemetry::logs::{LogRecord, Logger, LoggerProvider, Severity};
 use opentelemetry::KeyValue;
+use opentelemetry::logs::{LogRecord, Logger, LoggerProvider, Severity};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::logs::{Logger as SdkLogger, LoggerProvider as SdkLoggerProvider};
-use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::Resource;
 use serde::Deserialize;
 use std::process::Stdio;
@@ -21,7 +19,7 @@ struct Args {
     #[arg(short, long, default_value = "1048576")]
     rate_limit_bytes: u64,
 
-    #[arg(short, long, default_value = "http://127.0.0.1:4317")]
+    #[arg(short, long, default_value = "http://127.0.0.1:19998")]
     otel_endpoint: String,
 
     #[arg(short, long, default_value = "1000")]
@@ -90,27 +88,27 @@ fn status_to_severity(status: u16) -> Severity {
     }
 }
 
-fn initialize_logger(endpoint: &str) -> Result<SdkLoggerProvider> {
+fn initialize_logger(endpoint: &str) -> Result<opentelemetry_sdk::logs::SdkLoggerProvider> {
     let exporter = opentelemetry_otlp::LogExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()?;
 
-    let resource = Resource::new(vec![
-        KeyValue::new("service.name", "flog-otel-wrapper"),
-        KeyValue::new("service.version", "0.1.0"),
-    ]);
+    let resource = Resource::builder()
+        .with_service_name("flog-otel-wrapper")
+        .with_attributes(vec![KeyValue::new("service.version", "0.1.0")])
+        .build();
 
-    let provider = SdkLoggerProvider::builder()
-        .with_batch_exporter(exporter, runtime::Tokio)
+    let provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
 
     Ok(provider)
 }
 
-async fn process_flog_stream(
-    logger: &SdkLogger,
+async fn process_flog_stream<L: Logger>(
+    logger: &L,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     args: &Args,
 ) -> Result<()> {
@@ -137,51 +135,57 @@ async fn process_flog_stream(
 
     while let Some(line) = lines.next_line().await? {
         match serde_json::from_str::<FlogEntry>(&line) {
-            Ok(entry) => {
-                match parse_flog_datetime(&entry.datetime) {
-                    Ok(dt) => {
-                        let severity = status_to_severity(entry.status);
+            Ok(entry) => match parse_flog_datetime(&entry.datetime) {
+                Ok(dt) => {
+                    let severity = status_to_severity(entry.status);
 
-                        let log_message = format!(
-                            "{} {} {} {} {} {}",
-                            entry.host, entry.method, entry.request,
-                            entry.protocol, entry.status, entry.bytes
-                        );
+                    let log_message = format!(
+                        "{} {} {} {} {} {}",
+                        entry.host,
+                        entry.method,
+                        entry.request,
+                        entry.protocol,
+                        entry.status,
+                        entry.bytes
+                    );
 
-                        let mut log_record = logger.create_log_record();
-                        log_record.set_severity_number(severity);
-                        log_record.set_timestamp(std::time::SystemTime::UNIX_EPOCH +
-                            std::time::Duration::from_nanos(dt.timestamp_nanos_opt().unwrap_or(0) as u64));
-                        log_record.set_body(log_message.into());
-                        log_record.add_attribute("host", entry.host);
-                        log_record.add_attribute("method", entry.method);
-                        log_record.add_attribute("request", entry.request);
-                        log_record.add_attribute("protocol", entry.protocol);
-                        log_record.add_attribute("status", entry.status as i64);
-                        log_record.add_attribute("response_bytes", entry.bytes as i64);
-                        log_record.add_attribute("referer", entry.referer);
-                        log_record.add_attribute("user_identifier", entry.user_identifier);
+                    let mut log_record = logger.create_log_record();
+                    log_record.set_severity_number(severity);
+                    log_record.set_timestamp(
+                        std::time::SystemTime::UNIX_EPOCH
+                            + std::time::Duration::from_nanos(
+                                dt.timestamp_nanos_opt().unwrap_or(0) as u64,
+                            ),
+                    );
+                    log_record.set_body(log_message.into());
+                    log_record.add_attribute("host", entry.host);
+                    log_record.add_attribute("method", entry.method);
+                    log_record.add_attribute("request", entry.request);
+                    log_record.add_attribute("protocol", entry.protocol);
+                    log_record.add_attribute("status", entry.status as i64);
+                    log_record.add_attribute("response_bytes", entry.bytes as i64);
+                    log_record.add_attribute("referer", entry.referer);
+                    log_record.add_attribute("user_identifier", entry.user_identifier);
 
-                        logger.emit(log_record);
+                    logger.emit(log_record);
 
-                        batch_count += 1;
+                    batch_count += 1;
 
-                        if batch_count >= BATCH_SIZE {
-                            let batch_size = (batch_count * 1024) as u64;
-                            let mut limiter = rate_limiter.lock().await;
+                    if batch_count >= BATCH_SIZE {
+                        let batch_size = (batch_count * 1024) as u64;
+                        let mut limiter = rate_limiter.lock().await;
 
-                            if !limiter.can_send(batch_size).await {
-                                drop(limiter);
-                                info!("Rate limit reached, waiting 1 second...");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
-
-                            batch_count = 0;
+                        if !limiter.can_send(batch_size).await {
+                            drop(limiter);
+                            info!("Rate limit reached, waiting 1 second...");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
                         }
+
+                        batch_count = 0;
                     }
-                    Err(e) => error!("Failed to parse datetime: {}", e),
                 }
-            }
+                Err(e) => error!("Failed to parse datetime: {}", e),
+            },
             Err(e) => error!("Failed to parse JSON: {}", e),
         }
     }
@@ -217,7 +221,7 @@ async fn main() -> Result<()> {
     }
 
     // Ensure all logs are flushed before shutdown
-    provider.force_flush();
+    let _ = provider.force_flush();
     let _ = provider.shutdown();
 
     info!("Successfully sent logs to OTEL collector via gRPC");

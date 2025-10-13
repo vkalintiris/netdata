@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+#[allow(unused_imports)]
+use tracing::{error, info, instrument};
+
 // Helper function to create a File with archived status
 pub(crate) fn create_chain_file(
     path: &PathBuf,
@@ -119,10 +122,13 @@ impl Chain {
     }
 
     /// Retains the files that satisfy retention policy limits.
+    #[tracing::instrument(skip_all, fields(reason))]
     pub fn retain(&mut self, retention_policy: &RetentionPolicy) -> Result<()> {
         // Remove by file count limit
         if let Some(max_files) = retention_policy.number_of_journal_files {
             while self.inner.len() > max_files {
+                let reason = format!("num_files({}) > max_files({})", self.inner.len(), max_files);
+                tracing::Span::current().record("reason", reason);
                 self.delete_oldest_file()?;
             }
         }
@@ -130,6 +136,11 @@ impl Chain {
         // Remove by total size limit
         if let Some(max_total_size) = retention_policy.size_of_journal_files {
             while self.total_size > max_total_size && !self.inner.is_empty() {
+                let reason = format!(
+                    "total_size({}) > max_size({})",
+                    self.total_size, max_total_size
+                );
+                tracing::Span::current().record("reason", reason);
                 self.delete_oldest_file()?;
             }
         }
@@ -143,20 +154,20 @@ impl Chain {
     }
 
     /// Remove the oldest file
+    #[tracing::instrument(skip_all)]
     fn delete_oldest_file(&mut self) -> Result<()> {
         let Some(file) = self.inner.pop_front() else {
             return Ok(());
         };
+
+        info!("deleting {}", file.path);
 
         let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
 
         // Remove from filesystem
         if let Err(e) = std::fs::remove_file(&file.path) {
             // Log error but continue cleanup - file might already be deleted
-            eprintln!(
-                "Warning: Failed to remove journal file {:?}: {}",
-                file.path, e
-            );
+            error!("Failed to remove journal file {:?}: {}", file.path, e);
         }
 
         self.file_sizes.remove(&file.path);
@@ -165,6 +176,7 @@ impl Chain {
     }
 
     /// Remove files older than the specified cutoff time
+    #[tracing::instrument(skip(self))]
     fn delete_files_older_than(&mut self, max_entry_age: std::time::Duration) -> Result<()> {
         let cutoff_time = SystemTime::now()
             .checked_sub(max_entry_age)
@@ -176,15 +188,12 @@ impl Chain {
             .as_micros() as u64;
 
         for file in self.inner.drain(cutoff_time) {
+            info!("deleting {}", file.path);
             let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
 
-            // Remove from filesystem
             if let Err(e) = std::fs::remove_file(&file.path) {
-                // Log error but continue cleanup
-                eprintln!(
-                    "Warning: Failed to remove journal file {:?}: {}",
-                    file.path, e
-                );
+                error!("Failed to remove journal file {:?}: {}", file.path, e);
+                continue;
             }
 
             self.file_sizes.remove(&file.path);

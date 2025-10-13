@@ -80,6 +80,7 @@ pub fn json_from_log_record(jm: &mut JsonMap<String, JsonValue>, log_record: &Lo
 }
 
 // TODO: this does not belong here, it should be part of the service.
+#[tracing::instrument(skip_all)]
 pub fn json_from_export_logs_service_request(request: &ExportLogsServiceRequest) -> JsonValue {
     let mut items = Vec::new();
 
