@@ -6,52 +6,10 @@ pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::error::{JournalError, Result};
 use crate::file::mmap::MmapMut;
-use crate::file::{
-    BucketUtilization, JournalFile, JournalFileOptions, JournalWriter, load_boot_id,
-};
+use crate::file::{JournalFile, JournalFileOptions, JournalWriter, load_boot_id};
 use crate::registry::File as RegistryFile;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Calculate optimal bucket sizes based on previous file utilization or rotation policy
-fn calculate_bucket_sizes(
-    previous_utilization: Option<&BucketUtilization>,
-    rotation_policy: &RotationPolicy,
-) -> (usize, usize) {
-    if let Some(utilization) = previous_utilization {
-        let data_utilization = utilization.data_utilization();
-        let field_utilization = utilization.field_utilization();
-
-        let data_buckets = if data_utilization > 0.75 {
-            (utilization.data_total * 2).next_power_of_two()
-        } else if data_utilization < 0.25 && utilization.data_total > 4096 {
-            (utilization.data_total / 2).next_power_of_two()
-        } else {
-            utilization.data_total
-        };
-
-        let field_buckets = if field_utilization > 0.75 {
-            (utilization.field_total * 2).next_power_of_two()
-        } else if field_utilization < 0.25 && utilization.field_total > 512 {
-            (utilization.field_total / 2).next_power_of_two()
-        } else {
-            utilization.field_total
-        };
-
-        (data_buckets, field_buckets)
-    } else {
-        // Initial sizing based on rotation policy max file size
-        let max_file_size = rotation_policy
-            .size_of_journal_file
-            .unwrap_or(8 * 1024 * 1024);
-
-        // 16 MiB -> 4096 data buckets
-        let data_buckets = (max_file_size / 4096).max(1024).next_power_of_two() as usize;
-        let field_buckets = 128; // Assume ~8:1 data:field ratio
-
-        (data_buckets, field_buckets)
-    }
-}
 
 fn create_chain(path: &Path) -> Result<Chain> {
     let machine_id = crate::file::file::load_machine_id()?;
@@ -80,101 +38,128 @@ fn create_chain(path: &Path) -> Result<Chain> {
     Chain::new(path, machine_id)
 }
 
-trait Layer: Send + Sync {
-    fn new_entry(&mut self, journal_writer: &JournalWriter) -> Result<()>;
-    fn should_rotate(&self) -> bool;
-    fn rotate(&mut self) -> Result<()>;
+/// Tracks rotation state for size and count limits
+struct RotationState {
+    size: Option<(u64, u64)>,      // (max, current)
+    count: Option<(usize, usize)>, // (max, current)
 }
 
-pub struct SizeLayer {
-    pub max_size: u64,
-    pub current_size: u64,
-}
-
-impl SizeLayer {
-    fn new(max_size: u64) -> Self {
+impl RotationState {
+    fn new(rotation_policy: &RotationPolicy) -> Self {
         Self {
-            max_size,
-            current_size: 0,
+            size: rotation_policy.size_of_journal_file.map(|max| (max, 0)),
+            count: rotation_policy.number_of_entries.map(|max| (max, 0)),
         }
-    }
-}
-
-impl Layer for SizeLayer {
-    fn new_entry(&mut self, journal_writer: &JournalWriter) -> Result<()> {
-        self.current_size = journal_writer.current_file_size();
-        Ok(())
     }
 
     fn should_rotate(&self) -> bool {
-        self.current_size >= self.max_size
+        self.size.map_or(false, |(max, current)| current >= max)
+            || self.count.map_or(false, |(max, current)| current >= max)
     }
 
-    fn rotate(&mut self) -> Result<()> {
-        self.current_size = 0;
-        Ok(())
+    fn update(&mut self, journal_writer: &JournalWriter) {
+        if let Some((_, ref mut current)) = self.size {
+            *current = journal_writer.current_file_size();
+        }
+        if let Some((_, ref mut current)) = self.count {
+            *current += 1;
+        }
     }
-}
 
-pub struct CountLayer {
-    pub max_count: usize,
-    pub current_count: usize,
-}
-
-impl CountLayer {
-    fn new(max_count: usize) -> Self {
-        Self {
-            max_count,
-            current_count: 0,
+    fn reset(&mut self) {
+        if let Some((_, ref mut current)) = self.size {
+            *current = 0;
+        }
+        if let Some((_, ref mut current)) = self.count {
+            *current = 0;
         }
     }
 }
 
-impl Layer for CountLayer {
-    fn new_entry(&mut self, _journal_writer: &JournalWriter) -> Result<()> {
-        self.current_count += 1;
-        Ok(())
-    }
-
-    fn should_rotate(&self) -> bool {
-        self.current_count >= self.max_count
-    }
-
-    fn rotate(&mut self) -> Result<()> {
-        self.current_count = 0;
-        Ok(())
-    }
+/// Groups a journal file and its writer together
+pub struct ActiveFile {
+    registry_file: RegistryFile,
+    journal_file: JournalFile<MmapMut>,
+    writer: JournalWriter,
 }
 
-pub struct ChainWriter {
-    pub registry_file: Option<RegistryFile>,
-    pub journal_writer: Option<JournalWriter>,
-    pub journal_file: Option<JournalFile<MmapMut>>,
-    pub boot_id: uuid::Uuid,
-    pub seqnum_id: uuid::Uuid,
-    pub current_seqnum: u64,
-    pub previous_bucket_utilization: Option<BucketUtilization>,
-}
+impl ActiveFile {
+    /// Creates a new journal file with the given parameters
+    fn create(
+        chain: &mut Chain,
+        seqnum_id: uuid::Uuid,
+        boot_id: uuid::Uuid,
+        next_seqnum: u64,
+        max_file_size: Option<u64>,
+    ) -> Result<Self> {
+        let head_seqnum = next_seqnum;
+        let head_realtime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
 
-impl ChainWriter {
-    pub fn new(boot_id: uuid::Uuid, current_seqnum: u64) -> Self {
-        Self {
-            registry_file: None,
-            journal_writer: None,
-            journal_file: None,
-            boot_id,
-            seqnum_id: uuid::Uuid::new_v4(),
-            current_seqnum,
-            previous_bucket_utilization: None,
-        }
+        let registry_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+
+        let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
+            .with_window_size(8 * 1024 * 1024)
+            .with_optimized_buckets(None, max_file_size)
+            .with_keyed_hash(true);
+
+        let mut journal_file = JournalFile::create(&registry_file.path, options)?;
+        let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
+
+        Ok(Self {
+            registry_file,
+            journal_file,
+            writer,
+        })
+    }
+
+    /// Creates a successor file, inheriting settings from this file
+    fn rotate(self, chain: &mut Chain, max_file_size: Option<u64>) -> Result<Self> {
+        let next_seqnum = self.writer.next_seqnum();
+        let boot_id = self.writer.boot_id();
+
+        let head_seqnum = next_seqnum;
+        let head_realtime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        let seqnum_id = uuid::Uuid::from_bytes(self.journal_file.journal_header_ref().seqnum_id);
+        let registry_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+
+        let mut journal_file = self
+            .journal_file
+            .create_successor(&registry_file.path, max_file_size)?;
+        let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
+
+        Ok(Self {
+            registry_file,
+            journal_file,
+            writer,
+        })
+    }
+
+    /// Writes a journal entry
+    fn write_entry(&mut self, items: &[&[u8]], realtime: u64, monotonic: u64) -> Result<()> {
+        self.writer
+            .add_entry(&mut self.journal_file, items, realtime, monotonic)
+    }
+
+    /// Gets the current file size
+    fn current_file_size(&self) -> u64 {
+        self.writer.current_file_size()
     }
 }
 
 pub struct Log {
     chain: Chain,
     config: Config,
-    chain_writer: ChainWriter,
-    layers: Vec<Box<dyn Layer>>,
+    active_file: Option<ActiveFile>,
+    rotation_state: RotationState,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
     current_seqnum: u64,
 }
 
@@ -185,22 +170,17 @@ impl Log {
 
         let current_seqnum = chain.tail_seqnum()?;
         let boot_id = load_boot_id()?;
-        let chain_writer = ChainWriter::new(boot_id, current_seqnum);
-
-        let mut layers: Vec<Box<dyn Layer>> = Vec::new();
-        if let Some(max_size) = config.rotation_policy.size_of_journal_file {
-            layers.push(Box::new(SizeLayer::new(max_size)));
-        }
-        if let Some(max_count) = config.rotation_policy.number_of_entries {
-            layers.push(Box::new(CountLayer::new(max_count)));
-        }
+        let seqnum_id = uuid::Uuid::new_v4();
+        let rotation_state = RotationState::new(&config.rotation_policy);
 
         Ok(Log {
             chain,
             config,
-            chain_writer,
+            active_file: None,
+            rotation_state,
+            boot_id,
+            seqnum_id,
             current_seqnum,
-            layers,
         })
     }
 
@@ -220,101 +200,47 @@ impl Log {
             .as_micros() as u64;
         let monotonic = realtime;
 
-        let journal_file = self.chain_writer.journal_file.as_mut().unwrap();
-        let journal_writer = self.chain_writer.journal_writer.as_mut().unwrap();
+        let active_file = self.active_file.as_mut().unwrap();
+        active_file.write_entry(items, realtime, monotonic)?;
 
-        journal_writer.add_entry(journal_file, items, realtime, monotonic)?;
-
-        for layer in &mut self.layers {
-            layer.new_entry(journal_writer)?;
-        }
-
+        self.rotation_state.update(&active_file.writer);
         self.current_seqnum += 1;
 
         Ok(())
     }
 
     fn should_rotate(&self) -> bool {
-        if self.chain_writer.journal_writer.is_none() {
-            return true;
-        }
-
-        self.layers.iter().any(|l| l.should_rotate())
+        self.active_file.is_none() || self.rotation_state.should_rotate()
     }
 
     fn rotate(&mut self) -> Result<()> {
-        self.update_chain()?;
-        self.create_file()?;
-
-        for layer in &mut self.layers {
-            let _ = layer.rotate();
-        }
-
-        Ok(())
-    }
-
-    fn update_chain(&mut self) -> Result<()> {
-        // Update chain with the file size we are about to rotate
-        if let (Some(registry_file), Some(journal_writer)) = (
-            &self.chain_writer.registry_file,
-            &self.chain_writer.journal_writer,
-        ) {
-            let current_size = journal_writer.current_file_size();
-            let old_size = self
-                .chain
-                .file_sizes
-                .get(&registry_file.path)
-                .copied()
-                .unwrap_or(0);
-
-            self.chain
-                .file_sizes
-                .insert(registry_file.path.clone(), current_size);
-
-            self.chain.total_size = self
-                .chain
-                .total_size
-                .saturating_sub(old_size)
-                .saturating_add(current_size);
+        // Update chain with current file size before rotating
+        if let Some(active_file) = &self.active_file {
+            self.chain.update_file_size(
+                &active_file.registry_file.path,
+                active_file.current_file_size(),
+            );
         }
 
         // Respect retention policy
-        self.chain.retain(&self.config.retention_policy)
-    }
+        self.chain.retain(&self.config.retention_policy)?;
 
-    fn create_file(&mut self) -> Result<()> {
-        let head_seqnum = self.current_seqnum + 1;
-        let head_realtime = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
+        // Create new file (either initial or rotated)
+        let max_file_size = self.config.rotation_policy.size_of_journal_file;
+        let new_file = if let Some(old_file) = self.active_file.take() {
+            old_file.rotate(&mut self.chain, max_file_size)?
+        } else {
+            ActiveFile::create(
+                &mut self.chain,
+                self.seqnum_id,
+                self.boot_id,
+                self.current_seqnum + 1,
+                max_file_size,
+            )?
+        };
 
-        let registry_file =
-            self.chain
-                .create_file(self.chain_writer.seqnum_id, head_seqnum, head_realtime)?;
-
-        // Calculate optimal bucket sizes based on previous file utilization
-        let (data_buckets, field_buckets) = calculate_bucket_sizes(
-            self.chain_writer.previous_bucket_utilization.as_ref(),
-            &self.config.rotation_policy,
-        );
-
-        let options = JournalFileOptions::new(
-            self.chain.machine_id,
-            self.chain_writer.boot_id,
-            self.chain_writer.seqnum_id,
-        )
-        .with_window_size(8 * 1024 * 1024)
-        .with_data_hash_table_buckets(data_buckets)
-        .with_field_hash_table_buckets(field_buckets)
-        .with_keyed_hash(true);
-
-        let mut journal_file = JournalFile::create(&registry_file.path, options)?;
-        let writer = JournalWriter::new(&mut journal_file, head_seqnum, self.chain_writer.boot_id)?;
-
-        self.chain_writer.journal_file = Some(journal_file);
-        self.chain_writer.journal_writer = Some(writer);
-        self.chain_writer.registry_file = Some(registry_file);
+        self.active_file = Some(new_file);
+        self.rotation_state.reset();
 
         Ok(())
     }

@@ -207,6 +207,49 @@ impl JournalFileOptions {
         }
     }
 
+    /// Creates options with bucket sizes optimized based on previous utilization
+    pub fn with_optimized_buckets(
+        mut self,
+        previous_utilization: Option<BucketUtilization>,
+        max_file_size: Option<u64>,
+    ) -> Self {
+        let (data_buckets, field_buckets) = if let Some(utilization) = previous_utilization {
+            let data_utilization = utilization.data_utilization();
+            let field_utilization = utilization.field_utilization();
+
+            let data_buckets = if data_utilization > 0.75 {
+                (utilization.data_total * 2).next_power_of_two()
+            } else if data_utilization < 0.25 && utilization.data_total > 4096 {
+                (utilization.data_total / 2).next_power_of_two()
+            } else {
+                utilization.data_total
+            };
+
+            let field_buckets = if field_utilization > 0.75 {
+                (utilization.field_total * 2).next_power_of_two()
+            } else if field_utilization < 0.25 && utilization.field_total > 512 {
+                (utilization.field_total / 2).next_power_of_two()
+            } else {
+                utilization.field_total
+            };
+
+            (data_buckets, field_buckets)
+        } else {
+            // Initial sizing based on rotation policy max file size
+            let max_file_size = max_file_size.unwrap_or(8 * 1024 * 1024);
+
+            // 16 MiB -> 4096 data buckets
+            let data_buckets = (max_file_size / 4096).max(1024).next_power_of_two() as usize;
+            let field_buckets = 128; // Assume ~8:1 data:field ratio
+
+            (data_buckets, field_buckets)
+        };
+
+        self.data_hash_table_buckets = data_buckets;
+        self.field_hash_table_buckets = field_buckets;
+        self
+    }
+
     pub fn with_window_size(mut self, size: u64) -> Self {
         assert_eq!(size % OBJECT_ALIGNMENT, 0);
         assert_eq!(size % 4096, 0, "Window size must be page-aligned");
@@ -674,6 +717,27 @@ impl<M: MemoryMap> JournalFile<M> {
 }
 
 impl<M: MemoryMapMut> JournalFile<M> {
+    /// Creates a successor journal file with optimized bucket sizes based on this file's utilization
+    pub fn create_successor(
+        &self,
+        path: impl AsRef<Path>,
+        max_file_size: Option<u64>,
+    ) -> Result<Self> {
+        let header = self.journal_header_ref();
+        let bucket_utilization = self.bucket_utilization();
+
+        let options = JournalFileOptions::new(
+            uuid::Uuid::from_bytes(header.machine_id),
+            uuid::Uuid::from_bytes(header.tail_entry_boot_id),
+            uuid::Uuid::from_bytes(header.seqnum_id),
+        )
+        .with_window_size(8 * 1024 * 1024)
+        .with_optimized_buckets(bucket_utilization, max_file_size)
+        .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
+
+        Self::create(path, options)
+    }
+
     pub fn create(path: impl AsRef<Path>, options: JournalFileOptions) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)

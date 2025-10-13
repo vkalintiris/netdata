@@ -44,6 +44,16 @@ impl JournalWriter {
         self.first_entry_monotonic
     }
 
+    /// Get the next sequence number that will be written
+    pub fn next_seqnum(&self) -> u64 {
+        self.next_seqnum
+    }
+
+    /// Get the boot ID for this writer
+    pub fn boot_id(&self) -> uuid::Uuid {
+        self.boot_id
+    }
+
     pub fn new(
         journal_file: &mut JournalFile<MmapMut>,
         next_seqnum: u64,
@@ -73,6 +83,11 @@ impl JournalWriter {
             first_entry_monotonic: None,
             boot_id,
         })
+    }
+
+    /// Creates a successor writer for a new journal file
+    pub fn create_successor(&self, journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
+        Self::new(journal_file, self.next_seqnum, self.boot_id)
     }
 
     pub fn add_entry(

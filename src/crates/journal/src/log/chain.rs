@@ -108,6 +108,16 @@ impl Chain {
         Ok(file)
     }
 
+    /// Updates the tracked size of a file in the chain
+    pub fn update_file_size(&mut self, file_path: &str, new_size: u64) {
+        let old_size = self.file_sizes.get(file_path).copied().unwrap_or(0);
+        self.file_sizes.insert(file_path.to_string(), new_size);
+        self.total_size = self
+            .total_size
+            .saturating_sub(old_size)
+            .saturating_add(new_size);
+    }
+
     /// Retains the files that satisfy retention policy limits.
     pub fn retain(&mut self, retention_policy: &RetentionPolicy) -> Result<()> {
         // Remove by file count limit
