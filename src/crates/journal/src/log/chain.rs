@@ -42,9 +42,6 @@ pub struct Chain {
 }
 
 impl Chain {
-    /// Creates a new directory manager, scanning for existing journal files.
-    ///
-    /// Creates the directory if it doesn't exist.
     pub fn new(path: PathBuf, machine_id: Uuid) -> Result<Self> {
         #[cfg(debug_assertions)]
         {
@@ -65,7 +62,9 @@ impl Chain {
         };
 
         for entry in std::fs::read_dir(&chain.path)? {
-            let file_path = entry?.path();
+            let Ok(file_path) = entry.map(|e| e.path()) else {
+                continue;
+            };
 
             let Some(file) = RegistryFile::from_path(&file_path) else {
                 continue;
