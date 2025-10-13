@@ -71,35 +71,37 @@ pub struct Log {
     current_seqnum: u64,
 }
 
+fn create_chain(path: &Path) -> Result<Chain> {
+    let machine_id = crate::file::file::load_machine_id()?;
+
+    if path.exists() && !path.is_dir() {
+        return Err(JournalError::NotADirectory);
+    }
+
+    if path.to_str().is_none() {
+        return Err(JournalError::InvalidFilename);
+    }
+
+    let path = PathBuf::from(path).join(machine_id.as_simple().to_string());
+    if path.to_str().is_none() {
+        return Err(JournalError::InvalidFilename);
+    }
+
+    std::fs::create_dir_all(&path)?;
+
+    path.canonicalize()
+        .map_err(|_| JournalError::NotADirectory)?;
+    if path.to_str().is_none() {
+        return Err(JournalError::InvalidFilename);
+    }
+
+    Chain::new(path, machine_id)
+}
+
 impl Log {
     /// Creates a new journal log.
     pub fn new(path: &Path, config: Config) -> Result<Self> {
-        let mut chain = {
-            let machine_id = crate::file::file::load_machine_id()?;
-
-            if path.exists() && !path.is_dir() {
-                return Err(JournalError::NotADirectory);
-            }
-
-            if path.to_str().is_none() {
-                return Err(JournalError::InvalidFilename);
-            }
-
-            let path = PathBuf::from(path).join(machine_id.as_simple().to_string());
-            if path.to_str().is_none() {
-                return Err(JournalError::InvalidFilename);
-            }
-
-            std::fs::create_dir_all(&path)?;
-
-            path.canonicalize()
-                .map_err(|_| JournalError::NotADirectory)?;
-            if path.to_str().is_none() {
-                return Err(JournalError::InvalidFilename);
-            }
-
-            Chain::new(path, machine_id)?
-        };
+        let mut chain = create_chain(path)?;
 
         // Enforce retention policy on startup to clean up any old files
         chain.retain(&config.retention_policy)?;
