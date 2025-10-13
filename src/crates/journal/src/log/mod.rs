@@ -53,8 +53,8 @@ impl RotationState {
     }
 
     fn should_rotate(&self) -> bool {
-        self.size.map_or(false, |(max, current)| current >= max)
-            || self.count.map_or(false, |(max, current)| current >= max)
+        self.size.is_some_and(|(max, current)| current >= max)
+            || self.count.is_some_and(|(max, current)| current >= max)
     }
 
     fn update(&mut self, journal_writer: &JournalWriter) {
