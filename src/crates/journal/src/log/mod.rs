@@ -87,6 +87,7 @@ pub struct ChainWriter {
     pub boot_id: uuid::Uuid,
     pub seqnum_id: uuid::Uuid,
     pub current_seqnum: u64,
+    pub previous_bucket_utilization: Option<BucketUtilization>,
 }
 
 impl ChainWriter {
@@ -98,7 +99,15 @@ impl ChainWriter {
             boot_id,
             seqnum_id: uuid::Uuid::new_v4(),
             current_seqnum,
+            previous_bucket_utilization: None,
         }
+    }
+
+    pub fn add_entry(&mut self, items: &[&[u8]], realtime: u64, monotonic: u64) -> Result<()> {
+        let journal_file = self.journal_file.as_mut().unwrap();
+        let journal_writer = self.journal_writer.as_mut().unwrap();
+
+        journal_writer.add_entry(journal_file, items, realtime, monotonic)
     }
 }
 
@@ -106,7 +115,6 @@ pub struct Log {
     chain: Chain,
     config: Config,
     chain_writer: ChainWriter,
-    previous_bucket_utilization: Option<BucketUtilization>,
     entries_since_rotation: usize,
     current_seqnum: u64,
 }
@@ -125,7 +133,6 @@ impl Log {
             chain,
             config,
             chain_writer,
-            previous_bucket_utilization: None,
             entries_since_rotation: 0,
             current_seqnum,
         })
@@ -145,10 +152,7 @@ impl Log {
 
         self.ensure_active_journal()?;
 
-        let journal_file = self.chain_writer.journal_file.as_mut().unwrap();
-        let writer = self.chain_writer.journal_writer.as_mut().unwrap();
-
-        writer.add_entry(journal_file, items, realtime, monotonic)?;
+        self.chain_writer.add_entry(items, realtime, monotonic)?;
 
         self.entries_since_rotation += 1;
         self.current_seqnum += 1;
@@ -177,7 +181,7 @@ impl Log {
 
             // Calculate optimal bucket sizes based on previous file utilization
             let (data_buckets, field_buckets) = calculate_bucket_sizes(
-                self.previous_bucket_utilization.as_ref(),
+                self.chain_writer.previous_bucket_utilization.as_ref(),
                 &self.config.rotation_policy,
             );
 
@@ -256,7 +260,7 @@ impl Log {
     fn rotate_current_file(&mut self) -> Result<()> {
         // Capture bucket utilization and next seqnum before closing the file
         if let Some(file) = &self.chain_writer.journal_file {
-            self.previous_bucket_utilization = file.bucket_utilization();
+            self.chain_writer.previous_bucket_utilization = file.bucket_utilization();
         }
 
         // Update the current file's size in our tracking before closing
