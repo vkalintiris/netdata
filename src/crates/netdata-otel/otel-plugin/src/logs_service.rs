@@ -88,7 +88,8 @@ impl LogsService for NetdataLogsService {
 
             for entry in entries {
                 let entry_data = self.json_to_entry_data(&entry);
-                if !entry_data.is_empty() {
+
+                if entry_data.is_empty() {
                     continue;
                 }
 

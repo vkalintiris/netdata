@@ -38,7 +38,7 @@ fn initialize_tracing() {
     // Create Otel layer
     let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
-        .with_endpoint("http://localhost:4317")
+        .with_endpoint("http://localhost:4318")
         .build()
         .expect("Failed to build OTLP exporter");
 
