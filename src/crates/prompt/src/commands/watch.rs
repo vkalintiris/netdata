@@ -1,10 +1,15 @@
 #![allow(unused_imports)]
 use clap::Parser;
+use journal::file::HashableObject;
+use journal::file::Mmap;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::Path;
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use terminal_size::{Width, terminal_size};
+
+use journal::file::{JournalFile, JournalReader};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -20,6 +25,19 @@ struct Args {
     help: Option<bool>,
 }
 
+fn collect_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+    let mut fields = HashSet::new();
+
+    for item in journal_file.fields() {
+        let field = item.unwrap();
+
+        let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
+        fields.insert(payload);
+    }
+
+    fields
+}
+
 pub fn execute(args: &[String]) -> io::Result<()> {
     let parsed = match Args::try_parse_from(
         std::iter::once("watch".to_string()).chain(args.iter().cloned()),
@@ -32,8 +50,35 @@ pub fn execute(args: &[String]) -> io::Result<()> {
     };
 
     let path = parsed.path;
+    let window_size = 8 * 1024 * 1024;
+    let Ok(journal_file) = JournalFile::<Mmap>::open(&path, window_size) else {
+        eprintln!("Failed to open {}", path);
+        return Ok(());
+    };
 
-    println!("Will watch directory {}", path);
+    let fields = collect_fields(&journal_file);
+    let mut fields: Vec<String> = fields.into_iter().collect();
+
+    fields.sort();
+
+    // Get terminal width
+    let width = if let Some((Width(w), _)) = terminal_size() {
+        w as usize
+    } else {
+        80 // Default width
+    };
+
+    // Create grid using uutils_term_grid
+    let grid = Grid::new(
+        fields,
+        GridOptions {
+            filling: Filling::Spaces(2),
+            direction: Direction::LeftToRight,
+            width,
+        },
+    );
+
+    print!("{}", grid);
 
     Ok(())
 }
