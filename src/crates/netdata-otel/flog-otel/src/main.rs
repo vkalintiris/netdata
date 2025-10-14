@@ -201,8 +201,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     info!(
-        "Starting flog-otel-wrapper with rate limit: {} bytes/sec",
-        args.rate_limit_bytes
+        "Starting flog-otel-wrapper with rate limit: {} KiB/sec",
+        args.rate_limit_bytes / (1024)
     );
     info!("OTEL endpoint: {}", args.otel_endpoint);
 
