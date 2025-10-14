@@ -19,7 +19,7 @@ struct Args {
     #[arg(short, long, default_value = "1048576")]
     rate_limit_bytes: u64,
 
-    #[arg(short, long, default_value = "http://127.0.0.1:19998")]
+    #[arg(short, long, default_value = "http://127.0.0.1:4317")]
     otel_endpoint: String,
 
     #[arg(short, long, default_value = "1000")]
