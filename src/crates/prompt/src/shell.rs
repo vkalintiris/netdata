@@ -22,6 +22,7 @@ impl Shell {
         shell.register("pwd", crate::commands::pwd::execute);
         shell.register("help", crate::commands::help::execute);
         shell.register("exit", crate::commands::exit::execute);
+        shell.register("watch", crate::commands::watch::execute);
 
         shell
     }
@@ -58,7 +59,10 @@ impl Shell {
             handler(&cmd_args)?;
             Ok(true)
         } else {
-            println!("Unknown command: {}. Type 'help' for available commands.", cmd_name);
+            println!(
+                "Unknown command: {}. Type 'help' for available commands.",
+                cmd_name
+            );
             Ok(true)
         }
     }

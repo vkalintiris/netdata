@@ -62,6 +62,6 @@ fn main() -> Result<()> {
         }
     }
 
-    rl.save_history("history.txt")?;
+    rl.save_history("/tmp/history.txt")?;
     Ok(())
 }
