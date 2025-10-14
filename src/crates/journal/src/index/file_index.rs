@@ -1,9 +1,9 @@
+use crate::error::JournalError;
+use crate::error::Result;
 use crate::file::DataObject;
 use crate::file::JournalFile;
 use crate::file::Mmap;
 use crate::file::offset_array::InlinedCursor;
-use crate::error::JournalError;
-use crate::error::Result;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

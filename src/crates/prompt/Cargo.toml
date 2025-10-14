@@ -1,0 +1,11 @@
+[package]
+name = "prompt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustyline = { version = "17.0.2", features = ["with-file-history", "with-fuzzy", "derive"] }
+clap = { version = "4.5", features = ["derive"] }
+shell-words = "1.1"
+uutils_term_grid = "0.6"
+terminal_size = "0.4"

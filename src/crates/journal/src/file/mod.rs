@@ -3,8 +3,6 @@ pub mod cursor;
 pub mod file;
 pub mod filter;
 mod hash;
-pub mod index;
-pub mod index_filter;
 pub(crate) mod mmap;
 mod object;
 pub mod offset_array;
@@ -25,7 +23,6 @@ pub use offset_array::Direction;
 // Advanced filtering (for users who need it)
 pub use cursor::JournalCursor;
 pub use filter::{FilterExpr, JournalFilter, LogicalOp};
-pub use index_filter::{IndexFilter, IndexFilterExpr};
 
 // For FFI compatibility and advanced object manipulation
 pub use object::HashableObject;

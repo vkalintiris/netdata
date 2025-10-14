@@ -38,6 +38,9 @@ pub mod log;
 // Journal file tracking and monitoring
 pub mod registry;
 
+// Journal file indexing
+pub mod index;
+
 // Re-export commonly used types for convenience
 pub use error::{JournalError, Result};
 

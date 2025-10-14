@@ -1,6 +1,6 @@
 use super::error::{RegistryError, Result};
+use crate::index::FileIndex;
 use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
-use crate::file::index::FileIndex;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -44,13 +44,12 @@ impl JournalIndexCache {
         );
 
         // Create filesystem device with specified capacity
-        let device = FsDeviceBuilder::new(path)
-            .with_capacity(
-                disk_capacity
-                    .try_into()
-                    .map_err(|e| RegistryError::NumericConversion(format!("disk_capacity: {}", e)))?,
-            )
-            .build()?;
+        let device =
+            FsDeviceBuilder::new(path)
+                .with_capacity(disk_capacity.try_into().map_err(|e| {
+                    RegistryError::NumericConversion(format!("disk_capacity: {}", e))
+                })?)
+                .build()?;
 
         // Build hybrid cache with block-based storage
         let cache: HybridCache<String, FileIndex> = HybridCacheBuilder::new()
