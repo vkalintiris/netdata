@@ -252,7 +252,7 @@ impl FileIndexer {
     pub fn index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        source_timestamp_field: &[u8],
+        source_timestamp_field: Option<&[u8]>,
         field_names: &[&[u8]],
         bucket_size_seconds: u64,
     ) -> Result<FileIndex> {
@@ -342,60 +342,63 @@ impl FileIndexer {
     fn build_file_histogram(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        source_timestamp_field: &[u8],
+        source_timestamp_field: Option<&[u8]>,
         bucket_size_seconds: u64,
     ) -> Result<FileHistogram> {
-        if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field) {
-            // Collect the inlined cursors of the source timestamp field
-            self.source_timestamp_cursor_pairs.clear();
-            for data_object_result in field_data_iterator {
-                let Ok(data_object) = data_object_result else {
-                    warn!("loading data object failed");
-                    continue;
-                };
-
-                let Ok(source_timestamp) = parse_source_timestamp(&data_object) else {
-                    warn!("parsing source timestamp failed");
-                    continue;
-                };
-
-                let Some(ic) = data_object.inlined_cursor() else {
-                    warn!(
-                        "missing inlined cursor for source timestamp {:?}",
-                        source_timestamp
-                    );
-                    continue;
-                };
-
-                self.source_timestamp_cursor_pairs
-                    .push((source_timestamp, ic));
-            }
-
-            // Collect the source timestamp value and offset pairs
-            self.source_timestamp_entry_offset_pairs.clear();
-            for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
-                self.entry_offsets.clear();
-
-                match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!("failed to collect offsets from source timestamp: {}", e);
+        if let Some(source_timestamp_field) = source_timestamp_field {
+            if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field)
+            {
+                // Collect the inlined cursors of the source timestamp field
+                self.source_timestamp_cursor_pairs.clear();
+                for data_object_result in field_data_iterator {
+                    let Ok(data_object) = data_object_result else {
+                        warn!("loading data object failed");
                         continue;
+                    };
+
+                    let Ok(source_timestamp) = parse_source_timestamp(&data_object) else {
+                        warn!("parsing source timestamp failed");
+                        continue;
+                    };
+
+                    let Some(ic) = data_object.inlined_cursor() else {
+                        warn!(
+                            "missing inlined cursor for source timestamp {:?}",
+                            source_timestamp
+                        );
+                        continue;
+                    };
+
+                    self.source_timestamp_cursor_pairs
+                        .push((source_timestamp, ic));
+                }
+
+                // Collect the source timestamp value and offset pairs
+                self.source_timestamp_entry_offset_pairs.clear();
+                for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
+                    self.entry_offsets.clear();
+
+                    match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("failed to collect offsets from source timestamp: {}", e);
+                            continue;
+                        }
+                    }
+
+                    for entry_offset in &self.entry_offsets {
+                        self.source_timestamp_entry_offset_pairs
+                            .push((*ts, *entry_offset));
                     }
                 }
+                self.source_timestamp_entry_offset_pairs.sort_unstable();
 
-                for entry_offset in &self.entry_offsets {
-                    self.source_timestamp_entry_offset_pairs
-                        .push((*ts, *entry_offset));
+                // Map each entry offset to its position in the pair vector
+                for (idx, (_, entry_offset)) in
+                    self.source_timestamp_entry_offset_pairs.iter().enumerate()
+                {
+                    self.entry_offset_index.insert(*entry_offset, idx as _);
                 }
-            }
-            self.source_timestamp_entry_offset_pairs.sort_unstable();
-
-            // Map each entry offset to its position in the pair vector
-            for (idx, (_, entry_offset)) in
-                self.source_timestamp_entry_offset_pairs.iter().enumerate()
-            {
-                self.entry_offset_index.insert(*entry_offset, idx as _);
             }
         }
 

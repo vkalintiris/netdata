@@ -489,10 +489,6 @@ impl RegistryInner {
         Ok(())
     }
 
-    pub fn remove_directory_files(&mut self, path: &str) {
-        self.directories.remove(path);
-    }
-
     pub fn remove_file(&mut self, file: &File) -> Result<()> {
         let dir = file.dir()?;
         let mut remove_directory = false;
@@ -518,7 +514,10 @@ impl RegistryInner {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    pub fn remove_directory_files(&mut self, path: &str) {
+        self.directories.remove(path);
+    }
+
     pub fn rename_file(&mut self, from: &File, to: File) -> Result<()> {
         self.remove_file(from)?;
         self.insert_file(to)?;

@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 
-use journal_file::JournalFile;
-use journal_file::Mmap;
-use journal_file::index::{FileIndex, FileIndexer};
+use journal::file::JournalFile;
+use journal::file::Mmap;
+use journal::index::{FileIndex, FileIndexer};
 use std::time::Instant;
 use tracing::{info, warn};
 
 fn sequential(
-    files: &[journal_registry::File],
+    files: &[journal::registry::File],
     field_names: &[&[u8]],
-) -> Vec<(journal_registry::File, FileIndex)> {
+) -> Vec<(journal::registry::File, FileIndex)> {
     let start_time = Instant::now();
 
     let mut total_index_size = 0;
@@ -23,8 +23,7 @@ fn sequential(
         let window_size = 8 * 1024 * 1024;
         let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
 
-        let Ok(jfi) = file_indexer.index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
-        else {
+        let Ok(jfi) = file_indexer.index(&journal_file, None, field_names, 10) else {
             continue;
         };
 
@@ -63,12 +62,12 @@ fn sequential(
 use rayon::prelude::*;
 
 fn parallel(
-    files: &[journal_registry::File],
+    files: &[journal::registry::File],
     field_names: &[&[u8]],
-) -> Vec<(journal_registry::File, FileIndex)> {
+) -> Vec<(journal::registry::File, FileIndex)> {
     let start_time = Instant::now();
 
-    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
+    // const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 
     // Process files in parallel
     let file_indexes: Vec<_> = files
@@ -81,7 +80,7 @@ fn parallel(
             let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
             let jfi = file_indexer
-                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
+                .index(&journal_file, None, field_names, 10)
                 .ok()?;
 
             let mut index_size = 0;
@@ -193,15 +192,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"ND_ALERT_STATUS",
     ];
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    let facets: Vec<&[u8]> = vec![b"log.severity_number"];
 
-    let mut registry = journal_registry::Registry::new()?;
+    // Initialize tracing
+    // tracing_subscriber::fmt()
+    //     .with_max_level(tracing::Level::INFO)
+    //     .init();
+
+    let mut registry = journal::registry::Registry::new()?;
     info!("Journal registry initialized");
 
-    for dir in ["/var/log/journal", "/run/log/journal"] {
+    for dir in ["/home/vk/repos/tmp/flog"] {
         match registry.watch_directory(dir).await {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
@@ -215,7 +216,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // files.truncate(5);
 
     // let _ = sequential(&files, facets.as_slice());
-    let _ = parallel(&files, facets.as_slice());
+    let start = std::time::Instant::now();
+    let v = parallel(&files, facets.as_slice());
+    let elapsed = start.elapsed();
+
+    for (f, fi) in v.iter().take(3) {
+        println!("Path: {:#?}", f.path);
+        println!("FI: {:#?}", fi);
+    }
+    println!("Building took: {:#?}", elapsed.as_millis());
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", files.len());

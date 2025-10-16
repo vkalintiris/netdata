@@ -9,7 +9,8 @@ use std::path::Path;
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use terminal_size::{Width, terminal_size};
 
-use journal::file::{JournalFile, JournalReader};
+use journal::file::JournalFileMap;
+use journal::registry::RegistryInner;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,7 +26,7 @@ struct Args {
     help: Option<bool>,
 }
 
-fn collect_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+fn collect_fields(journal_file: &JournalFileMap) -> HashSet<String> {
     let mut fields = HashSet::new();
 
     for item in journal_file.fields() {
@@ -51,7 +52,7 @@ pub fn execute(args: &[String]) -> io::Result<()> {
 
     let path = parsed.path;
     let window_size = 8 * 1024 * 1024;
-    let Ok(journal_file) = JournalFile::<Mmap>::open(&path, window_size) else {
+    let Ok(journal_file) = JournalFileMap::open(&path, window_size) else {
         eprintln!("Failed to open {}", path);
         return Ok(());
     };
@@ -60,6 +61,8 @@ pub fn execute(args: &[String]) -> io::Result<()> {
     let mut fields: Vec<String> = fields.into_iter().collect();
 
     fields.sort();
+
+    println!("Found {} fields in {}:", fields.len(), path);
 
     // Get terminal width
     let width = if let Some((Width(w), _)) = terminal_size() {
