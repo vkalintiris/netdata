@@ -2,7 +2,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fst::{MapBuilder, Set, SetBuilder};
+use hyperloglogplus::{HyperLogLog, HyperLogLogPlus};
 use journal::file::{HashableObject, JournalFile, Mmap};
+use rand::Rng;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::BufWriter;
@@ -36,6 +39,10 @@ struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
+
+    /// Enable cardinality estimation using HyperLogLog (samples 1% of data)
+    #[arg(short = 'c', long)]
+    estimate_cardinality: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +68,7 @@ fn collect_data_objects(
     journal_file: &JournalFile<Mmap>,
     field_filter: Option<&[String]>,
     limit: Option<usize>,
+    estimate_cardinality: bool,
 ) -> Result<HashSet<(Vec<u8>, u64)>> {
     info!("Starting data object collection from journal file");
 
@@ -90,6 +98,66 @@ fn collect_data_objects(
 
     // Step 2: Sort offsets to enable linear scan of the file
     offsets.sort_unstable();
+
+    // Cardinality estimation experiment using HyperLogLog
+    if true {
+        info!("Starting cardinality estimation with 1% sample");
+
+        let mut rng = rand::thread_rng();
+        let sample_rate = 0.99; // 1%
+        let mut field_hll_map: HashMap<String, HyperLogLogPlus<Vec<u8>, RandomState>> =
+            HashMap::new();
+
+        for offset in offsets.iter() {
+            // Randomly sample 1% of offsets
+            let random_value: f64 = rng.sample(rand::distributions::Standard);
+            if random_value > sample_rate {
+                continue;
+            }
+
+            match journal_file.data_ref(*offset) {
+                Ok(data_object) => {
+                    let payload = data_object.get_payload();
+
+                    // Extract field name (everything before '=')
+                    if let Some(eq_pos) = payload.iter().position(|&b| b == b'=') {
+                        let field_name = String::from_utf8_lossy(&payload[..eq_pos]).to_string();
+                        let value = &payload[eq_pos + 1..];
+
+                        // Get or create HyperLogLog for this field (precision = 16)
+                        let hll = field_hll_map.entry(field_name).or_insert_with(|| {
+                            HyperLogLogPlus::new(16, RandomState::new()).unwrap()
+                        });
+
+                        // Add the value to the HyperLogLog
+                        hll.insert(&value.to_vec());
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to read data object at offset {:?}: {:?}", offset, e);
+                }
+            }
+        }
+
+        // Print cardinality estimates
+        info!("=== Cardinality Estimation Results (1% sample) ===");
+
+        // First, collect the counts so we can sort
+        let mut field_counts: Vec<_> = field_hll_map
+            .iter_mut()
+            .map(|(field, hll)| (field.clone(), hll.count()))
+            .collect();
+
+        field_counts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        for (field, estimated_cardinality) in field_counts.iter() {
+            if !field.is_ascii() {
+                continue;
+            }
+            info!("  {}: ~{:.0} unique values", field, estimated_cardinality);
+        }
+        info!("=== End of Cardinality Estimation ===");
+    }
 
     info!("Reading data objects in sequential order");
 
@@ -278,7 +346,12 @@ fn main() -> Result<()> {
     info!("  Objects: {}", header.n_objects);
 
     // Collect data objects
-    let data_objects = collect_data_objects(&journal_file, field_filter.as_deref(), args.limit)?;
+    let data_objects = collect_data_objects(
+        &journal_file,
+        field_filter.as_deref(),
+        args.limit,
+        args.estimate_cardinality,
+    )?;
 
     if data_objects.is_empty() {
         warn!("No data objects found matching criteria");

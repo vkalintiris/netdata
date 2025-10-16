@@ -253,6 +253,18 @@ impl FileIndex {
 
         false
     }
+
+    /// Compresses the bincode serialized representation of the entries_index field using lz4.
+    /// Returns the compressed bytes on success.
+    pub fn compress_entries_index(&self) -> Vec<u8> {
+        // Serialize the entries_index to bincode format
+        let serialized = bincode::serialize(&self.entries_index).unwrap();
+
+        // Compress the serialized data using lz4
+        let compressed = lz4::block::compress(&serialized, None, false).unwrap();
+
+        compressed
+    }
 }
 
 #[derive(Debug, Default)]

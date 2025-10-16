@@ -192,8 +192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"ND_ALERT_STATUS",
     ];
 
-    // let facets: Vec<&[u8]> = vec![b"log.severity_number"];
-
     let facets: Vec<&[u8]> = vec![
         b"_HOSTNAME",
         b"PRIORITY",
@@ -239,6 +237,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"_SYSTEMD_SESSION",
         b"__logs_sources",
     ];
+    let facets: Vec<&[u8]> = vec![b"log.severity_number"];
+
     // Initialize tracing
     // tracing_subscriber::fmt()
     //     .with_max_level(tracing::Level::INFO)
@@ -270,11 +270,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
 
     let mut total_size = 0;
+    let mut total_entries_index_size = 0;
     for t in v {
         total_size += t.1.memory_size();
+        total_entries_index_size += t.1.compress_entries_index().len();
     }
 
     println!("total_size: {:#?} MiB", total_size / (1024 * 1024));
+    println!(
+        "comrpessed_size: {:#?} MiB",
+        total_entries_index_size / (1024 * 1024)
+    );
 
     // for (f, fi) in v.iter().take(3) {
     //     println!("Path: {:#?}", f.path);
