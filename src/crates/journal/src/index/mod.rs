@@ -1,5 +1,7 @@
 mod file_index;
 pub use file_index::{FileIndex, FileIndexer};
 
-mod bitmap;
+pub mod bitmap;
+pub use bitmap::Bitmap;
+
 mod index_filter;

@@ -1,0 +1,12 @@
+[package]
+name = "histogram-viz"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4.5", features = ["derive"] }
+chrono = "0.4"
+journal = { path = "../journal" }
+roaring = "0.11.2"
