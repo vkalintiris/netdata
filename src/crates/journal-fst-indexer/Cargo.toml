@@ -1,0 +1,30 @@
+[package]
+name = "journal-fst-indexer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "journal-fst-indexer"
+path = "src/main.rs"
+
+[dependencies]
+# Local dependencies
+journal = { path = "../journal" }
+
+# FST for building finite state transducers
+fst = "0.4"
+
+# Command-line argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"

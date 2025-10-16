@@ -1,14 +1,14 @@
 use crate::error::JournalError;
 use crate::error::Result;
 use crate::file::DataObject;
+use crate::file::HashableObject;
 use crate::file::JournalFile;
 use crate::file::Mmap;
 use crate::file::offset_array::InlinedCursor;
 use crate::index::bitmap::Bitmap;
 use bincode;
-use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use tracing::{error, warn};
 
@@ -58,6 +58,7 @@ pub struct FileHistogram {
 }
 
 impl FileHistogram {
+    // Construct the file histogram of a field value from it's bitmap
     pub fn from_bitmap(&self, bitmap: &Bitmap) -> Vec<(u64, u32)> {
         if self.buckets.is_empty() || bitmap.is_empty() {
             return Vec::new();
@@ -223,12 +224,34 @@ impl FileHistogram {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
     pub file_histogram: FileHistogram,
+
+    // File fields
+    pub file_fields: HashSet<String>,
+
+    // Index that maps field values to their entries bitmap
     pub entries_index: HashMap<String, Bitmap>,
 }
 
 impl FileIndex {
     pub fn memory_size(&self) -> usize {
         bincode::serialized_size(self).unwrap() as usize
+    }
+
+    pub fn is_indexed(&self, field: &str) -> bool {
+        // If the file does not contain the field, then it's not indexed
+        if !self.file_fields.contains(field) {
+            return false;
+        }
+
+        // If the entries index contains a key that starts with the field
+        // name, then we've have indexed all the values the field takes
+        for key in self.entries_index.keys() {
+            if key.starts_with(field) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -256,6 +279,19 @@ pub struct FileIndexer {
     entry_offset_index: HashMap<NonZeroU64, u64>,
 }
 
+fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+    let mut fields = HashSet::new();
+
+    for item in journal_file.fields() {
+        let field = item.unwrap();
+
+        let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
+        fields.insert(payload);
+    }
+
+    fields
+}
+
 impl FileIndexer {
     pub fn index(
         &mut self,
@@ -272,11 +308,14 @@ impl FileIndexer {
         self.entry_offsets.reserve(8);
         self.entry_offset_index.reserve(n_entries);
 
+        let file_fields = collect_file_fields(journal_file);
+
         let file_histogram =
             self.build_file_histogram(journal_file, source_timestamp_field, bucket_size_seconds)?;
         let entries_index = self.build_entries_index(journal_file, field_names)?;
 
         Ok(FileIndex {
+            file_fields,
             file_histogram,
             entries_index,
         })
@@ -335,12 +374,12 @@ impl FileIndexer {
                 }
                 self.entry_indices.sort_unstable();
 
-                // Create the roaring bitmap for the entry indices
-                let mut rb =
-                    RoaringBitmap::from_sorted_iter(self.entry_indices.iter().copied()).unwrap();
-                rb.optimize();
+                // Create the bitmap for the entry indices
+                let mut bitmap =
+                    Bitmap::from_sorted_iter(self.entry_indices.iter().copied()).unwrap();
+                bitmap.optimize();
 
-                entries_index.insert(data_payload.clone(), Bitmap(rb));
+                entries_index.insert(data_payload.clone(), bitmap);
             }
         }
 
