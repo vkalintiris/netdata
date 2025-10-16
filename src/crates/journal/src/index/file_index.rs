@@ -4,6 +4,8 @@ use crate::file::DataObject;
 use crate::file::JournalFile;
 use crate::file::Mmap;
 use crate::file::offset_array::InlinedCursor;
+use crate::index::bitmap::Bitmap;
+use bincode;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,13 +58,13 @@ pub struct FileHistogram {
 }
 
 impl FileHistogram {
-    pub fn from_bitmap(&self, rb: &RoaringBitmap) -> Vec<(u64, u32)> {
-        if self.buckets.is_empty() || rb.is_empty() {
+    pub fn from_bitmap(&self, bitmap: &Bitmap) -> Vec<(u64, u32)> {
+        if self.buckets.is_empty() || bitmap.is_empty() {
             return Vec::new();
         }
 
         let mut rb_histogram = Vec::new();
-        let mut rb_iter = rb.iter().peekable();
+        let mut rb_iter = bitmap.iter().peekable();
 
         for bucket in &self.buckets {
             let mut count = 0;
@@ -221,7 +223,13 @@ impl FileHistogram {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
     pub file_histogram: FileHistogram,
-    pub entries_index: HashMap<String, RoaringBitmap>,
+    pub entries_index: HashMap<String, Bitmap>,
+}
+
+impl FileIndex {
+    pub fn memory_size(&self) -> usize {
+        bincode::serialized_size(self).unwrap() as usize
+    }
 }
 
 #[derive(Debug, Default)]
@@ -278,7 +286,7 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         field_names: &[&[u8]],
-    ) -> Result<HashMap<String, RoaringBitmap>> {
+    ) -> Result<HashMap<String, Bitmap>> {
         let mut entries_index = HashMap::new();
 
         for field_name in field_names {
@@ -332,7 +340,7 @@ impl FileIndexer {
                     RoaringBitmap::from_sorted_iter(self.entry_indices.iter().copied()).unwrap();
                 rb.optimize();
 
-                entries_index.insert(data_payload.clone(), rb);
+                entries_index.insert(data_payload.clone(), Bitmap(rb));
             }
         }
 

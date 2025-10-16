@@ -24,6 +24,9 @@ roaring = { version = "0.11.2", features = ["serde"] }
 lz4 = "1.25"
 serde = { version = "1.0", features = ["derive"] }
 
+# File index depedencies
+bincode = { version = "1.3" }
+
 # Registry dependencies
 notify = "8.2"
 parking_lot = "0.12"
@@ -38,6 +41,7 @@ foyer = { version = "0.20.0", features = ["serde"] }
 serde_json = "1.0"
 anyhow = "1.0"
 arbitrary = "1.3"
+
 
 tracing = "0.1"
 

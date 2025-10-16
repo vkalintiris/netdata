@@ -10,6 +10,7 @@ use term_grid::{Direction, Filling, Grid, GridOptions};
 use terminal_size::{Width, terminal_size};
 
 use journal::file::JournalFileMap;
+use journal::index::{FileIndex, FileIndexer};
 use journal::registry::RegistryInner;
 
 #[derive(Parser, Debug)]
@@ -59,29 +60,50 @@ pub fn execute(args: &[String]) -> io::Result<()> {
 
     let fields = collect_fields(&journal_file);
     let mut fields: Vec<String> = fields.into_iter().collect();
-
     fields.sort();
 
-    println!("Found {} fields in {}:", fields.len(), path);
+    if true {
+        let field_names: Vec<&[u8]> = vec![
+            b"log.attributes.method",
+            b"resource.attributes.service.name",
+            b"log.attributes.protocol",
+            b"log.attributes.status",
+            b"resource.attributes.service.version",
+            b"log.severity_number",
+        ];
 
-    // Get terminal width
-    let width = if let Some((Width(w), _)) = terminal_size() {
-        w as usize
+        let mut file_indexer = FileIndexer::default();
+        let file_index = file_indexer
+            .index(&journal_file, None, &field_names, 60)
+            .unwrap();
+
+        for (idx, (field, rb)) in file_index.entries_index.iter().enumerate() {
+            println!("[{}] do: {:#?}, rb: {:#?}", idx, field, rb);
+        }
+
+        println!("Index size: {:#?}", file_index.memory_size());
     } else {
-        80 // Default width
-    };
+        println!("Found {} fields in {}:", fields.len(), path);
 
-    // Create grid using uutils_term_grid
-    let grid = Grid::new(
-        fields,
-        GridOptions {
-            filling: Filling::Spaces(2),
-            direction: Direction::LeftToRight,
-            width,
-        },
-    );
+        // Get terminal width
+        let width = if let Some((Width(w), _)) = terminal_size() {
+            w as usize
+        } else {
+            80 // Default width
+        };
 
-    print!("{}", grid);
+        // Create grid using uutils_term_grid
+        let grid = Grid::new(
+            fields,
+            GridOptions {
+                filling: Filling::Spaces(2),
+                direction: Direction::LeftToRight,
+                width,
+            },
+        );
+
+        print!("{}", grid);
+    }
 
     Ok(())
 }

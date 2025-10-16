@@ -1,23 +1,24 @@
+use super::bitmap::Bitmap;
 use super::file_index::FileIndex;
-use roaring::RoaringBitmap;
+// use roaring::RoaringBitmap;
 
 #[derive(Clone, Debug)]
 pub enum IndexFilterExpr {
     None,
-    Match(RoaringBitmap),
+    Match(Bitmap),
     Conjunction(Vec<IndexFilterExpr>),
     Disjunction(Vec<IndexFilterExpr>),
 }
 
 impl IndexFilterExpr {
     /// Get all entry indices that match this filter expression
-    pub fn matching_indices(&self) -> RoaringBitmap {
+    pub fn matching_indices(&self) -> Bitmap {
         match self {
-            IndexFilterExpr::None => RoaringBitmap::new(),
+            IndexFilterExpr::None => Bitmap::new(),
             IndexFilterExpr::Match(bitmap) => bitmap.clone(),
             IndexFilterExpr::Conjunction(filter_exprs) => {
                 if filter_exprs.is_empty() {
-                    return RoaringBitmap::new();
+                    return Bitmap::new();
                 }
 
                 let mut result = filter_exprs[0].matching_indices();
@@ -30,7 +31,7 @@ impl IndexFilterExpr {
                 result
             }
             IndexFilterExpr::Disjunction(filter_exprs) => {
-                let mut result = RoaringBitmap::new();
+                let mut result = Bitmap::new();
                 for expr in filter_exprs.iter() {
                     result |= expr.matching_indices();
                 }
@@ -59,7 +60,7 @@ impl IndexFilterExpr {
     }
 
     /// Get matching indices within a specific range
-    pub fn matching_indices_in_range(&self, start: u32, end: u32) -> RoaringBitmap {
+    pub fn matching_indices_in_range(&self, start: u32, end: u32) -> Bitmap {
         let mut result = self.matching_indices();
         result.remove_range(..start);
         result.remove_range((end + 1)..);
@@ -71,7 +72,7 @@ impl IndexFilterExpr {
         &self,
         file_index: &FileIndex,
         bucket_index: usize,
-    ) -> Option<RoaringBitmap> {
+    ) -> Option<Bitmap> {
         let (start, end) = file_index.file_histogram.get_entry_range(bucket_index)?;
         Some(self.matching_indices_in_range(start, end))
     }
