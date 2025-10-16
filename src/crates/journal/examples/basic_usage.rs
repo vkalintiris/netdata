@@ -192,8 +192,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"ND_ALERT_STATUS",
     ];
 
-    let facets: Vec<&[u8]> = vec![b"log.severity_number"];
+    // let facets: Vec<&[u8]> = vec![b"log.severity_number"];
 
+    let facets: Vec<&[u8]> = vec![
+        b"_HOSTNAME",
+        b"PRIORITY",
+        b"SYSLOG_FACILITY",
+        b"ERRNO",
+        b"SYSLOG_IDENTIFIER",
+        b"UNIT",
+        b"USER_UNIT",
+        b"MESSAGE_ID",
+        b"_BOOT_ID",
+        b"_SYSTEMD_OWNER_UID",
+        b"_UID",
+        b"OBJECT_SYSTEMD_OWNER_UID",
+        b"OBJECT_UID",
+        b"_GID",
+        b"OBJECT_GID",
+        b"_CAP_EFFECTIVE",
+        b"_AUDIT_LOGINUID",
+        b"OBJECT_AUDIT_LOGINUID",
+        b"CODE_FUNC",
+        b"ND_LOG_SOURCE",
+        b"CODE_FILE",
+        b"ND_ALERT_NAME",
+        b"ND_ALERT_CLASS",
+        b"_SELINUX_CONTEXT",
+        b"_MACHINE_ID",
+        b"ND_ALERT_TYPE",
+        b"_SYSTEMD_SLICE",
+        b"_EXE",
+        b"_SYSTEMD_UNIT",
+        b"_NAMESPACE",
+        b"_TRANSPORT",
+        b"_RUNTIME_SCOPE",
+        b"_STREAM_ID",
+        b"ND_NIDL_CONTEXT",
+        b"ND_ALERT_STATUS",
+        b"_SYSTEMD_CGROUP",
+        b"ND_NIDL_NODE",
+        b"ND_ALERT_COMPONENT",
+        b"_COMM",
+        b"_SYSTEMD_USER_UNIT",
+        b"_SYSTEMD_USER_SLICE",
+        b"_SYSTEMD_SESSION",
+        b"__logs_sources",
+    ];
     // Initialize tracing
     // tracing_subscriber::fmt()
     //     .with_max_level(tracing::Level::INFO)
@@ -202,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = journal::registry::Registry::new()?;
     info!("Journal registry initialized");
 
-    for dir in ["/home/vk/repos/tmp/flog"] {
+    for dir in ["/var/log/journal/"] {
         match registry.watch_directory(dir).await {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
@@ -213,6 +258,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.find_files_in_range(0, u64::MAX, &mut files);
     files.sort_by_key(|f| String::from(&f.path));
     files.reverse();
+
+    for file in files.iter() {
+        println!("file: {:#?}", file.path);
+    }
     // files.truncate(5);
 
     // let _ = sequential(&files, facets.as_slice());
@@ -220,10 +269,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v = parallel(&files, facets.as_slice());
     let elapsed = start.elapsed();
 
-    for (f, fi) in v.iter().take(3) {
-        println!("Path: {:#?}", f.path);
-        println!("FI: {:#?}", fi);
+    let mut total_size = 0;
+    for t in v {
+        total_size += t.1.memory_size();
     }
+
+    println!("total_size: {:#?} MiB", total_size / (1024 * 1024));
+
+    // for (f, fi) in v.iter().take(3) {
+    //     println!("Path: {:#?}", f.path);
+    //     println!("FI: {:#?}", fi);
+    // }
     println!("Building took: {:#?}", elapsed.as_millis());
 
     println!("\n=== Journal Files Statistics ===");

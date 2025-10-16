@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use journal::file::JournalFileMap;
-use journal::index::{Bitmap, FileIndex};
+use journal::index::{Bitmap, FileIndex, FileIndexer};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -15,7 +15,7 @@ use ratatui::{
     text::Span,
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io;
 
 /// Application state for interactive visualization
@@ -64,7 +64,8 @@ impl AppState {
         let mut field_names = HashSet::new();
 
         // Iterate through all field objects in the journal
-        while let Some(field_guard) = reader.fields_enumerate(journal_file)
+        while let Some(field_guard) = reader
+            .fields_enumerate(journal_file)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
         {
             let field_name = String::from_utf8_lossy(&field_guard.payload).to_string();
@@ -76,10 +77,7 @@ impl AppState {
         Ok(fields)
     }
 
-    fn load_field_values(
-        &mut self,
-        journal_file: &JournalFileMap,
-    ) -> io::Result<()> {
+    fn load_field_values(&mut self, journal_file: &JournalFileMap) -> io::Result<()> {
         use journal::file::JournalReader;
 
         // Clone the field name to avoid borrow issues
@@ -92,11 +90,13 @@ impl AppState {
         let mut values = HashSet::new();
 
         // Query all unique values for this field
-        reader.field_data_query_unique(journal_file, field.as_bytes())
+        reader
+            .field_data_query_unique(journal_file, field.as_bytes())
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         // Enumerate all data objects for this field
-        while let Some(data_guard) = reader.field_data_enumerate(journal_file)
+        while let Some(data_guard) = reader
+            .field_data_enumerate(journal_file)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
         {
             // Use the payload_bytes() method to extract bytes
@@ -180,73 +180,36 @@ impl AppState {
     }
 }
 
-/// Build a bitmap of entry indices that contain a specific field-value pair
-/// This scans through all entries in the journal file
+/// Build a bitmap for a specific field-value pair using FileIndexer
+/// This uses the same indexing logic as the FileIndex to ensure consistency
 fn build_bitmap_for_field_value(
     journal_file: &JournalFileMap,
-    _file_index: &FileIndex,
+    file_index: &FileIndex,
     field_name: &str,
     value: &str,
 ) -> io::Result<Bitmap> {
-    use journal::file::{JournalReader, offset_array::Direction};
-    use roaring::RoaringBitmap;
+    // Use FileIndexer to index just this specific field
+    let mut indexer = FileIndexer::default();
+    let field_bytes = field_name.as_bytes();
 
-    // Build a map from entry offset to entry index
-    let mut entry_offset_to_index: HashMap<std::num::NonZeroU64, u32> = HashMap::new();
-
-    // We need to iterate through all entries to build the mapping
-    let mut reader = JournalReader::default();
-    reader.set_location(journal::file::cursor::Location::Head);
-
-    let mut entry_index = 0u32;
-    while reader.step(journal_file, Direction::Forward)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-    {
-        if let Ok(offset) = reader.get_entry_offset() {
-            entry_offset_to_index.insert(offset, entry_index);
-            entry_index += 1;
-        }
-    }
-
-    // Now scan through the data objects for this field
-    let mut matching_indices = Vec::new();
-
-    let field_data_iterator = journal_file.field_data_objects(field_name.as_bytes())
+    // Index this field to get its bitmap in the entries_index
+    let temp_index = indexer
+        .index(
+            journal_file,
+            None, // Use same source timestamp settings as original index
+            &[field_bytes],
+            file_index.file_histogram.bucket_size(),
+        )
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    for data_object_result in field_data_iterator {
-        let data_object = data_object_result
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Check if this data object has the matching value
-        let payload_bytes = data_object.payload_bytes();
-        let data_value = String::from_utf8_lossy(payload_bytes);
-
-        if data_value == value {
-            // Get the inlined cursor to find which entries contain this data object
-            if let Some(inlined_cursor) = data_object.inlined_cursor() {
-                let mut entry_offsets = Vec::new();
-                if inlined_cursor.collect_offsets(journal_file, &mut entry_offsets).is_ok() {
-                    // Map offsets to indices
-                    for entry_offset in entry_offsets {
-                        if let Some(&index) = entry_offset_to_index.get(&entry_offset) {
-                            matching_indices.push(index);
-                        }
-                    }
-                }
-            }
-        }
+    // Look for the field=value key in the newly created index
+    let key = format!("{}={}", field_name, value);
+    if let Some(bitmap) = temp_index.entries_index.get(&key) {
+        Ok(bitmap.clone())
+    } else {
+        // If the key doesn't exist, return an empty bitmap
+        Ok(Bitmap::default())
     }
-
-    // Sort and deduplicate
-    matching_indices.sort_unstable();
-    matching_indices.dedup();
-
-    // Create bitmap
-    let rb = RoaringBitmap::from_sorted_iter(matching_indices.into_iter())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    Ok(Bitmap(rb))
 }
 
 fn format_timestamp_medium(micros: u64) -> String {
@@ -263,9 +226,7 @@ fn format_timestamp_medium(micros: u64) -> String {
 
 pub fn visualize_histogram_interactive(
     journal_file: &JournalFileMap,
-    file_index: &FileIndex,
-    _histogram_data: &[(u64, u32)],
-    _title: String,
+    title: String,
 ) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -281,55 +242,45 @@ pub fn visualize_histogram_interactive(
         app_state.load_field_values(journal_file)?;
     }
 
-    // Calculate initial histogram data
-    let (mut histogram_data, mut chart_title) = if let Some((field, value)) = app_state.current_field_value_pair() {
-        let key = format!("{}={}", field, value);
-        if let Some(bitmap) = file_index.entries_index.get(&key) {
-            let data = file_index.file_histogram.from_bitmap(bitmap);
-            (data, format!("Histogram: {}", key))
-        } else {
-            match build_bitmap_for_field_value(journal_file, file_index, &field, &value) {
-                Ok(bitmap) => {
-                    let data = file_index.file_histogram.from_bitmap(&bitmap);
-                    (data, format!("Histogram: {}={}", field, value))
-                }
-                Err(e) => {
-                    (vec![], format!("Error building histogram: {}", e))
-                }
-            }
-        }
-    } else {
-        (vec![], "Select a field and value".to_string())
-    };
+    // Will calculate histogram data on first draw
+    let mut histogram_data: Vec<(u64, u32)>;
+    let mut chart_title: String;
 
     let mut needs_redraw = true;
+
+    let mut field_names: Vec<&[u8]> = vec![b"PRIORITY"];
+    let mut file_indexer = FileIndexer::default();
+    let bucket_size_seconds = 60;
+    let mut file_index = file_indexer
+        .index(journal_file, None, &field_names, bucket_size_seconds)
+        .unwrap();
 
     // Main event loop
     loop {
         // Only recalculate histogram if state changed
         if needs_redraw {
-            (histogram_data, chart_title) = if let Some((field, value)) = app_state.current_field_value_pair() {
-                // Look up the field=value combination in the index
-                let key = format!("{}={}", field, value);
-                if let Some(bitmap) = file_index.entries_index.get(&key) {
-                    // Use pre-indexed bitmap
-                    let data = file_index.file_histogram.from_bitmap(bitmap);
-                    (data, format!("Histogram: {}", key))
-                } else {
-                    // Build bitmap dynamically
-                    match build_bitmap_for_field_value(journal_file, file_index, &field, &value) {
-                        Ok(bitmap) => {
-                            let data = file_index.file_histogram.from_bitmap(&bitmap);
-                            (data, format!("Histogram: {}={}", field, value))
-                        }
-                        Err(e) => {
-                            (vec![], format!("Error building histogram: {}", e))
-                        }
+            (histogram_data, chart_title) =
+                if let Some((field, value)) = app_state.current_field_value_pair() {
+                    file_index = if file_index.is_indexed(&field) {
+                        file_index
+                    } else {
+                        let field_names = vec![field.as_bytes()];
+                        file_indexer
+                            .index(journal_file, None, &field_names, bucket_size_seconds)
+                            .unwrap()
+                    };
+
+                    // Look up the field=value combination in the index
+                    if let Some(bitmap) = file_index.entries_index.get(&value) {
+                        // Use pre-indexed bitmap
+                        let data = file_index.file_histogram.from_bitmap(bitmap);
+                        (data, format!("Histogram: {}", value))
+                    } else {
+                        (vec![], String::from("Error building histogram"))
                     }
-                }
-            } else {
-                (vec![], "Select a field and value".to_string())
-            };
+                } else {
+                    (vec![], "Select a field and value".to_string())
+                };
 
             terminal.draw(|f| {
                 // Create main layout: horizontal split
@@ -487,7 +438,11 @@ fn render_histogram(
     f.render_widget(chart, area);
 }
 
-fn render_fields_list(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app_state: &mut AppState) {
+fn render_fields_list(
+    f: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app_state: &mut AppState,
+) {
     let items: Vec<ListItem> = app_state
         .fields
         .iter()
@@ -530,7 +485,10 @@ fn render_values_list(
     let values: Vec<String> = app_state.current_values().to_vec();
     let is_empty = values.is_empty();
     let focused_panel = app_state.focused_panel;
-    let title = app_state.current_field().map(|f| format!("Values for: {}", f)).unwrap_or_else(|| "Values".to_string());
+    let title = app_state
+        .current_field()
+        .map(|f| format!("Values for: {}", f))
+        .unwrap_or_else(|| "Values".to_string());
 
     let items: Vec<ListItem> = if is_empty {
         vec![ListItem::new("(loading...)").style(Style::default().fg(Color::Gray))]
