@@ -1,6 +1,5 @@
 use super::bitmap::Bitmap;
 use super::file_index::FileIndex;
-// use roaring::RoaringBitmap;
 
 #[derive(Clone, Debug)]
 pub enum IndexFilterExpr {
@@ -286,10 +285,10 @@ impl IndexFilter {
 
 #[cfg(test)]
 mod tests {
+    use super::Bitmap;
     use super::*;
     use crate::index::file_index::{FileHistogram, FileIndex};
-    use roaring::RoaringBitmap;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn create_test_file_index() -> FileIndex {
         let mut entry_indices = HashMap::new();
@@ -297,23 +296,24 @@ mod tests {
         // Add some test data
         entry_indices.insert(
             "_SYSTEMD_UNIT=ssh.service".to_string(),
-            RoaringBitmap::from_sorted_iter([1, 3, 5, 7]).unwrap(),
+            Bitmap::from_sorted_iter([1, 3, 5, 7]).unwrap(),
         );
         entry_indices.insert(
             "_SYSTEMD_UNIT=nginx.service".to_string(),
-            RoaringBitmap::from_sorted_iter([2, 4, 6, 8]).unwrap(),
+            Bitmap::from_sorted_iter([2, 4, 6, 8]).unwrap(),
         );
         entry_indices.insert(
             "PRIORITY=6".to_string(),
-            RoaringBitmap::from_sorted_iter([1, 2, 9, 10]).unwrap(),
+            Bitmap::from_sorted_iter([1, 2, 9, 10]).unwrap(),
         );
         entry_indices.insert(
             "PRIORITY=3".to_string(),
-            RoaringBitmap::from_sorted_iter([3, 4, 5]).unwrap(),
+            Bitmap::from_sorted_iter([3, 4, 5]).unwrap(),
         );
 
         FileIndex {
             file_histogram: FileHistogram::default(),
+            file_fields: HashSet::default(),
             entries_index: entry_indices,
         }
     }
