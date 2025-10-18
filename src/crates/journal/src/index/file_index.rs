@@ -33,8 +33,11 @@ fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result
 fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
     let mut fields = HashSet::new();
 
-    for item in journal_file.fields() {
-        let field = item.unwrap();
+    for value_guard in journal_file.fields() {
+        let Ok(field) = value_guard else {
+            error!("Failed to get collect file field");
+            continue;
+        };
 
         let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
         fields.insert(payload);
@@ -221,13 +224,14 @@ impl std::fmt::Display for Histogram {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
-    pub file_histogram: Histogram,
+    // The journal file's histogram
+    pub histogram: Histogram,
 
-    // File fields
-    pub file_fields: HashSet<String>,
+    // Set of fields in the file
+    pub fields: HashSet<String>,
 
-    // Index that maps field values to their entries bitmap
-    pub entries_index: HashMap<String, Bitmap>,
+    // Bitmap for each indexed field
+    pub bitmaps: HashMap<String, Bitmap>,
 }
 
 impl FileIndex {
@@ -237,13 +241,13 @@ impl FileIndex {
 
     pub fn is_indexed(&self, field: &str) -> bool {
         // If the file does not contain the field, then it's not indexed
-        if !self.file_fields.contains(field) {
+        if !self.fields.contains(field) {
             return false;
         }
 
         // If the entries index contains a key that starts with the field
         // name, then we've have indexed all the values the field takes
-        for key in self.entries_index.keys() {
+        for key in self.bitmaps.keys() {
             if key.starts_with(field) {
                 return true;
             }
@@ -256,7 +260,7 @@ impl FileIndex {
     /// Returns the compressed bytes on success.
     pub fn compress_entries_index(&self) -> Vec<u8> {
         // Serialize the entries_index to bincode format
-        let serialized = bincode::serialize(&self.entries_index).unwrap();
+        let serialized = bincode::serialize(&self.bitmaps).unwrap();
 
         // Compress the serialized data using lz4
         lz4::block::compress(&serialized, None, false).unwrap()
@@ -303,16 +307,16 @@ impl FileIndexer {
         self.entry_offsets.reserve(8);
         self.entry_offset_index.reserve(n_entries);
 
-        let file_fields = collect_file_fields(journal_file);
+        let fields = collect_file_fields(journal_file);
 
-        let file_histogram =
-            self.build_file_histogram(journal_file, source_timestamp_field, bucket_duration)?;
-        let entries_index = self.build_entries_index(journal_file, field_names)?;
+        let histogram =
+            self.build_histogram(journal_file, source_timestamp_field, bucket_duration)?;
+        let entries = self.build_entries_index(journal_file, field_names)?;
 
         Ok(FileIndex {
-            file_fields,
-            file_histogram,
-            entries_index,
+            fields,
+            histogram,
+            bitmaps: entries,
         })
     }
 
@@ -442,7 +446,7 @@ impl FileIndexer {
         Ok(())
     }
 
-    fn build_file_histogram(
+    fn build_histogram(
         &mut self,
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field_name: Option<&[u8]>,

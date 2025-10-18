@@ -30,7 +30,7 @@ fn sequential(
         };
 
         let mut index_size = 0;
-        for (data_payload, entry_indices) in jfi.entries_index.iter() {
+        for (data_payload, entry_indices) in jfi.bitmaps.iter() {
             index_size += data_payload.len() + entry_indices.serialized_size();
         }
 
@@ -42,10 +42,7 @@ fn sequential(
     }
 
     // Count midx_count after parallel processing
-    let midx_count: usize = file_indexes
-        .iter()
-        .map(|fi| fi.1.file_histogram.len())
-        .sum();
+    let midx_count: usize = file_indexes.iter().map(|fi| fi.1.histogram.len()).sum();
 
     let elapsed = start_time.elapsed();
     info!(
@@ -86,7 +83,7 @@ fn parallel(
                 .ok()?;
 
             let mut index_size = 0;
-            for (data_payload, entry_indices) in jfi.entries_index.iter() {
+            for (data_payload, entry_indices) in jfi.bitmaps.iter() {
                 index_size += data_payload.len() + entry_indices.serialized_size();
             }
 
@@ -101,7 +98,7 @@ fn parallel(
 
     let midx_count: usize = file_indexes
         .iter()
-        .map(|(_, fi, _)| fi.file_histogram.len())
+        .map(|(_, fi, _)| fi.histogram.len())
         .sum();
 
     let elapsed = start_time.elapsed();
@@ -285,15 +282,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (f, fi) in v {
         println!("Histogram for {}", f.path);
-        println!("{}", fi.file_histogram);
+        println!("{}", fi.histogram);
 
         for k in &priority_keys {
-            if let Some(b) = fi.entries_index.get(k) {
+            if let Some(b) = fi.bitmaps.get(k) {
                 priority_count += b.len();
             }
         }
 
-        total_entries += fi.file_histogram.count();
+        total_entries += fi.histogram.count();
         total_size += fi.memory_size();
         total_entries_index_size += fi.compress_entries_index().len();
     }
