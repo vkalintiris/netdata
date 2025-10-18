@@ -12,16 +12,16 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use tracing::{error, warn};
 
-fn parse_timestamp(field: &[u8], data_object: &DataObject<&[u8]>) -> Result<u64> {
+fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result<u64> {
     let payload = data_object.payload_bytes();
 
-    if !payload.starts_with(field) || payload.len() < field.len() + 1 {
+    if !payload.starts_with(field_name) || payload.len() < field_name.len() + 1 {
         return Err(JournalError::InvalidField);
     }
 
     // get the timestamp string after "field="
-    let timestamp_str =
-        std::str::from_utf8(&payload[field.len() + 1..]).map_err(|_| JournalError::InvalidField)?;
+    let timestamp_str = std::str::from_utf8(&payload[field_name.len() + 1..])
+        .map_err(|_| JournalError::InvalidField)?;
 
     let timestamp = timestamp_str
         .parse::<u64>()
@@ -381,69 +381,76 @@ impl FileIndexer {
         Ok(entries_index)
     }
 
+    fn collect_source_field_info(
+        &mut self,
+        journal_file: &JournalFile<Mmap>,
+        source_field_name: &[u8],
+    ) -> Result<()> {
+        let field_data_iterator = journal_file.field_data_objects(source_field_name)?;
+
+        // Collect the inlined cursors of the source timestamp field
+        self.source_timestamp_cursor_pairs.clear();
+        for data_object_result in field_data_iterator {
+            let Ok(data_object) = data_object_result else {
+                warn!("loading data object failed");
+                continue;
+            };
+
+            let Ok(source_timestamp) = parse_timestamp(source_field_name, &data_object) else {
+                warn!("parsing source timestamp failed");
+                continue;
+            };
+
+            let Some(ic) = data_object.inlined_cursor() else {
+                warn!(
+                    "missing inlined cursor for source timestamp {:?}",
+                    source_timestamp
+                );
+                continue;
+            };
+
+            self.source_timestamp_cursor_pairs
+                .push((source_timestamp, ic));
+        }
+
+        // Collect the source timestamp value and offset pairs
+        self.source_timestamp_entry_offset_pairs.clear();
+        for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
+            self.entry_offsets.clear();
+
+            match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("failed to collect offsets from source timestamp: {}", e);
+                    continue;
+                }
+            }
+
+            for entry_offset in &self.entry_offsets {
+                self.source_timestamp_entry_offset_pairs
+                    .push((*ts, *entry_offset));
+            }
+        }
+        self.source_timestamp_entry_offset_pairs.sort_unstable();
+
+        // Map each entry offset to its position in the pair vector
+        for (idx, (_, entry_offset)) in self.source_timestamp_entry_offset_pairs.iter().enumerate()
+        {
+            self.entry_offset_index.insert(*entry_offset, idx as _);
+        }
+
+        Ok(())
+    }
+
     fn build_file_histogram(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        source_timestamp_field: Option<&[u8]>,
+        source_timestamp_field_name: Option<&[u8]>,
         bucket_duration: u64,
     ) -> Result<Histogram> {
-        if let Some(source_timestamp_field) = source_timestamp_field {
-            if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field)
-            {
-                // Collect the inlined cursors of the source timestamp field
-                self.source_timestamp_cursor_pairs.clear();
-                for data_object_result in field_data_iterator {
-                    let Ok(data_object) = data_object_result else {
-                        warn!("loading data object failed");
-                        continue;
-                    };
-
-                    let Ok(source_timestamp) =
-                        parse_timestamp(source_timestamp_field, &data_object)
-                    else {
-                        warn!("parsing source timestamp failed");
-                        continue;
-                    };
-
-                    let Some(ic) = data_object.inlined_cursor() else {
-                        warn!(
-                            "missing inlined cursor for source timestamp {:?}",
-                            source_timestamp
-                        );
-                        continue;
-                    };
-
-                    self.source_timestamp_cursor_pairs
-                        .push((source_timestamp, ic));
-                }
-
-                // Collect the source timestamp value and offset pairs
-                self.source_timestamp_entry_offset_pairs.clear();
-                for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
-                    self.entry_offsets.clear();
-
-                    match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("failed to collect offsets from source timestamp: {}", e);
-                            continue;
-                        }
-                    }
-
-                    for entry_offset in &self.entry_offsets {
-                        self.source_timestamp_entry_offset_pairs
-                            .push((*ts, *entry_offset));
-                    }
-                }
-                self.source_timestamp_entry_offset_pairs.sort_unstable();
-
-                // Map each entry offset to its position in the pair vector
-                for (idx, (_, entry_offset)) in
-                    self.source_timestamp_entry_offset_pairs.iter().enumerate()
-                {
-                    self.entry_offset_index.insert(*entry_offset, idx as _);
-                }
-            }
+        // Collect information from the source timestamp field
+        if let Some(source_field_name) = source_timestamp_field_name {
+            self.collect_source_field_info(journal_file, source_field_name)?;
         }
 
         // Load the global entry offset array
