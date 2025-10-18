@@ -82,7 +82,7 @@ fn parallel(
             let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
             let jfi = file_indexer
-                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
+                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 3600)
                 .ok()?;
 
             let mut index_size = 0;
@@ -283,14 +283,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         priority_keys.push(key);
     }
 
-    for (_, fi) in v {
+    for (f, fi) in v {
+        println!("Histogram for {}", f.path);
+        println!("{}", fi.file_histogram);
+
         for k in &priority_keys {
             if let Some(b) = fi.entries_index.get(k) {
                 priority_count += b.len();
             }
         }
 
-        total_entries += fi.file_histogram.num_entries();
+        total_entries += fi.file_histogram.count();
         total_size += fi.memory_size();
         total_entries_index_size += fi.compress_entries_index().len();
     }

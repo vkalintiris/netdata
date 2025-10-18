@@ -40,11 +40,11 @@ fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
 
 /// A time-aligned bucket in the file histogram.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-struct Bucket {
+pub struct Bucket {
     /// Start time of this bucket
-    start_time: u64,
-    /// Running count of items since the first bucket of the histogram
-    running_count: usize,
+    pub start_time: u64,
+    /// Count of items in this bucket
+    pub count: usize,
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
@@ -86,7 +86,7 @@ impl Histogram {
                     // New bucket boundary - save the LAST index of the previous bucket
                     buckets.push(Bucket {
                         start_time: prev_bucket,
-                        running_count: offset_index - 1,
+                        count: offset_index - 1,
                     });
                     current_bucket = Some(bucket);
                 }
@@ -98,7 +98,7 @@ impl Histogram {
         if let Some(last_bucket) = current_bucket {
             buckets.push(Bucket {
                 start_time: last_bucket,
-                running_count: timestamp_offset_pairs.len() - 1,
+                count: timestamp_offset_pairs.len() - 1,
             });
         }
 
@@ -108,39 +108,36 @@ impl Histogram {
         }
     }
 
-    // Construct the file histogram of a field value from it's bitmap
-    pub fn from_bitmap(&self, bitmap: &Bitmap) -> Vec<(u64, u32)> {
-        if self.buckets.is_empty() || bitmap.is_empty() {
-            return Vec::new();
-        }
-
-        let mut rb_histogram = Vec::new();
-        let mut rb_iter = bitmap.iter().peekable();
+    // Construct the buckets of a bitmap that contains entry indexes.
+    pub fn bitmap_buckets(&self, bitmap: &Bitmap) -> Vec<Bucket> {
+        let mut buckets = Vec::new();
+        let mut iter = bitmap.iter().peekable();
 
         for bucket in &self.buckets {
             let mut count = 0;
 
-            // Count values in this bucket
-            while let Some(&value) = rb_iter.peek() {
-                if value <= bucket.running_count as u32 {
+            while let Some(&value) = iter.peek() {
+                if value <= bucket.count as u32 {
                     count += 1;
-                    rb_iter.next();
+                    iter.next();
                 } else {
                     break;
                 }
             }
 
             if count > 0 {
-                rb_histogram.push((bucket.start_time, count));
+                buckets.push(Bucket {
+                    start_time: bucket.start_time,
+                    count,
+                });
             }
 
-            // All values processed
-            if rb_iter.peek().is_none() {
+            if iter.peek().is_none() {
                 break;
             }
         }
 
-        rb_histogram
+        buckets
     }
 
     /// Get the start time of the histogram.
@@ -177,22 +174,43 @@ impl Histogram {
     }
 
     /// Get the total number of entries in the histogram.
-    pub fn num_entries(&self) -> usize {
-        self.buckets
-            .last()
-            .map(|b| b.running_count + 1)
-            .unwrap_or(0)
+    pub fn count(&self) -> usize {
+        self.buckets.last().map(|b| b.count + 1).unwrap_or(0)
     }
+}
 
-    /// Returns the boundaries of the bucket
-    pub fn bucket_boundaries(&self, index: usize) -> Option<(u32, u32)> {
-        let bucket = self.buckets.get(index)?;
-        let start = if index == 0 {
-            0
-        } else {
-            self.buckets[index - 1].running_count + 1
-        };
-        Some((start as u32, bucket.running_count as u32))
+use chrono::{Local, TimeZone};
+
+impl std::fmt::Display for Histogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.buckets.is_empty() {
+            return writeln!(f, "Empty histogram");
+        }
+
+        writeln!(f, "Histogram (bucket_duration: {}s)", self.bucket_duration)?;
+        writeln!(f, "{:<18} {:<12} {:<12}", "Start Time", "Count", "Running")?;
+        writeln!(f, "{:-<42}", "")?;
+
+        let mut prev_running = 0;
+        for (i, bucket) in self.buckets.iter().enumerate() {
+            let count = if i == 0 {
+                bucket.count + 1
+            } else {
+                bucket.count - prev_running
+            };
+
+            // Convert seconds to datetime with format: dd/mm HH:MM:SS
+            let datetime = Local
+                .timestamp_opt(bucket.start_time as i64, 0)
+                .single()
+                .map(|dt| dt.format("%d/%m %H:%M:%S").to_string())
+                .unwrap_or_else(|| format!("{}", bucket.start_time));
+
+            writeln!(f, "{:<18} {:<12} {:<12}", datetime, count, bucket.count)?;
+            prev_running = bucket.count;
+        }
+
+        Ok(())
     }
 }
 

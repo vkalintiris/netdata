@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::bitmap::Bitmap;
 use super::file_index::FileIndex;
 
@@ -58,23 +60,23 @@ impl IndexFilterExpr {
         }
     }
 
-    /// Get matching indices within a specific range
-    pub fn matching_indices_in_range(&self, start: u32, end: u32) -> Bitmap {
-        let mut result = self.matching_indices();
-        result.remove_range(..start);
-        result.remove_range((end + 1)..);
-        result
-    }
+    // /// Get matching indices within a specific range
+    // pub fn matching_indices_in_range(&self, start: u32, end: u32) -> Bitmap {
+    //     let mut result = self.matching_indices();
+    //     result.remove_range(..start);
+    //     result.remove_range((end + 1)..);
+    //     result
+    // }
 
-    /// Get matching indices within specific histogram bucket
-    pub fn matching_indices_in_bucket(
-        &self,
-        file_index: &FileIndex,
-        bucket_index: usize,
-    ) -> Option<Bitmap> {
-        let (start, end) = file_index.file_histogram.bucket_boundaries(bucket_index)?;
-        Some(self.matching_indices_in_range(start, end))
-    }
+    // /// Get matching indices within specific histogram bucket
+    // pub fn matching_indices_in_bucket(
+    //     &self,
+    //     file_index: &FileIndex,
+    //     bucket_index: usize,
+    // ) -> Option<Bitmap> {
+    //     let (start, end) = file_index.file_histogram.bucket_boundaries(bucket_index)?;
+    //     Some(self.matching_indices_in_range(start, end))
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
