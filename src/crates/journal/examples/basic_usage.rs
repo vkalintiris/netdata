@@ -3,6 +3,8 @@
 use journal::file::JournalFile;
 use journal::file::Mmap;
 use journal::index::{FileIndex, FileIndexer};
+use rand::Rng;
+use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -75,7 +77,7 @@ fn parallel(
         .filter_map(|file| {
             // Each thread gets its own FileIndexer
             let mut file_indexer = FileIndexer::default();
-            let window_size = 8 * 1024 * 1024;
+            let window_size = 64 * 1024 * 1024;
 
             let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
@@ -237,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"_SYSTEMD_SESSION",
         b"__logs_sources",
     ];
-    let facets: Vec<&[u8]> = vec![b"log.severity_number"];
+    // let facets: Vec<&[u8]> = vec![b"log.severity_number"];
 
     // Initialize tracing
     // tracing_subscriber::fmt()
@@ -259,9 +261,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|f| String::from(&f.path));
     files.reverse();
 
-    for file in files.iter() {
-        println!("file: {:#?}", file.path);
-    }
+    // for file in files.iter() {
+    //     println!("file: {:#?}", file.path);
+    // }
     // files.truncate(5);
 
     // let _ = sequential(&files, facets.as_slice());
@@ -287,9 +289,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     println!("FI: {:#?}", fi);
     // }
     println!("Building took: {:#?}", elapsed.as_millis());
+    println!("GiB/sec: {:#?}", 9400.0 / elapsed.as_millis() as f64);
 
     println!("\n=== Journal Files Statistics ===");
     println!("Total files: {}", files.len());
+
+    std::thread::sleep(Duration::from_secs(100));
 
     // tokio::time::sleep(Duration::from_secs(100)).await;
 
