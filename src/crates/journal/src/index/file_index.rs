@@ -12,30 +12,35 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use tracing::{error, warn};
 
-// TODO: pass the field name that should be used to extract the source timestamp
-fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
-    const PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
-
-    // Get the payload bytes
+fn parse_timestamp(field: &[u8], data_object: &DataObject<&[u8]>) -> Result<u64> {
     let payload = data_object.payload_bytes();
 
-    // Check if it starts with the expected prefix
-    if !payload.starts_with(PREFIX) {
+    if !payload.starts_with(field) || payload.len() < field.len() + 1 {
         return Err(JournalError::InvalidField);
     }
 
-    // Get the timestamp portion after the '='
-    let timestamp_bytes = &payload[PREFIX.len()..];
-
-    // Convert to string and parse
+    // get the timestamp string after "field="
     let timestamp_str =
-        std::str::from_utf8(timestamp_bytes).map_err(|_| JournalError::InvalidField)?;
+        std::str::from_utf8(&payload[field.len() + 1..]).map_err(|_| JournalError::InvalidField)?;
 
     let timestamp = timestamp_str
         .parse::<u64>()
         .map_err(|_| JournalError::InvalidField)?;
 
     Ok(timestamp)
+}
+
+fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+    let mut fields = HashSet::new();
+
+    for item in journal_file.fields() {
+        let field = item.unwrap();
+
+        let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
+        fields.insert(payload);
+    }
+
+    fields
 }
 
 /// A time-aligned bucket in the file histogram.
@@ -282,26 +287,13 @@ pub struct FileIndexer {
     entry_offset_index: HashMap<NonZeroU64, u64>,
 }
 
-fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
-    let mut fields = HashSet::new();
-
-    for item in journal_file.fields() {
-        let field = item.unwrap();
-
-        let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
-        fields.insert(payload);
-    }
-
-    fields
-}
-
 impl FileIndexer {
     pub fn index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field: Option<&[u8]>,
         field_names: &[&[u8]],
-        bucket_size_seconds: u64,
+        bucket_duration: u64,
     ) -> Result<FileIndex> {
         let n_entries = journal_file.journal_header_ref().n_entries as _;
         self.source_timestamp_cursor_pairs.reserve(n_entries);
@@ -314,7 +306,7 @@ impl FileIndexer {
         let file_fields = collect_file_fields(journal_file);
 
         let file_histogram =
-            self.build_file_histogram(journal_file, source_timestamp_field, bucket_size_seconds)?;
+            self.build_file_histogram(journal_file, source_timestamp_field, bucket_duration)?;
         let entries_index = self.build_entries_index(journal_file, field_names)?;
 
         Ok(FileIndex {
@@ -406,7 +398,9 @@ impl FileIndexer {
                         continue;
                     };
 
-                    let Ok(source_timestamp) = parse_source_timestamp(&data_object) else {
+                    let Ok(source_timestamp) =
+                        parse_timestamp(source_timestamp_field, &data_object)
+                    else {
                         warn!("parsing source timestamp failed");
                         continue;
                     };

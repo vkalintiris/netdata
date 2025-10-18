@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 use journal::file::JournalFile;
 use journal::file::Mmap;

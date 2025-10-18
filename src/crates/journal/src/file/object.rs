@@ -1,5 +1,6 @@
-use crate::file::offset_array::{Cursor, InlinedCursor, List};
 use crate::error::{JournalError, Result};
+use crate::file::offset_array::{Cursor, InlinedCursor, List};
+use std::io::Read;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use zerocopy::{
     ByteSlice, ByteSliceMut, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice,
