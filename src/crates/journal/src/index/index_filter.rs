@@ -72,7 +72,7 @@ impl IndexFilterExpr {
         file_index: &FileIndex,
         bucket_index: usize,
     ) -> Option<Bitmap> {
-        let (start, end) = file_index.file_histogram.get_entry_range(bucket_index)?;
+        let (start, end) = file_index.file_histogram.bucket_boundaries(bucket_index)?;
         Some(self.matching_indices_in_range(start, end))
     }
 }
@@ -287,7 +287,7 @@ impl IndexFilter {
 mod tests {
     use super::Bitmap;
     use super::*;
-    use crate::index::file_index::{FileHistogram, FileIndex};
+    use crate::index::file_index::{FileIndex, Histogram};
     use std::collections::{HashMap, HashSet};
 
     fn create_test_file_index() -> FileIndex {
@@ -312,7 +312,7 @@ mod tests {
         );
 
         FileIndex {
-            file_histogram: FileHistogram::default(),
+            file_histogram: Histogram::default(),
             file_fields: HashSet::default(),
             entries_index: entry_indices,
         }

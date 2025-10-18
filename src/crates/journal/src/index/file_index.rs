@@ -38,26 +38,76 @@ fn parse_source_timestamp(data_object: &DataObject<&[u8]>) -> Result<u64> {
     Ok(timestamp)
 }
 
-/// A time-aligned bucket in the histogram index.
+/// A time-aligned bucket in the file histogram.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-struct FileBucket {
-    /// Bucket-aligned seconds since EPOCH.
-    /// (e.g., for 30s buckets, this would be 0, 30, 60, 90...)
-    bucket_seconds: u64,
-    /// Index into the global entry offsets array.
-    last_offset_index: usize,
+struct Bucket {
+    /// Start time of this bucket
+    start_time: u64,
+    /// Running count of items since the first bucket of the histogram
+    running_count: usize,
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct FileHistogram {
-    /// The bucket size in seconds (e.g., 30, 60, 120)
-    bucket_size_seconds: u64,
+pub struct Histogram {
+    /// The duration of each bucket
+    bucket_duration: u64,
     /// Sparse vector containing only bucket boundaries where changes occur.
-    buckets: Vec<FileBucket>,
+    buckets: Vec<Bucket>,
 }
 
-impl FileHistogram {
+impl Histogram {
+    pub fn from_timestamp_offset_pairs(
+        bucket_duration: u64,
+        timestamp_offset_pairs: &[(u64, NonZeroU64)],
+    ) -> Histogram {
+        debug_assert!(timestamp_offset_pairs.is_sorted());
+        debug_assert_ne!(bucket_duration, 0);
+
+        let mut buckets = Vec::new();
+        let mut current_bucket = None;
+
+        // Convert seconds to microseconds for bucket size
+        let bucket_size_micros = bucket_duration * 1_000_000;
+
+        for (offset_index, &(timestamp_micros, _offset)) in
+            timestamp_offset_pairs.iter().enumerate()
+        {
+            // Calculate which bucket this timestamp falls into
+            let bucket = (timestamp_micros / bucket_size_micros) * bucket_duration;
+
+            match current_bucket {
+                None => {
+                    // First entry - don't create bucket yet, just track the bucket
+                    debug_assert_eq!(offset_index, 0);
+                    current_bucket = Some(bucket);
+                }
+                Some(prev_bucket) if bucket > prev_bucket => {
+                    // New bucket boundary - save the LAST index of the previous bucket
+                    buckets.push(Bucket {
+                        start_time: prev_bucket,
+                        running_count: offset_index - 1,
+                    });
+                    current_bucket = Some(bucket);
+                }
+                _ => {} // Same bucket, continue
+            }
+        }
+
+        // Don't forget the last bucket!
+        if let Some(last_bucket) = current_bucket {
+            buckets.push(Bucket {
+                start_time: last_bucket,
+                running_count: timestamp_offset_pairs.len() - 1,
+            });
+        }
+
+        Histogram {
+            bucket_duration,
+            buckets,
+        }
+    }
+
     // Construct the file histogram of a field value from it's bitmap
     pub fn from_bitmap(&self, bitmap: &Bitmap) -> Vec<(u64, u32)> {
         if self.buckets.is_empty() || bitmap.is_empty() {
@@ -72,7 +122,7 @@ impl FileHistogram {
 
             // Count values in this bucket
             while let Some(&value) = rb_iter.peek() {
-                if value <= bucket.last_offset_index as u32 {
+                if value <= bucket.running_count as u32 {
                     count += 1;
                     rb_iter.next();
                 } else {
@@ -81,7 +131,7 @@ impl FileHistogram {
             }
 
             if count > 0 {
-                rb_histogram.push((bucket.bucket_seconds, count));
+                rb_histogram.push((bucket.start_time, count));
             }
 
             // All values processed
@@ -93,137 +143,62 @@ impl FileHistogram {
         rb_histogram
     }
 
-    pub fn from_timestamp_offset_pairs(
-        timestamp_offset_pairs: &[(u64, NonZeroU64)],
-        bucket_size_seconds: u64,
-    ) -> FileHistogram {
-        debug_assert!(timestamp_offset_pairs.is_sorted());
-        debug_assert_ne!(bucket_size_seconds, 0);
-
-        let mut buckets = Vec::new();
-        let mut current_bucket = None;
-
-        // Convert seconds to microseconds for bucket size
-        let bucket_size_micros = bucket_size_seconds * 1_000_000;
-
-        for (offset_index, &(timestamp_micros, _offset)) in
-            timestamp_offset_pairs.iter().enumerate()
-        {
-            // Calculate which bucket this timestamp falls into
-            let bucket = (timestamp_micros / bucket_size_micros) * bucket_size_seconds;
-
-            match current_bucket {
-                None => {
-                    // First entry - don't create bucket yet, just track the bucket
-                    debug_assert_eq!(offset_index, 0);
-                    current_bucket = Some(bucket);
-                }
-                Some(prev_bucket) if bucket > prev_bucket => {
-                    // New bucket boundary - save the LAST index of the previous bucket
-                    buckets.push(FileBucket {
-                        bucket_seconds: prev_bucket,
-                        last_offset_index: offset_index - 1,
-                    });
-                    current_bucket = Some(bucket);
-                }
-                _ => {} // Same bucket, continue
-            }
-        }
-
-        // Don't forget the last bucket!
-        if let Some(last_bucket) = current_bucket {
-            buckets.push(FileBucket {
-                bucket_seconds: last_bucket,
-                last_offset_index: timestamp_offset_pairs.len() - 1,
-            });
-        }
-
-        FileHistogram {
-            bucket_size_seconds,
-            buckets,
-        }
+    /// Get the start time of the histogram.
+    pub fn start_time(&self) -> Option<u64> {
+        self.buckets.first().map(|bucket| bucket.start_time)
     }
 
-    /// Get the end time of the histogram in microseconds since epoch
-    pub fn end_time_micros(&self) -> Option<u64> {
-        self.buckets.last().map(|bucket| {
-            // The last bucket starts at bucket_seconds, and spans bucket_size_seconds
-            // So the end time is the start of the bucket plus the bucket size
-            (bucket.bucket_seconds + self.bucket_size_seconds) * 1_000_000
-        })
-    }
-
-    /// Get the start time of the histogram in microseconds since epoch
-    pub fn start_time_micros(&self) -> Option<u64> {
+    /// Get the end time of the histogram.
+    pub fn end_time(&self) -> Option<u64> {
         self.buckets
-            .first()
-            .map(|bucket| bucket.bucket_seconds * 1_000_000)
+            .last()
+            .map(|bucket| bucket.start_time + self.bucket_duration)
     }
 
-    /// Get the time range covered by this histogram
+    /// Get the time range covered by the histogram.
     pub fn time_range(&self) -> Option<(u64, u64)> {
-        match (self.buckets.first(), self.buckets.last()) {
-            (Some(first), Some(last)) => {
-                let start = first.bucket_seconds * 1_000_000;
-                let end = (last.bucket_seconds + self.bucket_size_seconds) * 1_000_000;
-
-                Some((start, end))
-            }
-            _ => None,
-        }
+        Some((self.start_time()?, self.end_time()?))
     }
 
-    /// Get the duration covered by this histogram in seconds
-    pub fn duration_seconds(&self) -> Option<u64> {
-        match (self.buckets.first(), self.buckets.last()) {
-            (Some(first), Some(last)) => {
-                Some(last.bucket_seconds - first.bucket_seconds + self.bucket_size_seconds)
-            }
-            _ => None,
-        }
+    /// Get the duration covered by this histogram.
+    pub fn duration(&self) -> Option<u64> {
+        let (start, end) = self.time_range()?;
+        Some(end - start)
     }
 
-    /// Helper method to convert a timestamp to its bucket boundary
-    pub fn timestamp_to_bucket(&self, timestamp_micros: u64) -> u64 {
-        let bucket_size_micros = self.bucket_size_seconds * 1_000_000;
-        (timestamp_micros / bucket_size_micros) * self.bucket_size_seconds
-    }
-
-    /// Get the bucket size in seconds
-    pub fn bucket_size(&self) -> u64 {
-        self.bucket_size_seconds
-    }
-
-    // Rest of the methods remain the same...
+    /// Returns the number of buckets in the histogram.
     pub fn len(&self) -> usize {
         self.buckets.len()
     }
 
+    /// Check if the file histogram is empty.
     pub fn is_empty(&self) -> bool {
         self.buckets.is_empty()
     }
 
-    pub fn total_entries(&self) -> usize {
+    /// Get the total number of entries in the histogram.
+    pub fn num_entries(&self) -> usize {
         self.buckets
             .last()
-            .map(|b| b.last_offset_index + 1)
+            .map(|b| b.running_count + 1)
             .unwrap_or(0)
     }
 
-    pub fn get_entry_range(&self, bucket_index: usize) -> Option<(u32, u32)> {
-        let bucket = self.buckets.get(bucket_index)?;
-        let start = if bucket_index == 0 {
+    /// Returns the boundaries of the bucket
+    pub fn bucket_boundaries(&self, index: usize) -> Option<(u32, u32)> {
+        let bucket = self.buckets.get(index)?;
+        let start = if index == 0 {
             0
         } else {
-            self.buckets[bucket_index - 1].last_offset_index + 1
+            self.buckets[index - 1].running_count + 1
         };
-        Some((start as u32, bucket.last_offset_index as u32))
+        Some((start as u32, bucket.running_count as u32))
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileIndex {
-    pub file_histogram: FileHistogram,
+    pub file_histogram: Histogram,
 
     // File fields
     pub file_fields: HashSet<String>,
@@ -400,8 +375,8 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field: Option<&[u8]>,
-        bucket_size_seconds: u64,
-    ) -> Result<FileHistogram> {
+        bucket_duration: u64,
+    ) -> Result<Histogram> {
         if let Some(source_timestamp_field) = source_timestamp_field {
             if let Ok(field_data_iterator) = journal_file.field_data_objects(source_timestamp_field)
             {
@@ -496,9 +471,9 @@ impl FileIndexer {
         }
 
         // Now we can build the file histogram
-        Ok(FileHistogram::from_timestamp_offset_pairs(
+        Ok(Histogram::from_timestamp_offset_pairs(
+            bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
-            bucket_size_seconds,
         ))
     }
 }

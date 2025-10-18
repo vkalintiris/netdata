@@ -290,7 +290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        total_entries += fi.file_histogram.total_entries();
+        total_entries += fi.file_histogram.num_entries();
         total_size += fi.memory_size();
         total_entries_index_size += fi.compress_entries_index().len();
     }
