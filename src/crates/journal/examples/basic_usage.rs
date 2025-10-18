@@ -69,7 +69,7 @@ fn parallel(
 ) -> Vec<(journal::registry::File, FileIndex)> {
     let start_time = Instant::now();
 
-    // const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
+    const SOURCE_TIMESTAMP_FIELD: Option<&[u8]> = Some(b"_SOURCE_REALTIME_TIMESTAMP");
 
     // Process files in parallel
     let file_indexes: Vec<_> = files
@@ -82,7 +82,7 @@ fn parallel(
             let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
 
             let jfi = file_indexer
-                .index(&journal_file, None, field_names, 10)
+                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 10)
                 .ok()?;
 
             let mut index_size = 0;
@@ -273,30 +273,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut total_size = 0;
     let mut total_entries_index_size = 0;
-    for t in v {
-        total_size += t.1.memory_size();
-        total_entries_index_size += t.1.compress_entries_index().len();
+    let mut total_entries = 0;
+    let mut priority_count = 0;
+
+    let mut priority_keys = Vec::new();
+
+    for i in 0..10 {
+        let key = format!("PRIORITY={}", i);
+        priority_keys.push(key);
     }
 
-    println!("total_size: {:#?} MiB", total_size / (1024 * 1024));
+    for (_, fi) in v {
+        for k in &priority_keys {
+            if let Some(b) = fi.entries_index.get(k) {
+                priority_count += b.len();
+            }
+        }
+
+        total_entries += fi.file_histogram.total_entries();
+        total_size += fi.memory_size();
+        total_entries_index_size += fi.compress_entries_index().len();
+    }
+
+    println!("Total files: {}", files.len());
+    println!("Total size: {:#?} MiB", total_size / (1024 * 1024));
     println!(
-        "comrpessed_size: {:#?} MiB",
+        "Compressed size: {:#?} MiB",
         total_entries_index_size / (1024 * 1024)
     );
+    println!("Total entries: {:#?}", total_entries);
+    println!("Priority count: {:#?}", priority_count);
 
-    // for (f, fi) in v.iter().take(3) {
-    //     println!("Path: {:#?}", f.path);
-    //     println!("FI: {:#?}", fi);
-    // }
-    println!("Building took: {:#?}", elapsed.as_millis());
+    println!("Building took: {:#?} msec", elapsed.as_millis());
     println!("GiB/sec: {:#?}", 9400.0 / elapsed.as_millis() as f64);
-
-    println!("\n=== Journal Files Statistics ===");
-    println!("Total files: {}", files.len());
-
-    std::thread::sleep(Duration::from_secs(100));
-
-    // tokio::time::sleep(Duration::from_secs(100)).await;
 
     Ok(())
 }

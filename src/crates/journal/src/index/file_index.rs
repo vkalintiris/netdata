@@ -261,9 +261,7 @@ impl FileIndex {
         let serialized = bincode::serialize(&self.entries_index).unwrap();
 
         // Compress the serialized data using lz4
-        let compressed = lz4::block::compress(&serialized, None, false).unwrap();
-
-        compressed
+        lz4::block::compress(&serialized, None, false).unwrap()
     }
 }
 
