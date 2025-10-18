@@ -235,10 +235,6 @@ pub struct FileIndex {
 }
 
 impl FileIndex {
-    pub fn memory_size(&self) -> usize {
-        bincode::serialized_size(self).unwrap() as usize
-    }
-
     pub fn is_indexed(&self, field: &str) -> bool {
         // If the file does not contain the field, then it's not indexed
         if !self.fields.contains(field) {
@@ -264,6 +260,10 @@ impl FileIndex {
 
         // Compress the serialized data using lz4
         lz4::block::compress(&serialized, None, false).unwrap()
+    }
+
+    pub fn memory_size(&self) -> usize {
+        bincode::serialized_size(self).unwrap() as usize
     }
 }
 
