@@ -44,6 +44,9 @@ pub mod registry;
 // Journal file indexing
 pub mod index;
 
+// Indexing state
+pub mod index_state;
+
 // Re-export commonly used types for convenience
 pub use error::{JournalError, Result};
 
