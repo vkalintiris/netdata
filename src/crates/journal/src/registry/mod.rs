@@ -14,6 +14,23 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 
+pub fn scan_journal_files(path: &str) -> Result<Vec<File>> {
+    let mut files = Vec::new();
+
+    for entry in walkdir::WalkDir::new(path).follow_links(false) {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            if let Some(file) = File::from_path(path) {
+                files.push(file);
+            }
+        }
+    }
+
+    Ok(files)
+}
+
 pub struct Registry {
     repository: Repository,
     directories: HashSet<String>,
@@ -103,21 +120,4 @@ impl Registry {
         }
         Ok(())
     }
-}
-
-pub fn scan_journal_files(path: &str) -> Result<Vec<File>> {
-    let mut files = Vec::new();
-
-    for entry in walkdir::WalkDir::new(path).follow_links(false) {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(file) = File::from_path(path) {
-                files.push(file);
-            }
-        }
-    }
-
-    Ok(files)
 }
