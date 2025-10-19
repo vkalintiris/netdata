@@ -1,3 +1,4 @@
+use crate::repository::RepositoryError;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -11,6 +12,9 @@ pub enum RegistryError {
     /// I/O error when reading or scanning directories
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Repository error: {0}")]
+    Repository(#[from] RepositoryError),
 
     /// Error when parsing a journal file path
     #[error("Failed to parse journal file path: {path}")]

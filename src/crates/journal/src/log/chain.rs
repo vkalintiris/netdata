@@ -2,7 +2,7 @@ use crate::JournalFile;
 use crate::error::{JournalError, Result};
 use crate::file::Mmap;
 use crate::log::RetentionPolicy;
-use crate::registry::{File as RegistryFile, paths};
+use crate::repository;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -16,7 +16,7 @@ pub(crate) fn create_chain_file(
     seqnum_id: Uuid,
     head_seqnum: u64,
     head_realtime: u64,
-) -> Option<RegistryFile> {
+) -> Option<repository::File> {
     // Format the path using the same logic as journal_registry
     let filename = format!(
         "system@{}-{:016x}-{:016x}.journal",
@@ -27,7 +27,7 @@ pub(crate) fn create_chain_file(
 
     let path = path.join(filename);
 
-    RegistryFile::from_path(&path)
+    repository::File::from_path(&path)
 }
 
 /// Manages a directory of journal files with automatic cleanup.
@@ -39,7 +39,7 @@ pub struct Chain {
     pub(crate) path: PathBuf,
     pub(crate) machine_id: Uuid,
 
-    pub(crate) inner: paths::Chain,
+    pub(crate) inner: repository::Chain,
     pub(crate) file_sizes: std::collections::HashMap<String, u64>,
     pub(crate) total_size: u64,
 }
@@ -59,7 +59,7 @@ impl Chain {
         let mut chain = Self {
             path,
             machine_id,
-            inner: paths::Chain::default(),
+            inner: repository::Chain::default(),
             file_sizes: std::collections::HashMap::new(),
             total_size: 0,
         };
@@ -69,7 +69,7 @@ impl Chain {
                 continue;
             };
 
-            let Some(file) = RegistryFile::from_path(&file_path) else {
+            let Some(file) = repository::File::from_path(&file_path) else {
                 continue;
             };
 
@@ -102,7 +102,7 @@ impl Chain {
         seqnum_id: Uuid,
         head_seqnum: u64,
         head_realtime: u64,
-    ) -> Result<RegistryFile> {
+    ) -> Result<repository::File> {
         let Some(file) = create_chain_file(&self.path, seqnum_id, head_seqnum, head_realtime)
         else {
             return Err(JournalError::InvalidFilename);

@@ -1,4 +1,4 @@
-use crate::registry::Origin;
+use crate::repository::Origin;
 use std::time::Duration;
 
 /// Controls when journal files should be rotated

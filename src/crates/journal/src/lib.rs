@@ -36,6 +36,9 @@ pub mod file;
 pub mod log;
 
 // Journal file tracking and monitoring
+pub mod repository;
+
+// Journal file tracking and monitoring
 pub mod registry;
 
 // Journal file indexing
@@ -49,9 +52,3 @@ pub use file::{
     BucketUtilization, Direction, JournalCursor, JournalFile, JournalFileOptions, JournalReader,
     JournalWriter, Location,
 };
-
-// Log module re-exports
-// pub use log::{JournalLog, JournalLogConfig, RetentionPolicy, RotationPolicy};
-
-// Registry module re-exports
-pub use registry::{Registry, RegistryError};

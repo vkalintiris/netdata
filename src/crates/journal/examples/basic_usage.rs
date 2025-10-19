@@ -9,9 +9,9 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 fn sequential(
-    files: &[journal::registry::File],
+    files: &[journal::repository::File],
     field_names: &[&[u8]],
-) -> Vec<(journal::registry::File, FileIndex)> {
+) -> Vec<(journal::repository::File, FileIndex)> {
     let start_time = Instant::now();
 
     let mut total_index_size = 0;
@@ -61,9 +61,9 @@ fn sequential(
 use rayon::prelude::*;
 
 fn parallel(
-    files: &[journal::registry::File],
+    files: &[journal::repository::File],
     field_names: &[&[u8]],
-) -> Vec<(journal::registry::File, FileIndex)> {
+) -> Vec<(journal::repository::File, FileIndex)> {
     let start_time = Instant::now();
 
     const SOURCE_TIMESTAMP_FIELD: Option<&[u8]> = Some(b"_SOURCE_REALTIME_TIMESTAMP");

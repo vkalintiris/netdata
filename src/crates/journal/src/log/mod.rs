@@ -7,7 +7,7 @@ pub use config::{Config, RetentionPolicy, RotationPolicy};
 use crate::error::{JournalError, Result};
 use crate::file::mmap::MmapMut;
 use crate::file::{JournalFile, JournalFileOptions, JournalWriter, load_boot_id};
-use crate::registry::File as RegistryFile;
+use crate::repository;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,7 +81,7 @@ impl RotationState {
 
 /// Groups a journal file and its writer together
 pub struct ActiveFile {
-    registry_file: RegistryFile,
+    repository_file: repository::File,
     journal_file: JournalFile<MmapMut>,
     writer: JournalWriter,
 }
@@ -101,18 +101,18 @@ impl ActiveFile {
             .unwrap_or_default()
             .as_micros() as u64;
 
-        let registry_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+        let repository_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
 
         let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
             .with_window_size(8 * 1024 * 1024)
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true);
 
-        let mut journal_file = JournalFile::create(&registry_file.path, options)?;
+        let mut journal_file = JournalFile::create(&repository_file.path, options)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
-            registry_file,
+            repository_file,
             journal_file,
             writer,
         })
@@ -130,15 +130,15 @@ impl ActiveFile {
             .as_micros() as u64;
 
         let seqnum_id = uuid::Uuid::from_bytes(self.journal_file.journal_header_ref().seqnum_id);
-        let registry_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+        let repository_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
 
         let mut journal_file = self
             .journal_file
-            .create_successor(&registry_file.path, max_file_size)?;
+            .create_successor(&repository_file.path, max_file_size)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
-            registry_file,
+            repository_file,
             journal_file,
             writer,
         })
@@ -221,7 +221,7 @@ impl Log {
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
             self.chain.update_file_size(
-                &active_file.registry_file.path,
+                &active_file.repository_file.path,
                 active_file.current_file_size(),
             );
         }
@@ -243,7 +243,7 @@ impl Log {
             )?
         };
 
-        tracing::Span::current().record("new_file", &new_file.registry_file.path);
+        tracing::Span::current().record("new_file", &new_file.repository_file.path);
 
         self.active_file = Some(new_file);
         self.rotation_state.reset();
