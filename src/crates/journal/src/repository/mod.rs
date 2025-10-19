@@ -368,7 +368,7 @@ impl Chain {
     }
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
-    pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
+    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut Vec<File>) {
         if self.files.is_empty() || start >= end {
             return;
         }
@@ -423,7 +423,7 @@ impl Chain {
                     // Check if [head_realtime, tail_realtime) overlaps with [start, end)
                     // Overlap occurs when: head_realtime < end && tail_realtime > start
                     if *head_realtime < end && tail_realtime > start {
-                        output.push(file.clone());
+                        files.push(file.clone());
                     }
 
                     // Remember this head_realtime for potential active file
@@ -439,7 +439,7 @@ impl Chain {
 
                     // Check overlap: active_head < end && active_tail > start
                     if head_realtime < end && tail_realtime > start {
-                        output.push(file.clone());
+                        files.push(file.clone());
                     }
 
                     // There should only be one active file at the end
@@ -527,10 +527,10 @@ impl Repository {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
+    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut Vec<File>) {
         for directory in self.directories.values() {
             for chain in directory.chains.values() {
-                chain.find_files_in_range(start, end, output);
+                chain.find_files_in_range(start, end, files);
             }
         }
     }

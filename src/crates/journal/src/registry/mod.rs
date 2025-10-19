@@ -59,8 +59,8 @@ impl Registry {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
-        self.repository.find_files_in_range(start, end, output);
+    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut Vec<File>) {
+        self.repository.find_files_in_range(start, end, files);
     }
 
     pub fn process_events(&mut self) -> Result<()> {
