@@ -15,6 +15,10 @@ pub enum RepositoryError {
     /// Error when a path contains invalid UTF-8
     #[error("Path contains invalid UTF-8: {}", .path.display())]
     InvalidUtf8 { path: PathBuf },
+
+    /// Error from walkdir when scanning directories
+    #[error("Directory walk error: {0}")]
+    WalkDir(#[from] walkdir::Error),
 }
 
 /// A specialized Result type for journal registry operations
