@@ -13,6 +13,10 @@ pub enum RegistryError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Error from walkdir when scanning directories
+    #[error("Directory walk error: {0}")]
+    WalkDir(#[from] walkdir::Error),
+
     #[error("Repository error: {0}")]
     Repository(#[from] RepositoryError),
 

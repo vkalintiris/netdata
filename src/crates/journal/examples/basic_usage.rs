@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Journal registry initialized");
 
     for dir in ["/var/log/journal/"] {
-        match registry.watch_directory(dir).await {
+        match registry.watch_directory(dir) {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
         }

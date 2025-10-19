@@ -1,18 +1,18 @@
 use super::error::Result;
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
-use tokio::sync::mpsc;
 
 pub struct Monitor {
     /// The watcher instance
     watcher: RecommendedWatcher,
     /// Channel for events
-    event_receiver: mpsc::UnboundedReceiver<Event>,
+    event_receiver: Receiver<Event>,
 }
 
 impl Monitor {
     pub fn new() -> Result<Self> {
-        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let (event_sender, event_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
 
         let watcher = RecommendedWatcher::new(
             move |res| {
@@ -44,7 +44,7 @@ impl Monitor {
     }
 
     /// Collect all events from the queue
-    pub async fn collect(&mut self, events: &mut Vec<Event>) {
+    pub fn collect(&mut self, events: &mut Vec<Event>) {
         events.clear();
 
         while let Ok(event) = self.event_receiver.try_recv() {
