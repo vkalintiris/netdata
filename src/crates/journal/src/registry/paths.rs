@@ -458,12 +458,12 @@ struct Directory {
 }
 
 #[derive(Default)]
-pub struct RegistryInner {
+pub struct Repository {
     // Maps a journal directory to the chains it contains
     directories: HashMap<String, Directory>,
 }
 
-impl RegistryInner {
+impl Repository {
     pub fn insert_file(&mut self, file: File) -> Result<()> {
         let dir = file.dir()?.to_string();
 
@@ -540,10 +540,10 @@ use notify::{
 };
 
 pub struct Registry {
+    repository: Repository,
     directories: HashSet<String>,
     monitor: Monitor,
     events: Vec<Event>,
-    inner: RegistryInner,
 }
 
 impl Registry {
@@ -552,7 +552,7 @@ impl Registry {
             directories: Default::default(),
             monitor: Monitor::new()?,
             events: Default::default(),
-            inner: Default::default(),
+            repository: Default::default(),
         })
     }
 
@@ -567,7 +567,7 @@ impl Registry {
         self.directories.insert(String::from(path));
 
         for file in files {
-            self.inner.insert_file(file)?;
+            self.repository.insert_file(file)?;
         }
 
         Ok(())
@@ -579,13 +579,13 @@ impl Registry {
         }
 
         self.monitor.unwatch_directory(path)?;
-        self.inner.remove_directory_files(path);
+        self.repository.remove_directory_files(path);
 
         Ok(())
     }
 
     pub fn find_files_in_range(&self, start: u64, end: u64, output: &mut Vec<File>) {
-        self.inner.find_files_in_range(start, end, output);
+        self.repository.find_files_in_range(start, end, output);
     }
 
     pub async fn process_events(&mut self) -> Result<()> {
@@ -596,14 +596,14 @@ impl Registry {
                 EventKind::Create(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.inner.insert_file(file)?;
+                            self.repository.insert_file(file)?;
                         }
                     }
                 }
                 EventKind::Remove(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.inner.remove_file(&file)?;
+                            self.repository.remove_file(&file)?;
                         }
                     }
                 }
@@ -611,10 +611,10 @@ impl Registry {
                     // Handle renames: remove old, add new
                     if event.paths.len() >= 2 {
                         if let Some(old_file) = File::from_path(&event.paths[0]) {
-                            self.inner.remove_file(&old_file)?;
+                            self.repository.remove_file(&old_file)?;
                         }
                         if let Some(new_file) = File::from_path(&event.paths[1]) {
-                            self.inner.insert_file(new_file)?;
+                            self.repository.insert_file(new_file)?;
                         }
                     } else {
                         eprintln!("Uncaught rename event: {:#?}", event.paths);

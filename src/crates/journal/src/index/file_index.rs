@@ -1,11 +1,6 @@
-use crate::error::JournalError;
-use crate::error::Result;
-use crate::file::DataObject;
-use crate::file::HashableObject;
-use crate::file::JournalFile;
-use crate::file::Mmap;
-use crate::file::offset_array::InlinedCursor;
-use crate::index::bitmap::Bitmap;
+use super::Bitmap;
+use crate::error::{JournalError, Result};
+use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
 use bincode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
