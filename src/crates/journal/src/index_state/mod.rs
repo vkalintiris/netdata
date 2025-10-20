@@ -225,6 +225,88 @@ pub struct AppState {
     pub complete_responses: HashMap<BucketRequest, BucketCompleteResponse>,
 }
 
+#[derive(Debug)]
+pub struct HistogramRequest {
+    pub after: u64,
+    pub before: u64,
+}
+
+impl HistogramRequest {
+    fn calculate_bucket_duration(&self) -> u64 {
+        const MINUTE: Duration = Duration::from_secs(60);
+        const HOUR: Duration = Duration::from_secs(60 * MINUTE.as_secs());
+        const DAY: Duration = Duration::from_secs(24 * HOUR.as_secs());
+
+        const VALID_DURATIONS: &[Duration] = &[
+            // Seconds
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            Duration::from_secs(15),
+            Duration::from_secs(30),
+            // Minutes
+            MINUTE,
+            Duration::from_secs(2 * MINUTE.as_secs()),
+            Duration::from_secs(3 * MINUTE.as_secs()),
+            Duration::from_secs(5 * MINUTE.as_secs()),
+            Duration::from_secs(10 * MINUTE.as_secs()),
+            Duration::from_secs(15 * MINUTE.as_secs()),
+            Duration::from_secs(30 * MINUTE.as_secs()),
+            // Hours
+            HOUR,
+            Duration::from_secs(2 * HOUR.as_secs()),
+            Duration::from_secs(6 * HOUR.as_secs()),
+            Duration::from_secs(8 * HOUR.as_secs()),
+            Duration::from_secs(12 * HOUR.as_secs()),
+            // Days
+            DAY,
+            Duration::from_secs(2 * DAY.as_secs()),
+            Duration::from_secs(3 * DAY.as_secs()),
+            Duration::from_secs(5 * DAY.as_secs()),
+            Duration::from_secs(7 * DAY.as_secs()),
+            Duration::from_secs(14 * DAY.as_secs()),
+            Duration::from_secs(30 * DAY.as_secs()),
+        ];
+
+        let duration = self.before - self.after;
+
+        VALID_DURATIONS
+            .iter()
+            .rev()
+            .find(|&&bucket_width| duration / bucket_width.as_secs() >= 10)
+            .map(|d| d.as_secs())
+            .unwrap_or(1)
+    }
+
+    pub fn into_bucket_requests(self) -> Vec<BucketRequest> {
+        let bucket_duration = self.calculate_bucket_duration();
+
+        // Buckets are aligned to their duration
+        let aligned_start = (self.after / bucket_duration) * bucket_duration;
+
+        // Allocate our buckets
+        let num_buckets = (self.before - aligned_start).div_ceil(bucket_duration) as usize;
+        let mut buckets = Vec::with_capacity(num_buckets);
+
+        let mut current = aligned_start;
+        while current < self.before {
+            let bucket_start = current.max(self.after);
+            let bucket_end = (current + bucket_duration).min(self.before);
+
+            let bucket_request = BucketRequest {
+                start: bucket_start,
+                end: bucket_end,
+            };
+
+            buckets.push(bucket_request);
+            current += bucket_duration;
+        }
+
+        buckets
+    }
+}
+
 impl AppState {
     pub fn new(path: &str, indexed_fields: HashSet<String>) -> Result<Self> {
         let mut registry = Registry::new()?;
@@ -237,5 +319,16 @@ impl AppState {
             partial_responses: HashMap::new(),
             complete_responses: HashMap::new(),
         })
+    }
+
+    pub fn histogram(&self, request: HistogramRequest) {
+        let bucket_requests = request.into_bucket_requests();
+
+        for (idx, bucket_request) in bucket_requests.iter().enumerate() {
+            println!(
+                "Bucket[{}]: [{}, {})",
+                idx, bucket_request.start, bucket_request.end
+            );
+        }
     }
 }

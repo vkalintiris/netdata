@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-use journal::index_state::AppState;
+use journal::index_state::{AppState, HistogramRequest};
 use journal::registry::Registry;
 use journal::repository::File;
 
@@ -62,8 +62,14 @@ pub fn get_facets() -> HashSet<String> {
 }
 
 fn main() {
-    let indexed_fields = get_facets();
-    let _app_state = AppState::new("/var/log/journal", indexed_fields);
-
     println!("Hello there!");
+
+    let indexed_fields = get_facets();
+    let app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
+
+    let histogram_request = HistogramRequest {
+        after: 1_000_000,
+        before: 1_000_000 + (60 * 15),
+    };
+    app_state.histogram(histogram_request);
 }
