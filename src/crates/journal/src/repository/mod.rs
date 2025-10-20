@@ -169,23 +169,9 @@ pub struct FileInner {
     pub status: Status,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct File {
     inner: Arc<FileInner>,
-}
-
-impl PartialEq for File {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner) || self.inner == other.inner
-    }
-}
-
-impl Eq for File {}
-
-impl Hash for File {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.inner.as_ref().hash(state);
-    }
 }
 
 impl File {

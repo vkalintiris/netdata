@@ -145,7 +145,7 @@ impl IndexFilter {
                 let mut matches = Vec::with_capacity(i - start);
                 for idx in start..i {
                     let field_value = &self.current_matches[idx];
-                    if let Some(bitmap) = file_index.bitmaps.get(field_value) {
+                    if let Some(bitmap) = file_index.bitmaps().get(field_value) {
                         matches.push(IndexFilterExpr::Match(bitmap.clone()));
                     } else {
                         matches.push(IndexFilterExpr::None);
@@ -154,7 +154,7 @@ impl IndexFilter {
                 elements.push(IndexFilterExpr::Disjunction(matches));
             } else {
                 let field_value = &self.current_matches[start];
-                if let Some(bitmap) = file_index.bitmaps.get(field_value) {
+                if let Some(bitmap) = file_index.bitmaps().get(field_value) {
                     elements.push(IndexFilterExpr::Match(bitmap.clone()));
                 } else {
                     elements.push(IndexFilterExpr::None);
@@ -252,7 +252,7 @@ impl IndexFilter {
 
     /// Convenience method to create a simple match filter
     pub fn simple_match(file_index: &FileIndex, field_value: &str) -> IndexFilterExpr {
-        if let Some(bitmap) = file_index.bitmaps.get(field_value) {
+        if let Some(bitmap) = file_index.bitmaps().get(field_value) {
             IndexFilterExpr::Match(bitmap.clone())
         } else {
             IndexFilterExpr::None
@@ -313,11 +313,11 @@ mod tests {
             Bitmap::from_sorted_iter([3, 4, 5]).unwrap(),
         );
 
-        FileIndex {
-            histogram: Histogram::default(),
-            fields: HashSet::default(),
-            bitmaps: entry_indices,
-        }
+        let histogram = Histogram::default();
+        let fields = HashSet::default();
+        let bitmaps = entry_indices;
+
+        FileIndex::new(histogram, fields, bitmaps)
     }
 
     #[test]

@@ -23,18 +23,19 @@ fn sequential(
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).unwrap();
+        let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).unwrap();
 
         let Ok(jfi) = file_indexer.index(&journal_file, None, field_names, 10) else {
             continue;
         };
 
         let mut index_size = 0;
-        for (data_payload, entry_indices) in jfi.bitmaps.iter() {
+        for (data_payload, entry_indices) in jfi.bitmaps().iter() {
             index_size += data_payload.len() + entry_indices.serialized_size();
         }
 
-        info!(file.path, index_size);
+        let path = file.path();
+        info!(path, index_size);
 
         total_index_size += index_size;
 
@@ -42,7 +43,7 @@ fn sequential(
     }
 
     // Count midx_count after parallel processing
-    let midx_count: usize = file_indexes.iter().map(|fi| fi.1.histogram.len()).sum();
+    let midx_count: usize = file_indexes.iter().map(|fi| fi.1.histogram().len()).sum();
 
     let elapsed = start_time.elapsed();
     info!(
@@ -76,18 +77,19 @@ fn parallel(
             let mut file_indexer = FileIndexer::default();
             let window_size = 64 * 1024 * 1024;
 
-            let journal_file = JournalFile::<Mmap>::open(&file.path, window_size).ok()?;
+            let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
 
             let jfi = file_indexer
                 .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 3600)
                 .ok()?;
 
             let mut index_size = 0;
-            for (data_payload, entry_indices) in jfi.bitmaps.iter() {
+            for (data_payload, entry_indices) in jfi.bitmaps().iter() {
                 index_size += data_payload.len() + entry_indices.serialized_size();
             }
 
-            info!(file.path, index_size);
+            let path = file.path();
+            info!(path, index_size);
 
             Some((file, jfi, index_size))
         })
@@ -98,7 +100,7 @@ fn parallel(
 
     let midx_count: usize = file_indexes
         .iter()
-        .map(|(_, fi, _)| fi.histogram.len())
+        .map(|(_, fi, _)| fi.histogram().len())
         .sum();
 
     let elapsed = start_time.elapsed();
@@ -121,7 +123,7 @@ fn parallel(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let facets: Vec<&[u8]> = vec![
+    let _facets: Vec<&[u8]> = vec![
         // --- USER JOURNAL FIELDS ---
         b"MESSAGE_ID",
         b"PRIORITY",
@@ -255,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut files = Vec::new();
     registry.find_files_in_range(0, u64::MAX, &mut files);
-    files.sort_by_key(|f| String::from(&f.path));
+    files.sort_by_key(|f| String::from(f.path()));
     files.reverse();
 
     // for file in files.iter() {
@@ -281,16 +283,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     for (f, fi) in v {
-        println!("Histogram for {}", f.path);
-        println!("{}", fi.histogram);
+        println!("Histogram for {}", f.path());
+        println!("{}", fi.histogram());
 
         for k in &priority_keys {
-            if let Some(b) = fi.bitmaps.get(k) {
+            if let Some(b) = fi.bitmaps().get(k) {
                 priority_count += b.len();
             }
         }
 
-        total_entries += fi.histogram.count();
+        total_entries += fi.histogram().count();
         total_size += fi.memory_size();
         total_entries_index_size += fi.compress_entries_index().len();
     }

@@ -5,6 +5,7 @@ use bincode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use tracing::{error, warn};
 
 fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result<u64> {
@@ -218,7 +219,7 @@ impl std::fmt::Display for Histogram {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FileIndex {
+pub struct FileIndexInner {
     // The journal file's histogram
     pub histogram: Histogram,
 
@@ -229,16 +230,68 @@ pub struct FileIndex {
     pub bitmaps: HashMap<String, Bitmap>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FileIndex {
+    pub inner: Arc<FileIndexInner>,
+}
+
+impl Serialize for FileIndex {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.inner.as_ref().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FileIndex {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let inner = FileIndexInner::deserialize(deserializer)?;
+        Ok(FileIndex {
+            inner: Arc::new(inner),
+        })
+    }
+}
+
 impl FileIndex {
+    pub fn new(
+        histogram: Histogram,
+        fields: HashSet<String>,
+        bitmaps: HashMap<String, Bitmap>,
+    ) -> Self {
+        let inner = FileIndexInner {
+            histogram,
+            fields,
+            bitmaps,
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+    pub fn histogram(&self) -> &Histogram {
+        &self.inner.histogram
+    }
+
+    pub fn fields(&self) -> &HashSet<String> {
+        &self.inner.fields
+    }
+
+    pub fn bitmaps(&self) -> &HashMap<String, Bitmap> {
+        &self.inner.bitmaps
+    }
+
     pub fn is_indexed(&self, field: &str) -> bool {
         // If the file does not contain the field, then it's not indexed
-        if !self.fields.contains(field) {
+        if !self.inner.fields.contains(field) {
             return false;
         }
 
         // If the entries index contains a key that starts with the field
         // name, then we've have indexed all the values the field takes
-        for key in self.bitmaps.keys() {
+        for key in self.inner.bitmaps.keys() {
             if key.starts_with(field) {
                 return true;
             }
@@ -251,14 +304,14 @@ impl FileIndex {
     /// Returns the compressed bytes on success.
     pub fn compress_entries_index(&self) -> Vec<u8> {
         // Serialize the entries_index to bincode format
-        let serialized = bincode::serialize(&self.bitmaps).unwrap();
+        let serialized = bincode::serialize(&self.inner.bitmaps).unwrap();
 
         // Compress the serialized data using lz4
         lz4::block::compress(&serialized, None, false).unwrap()
     }
 
     pub fn memory_size(&self) -> usize {
-        bincode::serialized_size(self).unwrap() as usize
+        bincode::serialized_size(&*self.inner).unwrap() as usize
     }
 }
 
@@ -308,10 +361,14 @@ impl FileIndexer {
             self.build_histogram(journal_file, source_timestamp_field, bucket_duration)?;
         let entries = self.build_entries_index(journal_file, field_names)?;
 
-        Ok(FileIndex {
+        let inner = FileIndexInner {
             fields,
             histogram,
             bitmaps: entries,
+        };
+
+        Ok(FileIndex {
+            inner: Arc::new(inner),
         })
     }
 
