@@ -51,7 +51,7 @@ impl FileIndexCache {
     fn indexing_worker(rx: Receiver<IndexingTask>, cache: Arc<RwLock<HashMap<File, FileIndex>>>) {
         while let Ok(task) = rx.recv() {
             let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
-            let timeout = Duration::from_secs(30);
+            let timeout = Duration::from_secs(10);
             let start_time = Instant::now();
 
             use rayon::prelude::*;
@@ -64,15 +64,17 @@ impl FileIndexCache {
                         return None;
                     }
 
+                    // Skip indexing if cache already contains this file
                     if cache.read().contains_key(file) {
                         return None;
                     }
 
+                    // Create the file index
                     FILE_INDEXER.with(|indexer| {
                         let mut file_indexer = indexer.borrow_mut();
                         let window_size = 32 * 1024 * 1024;
                         let journal_file =
-                            JournalFile::<Mmap>::open(file.path.clone(), window_size).ok()?;
+                            JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
 
                         file_indexer
                             .index(&journal_file, None, &field_names, 1)
@@ -126,15 +128,21 @@ impl IndexState {
         }
     }
 
-    pub fn resolve_buckets(&mut self, bucket_requests: &[BucketRequest]) -> Vec<BucketResponse> {
+    fn index_buckets(&mut self, bucket_requests: &[BucketRequest]) {
+        // FIXME: make this a debug assert one verified
+        assert!(bucket_requests.is_sorted_by(|a, b| a.start < b.start));
+
+        let Some(start) = bucket_requests.first().map(|br| br.start) else {
+            return;
+        };
+        let Some(end) = bucket_requests.last().map(|br| br.end) else {
+            return;
+        };
+
         // Collect all files that we need to lookup
         let mut files = Vec::new();
-        for bucket_request in bucket_requests {
-            let BucketRequest { start, end } = *bucket_request;
-
-            // Lookup the in-range files from the registry
-            self.registry.find_files_in_range(start, end, &mut files);
-        }
+        // Lookup the in-range files from the registry
+        self.registry.find_files_in_range(start, end, &mut files);
 
         // Make sure our cache contains the file indexes we need
         if !files.is_empty() {
@@ -143,10 +151,23 @@ impl IndexState {
             self.cache
                 .request_indexing(files, self.indexed_fields.clone());
         }
+    }
 
-        // Now iterate each bucket and try to reolve it.
+    pub fn resolve_buckets(&mut self, bucket_requests: &[BucketRequest]) -> Vec<BucketResponse> {
+        // Request indexing of files covered by the bucket requests
+        self.index_buckets(bucket_requests);
+
+        // Now iterate each bucket and try to resolve it.
         let bucket_responses: Vec<BucketResponse> = Vec::new();
-        for _bucket_request in bucket_requests {
+        let mut bucket_files = Vec::new();
+        for bucket_request in bucket_requests {
+            let BucketRequest { start, end } = *bucket_request;
+
+            // Look up the files need to process this bucket request
+            bucket_files.clear();
+            self.registry
+                .find_files_in_range(start, end, &mut bucket_files);
+
             todo!()
         }
 

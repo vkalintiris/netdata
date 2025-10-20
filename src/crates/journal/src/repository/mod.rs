@@ -4,7 +4,9 @@ pub use crate::repository::error::{RepositoryError, Result};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -161,13 +163,44 @@ pub struct Origin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct File {
+pub struct FileInner {
     pub path: String,
     pub origin: Origin,
     pub status: Status,
 }
 
+#[derive(Debug, Clone)]
+pub struct File {
+    inner: Arc<FileInner>,
+}
+
+impl PartialEq for File {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner) || self.inner == other.inner
+    }
+}
+
+impl Eq for File {}
+
+impl Hash for File {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.as_ref().hash(state);
+    }
+}
+
 impl File {
+    pub fn path(&self) -> &str {
+        &self.inner.path
+    }
+
+    pub fn origin(&self) -> &Origin {
+        &self.inner.origin
+    }
+
+    pub fn status(&self) -> &Status {
+        &self.inner.status
+    }
+
     pub fn from_path(path: &Path) -> Option<Self> {
         Self::from_str(path.to_str()?)
     }
@@ -210,18 +243,20 @@ impl File {
             source,
         };
 
-        Some(File {
+        let inner = Arc::new(FileInner {
             path: String::from(path),
             origin,
             status,
-        })
+        });
+
+        Some(File { inner })
     }
 
     pub fn dir(&self) -> Result<&str> {
-        Path::new(&self.path)
+        Path::new(&self.inner.path)
             .parent()
             .and_then(|p| {
-                if self.origin.machine_id.is_some() {
+                if self.inner.origin.machine_id.is_some() {
                     p.parent()
                 } else {
                     Some(p)
@@ -229,7 +264,7 @@ impl File {
             })
             .and_then(|p| p.to_str())
             .ok_or_else(|| RepositoryError::InvalidUtf8 {
-                path: Path::new(&self.path).to_path_buf(),
+                path: Path::new(&self.inner.path).to_path_buf(),
             })
     }
 
@@ -240,36 +275,36 @@ impl File {
 
     /// Check if this is an active journal file that's currently being written to
     pub fn is_active(&self) -> bool {
-        matches!(self.status, Status::Active)
+        matches!(self.inner.status, Status::Active)
     }
 
     /// Check if this is an archived journal file
     pub fn is_archived(&self) -> bool {
-        matches!(self.status, Status::Archived { .. })
+        matches!(self.inner.status, Status::Archived { .. })
     }
 
     /// Check if this is a corrupted/disposed journal file
     pub fn is_disposed(&self) -> bool {
-        matches!(self.status, Status::Disposed { .. })
+        matches!(self.inner.status, Status::Disposed { .. })
     }
 
     /// Check if this contains logs from users
     pub fn is_user(&self) -> bool {
-        matches!(self.origin.source, Source::User(_))
+        matches!(self.inner.origin.source, Source::User(_))
     }
 
     /// Check if this contains logs from system
     pub fn is_system(&self) -> bool {
-        matches!(self.origin.source, Source::System)
+        matches!(self.inner.origin.source, Source::System)
     }
 
     pub fn is_remote(&self) -> bool {
-        matches!(self.origin.source, Source::Remote(_))
+        matches!(self.inner.origin.source, Source::Remote(_))
     }
 
     /// Get the user ID if this is a user journal
     pub fn user_id(&self) -> Option<u32> {
-        match &self.origin.source {
+        match &self.inner.origin.source {
             Source::User(uid) => Some(*uid),
             _ => None,
         }
@@ -277,7 +312,7 @@ impl File {
 
     /// Get the remote host if this is a remote journal
     pub fn remote_host(&self) -> Option<&str> {
-        match &self.origin.source {
+        match &self.inner.origin.source {
             Source::Remote(host) => Some(host.as_str()),
             _ => None,
         }
@@ -285,16 +320,17 @@ impl File {
 
     /// Get the namespace if this journal belongs to a namespace
     pub fn namespace(&self) -> Option<&str> {
-        self.origin.namespace.as_deref()
+        self.inner.origin.namespace.as_deref()
     }
 }
 
 impl Ord for File {
     fn cmp(&self, other: &Self) -> Ordering {
         // First compare by status, then by path for stability
-        self.status
-            .cmp(&other.status)
-            .then_with(|| self.path.cmp(&other.path))
+        self.inner
+            .status
+            .cmp(&other.inner.status)
+            .then_with(|| self.inner.path.cmp(&other.inner.path))
     }
 }
 
@@ -358,7 +394,7 @@ impl Chain {
     }
 
     pub fn drain(&mut self, cutoff_time: u64) -> impl Iterator<Item = File> + '_ {
-        let pos = self.files.partition_point(|file| match file.status {
+        let pos = self.files.partition_point(|file| match file.inner.status {
             Status::Active => false,
             Status::Archived { head_realtime, .. } => head_realtime <= cutoff_time,
             Status::Disposed { timestamp, .. } => timestamp <= cutoff_time,
@@ -375,14 +411,14 @@ impl Chain {
 
         let pos = self
             .files
-            .partition_point(|f| match &f.status {
+            .partition_point(|f| match &f.inner.status {
                 Status::Active => false,
                 Status::Archived { head_realtime, .. } => *head_realtime < start,
                 Status::Disposed { .. } => true,
             })
             .saturating_sub(1);
 
-        let mut prev_head_realtime = match self.files.get(pos).map(|f| &f.status) {
+        let mut prev_head_realtime = match self.files.get(pos).map(|f| &f.inner.status) {
             Some(Status::Archived { head_realtime, .. }) => Some(*head_realtime),
             _ => None,
         };
@@ -390,7 +426,7 @@ impl Chain {
         let mut iter = self.files.iter().skip(pos).peekable();
 
         while let Some(file) = iter.next() {
-            match &file.status {
+            match &file.inner.status {
                 Status::Archived { head_realtime, .. } => {
                     if *head_realtime >= end {
                         break;
@@ -398,7 +434,7 @@ impl Chain {
 
                     // Peek at the next file to determine tail_realtime
                     let tail_realtime = if let Some(next_file) = iter.peek() {
-                        match &next_file.status {
+                        match &next_file.inner.status {
                             Status::Active => {
                                 // We don't know the tail_realtime of the active file
                                 u64::MAX
@@ -471,16 +507,16 @@ impl Repository {
         let dir = file.dir()?.to_string();
 
         if let Some(directory) = self.directories.get_mut(&dir) {
-            if let Some(chain) = directory.chains.get_mut(&file.origin) {
+            if let Some(chain) = directory.chains.get_mut(&file.inner.origin) {
                 chain.insert_file(file);
             } else {
-                let origin = file.origin.clone();
+                let origin = file.inner.origin.clone();
                 let mut chain = Chain::default();
                 chain.insert_file(file);
                 directory.chains.insert(origin, chain);
             }
         } else {
-            let origin = file.origin.clone();
+            let origin = file.inner.origin.clone();
             let mut chain = Chain::default();
             chain.insert_file(file);
 
@@ -499,13 +535,13 @@ impl Repository {
         if let Some(directory) = self.directories.get_mut(dir) {
             let mut remove_chain = false;
 
-            if let Some(chain) = directory.chains.get_mut(&file.origin) {
+            if let Some(chain) = directory.chains.get_mut(&file.inner.origin) {
                 chain.remove_file(file);
                 remove_chain = chain.is_empty();
             };
 
             if remove_chain {
-                directory.chains.remove(&file.origin);
+                directory.chains.remove(&file.inner.origin);
             }
 
             remove_directory = directory.chains.is_empty();
@@ -567,7 +603,7 @@ mod tests {
     }
 
     fn create_archived_file(origin: &Origin, head_realtime: u64) -> File {
-        File {
+        let inner = FileInner {
             path: format!("/var/log/journal/system@{}.journal", head_realtime),
             origin: origin.clone(),
             status: Status::Archived {
@@ -575,22 +611,34 @@ mod tests {
                 head_seqnum: 1000 + head_realtime,
                 head_realtime,
             },
+        };
+
+        File {
+            inner: Arc::new(inner),
         }
     }
 
     fn create_active_file(origin: &Origin) -> File {
-        File {
+        let inner = FileInner {
             path: "/var/log/journal/system.journal".to_string(),
             origin: origin.clone(),
             status: Status::Active,
+        };
+
+        File {
+            inner: Arc::new(inner),
         }
     }
 
     fn create_disposed_file(origin: &Origin, timestamp: u64, number: u64) -> File {
-        File {
+        let inner = FileInner {
             path: format!("/var/log/journal/system@{}-{}.journal~", timestamp, number),
             origin: origin.clone(),
             status: Status::Disposed { timestamp, number },
+        };
+
+        File {
+            inner: Arc::new(inner),
         }
     }
 

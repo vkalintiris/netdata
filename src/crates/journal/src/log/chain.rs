@@ -3,6 +3,7 @@ use crate::error::{JournalError, Result};
 use crate::file::Mmap;
 use crate::log::RetentionPolicy;
 use crate::repository;
+use crate::repository::File;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -40,7 +41,7 @@ pub struct Chain {
     pub(crate) machine_id: Uuid,
 
     pub(crate) inner: repository::Chain,
-    pub(crate) file_sizes: std::collections::HashMap<String, u64>,
+    pub(crate) file_sizes: std::collections::HashMap<File, u64>,
     pub(crate) total_size: u64,
 }
 
@@ -73,12 +74,12 @@ impl Chain {
                 continue;
             };
 
-            let Ok(size) = std::fs::metadata(&file.path).map(|m| m.len()) else {
+            let Ok(size) = std::fs::metadata(file.path()).map(|m| m.len()) else {
                 continue;
             };
 
             chain.total_size += size;
-            chain.file_sizes.insert(file.path.clone(), size);
+            chain.file_sizes.insert(file.clone(), size);
             chain.inner.insert_file(file);
         }
 
@@ -91,7 +92,7 @@ impl Chain {
         };
 
         let window_size = 4096;
-        let jf = JournalFile::<Mmap>::open(&file.path, window_size)?;
+        let jf = JournalFile::<Mmap>::open(file.path(), window_size)?;
 
         Ok(jf.journal_header_ref().tail_entry_seqnum)
     }
@@ -112,9 +113,9 @@ impl Chain {
     }
 
     /// Updates the tracked size of a file in the chain
-    pub fn update_file_size(&mut self, file_path: &str, new_size: u64) {
-        let old_size = self.file_sizes.get(file_path).copied().unwrap_or(0);
-        self.file_sizes.insert(file_path.to_string(), new_size);
+    pub fn update_file_size(&mut self, file: &File, new_size: u64) {
+        let old_size = self.file_sizes.get(file).copied().unwrap_or(0);
+        self.file_sizes.insert(file.clone(), new_size);
         self.total_size = self
             .total_size
             .saturating_sub(old_size)
@@ -160,17 +161,17 @@ impl Chain {
             return Ok(());
         };
 
-        info!("deleting {}", file.path);
+        info!("deleting {}", file.path());
 
-        let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
+        let file_size = self.file_sizes.get(&file).copied().unwrap_or(0);
 
         // Remove from filesystem
-        if let Err(e) = std::fs::remove_file(&file.path) {
+        if let Err(e) = std::fs::remove_file(file.path()) {
             // Log error but continue cleanup - file might already be deleted
-            error!("Failed to remove journal file {:?}: {}", file.path, e);
+            error!("Failed to remove journal file {:?}: {}", file.path(), e);
         }
 
-        self.file_sizes.remove(&file.path);
+        self.file_sizes.remove(&file);
         self.total_size = self.total_size.saturating_sub(file_size);
         Ok(())
     }
@@ -188,15 +189,15 @@ impl Chain {
             .as_micros() as u64;
 
         for file in self.inner.drain(cutoff_time) {
-            info!("deleting {}", file.path);
-            let file_size = self.file_sizes.get(&file.path).copied().unwrap_or(0);
+            info!("deleting {}", file.path());
+            let file_size = self.file_sizes.get(&file).copied().unwrap_or(0);
 
-            if let Err(e) = std::fs::remove_file(&file.path) {
-                error!("Failed to remove journal file {:?}: {}", file.path, e);
+            if let Err(e) = std::fs::remove_file(file.path()) {
+                error!("Failed to remove journal file {:?}: {}", file.path(), e);
                 continue;
             }
 
-            self.file_sizes.remove(&file.path);
+            self.file_sizes.remove(&file);
             self.total_size = self.total_size.saturating_sub(file_size);
         }
 

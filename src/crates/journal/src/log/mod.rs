@@ -108,7 +108,7 @@ impl ActiveFile {
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true);
 
-        let mut journal_file = JournalFile::create(&repository_file.path, options)?;
+        let mut journal_file = JournalFile::create(repository_file.path(), options)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
@@ -134,7 +134,7 @@ impl ActiveFile {
 
         let mut journal_file = self
             .journal_file
-            .create_successor(&repository_file.path, max_file_size)?;
+            .create_successor(repository_file.path(), max_file_size)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
@@ -221,7 +221,7 @@ impl Log {
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
             self.chain.update_file_size(
-                &active_file.repository_file.path,
+                &active_file.repository_file,
                 active_file.current_file_size(),
             );
         }
@@ -243,7 +243,7 @@ impl Log {
             )?
         };
 
-        tracing::Span::current().record("new_file", &new_file.repository_file.path);
+        tracing::Span::current().record("new_file", new_file.repository_file.path());
 
         self.active_file = Some(new_file);
         self.rotation_state.reset();
