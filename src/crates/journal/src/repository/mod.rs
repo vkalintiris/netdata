@@ -4,7 +4,6 @@ pub use crate::repository::error::{RepositoryError, Result};
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;

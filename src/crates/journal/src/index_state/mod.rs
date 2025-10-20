@@ -114,17 +114,16 @@ impl FileIndexCache {
 
 pub struct IndexState {
     pub registry: Registry,
-    pub indexed_fields: HashSet<String>,
-
     pub cache: FileIndexCache,
+    pub indexed_fields: HashSet<String>,
 }
 
 impl IndexState {
     pub fn new(registry: Registry, indexed_fields: HashSet<String>) -> Self {
         Self {
             registry,
-            indexed_fields,
             cache: FileIndexCache::default(),
+            indexed_fields,
         }
     }
 
@@ -153,12 +152,15 @@ impl IndexState {
         }
     }
 
-    pub fn resolve_buckets(&mut self, bucket_requests: &[BucketRequest]) -> Vec<BucketResponse> {
+    pub fn resolve_buckets(
+        &mut self,
+        bucket_requests: &[BucketRequest],
+    ) -> Vec<BucketPartialResponse> {
         // Request indexing of files covered by the bucket requests
         self.index_buckets(bucket_requests);
 
         // Now iterate each bucket and try to resolve it.
-        let bucket_responses: Vec<BucketResponse> = Vec::new();
+        let bucket_responses: Vec<BucketPartialResponse> = Vec::new();
         let mut bucket_files = Vec::new();
         for bucket_request in bucket_requests {
             let BucketRequest { start, end } = *bucket_request;
@@ -188,8 +190,52 @@ impl BucketRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct BucketResponse {
+pub struct RequestMetadata {
+    // The original request
     pub request: BucketRequest,
+
+    // Files we need to use to generate a full response
+    pub files: Vec<File>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BucketPartialResponse {
+    // Used to incrementally progress request
+    pub request_metadata: RequestMetadata,
+
     pub indexed_fields: HashMap<String, usize>,
     pub unindexed_fields: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BucketCompleteResponse {
+    pub indexed_fields: HashMap<String, usize>,
+    pub unindexed_fields: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BucketResponse {
+    Complete(BucketCompleteResponse),
+    Partial(BucketPartialResponse),
+}
+
+pub struct AppState {
+    pub index_state: IndexState,
+    pub partial_responses: HashMap<BucketRequest, BucketPartialResponse>,
+    pub complete_responses: HashMap<BucketRequest, BucketCompleteResponse>,
+}
+
+impl AppState {
+    pub fn new(path: &str, indexed_fields: HashSet<String>) -> Result<Self> {
+        let mut registry = Registry::new()?;
+        registry.watch_directory(path)?;
+
+        let index_state = IndexState::new(registry, indexed_fields);
+
+        Ok(Self {
+            index_state,
+            partial_responses: HashMap::new(),
+            complete_responses: HashMap::new(),
+        })
+    }
 }
