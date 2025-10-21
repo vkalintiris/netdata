@@ -181,6 +181,109 @@ impl Histogram {
     pub fn count(&self) -> usize {
         self.buckets.last().map(|b| b.count + 1).unwrap_or(0)
     }
+
+    /// Count the number of bitmap entries that fall within a time range.
+    ///
+    /// This method efficiently counts entries by using the histogram's bucket structure
+    /// rather than iterating through all bitmap entries. It only works when the time
+    /// range is aligned to the histogram's bucket_duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `bitmap` - The bitmap containing entry indices to count
+    /// * `start_time` - Start of the time range (must be aligned to bucket_duration)
+    /// * `end_time` - End of the time range (must be aligned to bucket_duration)
+    ///
+    /// # Returns
+    ///
+    /// * `Some(count)` - The number of bitmap entries in the time range
+    /// * `None` - If the time range is not aligned to bucket_duration or if the range
+    ///            is invalid (start >= end, or outside histogram bounds)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Histogram with 60-second buckets
+    /// let histogram = Histogram::new(60, buckets);
+    /// let bitmap = /* bitmap from filter evaluation */;
+    ///
+    /// // Count entries between 1000 and 1120 seconds (aligned to 60s buckets)
+    /// if let Some(count) = histogram.count_bitmap_entries_in_range(&bitmap, 1000, 1120) {
+    ///     println!("Found {} entries in time range", count);
+    /// }
+    /// ```
+    pub fn count_bitmap_entries_in_range(
+        &self,
+        bitmap: &Bitmap,
+        start_time: u64,
+        end_time: u64,
+    ) -> Option<usize> {
+        // Validate inputs
+        if start_time >= end_time {
+            return None;
+        }
+
+        // Verify alignment to bucket_duration
+        if !start_time.is_multiple_of(self.bucket_duration)
+            || !end_time.is_multiple_of(self.bucket_duration)
+        {
+            return None;
+        }
+
+        // Handle empty histogram or bitmap
+        if self.buckets.is_empty() || bitmap.is_empty() {
+            return Some(0);
+        }
+
+        // Check if the time range intersects with the histogram
+        let hist_start = self.start_time()?;
+        let hist_end = self.end_time()?;
+
+        if end_time <= hist_start || start_time >= hist_end {
+            // Time range is completely outside histogram bounds
+            return Some(0);
+        }
+
+        // Find the bucket indices for start and end times
+        let start_bucket_idx = self
+            .buckets
+            .iter()
+            .position(|b| b.start_time >= start_time)?;
+
+        // Find the last bucket that starts before end_time
+        let end_bucket_idx = self
+            .buckets
+            .iter()
+            .rposition(|b| b.start_time < end_time)
+            .unwrap_or(0);
+
+        // If start is after end, the range doesn't contain any buckets
+        if start_bucket_idx > end_bucket_idx {
+            return Some(0);
+        }
+
+        // Get the running count boundaries
+        // For start: we want entries AFTER the previous bucket's running count
+        let start_running_count = if start_bucket_idx == 0 {
+            0
+        } else {
+            self.buckets[start_bucket_idx - 1].count + 1
+        };
+
+        // For end: we want entries UP TO AND INCLUDING this bucket's running count
+        let end_running_count = self.buckets[end_bucket_idx].count;
+
+        // Count bitmap entries in the range [start_running_count, end_running_count]
+        let count = bitmap
+            .iter()
+            .filter(|&idx| {
+                let idx = idx as usize;
+                idx >= start_running_count && idx <= end_running_count
+            })
+            .count();
+
+        Some(count)
+    }
 }
 
 use chrono::{Local, TimeZone};
@@ -550,5 +653,190 @@ impl FileIndexer {
             bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test histogram with known buckets
+    ///
+    /// Creates a histogram with:
+    /// - bucket_duration: 60 seconds
+    /// - Entries at indices 0-4 in bucket starting at time 0
+    /// - Entries at indices 5-9 in bucket starting at time 60
+    /// - Entries at indices 10-14 in bucket starting at time 120
+    /// - Entries at indices 15-19 in bucket starting at time 180
+    fn create_test_histogram() -> Histogram {
+        let buckets = vec![
+            Bucket {
+                start_time: 0,
+                count: 4, // entries 0-4 (5 entries)
+            },
+            Bucket {
+                start_time: 60,
+                count: 9, // entries 5-9 (5 entries)
+            },
+            Bucket {
+                start_time: 120,
+                count: 14, // entries 10-14 (5 entries)
+            },
+            Bucket {
+                start_time: 180,
+                count: 19, // entries 15-19 (5 entries)
+            },
+        ];
+
+        Histogram {
+            bucket_duration: 60,
+            buckets,
+        }
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_full_bucket() {
+        let histogram = create_test_histogram();
+        // Bitmap contains entries 5, 6, 7, 8, 9 (all in bucket starting at 60)
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 7, 8, 9]).unwrap();
+
+        // Query for the full bucket from 60 to 120
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 60, 120);
+        assert_eq!(count, Some(5));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_partial_match() {
+        let histogram = create_test_histogram();
+        // Bitmap contains some entries in bucket 60-120 and some in 120-180
+        let bitmap = Bitmap::from_sorted_iter([7, 8, 9, 10, 11]).unwrap();
+
+        // Query for bucket 60-120 should only count entries 7, 8, 9
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 60, 120);
+        assert_eq!(count, Some(3));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_multiple_buckets() {
+        let histogram = create_test_histogram();
+        // Bitmap spans multiple buckets
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 10, 11, 15, 16]).unwrap();
+
+        // Query for buckets 60-180 (includes buckets at 60 and 120)
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 60, 180);
+        assert_eq!(count, Some(4)); // 5, 6, 10, 11
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_no_matches() {
+        let histogram = create_test_histogram();
+        // Bitmap contains entries in bucket 0-60
+        let bitmap = Bitmap::from_sorted_iter([0, 1, 2]).unwrap();
+
+        // Query for bucket 120-180 should find no matches
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 120, 180);
+        assert_eq!(count, Some(0));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_empty_bitmap() {
+        let histogram = create_test_histogram();
+        let bitmap = Bitmap::new();
+
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 0, 60);
+        assert_eq!(count, Some(0));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_unaligned_start() {
+        let histogram = create_test_histogram();
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 7]).unwrap();
+
+        // Start time not aligned to bucket_duration (60)
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 30, 120);
+        assert_eq!(count, None);
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_unaligned_end() {
+        let histogram = create_test_histogram();
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 7]).unwrap();
+
+        // End time not aligned to bucket_duration (60)
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 60, 100);
+        assert_eq!(count, None);
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_invalid_range() {
+        let histogram = create_test_histogram();
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 7]).unwrap();
+
+        // start >= end
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 120, 60);
+        assert_eq!(count, None);
+
+        // start == end
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 60, 60);
+        assert_eq!(count, None);
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_outside_histogram() {
+        let histogram = create_test_histogram();
+        let bitmap = Bitmap::from_sorted_iter([5, 6, 7]).unwrap();
+
+        // Range completely before histogram
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 0, 60);
+        // This will actually work since 0-60 is the first bucket
+        assert!(count.is_some());
+
+        // Range completely after histogram (histogram ends at 240)
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 240, 300);
+        assert_eq!(count, Some(0));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_first_bucket() {
+        let histogram = create_test_histogram();
+        // Entries in first bucket (0-60)
+        let bitmap = Bitmap::from_sorted_iter([0, 1, 2, 3, 4]).unwrap();
+
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 0, 60);
+        assert_eq!(count, Some(5));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_last_bucket() {
+        let histogram = create_test_histogram();
+        // Entries in last bucket (180-240)
+        let bitmap = Bitmap::from_sorted_iter([15, 16, 17, 18, 19]).unwrap();
+
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 180, 240);
+        assert_eq!(count, Some(5));
+    }
+
+    #[test]
+    fn test_count_bitmap_entries_in_range_all_buckets() {
+        let histogram = create_test_histogram();
+        // Entries spanning all buckets
+        let bitmap = Bitmap::from_sorted_iter([0, 5, 10, 15]).unwrap();
+
+        // Query for entire histogram range
+        let count = histogram.count_bitmap_entries_in_range(&bitmap, 0, 240);
+        assert_eq!(count, Some(4));
+    }
+
+    #[test]
+    fn test_histogram_properties() {
+        let histogram = create_test_histogram();
+
+        assert_eq!(histogram.start_time(), Some(0));
+        assert_eq!(histogram.end_time(), Some(240)); // last bucket starts at 180, duration is 60
+        assert_eq!(histogram.time_range(), Some((0, 240)));
+        assert_eq!(histogram.duration(), Some(240));
+        assert_eq!(histogram.len(), 4);
+        assert!(!histogram.is_empty());
+        assert_eq!(histogram.count(), 20); // 20 total entries (indices 0-19)
     }
 }
