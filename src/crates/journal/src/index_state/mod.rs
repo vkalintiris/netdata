@@ -50,9 +50,10 @@ struct IndexingTask {
 impl FileIndexCache {
     fn indexing_worker(rx: Receiver<IndexingTask>, cache: Arc<RwLock<HashMap<File, FileIndex>>>) {
         while let Ok(task) = rx.recv() {
-            let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
             let timeout = Duration::from_secs(10);
             let start_time = Instant::now();
+
+            let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
 
             use rayon::prelude::*;
             let file_indexes: HashMap<File, FileIndex> = task
@@ -284,23 +285,20 @@ impl HistogramRequest {
 
         // Buckets are aligned to their duration
         let aligned_start = (self.after / bucket_duration) * bucket_duration;
+        let aligned_end = (self.before / bucket_duration + 1) * bucket_duration;
 
         // Allocate our buckets
-        let num_buckets = (self.before - aligned_start).div_ceil(bucket_duration) as usize;
+        let num_buckets = ((aligned_end - aligned_start) / bucket_duration) as usize;
         let mut buckets = Vec::with_capacity(num_buckets);
 
-        let mut current = aligned_start;
-        while current < self.before {
-            let bucket_start = current.max(self.after);
-            let bucket_end = (current + bucket_duration).min(self.before);
+        // Create our buckets
+        for bucket_index in 0..num_buckets {
+            let start = aligned_start + (bucket_index as u64 * bucket_duration);
 
-            let bucket_request = BucketRequest {
-                start: bucket_start,
-                end: bucket_end,
-            };
-
-            buckets.push(bucket_request);
-            current += bucket_duration;
+            buckets.push(BucketRequest {
+                start,
+                end: start + bucket_duration,
+            });
         }
 
         buckets
@@ -326,8 +324,10 @@ impl AppState {
 
         for (idx, bucket_request) in bucket_requests.iter().enumerate() {
             println!(
-                "Bucket[{}]: [{}, {})",
-                idx, bucket_request.start, bucket_request.end
+                "[{}] Bucket[{}, +{})",
+                idx,
+                bucket_request.start,
+                bucket_request.end - bucket_request.start
             );
         }
     }
