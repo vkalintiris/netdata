@@ -235,27 +235,24 @@ impl Histogram {
             return Some(0);
         }
 
-        // Check if the time range intersects with the histogram
-        let hist_start = self.start_time()?;
-        let hist_end = self.end_time()?;
+        // Find the bucket indices for start and end times using binary search
+        // partition_point returns the index of the first bucket with start_time >= start_time
+        let start_bucket_idx = self
+            .buckets
+            .partition_point(|b| b.start_time < start_time);
 
-        if end_time <= hist_start || start_time >= hist_end {
-            // Time range is completely outside histogram bounds
+        // If start_bucket_idx is beyond all buckets, no matches possible
+        if start_bucket_idx >= self.buckets.len() {
             return Some(0);
         }
 
-        // Find the bucket indices for start and end times
-        let start_bucket_idx = self
-            .buckets
-            .iter()
-            .position(|b| b.start_time >= start_time)?;
-
         // Find the last bucket that starts before end_time
+        // partition_point returns the index of the first bucket with start_time >= end_time,
+        // so we need to subtract 1 to get the last bucket before end_time
         let end_bucket_idx = self
             .buckets
-            .iter()
-            .rposition(|b| b.start_time < end_time)
-            .unwrap_or(0);
+            .partition_point(|b| b.start_time < end_time)
+            .saturating_sub(1);
 
         // If start is after end, the range doesn't contain any buckets
         if start_bucket_idx > end_bucket_idx {
