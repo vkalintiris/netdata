@@ -3,8 +3,10 @@
 use journal::index_state::{AppState, HistogramRequest};
 use journal::registry::Registry;
 use journal::repository::File;
+use tracing::Instrument;
 
 use std::collections::HashSet;
+use std::ops::Not;
 
 pub fn get_facets() -> HashSet<String> {
     let v: Vec<&[u8]> = vec![
@@ -65,49 +67,48 @@ fn main() {
     println!("Hello there!");
 
     let indexed_fields = get_facets();
-    let mut app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
+    // let mut app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
 
-    use chrono::Utc;
+    let mut app_state = AppState::new("/home/vk/repos/tmp/flog", indexed_fields).unwrap();
 
-    let before = Utc::now();
-    let after = before - chrono::Duration::weeks(52);
+    use chrono::{DateTime, Utc};
 
-    let histogram_request = HistogramRequest {
-        after: after.timestamp_micros() as u64,
-        before: before.timestamp_micros() as u64,
-    };
+    // let before = Utc::now();
+    // let after = before - chrono::Duration::weeks(52);
+
+    // let histogram_request = HistogramRequest {
+    //     after: after.timestamp_micros() as u64,
+    //     before: before.timestamp_micros() as u64,
+    // };
+
+    let after = u64::from_str_radix("641202f93e665", 16).unwrap();
+    let before = u64::from_str_radix("6414242cf1eec", 16).unwrap();
+
+    // Convert to DateTime for verification
+    let after_dt = DateTime::from_timestamp_micros(after as i64).unwrap();
+    let before_dt = DateTime::from_timestamp_micros(before as i64).unwrap();
+
+    println!("After: {}", after_dt);
+    println!("Before: {}", before_dt);
+
+    let histogram_request = HistogramRequest { after, before };
 
     let mut iteration = 0;
+    let loop_start = std::time::Instant::now();
     loop {
         iteration += 1;
-        println!("\n========== Iteration {} ==========", iteration);
+        println!("========== Iteration {} ==========", iteration);
 
         app_state.histogram(histogram_request.clone());
 
-        println!("\nPartial responses: {}", app_state.partial_responses.len());
-        for (bucket_request, partial_response) in &app_state.partial_responses {
-            println!(
-                "  Bucket[{}, +{}) - {} files remaining, {} indexed fields",
-                bucket_request.start,
-                bucket_request.end - bucket_request.start,
-                partial_response.request_metadata.files.len(),
-                partial_response.indexed_fields.len()
-            );
-        }
-
         println!(
-            "\nComplete responses: {}",
-            app_state.complete_responses.len()
+            "[Iteration {}] Elapsed: {}, Partial: {}, Complete: {}, Total: {}",
+            iteration,
+            loop_start.elapsed().as_secs(),
+            app_state.partial_responses.len(),
+            app_state.complete_responses.len(),
+            app_state.partial_responses.len() + app_state.complete_responses.len()
         );
-        for (bucket_request, complete_response) in &app_state.complete_responses {
-            println!(
-                "  Bucket[{}, +{}) - {} indexed fields, {} unindexed fields",
-                bucket_request.start,
-                bucket_request.end - bucket_request.start,
-                complete_response.indexed_fields.len(),
-                complete_response.unindexed_fields.len()
-            );
-        }
 
         std::thread::sleep(std::time::Duration::from_secs(1));
     }

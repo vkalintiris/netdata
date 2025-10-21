@@ -149,8 +149,6 @@ impl FileIndexCache {
                         return None;
                     }
 
-                    eprintln!("Indexing {}", file.path());
-
                     // Create the file index
                     FILE_INDEXER.with(|indexer| {
                         let mut file_indexer = indexer.borrow_mut();
@@ -382,12 +380,12 @@ impl AppState {
         // Create any new partial requests
         for bucket_request in request.into_bucket_requests().iter() {
             if self.complete_responses.contains_key(bucket_request) {
-                eprintln!("Found complete response for request: {:?}", bucket_request);
+                // eprintln!("Found complete response for request: {:?}", bucket_request);
                 continue;
             }
 
             if self.partial_responses.contains_key(bucket_request) {
-                eprintln!("Found partial response for request: {:?}", bucket_request);
+                // eprintln!("Found partial response for request: {:?}", bucket_request);
                 continue;
             }
 
