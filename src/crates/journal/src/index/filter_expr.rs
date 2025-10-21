@@ -13,7 +13,7 @@ pub enum FilterExpr {
 
 impl FilterExpr {
     /// Get all entry indices that match this filter expression
-    pub fn matching_indices(&self) -> Bitmap {
+    pub fn evaluate(&self) -> Bitmap {
         match self {
             Self::None => Bitmap::new(),
             Self::Match(bitmap) => bitmap.clone(),
@@ -22,9 +22,9 @@ impl FilterExpr {
                     return Bitmap::new();
                 }
 
-                let mut result = filter_exprs[0].matching_indices();
+                let mut result = filter_exprs[0].evaluate();
                 for expr in filter_exprs.iter().skip(1) {
-                    result &= expr.matching_indices();
+                    result &= expr.evaluate();
                     if result.is_empty() {
                         break; // Early termination for empty conjunction
                     }
@@ -34,7 +34,7 @@ impl FilterExpr {
             Self::Disjunction(filter_exprs) => {
                 let mut result = Bitmap::new();
                 for expr in filter_exprs.iter() {
-                    result |= expr.matching_indices();
+                    result |= expr.evaluate();
                 }
                 result
             }
@@ -43,7 +43,7 @@ impl FilterExpr {
 
     /// Count the number of matching entries
     pub fn count(&self) -> u64 {
-        self.matching_indices().len()
+        self.evaluate().len()
     }
 
     /// Check if there are any matching entries
@@ -321,7 +321,7 @@ mod tests {
         let file_index = create_test_file_index();
         let filter = FilterExprBuilder::simple_match(&file_index, "_SYSTEMD_UNIT=ssh.service");
 
-        let matches = filter.matching_indices();
+        let matches = filter.evaluate();
         assert_eq!(matches.iter().collect::<Vec<_>>(), vec![1, 3, 5, 7]);
     }
 
@@ -333,7 +333,7 @@ mod tests {
             &["_SYSTEMD_UNIT=ssh.service", "PRIORITY=6"],
         );
 
-        let matches = filter.matching_indices();
+        let matches = filter.evaluate();
         assert_eq!(matches.iter().collect::<Vec<_>>(), vec![1]); // Only entry 1 matches both
     }
 
@@ -345,7 +345,7 @@ mod tests {
             &["_SYSTEMD_UNIT=ssh.service", "_SYSTEMD_UNIT=nginx.service"],
         );
 
-        let matches = filter.matching_indices();
+        let matches = filter.evaluate();
         assert_eq!(
             matches.iter().collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 5, 6, 7, 8]
@@ -366,7 +366,7 @@ mod tests {
         filter.add_match("PRIORITY=6");
 
         let result = filter.build(&file_index);
-        let matches = result.matching_indices();
+        let matches = result.evaluate();
         assert_eq!(matches.iter().collect::<Vec<_>>(), vec![1, 2]); // Entries that match PRIORITY=6 AND (ssh OR nginx)
     }
 }
