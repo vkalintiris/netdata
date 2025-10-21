@@ -198,7 +198,7 @@ impl Histogram {
     ///
     /// * `Some(count)` - The number of bitmap entries in the time range
     /// * `None` - If the time range is not aligned to bucket_duration or if the range
-    ///            is invalid (start >= end, or outside histogram bounds)
+    ///   is invalid (start >= end, or outside histogram bounds)
     ///
     /// # Example
     ///
@@ -237,9 +237,7 @@ impl Histogram {
 
         // Find the bucket indices for start and end times using binary search
         // partition_point returns the index of the first bucket with start_time >= start_time
-        let start_bucket_idx = self
-            .buckets
-            .partition_point(|b| b.start_time < start_time);
+        let start_bucket_idx = self.buckets.partition_point(|b| b.start_time < start_time);
 
         // If start_bucket_idx is beyond all buckets, no matches possible
         if start_bucket_idx >= self.buckets.len() {
@@ -270,16 +268,11 @@ impl Histogram {
         // For end: we want entries UP TO AND INCLUDING this bucket's running count
         let end_running_count = self.buckets[end_bucket_idx].count;
 
-        // Count bitmap entries in the range [start_running_count, end_running_count]
-        let count = bitmap
-            .iter()
-            .filter(|&idx| {
-                let idx = idx as usize;
-                idx >= start_running_count && idx <= end_running_count
-            })
-            .count();
+        // Range is [start_running_count, end_running_count + 1) since range_cardinality is exclusive on the end
+        let count =
+            bitmap.range_cardinality(start_running_count as u32..(end_running_count + 1) as u32);
 
-        Some(count)
+        Some(count as usize)
     }
 }
 
@@ -398,6 +391,16 @@ impl FileIndex {
         }
 
         false
+    }
+
+    pub fn count_bitmap_entries_in_range(
+        &self,
+        bitmap: &Bitmap,
+        start_time: u64,
+        end_time: u64,
+    ) -> Option<usize> {
+        self.histogram()
+            .count_bitmap_entries_in_range(bitmap, start_time, end_time)
     }
 
     /// Compresses the bincode serialized representation of the entries_index field using lz4.
