@@ -15,7 +15,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HistogramRequest {
     pub after: u64,
     pub before: u64,
@@ -64,7 +64,7 @@ impl HistogramRequest {
         VALID_DURATIONS
             .iter()
             .rev()
-            .find(|&&bucket_width| duration / (bucket_width.as_micros() as u64) >= 10)
+            .find(|&&bucket_width| duration / (bucket_width.as_micros() as u64) >= 100)
             .map(|d| d.as_micros())
             .unwrap_or(1) as u64
     }
@@ -188,9 +188,77 @@ impl FileIndexCache {
         let _ = self.indexing_tx.send(IndexingTask { files, fields });
     }
 
-    /// Try to get a file index if it exists
-    pub fn get(&self, file: &File) -> Option<FileIndex> {
-        self.cache.read().get(file).cloned()
+    // /// Try to get a file index if it exists
+    // pub fn resolve_partial_response(&self, partial_response: &mut BucketPartialResponse) {
+    //     for file in &partial_response.request_metadata.files {
+    //         if let Some(file_index) = self.cache.write().get_mut(file) {
+    //             // Add any missing unindexed fields to the bucket
+    //             for unindexed_field in file_index.fields() {
+    //                 if partial_response.unindexed_fields.contains(unindexed_field) {
+    //                     continue;
+    //                 }
+
+    //                 partial_response
+    //                     .unindexed_fields
+    //                     .insert(unindexed_field.clone());
+    //             }
+
+    //             let start_time = partial_response.request_metadata.request.start;
+    //             let end_time = partial_response.request_metadata.request.end;
+
+    //             for (indexed_field, bitmap) in file_index.bitmaps() {
+    //                 let count = file_index
+    //                     .count_bitmap_entries_in_range(bitmap, start_time, end_time)
+    //                     .unwrap_or(0);
+
+    //                 if let Some(total) = partial_response.indexed_fields.get_mut(indexed_field) {
+    //                     *total += count;
+    //                 } else {
+    //                     partial_response
+    //                         .indexed_fields
+    //                         .insert(indexed_field.clone(), count);
+    //                 }
+    //             }
+    //         };
+    //     }
+    // }
+
+    pub fn resolve_partial_response(&self, partial_response: &mut BucketPartialResponse) {
+        partial_response.request_metadata.files.retain(|file| {
+            if let Some(file_index) = self.cache.write().get_mut(file) {
+                // Add any missing unindexed fields to the bucket
+                for unindexed_field in file_index.fields() {
+                    if partial_response.unindexed_fields.contains(unindexed_field) {
+                        continue;
+                    }
+
+                    partial_response
+                        .unindexed_fields
+                        .insert(unindexed_field.clone());
+                }
+
+                let start_time = partial_response.request_metadata.request.start;
+                let end_time = partial_response.request_metadata.request.end;
+
+                for (indexed_field, bitmap) in file_index.bitmaps() {
+                    let count = file_index
+                        .count_bitmap_entries_in_range(bitmap, start_time, end_time)
+                        .unwrap_or(0);
+
+                    if let Some(total) = partial_response.indexed_fields.get_mut(indexed_field) {
+                        *total += count;
+                    } else {
+                        partial_response
+                            .indexed_fields
+                            .insert(indexed_field.clone(), count);
+                    }
+                }
+
+                false // Remove this file (it's been processed)
+            } else {
+                true // Keep this file (not found in cache)
+            }
+        });
     }
 }
 
@@ -246,33 +314,9 @@ impl IndexState {
                 .request_indexing(files, self.indexed_fields.clone());
         }
     }
-
-    pub fn resolve_buckets(
-        &mut self,
-        bucket_requests: &[BucketRequest],
-    ) -> Vec<BucketPartialResponse> {
-        // Request indexing of files covered by the bucket requests
-        self.index_buckets(bucket_requests);
-
-        // Now iterate each bucket and try to resolve it.
-        let bucket_responses: Vec<BucketPartialResponse> = Vec::new();
-        let mut bucket_files = Vec::new();
-        for bucket_request in bucket_requests {
-            let BucketRequest { start, end } = *bucket_request;
-
-            // Look up the files need to process this bucket request
-            bucket_files.clear();
-            self.registry
-                .find_files_in_range(start, end, &mut bucket_files);
-
-            println!("Received bucket request: {:?}", bucket_request);
-        }
-
-        bucket_responses
-    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct BucketRequest {
     pub start: u64,
     pub end: u64,
@@ -335,20 +379,73 @@ impl AppState {
     }
 
     pub fn histogram(&mut self, request: HistogramRequest) {
-        let bucket_requests = request.into_bucket_requests();
+        // Create any new partial requests
+        for bucket_request in request.into_bucket_requests().iter() {
+            if self.complete_responses.contains_key(bucket_request) {
+                eprintln!("Found complete response for request: {:?}", bucket_request);
+                continue;
+            }
 
-        let index_state = &mut self.index_state;
+            if self.partial_responses.contains_key(bucket_request) {
+                eprintln!("Found partial response for request: {:?}", bucket_request);
+                continue;
+            }
 
-        index_state.resolve_buckets(&bucket_requests);
+            let mut request_metadata = RequestMetadata {
+                request: *bucket_request,
+                files: Vec::new(),
+            };
 
-        let usec_per_sec = std::time::Duration::from_secs(1).as_micros() as u64;
-        for (idx, bucket_request) in bucket_requests.iter().enumerate() {
-            println!(
-                "[{}] Bucket[{}, +{})",
-                idx,
-                bucket_request.start / usec_per_sec,
-                (bucket_request.end - bucket_request.start) / usec_per_sec
+            self.index_state.registry.find_files_in_range(
+                bucket_request.start,
+                bucket_request.end,
+                &mut request_metadata.files,
             );
+
+            let partial_response = BucketPartialResponse {
+                request_metadata,
+                indexed_fields: HashMap::default(),
+                unindexed_fields: HashSet::default(),
+            };
+
+            self.partial_responses
+                .insert(*bucket_request, partial_response);
         }
+
+        // Collect all files needed to complete the partial responses, and
+        // send indexing request
+        let mut files = Vec::new();
+
+        for partial_response in self.partial_responses.values() {
+            files.extend_from_slice(&partial_response.request_metadata.files);
+        }
+
+        self.index_state
+            .cache
+            .request_indexing(files, self.index_state.indexed_fields.clone());
+
+        // Try to resolve/progress partial responses
+        for partial_response in self.partial_responses.values_mut() {
+            self.index_state
+                .cache
+                .resolve_partial_response(partial_response);
+        }
+
+        // Move completed partial responses to complete responses
+        self.partial_responses
+            .retain(|bucket_request, partial_response| {
+                if partial_response.request_metadata.files.is_empty() {
+                    // No more files to process - this response is complete
+                    let complete_response = BucketCompleteResponse {
+                        indexed_fields: partial_response.indexed_fields.clone(),
+                        unindexed_fields: partial_response.unindexed_fields.clone(),
+                    };
+                    self.complete_responses
+                        .insert(*bucket_request, complete_response);
+                    false // Remove from partial_responses
+                } else {
+                    true // Keep in partial_responses
+                }
+            });
     }
 }

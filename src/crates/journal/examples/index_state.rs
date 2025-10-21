@@ -70,15 +70,45 @@ fn main() {
     use chrono::Utc;
 
     let before = Utc::now();
-    let after = before - chrono::Duration::hours(1);
+    let after = before - chrono::Duration::weeks(52);
 
     let histogram_request = HistogramRequest {
         after: after.timestamp_micros() as u64,
         before: before.timestamp_micros() as u64,
     };
-    app_state.histogram(histogram_request);
 
-    let sleep_duration = std::time::Duration::from_secs(10);
-    println!("Waiting for {} seconds", sleep_duration.as_secs());
-    std::thread::sleep(sleep_duration);
+    let mut iteration = 0;
+    loop {
+        iteration += 1;
+        println!("\n========== Iteration {} ==========", iteration);
+
+        app_state.histogram(histogram_request.clone());
+
+        println!("\nPartial responses: {}", app_state.partial_responses.len());
+        for (bucket_request, partial_response) in &app_state.partial_responses {
+            println!(
+                "  Bucket[{}, +{}) - {} files remaining, {} indexed fields",
+                bucket_request.start,
+                bucket_request.end - bucket_request.start,
+                partial_response.request_metadata.files.len(),
+                partial_response.indexed_fields.len()
+            );
+        }
+
+        println!(
+            "\nComplete responses: {}",
+            app_state.complete_responses.len()
+        );
+        for (bucket_request, complete_response) in &app_state.complete_responses {
+            println!(
+                "  Bucket[{}, +{}) - {} indexed fields, {} unindexed fields",
+                bucket_request.start,
+                bucket_request.end - bucket_request.start,
+                complete_response.indexed_fields.len(),
+                complete_response.unindexed_fields.len()
+            );
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
