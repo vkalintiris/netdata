@@ -4,4 +4,4 @@ pub use file_index::{FileIndex, FileIndexer};
 pub mod bitmap;
 pub use bitmap::Bitmap;
 
-mod index_filter;
+mod filter_expr;
