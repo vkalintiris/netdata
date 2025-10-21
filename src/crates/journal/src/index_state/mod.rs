@@ -15,6 +15,85 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[derive(Debug)]
+pub struct HistogramRequest {
+    pub after: u64,
+    pub before: u64,
+}
+
+impl HistogramRequest {
+    fn calculate_bucket_duration(&self) -> u64 {
+        const MINUTE: Duration = Duration::from_secs(60);
+        const HOUR: Duration = Duration::from_secs(60 * MINUTE.as_secs());
+        const DAY: Duration = Duration::from_secs(24 * HOUR.as_secs());
+
+        const VALID_DURATIONS: &[Duration] = &[
+            // Seconds
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+            Duration::from_secs(15),
+            Duration::from_secs(30),
+            // Minutes
+            MINUTE,
+            Duration::from_secs(2 * MINUTE.as_secs()),
+            Duration::from_secs(3 * MINUTE.as_secs()),
+            Duration::from_secs(5 * MINUTE.as_secs()),
+            Duration::from_secs(10 * MINUTE.as_secs()),
+            Duration::from_secs(15 * MINUTE.as_secs()),
+            Duration::from_secs(30 * MINUTE.as_secs()),
+            // Hours
+            HOUR,
+            Duration::from_secs(2 * HOUR.as_secs()),
+            Duration::from_secs(6 * HOUR.as_secs()),
+            Duration::from_secs(8 * HOUR.as_secs()),
+            Duration::from_secs(12 * HOUR.as_secs()),
+            // Days
+            DAY,
+            Duration::from_secs(2 * DAY.as_secs()),
+            Duration::from_secs(3 * DAY.as_secs()),
+            Duration::from_secs(5 * DAY.as_secs()),
+            Duration::from_secs(7 * DAY.as_secs()),
+            Duration::from_secs(14 * DAY.as_secs()),
+            Duration::from_secs(30 * DAY.as_secs()),
+        ];
+
+        let duration = self.before - self.after;
+
+        VALID_DURATIONS
+            .iter()
+            .rev()
+            .find(|&&bucket_width| duration / (bucket_width.as_micros() as u64) >= 10)
+            .map(|d| d.as_micros())
+            .unwrap_or(1) as u64
+    }
+
+    pub fn into_bucket_requests(self) -> Vec<BucketRequest> {
+        let bucket_duration = self.calculate_bucket_duration();
+
+        // Buckets are aligned to their duration
+        let aligned_start = (self.after / bucket_duration) * bucket_duration;
+        let aligned_end = (self.before / bucket_duration + 1) * bucket_duration;
+
+        // Allocate our buckets
+        let num_buckets = ((aligned_end - aligned_start) / bucket_duration) as usize;
+        let mut buckets = Vec::with_capacity(num_buckets);
+
+        // Create our buckets
+        for bucket_index in 0..num_buckets {
+            let start = aligned_start + (bucket_index as u64 * bucket_duration);
+
+            buckets.push(BucketRequest {
+                start,
+                end: start + bucket_duration,
+            });
+        }
+
+        buckets
+    }
+}
+
 thread_local! {
     static FILE_INDEXER: RefCell<FileIndexer> = RefCell::new(FileIndexer::default());
 }
@@ -69,6 +148,8 @@ impl FileIndexCache {
                     if cache.read().contains_key(file) {
                         return None;
                     }
+
+                    eprintln!("Indexing {}", file.path());
 
                     // Create the file index
                     FILE_INDEXER.with(|indexer| {
@@ -129,8 +210,14 @@ impl IndexState {
     }
 
     fn index_buckets(&mut self, bucket_requests: &[BucketRequest]) {
-        // FIXME: make this a debug assert one verified
+        // Make sure buckets are sorted
         assert!(bucket_requests.is_sorted_by(|a, b| a.start < b.start));
+        // Make sure buckets have the same duration
+        assert!(
+            bucket_requests
+                .windows(2)
+                .all(|w| w[0].end - w[0].start == w[1].end - w[1].start)
+        );
 
         let Some(start) = bucket_requests.first().map(|br| br.start) else {
             return;
@@ -143,11 +230,18 @@ impl IndexState {
         let mut files = Vec::new();
         // Lookup the in-range files from the registry
         self.registry.find_files_in_range(start, end, &mut files);
+        println!("Number of files in histogram's range: {}", files.len());
 
         // Make sure our cache contains the file indexes we need
         if !files.is_empty() {
             files.sort();
             files.dedup();
+
+            println!("Sending indexing request for files:");
+            for (idx, file) in files.iter().enumerate() {
+                println!("[{}] {}", idx, file.path());
+            }
+
             self.cache
                 .request_indexing(files, self.indexed_fields.clone());
         }
@@ -171,7 +265,7 @@ impl IndexState {
             self.registry
                 .find_files_in_range(start, end, &mut bucket_files);
 
-            todo!()
+            println!("Received bucket request: {:?}", bucket_request);
         }
 
         bucket_responses
@@ -226,85 +320,6 @@ pub struct AppState {
     pub complete_responses: HashMap<BucketRequest, BucketCompleteResponse>,
 }
 
-#[derive(Debug)]
-pub struct HistogramRequest {
-    pub after: u64,
-    pub before: u64,
-}
-
-impl HistogramRequest {
-    fn calculate_bucket_duration(&self) -> u64 {
-        const MINUTE: Duration = Duration::from_secs(60);
-        const HOUR: Duration = Duration::from_secs(60 * MINUTE.as_secs());
-        const DAY: Duration = Duration::from_secs(24 * HOUR.as_secs());
-
-        const VALID_DURATIONS: &[Duration] = &[
-            // Seconds
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(5),
-            Duration::from_secs(10),
-            Duration::from_secs(15),
-            Duration::from_secs(30),
-            // Minutes
-            MINUTE,
-            Duration::from_secs(2 * MINUTE.as_secs()),
-            Duration::from_secs(3 * MINUTE.as_secs()),
-            Duration::from_secs(5 * MINUTE.as_secs()),
-            Duration::from_secs(10 * MINUTE.as_secs()),
-            Duration::from_secs(15 * MINUTE.as_secs()),
-            Duration::from_secs(30 * MINUTE.as_secs()),
-            // Hours
-            HOUR,
-            Duration::from_secs(2 * HOUR.as_secs()),
-            Duration::from_secs(6 * HOUR.as_secs()),
-            Duration::from_secs(8 * HOUR.as_secs()),
-            Duration::from_secs(12 * HOUR.as_secs()),
-            // Days
-            DAY,
-            Duration::from_secs(2 * DAY.as_secs()),
-            Duration::from_secs(3 * DAY.as_secs()),
-            Duration::from_secs(5 * DAY.as_secs()),
-            Duration::from_secs(7 * DAY.as_secs()),
-            Duration::from_secs(14 * DAY.as_secs()),
-            Duration::from_secs(30 * DAY.as_secs()),
-        ];
-
-        let duration = self.before - self.after;
-
-        VALID_DURATIONS
-            .iter()
-            .rev()
-            .find(|&&bucket_width| duration / bucket_width.as_secs() >= 10)
-            .map(|d| d.as_secs())
-            .unwrap_or(1)
-    }
-
-    pub fn into_bucket_requests(self) -> Vec<BucketRequest> {
-        let bucket_duration = self.calculate_bucket_duration();
-
-        // Buckets are aligned to their duration
-        let aligned_start = (self.after / bucket_duration) * bucket_duration;
-        let aligned_end = (self.before / bucket_duration + 1) * bucket_duration;
-
-        // Allocate our buckets
-        let num_buckets = ((aligned_end - aligned_start) / bucket_duration) as usize;
-        let mut buckets = Vec::with_capacity(num_buckets);
-
-        // Create our buckets
-        for bucket_index in 0..num_buckets {
-            let start = aligned_start + (bucket_index as u64 * bucket_duration);
-
-            buckets.push(BucketRequest {
-                start,
-                end: start + bucket_duration,
-            });
-        }
-
-        buckets
-    }
-}
-
 impl AppState {
     pub fn new(path: &str, indexed_fields: HashSet<String>) -> Result<Self> {
         let mut registry = Registry::new()?;
@@ -319,15 +334,20 @@ impl AppState {
         })
     }
 
-    pub fn histogram(&self, request: HistogramRequest) {
+    pub fn histogram(&mut self, request: HistogramRequest) {
         let bucket_requests = request.into_bucket_requests();
 
+        let index_state = &mut self.index_state;
+
+        index_state.resolve_buckets(&bucket_requests);
+
+        let usec_per_sec = std::time::Duration::from_secs(1).as_micros() as u64;
         for (idx, bucket_request) in bucket_requests.iter().enumerate() {
             println!(
                 "[{}] Bucket[{}, +{})",
                 idx,
-                bucket_request.start,
-                bucket_request.end - bucket_request.start
+                bucket_request.start / usec_per_sec,
+                (bucket_request.end - bucket_request.start) / usec_per_sec
             );
         }
     }

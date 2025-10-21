@@ -65,11 +65,20 @@ fn main() {
     println!("Hello there!");
 
     let indexed_fields = get_facets();
-    let app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
+    let mut app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
+
+    use chrono::Utc;
+
+    let before = Utc::now();
+    let after = before - chrono::Duration::hours(1);
 
     let histogram_request = HistogramRequest {
-        after: 1_000_000,
-        before: 1_000_000 + (60 * 15),
+        after: after.timestamp_micros() as u64,
+        before: before.timestamp_micros() as u64,
     };
     app_state.histogram(histogram_request);
+
+    let sleep_duration = std::time::Duration::from_secs(10);
+    println!("Waiting for {} seconds", sleep_duration.as_secs());
+    std::thread::sleep(sleep_duration);
 }
