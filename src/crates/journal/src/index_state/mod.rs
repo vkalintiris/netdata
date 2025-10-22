@@ -274,44 +274,6 @@ impl IndexState {
             indexed_fields,
         }
     }
-
-    fn index_buckets(&mut self, bucket_requests: &[BucketRequest]) {
-        // Make sure buckets are sorted
-        assert!(bucket_requests.is_sorted_by(|a, b| a.start < b.start));
-        // Make sure buckets have the same duration
-        assert!(
-            bucket_requests
-                .windows(2)
-                .all(|w| w[0].end - w[0].start == w[1].end - w[1].start)
-        );
-
-        let Some(start) = bucket_requests.first().map(|br| br.start) else {
-            return;
-        };
-        let Some(end) = bucket_requests.last().map(|br| br.end) else {
-            return;
-        };
-
-        // Collect all files that we need to lookup
-        let mut files = Vec::new();
-        // Lookup the in-range files from the registry
-        self.registry.find_files_in_range(start, end, &mut files);
-        println!("Number of files in histogram's range: {}", files.len());
-
-        // Make sure our cache contains the file indexes we need
-        if !files.is_empty() {
-            files.sort();
-            files.dedup();
-
-            println!("Sending indexing request for files:");
-            for (idx, file) in files.iter().enumerate() {
-                println!("[{}] {}", idx, file.path());
-            }
-
-            self.cache
-                .request_indexing(files, self.indexed_fields.clone());
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
