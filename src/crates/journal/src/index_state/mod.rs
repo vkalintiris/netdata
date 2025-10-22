@@ -71,7 +71,7 @@ impl HistogramRequest {
             .unwrap_or(1)
     }
 
-    pub fn into_bucket_requests(self) -> Vec<BucketRequest> {
+    pub fn into_bucket_requests(&self) -> Vec<BucketRequest> {
         let bucket_duration = self.calculate_bucket_duration();
 
         // Buckets are aligned to their duration
@@ -368,6 +368,11 @@ pub enum BucketResponse {
     Partial(BucketPartialResponse),
 }
 
+#[derive(Debug, Clone)]
+pub struct HistogramResult {
+    pub buckets: Vec<(BucketRequest, BucketResponse)>,
+}
+
 pub struct AppState {
     pub index_state: IndexState,
     pub partial_responses: FxHashMap<BucketRequest, BucketPartialResponse>,
@@ -388,7 +393,32 @@ impl AppState {
         })
     }
 
-    pub fn histogram(&mut self, request: HistogramRequest) {
+    pub fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResult {
+        // Process the histogram request to ensure buckets are computed/in-progress
+        self.process_histogram_request(&request);
+
+        // Generate the bucket requests for this histogram
+        let bucket_requests = request.into_bucket_requests();
+
+        // Collect the responses for each bucket
+        let mut buckets = Vec::with_capacity(bucket_requests.len());
+        for bucket_request in bucket_requests {
+            let response = if let Some(complete) = self.complete_responses.get(&bucket_request) {
+                BucketResponse::Complete(complete.clone())
+            } else if let Some(partial) = self.partial_responses.get(&bucket_request) {
+                BucketResponse::Partial(partial.clone())
+            } else {
+                // This shouldn't happen after process_histogram_request, but handle it gracefully
+                continue;
+            };
+
+            buckets.push((bucket_request, response));
+        }
+
+        HistogramResult { buckets }
+    }
+
+    fn process_histogram_request(&mut self, request: &HistogramRequest) {
         // Create any new partial requests
         for bucket_request in request.into_bucket_requests().iter() {
             if self.complete_responses.contains_key(bucket_request) {

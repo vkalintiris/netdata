@@ -105,11 +105,9 @@ fn main() {
     let mut iteration = 0;
     let loop_start = std::time::Instant::now();
     loop {
+        app_state.get_histogram(histogram_request.clone());
+
         iteration += 1;
-        println!("========== Iteration {} ==========", iteration);
-
-        app_state.histogram(histogram_request.clone());
-
         println!(
             "[Iteration {}] Elapsed: {}, Partial: {}, Complete: {}, Total: {}",
             iteration,
