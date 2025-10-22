@@ -81,12 +81,13 @@ fn main() {
     //     before: before.timestamp_micros() as u64,
     // };
 
-    let after = u64::from_str_radix("641202f93e665", 16).unwrap();
-    let before = u64::from_str_radix("6414242cf1eec", 16).unwrap();
+    const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
+    let after = u64::from_str_radix("641202f93e665", 16).unwrap() / USEC_PER_SEC;
+    let before = u64::from_str_radix("6414242cf1eec", 16).unwrap() / USEC_PER_SEC;
 
     // Convert to DateTime for verification
-    let after_dt = DateTime::from_timestamp_micros(after as i64).unwrap();
-    let before_dt = DateTime::from_timestamp_micros(before as i64).unwrap();
+    let after_dt = DateTime::from_timestamp_secs(after as i64).unwrap();
+    let before_dt = DateTime::from_timestamp_secs(before as i64).unwrap();
 
     println!("After: {}", after_dt);
     println!("Before: {}", before_dt);

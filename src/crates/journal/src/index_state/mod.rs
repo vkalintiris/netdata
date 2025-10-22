@@ -64,9 +64,9 @@ impl HistogramRequest {
         VALID_DURATIONS
             .iter()
             .rev()
-            .find(|&&bucket_width| duration / (bucket_width.as_micros() as u64) >= 100)
-            .map(|d| d.as_micros())
-            .unwrap_or(1) as u64
+            .find(|&&bucket_width| duration / bucket_width.as_secs() >= 100)
+            .map(|d| d.as_secs())
+            .unwrap_or(1)
     }
 
     pub fn into_bucket_requests(self) -> Vec<BucketRequest> {
@@ -342,12 +342,10 @@ impl AppState {
         // Create any new partial requests
         for bucket_request in request.into_bucket_requests().iter() {
             if self.complete_responses.contains_key(bucket_request) {
-                // eprintln!("Found complete response for request: {:?}", bucket_request);
                 continue;
             }
 
             if self.partial_responses.contains_key(bucket_request) {
-                // eprintln!("Found partial response for request: {:?}", bucket_request);
                 continue;
             }
 

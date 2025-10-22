@@ -394,6 +394,10 @@ impl Chain {
             return;
         }
 
+        const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
+        let start = start * USEC_PER_SEC;
+        let end = end * USEC_PER_SEC;
+
         let pos = self
             .files
             .partition_point(|f| match &f.inner.status {
