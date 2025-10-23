@@ -125,14 +125,6 @@ impl Default for FileIndexCache {
     }
 }
 
-impl Drop for FileIndexCache {
-    fn drop(&mut self) {
-        // Drop the sender to signal the worker thread to exit
-        // The worker will then print FILE_INDEXER memory stats before exiting
-        eprintln!("FileIndexCache dropping, worker thread will measure FILE_INDEXER memory...");
-    }
-}
-
 #[derive(Allocative)]
 struct IndexingTask {
     files: VecDeque<File>,
@@ -192,26 +184,6 @@ impl FileIndexCache {
                 );
             }
         }
-
-        // Channel closed, worker is shutting down - measure FILE_INDEXER memory
-        FILE_INDEXER.with(|indexer| {
-            use allocative::FlameGraphBuilder;
-            use allocative::size_of_unique_allocated_data;
-
-            let indexer = indexer.borrow();
-            let size = size_of_unique_allocated_data(&*indexer);
-            eprintln!(
-                "FILE_INDEXER memory on main indexing thread: {} bytes",
-                size
-            );
-
-            // Optionally generate flamegraph
-            let mut flamegraph = FlameGraphBuilder::default();
-            flamegraph.visit_root(&*indexer);
-            let fg_output = flamegraph.finish();
-            let fg_str = fg_output.flamegraph().write();
-            eprintln!("FILE_INDEXER flamegraph:\n{}", fg_str);
-        });
     }
 
     /// Request files to be indexed (non-blocking)
