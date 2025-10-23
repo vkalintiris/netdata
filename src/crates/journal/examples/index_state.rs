@@ -56,7 +56,7 @@ pub fn get_facets() -> FxHashSet<String> {
         b"__logs_sources",
     ];
 
-    let v: Vec<&[u8]> = vec![b"log.severity_number"];
+    // let v: Vec<&[u8]> = vec![b"log.severity_number"];
 
     let mut facets = FxHashSet::default();
     for e in v {
@@ -72,40 +72,46 @@ fn main() {
     let indexed_fields = get_facets();
     // let mut app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
 
-    let mut app_state = AppState::new("/home/vk/repos/tmp/flog", indexed_fields).unwrap();
+    let mut app_state =
+        AppState::new("/home/vk/repos/tmp/agent-events-journal", indexed_fields).unwrap();
 
     use chrono::{DateTime, Utc};
 
-    // let before = Utc::now();
-    // let after = before - chrono::Duration::weeks(52);
+    let before = Utc::now();
+    let after = before - chrono::Duration::weeks(52);
 
-    // let histogram_request = HistogramRequest {
-    //     after: after.timestamp_micros() as u64,
-    //     before: before.timestamp_micros() as u64,
-    // };
-
-    const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
-    let after = u64::from_str_radix("641202f93e665", 16).unwrap() / USEC_PER_SEC;
-    let before = u64::from_str_radix("6414242cf1eec", 16).unwrap() / USEC_PER_SEC;
-
-    // Convert to DateTime for verification
-    let after_dt = DateTime::from_timestamp_secs(after as i64).unwrap();
-    let before_dt = DateTime::from_timestamp_secs(before as i64).unwrap();
-
-    println!("After: {}", after_dt);
-    println!("Before: {}", before_dt);
-
-    let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
+    let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=3"));
     let histogram_request = HistogramRequest {
-        after,
-        before,
+        after: after.timestamp() as u64,
+        before: before.timestamp() as u64,
         filter_expr,
     };
+
+    if false {
+        const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
+        let after = u64::from_str_radix("641202f93e665", 16).unwrap() / USEC_PER_SEC;
+        let before = u64::from_str_radix("6414242cf1eec", 16).unwrap() / USEC_PER_SEC;
+
+        // Convert to DateTime for verification
+        let after_dt = DateTime::from_timestamp_secs(after as i64).unwrap();
+        let before_dt = DateTime::from_timestamp_secs(before as i64).unwrap();
+        println!("After: {}", after_dt);
+        println!("Before: {}", before_dt);
+
+        let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
+
+        let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
+        let histogram_request = HistogramRequest {
+            after,
+            before,
+            filter_expr,
+        };
+    }
 
     let mut iteration = 0;
     let loop_start = std::time::Instant::now();
     loop {
-        app_state.get_histogram(histogram_request.clone());
+        app_state.process_histogram_request(&histogram_request.clone());
 
         iteration += 1;
         println!(

@@ -418,7 +418,7 @@ impl AppState {
         HistogramResult { buckets }
     }
 
-    fn process_histogram_request(&mut self, request: &HistogramRequest) {
+    pub fn process_histogram_request(&mut self, request: &HistogramRequest) {
         // Create any new partial requests
         for bucket_request in request.into_bucket_requests().iter() {
             if self.complete_responses.contains_key(bucket_request) {
