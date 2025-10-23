@@ -227,14 +227,12 @@ impl FileIndexCache {
                     partial_response.request_metadata.files.remove(idx);
 
                     // Add any missing unindexed fields to the bucket
-                    for unindexed_field in file_index.fields() {
-                        if partial_response.unindexed_fields.contains(unindexed_field) {
+                    for field in file_index.fields() {
+                        if file_index.is_indexed(field) {
                             continue;
                         }
 
-                        partial_response
-                            .unindexed_fields
-                            .insert(unindexed_field.clone());
+                        partial_response.unindexed_fields.insert(field.clone());
                     }
 
                     let start_time = partial_response.request_metadata.request.start;
