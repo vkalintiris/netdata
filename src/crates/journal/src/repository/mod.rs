@@ -2,6 +2,7 @@ pub mod error;
 
 pub use crate::repository::error::{RepositoryError, Result};
 
+use allocative::Allocative;
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -9,10 +10,11 @@ use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
 pub enum Status {
     Active,
     Archived {
+        #[allocative(skip)]
         seqnum_id: Uuid,
         head_seqnum: u64,
         head_realtime: u64,
@@ -123,7 +125,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
 pub enum Source {
     System,
     User(u32),
@@ -155,21 +157,22 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
 pub struct Origin {
+    #[allocative(skip)]
     pub machine_id: Option<Uuid>,
     pub namespace: Option<String>,
     pub source: Source,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
 pub struct FileInner {
     pub path: String,
     pub origin: Origin,
     pub status: Status,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
 pub struct File {
     inner: Arc<FileInner>,
 }
@@ -326,7 +329,7 @@ impl PartialOrd for File {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Allocative)]
 pub struct Chain {
     // Invariant: the deque is always sorted:
     //  - any disposed files are at the beginning
@@ -481,12 +484,12 @@ impl Chain {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Allocative)]
 struct Directory {
     chains: FxHashMap<Origin, Chain>,
 }
 
-#[derive(Default)]
+#[derive(Default, Allocative)]
 pub struct Repository {
     // Maps a journal directory to the chains it contains
     directories: FxHashMap<String, Directory>,

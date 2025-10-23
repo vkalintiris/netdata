@@ -2,9 +2,10 @@
 
 use super::bitmap::Bitmap;
 use super::file_index::FileIndex;
+use allocative::Allocative;
 use std::hash::{Hash, Hasher};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Allocative)]
 pub enum FilterExpr<T> {
     None,
     Match(T),

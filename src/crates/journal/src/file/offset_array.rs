@@ -1,7 +1,8 @@
-use crate::file::JournalFile;
-use crate::error::{JournalError, Result};
-use std::num::{NonZeroU64, NonZeroUsize};
 use super::mmap::MemoryMap;
+use crate::error::{JournalError, Result};
+use crate::file::JournalFile;
+use allocative::Allocative;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -171,7 +172,7 @@ impl std::fmt::Debug for Node {
 }
 
 /// A linked list of offset arrays
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Allocative)]
 pub struct List {
     head_offset: NonZeroU64,
     total_items: NonZeroUsize,
@@ -323,7 +324,7 @@ impl List {
 }
 
 /// A cursor pointing to a specific position within an offset array chain
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Allocative)]
 pub struct Cursor {
     list: List,
     array_offset: NonZeroU64,
@@ -502,7 +503,7 @@ impl std::fmt::Debug for Cursor {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Allocative)]
 pub struct InlinedCursor {
     inlined_offset: NonZeroU64,
     cursor: Option<Cursor>,

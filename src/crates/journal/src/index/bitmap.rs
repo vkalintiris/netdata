@@ -1,7 +1,8 @@
+use allocative::Allocative;
 use roaring::{NonSortedIntegers, RoaringBitmap};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Allocative)]
 #[serde(transparent)]
 pub struct Bitmap(pub RoaringBitmap);
 

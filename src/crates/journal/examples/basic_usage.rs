@@ -3,7 +3,9 @@
 use journal::file::JournalFile;
 use journal::file::Mmap;
 use journal::index::{FileIndex, FileIndexer};
+use journal::repository::File;
 use rand::Rng;
+use std::collections::VecDeque;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -248,15 +250,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = journal::registry::Registry::new()?;
     info!("Journal registry initialized");
 
-    for dir in ["/var/log/journal/"] {
+    for dir in ["/home/vk/repos/tmp/agent-events-journal"] {
         match registry.watch_directory(dir) {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
         }
     }
 
-    let mut files = Vec::new();
+    let mut files = VecDeque::new();
     registry.find_files_in_range(0, u64::MAX, &mut files);
+    let mut files: Vec<File> = files.into();
     files.sort_by_key(|f| String::from(f.path()));
     files.reverse();
 
@@ -308,6 +311,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Building took: {:#?} msec", elapsed.as_millis());
     println!("GiB/sec: {:#?}", 9400.0 / elapsed.as_millis() as f64);
+
+    std::thread::sleep(std::time::Duration::from_secs(3600));
 
     Ok(())
 }

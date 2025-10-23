@@ -6,6 +6,7 @@ pub use crate::registry::error::RegistryError;
 
 use crate::registry::error::Result;
 use crate::repository::{File, Repository, scan_journal_files};
+use allocative::Allocative;
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 
@@ -15,10 +16,13 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 
+#[derive(Allocative)]
 pub struct Registry {
     repository: Repository,
     directories: FxHashSet<String>,
+    #[allocative(skip)]
     monitor: Monitor,
+    #[allocative(skip)]
     events: Vec<Event>,
 }
 

@@ -124,5 +124,11 @@ fn main() {
         );
 
         std::thread::sleep(std::time::Duration::from_secs(1));
+
+        if iteration == 10000 {
+            break;
+        }
     }
+
+    app_state.build_fg();
 }

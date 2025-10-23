@@ -1,6 +1,7 @@
 use super::Bitmap;
 use crate::error::{JournalError, Result};
 use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
+use allocative::Allocative;
 use bincode;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -43,24 +44,32 @@ fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> FxHashSet<String> {
 }
 
 /// A time-aligned bucket in the file histogram.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Allocative)]
 pub struct Bucket {
     /// Start time of this bucket
-    pub start_time: u64,
+    pub start_time: u32,
     /// Count of items in this bucket
-    pub count: usize,
+    pub count: u32,
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Allocative)]
 pub struct Histogram {
     /// The duration of each bucket
-    bucket_duration: u64,
+    pub bucket_duration: u64,
     /// Sparse vector containing only bucket boundaries where changes occur.
-    buckets: Vec<Bucket>,
+    pub buckets: Vec<Bucket>,
 }
 
 impl Histogram {
+    /// Calculate the total memory consumption in bytes
+    pub fn memory_size_bytes(&self) -> usize {
+        // Size of the struct itself on the stack
+        std::mem::size_of::<Self>()
+        // Size of the heap-allocated Vec buffer
+        + self.buckets.capacity() * std::mem::size_of::<Bucket>()
+    }
+
     pub fn from_timestamp_offset_pairs(
         bucket_duration: u64,
         timestamp_offset_pairs: &[(u64, NonZeroU64)],
@@ -68,6 +77,7 @@ impl Histogram {
         debug_assert!(timestamp_offset_pairs.is_sorted());
         debug_assert_ne!(bucket_duration, 0);
 
+        // let mut buckets = Vec::with_capacity(timestamp_offset_pairs.len());
         let mut buckets = Vec::new();
         let mut current_bucket = None;
 
@@ -89,8 +99,8 @@ impl Histogram {
                 Some(prev_bucket) if bucket > prev_bucket => {
                     // New bucket boundary - save the LAST index of the previous bucket
                     buckets.push(Bucket {
-                        start_time: prev_bucket,
-                        count: offset_index - 1,
+                        start_time: prev_bucket as u32,
+                        count: offset_index as u32 - 1,
                     });
                     current_bucket = Some(bucket);
                 }
@@ -101,8 +111,8 @@ impl Histogram {
         // Don't forget the last bucket!
         if let Some(last_bucket) = current_bucket {
             buckets.push(Bucket {
-                start_time: last_bucket,
-                count: timestamp_offset_pairs.len() - 1,
+                start_time: last_bucket as u32,
+                count: timestamp_offset_pairs.len() as u32 - 1,
             });
         }
 
@@ -146,14 +156,14 @@ impl Histogram {
 
     /// Get the start time of the histogram.
     pub fn start_time(&self) -> Option<u64> {
-        self.buckets.first().map(|bucket| bucket.start_time)
+        self.buckets.first().map(|bucket| bucket.start_time as u64)
     }
 
     /// Get the end time of the histogram.
     pub fn end_time(&self) -> Option<u64> {
         self.buckets
             .last()
-            .map(|bucket| bucket.start_time + self.bucket_duration)
+            .map(|bucket| bucket.start_time as u64 + self.bucket_duration)
     }
 
     /// Get the time range covered by the histogram.
@@ -179,7 +189,10 @@ impl Histogram {
 
     /// Get the total number of entries in the histogram.
     pub fn count(&self) -> usize {
-        self.buckets.last().map(|b| b.count + 1).unwrap_or(0)
+        self.buckets
+            .last()
+            .map(|b| b.count as usize + 1)
+            .unwrap_or(0)
     }
 
     /// Count the number of bitmap entries that fall within a time range.
@@ -237,7 +250,9 @@ impl Histogram {
 
         // Find the bucket indices for start and end times using binary search
         // partition_point returns the index of the first bucket with start_time >= start_time
-        let start_bucket_idx = self.buckets.partition_point(|b| b.start_time < start_time);
+        let start_bucket_idx = self
+            .buckets
+            .partition_point(|b| (b.start_time as u64) < start_time);
 
         // If start_bucket_idx is beyond all buckets, no matches possible
         if start_bucket_idx >= self.buckets.len() {
@@ -249,7 +264,7 @@ impl Histogram {
         // so we need to subtract 1 to get the last bucket before end_time
         let end_bucket_idx = self
             .buckets
-            .partition_point(|b| b.start_time < end_time)
+            .partition_point(|b| (b.start_time as u64) < end_time)
             .saturating_sub(1);
 
         // If start is after end, the range doesn't contain any buckets
@@ -269,8 +284,7 @@ impl Histogram {
         let end_running_count = self.buckets[end_bucket_idx].count;
 
         // Range is [start_running_count, end_running_count + 1) since range_cardinality is exclusive on the end
-        let count =
-            bitmap.range_cardinality(start_running_count as u32..(end_running_count + 1) as u32);
+        let count = bitmap.range_cardinality(start_running_count..(end_running_count + 1));
 
         Some(count as usize)
     }
@@ -311,7 +325,7 @@ impl std::fmt::Display for Histogram {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Allocative)]
 pub struct FileIndexInner {
     // The journal file's histogram
     pub histogram: Histogram,
@@ -323,7 +337,7 @@ pub struct FileIndexInner {
     pub bitmaps: FxHashMap<String, Bitmap>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct FileIndex {
     pub inner: Arc<FileIndexInner>,
 }
@@ -418,7 +432,7 @@ impl FileIndex {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Allocative)]
 pub struct FileIndexer {
     // Associates a source timestamp value with its inlined cursor
     source_timestamp_cursor_pairs: Vec<(u64, InlinedCursor)>,
@@ -443,6 +457,26 @@ pub struct FileIndexer {
 }
 
 impl FileIndexer {
+    pub fn capacity(&self) -> usize {
+        let mut size = 0;
+
+        size += self.source_timestamp_cursor_pairs.capacity()
+            * std::mem::size_of::<(u64, InlinedCursor)>();
+
+        size += self.entry_offsets.capacity() * std::mem::size_of::<NonZeroU64>();
+
+        size += self.source_timestamp_entry_offset_pairs.capacity()
+            * std::mem::size_of::<(u64, NonZeroU64)>();
+
+        size +=
+            self.realtime_entry_offset_pairs.capacity() * std::mem::size_of::<(u64, NonZeroU64)>();
+
+        size += self.entry_indices.capacity() * std::mem::size_of::<u32>();
+
+        size += self.entry_offset_index.capacity() * std::mem::size_of::<(NonZeroU64, u64)>();
+
+        size
+    }
     pub fn index(
         &mut self,
         journal_file: &JournalFile<Mmap>,

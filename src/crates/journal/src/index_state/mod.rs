@@ -6,6 +6,7 @@ use crate::index::{FileIndex, FileIndexer, FilterExpr};
 use crate::registry::Registry;
 use crate::repository::File;
 use crate::{JournalFile, file::Mmap};
+use allocative::Allocative;
 use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
@@ -16,7 +17,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct HistogramRequest {
     pub after: u64,
     pub before: u64,
@@ -124,6 +125,15 @@ impl Default for FileIndexCache {
     }
 }
 
+impl Drop for FileIndexCache {
+    fn drop(&mut self) {
+        // Drop the sender to signal the worker thread to exit
+        // The worker will then print FILE_INDEXER memory stats before exiting
+        eprintln!("FileIndexCache dropping, worker thread will measure FILE_INDEXER memory...");
+    }
+}
+
+#[derive(Allocative)]
 struct IndexingTask {
     files: VecDeque<File>,
     fields: FxHashSet<String>,
@@ -160,7 +170,7 @@ impl FileIndexCache {
                             JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
 
                         file_indexer
-                            .index(&journal_file, None, &field_names, 1)
+                            .index(&journal_file, None, &field_names, 3600)
                             .ok()
                             .map(|file_index| (file.clone(), file_index))
                     })
@@ -182,6 +192,26 @@ impl FileIndexCache {
                 );
             }
         }
+
+        // Channel closed, worker is shutting down - measure FILE_INDEXER memory
+        FILE_INDEXER.with(|indexer| {
+            use allocative::FlameGraphBuilder;
+            use allocative::size_of_unique_allocated_data;
+
+            let indexer = indexer.borrow();
+            let size = size_of_unique_allocated_data(&*indexer);
+            eprintln!(
+                "FILE_INDEXER memory on main indexing thread: {} bytes",
+                size
+            );
+
+            // Optionally generate flamegraph
+            let mut flamegraph = FlameGraphBuilder::default();
+            flamegraph.visit_root(&*indexer);
+            let fg_output = flamegraph.finish();
+            let fg_str = fg_output.flamegraph().write();
+            eprintln!("FILE_INDEXER flamegraph:\n{}", fg_str);
+        });
     }
 
     /// Request files to be indexed (non-blocking)
@@ -294,8 +324,10 @@ impl FileIndexCache {
     }
 }
 
+#[derive(Allocative)]
 pub struct IndexState {
     pub registry: Registry,
+    #[allocative(skip)]
     pub cache: FileIndexCache,
     pub indexed_fields: FxHashSet<String>,
 }
@@ -310,7 +342,7 @@ impl IndexState {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Allocative)]
 pub struct BucketRequest {
     pub start: u64,
     pub end: u64,
@@ -323,7 +355,7 @@ impl BucketRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct RequestMetadata {
     // The original request
     pub request: BucketRequest,
@@ -332,7 +364,7 @@ pub struct RequestMetadata {
     pub files: VecDeque<File>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Allocative)]
 pub enum Count {
     Unfiltered(usize),
     Filtered(usize),
@@ -347,7 +379,7 @@ impl std::ops::AddAssign<usize> for Count {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct BucketPartialResponse {
     // Used to incrementally progress request
     pub request_metadata: RequestMetadata,
@@ -356,23 +388,24 @@ pub struct BucketPartialResponse {
     pub unindexed_fields: FxHashSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct BucketCompleteResponse {
     pub indexed_fields: FxHashMap<String, Count>,
     pub unindexed_fields: FxHashSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub enum BucketResponse {
     Complete(BucketCompleteResponse),
     Partial(BucketPartialResponse),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Allocative)]
 pub struct HistogramResult {
     pub buckets: Vec<(BucketRequest, BucketResponse)>,
 }
 
+#[derive(Allocative)]
 pub struct AppState {
     pub index_state: IndexState,
     pub partial_responses: FxHashMap<BucketRequest, BucketPartialResponse>,
@@ -495,5 +528,50 @@ impl AppState {
                     true // Keep in partial_responses
                 }
             });
+    }
+
+    pub fn build_fg(&self) {
+        use allocative::FlameGraphBuilder;
+        use std::fmt::Write as _;
+
+        let mut output = String::new();
+
+        for (file, file_index) in self.index_state.cache.cache.read().iter() {
+            let mut flamegraph = FlameGraphBuilder::default();
+            flamegraph.visit_root(file_index);
+
+            let fg_output = flamegraph.finish();
+
+            let fg_str = fg_output.flamegraph().write();
+            for line in fg_str.lines() {
+                if !line.is_empty() {
+                    // Prepend the file path to each stack trace
+                    writeln!(output, "{};{}", file.path(), line).unwrap();
+                }
+            }
+        }
+
+        let mut flamegraph = FlameGraphBuilder::default();
+        flamegraph.visit_root(self);
+
+        let fg_output = flamegraph.finish();
+        let fg_str = fg_output.flamegraph().write();
+        writeln!(output, "{}", fg_str).unwrap();
+
+        std::fs::write("/home/vk/mo/flamegraph.fg", output).unwrap();
+
+        // Generate SVG using inferno
+        use std::process::Command;
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(r#"cat ~/mo/flamegraph.fg | inferno-flamegraph --title "Journal Cache Memory by File" --colors mem --countname "bytes" > ~/mo/flamegraph.svg"#)
+            .status()
+            .expect("Failed to execute inferno-flamegraph");
+
+        if status.success() {
+            println!("Flamegraph SVG generated at ~/mo/flamegraph.svg");
+        } else {
+            eprintln!("Failed to generate flamegraph SVG");
+        }
     }
 }
