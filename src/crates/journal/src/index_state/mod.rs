@@ -257,36 +257,36 @@ impl FileIndexCache {
                     for (indexed_field, bitmap) in file_index.bitmaps() {
                         // once for unfiltered count
                         {
-                            let count = file_index
+                            let unfiltered_count = file_index
                                 .count_bitmap_entries_in_range(bitmap, start_time, end_time)
                                 .unwrap_or(0);
 
-                            if let Some(total) =
+                            if let Some((unfiltered_total, _)) =
                                 partial_response.indexed_fields.get_mut(indexed_field)
                             {
-                                *total += count;
+                                *unfiltered_total += unfiltered_count;
                             } else {
                                 partial_response
                                     .indexed_fields
-                                    .insert(indexed_field.clone(), Count::Unfiltered(count));
+                                    .insert(indexed_field.clone(), (unfiltered_count, 0));
                             }
                         }
 
                         // once more for filtered count
                         if let Some(filter_bitmap) = &filter_bitmap {
                             let bitmap = bitmap & filter_bitmap;
-                            let count = file_index
+                            let filtered_count = file_index
                                 .count_bitmap_entries_in_range(&bitmap, start_time, end_time)
                                 .unwrap_or(0);
 
-                            if let Some(total) =
+                            if let Some((_, filtered_total)) =
                                 partial_response.indexed_fields.get_mut(indexed_field)
                             {
-                                *total += count;
+                                *filtered_total += filtered_count;
                             } else {
                                 partial_response
                                     .indexed_fields
-                                    .insert(indexed_field.clone(), Count::Filtered(count));
+                                    .insert(indexed_field.clone(), (0, filtered_count));
                             }
                         }
                     }
@@ -336,33 +336,33 @@ pub struct RequestMetadata {
     pub files: VecDeque<File>,
 }
 
-#[derive(Debug, Clone, Copy, Allocative)]
-pub enum Count {
-    Unfiltered(usize),
-    Filtered(usize),
-}
+// #[derive(Debug, Clone, Copy, Allocative)]
+// pub enum Count {
+//     Unfiltered(usize),
+//     Filtered(usize),
+// }
 
-impl std::ops::AddAssign<usize> for Count {
-    fn add_assign(&mut self, rhs: usize) {
-        match self {
-            Count::Unfiltered(val) => *val += rhs,
-            Count::Filtered(val) => *val += rhs,
-        }
-    }
-}
+// impl std::ops::AddAssign<usize> for Count {
+//     fn add_assign(&mut self, rhs: usize) {
+//         match self {
+//             Count::Unfiltered(val) => *val += rhs,
+//             Count::Filtered(val) => *val += rhs,
+//         }
+//     }
+// }
 
 #[derive(Debug, Clone, Allocative)]
 pub struct BucketPartialResponse {
     // Used to incrementally progress request
     pub request_metadata: RequestMetadata,
 
-    pub indexed_fields: FxHashMap<String, Count>,
+    pub indexed_fields: FxHashMap<String, (usize, usize)>,
     pub unindexed_fields: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone, Allocative)]
 pub struct BucketCompleteResponse {
-    pub indexed_fields: FxHashMap<String, Count>,
+    pub indexed_fields: FxHashMap<String, (usize, usize)>,
     pub unindexed_fields: FxHashSet<String>,
 }
 

@@ -80,7 +80,7 @@ fn main() {
     let before = Utc::now();
     let after = before - chrono::Duration::weeks(52);
 
-    let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=3"));
+    let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
     let histogram_request = HistogramRequest {
         after: after.timestamp() as u64,
         before: before.timestamp() as u64,
@@ -111,7 +111,7 @@ fn main() {
     let mut iteration = 0;
     let loop_start = std::time::Instant::now();
     loop {
-        app_state.process_histogram_request(&histogram_request.clone());
+        let histogram_result = app_state.get_histogram(histogram_request.clone());
 
         iteration += 1;
         println!(
@@ -125,10 +125,9 @@ fn main() {
 
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        if iteration == 10000 {
-            break;
+        if iteration == 10 {
+            println!("Histogram result: {:#?}", histogram_result);
+            std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
-
-    app_state.build_fg();
 }
