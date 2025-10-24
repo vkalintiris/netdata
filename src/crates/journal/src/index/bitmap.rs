@@ -1,8 +1,10 @@
+#[cfg(feature = "allocative")]
 use allocative::Allocative;
 use roaring::{NonSortedIntegers, RoaringBitmap};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Allocative)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 #[serde(transparent)]
 pub struct Bitmap(pub RoaringBitmap);
 

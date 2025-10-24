@@ -2,19 +2,20 @@ pub mod error;
 
 pub use crate::repository::error::{RepositoryError, Result};
 
+use crate::collections::{HashMap, HashSet, VecDeque};
+#[cfg(feature = "allocative")]
 use allocative::Allocative;
-use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
-use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub enum Status {
     Active,
     Archived {
-        #[allocative(skip)]
+        #[cfg_attr(feature = "allocative", allocative(skip))]
         seqnum_id: Uuid,
         head_seqnum: u64,
         head_realtime: u64,
@@ -125,7 +126,8 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub enum Source {
     System,
     User(u32),
@@ -157,22 +159,25 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Origin {
-    #[allocative(skip)]
+    #[cfg_attr(feature = "allocative", allocative(skip))]
     pub machine_id: Option<Uuid>,
     pub namespace: Option<String>,
     pub source: Source,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileInner {
     pub path: String,
     pub origin: Origin,
     pub status: Status,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Allocative)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct File {
     inner: Arc<FileInner>,
 }
@@ -329,7 +334,8 @@ impl PartialOrd for File {
     }
 }
 
-#[derive(Debug, Clone, Default, Allocative)]
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Chain {
     // Invariant: the deque is always sorted:
     //  - any disposed files are at the beginning
@@ -393,7 +399,7 @@ impl Chain {
     }
 
     /// Append files that overlap with the time range [start, end) to the provided vector.
-    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut VecDeque<File>) {
+    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut HashSet<File>) {
         if self.files.is_empty() || start >= end {
             return;
         }
@@ -452,7 +458,7 @@ impl Chain {
                     // Check if [head_realtime, tail_realtime) overlaps with [start, end)
                     // Overlap occurs when: head_realtime < end && tail_realtime > start
                     if *head_realtime < end && tail_realtime > start {
-                        files.push_back(file.clone());
+                        files.insert(file.clone());
                     }
 
                     // Remember this head_realtime for potential active file
@@ -468,7 +474,7 @@ impl Chain {
 
                     // Check overlap: active_head < end && active_tail > start
                     if head_realtime < end && tail_realtime > start {
-                        files.push_back(file.clone());
+                        files.insert(file.clone());
                     }
 
                     // There should only be one active file at the end
@@ -484,15 +490,17 @@ impl Chain {
     }
 }
 
-#[derive(Default, Debug, Allocative)]
+#[derive(Default, Debug)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 struct Directory {
-    chains: FxHashMap<Origin, Chain>,
+    chains: HashMap<Origin, Chain>,
 }
 
-#[derive(Default, Allocative)]
+#[derive(Default)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Repository {
     // Maps a journal directory to the chains it contains
-    directories: FxHashMap<String, Directory>,
+    directories: HashMap<String, Directory>,
 }
 
 impl Repository {
@@ -556,12 +564,16 @@ impl Repository {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut VecDeque<File>) {
+    pub fn find_files_in_range(&self, start: u64, end: u64) -> HashSet<File> {
+        let mut files = HashSet::default();
+
         for directory in self.directories.values() {
             for chain in directory.chains.values() {
-                chain.find_files_in_range(start, end, files);
+                chain.find_files_in_range(start, end, &mut files);
             }
         }
+
+        files
     }
 }
 
@@ -643,9 +655,9 @@ mod tests {
             files: VecDeque::new(),
         };
 
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(100, 200, &mut output);
-        assert!(output.is_empty());
+        let mut files = HashSet::default();
+        chain.find_files_in_range(100, 200, &mut files);
+        assert!(files.is_empty());
     }
 
     #[test]
@@ -663,13 +675,13 @@ mod tests {
             .files
             .push_back(create_archived_file(&origin, 200 * USEC_PER_SEC));
 
-        let mut output = VecDeque::new();
+        let mut files = HashSet::default();
         // Test with start >= end
-        chain.find_files_in_range(200, 200, &mut output);
-        assert!(output.is_empty());
+        chain.find_files_in_range(200, 200, &mut files);
+        assert!(files.is_empty());
 
-        chain.find_files_in_range(200, 100, &mut output);
-        assert!(output.is_empty());
+        chain.find_files_in_range(200, 100, &mut files);
+        assert!(files.is_empty());
     }
 
     #[test]
@@ -684,30 +696,30 @@ mod tests {
         chain.files.push_back(file.clone());
 
         // Test range that starts before and ends after the file
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(100, 200, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(100, 200, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file));
 
         // Test range that starts exactly at head_realtime
-        output.clear();
-        chain.find_files_in_range(150, 200, &mut output);
-        assert_eq!(output.len(), 1);
+        files.clear();
+        chain.find_files_in_range(150, 200, &mut files);
+        assert_eq!(files.len(), 1);
 
         // Test range that ends exactly at head_realtime (should not include)
-        output.clear();
-        chain.find_files_in_range(100, 150, &mut output);
-        assert!(output.is_empty());
+        files.clear();
+        chain.find_files_in_range(100, 150, &mut files);
+        assert!(files.is_empty());
 
         // Test range entirely before the file
-        output.clear();
-        chain.find_files_in_range(50, 100, &mut output);
-        assert!(output.is_empty());
+        files.clear();
+        chain.find_files_in_range(50, 100, &mut files);
+        assert!(files.is_empty());
 
         // Test range entirely after (single archived file extends to infinity)
-        output.clear();
-        chain.find_files_in_range(200, 300, &mut output);
-        assert_eq!(output.len(), 1);
+        files.clear();
+        chain.find_files_in_range(200, 300, &mut files);
+        assert_eq!(files.len(), 1);
     }
 
     #[test]
@@ -729,31 +741,31 @@ mod tests {
         chain.files.push_back(file4.clone());
 
         // Range [150, 350) should include files at 100, 200, and 300
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(150, 350, &mut output);
-        assert_eq!(output.len(), 3);
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
-        assert_eq!(output[2], file3);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(150, 350, &mut files);
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
+        assert!(files.contains(&file3));
 
         // Range [200, 300) should include only file at 200
-        output.clear();
-        chain.find_files_in_range(200, 300, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file2);
+        files.clear();
+        chain.find_files_in_range(200, 300, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file2));
 
         // Range [250, 350) should include files at 200 and 300
-        output.clear();
-        chain.find_files_in_range(250, 350, &mut output);
-        assert_eq!(output.len(), 2);
-        assert_eq!(output[0], file2);
-        assert_eq!(output[1], file3);
+        files.clear();
+        chain.find_files_in_range(250, 350, &mut files);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file2));
+        assert!(files.contains(&file3));
 
         // Range [450, 500) should include file at 400 (last file extends to infinity)
-        output.clear();
-        chain.find_files_in_range(450, 500, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file4);
+        files.clear();
+        chain.find_files_in_range(450, 500, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file4));
     }
 
     #[test]
@@ -837,11 +849,11 @@ mod tests {
         chain.files.push_back(file2.clone());
 
         // Disposed files should not appear in output
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(0, 300, &mut output);
-        assert_eq!(output.len(), 2);
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(0, 300, &mut files);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
     }
 
     #[test]
@@ -861,31 +873,31 @@ mod tests {
         chain.files.push_back(file3.clone());
 
         // Test exact boundaries
-        let mut output = VecDeque::new();
+        let mut files = HashSet::default();
 
         // Range [100, 200) should include only file at 100
-        chain.find_files_in_range(100, 200, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file1);
+        chain.find_files_in_range(100, 200, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file1));
 
         // Range [200, 300) should include only file at 200
-        output.clear();
-        chain.find_files_in_range(200, 300, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file2);
+        files.clear();
+        chain.find_files_in_range(200, 300, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file2));
 
         // Range [300, 400) should include only file at 300
-        output.clear();
-        chain.find_files_in_range(300, 400, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file3);
+        files.clear();
+        chain.find_files_in_range(300, 400, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file3));
 
         // Range [199, 201) should include files at 100 and 200
-        output.clear();
-        chain.find_files_in_range(199, 201, &mut output);
-        assert_eq!(output.len(), 2);
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
+        files.clear();
+        chain.find_files_in_range(199, 201, &mut files);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
     }
 
     #[test]
@@ -911,34 +923,33 @@ mod tests {
         chain.files.push_back(active.clone());
 
         // Range [1500, 3500) should include files at 1000, 2000, 3000
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(1500, 3500, &mut output);
-        assert_eq!(output.len(), 3);
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
-        assert_eq!(output[2], file3);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(1500, 3500, &mut files);
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
+        assert!(files.contains(&file3));
 
         // Range [4500, 5000) should include active file only
-        output.clear();
-        chain.find_files_in_range(4500, 5000, &mut output);
-        assert_eq!(output.len(), 2);
-        assert_eq!(output[0], file4);
-        assert_eq!(output[1], active);
+        files.clear();
+        chain.find_files_in_range(4500, 5000, &mut files);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file4));
 
         // Range [500, 1500) should include file at 1000
-        output.clear();
-        chain.find_files_in_range(500, 1500, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file1);
+        files.clear();
+        chain.find_files_in_range(500, 1500, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file1));
 
         // Range covering everything
-        output.clear();
-        chain.find_files_in_range(0, u64::MAX / USEC_PER_SEC, &mut output);
-        assert_eq!(output.len(), 5); // All except disposed
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
-        assert_eq!(output[2], file3);
-        assert_eq!(output[3], file4);
-        assert_eq!(output[4], active);
+        files.clear();
+        chain.find_files_in_range(0, u64::MAX / USEC_PER_SEC, &mut files);
+        assert_eq!(files.len(), 5); // All except disposed
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
+        assert!(files.contains(&file3));
+        assert!(files.contains(&file4));
+        assert!(files.contains(&active));
     }
 }

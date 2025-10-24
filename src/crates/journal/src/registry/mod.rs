@@ -4,11 +4,11 @@ pub(crate) mod monitor;
 
 pub use crate::registry::error::RegistryError;
 
+use crate::collections::HashSet;
 use crate::registry::error::Result;
 use crate::repository::{File, Repository, scan_journal_files};
+#[cfg(feature = "allocative")]
 use allocative::Allocative;
-use rustc_hash::FxHashSet;
-use std::collections::VecDeque;
 
 use monitor::Monitor;
 use notify::{
@@ -16,13 +16,13 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 
-#[derive(Allocative)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Registry {
     repository: Repository,
-    directories: FxHashSet<String>,
-    #[allocative(skip)]
+    directories: HashSet<String>,
+    #[cfg_attr(feature = "allocative", allocative(skip))]
     monitor: Monitor,
-    #[allocative(skip)]
+    #[cfg_attr(feature = "allocative", allocative(skip))]
     events: Vec<Event>,
 }
 
@@ -64,8 +64,8 @@ impl Registry {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut VecDeque<File>) {
-        self.repository.find_files_in_range(start, end, files);
+    pub fn find_files_in_range(&self, start: u64, end: u64) -> HashSet<File> {
+        self.repository.find_files_in_range(start, end)
     }
 
     pub fn process_events(&mut self) -> Result<()> {

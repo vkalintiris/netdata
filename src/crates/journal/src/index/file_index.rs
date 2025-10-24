@@ -1,9 +1,10 @@
 use super::Bitmap;
+use crate::collections::{HashMap, HashSet};
 use crate::error::{JournalError, Result};
 use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
+#[cfg(feature = "allocative")]
 use allocative::Allocative;
 use bincode;
-use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -27,8 +28,8 @@ fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result
     Ok(timestamp)
 }
 
-fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> FxHashSet<String> {
-    let mut fields = FxHashSet::default();
+fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+    let mut fields = HashSet::default();
 
     for value_guard in journal_file.fields() {
         let Ok(field) = value_guard else {
@@ -44,7 +45,8 @@ fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> FxHashSet<String> {
 }
 
 /// A time-aligned bucket in the file histogram.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Allocative)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Bucket {
     /// Start time of this bucket
     pub start_time: u32,
@@ -53,7 +55,8 @@ pub struct Bucket {
 }
 
 /// An index structure for efficiently generating time-based histograms from journal entries.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Allocative)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Histogram {
     /// The duration of each bucket
     pub bucket_duration: u64,
@@ -325,19 +328,21 @@ impl std::fmt::Display for Histogram {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Allocative)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileIndexInner {
     // The journal file's histogram
     pub histogram: Histogram,
 
     // Set of fields in the file
-    pub fields: FxHashSet<String>,
+    pub fields: HashSet<String>,
 
     // Bitmap for each indexed field
-    pub bitmaps: FxHashMap<String, Bitmap>,
+    pub bitmaps: HashMap<String, Bitmap>,
 }
 
-#[derive(Debug, Clone, Allocative)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileIndex {
     pub inner: Arc<FileIndexInner>,
 }
@@ -366,8 +371,8 @@ impl<'de> Deserialize<'de> for FileIndex {
 impl FileIndex {
     pub fn new(
         histogram: Histogram,
-        fields: FxHashSet<String>,
-        bitmaps: FxHashMap<String, Bitmap>,
+        fields: HashSet<String>,
+        bitmaps: HashMap<String, Bitmap>,
     ) -> Self {
         let inner = FileIndexInner {
             histogram,
@@ -378,15 +383,20 @@ impl FileIndex {
             inner: Arc::new(inner),
         }
     }
+
+    pub fn bucket_duration(&self) -> u64 {
+        self.inner.histogram.bucket_duration
+    }
+
     pub fn histogram(&self) -> &Histogram {
         &self.inner.histogram
     }
 
-    pub fn fields(&self) -> &FxHashSet<String> {
+    pub fn fields(&self) -> &HashSet<String> {
         &self.inner.fields
     }
 
-    pub fn bitmaps(&self) -> &FxHashMap<String, Bitmap> {
+    pub fn bitmaps(&self) -> &HashMap<String, Bitmap> {
         &self.inner.bitmaps
     }
 
@@ -432,7 +442,8 @@ impl FileIndex {
     }
 }
 
-#[derive(Debug, Default, Allocative)]
+#[derive(Debug, Default)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileIndexer {
     // Associates a source timestamp value with its inlined cursor
     source_timestamp_cursor_pairs: Vec<(u64, InlinedCursor)>,
@@ -453,7 +464,7 @@ pub struct FileIndexer {
 
     /// Maps entry offsets to an index of an implicitly defined time-ordered
     /// array of entries.
-    entry_offset_index: FxHashMap<NonZeroU64, u64>,
+    entry_offset_index: HashMap<NonZeroU64, u64>,
 }
 
 impl FileIndexer {
@@ -513,8 +524,8 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         field_names: &[&[u8]],
-    ) -> Result<FxHashMap<String, Bitmap>> {
-        let mut entries_index = FxHashMap::default();
+    ) -> Result<HashMap<String, Bitmap>> {
+        let mut entries_index = HashMap::default();
 
         for field_name in field_names {
             // Get the data object iterator for this field

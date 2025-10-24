@@ -1,10 +1,10 @@
 use crate::JournalFile;
+use crate::collections::HashMap;
 use crate::error::{JournalError, Result};
 use crate::file::Mmap;
 use crate::log::RetentionPolicy;
 use crate::repository;
 use crate::repository::File;
-use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -42,7 +42,7 @@ pub struct Chain {
     pub(crate) machine_id: Uuid,
 
     pub(crate) inner: repository::Chain,
-    pub(crate) file_sizes: FxHashMap<File, u64>,
+    pub(crate) file_sizes: HashMap<File, u64>,
     pub(crate) total_size: u64,
 }
 
@@ -62,7 +62,7 @@ impl Chain {
             path,
             machine_id,
             inner: repository::Chain::default(),
-            file_sizes: FxHashMap::default(),
+            file_sizes: HashMap::default(),
             total_size: 0,
         };
 

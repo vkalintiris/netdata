@@ -287,8 +287,6 @@ impl IndexFilter {
 mod tests {
     use super::*;
     use crate::index::{FileHistogram, FileIndex};
-    use roaring::RoaringBitmap;
-    use rustc_hash::FxHashMap;
 
     fn create_test_file_index() -> FileIndex {
         let mut entry_indices = FxHashMap::default();

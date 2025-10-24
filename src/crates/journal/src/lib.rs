@@ -29,6 +29,9 @@ extern crate static_assertions;
 // Core error types used throughout the crate
 pub mod error;
 
+// Internal collection type aliases (not re-exported)
+mod collections;
+
 // Low-level journal file format I/O
 pub mod file;
 

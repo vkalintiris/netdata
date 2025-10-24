@@ -6,10 +6,10 @@ use journal::registry::Registry;
 use journal::repository::File;
 use tracing::Instrument;
 
-use rustc_hash::FxHashSet;
+use std::collections::HashSet;
 use std::sync::Arc;
 
-pub fn get_facets() -> FxHashSet<String> {
+pub fn get_facets() -> HashSet<String> {
     let v: Vec<&[u8]> = vec![
         b"_HOSTNAME",
         b"PRIORITY",
@@ -58,7 +58,7 @@ pub fn get_facets() -> FxHashSet<String> {
 
     // let v: Vec<&[u8]> = vec![b"log.severity_number"];
 
-    let mut facets = FxHashSet::default();
+    let mut facets = HashSet::default();
     for e in v {
         facets.insert(String::from_utf8_lossy(e).into_owned());
     }
@@ -126,7 +126,10 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         if iteration == 10 {
-            println!("Histogram result: {:#?}", histogram_result);
+            // println!("Histogram result: {:#?}", histogram_result);
+            //
+            let available_histograms = histogram_result.available_histograms();
+            println!("{:#?}", available_histograms);
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
