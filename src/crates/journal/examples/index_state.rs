@@ -135,9 +135,12 @@ async fn main() {
             // println!("Histogram result: {:#?}", histogram_result);
             //
             let available_histograms = histogram_result.available_histograms();
-            println!("{:#?}", available_histograms);
+            // println!("{:#?}", available_histograms);
             app_state.print_indexing_stats();
-            std::thread::sleep(std::time::Duration::from_secs(3600));
+            std::thread::sleep(std::time::Duration::from_secs(1000));
+            break;
         }
     }
+
+    app_state.close().await.expect("Failed to close cache");
 }

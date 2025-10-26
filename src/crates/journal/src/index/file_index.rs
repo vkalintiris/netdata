@@ -495,13 +495,23 @@ impl FileIndexer {
         field_names: &[&[u8]],
         bucket_duration: u64,
     ) -> Result<FileIndex> {
-        let n_entries = journal_file.journal_header_ref().n_entries as _;
-        self.source_timestamp_cursor_pairs.reserve(n_entries);
-        self.source_timestamp_entry_offset_pairs.reserve(n_entries);
-        self.realtime_entry_offset_pairs.reserve(n_entries);
-        self.entry_indices.reserve(n_entries / 2);
-        self.entry_offsets.reserve(8);
-        self.entry_offset_index.reserve(n_entries);
+        if false {
+            let n_entries = journal_file.journal_header_ref().n_entries as _;
+            self.source_timestamp_cursor_pairs.reserve(n_entries);
+            self.source_timestamp_entry_offset_pairs.reserve(n_entries);
+            self.realtime_entry_offset_pairs.reserve(n_entries);
+            self.entry_indices.reserve(n_entries / 2);
+            self.entry_offsets.reserve(8);
+            self.entry_offset_index.reserve(n_entries);
+        } else {
+            // let n_entries = journal_file.journal_header_ref().n_entries as _;
+            self.source_timestamp_cursor_pairs = Vec::new();
+            self.source_timestamp_entry_offset_pairs = Vec::new();
+            self.realtime_entry_offset_pairs = Vec::new();
+            self.entry_indices = Vec::new();
+            self.entry_offsets = Vec::new();
+            self.entry_offset_index = HashMap::default();
+        }
 
         let fields = collect_file_fields(journal_file);
 
@@ -514,6 +524,17 @@ impl FileIndexer {
             histogram,
             bitmaps: entries,
         };
+
+        // println!("GVD {}", allocative::size_of_unique(&inner));
+        println!("FileIndexer: {}", allocative::size_of_unique(self));
+
+        // let n_entries = journal_file.journal_header_ref().n_entries as _;
+        self.source_timestamp_cursor_pairs = Vec::new();
+        self.source_timestamp_entry_offset_pairs = Vec::new();
+        self.realtime_entry_offset_pairs = Vec::new();
+        self.entry_indices = Vec::new();
+        self.entry_offsets = Vec::new();
+        self.entry_offset_index = HashMap::default();
 
         Ok(FileIndex {
             inner: Arc::new(inner),

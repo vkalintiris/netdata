@@ -75,14 +75,30 @@ pub struct IndexingStats {
     pub request_latency_p50_ms: Option<f64>,
     pub request_latency_p99_ms: Option<f64>,
     pub request_latency_max_ms: Option<f64>,
+
+    /// File index size percentiles in bytes (None if no samples)
+    pub file_index_size_mean_bytes: Option<f64>,
+    pub file_index_size_p90_bytes: Option<f64>,
+    pub file_index_size_p95_bytes: Option<f64>,
+    pub file_index_size_p99_bytes: Option<f64>,
+    pub file_index_size_max_bytes: Option<f64>,
+
+    /// Foyer cache statistics
+    pub foyer_memory_usage_bytes: usize,
+    pub foyer_memory_capacity_bytes: usize,
+    pub foyer_disk_write_bytes: usize,
+    pub foyer_disk_read_bytes: usize,
+    pub foyer_disk_write_ios: usize,
+    pub foyer_disk_read_ios: usize,
 }
 
 /// Internal metrics implementation with atomics and histograms (requires `indexing-stats` feature).
 #[cfg(feature = "indexing-stats")]
 struct IndexingMetrics {
-    // Histograms (in microseconds)
+    // Histograms (in microseconds for time, bytes for size)
     indexing_time_us: parking_lot::Mutex<Histogram<u64>>,
     request_latency_us: parking_lot::Mutex<Histogram<u64>>,
+    file_index_size_bytes: parking_lot::Mutex<Histogram<u64>>,
 
     // Counters
     try_send_succeeded: AtomicU64,
@@ -101,10 +117,14 @@ impl IndexingMetrics {
             parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
         let request_latency_us =
             parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
+        // Track up to 128 MiB file index sizes (134,217,728 bytes) with 3 significant digits
+        let file_index_size_bytes =
+            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 134_217_728, 3).unwrap());
 
         Self {
             indexing_time_us,
             request_latency_us,
+            file_index_size_bytes,
             try_send_succeeded: AtomicU64::new(0),
             try_send_failed: AtomicU64::new(0),
             dropped_age_timeout: AtomicU64::new(0),
@@ -127,6 +147,13 @@ impl IndexingMetrics {
         let micros = duration.as_micros() as u64;
         if let Some(mut hist) = self.request_latency_us.try_lock() {
             let _ = hist.record(micros);
+        }
+    }
+
+    /// Records the size of a file index in bytes.
+    pub fn record_file_index_size(&self, size_bytes: usize) {
+        if let Some(mut hist) = self.file_index_size_bytes.try_lock() {
+            let _ = hist.record(size_bytes as u64);
         }
     }
 
@@ -162,6 +189,28 @@ impl IndexingMetrics {
                 (None, None, None)
             };
 
+        let (
+            file_index_size_mean_bytes,
+            file_index_size_p90_bytes,
+            file_index_size_p95_bytes,
+            file_index_size_p99_bytes,
+            file_index_size_max_bytes,
+        ) = if let Some(hist) = self.file_index_size_bytes.try_lock() {
+            if hist.len() > 0 {
+                (
+                    Some(hist.mean()),
+                    Some(hist.value_at_quantile(0.90) as f64),
+                    Some(hist.value_at_quantile(0.95) as f64),
+                    Some(hist.value_at_quantile(0.99) as f64),
+                    Some(hist.max() as f64),
+                )
+            } else {
+                (None, None, None, None, None)
+            }
+        } else {
+            (None, None, None, None, None)
+        };
+
         IndexingStats {
             try_send_succeeded: self.try_send_succeeded.load(Ordering::Relaxed),
             try_send_failed: self.try_send_failed.load(Ordering::Relaxed),
@@ -175,6 +224,18 @@ impl IndexingMetrics {
             request_latency_p50_ms,
             request_latency_p99_ms,
             request_latency_max_ms,
+            file_index_size_mean_bytes,
+            file_index_size_p90_bytes,
+            file_index_size_p95_bytes,
+            file_index_size_p99_bytes,
+            file_index_size_max_bytes,
+            // Foyer stats will be added at IndexCache level
+            foyer_memory_usage_bytes: 0,
+            foyer_memory_capacity_bytes: 0,
+            foyer_disk_write_bytes: 0,
+            foyer_disk_read_bytes: 0,
+            foyer_disk_write_ios: 0,
+            foyer_disk_read_ios: 0,
         }
     }
 
@@ -203,6 +264,51 @@ impl IndexingMetrics {
             println!("  P50: {:.2}ms", stats.request_latency_p50_ms.unwrap());
             println!("  P99: {:.2}ms", stats.request_latency_p99_ms.unwrap());
             println!("  Max: {:.2}ms", stats.request_latency_max_ms.unwrap());
+        }
+
+        if stats.file_index_size_mean_bytes.is_some() {
+            println!("\nFile Index Size:");
+            println!(
+                "  Mean: {:.2} KB",
+                stats.file_index_size_mean_bytes.unwrap() / 1024.0
+            );
+            println!(
+                "  P90:  {:.2} KB",
+                stats.file_index_size_p90_bytes.unwrap() / 1024.0
+            );
+            println!(
+                "  P95:  {:.2} KB",
+                stats.file_index_size_p95_bytes.unwrap() / 1024.0
+            );
+            println!(
+                "  P99:  {:.2} KB",
+                stats.file_index_size_p99_bytes.unwrap() / 1024.0
+            );
+            println!(
+                "  Max:  {:.2} KB",
+                stats.file_index_size_max_bytes.unwrap() / 1024.0
+            );
+        }
+
+        println!("\nFoyer Cache:");
+        println!(
+            "  Memory usage:     {:.2} MB / {:.2} MB",
+            stats.foyer_memory_usage_bytes as f64 / (1024.0 * 1024.0),
+            stats.foyer_memory_capacity_bytes as f64 / (1024.0 * 1024.0)
+        );
+        if stats.foyer_disk_write_bytes > 0 || stats.foyer_disk_read_bytes > 0 {
+            println!(
+                "  Disk write:       {:.2} MB ({} IOs)",
+                stats.foyer_disk_write_bytes as f64 / (1024.0 * 1024.0),
+                stats.foyer_disk_write_ios
+            );
+            println!(
+                "  Disk read:        {:.2} MB ({} IOs)",
+                stats.foyer_disk_read_bytes as f64 / (1024.0 * 1024.0),
+                stats.foyer_disk_read_ios
+            );
+        } else {
+            println!("  Disk I/O:         Statistics not tracked yet");
         }
 
         println!();
@@ -246,7 +352,9 @@ impl IndexCache {
         memory_size: usize,
         disk_capacity: u64,
     ) -> crate::index_state::error::Result<Self> {
-        use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCacheBuilder};
+        use foyer::{
+            BlockEngineBuilder, Compression, DeviceBuilder, FsDeviceBuilder, HybridCacheBuilder,
+        };
 
         let cache_dir = cache_dir.as_ref();
 
@@ -259,12 +367,23 @@ impl IndexCache {
             .build()?;
 
         // Build hybrid cache with block-based storage
-        // Block size is set to 256KB - tune this based on typical FileIndex size
+
+        // Custom weighter that returns the serialized size of FileIndex in bytes
+        let weighter = |_key: &File, value: &FileIndex| -> usize {
+            // Use bincode to estimate the serialized size
+            bincode::serialize(value)
+                .map(|serialized| serialized.len())
+                .unwrap_or(1) // Fallback to weight=1 if serialization fails
+        };
+
         let file_indexes = HybridCacheBuilder::new()
             .with_name("journal-index-cache")
+            .with_policy(foyer::HybridCachePolicy::WriteOnInsertion)
             .memory(memory_size)
+            .with_weighter(weighter)
             .with_shards(16)
             .storage()
+            .with_compression(Compression::Zstd)
             .with_engine_config(BlockEngineBuilder::new(device).with_block_size(256 * 1024))
             .build()
             .await?;
@@ -332,13 +451,44 @@ impl IndexCache {
     /// Returns a snapshot of current indexing statistics.
     #[cfg(feature = "indexing-stats")]
     pub fn indexing_stats(&self) -> IndexingStats {
-        self.stats.snapshot()
+        let mut stats = self.stats.snapshot();
+
+        // Add foyer cache statistics
+        // usage/capacity return weighted sizes (bytes in our case, since we use a byte-based weighter)
+        stats.foyer_memory_usage_bytes = self.file_indexes.memory().usage();
+        stats.foyer_memory_capacity_bytes = self.file_indexes.memory().capacity();
+
+        // Only populate disk stats if running in hybrid mode
+        if self.file_indexes.is_hybrid() {
+            let foyer_stats = self.file_indexes.statistics();
+            stats.foyer_disk_write_bytes = foyer_stats.disk_write_bytes();
+            stats.foyer_disk_read_bytes = foyer_stats.disk_read_bytes();
+            stats.foyer_disk_write_ios = foyer_stats.disk_write_ios();
+            stats.foyer_disk_read_ios = foyer_stats.disk_read_ios();
+        }
+
+        stats
     }
 
     /// Prints indexing statistics to stdout.
     #[cfg(feature = "indexing-stats")]
     pub fn print_indexing_stats(&self) {
+        println!(
+            "\n[DEBUG] Cache mode: {}",
+            if self.file_indexes.is_hybrid() {
+                "Hybrid (memory + disk)"
+            } else {
+                "Memory only"
+            }
+        );
         self.stats.print_stats();
+    }
+
+    /// Gracefully closes the cache, ensuring all pending writes are flushed to disk.
+    /// Should be called during application shutdown.
+    pub async fn close(&self) -> crate::index_state::error::Result<()> {
+        self.file_indexes.close().await?;
+        Ok(())
     }
 
     /// Updates partial responses with data from cached file indexes.
@@ -416,9 +566,16 @@ impl IndexCache {
 
             // Update cache if indexing succeeded
             if let Some(file_index) = file_index {
-                cache.insert(task.file, file_index);
                 #[cfg(feature = "indexing-stats")]
-                stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
+                {
+                    // Record file index size (approximate using bincode serialization)
+                    if let Ok(serialized) = bincode::serialized_size(&file_index) {
+                        stats.record_file_index_size(serialized as usize);
+                    }
+                    stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
+                }
+
+                cache.insert(task.file, file_index);
             } else {
                 #[cfg(feature = "indexing-stats")]
                 stats.indexing_failed.fetch_add(1, Ordering::Relaxed);

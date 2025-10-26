@@ -21,6 +21,7 @@ uuid = { version = "1.0", features = ["v4", "rng", "serde"] }
 
 # File format dependencies
 ruzstd = "0.8"
+zstd = "0.13"
 siphasher = "1.0"
 twox-hash = { version = "2.1", default-features = false, features = ["std"] }
 rand = "0.9"

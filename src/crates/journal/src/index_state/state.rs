@@ -45,8 +45,8 @@ impl AppState {
             indexed_fields,
             runtime_handle,
             "/home/vk/repos/tmp/foyer-storage",
-            4 * 1024 * 1024, // 1GB memory
             16 * 1024 * 1024,
+            128 * 1024 * 1024,
         )
         .await
     }
@@ -253,6 +253,13 @@ impl AppState {
     #[cfg(feature = "indexing-stats")]
     pub fn print_indexing_stats(&self) {
         self.cache.print_indexing_stats();
+    }
+
+    /// Gracefully closes the state, ensuring all pending cache writes are flushed to disk.
+    /// Should be called during application shutdown.
+    pub async fn close(&self) -> Result<()> {
+        self.cache.close().await?;
+        Ok(())
     }
 
     #[cfg(feature = "allocative")]
