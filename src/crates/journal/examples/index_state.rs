@@ -66,14 +66,20 @@ pub fn get_facets() -> HashSet<String> {
     facets
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Hello there!");
 
     let indexed_fields = get_facets();
-    // let mut app_state = AppState::new("/var/log/journal", indexed_fields).unwrap();
+    // let mut app_state = AppState::new("/var/log/journal", indexed_fields, tokio::runtime::Handle::current()).await.unwrap();
 
-    let mut app_state =
-        AppState::new("/home/vk/repos/tmp/agent-events-journal", indexed_fields).unwrap();
+    let mut app_state = AppState::new(
+        "/home/vk/repos/tmp/agent-events-journal",
+        indexed_fields,
+        tokio::runtime::Handle::current(),
+    )
+    .await
+    .unwrap();
 
     use chrono::{DateTime, Utc};
 
@@ -111,7 +117,7 @@ fn main() {
     let mut iteration = 0;
     let loop_start = std::time::Instant::now();
     loop {
-        let histogram_result = app_state.get_histogram(histogram_request.clone());
+        let histogram_result = app_state.get_histogram(histogram_request.clone()).await;
 
         iteration += 1;
         println!(
@@ -125,7 +131,7 @@ fn main() {
 
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        if iteration == 10 {
+        if iteration == 15 {
             // println!("Histogram result: {:#?}", histogram_result);
             //
             let available_histograms = histogram_result.available_histograms();

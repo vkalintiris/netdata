@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub enum Status {
     Active,
@@ -126,7 +126,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub enum Source {
     System,
@@ -159,7 +159,7 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Origin {
     #[cfg_attr(feature = "allocative", allocative(skip))]
@@ -168,7 +168,7 @@ pub struct Origin {
     pub source: Source,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileInner {
     pub path: String,
@@ -180,6 +180,27 @@ pub struct FileInner {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct File {
     inner: Arc<FileInner>,
+}
+
+impl serde::Serialize for File {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.inner.as_ref().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for File {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let inner = FileInner::deserialize(deserializer)?;
+        Ok(File {
+            inner: Arc::new(inner),
+        })
+    }
 }
 
 impl File {

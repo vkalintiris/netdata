@@ -29,7 +29,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(path: &str, indexed_fields: std::collections::HashSet<String>) -> Result<Self> {
+    pub async fn new(
+        path: &str,
+        indexed_fields: std::collections::HashSet<String>,
+        runtime_handle: tokio::runtime::Handle,
+    ) -> Result<Self> {
         let mut registry = Registry::new()?;
         registry.watch_directory(path)?;
 
@@ -38,7 +42,7 @@ impl AppState {
         Ok(Self {
             registry,
             indexed_fields: indexed_fields.into_iter().collect(),
-            cache: IndexCache::default(),
+            cache: IndexCache::new(runtime_handle).await,
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })
@@ -86,11 +90,11 @@ impl AppState {
 
             // Use try_send to avoid blocking if queue is full
             // Ignore full queue errors - newer requests will arrive soon
-            let _ = self.cache.send_request(indexing_request);
+            let _ = self.cache.try_send_request(indexing_request);
         }
     }
 
-    pub fn process_histogram_request(&mut self, request: &HistogramRequest) {
+    pub async fn process_histogram_request(&mut self, request: &HistogramRequest) {
         // Create any partial responses we don't already have
         let bucket_requests = request.bucket_requests();
         assert!(!bucket_requests.is_empty());
@@ -105,16 +109,17 @@ impl AppState {
 
         // Progress partial responses
         self.cache
-            .resolve_partial_responses(&mut self.partial_responses, pending_files);
+            .resolve_partial_responses(&mut self.partial_responses, pending_files)
+            .await;
 
         // Promote those that have been completed from partial to complete
         // responses
         self.promote_partial_responses();
     }
 
-    pub fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResult {
+    pub async fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResult {
         // Process the histogram request to ensure buckets are computed/in-progress
-        self.process_histogram_request(&request);
+        self.process_histogram_request(&request).await;
 
         // Generate the bucket requests for this histogram
         let bucket_requests = request.bucket_requests();
@@ -140,10 +145,10 @@ impl AppState {
 
     /// Creates responses for bucket requests that we don't have in our caches
     fn create_partial_responses(&mut self, bucket_requests: &[BucketRequest]) {
-        // NOTE: we use `get()` instead of `peek()` when looking up responses
-        // in the LRU caches, so that the will be promoted to the head of the
-        // LRU list. This ensures that any newly-created responses will not
-        // evict any responses we've queried.
+        // NOTE: we use `get()`, instead of `peek()`, when looking up responses
+        // in the LRU caches, to promote them to the head of the LRU list.
+        // This ensures that any newly-created responses will not evict any
+        // responses we've queried.
         for bucket_request in bucket_requests {
             // Ignore if we have the request in the cache of complete responses
             if self.complete_responses.get(bucket_request).is_some() {
@@ -223,20 +228,11 @@ impl AppState {
 
         let mut output = String::new();
 
-        for (file, file_index) in self.cache.file_indexes.read().iter() {
-            let mut flamegraph = FlameGraphBuilder::default();
-            flamegraph.visit_root(file_index);
+        // NOTE: Iteration over foyer::HybridCache is not supported.
+        // This functionality needs to be redesigned if needed.
+        // The per-file flamegraph generation has been disabled.
 
-            let fg_output = flamegraph.finish();
-
-            let fg_str = fg_output.flamegraph().write();
-            for line in fg_str.lines() {
-                if !line.is_empty() {
-                    // Prepend the file path to each stack trace
-                    writeln!(output, "{};{}", file.path(), line).unwrap();
-                }
-            }
-        }
+        // TODO: Consider tracking files separately if per-file flamegraphs are needed
 
         let mut flamegraph = FlameGraphBuilder::default();
         flamegraph.visit_root(self);

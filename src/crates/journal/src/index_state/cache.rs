@@ -29,7 +29,7 @@
 //! failed sends), age-based drops, cache hit rates, and latency percentiles for both queue wait
 //! time and indexing duration. These metrics help tune the channel size and timeout parameters.
 
-use crate::collections::{HashMap, HashSet};
+use crate::collections::HashSet;
 use crate::index::{FileIndex, FileIndexer};
 use crate::index_state::request::BucketRequest;
 use crate::index_state::response::BucketPartialResponse;
@@ -38,7 +38,6 @@ use crate::{JournalFile, file::Mmap};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use lru::LruCache;
-use parking_lot::RwLock;
 use std::cell::RefCell;
 use std::sync::{
     Arc,
@@ -223,16 +222,28 @@ pub struct IndexingRequest {
 
 /// Cache for file indexes with a background worker pool for concurrent indexing.
 pub struct IndexCache {
-    pub file_indexes: Arc<RwLock<HashMap<File, FileIndex>>>,
+    pub file_indexes: foyer::HybridCache<File, FileIndex>,
     pub indexing_tx: SyncSender<IndexingRequest>,
 
     #[cfg(feature = "indexing-stats")]
     stats: Arc<IndexingMetrics>,
 }
 
-impl Default for IndexCache {
-    fn default() -> Self {
-        let file_indexes = Arc::new(RwLock::new(HashMap::default()));
+impl IndexCache {
+    pub async fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+        // Build the hybrid cache with memory + disk
+        // Use 1GB memory cache and 10GB disk cache
+        let cache_dir = std::env::temp_dir().join("journal-cache");
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+
+        let file_indexes = foyer::HybridCacheBuilder::new()
+            .memory(1024 * 1024 * 1024) // 1GB memory
+            .with_shards(16) // Number of shards for concurrency
+            .storage()
+            .build()
+            .await
+            .expect("Failed to build hybrid cache");
+
         let (tx, rx) = sync_channel(100);
 
         #[cfg(feature = "indexing-stats")]
@@ -241,8 +252,9 @@ impl Default for IndexCache {
         // Spawn 24 background indexing threads
         let rx = Arc::new(std::sync::Mutex::new(rx));
         for _ in 0..24 {
-            let cache_clone = Arc::clone(&file_indexes);
+            let cache_clone = file_indexes.clone();
             let rx_clone = Arc::clone(&rx);
+            let handle_clone = runtime_handle.clone();
             #[cfg(feature = "indexing-stats")]
             let stats_clone = Arc::clone(&stats);
 
@@ -250,6 +262,7 @@ impl Default for IndexCache {
                 Self::indexing_worker(
                     rx_clone,
                     cache_clone,
+                    handle_clone,
                     #[cfg(feature = "indexing-stats")]
                     stats_clone,
                 );
@@ -268,7 +281,7 @@ impl Default for IndexCache {
 impl IndexCache {
     /// Attempts to queue an indexing request. Returns `false` if the channel is full,
     /// in which case the request is dropped.
-    pub fn send_request(&self, request: IndexingRequest) -> bool {
+    pub fn try_send_request(&self, request: IndexingRequest) -> bool {
         match self.indexing_tx.try_send(request) {
             Ok(_) => {
                 #[cfg(feature = "indexing-stats")]
@@ -304,15 +317,14 @@ impl IndexCache {
     }
 
     /// Updates partial responses with data from cached file indexes.
-    pub fn resolve_partial_responses(
+    pub async fn resolve_partial_responses(
         &self,
         partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
         pending_files: HashSet<File>,
     ) {
-        let cache = self.file_indexes.read();
-
         for file in pending_files {
-            if let Some(file_index) = cache.get(&file) {
+            if let Ok(Some(entry)) = self.file_indexes.get(&file).await {
+                let file_index = entry.value();
                 for (_bucket_request, partial_response) in partial_responses.iter_mut() {
                     partial_response.update(&file, file_index);
                 }
@@ -322,7 +334,8 @@ impl IndexCache {
 
     fn indexing_worker(
         rx: Arc<std::sync::Mutex<Receiver<IndexingRequest>>>,
-        cache: Arc<RwLock<HashMap<File, FileIndex>>>,
+        cache: foyer::HybridCache<File, FileIndex>,
+        runtime_handle: tokio::runtime::Handle,
         #[cfg(feature = "indexing-stats")] stats: Arc<IndexingMetrics>,
     ) {
         loop {
@@ -348,8 +361,8 @@ impl IndexCache {
 
             // Skip indexing if cache already contains this file with sufficient granularity
             // (cached duration <= requested duration means cached is more granular or equal)
-            if let Some(cached_index) = cache.read().get(&task.file) {
-                if cached_index.bucket_duration() <= task.bucket_duration {
+            if let Ok(Some(cached_entry)) = runtime_handle.block_on(cache.get(&task.file)) {
+                if cached_entry.value().bucket_duration() <= task.bucket_duration {
                     #[cfg(feature = "indexing-stats")]
                     stats.skipped_already_cached.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -378,7 +391,7 @@ impl IndexCache {
 
             // Update cache if indexing succeeded
             if let Some(file_index) = file_index {
-                cache.write().insert(task.file, file_index);
+                cache.insert(task.file, file_index);
                 #[cfg(feature = "indexing-stats")]
                 stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
             } else {
