@@ -1,3 +1,34 @@
+//! File index cache with background indexing workers.
+//!
+//! This module implements a concurrent file indexing system for UI dashboards that continuously
+//! poll for histogram data. Requests are decomposed into individual file indexing tasks and
+//! distributed to a pool of Y worker threads through a bounded channel of size X.
+//!
+//! # Request Flow and Prioritization
+//!
+//! When indexing requests arrive via `send_request`, they are pushed to the bounded channel using
+//! `try_send`. If the channel is full, the request is silently dropped. This is by design: the
+//! UI polls continuously (typically every second), so dropped requests will be resubmitted shortly.
+//! This behavior creates implicit prioritization where newer requests naturally take precedence
+//! during periods of high load.
+//!
+//! Each request carries a timestamp. Workers check this timestamp before processing and drop
+//! requests older than Z seconds. This age-based filtering works together with the bounded channel
+//! to ensure workers focus on recent requests. When a user switches from a long time range to a
+//! short one mid-indexing, old requests either fail to queue or age out, allowing the new requests
+//! to be processed quickly.
+//!
+//! Before indexing a file, workers check if the cache already contains an index with equal or
+//! finer granularity. Only cache misses or requests for finer granularity proceed to actual
+//! indexing. Workers use thread-local `FileIndexer` instances to avoid contention, and completed
+//! indexes are stored in a shared cache protected by an RwLock.
+//!
+//! # Statistics
+//!
+//! When built with the `indexing-stats` feature, the cache tracks queue pressure (successful vs
+//! failed sends), age-based drops, cache hit rates, and latency percentiles for both queue wait
+//! time and indexing duration. These metrics help tune the channel size and timeout parameters.
+
 use crate::collections::{HashMap, HashSet};
 use crate::index::{FileIndex, FileIndexer};
 use crate::index_state::request::BucketRequest;
@@ -6,133 +37,353 @@ use crate::repository::File;
 use crate::{JournalFile, file::Mmap};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
+use lru::LruCache;
 use parking_lot::RwLock;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::{
     Arc,
-    mpsc::{Receiver, Sender, channel},
+    mpsc::{Receiver, SyncSender, sync_channel},
 };
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "indexing-stats")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "indexing-stats")]
+use hdrhistogram::Histogram;
 
 thread_local! {
     static FILE_INDEXER: RefCell<FileIndexer> = RefCell::new(FileIndexer::default());
 }
 
-/// Request to index a file with a specific bucket duration
+/// User-facing statistics snapshot (requires `indexing-stats` feature).
+#[cfg(feature = "indexing-stats")]
+#[derive(Debug, Clone)]
+pub struct IndexingStats {
+    pub try_send_succeeded: u64,
+    pub try_send_failed: u64,
+    pub dropped_age_timeout: u64,
+    pub skipped_already_cached: u64,
+    pub indexed_successfully: u64,
+    pub indexing_failed: u64,
+
+    /// Indexing time percentiles in milliseconds (None if no samples)
+    pub indexing_time_p50_ms: Option<f64>,
+    pub indexing_time_p99_ms: Option<f64>,
+    pub indexing_time_max_ms: Option<f64>,
+
+    /// Request latency percentiles in milliseconds (None if no samples)
+    pub request_latency_p50_ms: Option<f64>,
+    pub request_latency_p99_ms: Option<f64>,
+    pub request_latency_max_ms: Option<f64>,
+}
+
+/// Internal metrics implementation with atomics and histograms (requires `indexing-stats` feature).
+#[cfg(feature = "indexing-stats")]
+struct IndexingMetrics {
+    // Histograms (in microseconds)
+    indexing_time_us: parking_lot::Mutex<Histogram<u64>>,
+    request_latency_us: parking_lot::Mutex<Histogram<u64>>,
+
+    // Counters
+    try_send_succeeded: AtomicU64,
+    try_send_failed: AtomicU64,
+    dropped_age_timeout: AtomicU64,
+    skipped_already_cached: AtomicU64,
+    indexed_successfully: AtomicU64,
+    indexing_failed: AtomicU64,
+}
+
+#[cfg(feature = "indexing-stats")]
+impl IndexingMetrics {
+    fn new() -> Self {
+        // Track up to 60 seconds (60,000,000 microseconds) with 3 significant digits
+        let indexing_time_us =
+            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
+        let request_latency_us =
+            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
+
+        Self {
+            indexing_time_us,
+            request_latency_us,
+            try_send_succeeded: AtomicU64::new(0),
+            try_send_failed: AtomicU64::new(0),
+            dropped_age_timeout: AtomicU64::new(0),
+            skipped_already_cached: AtomicU64::new(0),
+            indexed_successfully: AtomicU64::new(0),
+            indexing_failed: AtomicU64::new(0),
+        }
+    }
+
+    /// Records the time spent indexing a single file.
+    pub fn record_indexing_time(&self, duration: Duration) {
+        let micros = duration.as_micros() as u64;
+        if let Some(mut hist) = self.indexing_time_us.try_lock() {
+            let _ = hist.record(micros);
+        }
+    }
+
+    /// Records the time a request spent waiting in the queue before processing.
+    fn record_request_latency(&self, duration: Duration) {
+        let micros = duration.as_micros() as u64;
+        if let Some(mut hist) = self.request_latency_us.try_lock() {
+            let _ = hist.record(micros);
+        }
+    }
+
+    /// Creates a snapshot of current statistics with plain values.
+    pub fn snapshot(&self) -> IndexingStats {
+        let (indexing_time_p50_ms, indexing_time_p99_ms, indexing_time_max_ms) =
+            if let Some(hist) = self.indexing_time_us.try_lock() {
+                if hist.len() > 0 {
+                    (
+                        Some(hist.value_at_quantile(0.50) as f64 / 1000.0),
+                        Some(hist.value_at_quantile(0.99) as f64 / 1000.0),
+                        Some(hist.max() as f64 / 1000.0),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            };
+
+        let (request_latency_p50_ms, request_latency_p99_ms, request_latency_max_ms) =
+            if let Some(hist) = self.request_latency_us.try_lock() {
+                if hist.len() > 0 {
+                    (
+                        Some(hist.value_at_quantile(0.50) as f64 / 1000.0),
+                        Some(hist.value_at_quantile(0.99) as f64 / 1000.0),
+                        Some(hist.max() as f64 / 1000.0),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            };
+
+        IndexingStats {
+            try_send_succeeded: self.try_send_succeeded.load(Ordering::Relaxed),
+            try_send_failed: self.try_send_failed.load(Ordering::Relaxed),
+            dropped_age_timeout: self.dropped_age_timeout.load(Ordering::Relaxed),
+            skipped_already_cached: self.skipped_already_cached.load(Ordering::Relaxed),
+            indexed_successfully: self.indexed_successfully.load(Ordering::Relaxed),
+            indexing_failed: self.indexing_failed.load(Ordering::Relaxed),
+            indexing_time_p50_ms,
+            indexing_time_p99_ms,
+            indexing_time_max_ms,
+            request_latency_p50_ms,
+            request_latency_p99_ms,
+            request_latency_max_ms,
+        }
+    }
+
+    /// Prints all collected statistics to stdout.
+    fn print_stats(&self) {
+        let stats = self.snapshot();
+
+        println!("\n=== Indexing Statistics ===");
+        println!("\nCounters:");
+        println!("  try_send succeeded:    {}", stats.try_send_succeeded);
+        println!("  try_send failed:       {}", stats.try_send_failed);
+        println!("  dropped (age timeout): {}", stats.dropped_age_timeout);
+        println!("  skipped (cached):      {}", stats.skipped_already_cached);
+        println!("  indexed successfully:  {}", stats.indexed_successfully);
+        println!("  indexing failed:       {}", stats.indexing_failed);
+
+        if stats.indexing_time_p50_ms.is_some() {
+            println!("\nIndexing Time:");
+            println!("  P50: {:.2}ms", stats.indexing_time_p50_ms.unwrap());
+            println!("  P99: {:.2}ms", stats.indexing_time_p99_ms.unwrap());
+            println!("  Max: {:.2}ms", stats.indexing_time_max_ms.unwrap());
+        }
+
+        if stats.request_latency_p50_ms.is_some() {
+            println!("\nRequest Latency (queue wait time):");
+            println!("  P50: {:.2}ms", stats.request_latency_p50_ms.unwrap());
+            println!("  P99: {:.2}ms", stats.request_latency_p99_ms.unwrap());
+            println!("  Max: {:.2}ms", stats.request_latency_max_ms.unwrap());
+        }
+
+        println!();
+    }
+}
+
+/// A request to index a file with a specific bucket duration. The `instant` field
+/// is used for age-based filtering by workers.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
-pub struct IndexRequest {
-    pub file: File,
+pub struct IndexingRequest {
+    pub fields: HashSet<String>,
     pub bucket_duration: u64,
+    pub file: File,
+    pub instant: Instant,
 }
 
-#[cfg_attr(feature = "allocative", derive(Allocative))]
-struct IndexingTask {
-    requests: VecDeque<IndexRequest>,
-    fields: HashSet<String>,
-}
-
+/// Cache for file indexes with a background worker pool for concurrent indexing.
 pub struct IndexCache {
     pub file_indexes: Arc<RwLock<HashMap<File, FileIndex>>>,
-    indexing_tx: Sender<IndexingTask>,
+    pub indexing_tx: SyncSender<IndexingRequest>,
+
+    #[cfg(feature = "indexing-stats")]
+    stats: Arc<IndexingMetrics>,
 }
 
 impl Default for IndexCache {
     fn default() -> Self {
         let file_indexes = Arc::new(RwLock::new(HashMap::default()));
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(100);
 
-        // Spawn background indexing thread
-        let cache_clone = Arc::clone(&file_indexes);
-        std::thread::spawn(move || {
-            Self::indexing_worker(rx, cache_clone);
-        });
+        #[cfg(feature = "indexing-stats")]
+        let stats = Arc::new(IndexingMetrics::new());
+
+        // Spawn 24 background indexing threads
+        let rx = Arc::new(std::sync::Mutex::new(rx));
+        for _ in 0..24 {
+            let cache_clone = Arc::clone(&file_indexes);
+            let rx_clone = Arc::clone(&rx);
+            #[cfg(feature = "indexing-stats")]
+            let stats_clone = Arc::clone(&stats);
+
+            std::thread::spawn(move || {
+                Self::indexing_worker(
+                    rx_clone,
+                    cache_clone,
+                    #[cfg(feature = "indexing-stats")]
+                    stats_clone,
+                );
+            });
+        }
 
         Self {
             file_indexes,
             indexing_tx: tx,
+            #[cfg(feature = "indexing-stats")]
+            stats,
         }
     }
 }
 
 impl IndexCache {
-    /// Request files to be indexed (non-blocking)
-    pub fn request_indexing(&self, requests: VecDeque<IndexRequest>, fields: HashSet<String>) {
-        let _ = self.indexing_tx.send(IndexingTask { requests, fields });
+    /// Attempts to queue an indexing request. Returns `false` if the channel is full,
+    /// in which case the request is dropped.
+    pub fn send_request(&self, request: IndexingRequest) -> bool {
+        match self.indexing_tx.try_send(request) {
+            Ok(_) => {
+                #[cfg(feature = "indexing-stats")]
+                {
+                    use std::sync::atomic::Ordering;
+                    self.stats
+                        .try_send_succeeded
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
+            Err(_) => {
+                #[cfg(feature = "indexing-stats")]
+                {
+                    use std::sync::atomic::Ordering;
+                    self.stats.try_send_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                false
+            }
+        }
     }
 
-    /// Resolve as many partial responses as we can using cached files
+    /// Returns a snapshot of current indexing statistics.
+    #[cfg(feature = "indexing-stats")]
+    pub fn indexing_stats(&self) -> IndexingStats {
+        self.stats.snapshot()
+    }
+
+    /// Prints indexing statistics to stdout.
+    #[cfg(feature = "indexing-stats")]
+    pub fn print_indexing_stats(&self) {
+        self.stats.print_stats();
+    }
+
+    /// Updates partial responses with data from cached file indexes.
     pub fn resolve_partial_responses(
         &self,
-        partial_responses: &mut HashMap<BucketRequest, BucketPartialResponse>,
+        partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
         pending_files: HashSet<File>,
     ) {
         let cache = self.file_indexes.read();
 
         for file in pending_files {
             if let Some(file_index) = cache.get(&file) {
-                for partial_response in partial_responses.values_mut() {
+                for (_bucket_request, partial_response) in partial_responses.iter_mut() {
                     partial_response.update(&file, file_index);
                 }
             }
         }
     }
 
-    fn indexing_worker(rx: Receiver<IndexingTask>, cache: Arc<RwLock<HashMap<File, FileIndex>>>) {
-        while let Ok(task) = rx.recv() {
-            let timeout = Duration::from_secs(10);
-            let start_time = Instant::now();
+    fn indexing_worker(
+        rx: Arc<std::sync::Mutex<Receiver<IndexingRequest>>>,
+        cache: Arc<RwLock<HashMap<File, FileIndex>>>,
+        #[cfg(feature = "indexing-stats")] stats: Arc<IndexingMetrics>,
+    ) {
+        loop {
+            let task = {
+                let rx = rx.lock().unwrap();
+                rx.recv()
+            };
+
+            let Ok(task) = task else {
+                break;
+            };
+
+            // Record request latency (time from creation to now)
+            #[cfg(feature = "indexing-stats")]
+            stats.record_request_latency(task.instant.elapsed());
+
+            // Drop requests older than 2 seconds
+            if task.instant.elapsed() > Duration::from_secs(2) {
+                #[cfg(feature = "indexing-stats")]
+                stats.dropped_age_timeout.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+
+            // Skip indexing if cache already contains this file with sufficient granularity
+            // (cached duration <= requested duration means cached is more granular or equal)
+            if let Some(cached_index) = cache.read().get(&task.file) {
+                if cached_index.bucket_duration() <= task.bucket_duration {
+                    #[cfg(feature = "indexing-stats")]
+                    stats.skipped_already_cached.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                // Otherwise, fall through and re-index with finer granularity
+            }
 
             let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
 
-            use rayon::prelude::*;
-            let file_indexes: HashMap<File, FileIndex> = task
-                .requests
-                .par_iter()
-                .filter_map(|request| {
-                    // Check timeout before starting work on this file
-                    if start_time.elapsed() > timeout {
-                        return None;
-                    }
+            // Create the file index and measure indexing time
+            #[cfg(feature = "indexing-stats")]
+            let indexing_start = Instant::now();
 
-                    // Skip indexing if cache already contains this file with sufficient granularity
-                    // (cached duration <= requested duration means cached is more granular or equal)
-                    if let Some(cached_index) = cache.read().get(&request.file) {
-                        if cached_index.bucket_duration() <= request.bucket_duration {
-                            return None;
-                        }
-                        // Otherwise, fall through and re-index with finer granularity
-                    }
+            let file_index = FILE_INDEXER.with(|indexer| {
+                let mut file_indexer = indexer.borrow_mut();
+                let window_size = 32 * 1024 * 1024;
+                let journal_file = JournalFile::<Mmap>::open(task.file.path(), window_size).ok()?;
 
-                    // Create the file index
-                    FILE_INDEXER.with(|indexer| {
-                        let mut file_indexer = indexer.borrow_mut();
-                        let window_size = 32 * 1024 * 1024;
-                        let journal_file =
-                            JournalFile::<Mmap>::open(request.file.path(), window_size).ok()?;
+                file_indexer
+                    .index(&journal_file, None, &field_names, task.bucket_duration)
+                    .ok()
+            });
 
-                        file_indexer
-                            .index(&journal_file, None, &field_names, request.bucket_duration)
-                            .ok()
-                            .map(|file_index| (request.file.clone(), file_index))
-                    })
-                })
-                .collect();
+            #[cfg(feature = "indexing-stats")]
+            stats.record_indexing_time(indexing_start.elapsed());
 
-            let completed = file_indexes.len();
-            let total = task.requests.len();
-
-            // Always update cache with whatever we managed to complete
-            cache.write().extend(file_indexes);
-
-            if start_time.elapsed() > timeout {
-                eprintln!(
-                    "Indexing timed out after {:?}. Completed {}/{} files",
-                    start_time.elapsed(),
-                    completed,
-                    total
-                );
+            // Update cache if indexing succeeded
+            if let Some(file_index) = file_index {
+                cache.write().insert(task.file, file_index);
+                #[cfg(feature = "indexing-stats")]
+                stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
+            } else {
+                #[cfg(feature = "indexing-stats")]
+                stats.indexing_failed.fetch_add(1, Ordering::Relaxed);
             }
         }
     }

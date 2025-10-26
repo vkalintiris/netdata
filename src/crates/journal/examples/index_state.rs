@@ -130,6 +130,7 @@ fn main() {
             //
             let available_histograms = histogram_result.available_histograms();
             println!("{:#?}", available_histograms);
+            app_state.print_indexing_stats();
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }

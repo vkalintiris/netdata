@@ -1,5 +1,5 @@
 use crate::collections::{HashMap, HashSet};
-use crate::index_state::cache::{IndexCache, IndexRequest};
+use crate::index_state::cache::{IndexCache, IndexingRequest};
 use crate::index_state::error::Result;
 use crate::index_state::request::{BucketRequest, HistogramRequest, RequestMetadata};
 use crate::index_state::response::{
@@ -9,7 +9,9 @@ use crate::registry::Registry;
 use crate::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use std::collections::VecDeque;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::time::Instant;
 
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct AppState {
@@ -20,8 +22,10 @@ pub struct AppState {
     #[cfg_attr(feature = "allocative", allocative(skip))]
     pub cache: IndexCache,
 
-    pub partial_responses: HashMap<BucketRequest, BucketPartialResponse>,
-    pub complete_responses: HashMap<BucketRequest, BucketCompleteResponse>,
+    #[cfg_attr(feature = "allocative", allocative(skip))]
+    pub partial_responses: LruCache<BucketRequest, BucketPartialResponse>,
+    #[cfg_attr(feature = "allocative", allocative(skip))]
+    pub complete_responses: LruCache<BucketRequest, BucketCompleteResponse>,
 }
 
 impl AppState {
@@ -29,12 +33,14 @@ impl AppState {
         let mut registry = Registry::new()?;
         registry.watch_directory(path)?;
 
+        let cache_capacity = NonZeroUsize::new(1000).unwrap();
+
         Ok(Self {
             registry,
             indexed_fields: indexed_fields.into_iter().collect(),
             cache: IndexCache::default(),
-            partial_responses: HashMap::default(),
-            complete_responses: HashMap::default(),
+            partial_responses: LruCache::new(cache_capacity),
+            complete_responses: LruCache::new(cache_capacity),
         })
     }
 
@@ -48,11 +54,11 @@ impl AppState {
         let mut files = HashSet::default();
 
         for bucket_request in bucket_requests.iter() {
-            if self.complete_responses.contains_key(bucket_request) {
+            if self.complete_responses.peek(bucket_request).is_some() {
                 continue;
             }
 
-            let Some(partial_response) = self.partial_responses.get(bucket_request) else {
+            let Some(partial_response) = self.partial_responses.peek(bucket_request) else {
                 eprintln!(
                     "Missing partial response for bucket request: {:?}",
                     bucket_request
@@ -69,20 +75,19 @@ impl AppState {
         files
     }
 
-    fn collect_index_requests(
-        &self,
-        files: &HashSet<File>,
-        bucket_duration: u64,
-    ) -> VecDeque<IndexRequest> {
-        let mut index_requests = VecDeque::new();
-        for file in files.iter().cloned() {
-            index_requests.push_back(IndexRequest {
-                file,
+    pub fn send_indexing_requests(&self, pending_files: &HashSet<File>, bucket_duration: u64) {
+        for file in pending_files {
+            let indexing_request = IndexingRequest {
+                fields: self.indexed_fields.clone(),
                 bucket_duration,
-            });
-        }
+                file: file.clone(),
+                instant: Instant::now(),
+            };
 
-        index_requests
+            // Use try_send to avoid blocking if queue is full
+            // Ignore full queue errors - newer requests will arrive soon
+            let _ = self.cache.send_request(indexing_request);
+        }
     }
 
     pub fn process_histogram_request(&mut self, request: &HistogramRequest) {
@@ -96,9 +101,7 @@ impl AppState {
 
         // Send indexing requests
         let bucket_duration = bucket_requests.first().unwrap().duration();
-        let index_requests = self.collect_index_requests(&pending_files, bucket_duration);
-        self.cache
-            .request_indexing(index_requests, self.indexed_fields.clone());
+        self.send_indexing_requests(&pending_files, bucket_duration);
 
         // Progress partial responses
         self.cache
@@ -119,9 +122,10 @@ impl AppState {
         // Collect the responses for each bucket
         let mut buckets = Vec::with_capacity(bucket_requests.len());
         for bucket_request in bucket_requests {
-            let response = if let Some(complete) = self.complete_responses.get(&bucket_request) {
+            let response = if let Some(complete) = self.complete_responses.get_mut(&bucket_request)
+            {
                 BucketResponse::Complete(complete.clone())
-            } else if let Some(partial) = self.partial_responses.get(&bucket_request) {
+            } else if let Some(partial) = self.partial_responses.get_mut(&bucket_request) {
                 BucketResponse::Partial(partial.clone())
             } else {
                 // This shouldn't happen after process_histogram_request, but handle it gracefully
@@ -136,14 +140,18 @@ impl AppState {
 
     /// Creates responses for bucket requests that we don't have in our caches
     fn create_partial_responses(&mut self, bucket_requests: &[BucketRequest]) {
+        // NOTE: we use `get()` instead of `peek()` when looking up responses
+        // in the LRU caches, so that the will be promoted to the head of the
+        // LRU list. This ensures that any newly-created responses will not
+        // evict any responses we've queried.
         for bucket_request in bucket_requests {
             // Ignore if we have the request in the cache of complete responses
-            if self.complete_responses.contains_key(bucket_request) {
+            if self.complete_responses.get(bucket_request).is_some() {
                 continue;
             }
 
             // Ignore if we have the request in the cache of partial responses
-            if self.partial_responses.contains_key(bucket_request) {
+            if self.partial_responses.get(bucket_request).is_some() {
                 continue;
             }
 
@@ -160,7 +168,7 @@ impl AppState {
             };
 
             self.partial_responses
-                .insert(bucket_request.clone(), partial_response);
+                .put(bucket_request.clone(), partial_response);
         }
     }
 
@@ -179,16 +187,33 @@ impl AppState {
 
     /// Promotes responses from the partial cache to the completed cache
     fn promote_partial_responses(&mut self) {
-        self.partial_responses
-            .retain(|bucket_request, partial_response| {
-                if !partial_response.files().is_empty() {
-                    return true;
-                } else {
-                    self.complete_responses
-                        .insert(bucket_request.clone(), partial_response.to_complete());
-                    return false;
-                }
-            });
+        // Collect bucket requests that are ready to be promoted (no pending files)
+        let mut to_promote = Vec::new();
+        for (bucket_request, partial_response) in self.partial_responses.iter() {
+            if partial_response.files().is_empty() {
+                to_promote.push(bucket_request.clone());
+            }
+        }
+
+        // Promote completed partial responses to complete responses
+        for bucket_request in to_promote {
+            if let Some(partial_response) = self.partial_responses.pop(&bucket_request) {
+                self.complete_responses
+                    .put(bucket_request, partial_response.to_complete());
+            }
+        }
+    }
+
+    /// Returns a snapshot of current indexing statistics.
+    #[cfg(feature = "indexing-stats")]
+    pub fn indexing_stats(&self) -> crate::index_state::cache::IndexingStats {
+        self.cache.indexing_stats()
+    }
+
+    /// Prints indexing statistics to stdout.
+    #[cfg(feature = "indexing-stats")]
+    pub fn print_indexing_stats(&self) {
+        self.cache.print_indexing_stats();
     }
 
     #[cfg(feature = "allocative")]
