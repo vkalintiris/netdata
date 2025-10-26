@@ -29,10 +29,44 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Creates a new AppState with default cache configuration.
+    ///
+    /// Uses sensible defaults:
+    /// - Cache directory: `/tmp/journal-index-cache`
+    /// - Memory size: 1GB
+    /// - Disk capacity: 10GB
     pub async fn new(
         path: &str,
         indexed_fields: std::collections::HashSet<String>,
         runtime_handle: tokio::runtime::Handle,
+    ) -> Result<Self> {
+        Self::new_with_cache_config(
+            path,
+            indexed_fields,
+            runtime_handle,
+            "/home/vk/repos/tmp/foyer-storage",
+            4 * 1024 * 1024, // 1GB memory
+            16 * 1024 * 1024,
+        )
+        .await
+    }
+
+    /// Creates a new AppState with custom cache configuration.
+    ///
+    /// # Arguments
+    /// * `path` - Journal directory path to watch
+    /// * `indexed_fields` - Fields to index
+    /// * `runtime_handle` - Tokio runtime handle for async operations
+    /// * `cache_dir` - Directory for disk cache storage
+    /// * `memory_size` - Memory cache size in bytes
+    /// * `disk_capacity` - Disk cache capacity in bytes
+    pub async fn new_with_cache_config(
+        path: &str,
+        indexed_fields: std::collections::HashSet<String>,
+        runtime_handle: tokio::runtime::Handle,
+        cache_dir: impl AsRef<std::path::Path>,
+        memory_size: usize,
+        disk_capacity: u64,
     ) -> Result<Self> {
         let mut registry = Registry::new()?;
         registry.watch_directory(path)?;
@@ -42,7 +76,7 @@ impl AppState {
         Ok(Self {
             registry,
             indexed_fields: indexed_fields.into_iter().collect(),
-            cache: IndexCache::new(runtime_handle).await,
+            cache: IndexCache::new(runtime_handle, cache_dir, memory_size, disk_capacity).await?,
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })

@@ -230,19 +230,44 @@ pub struct IndexCache {
 }
 
 impl IndexCache {
-    pub async fn new(runtime_handle: tokio::runtime::Handle) -> Self {
-        // Build the hybrid cache with memory + disk
-        // Use 1GB memory cache and 10GB disk cache
-        let cache_dir = std::env::temp_dir().join("journal-cache");
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+    /// Creates a new IndexCache with hybrid memory + disk storage.
+    ///
+    /// # Arguments
+    /// * `runtime_handle` - Tokio runtime handle for async operations
+    /// * `cache_dir` - Directory path for disk cache storage
+    /// * `memory_size` - Memory cache size in bytes
+    /// * `disk_capacity` - Disk cache capacity in bytes
+    ///
+    /// # Returns
+    /// Result containing the initialized IndexCache or an error
+    pub async fn new(
+        runtime_handle: tokio::runtime::Handle,
+        cache_dir: impl AsRef<std::path::Path>,
+        memory_size: usize,
+        disk_capacity: u64,
+    ) -> crate::index_state::error::Result<Self> {
+        use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCacheBuilder};
 
-        let file_indexes = foyer::HybridCacheBuilder::new()
-            .memory(1024 * 1024 * 1024) // 1GB memory
-            .with_shards(16) // Number of shards for concurrency
+        let cache_dir = cache_dir.as_ref();
+
+        // Create cache directory if it doesn't exist
+        std::fs::create_dir_all(cache_dir)?;
+
+        // Create filesystem device with specified capacity
+        let device = FsDeviceBuilder::new(cache_dir)
+            .with_capacity(disk_capacity.try_into().unwrap())
+            .build()?;
+
+        // Build hybrid cache with block-based storage
+        // Block size is set to 256KB - tune this based on typical FileIndex size
+        let file_indexes = HybridCacheBuilder::new()
+            .with_name("journal-index-cache")
+            .memory(memory_size)
+            .with_shards(16)
             .storage()
+            .with_engine_config(BlockEngineBuilder::new(device).with_block_size(256 * 1024))
             .build()
-            .await
-            .expect("Failed to build hybrid cache");
+            .await?;
 
         let (tx, rx) = sync_channel(100);
 
@@ -269,12 +294,12 @@ impl IndexCache {
             });
         }
 
-        Self {
+        Ok(Self {
             file_indexes,
             indexing_tx: tx,
             #[cfg(feature = "indexing-stats")]
             stats,
-        }
+        })
     }
 }
 
