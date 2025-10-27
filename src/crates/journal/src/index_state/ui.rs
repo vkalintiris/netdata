@@ -1,3 +1,4 @@
+#[cfg(feature = "allocative")]
 use allocative::Allocative;
 use serde::{Deserialize, Serialize};
 

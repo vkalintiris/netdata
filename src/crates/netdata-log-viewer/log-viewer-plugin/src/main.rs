@@ -20,9 +20,13 @@ impl FunctionHandler for HealthHandler {
     async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
         info!("health function called");
 
-        let response = reqwest::get("http://localhost:8080/health").await.unwrap();
-        let resp = response.json::<HealthResponse>().await.unwrap();
-        // println!("Response: {:?}", resp);
+        // let response = reqwest::get("http://localhost:8080/health").await.unwrap();
+        // let resp = response.json::<HealthResponse>().await.unwrap();
+        let resp = HealthResponse {
+            status: String::from("All good"),
+            timestamp: String::from("1761593359"),
+        };
+        println!("Response: {:?}", resp);
 
         Ok(resp)
     }
