@@ -45,8 +45,8 @@ impl AppState {
             indexed_fields,
             runtime_handle,
             "/mnt/ramfs/foyer-storage",
-            16 * 1024 * 1024,
-            128 * 1024 * 1024,
+            1024,
+            64 * 1024 * 1024,
         )
         .await
     }
@@ -202,7 +202,7 @@ impl AppState {
 
             let partial_response = BucketPartialResponse {
                 request_metadata,
-                kv_counts: HashMap::default(),
+                fv_counts: HashMap::default(),
                 unindexed_fields: HashSet::default(),
             };
 

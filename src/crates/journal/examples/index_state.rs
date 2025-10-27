@@ -73,8 +73,10 @@ async fn main() {
     let indexed_fields = get_facets();
     // let mut app_state = AppState::new("/var/log/journal", indexed_fields, tokio::runtime::Handle::current()).await.unwrap();
 
+    let path = "/var/log/journal";
     let mut app_state = AppState::new(
-        "/home/vk/repos/tmp/agent-events-journal",
+        // "/home/vk/repos/tmp/agent-events-journal",
+        path,
         indexed_fields,
         tokio::runtime::Handle::current(),
     )
@@ -84,13 +86,20 @@ async fn main() {
     use chrono::{DateTime, Utc};
 
     let before = Utc::now();
-    let after = before - chrono::Duration::weeks(52);
+    let after = before - chrono::Duration::weeks(1);
 
-    let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
+    let filter_expr = FilterExpr::match_str("PRIORITY=1")
+        .or_with(FilterExpr::match_str("PRIORITY=2"))
+        .or_with(FilterExpr::match_str("PRIORITY=3"))
+        .or_with(FilterExpr::match_str("PRIORITY=4"))
+        .or_with(FilterExpr::match_str("PRIORITY=5"))
+        .or_with(FilterExpr::match_str("PRIORITY=6"))
+        .or_with(FilterExpr::match_str("PRIORITY=7"));
+    // let filter_expr = FilterExpr::None;
     let histogram_request = HistogramRequest {
         after: after.timestamp() as u64,
         before: before.timestamp() as u64,
-        filter_expr,
+        filter_expr: Arc::new(filter_expr),
     };
 
     if false {
@@ -104,10 +113,10 @@ async fn main() {
         println!("After: {}", after_dt);
         println!("Before: {}", before_dt);
 
-        let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
+        let _filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
 
         let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
-        let histogram_request = HistogramRequest {
+        let _histogram_request = HistogramRequest {
             after,
             before,
             filter_expr,
@@ -132,12 +141,10 @@ async fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         if iteration == 15 {
-            // println!("Histogram result: {:#?}", histogram_result);
-            //
-            let available_histograms = histogram_result.available_histograms();
-            // println!("{:#?}", available_histograms);
-            app_state.print_indexing_stats();
-            std::thread::sleep(std::time::Duration::from_secs(1000));
+            let ui_response = histogram_result.ui_response("PRIORITY");
+            let s = serde_json::to_string_pretty(&ui_response).unwrap();
+            println!("{}", s);
+
             break;
         }
     }

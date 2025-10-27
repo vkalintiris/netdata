@@ -21,8 +21,8 @@ pub struct BucketPartialResponse {
     // Used to incrementally progress request
     pub request_metadata: RequestMetadata,
 
-    // Maps key=value pairs to (unfiltered, filtered) counts
-    pub kv_counts: HashMap<String, (usize, usize)>,
+    // Maps field=value pairs to (unfiltered, filtered) counts
+    pub fv_counts: HashMap<String, (usize, usize)>,
 
     // Set of fields that are not indexed
     pub unindexed_fields: HashSet<String>,
@@ -51,7 +51,7 @@ impl BucketPartialResponse {
 
     pub fn to_complete(&self) -> BucketCompleteResponse {
         BucketCompleteResponse {
-            indexed_fields: self.kv_counts.clone(),
+            fv_counts: self.fv_counts.clone(),
             unindexed_fields: self.unindexed_fields.clone(),
         }
     }
@@ -97,10 +97,10 @@ impl BucketPartialResponse {
                     .count_bitmap_entries_in_range(bitmap, start_time, end_time)
                     .unwrap_or(0);
 
-                if let Some((unfiltered_total, _)) = self.kv_counts.get_mut(indexed_field) {
+                if let Some((unfiltered_total, _)) = self.fv_counts.get_mut(indexed_field) {
                     *unfiltered_total += unfiltered_count;
                 } else {
-                    self.kv_counts
+                    self.fv_counts
                         .insert(indexed_field.clone(), (unfiltered_count, 0));
                 }
             }
@@ -112,10 +112,10 @@ impl BucketPartialResponse {
                     .count_bitmap_entries_in_range(&bitmap, start_time, end_time)
                     .unwrap_or(0);
 
-                if let Some((_, filtered_total)) = self.kv_counts.get_mut(indexed_field) {
+                if let Some((_, filtered_total)) = self.fv_counts.get_mut(indexed_field) {
                     *filtered_total += filtered_count;
                 } else {
-                    self.kv_counts
+                    self.fv_counts
                         .insert(indexed_field.clone(), (0, filtered_count));
                 }
             }
@@ -131,7 +131,7 @@ impl BucketPartialResponse {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct BucketCompleteResponse {
     // Maps key=value pairs to (unfiltered, filtered) counts
-    pub indexed_fields: HashMap<String, (usize, usize)>,
+    pub fv_counts: HashMap<String, (usize, usize)>,
     // Set of fields that are not indexed
     pub unindexed_fields: HashSet<String>,
 }
@@ -144,7 +144,7 @@ pub trait BucketResponseOps {
 
 impl BucketResponseOps for BucketPartialResponse {
     fn indexed_fields(&self) -> HashSet<String> {
-        self.kv_counts
+        self.fv_counts
             .keys()
             .filter_map(|key| key.split_once('=').map(|(field, _value)| field.to_string()))
             .collect()
@@ -157,7 +157,7 @@ impl BucketResponseOps for BucketPartialResponse {
 
 impl BucketResponseOps for BucketCompleteResponse {
     fn indexed_fields(&self) -> HashSet<String> {
-        self.indexed_fields
+        self.fv_counts
             .keys()
             .filter_map(|key| key.split_once('=').map(|(field, _value)| field.to_string()))
             .collect()
@@ -188,7 +188,7 @@ pub struct HistogramResult {
 }
 
 impl HistogramResult {
-    pub fn available_histograms(&self) -> Vec<ui::AvailableHistogram> {
+    pub fn ui_available_histograms(&self) -> Vec<ui::available_histogram::AvailableHistogram> {
         let mut indexed_fields = HashSet::default();
 
         for (_, bucket) in &self.buckets {
@@ -197,7 +197,7 @@ impl HistogramResult {
 
         let mut available_histograms = Vec::with_capacity(indexed_fields.len());
         for id in indexed_fields {
-            available_histograms.push(ui::AvailableHistogram {
+            available_histograms.push(ui::available_histogram::AvailableHistogram {
                 id: id.clone(),
                 name: id,
                 order: 0,
@@ -211,5 +211,126 @@ impl HistogramResult {
         }
 
         available_histograms
+    }
+
+    pub fn ui_chart_result(&self, field: &str) -> ui::histogram::chart::result::Result {
+        // Collect all unique values for the field across all buckets
+        let mut values = HashSet::default();
+
+        for (_, bucket_response) in &self.buckets {
+            match bucket_response {
+                BucketResponse::Partial(partial) => {
+                    for fv in partial.fv_counts.keys() {
+                        if let Some((f, v)) = fv.split_once('=') {
+                            if f == field {
+                                values.insert(v.to_string());
+                            }
+                        }
+                    }
+                }
+                BucketResponse::Complete(complete) => {
+                    for fv in complete.fv_counts.keys() {
+                        if let Some((f, v)) = fv.split_once('=') {
+                            if f == field {
+                                values.insert(v.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort values for consistent ordering
+        let mut labels: Vec<String> = values.into_iter().collect();
+        labels.sort();
+
+        // Build data array
+        let mut data = Vec::new();
+
+        for (request, bucket_response) in &self.buckets {
+            let timestamp = request.start;
+            let mut counts = Vec::with_capacity(labels.len());
+
+            for field_value in &labels {
+                let key = format!("{}={}", field, field_value);
+
+                let count = match bucket_response {
+                    BucketResponse::Partial(partial) => partial
+                        .fv_counts
+                        .get(&key)
+                        .map(|(_, filtered)| *filtered)
+                        .unwrap_or(0),
+                    BucketResponse::Complete(complete) => complete
+                        .fv_counts
+                        .get(&key)
+                        .map(|(_, filtered)| *filtered)
+                        .unwrap_or(0),
+                };
+
+                counts.push([count, 0, 0]);
+            }
+
+            data.push(ui::histogram::chart::result::DataItem {
+                timestamp: timestamp * std::time::Duration::from_secs(1).as_millis() as u64,
+                items: counts,
+            });
+        }
+
+        let point = ui::histogram::chart::result::Point {
+            value: 0,
+            arp: 1,
+            pa: 2,
+        };
+
+        ui::histogram::chart::result::Result {
+            labels,
+            point,
+            data,
+        }
+    }
+
+    pub fn ui_chart_view(
+        &self,
+        field: &str,
+        labels: &[String],
+    ) -> ui::histogram::chart::view::View {
+        let ids: Vec<String> = labels.iter().skip(1).cloned().collect();
+        let names = ids.clone();
+        let units = std::iter::repeat("events".to_string())
+            .take(ids.len())
+            .collect();
+
+        let dimensions = ui::histogram::chart::view::Dimensions { ids, names, units };
+
+        ui::histogram::chart::view::View {
+            title: format!("Events distribution by {}", field),
+            after: self.buckets.first().unwrap().0.start as u32,
+            before: self.buckets.last().unwrap().0.end as u32,
+            units: String::from("units"),
+            chart_type: String::from("stackedBar"),
+            dimensions,
+        }
+    }
+
+    pub fn ui_chart(&self, field: &str) -> ui::histogram::chart::Chart {
+        let result = self.ui_chart_result(field);
+        let view = self.ui_chart_view(field, &result.labels);
+
+        ui::histogram::chart::Chart { view, result }
+    }
+
+    pub fn ui_histogram(&self, field: &str) -> ui::histogram::Histogram {
+        ui::histogram::Histogram {
+            id: String::from(field),
+            name: String::from(field),
+            chart: self.ui_chart(field),
+        }
+    }
+
+    pub fn ui_response(&self, field: &str) -> ui::Response {
+        ui::Response {
+            available_histograms: self.ui_available_histograms(),
+            histogram: self.ui_histogram(field),
+        }
     }
 }
