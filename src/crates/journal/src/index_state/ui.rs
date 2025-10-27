@@ -51,6 +51,7 @@ pub mod histogram {
                 pub title: String,
                 pub after: u32,
                 pub before: u32,
+                pub update_every: u32,
                 pub units: String,
                 pub chart_type: String,
                 pub dimensions: Dimensions,
@@ -85,8 +86,7 @@ pub mod histogram {
                 pub pa: u64,
             }
 
-            #[derive(Debug, Deserialize)]
-            #[serde(from = "(u64, Vec<[usize; 3]>)")]
+            #[derive(Debug)]
             #[cfg_attr(feature = "allocative", derive(Allocative))]
             pub struct DataItem {
                 pub timestamp: u64,
@@ -98,13 +98,65 @@ pub mod histogram {
                 where
                     S: Serializer,
                 {
-                    (&self.timestamp, &self.items).serialize(serializer)
+                    use serde::ser::SerializeSeq;
+
+                    // Create a sequence with length = 1 (timestamp) + number of items
+                    let mut seq = serializer.serialize_seq(Some(1 + self.items.len()))?;
+
+                    // First element: timestamp
+                    seq.serialize_element(&self.timestamp)?;
+
+                    // Remaining elements: each [usize; 3] array
+                    for item in &self.items {
+                        seq.serialize_element(item)?;
+                    }
+
+                    seq.end()
                 }
             }
 
-            impl From<(u64, Vec<[usize; 3]>)> for DataItem {
-                fn from((timestamp, items): (u64, Vec<[usize; 3]>)) -> Self {
-                    Self { timestamp, items }
+            impl<'de> Deserialize<'de> for DataItem {
+                fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    use serde::de::{SeqAccess, Visitor};
+
+                    struct DataItemVisitor;
+
+                    impl<'de> Visitor<'de> for DataItemVisitor {
+                        type Value = DataItem;
+
+                        fn expecting(
+                            &self,
+                            formatter: &mut std::fmt::Formatter,
+                        ) -> std::fmt::Result {
+                            formatter.write_str("an array with timestamp followed by data items")
+                        }
+
+                        fn visit_seq<A>(
+                            self,
+                            mut seq: A,
+                        ) -> std::result::Result<Self::Value, A::Error>
+                        where
+                            A: SeqAccess<'de>,
+                        {
+                            // First element: timestamp
+                            let timestamp = seq
+                                .next_element()?
+                                .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+
+                            // Remaining elements: collect all [usize; 3] arrays
+                            let mut items = Vec::new();
+                            while let Some(item) = seq.next_element()? {
+                                items.push(item);
+                            }
+
+                            Ok(DataItem { timestamp, items })
+                        }
+                    }
+
+                    deserializer.deserialize_seq(DataItemVisitor)
                 }
             }
         }

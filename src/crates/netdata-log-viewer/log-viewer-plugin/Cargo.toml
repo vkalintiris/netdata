@@ -20,7 +20,6 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 tokio = { workspace = true }
-polars = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"]}
 types = { path = "../types" }

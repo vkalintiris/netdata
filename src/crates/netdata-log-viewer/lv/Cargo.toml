@@ -22,7 +22,6 @@ netdata-plugin-protocol = { workspace = true }
 netdata-plugin-schema = { workspace = true }
 journal = { workspace = true }
 types = { path = "../types" }
-polars = { workspace = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

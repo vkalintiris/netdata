@@ -155,8 +155,9 @@ pub struct JournalResponse {
     pub accepted_params: Vec<RequestParam>,
     pub required_params: Vec<RequiredParam>,
 
-    pub available_histograms: serde_json::Value,
-    pub histogram: serde_json::Value,
+    pub available_histograms:
+        Vec<journal::index_state::ui::available_histogram::AvailableHistogram>,
+    pub histogram: journal::index_state::ui::histogram::Histogram,
     // FIXME: columns do not contain u32s
     pub columns: Columns,
     pub data: Vec<u32>,

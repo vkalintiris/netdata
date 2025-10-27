@@ -282,6 +282,8 @@ impl HistogramResult {
             pa: 2,
         };
 
+        labels.insert(0, String::from("time"));
+
         ui::histogram::chart::result::Result {
             labels,
             point,
@@ -306,6 +308,7 @@ impl HistogramResult {
             title: format!("Events distribution by {}", field),
             after: self.buckets.first().unwrap().0.start as u32,
             before: self.buckets.last().unwrap().0.end as u32,
+            update_every: self.buckets.first().unwrap().0.duration() as u32,
             units: String::from("units"),
             chart_type: String::from("stackedBar"),
             dimensions,
