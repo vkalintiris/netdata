@@ -138,6 +138,7 @@ pub struct BucketCompleteResponse {
 pub trait BucketResponseOps {
     fn indexed_fields(&self) -> HashSet<String>;
     fn unindexed_fields(&self) -> &HashSet<String>;
+    fn field_values(&self, field: &str) -> Vec<String>;
 }
 
 impl BucketResponseOps for BucketPartialResponse {
@@ -151,6 +152,18 @@ impl BucketResponseOps for BucketPartialResponse {
     fn unindexed_fields(&self) -> &HashSet<String> {
         &self.unindexed_fields
     }
+
+    fn field_values(&self, field: &str) -> Vec<String> {
+        let mut v = self
+            .indexed_fields
+            .keys()
+            .filter(|key| key.as_str() == field)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        v.sort();
+        v
+    }
 }
 
 impl BucketResponseOps for BucketCompleteResponse {
@@ -163,6 +176,10 @@ impl BucketResponseOps for BucketCompleteResponse {
 
     fn unindexed_fields(&self) -> &HashSet<String> {
         &self.unindexed_fields
+    }
+
+    fn field_values(&self, field: &str) -> Vec<String> {
+        todo!()
     }
 }
 

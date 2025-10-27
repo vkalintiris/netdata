@@ -525,9 +525,6 @@ impl FileIndexer {
             bitmaps: entries,
         };
 
-        // println!("GVD {}", allocative::size_of_unique(&inner));
-        println!("FileIndexer: {}", allocative::size_of_unique(self));
-
         // let n_entries = journal_file.journal_header_ref().n_entries as _;
         self.source_timestamp_cursor_pairs = Vec::new();
         self.source_timestamp_entry_offset_pairs = Vec::new();
