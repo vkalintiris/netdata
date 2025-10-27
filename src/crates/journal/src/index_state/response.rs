@@ -20,8 +20,10 @@ use std::sync::Arc;
 pub struct BucketPartialResponse {
     // Used to incrementally progress request
     pub request_metadata: RequestMetadata,
+
     // Maps key=value pairs to (unfiltered, filtered) counts
-    pub indexed_fields: HashMap<String, (usize, usize)>,
+    pub kv_counts: HashMap<String, (usize, usize)>,
+
     // Set of fields that are not indexed
     pub unindexed_fields: HashSet<String>,
 }
@@ -49,7 +51,7 @@ impl BucketPartialResponse {
 
     pub fn to_complete(&self) -> BucketCompleteResponse {
         BucketCompleteResponse {
-            indexed_fields: self.indexed_fields.clone(),
+            indexed_fields: self.kv_counts.clone(),
             unindexed_fields: self.unindexed_fields.clone(),
         }
     }
@@ -95,10 +97,10 @@ impl BucketPartialResponse {
                     .count_bitmap_entries_in_range(bitmap, start_time, end_time)
                     .unwrap_or(0);
 
-                if let Some((unfiltered_total, _)) = self.indexed_fields.get_mut(indexed_field) {
+                if let Some((unfiltered_total, _)) = self.kv_counts.get_mut(indexed_field) {
                     *unfiltered_total += unfiltered_count;
                 } else {
-                    self.indexed_fields
+                    self.kv_counts
                         .insert(indexed_field.clone(), (unfiltered_count, 0));
                 }
             }
@@ -110,10 +112,10 @@ impl BucketPartialResponse {
                     .count_bitmap_entries_in_range(&bitmap, start_time, end_time)
                     .unwrap_or(0);
 
-                if let Some((_, filtered_total)) = self.indexed_fields.get_mut(indexed_field) {
+                if let Some((_, filtered_total)) = self.kv_counts.get_mut(indexed_field) {
                     *filtered_total += filtered_count;
                 } else {
-                    self.indexed_fields
+                    self.kv_counts
                         .insert(indexed_field.clone(), (0, filtered_count));
                 }
             }
@@ -138,12 +140,11 @@ pub struct BucketCompleteResponse {
 pub trait BucketResponseOps {
     fn indexed_fields(&self) -> HashSet<String>;
     fn unindexed_fields(&self) -> &HashSet<String>;
-    fn field_values(&self, field: &str) -> Vec<String>;
 }
 
 impl BucketResponseOps for BucketPartialResponse {
     fn indexed_fields(&self) -> HashSet<String> {
-        self.indexed_fields
+        self.kv_counts
             .keys()
             .filter_map(|key| key.split_once('=').map(|(field, _value)| field.to_string()))
             .collect()
@@ -151,18 +152,6 @@ impl BucketResponseOps for BucketPartialResponse {
 
     fn unindexed_fields(&self) -> &HashSet<String> {
         &self.unindexed_fields
-    }
-
-    fn field_values(&self, field: &str) -> Vec<String> {
-        let mut v = self
-            .indexed_fields
-            .keys()
-            .filter(|key| key.as_str() == field)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        v.sort();
-        v
     }
 }
 
@@ -176,10 +165,6 @@ impl BucketResponseOps for BucketCompleteResponse {
 
     fn unindexed_fields(&self) -> &HashSet<String> {
         &self.unindexed_fields
-    }
-
-    fn field_values(&self, field: &str) -> Vec<String> {
-        todo!()
     }
 }
 

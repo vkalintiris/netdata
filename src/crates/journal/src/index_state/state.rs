@@ -44,7 +44,7 @@ impl AppState {
             path,
             indexed_fields,
             runtime_handle,
-            "/home/vk/repos/tmp/foyer-storage",
+            "/mnt/ramfs/foyer-storage",
             16 * 1024 * 1024,
             128 * 1024 * 1024,
         )
@@ -202,7 +202,7 @@ impl AppState {
 
             let partial_response = BucketPartialResponse {
                 request_metadata,
-                indexed_fields: HashMap::default(),
+                kv_counts: HashMap::default(),
                 unindexed_fields: HashSet::default(),
             };
 
