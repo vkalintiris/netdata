@@ -49,7 +49,7 @@ impl HistogramRequest {
 
         // Buckets are aligned to their duration
         let aligned_start = (self.after / bucket_duration) * bucket_duration;
-        let aligned_end = (self.before / bucket_duration + 1) * bucket_duration;
+        let aligned_end = self.before.div_ceil(bucket_duration) * bucket_duration;
 
         // Allocate our buckets
         let num_buckets = ((aligned_end - aligned_start) / bucket_duration) as usize;

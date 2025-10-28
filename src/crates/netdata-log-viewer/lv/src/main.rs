@@ -62,18 +62,61 @@ async fn health_handler() -> impl IntoResponse {
     PrettyJson(response).into_response()
 }
 
+/// Builds a FilterExpr from the selections HashMap
+///
+/// # Arguments
+/// * `selections` - HashMap where each key is a field name and each value is a Vec of possible values
+///
+/// # Returns
+/// A FilterExpr where:
+/// - Values for the same field are combined with OR logic (e.g., PRIORITY=1 OR PRIORITY=2)
+/// - Different fields are combined with AND logic (e.g., (PRIORITY=1 OR PRIORITY=2) AND _HOSTNAME=server1)
+/// - Returns FilterExpr::None if selections is empty or all value lists are empty
+fn build_filter_from_selections(
+    selections: &std::collections::HashMap<String, Vec<String>>,
+) -> journal::index::FilterExpr<String> {
+    if selections.is_empty() {
+        return journal::index::FilterExpr::None;
+    }
+
+    let mut field_filters = Vec::new();
+
+    for (field, values) in selections {
+        // Ignore log sources. We've not implemented this functionality.
+        if field == "__logs_sources" {
+            continue;
+        }
+
+        if values.is_empty() {
+            continue; // Skip empty value lists
+        }
+
+        // Build OR filter for all values of this field
+        // e.g., PRIORITY=1 OR PRIORITY=2 OR PRIORITY=3
+        let value_filters: Vec<_> = values
+            .iter()
+            .map(|value| journal::index::FilterExpr::match_str(format!("{}={}", field, value)))
+            .collect();
+
+        let field_filter = journal::index::FilterExpr::or(value_filters);
+        field_filters.push(field_filter);
+    }
+
+    // Combine all field filters with AND
+    // e.g., (PRIORITY=1 OR PRIORITY=2) AND (_HOSTNAME=server1 OR _HOSTNAME=server2)
+    if field_filters.is_empty() {
+        journal::index::FilterExpr::None
+    } else {
+        journal::index::FilterExpr::and(field_filters)
+    }
+}
+
 #[tracing::instrument(skip(state))]
 async fn journal_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<JournalRequest>,
 ) -> impl IntoResponse {
-    let filter_expr = journal::index::FilterExpr::match_str("PRIORITY=1")
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=2"))
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=3"))
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=4"))
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=5"))
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=6"))
-        .or_with(journal::index::FilterExpr::match_str("PRIORITY=7"));
+    let filter_expr = build_filter_from_selections(&request.selections);
 
     let histogram_request = journal::index_state::HistogramRequest {
         after: request.after as u64,
@@ -174,7 +217,7 @@ pub fn get_facets() -> HashSet<String> {
         b"SYSLOG_FACILITY",
         b"ERRNO",
         b"SYSLOG_IDENTIFIER",
-        b"UNIT",
+        // b"UNIT",
         b"USER_UNIT",
         b"MESSAGE_ID",
         b"_BOOT_ID",
@@ -197,20 +240,20 @@ pub fn get_facets() -> HashSet<String> {
         b"ND_ALERT_TYPE",
         b"_SYSTEMD_SLICE",
         b"_EXE",
-        b"_SYSTEMD_UNIT",
+        // b"_SYSTEMD_UNIT",
         b"_NAMESPACE",
         b"_TRANSPORT",
         b"_RUNTIME_SCOPE",
         b"_STREAM_ID",
         b"ND_NIDL_CONTEXT",
         b"ND_ALERT_STATUS",
-        b"_SYSTEMD_CGROUP",
+        // b"_SYSTEMD_CGROUP",
         b"ND_NIDL_NODE",
         b"ND_ALERT_COMPONENT",
         b"_COMM",
         b"_SYSTEMD_USER_UNIT",
         b"_SYSTEMD_USER_SLICE",
-        b"_SYSTEMD_SESSION",
+        // b"_SYSTEMD_SESSION",
         b"__logs_sources",
     ];
 
@@ -284,6 +327,8 @@ async fn main() {
     let indexed_fields = get_facets();
 
     let path = "/var/log/journal";
+    // let path = "/home/vk/repos/tmp/flog";
+    // let path = "/home/vk/repos/tmp/agent-events-journal";
     let journal_state = journal::index_state::AppState::new(
         // "/home/vk/repos/tmp/agent-events-journal",
         path,

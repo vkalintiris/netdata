@@ -62,9 +62,8 @@ impl BucketPartialResponse {
             return;
         }
 
-        // Check if the cached index has sufficient granularity
-        if file_index.bucket_duration() > self.duration() {
-            // Cached index doesn't have sufficient granularity, skip it
+        // Can not use file index, if it doesn't have sufficient granularity
+        if self.duration() < file_index.bucket_duration() {
             return;
         }
 
@@ -77,9 +76,11 @@ impl BucketPartialResponse {
                 continue;
             }
 
+            // FIXME: rethink this
             self.unindexed_fields.insert(field.clone());
         }
 
+        // TODO: should `resolve`/`evaluate` return an `Option`?
         let filter_expr = self.filter_expr().as_ref();
         let filter_bitmap = if *filter_expr != FilterExpr::<String>::None {
             Some(filter_expr.resolve(file_index).evaluate())
@@ -90,34 +91,30 @@ impl BucketPartialResponse {
         let start_time = self.start_time();
         let end_time = self.end_time();
 
-        for (indexed_field, bitmap) in file_index.bitmaps() {
-            // once for unfiltered count
-            {
-                let unfiltered_count = file_index
-                    .count_bitmap_entries_in_range(bitmap, start_time, end_time)
-                    .unwrap_or(0);
+        for (indexed_field, field_bitmap) in file_index.bitmaps() {
+            // Calculate unfiltered count (all occurrences of this field=value)
+            let unfiltered_count = file_index
+                .count_bitmap_entries_in_range(field_bitmap, start_time, end_time)
+                .unwrap_or(0);
 
-                if let Some((unfiltered_total, _)) = self.fv_counts.get_mut(indexed_field) {
-                    *unfiltered_total += unfiltered_count;
-                } else {
-                    self.fv_counts
-                        .insert(indexed_field.clone(), (unfiltered_count, 0));
-                }
-            }
+            // Calculate filtered count (occurrences matching the filter expression)
+            // When no filter is specified, filtered = unfiltered (shows all entries)
+            let filtered_count = if let Some(filter_bitmap) = &filter_bitmap {
+                let filtered_bitmap = field_bitmap & filter_bitmap;
+                file_index
+                    .count_bitmap_entries_in_range(&filtered_bitmap, start_time, end_time)
+                    .unwrap_or(0)
+            } else {
+                unfiltered_count
+            };
 
-            // once more for filtered count
-            if let Some(filter_bitmap) = &filter_bitmap {
-                let bitmap = bitmap & filter_bitmap;
-                let filtered_count = file_index
-                    .count_bitmap_entries_in_range(&bitmap, start_time, end_time)
-                    .unwrap_or(0);
-
-                if let Some((_, filtered_total)) = self.fv_counts.get_mut(indexed_field) {
-                    *filtered_total += filtered_count;
-                } else {
-                    self.fv_counts
-                        .insert(indexed_field.clone(), (0, filtered_count));
-                }
+            // Update the counts for this field=value pair
+            if let Some(counts) = self.fv_counts.get_mut(indexed_field) {
+                counts.0 += unfiltered_count;
+                counts.1 += filtered_count;
+            } else {
+                self.fv_counts
+                    .insert(indexed_field.clone(), (unfiltered_count, filtered_count));
             }
         }
     }
