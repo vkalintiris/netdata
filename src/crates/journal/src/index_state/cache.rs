@@ -349,7 +349,7 @@ impl IndexCache {
     pub async fn new(
         runtime_handle: tokio::runtime::Handle,
         cache_dir: impl AsRef<std::path::Path>,
-        memory_size: usize,
+        memory_capacity: usize,
         disk_capacity: u64,
     ) -> crate::index_state::error::Result<Self> {
         use foyer::{
@@ -358,33 +358,20 @@ impl IndexCache {
 
         let cache_dir = cache_dir.as_ref();
 
-        // Create cache directory if it doesn't exist
         std::fs::create_dir_all(cache_dir)?;
 
-        // Create filesystem device with specified capacity
         let device = FsDeviceBuilder::new(cache_dir)
             .with_capacity(disk_capacity.try_into().unwrap())
             .build()?;
 
-        // Build hybrid cache with block-based storage
-
-        // Custom weighter that returns the serialized size of FileIndex in bytes
-        let weighter = |_key: &File, value: &FileIndex| -> usize {
-            // Use bincode to estimate the serialized size
-            bincode::serialize(value)
-                .map(|serialized| serialized.len())
-                .unwrap_or(1) // Fallback to weight=1 if serialization fails
-        };
-
         let file_indexes = HybridCacheBuilder::new()
             .with_name("journal-index-cache")
-            .with_policy(foyer::HybridCachePolicy::WriteOnInsertion)
-            .memory(memory_size)
-            .with_weighter(weighter)
+            .with_policy(foyer::HybridCachePolicy::WriteOnEviction)
+            .memory(memory_capacity)
             .with_shards(16)
             .storage()
             .with_compression(Compression::Zstd)
-            .with_engine_config(BlockEngineBuilder::new(device).with_block_size(256 * 1024))
+            .with_engine_config(BlockEngineBuilder::new(device).with_block_size(1024 * 1024))
             .build()
             .await?;
 
@@ -492,7 +479,7 @@ impl IndexCache {
     }
 
     /// Updates partial responses with data from cached file indexes.
-    pub async fn resolve_partial_responses(
+    pub async fn resolve_partial_responses_new(
         &self,
         partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
         pending_files: HashSet<File>,
@@ -503,8 +490,84 @@ impl IndexCache {
                 for (_bucket_request, partial_response) in partial_responses.iter_mut() {
                     partial_response.update(&file, file_index);
                 }
+            } else {
+                eprintln!("Did not find {}", file.path());
             }
         }
+    }
+
+    pub async fn resolve_partial_responses(
+        &self,
+        partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
+        pending_files: HashSet<File>,
+    ) {
+        use std::time::Duration;
+        use tokio::time::{Instant, timeout};
+
+        const TOTAL_TIMEOUT: Duration = Duration::from_millis(500);
+        const PER_FILE_TIMEOUT: Duration = Duration::from_millis(100); // adjust as needed
+
+        let start = Instant::now();
+
+        let mut hits = 0;
+        let mut misses = 0;
+
+        for file in pending_files {
+            // Check if we've exceeded total timeout
+            if start.elapsed() >= TOTAL_TIMEOUT {
+                break;
+            }
+
+            // Calculate remaining time
+            let remaining = TOTAL_TIMEOUT.saturating_sub(start.elapsed());
+            let file_timeout = remaining.min(PER_FILE_TIMEOUT);
+
+            // Apply timeout to the `obtain` operation
+            match timeout(file_timeout, self.file_indexes.obtain(file.clone())).await {
+                Ok(Ok(Some(entry))) => {
+                    hits += 1;
+
+                    let file_index = entry.value();
+                    let inst = Instant::now();
+                    let mut counter = 0;
+                    use rayon::prelude::*;
+                    let counter: usize = partial_responses
+                        .iter_mut()
+                        .par_bridge()
+                        .map(|(_bucket_request, partial_response)| {
+                            partial_response.update(&file, file_index);
+                            1
+                        })
+                        .sum();
+                    // for (_bucket_request, partial_response) in partial_responses.iter() {
+                    //     partial_response.update(&file, file_index);
+                    //     counter += 1;
+
+                    //     // if start.elapsed() >= TOTAL_TIMEOUT {
+                    //     //     break;
+                    //     // }
+                    // }
+                    println!(
+                        "Updating {} buckets took {} msec for file {}",
+                        counter,
+                        inst.elapsed().as_millis(),
+                        file.path()
+                    );
+                }
+                Ok(Ok(None)) => {
+                    misses += 1;
+                    // File not in cache
+                }
+                Ok(Err(_)) => {
+                    // Error from get operation
+                }
+                Err(_) => {
+                    // Timeout occurred for this file, continue to next
+                }
+            }
+        }
+
+        // println!("Hits: {}, Misses: {}", hits, misses);
     }
 
     fn indexing_worker(
@@ -569,9 +632,9 @@ impl IndexCache {
                 #[cfg(feature = "indexing-stats")]
                 {
                     // Record file index size (approximate using bincode serialization)
-                    if let Ok(serialized) = bincode::serialized_size(&file_index) {
-                        stats.record_file_index_size(serialized as usize);
-                    }
+                    // if let Ok(serialized) = bincode::serialized_size(&file_index) {
+                    //     stats.record_file_index_size(serialized as usize);
+                    // }
                     stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
                 }
 

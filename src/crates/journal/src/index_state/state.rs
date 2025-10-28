@@ -45,7 +45,7 @@ impl AppState {
             indexed_fields,
             runtime_handle,
             "/mnt/ramfs/foyer-storage",
-            1024,
+            1_000_00,
             64 * 1024 * 1024,
         )
         .await
@@ -58,14 +58,14 @@ impl AppState {
     /// * `indexed_fields` - Fields to index
     /// * `runtime_handle` - Tokio runtime handle for async operations
     /// * `cache_dir` - Directory for disk cache storage
-    /// * `memory_size` - Memory cache size in bytes
+    /// * `memory_size` - Memory cache capacity in items
     /// * `disk_capacity` - Disk cache capacity in bytes
     pub async fn new_with_cache_config(
         path: &str,
         indexed_fields: std::collections::HashSet<String>,
         runtime_handle: tokio::runtime::Handle,
         cache_dir: impl AsRef<std::path::Path>,
-        memory_size: usize,
+        memory_capacity: usize,
         disk_capacity: u64,
     ) -> Result<Self> {
         let mut registry = Registry::new()?;
@@ -76,7 +76,8 @@ impl AppState {
         Ok(Self {
             registry,
             indexed_fields: indexed_fields.into_iter().collect(),
-            cache: IndexCache::new(runtime_handle, cache_dir, memory_size, disk_capacity).await?,
+            cache: IndexCache::new(runtime_handle, cache_dir, memory_capacity, disk_capacity)
+                .await?,
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })
@@ -129,6 +130,8 @@ impl AppState {
     }
 
     pub async fn process_histogram_request(&mut self, request: &HistogramRequest) {
+        let timer = std::time::Instant::now();
+
         // Create any partial responses we don't already have
         let bucket_requests = request.bucket_requests();
         assert!(!bucket_requests.is_empty());
@@ -136,15 +139,33 @@ impl AppState {
 
         // Figure out the files we will need to lookup for partial requests
         let pending_files = self.collect_partial_requests_files(&bucket_requests);
+        println!("Num pending files: {:#?}", pending_files.len());
+
+        println!(
+            "[01]: Collecting partial requests: {} msec",
+            timer.elapsed().as_millis()
+        );
+        let timer = std::time::Instant::now();
 
         // Send indexing requests
         let bucket_duration = bucket_requests.first().unwrap().duration();
         self.send_indexing_requests(&pending_files, bucket_duration);
 
+        println!(
+            "[02]: Sending indexing requests: {} msec",
+            timer.elapsed().as_millis()
+        );
+        let timer = std::time::Instant::now();
+
         // Progress partial responses
         self.cache
             .resolve_partial_responses(&mut self.partial_responses, pending_files)
             .await;
+
+        println!(
+            "[03]: Resolving partial responses: {} msec",
+            timer.elapsed().as_millis()
+        );
 
         // Promote those that have been completed from partial to complete
         // responses

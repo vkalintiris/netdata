@@ -86,7 +86,7 @@ async fn main() {
     use chrono::{DateTime, Utc};
 
     let before = Utc::now();
-    let after = before - chrono::Duration::weeks(1);
+    let after = before - chrono::Duration::hours(1);
 
     let filter_expr = FilterExpr::match_str("PRIORITY=1")
         .or_with(FilterExpr::match_str("PRIORITY=2"))
@@ -102,45 +102,27 @@ async fn main() {
         filter_expr: Arc::new(filter_expr),
     };
 
-    if false {
-        const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
-        let after = u64::from_str_radix("641202f93e665", 16).unwrap() / USEC_PER_SEC;
-        let before = u64::from_str_radix("6414242cf1eec", 16).unwrap() / USEC_PER_SEC;
-
-        // Convert to DateTime for verification
-        let after_dt = DateTime::from_timestamp_secs(after as i64).unwrap();
-        let before_dt = DateTime::from_timestamp_secs(before as i64).unwrap();
-        println!("After: {}", after_dt);
-        println!("Before: {}", before_dt);
-
-        let _filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
-
-        let filter_expr = Arc::new(FilterExpr::match_str("PRIORITY=4"));
-        let _histogram_request = HistogramRequest {
-            after,
-            before,
-            filter_expr,
-        };
-    }
-
+    use tokio::time::{Duration, interval};
+    let mut interval = interval(Duration::from_secs(1));
     let mut iteration = 0;
     let loop_start = std::time::Instant::now();
     loop {
-        let histogram_result = app_state.get_histogram(histogram_request.clone()).await;
+        interval.tick().await;
 
+        let instant = std::time::Instant::now();
+        let histogram_result = app_state.get_histogram(histogram_request.clone()).await;
         iteration += 1;
         println!(
-            "[Iteration {}] Elapsed: {}, Partial: {}, Complete: {}, Total: {}",
+            "[Iteration {}] Elapsed: {}/{}, Partial: {}, Complete: {}, Total: {}",
             iteration,
+            instant.elapsed().as_millis(),
             loop_start.elapsed().as_secs(),
             app_state.partial_responses.len(),
             app_state.complete_responses.len(),
             app_state.partial_responses.len() + app_state.complete_responses.len()
         );
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
-
-        if iteration == 15 {
+        if iteration == 1500 {
             let ui_response = histogram_result.ui_response("PRIORITY");
             let s = serde_json::to_string_pretty(&ui_response).unwrap();
             println!("{}", s);

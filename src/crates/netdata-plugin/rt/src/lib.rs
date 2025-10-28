@@ -369,7 +369,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
         let current_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Time went backwards")
-            .as_secs() as u64;
+            .as_secs();
 
         let expires: u64 = current_timestamp + 2;
 
@@ -703,7 +703,6 @@ where
         // we convert the frontend request from a GET to POST.
         let mut function_call = function_call;
         {
-            eprintln!("Function call {:#?}", function_call);
             if function_call.name == "systemd-journal" {
                 if !function_call.args.is_empty() {
                     let mut map = serde_json::Map::new();
