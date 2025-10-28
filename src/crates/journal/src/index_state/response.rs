@@ -319,7 +319,13 @@ impl HistogramResult {
         let result = self.ui_chart_result(field);
         let view = self.ui_chart_view(field, &result.labels);
 
-        ui::histogram::chart::Chart { view, result }
+        let mut chart = ui::histogram::chart::Chart { view, result };
+
+        if field == "PRIORITY" {
+            chart.patch_priority();
+        }
+
+        chart
     }
 
     pub fn ui_histogram(&self, field: &str) -> ui::histogram::Histogram {

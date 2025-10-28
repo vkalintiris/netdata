@@ -1,6 +1,7 @@
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
@@ -35,11 +36,38 @@ pub mod histogram {
     pub mod chart {
         use super::*;
 
+        fn remap_strings(vec: &mut Vec<String>, map: &HashMap<&str, &str>) {
+            for s in vec.iter_mut() {
+                if let Some(&new_value) = map.get(s.as_str()) {
+                    *s = new_value.to_string();
+                }
+            }
+        }
+
         #[derive(Debug, Serialize, Deserialize)]
         #[cfg_attr(feature = "allocative", derive(Allocative))]
         pub struct Chart {
             pub view: view::View,
             pub result: result::Result,
+        }
+
+        impl Chart {
+            pub fn patch_priority(&mut self) {
+                let mut map = HashMap::default();
+
+                map.insert("0", "emergency");
+                map.insert("1", "alert");
+                map.insert("2", "critical");
+                map.insert("3", "error");
+                map.insert("4", "warning");
+                map.insert("5", "notice");
+                map.insert("6", "info");
+                map.insert("7", "debug");
+
+                remap_strings(&mut self.view.dimensions.ids, &map);
+                remap_strings(&mut self.view.dimensions.names, &map);
+                remap_strings(&mut self.result.labels, &map);
+            }
         }
 
         pub mod view {
