@@ -336,8 +336,67 @@ impl HistogramResult {
         }
     }
 
+    pub fn ui_facets(&self) -> Vec<ui::facet::Facet> {
+        // Aggregate filtered counts for each field=value pair across all buckets
+        let mut field_value_counts: HashMap<String, usize> = HashMap::default();
+
+        for (_, bucket_response) in &self.buckets {
+            let fv_counts = match bucket_response {
+                BucketResponse::Partial(partial) => &partial.fv_counts,
+                BucketResponse::Complete(complete) => &complete.fv_counts,
+            };
+
+            for (fv, (_unfiltered, filtered)) in fv_counts {
+                *field_value_counts.entry(fv.clone()).or_insert(0) += filtered;
+            }
+        }
+
+        // Group values by field
+        let mut field_to_values: HashMap<String, Vec<(String, usize)>> = HashMap::default();
+
+        for (fv, count) in field_value_counts {
+            if let Some((f, v)) = fv.split_once('=') {
+                field_to_values
+                    .entry(f.to_string())
+                    .or_insert_with(Vec::new)
+                    .push((v.to_string(), count));
+            }
+        }
+
+        // Create facets with sorted fields and options
+        let mut facets = Vec::new();
+        let mut field_names: Vec<String> = field_to_values.keys().cloned().collect();
+        field_names.sort();
+
+        for (order, field_name) in field_names.iter().enumerate() {
+            let mut values = field_to_values.get(field_name).unwrap().clone();
+            values.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let options: Vec<ui::facet::Option> = values
+                .into_iter()
+                .enumerate()
+                .map(|(opt_order, (value, count))| ui::facet::Option {
+                    id: value.clone(),
+                    name: value,
+                    order: opt_order,
+                    count,
+                })
+                .collect();
+
+            facets.push(ui::facet::Facet {
+                id: field_name.clone(),
+                name: field_name.clone(),
+                order,
+                options,
+            });
+        }
+
+        facets
+    }
+
     pub fn ui_response(&self, field: &str) -> ui::Response {
         ui::Response {
+            facets: self.ui_facets(),
             available_histograms: self.ui_available_histograms(),
             histogram: self.ui_histogram(field),
         }

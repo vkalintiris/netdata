@@ -92,6 +92,7 @@ async fn journal_handler(
         version: Version::default(),
         accepted_params: AppState::accepted_params(),
         required_params: AppState::required_params(),
+        facets: histogram_result.ui_facets(),
         histogram: histogram_result.ui_histogram("PRIORITY"),
         available_histograms: histogram_result.ui_available_histograms(),
         columns: Columns {},

@@ -155,6 +155,8 @@ pub struct JournalResponse {
     pub accepted_params: Vec<RequestParam>,
     pub required_params: Vec<RequiredParam>,
 
+    pub facets: Vec<journal::index_state::ui::facet::Facet>,
+
     pub available_histograms:
         Vec<journal::index_state::ui::available_histogram::AvailableHistogram>,
     pub histogram: journal::index_state::ui::histogram::Histogram,

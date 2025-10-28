@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Response {
+    pub facets: Vec<facet::Facet>,
     pub available_histograms: Vec<available_histogram::AvailableHistogram>,
     pub histogram: histogram::Histogram,
 }
@@ -19,6 +20,28 @@ pub mod available_histogram {
         pub id: String,
         pub name: String,
         pub order: usize,
+    }
+}
+
+pub mod facet {
+    use super::*;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "allocative", derive(Allocative))]
+    pub struct Facet {
+        pub id: String,
+        pub name: String,
+        pub order: usize,
+        pub options: Vec<Option>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "allocative", derive(Allocative))]
+    pub struct Option {
+        pub id: String,
+        pub name: String,
+        pub order: usize,
+        pub count: usize,
     }
 }
 
