@@ -112,11 +112,14 @@ impl FilterExpr<String> {
                 }
             }
             FilterExpr::Conjunction(filters) => {
-                let resolved: Vec<_> = filters
-                    .iter()
-                    .map(|f| f.resolve(file_index))
-                    .filter(|f| !matches!(f, FilterExpr::None))
-                    .collect();
+                let mut resolved = Vec::with_capacity(filters.len());
+                for filter in filters {
+                    let r = filter.resolve(file_index);
+                    if matches!(r, FilterExpr::None) {
+                        return FilterExpr::None;
+                    }
+                    resolved.push(r);
+                }
 
                 match resolved.len() {
                     0 => FilterExpr::None,
@@ -125,17 +128,41 @@ impl FilterExpr<String> {
                 }
             }
             FilterExpr::Disjunction(filters) => {
-                let resolved: Vec<_> = filters
-                    .iter()
-                    .map(|f| f.resolve(file_index))
-                    .filter(|f| !matches!(f, FilterExpr::None))
-                    .collect();
+                let mut resolved = Vec::with_capacity(filters.len());
+                for filter in filters {
+                    let r = filter.resolve(file_index);
+                    if !matches!(r, FilterExpr::None) {
+                        resolved.push(r);
+                    }
+                }
 
                 match resolved.len() {
                     0 => FilterExpr::None,
                     1 => resolved.into_iter().next().unwrap(),
                     _ => FilterExpr::Disjunction(resolved),
                 }
+            }
+        }
+    }
+
+    pub fn contains(&self, s: &str) -> bool {
+        match self {
+            FilterExpr::None => false,
+            FilterExpr::Match(field_value) => {
+                if field_value == s {
+                    true
+                } else {
+                    false
+                }
+            }
+            FilterExpr::Conjunction(filters) | FilterExpr::Disjunction(filters) => {
+                for fe in filters {
+                    if fe.contains(s) {
+                        return true;
+                    }
+                }
+
+                false
             }
         }
     }
