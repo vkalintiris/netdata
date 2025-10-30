@@ -1,11 +1,11 @@
-use journal::collections::{HashMap, HashSet};
-use journal::index::{FileIndex, FilterExpr};
 use crate::request::{BucketRequest, RequestMetadata};
 use crate::ui;
-use journal::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use enum_dispatch::enum_dispatch;
+use journal::collections::{HashMap, HashSet};
+use journal::index::{FileIndex, FilterExpr};
+use journal::repository::File;
 use std::sync::Arc;
 
 /// A partial bucket response.
@@ -295,9 +295,7 @@ impl HistogramResult {
     ) -> ui::histogram::chart::view::View {
         let ids: Vec<String> = labels.iter().skip(1).cloned().collect();
         let names = ids.clone();
-        let units = std::iter::repeat("events".to_string())
-            .take(ids.len())
-            .collect();
+        let units = std::iter::repeat_n("events".to_string(), ids.len()).collect();
 
         let dimensions = ui::histogram::chart::view::Dimensions { ids, names, units };
 
@@ -355,7 +353,7 @@ impl HistogramResult {
             if let Some((f, v)) = fv.split_once('=') {
                 field_to_values
                     .entry(f.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((v.to_string(), count));
             }
         }

@@ -45,7 +45,7 @@ impl AppState {
             indexed_fields,
             runtime_handle,
             "/mnt/ramfs/foyer-storage",
-            1_000_00,
+            10000,
             64 * 1024 * 1024,
         )
         .await

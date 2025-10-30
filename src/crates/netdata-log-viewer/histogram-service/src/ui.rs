@@ -59,7 +59,7 @@ pub mod histogram {
     pub mod chart {
         use super::*;
 
-        fn remap_strings(vec: &mut Vec<String>, map: &HashMap<&str, &str>) {
+        fn remap_strings(vec: &mut [String], map: &HashMap<&str, &str>) {
             for s in vec.iter_mut() {
                 if let Some(&new_value) = map.get(s.as_str()) {
                     *s = new_value.to_string();
