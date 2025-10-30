@@ -155,11 +155,11 @@ pub struct JournalResponse {
     pub accepted_params: Vec<RequestParam>,
     pub required_params: Vec<RequiredParam>,
 
-    pub facets: Vec<journal::index_state::ui::facet::Facet>,
+    pub facets: Vec<histogram_service::ui::facet::Facet>,
 
     pub available_histograms:
-        Vec<journal::index_state::ui::available_histogram::AvailableHistogram>,
-    pub histogram: journal::index_state::ui::histogram::Histogram,
+        Vec<histogram_service::ui::available_histogram::AvailableHistogram>,
+    pub histogram: histogram_service::ui::histogram::Histogram,
     // FIXME: columns do not contain u32s
     pub columns: Columns,
     pub data: Vec<u32>,

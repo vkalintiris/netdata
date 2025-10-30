@@ -1,0 +1,40 @@
+[package]
+name = "histogram-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+allocative = ["dep:allocative", "journal/allocative"]
+indexing-stats = ["dep:hdrhistogram", "journal/indexing-stats"]
+
+[dependencies]
+# Core dependencies
+journal.workspace = true
+
+# Cache dependencies
+foyer.workspace = true
+lru.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Utilities
+enum_dispatch.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+
+# Optional features
+allocative = { workspace = true, optional = true }
+hdrhistogram = { workspace = true, optional = true }

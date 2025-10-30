@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing,
 };
-use journal::index_state::ui::available_histogram;
+use histogram_service::ui::available_histogram;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -118,7 +118,7 @@ async fn journal_handler(
 ) -> impl IntoResponse {
     let filter_expr = build_filter_from_selections(&request.selections);
 
-    let histogram_request = journal::index_state::HistogramRequest {
+    let histogram_request = histogram_service::HistogramRequest {
         after: request.after as u64,
         before: request.before as u64,
         filter_expr: Arc::new(filter_expr),
@@ -153,7 +153,7 @@ async fn journal_handler(
 }
 
 struct AppState {
-    journal_state: Arc<RwLock<journal::index_state::AppState>>,
+    journal_state: Arc<RwLock<histogram_service::AppState>>,
 }
 
 impl AppState {
@@ -269,7 +269,7 @@ pub fn get_facets() -> HashSet<String> {
 
 impl AppState {
     fn new(
-        journal_state: journal::index_state::AppState,
+        journal_state: histogram_service::AppState,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             journal_state: Arc::new(RwLock::new(journal_state)),
@@ -329,7 +329,7 @@ async fn main() {
     let path = "/var/log/journal";
     // let path = "/home/vk/repos/tmp/flog";
     // let path = "/home/vk/repos/tmp/agent-events-journal";
-    let journal_state = journal::index_state::AppState::new(
+    let journal_state = histogram_service::AppState::new(
         // "/home/vk/repos/tmp/agent-events-journal",
         path,
         indexed_fields,

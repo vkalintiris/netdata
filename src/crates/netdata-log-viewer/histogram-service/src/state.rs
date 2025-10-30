@@ -1,12 +1,12 @@
-use crate::collections::{HashMap, HashSet};
-use crate::index_state::cache::{IndexCache, IndexingRequest};
-use crate::index_state::error::Result;
-use crate::index_state::request::{BucketRequest, HistogramRequest, RequestMetadata};
-use crate::index_state::response::{
+use journal::collections::{HashMap, HashSet};
+use crate::cache::{IndexCache, IndexingRequest};
+use crate::error::Result;
+use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
+use crate::response::{
     BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResult,
 };
-use crate::registry::Registry;
-use crate::repository::File;
+use journal::registry::Registry;
+use journal::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use lru::LruCache;
@@ -266,7 +266,7 @@ impl AppState {
 
     /// Returns a snapshot of current indexing statistics.
     #[cfg(feature = "indexing-stats")]
-    pub fn indexing_stats(&self) -> crate::index_state::cache::IndexingStats {
+    pub fn indexing_stats(&self) -> crate::cache::IndexingStats {
         self.cache.indexing_stats()
     }
 

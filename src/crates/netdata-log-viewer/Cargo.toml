@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "histogram-service",
     "log-viewer-plugin",
     "lv",
     "types",
@@ -45,12 +46,20 @@ opentelemetry-otlp = "0.31.0"
 axum = "0.7"
 axum-tracing-opentelemetry = "0.32.0"
 tower-http = { version = "0.5" }
+foyer = { version = "0.20.0", features = ["serde"] }
+lru = "0.16"
+enum_dispatch = "0.3.13"
+parking_lot = "0.12"
+allocative = { version = "0.3.4" }
+hdrhistogram = { version = "7.5" }
+rayon = "1.11.0"
 
 rt = { path = "../netdata-plugin/rt" }
 netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "../netdata-plugin/schema" }
 journal = { path = "../journal" }
+histogram-service = { path = "histogram-service" }
 
 [profile.release-min]
 inherits = "release"

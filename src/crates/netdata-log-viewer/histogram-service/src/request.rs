@@ -1,6 +1,6 @@
-use crate::collections::HashSet;
-use crate::index::FilterExpr;
-use crate::repository::File;
+use journal::collections::HashSet;
+use journal::index::FilterExpr;
+use journal::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use std::sync::Arc;

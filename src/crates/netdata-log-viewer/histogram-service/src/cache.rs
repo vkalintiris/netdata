@@ -29,12 +29,12 @@
 //! failed sends), age-based drops, cache hit rates, and latency percentiles for both queue wait
 //! time and indexing duration. These metrics help tune the channel size and timeout parameters.
 
-use crate::collections::HashSet;
-use crate::index::{FileIndex, FileIndexer};
-use crate::index_state::request::BucketRequest;
-use crate::index_state::response::BucketPartialResponse;
-use crate::repository::File;
-use crate::{JournalFile, file::Mmap};
+use journal::collections::HashSet;
+use journal::index::{FileIndex, FileIndexer};
+use crate::request::BucketRequest;
+use crate::response::BucketPartialResponse;
+use journal::repository::File;
+use journal::{JournalFile, file::Mmap};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use lru::LruCache;
@@ -351,7 +351,7 @@ impl IndexCache {
         cache_dir: impl AsRef<std::path::Path>,
         memory_capacity: usize,
         disk_capacity: u64,
-    ) -> crate::index_state::error::Result<Self> {
+    ) -> crate::error::Result<Self> {
         use foyer::{
             BlockEngineBuilder, Compression, DeviceBuilder, FsDeviceBuilder, HybridCacheBuilder,
         };
@@ -473,7 +473,7 @@ impl IndexCache {
 
     /// Gracefully closes the cache, ensuring all pending writes are flushed to disk.
     /// Should be called during application shutdown.
-    pub async fn close(&self) -> crate::index_state::error::Result<()> {
+    pub async fn close(&self) -> crate::error::Result<()> {
         self.file_indexes.close().await?;
         Ok(())
     }

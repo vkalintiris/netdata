@@ -1,5 +1,5 @@
-use crate::JournalError;
-use crate::registry::RegistryError;
+use journal::JournalError;
+use journal::registry::RegistryError;
 use thiserror::Error;
 
 /// Errors that can occur when working with the journal registry

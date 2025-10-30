@@ -1,8 +1,8 @@
-use crate::collections::{HashMap, HashSet};
-use crate::index::{FileIndex, FilterExpr};
-use crate::index_state::request::{BucketRequest, RequestMetadata};
-use crate::index_state::ui;
-use crate::repository::File;
+use journal::collections::{HashMap, HashSet};
+use journal::index::{FileIndex, FilterExpr};
+use crate::request::{BucketRequest, RequestMetadata};
+use crate::ui;
+use journal::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use enum_dispatch::enum_dispatch;
