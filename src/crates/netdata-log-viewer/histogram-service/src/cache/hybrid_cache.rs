@@ -26,8 +26,8 @@ pub enum CacheGetResult<T> {
 /// * `V` - Value type (must implement StorageValue from foyer)
 pub struct HybridCache<K, V>
 where
-    K: StorageKey + Clone,
-    V: StorageValue + Clone,
+    K: StorageKey,
+    V: StorageValue,
 {
     inner: foyer::HybridCache<K, V>,
 }
