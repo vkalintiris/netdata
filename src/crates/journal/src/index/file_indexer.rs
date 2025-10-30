@@ -5,10 +5,9 @@ use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::I
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use tracing::{error, warn};
 
-use super::file_index::{FileIndex, FileIndexInner};
+use super::file_index::FileIndex;
 
 fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result<u64> {
     let payload = data_object.payload_bytes();
@@ -129,13 +128,6 @@ impl FileIndexer {
             .map(|s| s.to_string())
             .collect();
 
-        let inner = FileIndexInner {
-            file_fields,
-            indexed_fields,
-            histogram,
-            bitmaps: entries,
-        };
-
         // let n_entries = journal_file.journal_header_ref().n_entries as _;
         self.source_timestamp_cursor_pairs = Vec::new();
         self.source_timestamp_entry_offset_pairs = Vec::new();
@@ -145,7 +137,10 @@ impl FileIndexer {
         self.entry_offset_index = HashMap::default();
 
         Ok(FileIndex {
-            inner: Arc::new(inner),
+            histogram,
+            file_fields,
+            indexed_fields,
+            bitmaps: entries,
         })
     }
 
