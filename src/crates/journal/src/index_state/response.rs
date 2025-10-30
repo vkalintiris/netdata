@@ -70,13 +70,13 @@ impl BucketPartialResponse {
         // Remove the file from the queue
         self.request_metadata.files.remove(file);
 
-        // Add any missing unindexed fields to the bucket
+        // Track fields that exist in the file but were not indexed
+        // This allows the UI to distinguish between indexed and unindexed fields
         for field in file_index.fields() {
             if file_index.is_indexed(field) {
                 continue;
             }
 
-            // FIXME: rethink this
             self.unindexed_fields.insert(field.clone());
         }
 

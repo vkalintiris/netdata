@@ -806,25 +806,25 @@ mod tests {
         chain.files.push_back(active.clone());
 
         // Range [150, 250) should include files at 100, 200, and active
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(150, 250, &mut output);
-        assert_eq!(output.len(), 3);
-        assert_eq!(output[0], file1);
-        assert_eq!(output[1], file2);
-        assert_eq!(output[2], active);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(150, 250, &mut files);
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
+        assert!(files.contains(&active));
 
         // Range [250, 350) should include only file at 200 and active
-        output.clear();
-        chain.find_files_in_range(250, 350, &mut output);
-        assert_eq!(output.len(), 2);
-        assert_eq!(output[0], file2);
-        assert_eq!(output[1], active);
+        files.clear();
+        chain.find_files_in_range(250, 350, &mut files);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file2));
+        assert!(files.contains(&active));
 
         // Range [50, 150) should include file at 100
-        output.clear();
-        chain.find_files_in_range(50, 150, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], file1);
+        files.clear();
+        chain.find_files_in_range(50, 150, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file1));
     }
 
     #[test]
@@ -838,17 +838,17 @@ mod tests {
         chain.files.push_back(active.clone());
 
         // Active file with no archived files should span from u64::MIN to u64::MAX
-        let mut output = VecDeque::new();
-        chain.find_files_in_range(0, 100, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], active);
+        let mut files = HashSet::default();
+        chain.find_files_in_range(0, 100, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&active));
 
-        output.clear();
+        files.clear();
         let start = u64::MAX / USEC_PER_SEC - 100;
         let end = u64::MAX / USEC_PER_SEC;
-        chain.find_files_in_range(start, end, &mut output);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], active);
+        chain.find_files_in_range(start, end, &mut files);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&active));
     }
 
     #[test]
