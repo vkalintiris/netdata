@@ -139,13 +139,15 @@ impl Default for Pagination {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Versions {
-    sources: u64,
-}
+// #[derive(Debug, Serialize, Deserialize)]
+// struct Versions {
+//     sources: u64,
+// }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Columns {}
+// #[derive(Debug, Serialize, Deserialize)]
+// pub struct Columns {}
+
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JournalResponse {
@@ -157,11 +159,10 @@ pub struct JournalResponse {
 
     pub facets: Vec<histogram_service::ui::facet::Facet>,
 
-    pub available_histograms:
-        Vec<histogram_service::ui::available_histogram::AvailableHistogram>,
+    pub available_histograms: Vec<histogram_service::ui::available_histogram::AvailableHistogram>,
     pub histogram: histogram_service::ui::histogram::Histogram,
     // FIXME: columns do not contain u32s
-    pub columns: Columns,
+    pub columns: Value,
     pub data: Vec<u32>,
     pub default_charts: Vec<u32>,
 

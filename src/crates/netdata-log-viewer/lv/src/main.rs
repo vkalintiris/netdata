@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use types::{
-    Columns, HealthResponse, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption,
+    HealthResponse, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption,
     Pagination, RequestParam, RequiredParam, Version,
 };
 
@@ -131,6 +131,10 @@ async fn journal_handler(
         .get_histogram(histogram_request)
         .await;
 
+    let path = "/home/vk/repos/nd/sjr/src/crates/netdata-log-viewer/columns.json";
+    let contents = std::fs::read_to_string(path).unwrap();
+    let data: serde_json::Value = serde_json::from_str(&contents).unwrap();
+
     PrettyJson(JournalResponse {
         version: Version::default(),
         accepted_params: AppState::accepted_params(),
@@ -138,7 +142,7 @@ async fn journal_handler(
         facets: histogram_result.ui_facets(),
         histogram: histogram_result.ui_histogram("PRIORITY"),
         available_histograms: histogram_result.ui_available_histograms(),
-        columns: Columns {},
+        columns: data,
         data: Vec::new(),
         default_charts: Vec::new(),
         // Hard coded stuff
@@ -268,9 +272,7 @@ pub fn get_facets() -> HashSet<String> {
 }
 
 impl AppState {
-    fn new(
-        journal_state: histogram_service::AppState,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(journal_state: histogram_service::AppState) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             journal_state: Arc::new(RwLock::new(journal_state)),
         })
