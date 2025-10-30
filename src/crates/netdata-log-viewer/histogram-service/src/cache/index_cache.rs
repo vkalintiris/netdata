@@ -1,4 +1,4 @@
-//! File index cache with background indexing workers.
+//! High-level file index cache with background indexing workers.
 //!
 //! This module implements a concurrent file indexing system for UI dashboards that continuously
 //! poll for histogram data. Requests are decomposed into individual file indexing tasks and
@@ -29,6 +29,8 @@
 //! failed sends), age-based drops, cache hit rates, and latency percentiles for both queue wait
 //! time and indexing duration. These metrics help tune the channel size and timeout parameters.
 
+use super::hybrid_cache::CacheGetResult;
+use super::FileIndexCache;
 use journal::collections::HashSet;
 use journal::index::{FileIndex, FileIndexer};
 use crate::request::BucketRequest;
@@ -83,13 +85,13 @@ pub struct IndexingStats {
     pub file_index_size_p99_bytes: Option<f64>,
     pub file_index_size_max_bytes: Option<f64>,
 
-    /// Foyer cache statistics
-    pub foyer_memory_usage_bytes: usize,
-    pub foyer_memory_capacity_bytes: usize,
-    pub foyer_disk_write_bytes: usize,
-    pub foyer_disk_read_bytes: usize,
-    pub foyer_disk_write_ios: usize,
-    pub foyer_disk_read_ios: usize,
+    /// Cache statistics
+    pub cache_memory_usage_bytes: usize,
+    pub cache_memory_capacity_bytes: usize,
+    pub cache_disk_write_bytes: usize,
+    pub cache_disk_read_bytes: usize,
+    pub cache_disk_write_ios: usize,
+    pub cache_disk_read_ios: usize,
 }
 
 /// Internal metrics implementation with atomics and histograms (requires `indexing-stats` feature).
@@ -328,8 +330,8 @@ pub struct IndexingRequest {
 
 /// Cache for file indexes with a background worker pool for concurrent indexing.
 pub struct IndexCache {
-    pub file_indexes: foyer::HybridCache<File, FileIndex>,
-    pub indexing_tx: SyncSender<IndexingRequest>,
+    file_indexes: FileIndexCache,
+    indexing_tx: SyncSender<IndexingRequest>,
 
     #[cfg(feature = "indexing-stats")]
     stats: Arc<IndexingMetrics>,
@@ -364,7 +366,7 @@ impl IndexCache {
             .with_capacity(disk_capacity.try_into().unwrap())
             .build()?;
 
-        let file_indexes = HybridCacheBuilder::new()
+        let foyer_cache = HybridCacheBuilder::new()
             .with_name("journal-index-cache")
             .with_policy(foyer::HybridCachePolicy::WriteOnEviction)
             .memory(memory_capacity)
@@ -375,6 +377,8 @@ impl IndexCache {
             .build()
             .await?;
 
+        let file_indexes = FileIndexCache::new(foyer_cache);
+
         let (tx, rx) = sync_channel(100);
 
         #[cfg(feature = "indexing-stats")]
@@ -383,7 +387,7 @@ impl IndexCache {
         // Spawn 24 background indexing threads
         let rx = Arc::new(std::sync::Mutex::new(rx));
         for _ in 0..24 {
-            let cache_clone = file_indexes.clone();
+            let cache_clone = file_indexes.inner().clone();
             let rx_clone = Arc::clone(&rx);
             let handle_clone = runtime_handle.clone();
             #[cfg(feature = "indexing-stats")]
@@ -440,19 +444,14 @@ impl IndexCache {
     pub fn indexing_stats(&self) -> IndexingStats {
         let mut stats = self.stats.snapshot();
 
-        // Add foyer cache statistics
-        // usage/capacity return weighted sizes (bytes in our case, since we use a byte-based weighter)
-        stats.foyer_memory_usage_bytes = self.file_indexes.memory().usage();
-        stats.foyer_memory_capacity_bytes = self.file_indexes.memory().capacity();
-
-        // Only populate disk stats if running in hybrid mode
-        if self.file_indexes.is_hybrid() {
-            let foyer_stats = self.file_indexes.statistics();
-            stats.foyer_disk_write_bytes = foyer_stats.disk_write_bytes();
-            stats.foyer_disk_read_bytes = foyer_stats.disk_read_bytes();
-            stats.foyer_disk_write_ios = foyer_stats.disk_write_ios();
-            stats.foyer_disk_read_ios = foyer_stats.disk_read_ios();
-        }
+        // Add cache statistics
+        let cache_stats = self.file_indexes.statistics();
+        stats.cache_memory_usage_bytes = cache_stats.memory_usage_bytes;
+        stats.cache_memory_capacity_bytes = cache_stats.memory_capacity_bytes;
+        stats.cache_disk_write_bytes = cache_stats.disk_write_bytes;
+        stats.cache_disk_read_bytes = cache_stats.disk_read_bytes;
+        stats.cache_disk_write_ios = cache_stats.disk_write_ios;
+        stats.cache_disk_read_ios = cache_stats.disk_read_ios;
 
         stats
     }
@@ -479,38 +478,22 @@ impl IndexCache {
     }
 
     /// Updates partial responses with data from cached file indexes.
-    pub async fn resolve_partial_responses_new(
-        &self,
-        partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
-        pending_files: HashSet<File>,
-    ) {
-        for file in pending_files {
-            if let Ok(Some(entry)) = self.file_indexes.get(&file).await {
-                let file_index = entry.value();
-                for (_bucket_request, partial_response) in partial_responses.iter_mut() {
-                    partial_response.update(&file, file_index);
-                }
-            } else {
-                eprintln!("Did not find {}", file.path());
-            }
-        }
-    }
-
+    ///
+    /// Attempts to fetch file indexes from cache with timeouts, updating all
+    /// partial responses with the retrieved data. Uses per-file and total timeouts
+    /// to ensure responsiveness.
     pub async fn resolve_partial_responses(
         &self,
         partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
         pending_files: HashSet<File>,
     ) {
         use std::time::Duration;
-        use tokio::time::{Instant, timeout};
+        use tokio::time::Instant;
 
         const TOTAL_TIMEOUT: Duration = Duration::from_millis(500);
-        const PER_FILE_TIMEOUT: Duration = Duration::from_millis(100); // adjust as needed
+        const PER_FILE_TIMEOUT: Duration = Duration::from_millis(100);
 
         let start = Instant::now();
-
-        let mut hits = 0;
-        let mut misses = 0;
 
         for file in pending_files {
             // Check if we've exceeded total timeout
@@ -523,51 +506,35 @@ impl IndexCache {
             let file_timeout = remaining.min(PER_FILE_TIMEOUT);
 
             // Apply timeout to the `obtain` operation
-            match timeout(file_timeout, self.file_indexes.obtain(file.clone())).await {
-                Ok(Ok(Some(entry))) => {
-                    hits += 1;
+            match self.file_indexes.get_with_timeout(&file, file_timeout).await {
+                Ok(CacheGetResult::Hit(file_index)) => {
 
-                    let file_index = entry.value();
                     let inst = Instant::now();
-                    let mut counter = 0;
                     use rayon::prelude::*;
-                    let counter: usize = partial_responses
+                    let count: usize = partial_responses
                         .iter_mut()
                         .par_bridge()
                         .map(|(_bucket_request, partial_response)| {
-                            partial_response.update(&file, file_index);
+                            partial_response.update(&file, &file_index);
                             1
                         })
                         .sum();
-                    // for (_bucket_request, partial_response) in partial_responses.iter() {
-                    //     partial_response.update(&file, file_index);
-                    //     counter += 1;
-
-                    //     // if start.elapsed() >= TOTAL_TIMEOUT {
-                    //     //     break;
-                    //     // }
                     // }
                     println!(
                         "Updating {} buckets took {} msec for file {}",
-                        counter,
+                        count,
                         inst.elapsed().as_millis(),
                         file.path()
                     );
                 }
-                Ok(Ok(None)) => {
-                    misses += 1;
-                    // File not in cache
+                Ok(CacheGetResult::Miss) => {
+                    // File not in cache, will be indexed by workers
                 }
-                Ok(Err(_)) => {
-                    // Error from get operation
-                }
-                Err(_) => {
-                    // Timeout occurred for this file, continue to next
+                Err(_e) => {
+                    // Error fetching from cache, skip this file
                 }
             }
         }
-
-        // println!("Hits: {}, Misses: {}", hits, misses);
     }
 
     fn indexing_worker(
