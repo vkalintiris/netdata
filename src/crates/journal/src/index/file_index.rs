@@ -68,7 +68,7 @@ impl FileIndex {
     }
 
     pub fn bucket_duration(&self) -> u64 {
-        self.inner.histogram.bucket_duration
+        self.inner.histogram.bucket_duration.get()
     }
 
     pub fn histogram(&self) -> &Histogram {

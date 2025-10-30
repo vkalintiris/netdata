@@ -2,6 +2,7 @@ use super::Bitmap;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
 
 /// A [`Histogram::bucket_duration`] aligned bucket in the histogram.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -19,31 +20,30 @@ pub struct Bucket {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Histogram {
     /// The duration of each bucket in seconds
-    pub bucket_duration: u64,
+    pub bucket_duration: NonZeroU64,
     /// Sparse vector containing only bucket boundaries where changes occur.
     pub buckets: Vec<Bucket>,
 }
 
 impl Histogram {
     pub fn from_timestamp_offset_pairs(
-        bucket_duration: u64,
+        bucket_duration: std::num::NonZeroU64,
         timestamp_offset_pairs: &[(u64, std::num::NonZeroU64)],
     ) -> Histogram {
         debug_assert!(timestamp_offset_pairs.is_sorted());
-        debug_assert_ne!(bucket_duration, 0);
 
         // let mut buckets = Vec::with_capacity(timestamp_offset_pairs.len());
         let mut buckets = Vec::new();
         let mut current_bucket = None;
 
         // Convert seconds to microseconds for bucket size
-        let bucket_size_micros = bucket_duration * 1_000_000;
+        let bucket_size_micros = bucket_duration.get() * 1_000_000;
 
         for (offset_index, &(timestamp_micros, _offset)) in
             timestamp_offset_pairs.iter().enumerate()
         {
             // Calculate which bucket this timestamp falls into
-            let bucket = (timestamp_micros / bucket_size_micros) * bucket_duration;
+            let bucket = (timestamp_micros / bucket_size_micros) * bucket_duration.get();
 
             match current_bucket {
                 None => {
@@ -118,7 +118,7 @@ impl Histogram {
     pub fn end_time(&self) -> Option<u64> {
         self.buckets
             .last()
-            .map(|bucket| bucket.start_time as u64 + self.bucket_duration)
+            .map(|bucket| bucket.start_time as u64 + self.bucket_duration.get())
     }
 
     /// Get the time range covered by the histogram.
@@ -192,8 +192,8 @@ impl Histogram {
         }
 
         // Verify alignment to bucket_duration
-        if !start_time.is_multiple_of(self.bucket_duration)
-            || !end_time.is_multiple_of(self.bucket_duration)
+        if !start_time.is_multiple_of(self.bucket_duration.get())
+            || !end_time.is_multiple_of(self.bucket_duration.get())
         {
             return None;
         }
@@ -313,7 +313,7 @@ mod tests {
         ];
 
         Histogram {
-            bucket_duration: 60,
+            bucket_duration: NonZeroU64::new(60).unwrap(),
             buckets,
         }
     }

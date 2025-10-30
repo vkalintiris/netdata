@@ -322,6 +322,10 @@ impl FileIndexer {
             }
         }
 
+        let Some(bucket_duration) = NonZeroU64::new(bucket_duration) else {
+            return Err(JournalError::InvalidMagicNumber);
+        };
+
         // Now we can build the file histogram
         Ok(Histogram::from_timestamp_offset_pairs(
             bucket_duration,
