@@ -29,16 +29,16 @@
 //! failed sends), age-based drops, cache hit rates, and latency percentiles for both queue wait
 //! time and indexing duration. These metrics help tune the channel size and timeout parameters.
 
-use super::hybrid_cache::CacheGetResult;
 use super::FileIndexCache;
-use journal::collections::HashSet;
-use journal::index::{FileIndex, FileIndexer};
+use super::hybrid_cache::CacheGetResult;
 use crate::request::BucketRequest;
 use crate::response::BucketPartialResponse;
-use journal::repository::File;
-use journal::{JournalFile, file::Mmap};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
+use journal::collections::HashSet;
+use journal::index::{FileIndex, FileIndexer};
+use journal::repository::File;
+use journal::{JournalFile, file::Mmap};
 use lru::LruCache;
 use std::cell::RefCell;
 use std::sync::{
@@ -57,266 +57,6 @@ thread_local! {
     static FILE_INDEXER: RefCell<FileIndexer> = RefCell::new(FileIndexer::default());
 }
 
-/// User-facing statistics snapshot (requires `indexing-stats` feature).
-#[cfg(feature = "indexing-stats")]
-#[derive(Debug, Clone)]
-pub struct IndexingStats {
-    pub try_send_succeeded: u64,
-    pub try_send_failed: u64,
-    pub dropped_age_timeout: u64,
-    pub skipped_already_cached: u64,
-    pub indexed_successfully: u64,
-    pub indexing_failed: u64,
-
-    /// Indexing time percentiles in milliseconds (None if no samples)
-    pub indexing_time_p50_ms: Option<f64>,
-    pub indexing_time_p99_ms: Option<f64>,
-    pub indexing_time_max_ms: Option<f64>,
-
-    /// Request latency percentiles in milliseconds (None if no samples)
-    pub request_latency_p50_ms: Option<f64>,
-    pub request_latency_p99_ms: Option<f64>,
-    pub request_latency_max_ms: Option<f64>,
-
-    /// File index size percentiles in bytes (None if no samples)
-    pub file_index_size_mean_bytes: Option<f64>,
-    pub file_index_size_p90_bytes: Option<f64>,
-    pub file_index_size_p95_bytes: Option<f64>,
-    pub file_index_size_p99_bytes: Option<f64>,
-    pub file_index_size_max_bytes: Option<f64>,
-
-    /// Cache statistics
-    pub cache_memory_usage_bytes: usize,
-    pub cache_memory_capacity_bytes: usize,
-    pub cache_disk_write_bytes: usize,
-    pub cache_disk_read_bytes: usize,
-    pub cache_disk_write_ios: usize,
-    pub cache_disk_read_ios: usize,
-}
-
-/// Internal metrics implementation with atomics and histograms (requires `indexing-stats` feature).
-#[cfg(feature = "indexing-stats")]
-struct IndexingMetrics {
-    // Histograms (in microseconds for time, bytes for size)
-    indexing_time_us: parking_lot::Mutex<Histogram<u64>>,
-    request_latency_us: parking_lot::Mutex<Histogram<u64>>,
-    file_index_size_bytes: parking_lot::Mutex<Histogram<u64>>,
-
-    // Counters
-    try_send_succeeded: AtomicU64,
-    try_send_failed: AtomicU64,
-    dropped_age_timeout: AtomicU64,
-    skipped_already_cached: AtomicU64,
-    indexed_successfully: AtomicU64,
-    indexing_failed: AtomicU64,
-}
-
-#[cfg(feature = "indexing-stats")]
-impl IndexingMetrics {
-    fn new() -> Self {
-        // Track up to 60 seconds (60,000,000 microseconds) with 3 significant digits
-        let indexing_time_us =
-            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
-        let request_latency_us =
-            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap());
-        // Track up to 128 MiB file index sizes (134,217,728 bytes) with 3 significant digits
-        let file_index_size_bytes =
-            parking_lot::Mutex::new(Histogram::<u64>::new_with_bounds(1, 134_217_728, 3).unwrap());
-
-        Self {
-            indexing_time_us,
-            request_latency_us,
-            file_index_size_bytes,
-            try_send_succeeded: AtomicU64::new(0),
-            try_send_failed: AtomicU64::new(0),
-            dropped_age_timeout: AtomicU64::new(0),
-            skipped_already_cached: AtomicU64::new(0),
-            indexed_successfully: AtomicU64::new(0),
-            indexing_failed: AtomicU64::new(0),
-        }
-    }
-
-    /// Records the time spent indexing a single file.
-    pub fn record_indexing_time(&self, duration: Duration) {
-        let micros = duration.as_micros() as u64;
-        if let Some(mut hist) = self.indexing_time_us.try_lock() {
-            let _ = hist.record(micros);
-        }
-    }
-
-    /// Records the time a request spent waiting in the queue before processing.
-    fn record_request_latency(&self, duration: Duration) {
-        let micros = duration.as_micros() as u64;
-        if let Some(mut hist) = self.request_latency_us.try_lock() {
-            let _ = hist.record(micros);
-        }
-    }
-
-    /// Records the size of a file index in bytes.
-    pub fn record_file_index_size(&self, size_bytes: usize) {
-        if let Some(mut hist) = self.file_index_size_bytes.try_lock() {
-            let _ = hist.record(size_bytes as u64);
-        }
-    }
-
-    /// Creates a snapshot of current statistics with plain values.
-    pub fn snapshot(&self) -> IndexingStats {
-        let (indexing_time_p50_ms, indexing_time_p99_ms, indexing_time_max_ms) =
-            if let Some(hist) = self.indexing_time_us.try_lock() {
-                if hist.len() > 0 {
-                    (
-                        Some(hist.value_at_quantile(0.50) as f64 / 1000.0),
-                        Some(hist.value_at_quantile(0.99) as f64 / 1000.0),
-                        Some(hist.max() as f64 / 1000.0),
-                    )
-                } else {
-                    (None, None, None)
-                }
-            } else {
-                (None, None, None)
-            };
-
-        let (request_latency_p50_ms, request_latency_p99_ms, request_latency_max_ms) =
-            if let Some(hist) = self.request_latency_us.try_lock() {
-                if hist.len() > 0 {
-                    (
-                        Some(hist.value_at_quantile(0.50) as f64 / 1000.0),
-                        Some(hist.value_at_quantile(0.99) as f64 / 1000.0),
-                        Some(hist.max() as f64 / 1000.0),
-                    )
-                } else {
-                    (None, None, None)
-                }
-            } else {
-                (None, None, None)
-            };
-
-        let (
-            file_index_size_mean_bytes,
-            file_index_size_p90_bytes,
-            file_index_size_p95_bytes,
-            file_index_size_p99_bytes,
-            file_index_size_max_bytes,
-        ) = if let Some(hist) = self.file_index_size_bytes.try_lock() {
-            if hist.len() > 0 {
-                (
-                    Some(hist.mean()),
-                    Some(hist.value_at_quantile(0.90) as f64),
-                    Some(hist.value_at_quantile(0.95) as f64),
-                    Some(hist.value_at_quantile(0.99) as f64),
-                    Some(hist.max() as f64),
-                )
-            } else {
-                (None, None, None, None, None)
-            }
-        } else {
-            (None, None, None, None, None)
-        };
-
-        IndexingStats {
-            try_send_succeeded: self.try_send_succeeded.load(Ordering::Relaxed),
-            try_send_failed: self.try_send_failed.load(Ordering::Relaxed),
-            dropped_age_timeout: self.dropped_age_timeout.load(Ordering::Relaxed),
-            skipped_already_cached: self.skipped_already_cached.load(Ordering::Relaxed),
-            indexed_successfully: self.indexed_successfully.load(Ordering::Relaxed),
-            indexing_failed: self.indexing_failed.load(Ordering::Relaxed),
-            indexing_time_p50_ms,
-            indexing_time_p99_ms,
-            indexing_time_max_ms,
-            request_latency_p50_ms,
-            request_latency_p99_ms,
-            request_latency_max_ms,
-            file_index_size_mean_bytes,
-            file_index_size_p90_bytes,
-            file_index_size_p95_bytes,
-            file_index_size_p99_bytes,
-            file_index_size_max_bytes,
-            // Foyer stats will be added at IndexCache level
-            foyer_memory_usage_bytes: 0,
-            foyer_memory_capacity_bytes: 0,
-            foyer_disk_write_bytes: 0,
-            foyer_disk_read_bytes: 0,
-            foyer_disk_write_ios: 0,
-            foyer_disk_read_ios: 0,
-        }
-    }
-
-    /// Prints all collected statistics to stdout.
-    fn print_stats(&self) {
-        let stats = self.snapshot();
-
-        println!("\n=== Indexing Statistics ===");
-        println!("\nCounters:");
-        println!("  try_send succeeded:    {}", stats.try_send_succeeded);
-        println!("  try_send failed:       {}", stats.try_send_failed);
-        println!("  dropped (age timeout): {}", stats.dropped_age_timeout);
-        println!("  skipped (cached):      {}", stats.skipped_already_cached);
-        println!("  indexed successfully:  {}", stats.indexed_successfully);
-        println!("  indexing failed:       {}", stats.indexing_failed);
-
-        if stats.indexing_time_p50_ms.is_some() {
-            println!("\nIndexing Time:");
-            println!("  P50: {:.2}ms", stats.indexing_time_p50_ms.unwrap());
-            println!("  P99: {:.2}ms", stats.indexing_time_p99_ms.unwrap());
-            println!("  Max: {:.2}ms", stats.indexing_time_max_ms.unwrap());
-        }
-
-        if stats.request_latency_p50_ms.is_some() {
-            println!("\nRequest Latency (queue wait time):");
-            println!("  P50: {:.2}ms", stats.request_latency_p50_ms.unwrap());
-            println!("  P99: {:.2}ms", stats.request_latency_p99_ms.unwrap());
-            println!("  Max: {:.2}ms", stats.request_latency_max_ms.unwrap());
-        }
-
-        if stats.file_index_size_mean_bytes.is_some() {
-            println!("\nFile Index Size:");
-            println!(
-                "  Mean: {:.2} KB",
-                stats.file_index_size_mean_bytes.unwrap() / 1024.0
-            );
-            println!(
-                "  P90:  {:.2} KB",
-                stats.file_index_size_p90_bytes.unwrap() / 1024.0
-            );
-            println!(
-                "  P95:  {:.2} KB",
-                stats.file_index_size_p95_bytes.unwrap() / 1024.0
-            );
-            println!(
-                "  P99:  {:.2} KB",
-                stats.file_index_size_p99_bytes.unwrap() / 1024.0
-            );
-            println!(
-                "  Max:  {:.2} KB",
-                stats.file_index_size_max_bytes.unwrap() / 1024.0
-            );
-        }
-
-        println!("\nFoyer Cache:");
-        println!(
-            "  Memory usage:     {:.2} MB / {:.2} MB",
-            stats.foyer_memory_usage_bytes as f64 / (1024.0 * 1024.0),
-            stats.foyer_memory_capacity_bytes as f64 / (1024.0 * 1024.0)
-        );
-        if stats.foyer_disk_write_bytes > 0 || stats.foyer_disk_read_bytes > 0 {
-            println!(
-                "  Disk write:       {:.2} MB ({} IOs)",
-                stats.foyer_disk_write_bytes as f64 / (1024.0 * 1024.0),
-                stats.foyer_disk_write_ios
-            );
-            println!(
-                "  Disk read:        {:.2} MB ({} IOs)",
-                stats.foyer_disk_read_bytes as f64 / (1024.0 * 1024.0),
-                stats.foyer_disk_read_ios
-            );
-        } else {
-            println!("  Disk I/O:         Statistics not tracked yet");
-        }
-
-        println!();
-    }
-}
-
 /// A request to index a file with a specific bucket duration. The `instant` field
 /// is used for age-based filtering by workers.
 #[derive(Debug, Clone)]
@@ -332,9 +72,6 @@ pub struct IndexingRequest {
 pub struct IndexCache {
     file_indexes: FileIndexCache,
     indexing_tx: SyncSender<IndexingRequest>,
-
-    #[cfg(feature = "indexing-stats")]
-    stats: Arc<IndexingMetrics>,
 }
 
 impl IndexCache {
@@ -381,34 +118,21 @@ impl IndexCache {
 
         let (tx, rx) = sync_channel(100);
 
-        #[cfg(feature = "indexing-stats")]
-        let stats = Arc::new(IndexingMetrics::new());
-
         // Spawn 24 background indexing threads
         let rx = Arc::new(std::sync::Mutex::new(rx));
         for _ in 0..24 {
             let cache_clone = file_indexes.inner().clone();
             let rx_clone = Arc::clone(&rx);
             let handle_clone = runtime_handle.clone();
-            #[cfg(feature = "indexing-stats")]
-            let stats_clone = Arc::clone(&stats);
 
             std::thread::spawn(move || {
-                Self::indexing_worker(
-                    rx_clone,
-                    cache_clone,
-                    handle_clone,
-                    #[cfg(feature = "indexing-stats")]
-                    stats_clone,
-                );
+                Self::indexing_worker(rx_clone, cache_clone, handle_clone);
             });
         }
 
         Ok(Self {
             file_indexes,
             indexing_tx: tx,
-            #[cfg(feature = "indexing-stats")]
-            stats,
         })
     }
 }
@@ -417,57 +141,7 @@ impl IndexCache {
     /// Attempts to queue an indexing request. Returns `false` if the channel is full,
     /// in which case the request is dropped.
     pub fn try_send_request(&self, request: IndexingRequest) -> bool {
-        match self.indexing_tx.try_send(request) {
-            Ok(_) => {
-                #[cfg(feature = "indexing-stats")]
-                {
-                    use std::sync::atomic::Ordering;
-                    self.stats
-                        .try_send_succeeded
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                true
-            }
-            Err(_) => {
-                #[cfg(feature = "indexing-stats")]
-                {
-                    use std::sync::atomic::Ordering;
-                    self.stats.try_send_failed.fetch_add(1, Ordering::Relaxed);
-                }
-                false
-            }
-        }
-    }
-
-    /// Returns a snapshot of current indexing statistics.
-    #[cfg(feature = "indexing-stats")]
-    pub fn indexing_stats(&self) -> IndexingStats {
-        let mut stats = self.stats.snapshot();
-
-        // Add cache statistics
-        let cache_stats = self.file_indexes.statistics();
-        stats.cache_memory_usage_bytes = cache_stats.memory_usage_bytes;
-        stats.cache_memory_capacity_bytes = cache_stats.memory_capacity_bytes;
-        stats.cache_disk_write_bytes = cache_stats.disk_write_bytes;
-        stats.cache_disk_read_bytes = cache_stats.disk_read_bytes;
-        stats.cache_disk_write_ios = cache_stats.disk_write_ios;
-        stats.cache_disk_read_ios = cache_stats.disk_read_ios;
-
-        stats
-    }
-
-    /// Prints indexing statistics to stdout.
-    #[cfg(feature = "indexing-stats")]
-    pub fn print_indexing_stats(&self) {
-        println!(
-            "\n[DEBUG] Cache mode: {}",
-            if self.file_indexes.is_hybrid() {
-                "Hybrid (memory + disk)"
-            } else {
-                "Memory only"
-            }
-        );
-        self.stats.print_stats();
+        self.indexing_tx.try_send(request).is_ok()
     }
 
     /// Gracefully closes the cache, ensuring all pending writes are flushed to disk.
@@ -506,9 +180,12 @@ impl IndexCache {
             let file_timeout = remaining.min(PER_FILE_TIMEOUT);
 
             // Apply timeout to the `obtain` operation
-            match self.file_indexes.get_with_timeout(&file, file_timeout).await {
+            match self
+                .file_indexes
+                .get_with_timeout(&file, file_timeout)
+                .await
+            {
                 Ok(CacheGetResult::Hit(file_index)) => {
-
                     let inst = Instant::now();
                     use rayon::prelude::*;
                     let count: usize = partial_responses
@@ -541,7 +218,6 @@ impl IndexCache {
         rx: Arc<std::sync::Mutex<Receiver<IndexingRequest>>>,
         cache: foyer::HybridCache<File, FileIndex>,
         runtime_handle: tokio::runtime::Handle,
-        #[cfg(feature = "indexing-stats")] stats: Arc<IndexingMetrics>,
     ) {
         loop {
             let task = {
@@ -553,14 +229,8 @@ impl IndexCache {
                 break;
             };
 
-            // Record request latency (time from creation to now)
-            #[cfg(feature = "indexing-stats")]
-            stats.record_request_latency(task.instant.elapsed());
-
             // Drop requests older than 2 seconds
             if task.instant.elapsed() > Duration::from_secs(2) {
-                #[cfg(feature = "indexing-stats")]
-                stats.dropped_age_timeout.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
@@ -568,8 +238,6 @@ impl IndexCache {
             // (cached duration <= requested duration means cached is more granular or equal)
             if let Ok(Some(cached_entry)) = runtime_handle.block_on(cache.get(&task.file)) {
                 if cached_entry.value().bucket_duration() <= task.bucket_duration {
-                    #[cfg(feature = "indexing-stats")]
-                    stats.skipped_already_cached.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 // Otherwise, fall through and re-index with finer granularity
@@ -577,9 +245,7 @@ impl IndexCache {
 
             let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
 
-            // Create the file index and measure indexing time
-            #[cfg(feature = "indexing-stats")]
-            let indexing_start = Instant::now();
+            // Create the file index
 
             let file_index = FILE_INDEXER.with(|indexer| {
                 let mut file_indexer = indexer.borrow_mut();
@@ -591,24 +257,9 @@ impl IndexCache {
                     .ok()
             });
 
-            #[cfg(feature = "indexing-stats")]
-            stats.record_indexing_time(indexing_start.elapsed());
-
             // Update cache if indexing succeeded
             if let Some(file_index) = file_index {
-                #[cfg(feature = "indexing-stats")]
-                {
-                    // Record file index size (approximate using bincode serialization)
-                    // if let Ok(serialized) = bincode::serialized_size(&file_index) {
-                    //     stats.record_file_index_size(serialized as usize);
-                    // }
-                    stats.indexed_successfully.fetch_add(1, Ordering::Relaxed);
-                }
-
                 cache.insert(task.file, file_index);
-            } else {
-                #[cfg(feature = "indexing-stats")]
-                stats.indexing_failed.fetch_add(1, Ordering::Relaxed);
             }
         }
     }

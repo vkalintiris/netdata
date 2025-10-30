@@ -1,14 +1,14 @@
-use journal::collections::{HashMap, HashSet};
 use crate::cache::{IndexCache, IndexingRequest};
 use crate::error::Result;
 use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
 use crate::response::{
     BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResult,
 };
-use journal::registry::Registry;
-use journal::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
+use journal::collections::{HashMap, HashSet};
+use journal::registry::Registry;
+use journal::repository::File;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::Instant;
@@ -262,18 +262,6 @@ impl AppState {
                     .put(bucket_request, partial_response.to_complete());
             }
         }
-    }
-
-    /// Returns a snapshot of current indexing statistics.
-    #[cfg(feature = "indexing-stats")]
-    pub fn indexing_stats(&self) -> crate::cache::IndexingStats {
-        self.cache.indexing_stats()
-    }
-
-    /// Prints indexing statistics to stdout.
-    #[cfg(feature = "indexing-stats")]
-    pub fn print_indexing_stats(&self) {
-        self.cache.print_indexing_stats();
     }
 
     /// Gracefully closes the state, ensuring all pending cache writes are flushed to disk.

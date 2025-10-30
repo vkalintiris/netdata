@@ -7,8 +7,6 @@ pub mod ui;
 
 pub use crate::cache::IndexCache;
 pub use crate::cache::IndexingRequest;
-#[cfg(feature = "indexing-stats")]
-pub use crate::cache::IndexingStats;
 pub use crate::error::Result;
 pub use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
 pub use crate::response::{

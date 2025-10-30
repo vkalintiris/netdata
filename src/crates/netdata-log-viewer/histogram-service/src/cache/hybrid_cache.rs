@@ -4,7 +4,6 @@
 //! hiding implementation details and providing better error handling.
 
 use foyer::{StorageKey, StorageValue};
-use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,18 +14,6 @@ pub enum CacheGetResult<T> {
     Hit(T),
     /// Entry not in cache
     Miss,
-}
-
-/// Statistics about the hybrid cache
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    pub memory_usage_bytes: usize,
-    pub memory_capacity_bytes: usize,
-    pub disk_write_bytes: usize,
-    pub disk_read_bytes: usize,
-    pub disk_write_ios: usize,
-    pub disk_read_ios: usize,
-    pub is_hybrid: bool,
 }
 
 /// Generic wrapper around foyer::HybridCache.
@@ -80,22 +67,6 @@ where
             Ok(Some(entry)) => Ok(CacheGetResult::Hit(Arc::new((*entry.value()).clone()))),
             Ok(None) => Ok(CacheGetResult::Miss),
             Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Returns statistics about the cache
-    pub fn statistics(&self) -> CacheStats {
-        let is_hybrid = self.inner.is_hybrid();
-        let stats = self.inner.statistics();
-
-        CacheStats {
-            memory_usage_bytes: self.inner.memory().usage(),
-            memory_capacity_bytes: self.inner.memory().capacity(),
-            disk_write_bytes: if is_hybrid { stats.disk_write_bytes() } else { 0 },
-            disk_read_bytes: if is_hybrid { stats.disk_read_bytes() } else { 0 },
-            disk_write_ios: if is_hybrid { stats.disk_write_ios() } else { 0 },
-            disk_read_ios: if is_hybrid { stats.disk_read_ios() } else { 0 },
-            is_hybrid,
         }
     }
 

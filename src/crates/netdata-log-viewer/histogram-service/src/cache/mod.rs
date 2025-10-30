@@ -7,11 +7,8 @@
 pub mod hybrid_cache;
 pub mod index_cache;
 
-pub use hybrid_cache::{CacheGetResult, CacheStats, HybridCache};
+pub use hybrid_cache::{CacheGetResult, HybridCache};
 pub use index_cache::{IndexCache, IndexingRequest};
-
-#[cfg(feature = "indexing-stats")]
-pub use index_cache::IndexingStats;
 
 // Type alias for our specific use case
 use journal::index::FileIndex;
