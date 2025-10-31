@@ -13,7 +13,10 @@ pub trait MemoryMap: Deref<Target = [u8]> {
         Self: Sized;
 }
 
-pub trait MemoryMapMut: MemoryMap + DerefMut {}
+pub trait MemoryMapMut: MemoryMap + DerefMut {
+    /// Flushes outstanding memory map modifications to disk
+    fn flush(&self) -> Result<()>;
+}
 
 impl MemoryMap for Mmap {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
@@ -47,7 +50,12 @@ impl MemoryMap for MmapMut {
     }
 }
 
-impl MemoryMapMut for MmapMut {}
+impl MemoryMapMut for MmapMut {
+    fn flush(&self) -> Result<()> {
+        MmapMut::flush(self)?;
+        Ok(())
+    }
+}
 
 struct Window<M: MemoryMap> {
     offset: u64,
@@ -233,5 +241,11 @@ impl<M: MemoryMapMut> WindowManager<M> {
     pub fn get_slice_mut(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
         let window = self.get_window(position, size)?;
         Ok(window.get_mut_slice(position, size))
+    }
+
+    /// Syncs all file data to disk
+    pub fn sync(&self) -> Result<()> {
+        self.file.sync_data()?;
+        Ok(())
     }
 }

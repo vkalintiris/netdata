@@ -193,9 +193,8 @@ impl IndexCache {
                 .await
             {
                 Ok(CacheGetResult::Hit(file_index)) => {
-                    let inst = Instant::now();
                     use rayon::prelude::*;
-                    let count: usize = partial_responses
+                    let _count: usize = partial_responses
                         .iter_mut()
                         .par_bridge()
                         .map(|(_bucket_request, partial_response)| {
@@ -203,13 +202,6 @@ impl IndexCache {
                             1
                         })
                         .sum();
-                    // }
-                    println!(
-                        "Updating {} buckets took {} msec for file {}",
-                        count,
-                        inst.elapsed().as_millis(),
-                        file.path()
-                    );
                 }
                 Ok(CacheGetResult::Miss) => {
                     // File not in cache, will be indexed by workers

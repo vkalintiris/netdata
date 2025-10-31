@@ -717,6 +717,22 @@ impl<M: MemoryMap> JournalFile<M> {
 }
 
 impl<M: MemoryMapMut> JournalFile<M> {
+    /// Syncs all file data to disk, ensuring all changes are persisted
+    ///
+    /// This performs a two-step sync process:
+    /// 1. Flushes memory-mapped regions to the file page cache (msync)
+    /// 2. Syncs the file page cache to physical disk (fdatasync)
+    pub fn sync(&mut self) -> Result<()> {
+        // Flush memory-mapped header to file page cache
+        self.header_map.flush()?;
+
+        // Sync file page cache to disk
+        let window_manager = unsafe { &mut *self.window_manager.get() };
+        window_manager.sync()?;
+
+        Ok(())
+    }
+
     /// Creates a successor journal file with optimized bucket sizes based on this file's utilization
     pub fn create_successor(
         &self,
@@ -806,12 +822,14 @@ impl<M: MemoryMapMut> JournalFile<M> {
         {
             let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
             *header_mut = header;
+            // Set state to ONLINE as per journal file format spec
+            header_mut.state = JournalState::Online as u8;
         }
 
         // Create window manager for the rest of the objects
         let window_manager = UnsafeCell::new(WindowManager::new(file, options.window_size, 32)?);
 
-        let jf = JournalFile {
+        let mut jf = JournalFile {
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -848,6 +866,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
             object_header.type_ = ObjectType::FieldHashTable as u8;
             object_header.size = size
         }
+
+        // Sync to ensure the ONLINE state is persisted to disk
+        jf.sync()?;
 
         Ok(jf)
     }

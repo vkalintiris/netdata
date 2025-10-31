@@ -67,6 +67,34 @@ impl Registry {
         self.repository.find_files_in_range(start, end)
     }
 
+    /// Suggest histogram fields by analyzing cardinality in recent journal files.
+    ///
+    /// This function examines the last `max_files_per_chain` files in each chain,
+    /// computes the cardinality of all fields, and returns fields that have
+    /// cardinality between `min_cardinality` and `max_cardinality`.
+    ///
+    /// # Arguments
+    /// * `max_files_per_chain` - Maximum number of recent files to analyze per chain
+    /// * `min_cardinality` - Minimum cardinality threshold (fields below this are excluded)
+    /// * `max_cardinality` - Maximum cardinality threshold (fields above this are excluded)
+    ///
+    /// # Returns
+    /// A vector of field names that meet the cardinality criteria, sorted by name.
+    pub fn suggest_histogram_fields(
+        &self,
+        max_files_per_chain: usize,
+        max_cardinality: usize,
+    ) -> Result<Vec<String>> {
+        let start = std::time::Instant::now();
+        let suggested_fields = self
+            .repository
+            .suggest_histogram_fields(max_files_per_chain, max_cardinality)?;
+
+        eprintln!("Found suggested fields in {:?}", start.elapsed());
+
+        Ok(suggested_fields)
+    }
+
     pub fn process_events(&mut self) -> Result<()> {
         self.monitor.collect(&mut self.events);
 

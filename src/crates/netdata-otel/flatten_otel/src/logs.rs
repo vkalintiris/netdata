@@ -30,13 +30,50 @@ pub fn json_from_log_record(jm: &mut JsonMap<String, JsonValue>, log_record: &Lo
 
     // Add body if present
     if let Some(body) = &log_record.body {
-        let mut temp_map = JsonMap::new();
-        temp_map.insert("body".to_string(), json_from_any_value(body));
+        let body_json = json_from_any_value(body);
 
-        let flattened_body = flatten_serde_json::flatten(&temp_map);
-        for (key, value) in flattened_body {
-            if key != "body" {
-                jm.insert(format!("log.{}", key), value);
+        match &body_json {
+            // If body is a string, try to parse it as JSON first
+            JsonValue::String(s) => {
+                // Try to parse the string as JSON
+                if let Ok(parsed) = serde_json::from_str::<JsonValue>(s) {
+                    // Successfully parsed JSON - check if it's an object
+                    if let JsonValue::Object(_) = parsed {
+                        // Flatten the parsed JSON object
+                        let mut temp_map = JsonMap::new();
+                        temp_map.insert("body".to_string(), parsed);
+
+                        let flattened_body = flatten_serde_json::flatten(&temp_map);
+                        for (key, value) in flattened_body {
+                            jm.insert(format!("log.{}", key), value);
+                        }
+                    } else {
+                        // Parsed JSON but not an object (array, primitive, etc.)
+                        // Store the original string
+                        jm.insert("log.body".to_string(), body_json);
+                    }
+                } else {
+                    // Not valid JSON, store as-is
+                    jm.insert("log.body".to_string(), body_json);
+                }
+            }
+            // If body is a number or bool, add it directly
+            JsonValue::Number(_) | JsonValue::Bool(_) => {
+                jm.insert("log.body".to_string(), body_json);
+            }
+            // If body is structured, flatten it
+            JsonValue::Object(_) => {
+                let mut temp_map = JsonMap::new();
+                temp_map.insert("body".to_string(), body_json);
+
+                let flattened_body = flatten_serde_json::flatten(&temp_map);
+                for (key, value) in flattened_body {
+                    jm.insert(format!("log.{}", key), value);
+                }
+            }
+            _ => {
+                // Arrays, null, etc. - add as-is
+                jm.insert("log.body".to_string(), body_json);
             }
         }
     }

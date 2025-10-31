@@ -27,6 +27,30 @@ impl BucketRequest {
     pub fn duration(&self) -> u64 {
         self.end - self.start
     }
+
+    /// Returns the next bucket request with the same duration, facets, and filter.
+    /// The next bucket starts where this bucket ends.
+    pub fn next(&self) -> Self {
+        let duration = self.duration();
+        Self {
+            start: self.end,
+            end: self.end + duration,
+            facets: self.facets.clone(),
+            filter_expr: self.filter_expr.clone(),
+        }
+    }
+
+    /// Returns the previous bucket request with the same duration, facets, and filter.
+    /// The previous bucket ends where this bucket starts.
+    pub fn prev(&self) -> Self {
+        let duration = self.duration();
+        Self {
+            start: self.start.saturating_sub(duration),
+            end: self.start,
+            facets: self.facets.clone(),
+            filter_expr: self.filter_expr.clone(),
+        }
+    }
 }
 
 /// A histogram request for a given [start, end) time range with a specific

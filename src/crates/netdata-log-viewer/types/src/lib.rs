@@ -1,15 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EmptyRequest {}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub timestamp: String,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JournalRequest {
     #[serde(default)]
@@ -31,7 +22,7 @@ pub struct JournalRequest {
     /// Whether to slice the results
     pub slice: Option<bool>,
 
-    /// Query string (empty in your example)
+    /// Text search query
     #[serde(default)]
     pub query: String,
 

@@ -6,45 +6,7 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_schema::HttpAccess;
 use rt::{FunctionHandler, PluginRuntime};
 use tracing::{info, instrument, warn};
-use types::{EmptyRequest, HealthResponse, JournalRequest, JournalResponse};
-
-#[derive(Debug, Default)]
-struct HealthHandler;
-
-#[async_trait]
-impl FunctionHandler for HealthHandler {
-    type Request = EmptyRequest;
-    type Response = HealthResponse;
-
-    #[instrument(name = "health_call")]
-    async fn on_call(&self, _request: Self::Request) -> Result<Self::Response> {
-        let response = reqwest::get("http://localhost:8080/health").await.unwrap();
-        let resp = response.json::<HealthResponse>().await;
-
-        Ok(resp.unwrap())
-    }
-
-    async fn on_cancellation(&self) -> Result<Self::Response> {
-        // Health  function doesn't really need cancellation handling
-        Err(netdata_plugin_error::NetdataPluginError::Other {
-            message: "Cancelled".to_string(),
-        })
-    }
-
-    async fn on_progress(&self) {
-        info!("Progress requested for health function");
-    }
-
-    #[instrument(name = "health_declaration")]
-    fn declaration(&self) -> FunctionDeclaration {
-        let mut func_decl =
-            FunctionDeclaration::new("health", "A health function that responds immediately");
-        func_decl.global = true;
-        func_decl.access =
-            Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
-        func_decl
-    }
-}
+use types::{JournalRequest, JournalResponse};
 
 #[derive(Default)]
 struct Journal {}
@@ -149,19 +111,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Run the plugin using stdin/stdout (default Netdata mode)
 async fn run_stdio_mode() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("example");
 
     runtime.register_handler(Journal::default());
-    runtime.register_handler(HealthHandler {});
-
     runtime.run().await?;
 
     Ok(())
 }
 
-/// Run the plugin using a TCP connection
 async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use tokio::net::TcpStream;
 
@@ -173,7 +131,6 @@ async fn run_tcp_mode(addr: &str) -> std::result::Result<(), Box<dyn std::error:
 
     let mut runtime = PluginRuntime::with_streams("example", reader, writer);
     runtime.register_handler(Journal::default());
-    runtime.register_handler(HealthHandler {});
     runtime.run().await?;
 
     Ok(())

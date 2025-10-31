@@ -212,12 +212,25 @@ impl Log {
         Ok(())
     }
 
+    /// Syncs all written data to disk, ensuring durability.
+    ///
+    /// This should be called after writing a batch of log entries to ensure
+    /// they are persisted to disk before acknowledging the request.
+    pub fn sync(&mut self) -> Result<()> {
+        if let Some(active_file) = &mut self.active_file {
+            active_file.journal_file.sync()?;
+        }
+        Ok(())
+    }
+
     fn should_rotate(&self) -> bool {
         self.active_file.is_none() || self.rotation_state.should_rotate()
     }
 
     #[tracing::instrument(skip_all, fields(active_file))]
     fn rotate(&mut self) -> Result<()> {
+        use crate::file::JournalState;
+
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
             self.chain.update_file_size(
@@ -231,7 +244,11 @@ impl Log {
 
         // Create new file (either initial or rotated)
         let max_file_size = self.config.rotation_policy.size_of_journal_file;
-        let new_file = if let Some(old_file) = self.active_file.take() {
+        let new_file = if let Some(mut old_file) = self.active_file.take() {
+            // Set the old file's state to ARCHIVED before creating successor
+            old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
+            old_file.journal_file.sync()?;
+
             old_file.rotate(&mut self.chain, max_file_size)?
         } else {
             ActiveFile::create(

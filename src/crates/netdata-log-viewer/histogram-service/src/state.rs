@@ -31,12 +31,9 @@ impl AppState {
     ///
     /// Uses sensible defaults:
     /// - Cache directory: `/tmp/journal-index-cache`
-    /// - Memory size: 1GB
-    /// - Disk capacity: 10GB
-    pub async fn new(
-        path: &str,
-        runtime_handle: tokio::runtime::Handle,
-    ) -> Result<Self> {
+    /// - Memory items capacity: 10000
+    /// - Disk capacity: 64MiB
+    pub async fn new(path: &str, runtime_handle: tokio::runtime::Handle) -> Result<Self> {
         Self::new_with_cache_config(
             path,
             runtime_handle,
@@ -115,6 +112,7 @@ impl AppState {
     ) {
         use crate::cache::IndexingRequest;
 
+        eprintln!("Pending files: {}", pending_files.len());
         for file in pending_files {
             let indexing_request = IndexingRequest {
                 facets: facets.clone(),
@@ -130,8 +128,6 @@ impl AppState {
     }
 
     pub async fn process_histogram_request(&mut self, request: &HistogramRequest) {
-        let timer = std::time::Instant::now();
-
         // Create any partial responses we don't already have
         let bucket_requests = request.bucket_requests();
         assert!(!bucket_requests.is_empty());
@@ -139,34 +135,16 @@ impl AppState {
 
         // Figure out the files we will need to lookup for partial requests
         let pending_files = self.collect_partial_requests_files(&bucket_requests);
-        println!("Num pending files: {:#?}", pending_files.len());
-
-        println!(
-            "[01]: Collecting partial requests: {} msec",
-            timer.elapsed().as_millis()
-        );
-        let timer = std::time::Instant::now();
 
         // Send indexing requests
         let facets = &request.facets;
         let bucket_duration = bucket_requests.first().unwrap().duration();
         self.send_indexing_requests(facets, &pending_files, bucket_duration);
 
-        println!(
-            "[02]: Sending indexing requests: {} msec",
-            timer.elapsed().as_millis()
-        );
-        let timer = std::time::Instant::now();
-
         // Progress partial responses
         self.cache
             .resolve_partial_responses(facets, &mut self.partial_responses, pending_files)
             .await;
-
-        println!(
-            "[03]: Resolving partial responses: {} msec",
-            timer.elapsed().as_millis()
-        );
 
         // Promote those that have been completed from partial to complete
         // responses

@@ -419,7 +419,7 @@ impl Chain {
         self.files.drain(..pos)
     }
 
-    /// Append files that overlap with the time range [start, end) to the provided vector.
+    /// Find files that overlap with the time range [start, end)
     pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut HashSet<File>) {
         if self.files.is_empty() || start >= end {
             return;
@@ -595,6 +595,133 @@ impl Repository {
         }
 
         files
+    }
+
+    /// Suggest histogram fields by analyzing cardinality in recent journal files.
+    ///
+    /// This iterates through all chains, examines the last N files per chain,
+    /// and computes field cardinality to identify good candidates for histograms.
+    pub fn suggest_histogram_fields(
+        &self,
+        max_files_per_chain: usize,
+        max_cardinality: usize,
+    ) -> Result<Vec<String>> {
+        use crate::file::{JournalFile, Mmap};
+        use std::collections::HashMap;
+
+        // Aggregate cardinality across all files
+        let mut field_cardinalities: HashMap<String, usize> = HashMap::default();
+
+        // Iterate through all chains
+        for directory in self.directories.values() {
+            eprintln!("Checking directory...");
+
+            for chain in directory.chains.values() {
+                eprintln!("Checking chain...");
+
+                // Get the last N files from this chain (files are already sorted)
+                let files_to_analyze = chain
+                    .files
+                    .iter()
+                    .rev()
+                    .take(max_files_per_chain)
+                    .collect::<Vec<_>>();
+
+                for file in files_to_analyze {
+                    println!("Checking file: {:#?}", file.path());
+
+                    // Open the journal file
+                    let window_size = 8 * 1024 * 1024; // 8 MiB
+                    let journal_file = match JournalFile::<Mmap>::open(file.path(), window_size) {
+                        Ok(jf) => jf,
+                        Err(_e) => {
+                            // Skip files we can't open
+                            continue;
+                        }
+                    };
+
+                    // Iterate through all fields in this file
+                    for field_result in journal_file.fields() {
+                        let field_name = {
+                            let Ok(field) = field_result else {
+                                continue;
+                            };
+
+                            // Skip fields with names >= 64 bytes
+                            if field.payload.len() >= 64 {
+                                continue;
+                            }
+
+                            // Convert field name to string using lossy conversion
+                            let Ok(field_name) = String::from_utf8(field.payload.to_vec()) else {
+                                // Skip fields that don't contain valid utf-8
+                                continue;
+                            };
+
+                            field_name
+                        };
+
+                        // Iterate through all data objects for this field
+                        let mut iter = match journal_file.field_data_objects(field_name.as_bytes())
+                        {
+                            Ok(iter) => iter,
+                            Err(_) => continue,
+                        };
+
+                        let mut cardinality = 0;
+
+                        while let Some(Ok(data)) = iter.next() {
+                            let payload = data.payload_bytes();
+
+                            if payload.len() > (64 + 128) {
+                                cardinality = usize::MAX;
+                                continue;
+                            }
+
+                            if str::from_utf8(payload).is_err() {
+                                cardinality = usize::MAX;
+                                break;
+                            }
+
+                            cardinality += 1;
+
+                            if cardinality > max_cardinality {
+                                // We won't use this field
+                                cardinality = usize::MAX;
+                                break;
+                            }
+                        }
+
+                        if cardinality > 0 && cardinality <= max_cardinality {
+                            if let Some(c) = field_cardinalities.get_mut(&field_name) {
+                                *c = cardinality;
+                            } else {
+                                field_cardinalities.insert(field_name, cardinality);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // eprintln!("field cardinalities: {:#?}", field_cardinalities);
+
+        // Filter fields by cardinality and return sorted list
+        let mut result: Vec<String> = field_cardinalities
+            .into_iter()
+            .filter_map(|(field_name, cardinality)| {
+                if cardinality <= max_cardinality {
+                    Some(field_name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // eprintln!("Result: {:#?}", result);
+
+        result.sort();
+        Ok(result)
     }
 }
 

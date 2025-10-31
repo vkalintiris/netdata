@@ -34,6 +34,7 @@ anyhow.workspace = true
 enum_dispatch.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
+chrono.workspace = true
 
 # Optional features
 allocative = { workspace = true, optional = true }

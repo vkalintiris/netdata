@@ -102,6 +102,14 @@ impl LogsService for NetdataLogsService {
                     )));
                 }
             }
+
+            if let Err(e) = self.log.lock().unwrap().sync() {
+                eprintln!("Failed to sync journal file: {}", e);
+                return Err(Status::internal(format!(
+                    "Failed to sync journal file: {}",
+                    e
+                )));
+            }
         }
 
         let reply = ExportLogsServiceResponse {
