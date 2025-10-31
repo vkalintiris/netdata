@@ -1,6 +1,6 @@
-use crate::cache::{IndexCache, IndexingRequest};
+use crate::cache::IndexCache;
 use crate::error::Result;
-use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
+use crate::request::{BucketRequest, HistogramFacets, HistogramRequest, RequestMetadata};
 use crate::response::{
     BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResult,
 };
@@ -16,8 +16,6 @@ use std::time::Instant;
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct AppState {
     pub registry: Registry,
-
-    pub indexed_fields: HashSet<String>,
 
     #[cfg_attr(feature = "allocative", allocative(skip))]
     pub cache: IndexCache,
@@ -37,12 +35,10 @@ impl AppState {
     /// - Disk capacity: 10GB
     pub async fn new(
         path: &str,
-        indexed_fields: std::collections::HashSet<String>,
         runtime_handle: tokio::runtime::Handle,
     ) -> Result<Self> {
         Self::new_with_cache_config(
             path,
-            indexed_fields,
             runtime_handle,
             "/mnt/ramfs/foyer-storage",
             10000,
@@ -55,14 +51,12 @@ impl AppState {
     ///
     /// # Arguments
     /// * `path` - Journal directory path to watch
-    /// * `indexed_fields` - Fields to index
     /// * `runtime_handle` - Tokio runtime handle for async operations
     /// * `cache_dir` - Directory for disk cache storage
     /// * `memory_size` - Memory cache capacity in items
     /// * `disk_capacity` - Disk cache capacity in bytes
     pub async fn new_with_cache_config(
         path: &str,
-        indexed_fields: std::collections::HashSet<String>,
         runtime_handle: tokio::runtime::Handle,
         cache_dir: impl AsRef<std::path::Path>,
         memory_capacity: usize,
@@ -75,7 +69,6 @@ impl AppState {
 
         Ok(Self {
             registry,
-            indexed_fields: indexed_fields.into_iter().collect(),
             cache: IndexCache::new(runtime_handle, cache_dir, memory_capacity, disk_capacity)
                 .await?,
             partial_responses: LruCache::new(cache_capacity),
@@ -114,10 +107,17 @@ impl AppState {
         files
     }
 
-    pub fn send_indexing_requests(&self, pending_files: &HashSet<File>, bucket_duration: u64) {
+    pub fn send_indexing_requests(
+        &self,
+        facets: &HistogramFacets,
+        pending_files: &HashSet<File>,
+        bucket_duration: u64,
+    ) {
+        use crate::cache::IndexingRequest;
+
         for file in pending_files {
             let indexing_request = IndexingRequest {
-                fields: self.indexed_fields.clone(),
+                facets: facets.clone(),
                 bucket_duration,
                 file: file.clone(),
                 instant: Instant::now(),
@@ -148,8 +148,9 @@ impl AppState {
         let timer = std::time::Instant::now();
 
         // Send indexing requests
+        let facets = &request.facets;
         let bucket_duration = bucket_requests.first().unwrap().duration();
-        self.send_indexing_requests(&pending_files, bucket_duration);
+        self.send_indexing_requests(facets, &pending_files, bucket_duration);
 
         println!(
             "[02]: Sending indexing requests: {} msec",
@@ -159,7 +160,7 @@ impl AppState {
 
         // Progress partial responses
         self.cache
-            .resolve_partial_responses(&mut self.partial_responses, pending_files)
+            .resolve_partial_responses(facets, &mut self.partial_responses, pending_files)
             .await;
 
         println!(

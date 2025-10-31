@@ -57,12 +57,14 @@ thread_local! {
     static FILE_INDEXER: RefCell<FileIndexer> = RefCell::new(FileIndexer::default());
 }
 
+use crate::request::HistogramFacets;
+
 /// A request to index a file with a specific bucket duration. The `instant` field
 /// is used for age-based filtering by workers.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct IndexingRequest {
-    pub fields: HashSet<String>,
+    pub facets: HistogramFacets,
     pub bucket_duration: u64,
     pub file: File,
     pub instant: Instant,
@@ -158,6 +160,7 @@ impl IndexCache {
     /// to ensure responsiveness.
     pub async fn resolve_partial_responses(
         &self,
+        facets: &HistogramFacets,
         partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
         pending_files: HashSet<File>,
     ) {
@@ -179,10 +182,14 @@ impl IndexCache {
             let remaining = TOTAL_TIMEOUT.saturating_sub(start.elapsed());
             let file_timeout = remaining.min(PER_FILE_TIMEOUT);
 
+            // Create cache key with file and facets
+            use super::FileIndexKey;
+            let cache_key = FileIndexKey::new(file.clone(), facets.clone());
+
             // Apply timeout to the `obtain` operation
             match self
                 .file_indexes
-                .get_with_timeout(&file, file_timeout)
+                .get_with_timeout(&cache_key, file_timeout)
                 .await
             {
                 Ok(CacheGetResult::Hit(file_index)) => {
@@ -216,7 +223,7 @@ impl IndexCache {
 
     fn indexing_worker(
         rx: Arc<std::sync::Mutex<Receiver<IndexingRequest>>>,
-        cache: foyer::HybridCache<File, FileIndex>,
+        cache: foyer::HybridCache<super::FileIndexKey, FileIndex>,
         runtime_handle: tokio::runtime::Handle,
     ) {
         loop {
@@ -234,16 +241,21 @@ impl IndexCache {
                 continue;
             }
 
+            // Create cache key with file and facets
+            use super::FileIndexKey;
+            let cache_key = FileIndexKey::new(task.file.clone(), task.facets.clone());
+
             // Skip indexing if cache already contains this file with sufficient granularity
             // (cached duration <= requested duration means cached is more granular or equal)
-            if let Ok(Some(cached_entry)) = runtime_handle.block_on(cache.get(&task.file)) {
+            if let Ok(Some(cached_entry)) = runtime_handle.block_on(cache.get(&cache_key)) {
                 if cached_entry.value().bucket_duration() <= task.bucket_duration {
                     continue;
                 }
                 // Otherwise, fall through and re-index with finer granularity
             }
 
-            let field_names: Vec<&[u8]> = task.fields.iter().map(|x| x.as_bytes()).collect();
+            // Extract field names from facets
+            let field_names: Vec<&[u8]> = task.facets.iter().map(|x| x.as_bytes()).collect();
 
             // Create the file index
 
@@ -259,7 +271,7 @@ impl IndexCache {
 
             // Update cache if indexing succeeded
             if let Some(file_index) = file_index {
-                cache.insert(task.file, file_index);
+                cache.insert(cache_key, file_index);
             }
         }
     }

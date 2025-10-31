@@ -118,11 +118,12 @@ async fn journal_handler(
 ) -> impl IntoResponse {
     let filter_expr = build_filter_from_selections(&request.selections);
 
-    let histogram_request = histogram_service::HistogramRequest {
-        after: request.after as u64,
-        before: request.before as u64,
-        filter_expr: Arc::new(filter_expr),
-    };
+    let histogram_request = histogram_service::HistogramRequest::new(
+        request.after as u64,
+        request.before as u64,
+        &request.facets,
+        &filter_expr,
+    );
 
     let histogram_result = state
         .journal_state
@@ -131,7 +132,7 @@ async fn journal_handler(
         .get_histogram(histogram_request)
         .await;
 
-    let path = "/home/vk/repos/nd/sjr/src/crates/netdata-log-viewer/columns.json";
+    let path = "/tmp/columns.json";
     let contents = std::fs::read_to_string(path).unwrap();
     let data: serde_json::Value = serde_json::from_str(&contents).unwrap();
 
@@ -326,15 +327,12 @@ fn initialize_tracing() {
 async fn main() {
     // initialize_tracing();
 
-    let indexed_fields = get_facets();
-
     let path = "/var/log/journal";
     // let path = "/home/vk/repos/tmp/flog";
     // let path = "/home/vk/repos/tmp/agent-events-journal";
     let journal_state = histogram_service::AppState::new(
         // "/home/vk/repos/tmp/agent-events-journal",
         path,
-        indexed_fields,
         tokio::runtime::Handle::current(),
     )
     .await

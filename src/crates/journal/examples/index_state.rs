@@ -70,14 +70,10 @@ pub fn get_facets() -> HashSet<String> {
 async fn main() {
     println!("Hello there!");
 
-    let indexed_fields = get_facets();
-    // let mut app_state = AppState::new("/var/log/journal", indexed_fields, tokio::runtime::Handle::current()).await.unwrap();
-
     let path = "/var/log/journal";
     let mut app_state = AppState::new(
         // "/home/vk/repos/tmp/agent-events-journal",
         path,
-        indexed_fields,
         tokio::runtime::Handle::current(),
     )
     .await
@@ -96,11 +92,12 @@ async fn main() {
     // .or_with(FilterExpr::match_str("PRIORITY=6"))
     // .or_with(FilterExpr::match_str("PRIORITY=7"));
     // let filter_expr = FilterExpr::None;
-    let histogram_request = HistogramRequest {
-        after: after.timestamp() as u64,
-        before: before.timestamp() as u64,
-        filter_expr: Arc::new(filter_expr),
-    };
+    let histogram_request = HistogramRequest::new(
+        after.timestamp() as u64,
+        before.timestamp() as u64,
+        &[],  // Empty facets will use defaults
+        &filter_expr,
+    );
 
     use tokio::time::{Duration, interval};
     let mut interval = interval(Duration::from_secs(1));

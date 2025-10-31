@@ -1,8 +1,9 @@
+#[cfg(feature = "allocative")]
+use allocative::Allocative;
 use journal::collections::HashSet;
 use journal::index::FilterExpr;
 use journal::repository::File;
-#[cfg(feature = "allocative")]
-use allocative::Allocative;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ pub struct BucketRequest {
     pub start: u64,
     // End time of the bucket request
     pub end: u64,
+    // Facets to use for file index
+    pub facets: HistogramFacets,
     // Applied filter expression
     pub filter_expr: Arc<FilterExpr<String>>,
 }
@@ -35,11 +38,145 @@ pub struct HistogramRequest {
     pub after: u64,
     /// End time
     pub before: u64,
+    /// Facets to use for file indexes
+    pub facets: HistogramFacets,
     /// Filter expression to apply
     pub filter_expr: Arc<FilterExpr<String>>,
 }
 
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
+pub struct HistogramFacets {
+    fields: Arc<Vec<String>>,
+    precomputed_hash: u64,
+}
+
+impl Hash for HistogramFacets {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.precomputed_hash);
+    }
+}
+
+impl PartialEq for HistogramFacets {
+    fn eq(&self, other: &Self) -> bool {
+        if self.precomputed_hash != other.precomputed_hash {
+            return false;
+        }
+
+        // NOTE: Maybe a panic is warranted here.
+        Arc::ptr_eq(&self.fields, &other.fields) || self.fields == other.fields
+    }
+}
+
+impl Eq for HistogramFacets {}
+
+impl HistogramFacets {
+    fn default_facets() -> Vec<String> {
+        let v: Vec<String> = vec![
+            String::from("_HOSTNAME"),
+            String::from("PRIORITY"),
+            String::from("SYSLOG_FACILITY"),
+            String::from("ERRNO"),
+            String::from("SYSLOG_IDENTIFIER"),
+            // b"UNIT",
+            String::from("USER_UNIT"),
+            String::from("MESSAGE_ID"),
+            String::from("_BOOT_ID"),
+            String::from("_SYSTEMD_OWNER_UID"),
+            String::from("_UID"),
+            String::from("OBJECT_SYSTEMD_OWNER_UID"),
+            String::from("OBJECT_UID"),
+            String::from("_GID"),
+            String::from("OBJECT_GID"),
+            String::from("_CAP_EFFECTIVE"),
+            String::from("_AUDIT_LOGINUID"),
+            String::from("OBJECT_AUDIT_LOGINUID"),
+            String::from("CODE_FUNC"),
+            String::from("ND_LOG_SOURCE"),
+            String::from("CODE_FILE"),
+            String::from("ND_ALERT_NAME"),
+            String::from("ND_ALERT_CLASS"),
+            String::from("_SELINUX_CONTEXT"),
+            String::from("_MACHINE_ID"),
+            String::from("ND_ALERT_TYPE"),
+            String::from("_SYSTEMD_SLICE"),
+            String::from("_EXE"),
+            // b"_SYSTEMD_UNIT",
+            String::from("_NAMESPACE"),
+            String::from("_TRANSPORT"),
+            String::from("_RUNTIME_SCOPE"),
+            String::from("_STREAM_ID"),
+            String::from("ND_NIDL_CONTEXT"),
+            String::from("ND_ALERT_STATUS"),
+            // b"_SYSTEMD_CGROUP",
+            String::from("ND_NIDL_NODE"),
+            String::from("ND_ALERT_COMPONENT"),
+            String::from("_COMM"),
+            String::from("_SYSTEMD_USER_UNIT"),
+            String::from("_SYSTEMD_USER_SLICE"),
+            // b"_SYSTEMD_SESSION",
+            String::from("__logs_sources"),
+        ];
+
+        v
+    }
+
+    pub fn new(facets: &[String]) -> Self {
+        let mut facets = if facets.is_empty() {
+            Self::default_facets()
+        } else {
+            facets.to_vec()
+        };
+
+        facets.sort();
+
+        use std::hash::Hasher;
+        let mut hasher = std::hash::DefaultHasher::new();
+        facets.hash(&mut hasher);
+        let precomputed_hash = hasher.finish();
+
+        Self {
+            fields: Arc::new(facets),
+            precomputed_hash,
+        }
+    }
+
+    /// Returns an iterator over the facet field names
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
+        self.fields.iter()
+    }
+
+    /// Returns the facet fields as a slice
+    pub fn as_slice(&self) -> &[String] {
+        &self.fields
+    }
+
+    /// Returns the number of facet fields
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Returns true if there are no facet fields
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
 impl HistogramRequest {
+    pub fn new(
+        after: u64,
+        before: u64,
+        facets: &[String],
+        filter_expr: &FilterExpr<String>,
+    ) -> Self {
+        Self {
+            after,
+            before,
+            facets: HistogramFacets::new(facets),
+            filter_expr: Arc::new(filter_expr.clone()),
+        }
+    }
+
     /// Returns the bucket requests that should be used in order to
     /// generate data for this histogram. The bucket duration is automatically
     /// determined by time range of the histogram request, and it's large
@@ -62,6 +199,7 @@ impl HistogramRequest {
             buckets.push(BucketRequest {
                 start,
                 end: start + bucket_duration,
+                facets: self.facets.clone(),
                 filter_expr: self.filter_expr.clone(),
             });
         }
