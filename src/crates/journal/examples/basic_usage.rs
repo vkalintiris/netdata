@@ -257,9 +257,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut files = VecDeque::new();
-    registry.find_files_in_range(0, u64::MAX, &mut files);
-    let mut files: Vec<File> = files.into();
+    let files = registry.find_files_in_range(0, u32::MAX);
+    let mut files: Vec<File> = files.iter().cloned().collect::<_>();
     files.sort_by_key(|f| String::from(f.path()));
     files.reverse();
 

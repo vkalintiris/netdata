@@ -1,10 +1,25 @@
 #![allow(dead_code)]
 
 use super::bitmap::Bitmap;
+use super::field_types::{FieldName, FieldValuePair};
 use super::file_index::FileIndex;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use std::hash::{Hash, Hasher};
+
+/// Represents what a filter expression can match against.
+///
+/// This enum distinguishes between:
+/// - Matching a field name (e.g., "PRIORITY" matches any PRIORITY value)
+/// - Matching a specific field=value pair (e.g., "PRIORITY=error")
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
+pub enum FilterTarget {
+    /// Match any entry that has this field, regardless of value
+    Field(FieldName),
+    /// Match entries where this specific field=value pair exists
+    Pair(FieldValuePair),
+}
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
@@ -15,24 +30,36 @@ pub enum FilterExpr<T> {
     Disjunction(Vec<Self>),
 }
 
-impl Eq for FilterExpr<String> {}
+impl Eq for FilterExpr<FilterTarget> {}
 
-impl Hash for FilterExpr<String> {
+impl Hash for FilterExpr<FilterTarget> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
 
         match self {
             FilterExpr::None => {}
-            FilterExpr::Match(s) => s.hash(state),
+            FilterExpr::Match(target) => target.hash(state),
             FilterExpr::Conjunction(filters) => filters.hash(state),
             FilterExpr::Disjunction(filters) => filters.hash(state),
         }
     }
 }
 
-impl FilterExpr<String> {
-    pub fn match_str(s: impl Into<String>) -> Self {
-        FilterExpr::Match(s.into())
+impl FilterExpr<FilterTarget> {
+    /// Create a filter that matches any entry with the given field name.
+    ///
+    /// Example: `match_field_name(FieldName::new("PRIORITY"))` matches any entry
+    /// that has a PRIORITY field, regardless of its value.
+    pub fn match_field_name(name: FieldName) -> Self {
+        FilterExpr::Match(FilterTarget::Field(name))
+    }
+
+    /// Create a filter that matches a specific field=value pair.
+    ///
+    /// Example: `match_field_value_pair(pair)` where pair is "PRIORITY=error"
+    /// matches only entries where PRIORITY equals "error".
+    pub fn match_field_value_pair(pair: FieldValuePair) -> Self {
+        FilterExpr::Match(FilterTarget::Pair(pair))
     }
 
     pub fn and(filters: Vec<Self>) -> Self {
@@ -81,26 +108,17 @@ impl FilterExpr<String> {
         Self::or(vec![self, other])
     }
 
-    /// Convert a FilterExpr<String> to FilterExpr<Bitmap> using the file index
+    /// Convert a FilterExpr<FilterTarget> to FilterExpr<Bitmap> using the file index
     pub fn resolve(&self, file_index: &FileIndex) -> FilterExpr<Bitmap> {
         match self {
             FilterExpr::None => FilterExpr::None,
-            FilterExpr::Match(field_value) => {
-                // Check if this is a complete field=value or just a field key
-                if field_value.contains('=') {
-                    // Complete field=value pair
-                    if let Some(bitmap) = file_index.bitmaps().get(field_value) {
-                        FilterExpr::Match(bitmap.clone())
-                    } else {
-                        FilterExpr::None
-                    }
-                } else {
-                    // Just a field key - find all matching field=value pairs
-                    let prefix = format!("{}=", field_value);
+            FilterExpr::Match(target) => match target {
+                FilterTarget::Field(field_name) => {
+                    // Find all field=value pairs with matching field name
                     let matches: Vec<_> = file_index
                         .bitmaps()
                         .iter()
-                        .filter(|(key, _)| key.starts_with(&prefix))
+                        .filter(|(pair, _)| pair.field() == field_name.as_str())
                         .map(|(_, bitmap)| FilterExpr::Match(bitmap.clone()))
                         .collect();
 
@@ -110,7 +128,15 @@ impl FilterExpr<String> {
                         _ => FilterExpr::Disjunction(matches),
                     }
                 }
-            }
+                FilterTarget::Pair(pair) => {
+                    // Lookup specific field=value pair
+                    if let Some(bitmap) = file_index.bitmaps().get(pair) {
+                        FilterExpr::Match(bitmap.clone())
+                    } else {
+                        FilterExpr::None
+                    }
+                }
+            },
             FilterExpr::Conjunction(filters) => {
                 let mut resolved = Vec::with_capacity(filters.len());
                 for filter in filters {
@@ -145,24 +171,60 @@ impl FilterExpr<String> {
         }
     }
 
-    pub fn contains(&self, s: &str) -> bool {
+    pub fn contains_field(&self, field_name: &FieldName) -> bool {
         match self {
             FilterExpr::None => false,
-            FilterExpr::Match(field_value) => {
-                if field_value == s {
-                    true
-                } else {
-                    false
-                }
-            }
+            FilterExpr::Match(target) => match target {
+                FilterTarget::Field(name) => name == field_name,
+                FilterTarget::Pair(pair) => pair.field() == field_name.as_str(),
+            },
             FilterExpr::Conjunction(filters) | FilterExpr::Disjunction(filters) => {
-                for fe in filters {
-                    if fe.contains(s) {
-                        return true;
-                    }
-                }
+                filters.iter().any(|fe| fe.contains_field(field_name))
+            }
+        }
+    }
 
-                false
+    pub fn contains_pair(&self, pair: &FieldValuePair) -> bool {
+        match self {
+            FilterExpr::None => false,
+            FilterExpr::Match(target) => match target {
+                FilterTarget::Field(_) => false,
+                FilterTarget::Pair(p) => p == pair,
+            },
+            FilterExpr::Conjunction(filters) | FilterExpr::Disjunction(filters) => {
+                filters.iter().any(|fe| fe.contains_pair(pair))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for FilterExpr<FilterTarget> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterExpr::None => write!(f, "None"),
+            FilterExpr::Match(target) => match target {
+                FilterTarget::Field(name) => write!(f, "{}", name),
+                FilterTarget::Pair(pair) => write!(f, "{}", pair),
+            },
+            FilterExpr::Conjunction(filters) => {
+                write!(f, "(")?;
+                for (i, filter) in filters.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " AND ")?;
+                    }
+                    write!(f, "{}", filter)?;
+                }
+                write!(f, ")")
+            }
+            FilterExpr::Disjunction(filters) => {
+                write!(f, "(")?;
+                for (i, filter) in filters.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " OR ")?;
+                    }
+                    write!(f, "{}", filter)?;
+                }
+                write!(f, ")")
             }
         }
     }

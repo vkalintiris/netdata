@@ -31,7 +31,6 @@ thiserror.workspace = true
 anyhow.workspace = true
 
 # Utilities
-enum_dispatch.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 chrono.workspace = true

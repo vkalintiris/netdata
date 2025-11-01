@@ -130,7 +130,7 @@ pub struct HistogramRequest {
     /// End time
     pub before: u64,
     /// Filter expression to apply
-    pub filter_expr: Arc<FilterExpr<String>>,
+    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
 }
 ```
 
@@ -148,7 +148,7 @@ Each `BucketRequest` represents a single time bucket:
 pub struct BucketRequest {
     pub start: u64,        // Bucket start time (aligned to duration)
     pub end: u64,          // Bucket end time
-    pub filter_expr: Arc<FilterExpr<String>>,
+    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
 }
 ```
 

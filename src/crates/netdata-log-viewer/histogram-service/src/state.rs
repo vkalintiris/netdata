@@ -108,7 +108,7 @@ impl AppState {
         &self,
         facets: &HistogramFacets,
         pending_files: &HashSet<File>,
-        bucket_duration: u64,
+        bucket_duration: u32,
     ) {
         use crate::cache::IndexingRequest;
 

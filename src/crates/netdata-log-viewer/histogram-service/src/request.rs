@@ -1,7 +1,7 @@
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use journal::collections::HashSet;
-use journal::index::FilterExpr;
+use journal::index::{FilterExpr, FilterTarget};
 use journal::repository::File;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -13,18 +13,18 @@ use std::time::Duration;
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct BucketRequest {
     // Start time of the bucket request
-    pub start: u64,
+    pub start: u32,
     // End time of the bucket request
-    pub end: u64,
+    pub end: u32,
     // Facets to use for file index
     pub facets: HistogramFacets,
     // Applied filter expression
-    pub filter_expr: Arc<FilterExpr<String>>,
+    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
 }
 
 impl BucketRequest {
     /// The duration of the bucket request in seconds
-    pub fn duration(&self) -> u64 {
+    pub fn duration(&self) -> u32 {
         self.end - self.start
     }
 
@@ -59,19 +59,19 @@ impl BucketRequest {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct HistogramRequest {
     /// Start time
-    pub after: u64,
+    pub after: u32,
     /// End time
-    pub before: u64,
+    pub before: u32,
     /// Facets to use for file indexes
     pub facets: HistogramFacets,
     /// Filter expression to apply
-    pub filter_expr: Arc<FilterExpr<String>>,
+    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
 }
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct HistogramFacets {
-    fields: Arc<Vec<String>>,
+    fields: Arc<Vec<journal::FieldName>>,
     precomputed_hash: u64,
 }
 
@@ -95,68 +95,78 @@ impl PartialEq for HistogramFacets {
 impl Eq for HistogramFacets {}
 
 impl HistogramFacets {
-    fn default_facets() -> Vec<String> {
-        let v: Vec<String> = vec![
-            String::from("_HOSTNAME"),
-            String::from("PRIORITY"),
-            String::from("SYSLOG_FACILITY"),
-            String::from("ERRNO"),
-            String::from("SYSLOG_IDENTIFIER"),
-            // b"UNIT",
-            String::from("USER_UNIT"),
-            String::from("MESSAGE_ID"),
-            String::from("_BOOT_ID"),
-            String::from("_SYSTEMD_OWNER_UID"),
-            String::from("_UID"),
-            String::from("OBJECT_SYSTEMD_OWNER_UID"),
-            String::from("OBJECT_UID"),
-            String::from("_GID"),
-            String::from("OBJECT_GID"),
-            String::from("_CAP_EFFECTIVE"),
-            String::from("_AUDIT_LOGINUID"),
-            String::from("OBJECT_AUDIT_LOGINUID"),
-            String::from("CODE_FUNC"),
-            String::from("ND_LOG_SOURCE"),
-            String::from("CODE_FILE"),
-            String::from("ND_ALERT_NAME"),
-            String::from("ND_ALERT_CLASS"),
-            String::from("_SELINUX_CONTEXT"),
-            String::from("_MACHINE_ID"),
-            String::from("ND_ALERT_TYPE"),
-            String::from("_SYSTEMD_SLICE"),
-            String::from("_EXE"),
-            // b"_SYSTEMD_UNIT",
-            String::from("_NAMESPACE"),
-            String::from("_TRANSPORT"),
-            String::from("_RUNTIME_SCOPE"),
-            String::from("_STREAM_ID"),
-            String::from("ND_NIDL_CONTEXT"),
-            String::from("ND_ALERT_STATUS"),
-            // b"_SYSTEMD_CGROUP",
-            String::from("ND_NIDL_NODE"),
-            String::from("ND_ALERT_COMPONENT"),
-            String::from("_COMM"),
-            String::from("_SYSTEMD_USER_UNIT"),
-            String::from("_SYSTEMD_USER_SLICE"),
-            // b"_SYSTEMD_SESSION",
-            String::from("__logs_sources"),
+    fn default_facets() -> Vec<journal::FieldName> {
+        let v: Vec<&str> = vec![
+            "_HOSTNAME",
+            "PRIORITY",
+            "SYSLOG_FACILITY",
+            "ERRNO",
+            "SYSLOG_IDENTIFIER",
+            // "UNIT",
+            "USER_UNIT",
+            "MESSAGE_ID",
+            "_BOOT_ID",
+            "_SYSTEMD_OWNER_UID",
+            "_UID",
+            "OBJECT_SYSTEMD_OWNER_UID",
+            "OBJECT_UID",
+            "_GID",
+            "OBJECT_GID",
+            "_CAP_EFFECTIVE",
+            "_AUDIT_LOGINUID",
+            "OBJECT_AUDIT_LOGINUID",
+            "CODE_FUNC",
+            "ND_LOG_SOURCE",
+            "CODE_FILE",
+            "ND_ALERT_NAME",
+            "ND_ALERT_CLASS",
+            "_SELINUX_CONTEXT",
+            "_MACHINE_ID",
+            "ND_ALERT_TYPE",
+            "_SYSTEMD_SLICE",
+            "_EXE",
+            // "_SYSTEMD_UNIT",
+            "_NAMESPACE",
+            "_TRANSPORT",
+            "_RUNTIME_SCOPE",
+            "_STREAM_ID",
+            "ND_NIDL_CONTEXT",
+            "ND_ALERT_STATUS",
+            // "_SYSTEMD_CGROUP",
+            "ND_NIDL_NODE",
+            "ND_ALERT_COMPONENT",
+            "_COMM",
+            "_SYSTEMD_USER_UNIT",
+            "_SYSTEMD_USER_SLICE",
+            // "_SYSTEMD_SESSION",
+            "__logs_sources",
         ];
 
-        v
+        // Convert to FieldName - use new_unchecked since these are trusted constants
+        v.into_iter()
+            .map(journal::FieldName::new_unchecked)
+            .collect()
     }
 
     pub fn new(facets: &[String]) -> Self {
         let mut facets = if facets.is_empty() {
             Self::default_facets()
         } else {
-            facets.to_vec()
+            // Parse and validate each facet string into FieldName
+            facets
+                .iter()
+                .filter_map(|s| journal::FieldName::new(s.clone()))
+                .collect()
         };
 
         facets.sort();
 
         use std::hash::Hasher;
         let mut hasher = std::hash::DefaultHasher::new();
-        facets.hash(&mut hasher);
+        // Hash the string representation for consistency
+        for field in &facets {
+            field.as_str().hash(&mut hasher);
+        }
         let precomputed_hash = hasher.finish();
 
         Self {
@@ -166,12 +176,12 @@ impl HistogramFacets {
     }
 
     /// Returns an iterator over the facet field names
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
+    pub fn iter(&self) -> impl Iterator<Item = &journal::FieldName> {
         self.fields.iter()
     }
 
     /// Returns the facet fields as a slice
-    pub fn as_slice(&self) -> &[String] {
+    pub fn as_slice(&self) -> &[journal::FieldName] {
         &self.fields
     }
 
@@ -188,10 +198,10 @@ impl HistogramFacets {
 
 impl HistogramRequest {
     pub fn new(
-        after: u64,
-        before: u64,
+        after: u32,
+        before: u32,
         facets: &[String],
-        filter_expr: &FilterExpr<String>,
+        filter_expr: &FilterExpr<FilterTarget>,
     ) -> Self {
         Self {
             after,
@@ -215,10 +225,14 @@ impl HistogramRequest {
         // Allocate our buckets
         let num_buckets = ((aligned_end - aligned_start) / bucket_duration) as usize;
         let mut buckets = Vec::with_capacity(num_buckets);
+        assert!(
+            num_buckets > 0,
+            "histogram requests should always have at least one bucket"
+        );
 
         // Create our buckets
         for bucket_index in 0..num_buckets {
-            let start = aligned_start + (bucket_index as u64 * bucket_duration);
+            let start = aligned_start + (bucket_index as u32 * bucket_duration);
 
             buckets.push(BucketRequest {
                 start,
@@ -231,7 +245,7 @@ impl HistogramRequest {
         buckets
     }
 
-    fn calculate_bucket_duration(&self) -> u64 {
+    fn calculate_bucket_duration(&self) -> u32 {
         const MINUTE: Duration = Duration::from_secs(60);
         const HOUR: Duration = Duration::from_secs(60 * MINUTE.as_secs());
         const DAY: Duration = Duration::from_secs(24 * HOUR.as_secs());
@@ -273,9 +287,9 @@ impl HistogramRequest {
         VALID_DURATIONS
             .iter()
             .rev()
-            .find(|&&bucket_width| duration / bucket_width.as_secs() >= 100)
+            .find(|&&bucket_width| duration as u64 / bucket_width.as_secs() >= 100)
             .map(|d| d.as_secs())
-            .unwrap_or(1)
+            .unwrap_or(1) as u32
     }
 }
 

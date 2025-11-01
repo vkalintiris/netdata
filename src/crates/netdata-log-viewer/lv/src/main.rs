@@ -54,7 +54,7 @@ where
 /// - Returns FilterExpr::None if selections is empty or all value lists are empty
 fn build_filter_from_selections(
     selections: &std::collections::HashMap<String, Vec<String>>,
-) -> journal::index::FilterExpr<String> {
+) -> journal::index::FilterExpr<journal::index::FilterTarget> {
     if selections.is_empty() {
         return journal::index::FilterExpr::None;
     }
@@ -75,10 +75,20 @@ fn build_filter_from_selections(
         // e.g., PRIORITY=1 OR PRIORITY=2 OR PRIORITY=3
         let value_filters: Vec<_> = values
             .iter()
-            .map(|value| journal::index::FilterExpr::match_str(format!("{}={}", field, value)))
+            .filter_map(|value| {
+                // Parse into FieldValuePair
+                let pair_str = format!("{}={}", field, value);
+                journal::FieldValuePair::parse(&pair_str)
+                    .map(journal::index::FilterExpr::match_field_value_pair)
+            })
             .collect();
 
-        let field_filter = journal::index::FilterExpr::or(value_filters);
+        if value_filters.is_empty() {
+            continue; // Skip if all values failed to parse
+        }
+
+        let field_filter =
+            journal::index::FilterExpr::<journal::index::FilterTarget>::or(value_filters);
         field_filters.push(field_filter);
     }
 
@@ -87,7 +97,7 @@ fn build_filter_from_selections(
     if field_filters.is_empty() {
         journal::index::FilterExpr::None
     } else {
-        journal::index::FilterExpr::and(field_filters)
+        journal::index::FilterExpr::<journal::index::FilterTarget>::and(field_filters)
     }
 }
 
@@ -98,42 +108,9 @@ async fn journal_handler(
 ) -> impl IntoResponse {
     let filter_expr = build_filter_from_selections(&request.selections);
 
-    // Auto-detect facets if none provided
-    let facets = if request.facets.len() <= 1 {
-        // Auto-detect fields based on cardinality analysis of recent journal files
-        // Parameters:
-        // - max_files_per_chain: 5 (analyze last 5 files per chain)
-        // - min_cardinality: 2 (exclude fields with only 1 unique value)
-        // - max_cardinality: 1000 (exclude high-cardinality fields like MESSAGE)
-        let journal_state_guard = state.journal_state.read().await;
-        match journal_state_guard
-            .registry
-            .suggest_histogram_fields(5, 500)
-        {
-            Ok(detected_fields) if !detected_fields.is_empty() => {
-                eprintln!("Auto-detected {} histogram fields", detected_fields.len());
-                detected_fields
-            }
-            Ok(_) => {
-                eprintln!("No fields auto-detected, using defaults");
-                Vec::new() // Will fall back to defaults in HistogramFacets::new()
-            }
-            Err(e) => {
-                eprintln!("Failed to auto-detect fields: {}, using defaults", e);
-                Vec::new() // Will fall back to defaults
-            }
-        }
-    } else {
-        eprintln!("Using facets from request");
-        request.facets.clone()
-    };
-
-    let histogram_request = histogram_service::HistogramRequest::new(
-        request.after as u64,
-        request.before as u64,
-        &facets,
-        &filter_expr,
-    );
+    assert!(request.after < request.before);
+    let histogram_request =
+        histogram_service::HistogramRequest::new(request.after, request.before, &[], &filter_expr);
 
     let histogram_result = state
         .journal_state
@@ -151,7 +128,7 @@ async fn journal_handler(
         accepted_params: AppState::accepted_params(),
         required_params: AppState::required_params(),
         facets: histogram_result.ui_facets(),
-        histogram: histogram_result.ui_histogram("log.severity_number"),
+        histogram: histogram_result.ui_histogram("PRIORITY"),
         available_histograms: histogram_result.ui_available_histograms(),
         columns: data,
         data: Vec::new(),
@@ -338,8 +315,8 @@ fn initialize_tracing() {
 async fn main() {
     // initialize_tracing();
 
-    // let path = "/var/log/journal";
-    let path = "/home/vk/repos/tmp/aws";
+    let path = "/var/log/journal";
+    // let path = "/home/vk/repos/tmp/aws";
     // let path = "/home/vk/repos/tmp/agent-events-journal";
     let journal_state = histogram_service::AppState::new(
         // "/home/vk/repos/tmp/agent-events-journal",

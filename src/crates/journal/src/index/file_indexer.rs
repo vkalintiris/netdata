@@ -1,10 +1,10 @@
-use super::{Bitmap, Histogram};
+use super::{field_types::{FieldName, FieldValuePair}, Bitmap, Histogram};
 use crate::collections::{HashMap, HashSet};
 use crate::error::{JournalError, Result};
 use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use tracing::{error, warn};
 
 use super::file_index::FileIndex;
@@ -27,7 +27,7 @@ fn parse_timestamp(field_name: &[u8], data_object: &DataObject<&[u8]>) -> Result
     Ok(timestamp)
 }
 
-fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
+fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<FieldName> {
     let mut fields = HashSet::default();
 
     for value_guard in journal_file.fields() {
@@ -37,7 +37,9 @@ fn collect_file_fields(journal_file: &JournalFile<Mmap>) -> HashSet<String> {
         };
 
         let payload = String::from_utf8_lossy(field.get_payload()).into_owned();
-        fields.insert(payload);
+        if let Some(field_name) = FieldName::new(payload) {
+            fields.insert(field_name);
+        }
     }
 
     fields
@@ -93,9 +95,9 @@ impl FileIndexer {
     pub fn index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        source_timestamp_field: Option<&[u8]>,
-        field_names: &[&[u8]],
-        bucket_duration: u64,
+        source_timestamp_field: Option<&FieldName>,
+        field_names: &[FieldName],
+        bucket_duration: u32,
     ) -> Result<FileIndex> {
         if false {
             let n_entries = journal_file.journal_header_ref().n_entries as _;
@@ -121,12 +123,8 @@ impl FileIndexer {
             self.build_histogram(journal_file, source_timestamp_field, bucket_duration)?;
         let entries = self.build_entries_index(journal_file, field_names)?;
 
-        // Convert field_names to HashSet<String> for indexed_fields
-        let indexed_fields: HashSet<String> = field_names
-            .iter()
-            .filter_map(|field_name| std::str::from_utf8(field_name).ok())
-            .map(|s| s.to_string())
-            .collect();
+        // Convert field_names to HashSet<FieldName> for indexed_fields
+        let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
 
         // let n_entries = journal_file.journal_header_ref().n_entries as _;
         self.source_timestamp_cursor_pairs = Vec::new();
@@ -147,13 +145,13 @@ impl FileIndexer {
     fn build_entries_index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        field_names: &[&[u8]],
-    ) -> Result<HashMap<String, Bitmap>> {
+        field_names: &[FieldName],
+    ) -> Result<HashMap<FieldValuePair, Bitmap>> {
         let mut entries_index = HashMap::default();
 
         for field_name in field_names {
             // Get the data object iterator for this field
-            let field_data_iterator = match journal_file.field_data_objects(field_name) {
+            let field_data_iterator = match journal_file.field_data_objects(field_name.as_bytes()) {
                 Ok(field_data_iterator) => field_data_iterator,
                 Err(e) => {
                     warn!("failed to iterate field data objects {:#?}", e);
@@ -175,6 +173,12 @@ impl FileIndexer {
                     };
 
                     (data_payload, inlined_cursor)
+                };
+
+                // Parse the payload into a FieldValuePair (format is "FIELD=value")
+                let Some(pair) = FieldValuePair::parse(&data_payload) else {
+                    warn!("Invalid field=value format: {}", data_payload);
+                    continue;
                 };
 
                 // Collect the offset of entries where this data object appears
@@ -202,7 +206,7 @@ impl FileIndexer {
                     Bitmap::from_sorted_iter(self.entry_indices.iter().copied()).unwrap();
                 bitmap.optimize();
 
-                entries_index.insert(data_payload.clone(), bitmap);
+                entries_index.insert(pair, bitmap);
             }
         }
 
@@ -273,12 +277,12 @@ impl FileIndexer {
     fn build_histogram(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        source_timestamp_field_name: Option<&[u8]>,
-        bucket_duration: u64,
+        source_timestamp_field_name: Option<&FieldName>,
+        bucket_duration: u32,
     ) -> Result<Histogram> {
         // Collect information from the source timestamp field
         if let Some(source_field_name) = source_timestamp_field_name {
-            self.collect_source_field_info(journal_file, source_field_name)?;
+            self.collect_source_field_info(journal_file, source_field_name.as_bytes())?;
         }
 
         // Load the global entry offset array
@@ -317,7 +321,7 @@ impl FileIndexer {
             }
         }
 
-        let Some(bucket_duration) = NonZeroU64::new(bucket_duration) else {
+        let Some(bucket_duration) = NonZeroU32::new(bucket_duration) else {
             return Err(JournalError::InvalidMagicNumber);
         };
 

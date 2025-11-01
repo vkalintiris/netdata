@@ -49,7 +49,6 @@ axum-tracing-opentelemetry = "0.32.0"
 tower-http = { version = "0.5" }
 foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
-enum_dispatch = "0.3.13"
 parking_lot = "0.12"
 allocative = { version = "0.3.4" }
 hdrhistogram = { version = "7.5" }

@@ -2,7 +2,7 @@ use super::Bitmap;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroU64;
+use std::num::NonZeroU32;
 
 /// A [`Histogram::bucket_duration`] aligned bucket in the histogram.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -20,30 +20,29 @@ pub struct Bucket {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Histogram {
     /// The duration of each bucket in seconds
-    pub bucket_duration: NonZeroU64,
+    pub bucket_duration: NonZeroU32,
     /// Sparse vector containing only bucket boundaries where changes occur.
     pub buckets: Vec<Bucket>,
 }
 
 impl Histogram {
     pub fn from_timestamp_offset_pairs(
-        bucket_duration: std::num::NonZeroU64,
+        bucket_duration: std::num::NonZeroU32,
         timestamp_offset_pairs: &[(u64, std::num::NonZeroU64)],
     ) -> Histogram {
         debug_assert!(timestamp_offset_pairs.is_sorted());
 
-        // let mut buckets = Vec::with_capacity(timestamp_offset_pairs.len());
         let mut buckets = Vec::new();
         let mut current_bucket = None;
 
         // Convert seconds to microseconds for bucket size
-        let bucket_size_micros = bucket_duration.get() * 1_000_000;
+        let bucket_size_micros = bucket_duration.get() as u64 * 1_000_000;
 
         for (offset_index, &(timestamp_micros, _offset)) in
             timestamp_offset_pairs.iter().enumerate()
         {
             // Calculate which bucket this timestamp falls into
-            let bucket = (timestamp_micros / bucket_size_micros) * bucket_duration.get();
+            let bucket = (timestamp_micros / bucket_size_micros) * bucket_duration.get() as u64;
 
             match current_bucket {
                 None => {
@@ -63,7 +62,7 @@ impl Histogram {
             }
         }
 
-        // Don't forget the last bucket!
+        // Handle last bucket
         if let Some(last_bucket) = current_bucket {
             buckets.push(Bucket {
                 start_time: last_bucket as u32,
@@ -86,7 +85,7 @@ impl Histogram {
             let mut count = 0;
 
             while let Some(&value) = iter.peek() {
-                if value <= bucket.count as u32 {
+                if value <= bucket.count {
                     count += 1;
                     iter.next();
                 } else {
@@ -110,26 +109,26 @@ impl Histogram {
     }
 
     /// Get the start time of the histogram.
-    pub fn start_time(&self) -> Option<u64> {
-        self.buckets.first().map(|bucket| bucket.start_time as u64)
+    pub fn start_time(&self) -> u32 {
+        let first_bucket = self.buckets.first().expect("histogram to have buckets");
+        first_bucket.start_time
     }
 
     /// Get the end time of the histogram.
-    pub fn end_time(&self) -> Option<u64> {
-        self.buckets
-            .last()
-            .map(|bucket| bucket.start_time as u64 + self.bucket_duration.get())
+    pub fn end_time(&self) -> u32 {
+        let last_bucket = self.buckets.last().expect("histogram to have buckets");
+        last_bucket.start_time + self.bucket_duration.get()
     }
 
     /// Get the time range covered by the histogram.
-    pub fn time_range(&self) -> Option<(u64, u64)> {
-        Some((self.start_time()?, self.end_time()?))
+    pub fn time_range(&self) -> (u32, u32) {
+        (self.start_time(), self.end_time())
     }
 
     /// Get the duration covered by this histogram.
-    pub fn duration(&self) -> Option<u64> {
-        let (start, end) = self.time_range()?;
-        Some(end - start)
+    pub fn duration(&self) -> u32 {
+        let (start, end) = self.time_range();
+        end - start
     }
 
     /// Returns the number of buckets in the histogram.
@@ -144,10 +143,9 @@ impl Histogram {
 
     /// Get the total number of entries in the histogram.
     pub fn count(&self) -> usize {
-        self.buckets
-            .last()
-            .map(|b| b.count as usize + 1)
-            .unwrap_or(0)
+        let last_bucket = self.buckets.last().expect("histogram to have buckets");
+        // FIXME: Off-by-one error
+        last_bucket.count as usize + 1
     }
 
     /// Count the number of bitmap entries that fall within a time range.
@@ -183,8 +181,8 @@ impl Histogram {
     pub fn count_bitmap_entries_in_range(
         &self,
         bitmap: &Bitmap,
-        start_time: u64,
-        end_time: u64,
+        start_time: u32,
+        end_time: u32,
     ) -> Option<usize> {
         // Validate inputs
         if start_time >= end_time {
@@ -205,9 +203,7 @@ impl Histogram {
 
         // Find the bucket indices for start and end times using binary search
         // partition_point returns the index of the first bucket with start_time >= start_time
-        let start_bucket_idx = self
-            .buckets
-            .partition_point(|b| (b.start_time as u64) < start_time);
+        let start_bucket_idx = self.buckets.partition_point(|b| b.start_time < start_time);
 
         // If start_bucket_idx is beyond all buckets, no matches possible
         if start_bucket_idx >= self.buckets.len() {
@@ -219,7 +215,7 @@ impl Histogram {
         // so we need to subtract 1 to get the last bucket before end_time
         let end_bucket_idx = self
             .buckets
-            .partition_point(|b| (b.start_time as u64) < end_time)
+            .partition_point(|b| b.start_time < end_time)
             .saturating_sub(1);
 
         // If start is after end, the range doesn't contain any buckets
@@ -270,7 +266,7 @@ impl std::fmt::Display for Histogram {
                 .timestamp_opt(bucket.start_time as i64, 0)
                 .single()
                 .map(|dt| dt.format("%d/%m %H:%M:%S").to_string())
-                .unwrap_or_else(|| format!("{}", bucket.start_time));
+                .expect("a local datetime from bucket's start time");
 
             writeln!(f, "{:<18} {:<12} {:<12}", datetime, count, bucket.count)?;
             prev_running = bucket.count;
@@ -313,7 +309,7 @@ mod tests {
         ];
 
         Histogram {
-            bucket_duration: NonZeroU64::new(60).unwrap(),
+            bucket_duration: NonZeroU32::new(60).unwrap(),
             buckets,
         }
     }
@@ -455,10 +451,10 @@ mod tests {
     fn test_histogram_properties() {
         let histogram = create_test_histogram();
 
-        assert_eq!(histogram.start_time(), Some(0));
-        assert_eq!(histogram.end_time(), Some(240));
-        assert_eq!(histogram.time_range(), Some((0, 240)));
-        assert_eq!(histogram.duration(), Some(240));
+        assert_eq!(histogram.start_time(), 0);
+        assert_eq!(histogram.end_time(), 240);
+        assert_eq!(histogram.time_range(), (0, 240));
+        assert_eq!(histogram.duration(), 240);
         assert_eq!(histogram.len(), 4);
         assert!(!histogram.is_empty());
         assert_eq!(histogram.count(), 20);

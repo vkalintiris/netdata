@@ -63,7 +63,7 @@ impl Registry {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64) -> HashSet<File> {
+    pub fn find_files_in_range(&self, start: u32, end: u32) -> HashSet<File> {
         self.repository.find_files_in_range(start, end)
     }
 

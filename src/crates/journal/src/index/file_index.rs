@@ -1,4 +1,4 @@
-use super::{Bitmap, Histogram};
+use super::{field_types::{FieldName, FieldValuePair}, Bitmap, Histogram};
 use crate::collections::{HashMap, HashSet};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
@@ -12,21 +12,21 @@ pub struct FileIndex {
     pub histogram: Histogram,
 
     // Set of fields in the file
-    pub file_fields: HashSet<String>,
+    pub file_fields: HashSet<FieldName>,
 
     // Set of fields that were requested to be indexed
-    pub indexed_fields: HashSet<String>,
+    pub indexed_fields: HashSet<FieldName>,
 
-    // Bitmap for each indexed field
-    pub bitmaps: HashMap<String, Bitmap>,
+    // Bitmap for each indexed field=value pair
+    pub bitmaps: HashMap<FieldValuePair, Bitmap>,
 }
 
 impl FileIndex {
     pub fn new(
         histogram: Histogram,
-        fields: HashSet<String>,
-        indexed_fields: HashSet<String>,
-        bitmaps: HashMap<String, Bitmap>,
+        fields: HashSet<FieldName>,
+        indexed_fields: HashSet<FieldName>,
+        bitmaps: HashMap<FieldValuePair, Bitmap>,
     ) -> Self {
         Self {
             histogram,
@@ -36,7 +36,7 @@ impl FileIndex {
         }
     }
 
-    pub fn bucket_duration(&self) -> u64 {
+    pub fn bucket_duration(&self) -> u32 {
         self.histogram.bucket_duration.get()
     }
 
@@ -44,23 +44,26 @@ impl FileIndex {
         &self.histogram
     }
 
-    pub fn fields(&self) -> &HashSet<String> {
+    /// Get all field names present in this file.
+    pub fn fields(&self) -> &HashSet<FieldName> {
         &self.file_fields
     }
 
-    pub fn bitmaps(&self) -> &HashMap<String, Bitmap> {
+    /// Get all indexed field=value pairs with their bitmaps.
+    pub fn bitmaps(&self) -> &HashMap<FieldValuePair, Bitmap> {
         &self.bitmaps
     }
 
-    pub fn is_indexed(&self, field: &str) -> bool {
+    /// Check if a field is indexed.
+    pub fn is_indexed(&self, field: &FieldName) -> bool {
         self.indexed_fields.contains(field)
     }
 
     pub fn count_bitmap_entries_in_range(
         &self,
         bitmap: &Bitmap,
-        start_time: u64,
-        end_time: u64,
+        start_time: u32,
+        end_time: u32,
     ) -> Option<usize> {
         self.histogram()
             .count_bitmap_entries_in_range(bitmap, start_time, end_time)

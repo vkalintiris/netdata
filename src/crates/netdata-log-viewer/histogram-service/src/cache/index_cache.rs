@@ -65,7 +65,7 @@ use crate::request::HistogramFacets;
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct IndexingRequest {
     pub facets: HistogramFacets,
-    pub bucket_duration: u64,
+    pub bucket_duration: u32,
     pub file: File,
     pub instant: Instant,
 }
@@ -247,7 +247,7 @@ impl IndexCache {
             }
 
             // Extract field names from facets
-            let field_names: Vec<&[u8]> = task.facets.iter().map(|x| x.as_bytes()).collect();
+            let field_names: Vec<journal::FieldName> = task.facets.iter().cloned().collect();
 
             // Create the file index
 

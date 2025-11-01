@@ -7,10 +7,10 @@ pub struct JournalRequest {
     pub info: bool,
 
     /// Unix timestamp for the start of the time range
-    pub after: i64,
+    pub after: u32,
 
     /// Unix timestamp for the end of the time range
-    pub before: i64,
+    pub before: u32,
 
     /// Maximum number of results to return
     pub last: Option<u32>,

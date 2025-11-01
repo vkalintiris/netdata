@@ -3,6 +3,17 @@ use allocative::Allocative;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const PRIORITY_LABELS: &[(&str, &str)] = &[
+    ("0", "emergency"),
+    ("1", "alert"),
+    ("2", "critical"),
+    ("3", "error"),
+    ("4", "warning"),
+    ("5", "notice"),
+    ("6", "info"),
+    ("7", "debug"),
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct Response {
@@ -76,17 +87,7 @@ pub mod histogram {
 
         impl Chart {
             pub fn patch_priority(&mut self) {
-                let mut map = HashMap::default();
-
-                map.insert("0", "emergency");
-                map.insert("1", "alert");
-                map.insert("2", "critical");
-                map.insert("3", "error");
-                map.insert("4", "warning");
-                map.insert("5", "notice");
-                map.insert("6", "info");
-                map.insert("7", "debug");
-
+                let map: HashMap<_, _> = PRIORITY_LABELS.iter().copied().collect();
                 remap_strings(&mut self.view.dimensions.ids, &map);
                 remap_strings(&mut self.view.dimensions.names, &map);
                 remap_strings(&mut self.result.labels, &map);
@@ -144,6 +145,11 @@ pub mod histogram {
                 pub items: Vec<[usize; 3]>,
             }
 
+            /// Custom serialization for DataItem to flatten the structure.
+            ///
+            /// Serialize as: [timestamp, [val1, arp1, pa1], [val2, arp2, pa2], ...]
+            /// This format matches the expected Netdata chart data format where the first
+            /// element is the timestamp followed by dimension data arrays.
             impl Serialize for DataItem {
                 fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
                 where

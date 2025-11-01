@@ -1,12 +1,13 @@
 use crate::request::{BucketRequest, RequestMetadata};
 use crate::ui;
+use journal::collections::{HashMap, HashSet};
+use journal::index::{FileIndex, FilterExpr, FilterTarget};
+use journal::repository::File;
+use journal::{FieldName, FieldValuePair};
+use std::sync::Arc;
+
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use enum_dispatch::enum_dispatch;
-use journal::collections::{HashMap, HashSet};
-use journal::index::{FileIndex, FilterExpr};
-use journal::repository::File;
-use std::sync::Arc;
 
 /// A partial bucket response.
 ///
@@ -22,14 +23,14 @@ pub struct BucketPartialResponse {
     pub request_metadata: RequestMetadata,
 
     // Maps field=value pairs to (unfiltered, filtered) counts
-    pub fv_counts: HashMap<String, (usize, usize)>,
+    pub fv_counts: HashMap<FieldValuePair, (usize, usize)>,
 
     // Set of fields that are not indexed
-    pub unindexed_fields: HashSet<String>,
+    pub unindexed_fields: HashSet<FieldName>,
 }
 
 impl BucketPartialResponse {
-    pub fn duration(&self) -> u64 {
+    pub fn duration(&self) -> u32 {
         self.request_metadata.request.duration()
     }
 
@@ -37,15 +38,15 @@ impl BucketPartialResponse {
         &self.request_metadata.files
     }
 
-    pub fn start_time(&self) -> u64 {
+    pub fn start_time(&self) -> u32 {
         self.request_metadata.request.start
     }
 
-    pub fn end_time(&self) -> u64 {
+    pub fn end_time(&self) -> u32 {
         self.request_metadata.request.end
     }
 
-    pub fn filter_expr(&self) -> &Arc<FilterExpr<String>> {
+    pub fn filter_expr(&self) -> &Arc<FilterExpr<FilterTarget>> {
         &self.request_metadata.request.filter_expr
     }
 
@@ -77,12 +78,14 @@ impl BucketPartialResponse {
                 continue;
             }
 
-            self.unindexed_fields.insert(field.clone());
+            if let Some(field_name) = FieldName::new(field) {
+                self.unindexed_fields.insert(field_name);
+            }
         }
 
         // TODO: should `resolve`/`evaluate` return an `Option`?
         let filter_expr = self.filter_expr().as_ref();
-        let filter_bitmap = if *filter_expr != FilterExpr::<String>::None {
+        let filter_bitmap = if *filter_expr != FilterExpr::<FilterTarget>::None {
             Some(filter_expr.resolve(file_index).evaluate())
         } else {
             None
@@ -109,12 +112,15 @@ impl BucketPartialResponse {
             };
 
             // Update the counts for this field=value pair
-            if let Some(counts) = self.fv_counts.get_mut(indexed_field) {
-                counts.0 += unfiltered_count;
-                counts.1 += filtered_count;
-            } else {
-                self.fv_counts
-                    .insert(indexed_field.clone(), (unfiltered_count, filtered_count));
+            // Parse the indexed_field string into a FieldValuePair
+            if let Some(pair) = FieldValuePair::parse(indexed_field) {
+                if let Some(counts) = self.fv_counts.get_mut(&pair) {
+                    counts.0 += unfiltered_count;
+                    counts.1 += filtered_count;
+                } else {
+                    self.fv_counts
+                        .insert(pair, (unfiltered_count, filtered_count));
+                }
             }
         }
     }
@@ -128,50 +134,43 @@ impl BucketPartialResponse {
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct BucketCompleteResponse {
     // Maps key=value pairs to (unfiltered, filtered) counts
-    pub fv_counts: HashMap<String, (usize, usize)>,
+    pub fv_counts: HashMap<FieldValuePair, (usize, usize)>,
     // Set of fields that are not indexed
-    pub unindexed_fields: HashSet<String>,
-}
-
-#[enum_dispatch]
-pub trait BucketResponseOps {
-    fn indexed_fields(&self) -> HashSet<String>;
-    fn unindexed_fields(&self) -> &HashSet<String>;
-}
-
-impl BucketResponseOps for BucketPartialResponse {
-    fn indexed_fields(&self) -> HashSet<String> {
-        self.fv_counts
-            .keys()
-            .filter_map(|key| key.split_once('=').map(|(field, _value)| field.to_string()))
-            .collect()
-    }
-
-    fn unindexed_fields(&self) -> &HashSet<String> {
-        &self.unindexed_fields
-    }
-}
-
-impl BucketResponseOps for BucketCompleteResponse {
-    fn indexed_fields(&self) -> HashSet<String> {
-        self.fv_counts
-            .keys()
-            .filter_map(|key| key.split_once('=').map(|(field, _value)| field.to_string()))
-            .collect()
-    }
-
-    fn unindexed_fields(&self) -> &HashSet<String> {
-        &self.unindexed_fields
-    }
+    pub unindexed_fields: HashSet<FieldName>,
 }
 
 /// Type to discriminate partial vs. complete bucket responses.
 #[derive(Debug, Clone)]
-#[enum_dispatch(BucketResponseOps)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub enum BucketResponse {
     Partial(BucketPartialResponse),
     Complete(BucketCompleteResponse),
+}
+
+impl BucketResponse {
+    /// Get all indexed field names from this bucket response.
+    pub fn indexed_fields(&self) -> HashSet<FieldName> {
+        self.fv_counts()
+            .keys()
+            .map(|pair| pair.extract_field())
+            .collect()
+    }
+
+    /// Get the set of unindexed field names.
+    pub fn unindexed_fields(&self) -> &HashSet<FieldName> {
+        match self {
+            BucketResponse::Partial(partial) => &partial.unindexed_fields,
+            BucketResponse::Complete(complete) => &complete.unindexed_fields,
+        }
+    }
+
+    /// Get a reference to the fv_counts HashMap regardless of variant.
+    pub fn fv_counts(&self) -> &HashMap<FieldValuePair, (usize, usize)> {
+        match self {
+            BucketResponse::Partial(partial) => &partial.fv_counts,
+            BucketResponse::Complete(complete) => &complete.fv_counts,
+        }
+    }
 }
 
 /// Represents the result of a histogram evaluation.
@@ -193,7 +192,8 @@ impl HistogramResult {
         }
 
         let mut available_histograms = Vec::with_capacity(indexed_fields.len());
-        for id in indexed_fields {
+        for field_name in indexed_fields {
+            let id = field_name.as_str().to_string();
             available_histograms.push(ui::available_histogram::AvailableHistogram {
                 id: id.clone(),
                 name: id,
@@ -215,24 +215,9 @@ impl HistogramResult {
         let mut values = HashSet::default();
 
         for (_, bucket_response) in &self.buckets {
-            match bucket_response {
-                BucketResponse::Partial(partial) => {
-                    for fv in partial.fv_counts.keys() {
-                        if let Some((f, v)) = fv.split_once('=') {
-                            if f == field {
-                                values.insert(v.to_string());
-                            }
-                        }
-                    }
-                }
-                BucketResponse::Complete(complete) => {
-                    for fv in complete.fv_counts.keys() {
-                        if let Some((f, v)) = fv.split_once('=') {
-                            if f == field {
-                                values.insert(v.to_string());
-                            }
-                        }
-                    }
+            for pair in bucket_response.fv_counts().keys() {
+                if pair.field() == field {
+                    values.insert(pair.value().to_string());
                 }
             }
         }
@@ -249,26 +234,21 @@ impl HistogramResult {
             let mut counts = Vec::with_capacity(labels.len());
 
             for field_value in &labels {
-                let key = format!("{}={}", field, field_value);
+                // Create FieldValuePair for lookup
+                let field_name = FieldName::new_unchecked(field);
+                let pair = field_name.with_value(field_value);
 
-                let count = match bucket_response {
-                    BucketResponse::Partial(partial) => partial
-                        .fv_counts
-                        .get(&key)
-                        .map(|(_, filtered)| *filtered)
-                        .unwrap_or(0),
-                    BucketResponse::Complete(complete) => complete
-                        .fv_counts
-                        .get(&key)
-                        .map(|(_, filtered)| *filtered)
-                        .unwrap_or(0),
-                };
+                let count = bucket_response
+                    .fv_counts()
+                    .get(&pair)
+                    .map(|(_, filtered)| *filtered)
+                    .unwrap_or(0);
 
                 counts.push([count, 0, 0]);
             }
 
             data.push(ui::histogram::chart::result::DataItem {
-                timestamp: timestamp * std::time::Duration::from_secs(1).as_millis() as u64,
+                timestamp: timestamp as u64 * std::time::Duration::from_secs(1).as_millis() as u64,
                 items: counts,
             });
         }
@@ -301,13 +281,39 @@ impl HistogramResult {
 
         ui::histogram::chart::view::View {
             title: format!("Events distribution by {}", field),
-            after: self.buckets.first().unwrap().0.start as u32,
-            before: self.buckets.last().unwrap().0.end as u32,
-            update_every: self.buckets.first().unwrap().0.duration() as u32,
+            after: self.start_time(),
+            before: self.end_time(),
+            update_every: self.bucket_duration(),
             units: String::from("units"),
             chart_type: String::from("stackedBar"),
             dimensions,
         }
+    }
+
+    pub fn start_time(&self) -> u32 {
+        let bucket_request = &self
+            .buckets
+            .first()
+            .expect("histogram with at least one bucket")
+            .0;
+        bucket_request.start
+    }
+
+    pub fn end_time(&self) -> u32 {
+        let bucket_request = &self
+            .buckets
+            .last()
+            .expect("histogram with at least one bucket")
+            .0;
+        bucket_request.end
+    }
+
+    pub fn bucket_duration(&self) -> u32 {
+        self.buckets
+            .first()
+            .expect("histogram with at least one bucket")
+            .0
+            .duration()
     }
 
     pub fn ui_chart(&self, field: &str) -> ui::histogram::chart::Chart {
@@ -333,29 +339,22 @@ impl HistogramResult {
 
     pub fn ui_facets(&self) -> Vec<ui::facet::Facet> {
         // Aggregate filtered counts for each field=value pair across all buckets
-        let mut field_value_counts: HashMap<String, usize> = HashMap::default();
+        let mut field_value_counts: HashMap<FieldValuePair, usize> = HashMap::default();
 
         for (_, bucket_response) in &self.buckets {
-            let fv_counts = match bucket_response {
-                BucketResponse::Partial(partial) => &partial.fv_counts,
-                BucketResponse::Complete(complete) => &complete.fv_counts,
-            };
-
-            for (fv, (_unfiltered, filtered)) in fv_counts {
-                *field_value_counts.entry(fv.clone()).or_insert(0) += filtered;
+            for (pair, (_unfiltered, filtered)) in bucket_response.fv_counts() {
+                *field_value_counts.entry(pair.clone()).or_insert(0) += filtered;
             }
         }
 
         // Group values by field
         let mut field_to_values: HashMap<String, Vec<(String, usize)>> = HashMap::default();
 
-        for (fv, count) in field_value_counts {
-            if let Some((f, v)) = fv.split_once('=') {
-                field_to_values
-                    .entry(f.to_string())
-                    .or_default()
-                    .push((v.to_string(), count));
-            }
+        for (pair, count) in field_value_counts {
+            field_to_values
+                .entry(pair.field().to_string())
+                .or_default()
+                .push((pair.value().to_string(), count));
         }
 
         // Create facets with sorted fields and options
@@ -363,8 +362,12 @@ impl HistogramResult {
         let mut field_names: Vec<String> = field_to_values.keys().cloned().collect();
         field_names.sort();
 
-        for (order, field_name) in field_names.iter().enumerate() {
-            let mut values = field_to_values.get(field_name).unwrap().clone();
+        for (order, field_name) in field_names.into_iter().enumerate() {
+            let Some(values) = field_to_values.get(&field_name) else {
+                eprintln!("Could not find values for field '{}'", field_name);
+                continue;
+            };
+            let mut values = values.clone();
             values.sort_by(|a, b| a.0.cmp(&b.0));
 
             let options: Vec<ui::facet::Option> = values

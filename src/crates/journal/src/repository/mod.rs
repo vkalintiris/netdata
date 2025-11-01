@@ -420,14 +420,14 @@ impl Chain {
     }
 
     /// Find files that overlap with the time range [start, end)
-    pub fn find_files_in_range(&self, start: u64, end: u64, files: &mut HashSet<File>) {
+    pub fn find_files_in_range(&self, start: u32, end: u32, files: &mut HashSet<File>) {
         if self.files.is_empty() || start >= end {
             return;
         }
 
         const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
-        let start = start * USEC_PER_SEC;
-        let end = end * USEC_PER_SEC;
+        let start = start as u64 * USEC_PER_SEC;
+        let end = end as u64 * USEC_PER_SEC;
 
         let pos = self
             .files
@@ -585,7 +585,7 @@ impl Repository {
         Ok(())
     }
 
-    pub fn find_files_in_range(&self, start: u64, end: u64) -> HashSet<File> {
+    pub fn find_files_in_range(&self, start: u32, end: u32) -> HashSet<File> {
         let mut files = HashSet::default();
 
         for directory in self.directories.values() {
@@ -971,8 +971,8 @@ mod tests {
         assert!(files.contains(&active));
 
         files.clear();
-        let start = u64::MAX / USEC_PER_SEC - 100;
-        let end = u64::MAX / USEC_PER_SEC;
+        let start = u32::MAX - 100;
+        let end = u32::MAX;
         chain.find_files_in_range(start, end, &mut files);
         assert_eq!(files.len(), 1);
         assert!(files.contains(&active));
@@ -1092,7 +1092,7 @@ mod tests {
 
         // Range covering everything
         files.clear();
-        chain.find_files_in_range(0, u64::MAX / USEC_PER_SEC, &mut files);
+        chain.find_files_in_range(0, u32::MAX, &mut files);
         assert_eq!(files.len(), 5); // All except disposed
         assert!(files.contains(&file1));
         assert!(files.contains(&file2));

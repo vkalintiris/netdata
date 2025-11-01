@@ -11,4 +11,7 @@ pub mod bitmap;
 pub use bitmap::Bitmap;
 
 pub mod filter_expr;
-pub use filter_expr::FilterExpr;
+pub use filter_expr::{FilterExpr, FilterTarget};
+
+pub mod field_types;
+pub use field_types::{FieldName, FieldValuePair};

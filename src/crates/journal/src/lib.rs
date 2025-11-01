@@ -50,6 +50,9 @@ pub mod index;
 // Re-export commonly used types for convenience
 pub use error::{JournalError, Result};
 
+// Field types re-exports from index module
+pub use index::{FieldName, FieldValuePair};
+
 // File module re-exports
 pub use file::{
     BucketUtilization, Direction, JournalCursor, JournalFile, JournalFileOptions, JournalReader,

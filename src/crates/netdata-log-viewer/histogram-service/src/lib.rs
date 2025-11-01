@@ -13,3 +13,6 @@ pub use crate::response::{
     BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResult,
 };
 pub use crate::state::AppState;
+
+// Re-export field types from journal crate
+pub use journal::{FieldName, FieldValuePair};
