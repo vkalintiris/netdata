@@ -78,14 +78,27 @@ where
 
     /// Send a message
     pub async fn send(&mut self, message: Message) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
         self.writer.send(message).await?;
         self.writer.flush().await?;
+        self.writer.get_mut().flush().await?;
         Ok(())
     }
 
     /// Force flush the underlying writer
     pub async fn flush(&mut self) -> Result<()> {
         use tokio::io::AsyncWriteExt;
+        self.writer.get_mut().flush().await?;
+        Ok(())
+    }
+
+    /// Write raw bytes directly to the underlying writer (for chart protocol)
+    ///
+    /// This bypasses the message framing and writes raw bytes directly.
+    /// Used for emitting chart protocol data (CHART, BEGIN, SET, END commands).
+    pub async fn write_raw(&mut self, data: &[u8]) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.get_mut().write_all(data).await?;
         self.writer.get_mut().flush().await?;
         Ok(())
     }

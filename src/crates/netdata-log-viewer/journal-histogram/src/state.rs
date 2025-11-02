@@ -12,13 +12,16 @@ use journal::repository::File;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::Instant;
+use tracing::{debug, instrument, warn};
+#[cfg(feature = "allocative")]
+use tracing::{error, info};
 
 #[cfg_attr(feature = "allocative", derive(Allocative))]
-pub struct AppState {
+pub struct HistogramCache {
     pub registry: Registry,
 
     #[cfg_attr(feature = "allocative", allocative(skip))]
-    pub cache: IndexCache,
+    pub index_cache: IndexCache,
 
     #[cfg_attr(feature = "allocative", allocative(skip))]
     pub partial_responses: LruCache<BucketRequest, BucketPartialResponse>,
@@ -26,39 +29,13 @@ pub struct AppState {
     pub complete_responses: LruCache<BucketRequest, BucketCompleteResponse>,
 }
 
-impl AppState {
-    /// Creates a new AppState with default cache configuration.
-    ///
-    /// Uses sensible defaults:
-    /// - Cache directory: `/tmp/journal-index-cache`
-    /// - Memory items capacity: 10000
-    /// - Disk capacity: 64MiB
-    pub async fn new(path: &str, runtime_handle: tokio::runtime::Handle) -> Result<Self> {
-        Self::new_with_cache_config(
-            path,
-            runtime_handle,
-            "/mnt/ramfs/foyer-storage",
-            10000,
-            64 * 1024 * 1024,
-        )
-        .await
-    }
-
-    /// Creates a new AppState with custom cache configuration.
+impl HistogramCache {
+    /// Creates a new HistogramCache from an IndexCache and journal directory path.
     ///
     /// # Arguments
+    /// * `index_cache` - The IndexCache to use for file indexing
     /// * `path` - Journal directory path to watch
-    /// * `runtime_handle` - Tokio runtime handle for async operations
-    /// * `cache_dir` - Directory for disk cache storage
-    /// * `memory_size` - Memory cache capacity in items
-    /// * `disk_capacity` - Disk cache capacity in bytes
-    pub async fn new_with_cache_config(
-        path: &str,
-        runtime_handle: tokio::runtime::Handle,
-        cache_dir: impl AsRef<std::path::Path>,
-        memory_capacity: usize,
-        disk_capacity: u64,
-    ) -> Result<Self> {
+    pub fn new(index_cache: IndexCache, path: &str) -> Result<Self> {
         let mut registry = Registry::new()?;
         registry.watch_directory(path)?;
 
@@ -66,8 +43,7 @@ impl AppState {
 
         Ok(Self {
             registry,
-            cache: IndexCache::new(runtime_handle, cache_dir, memory_capacity, disk_capacity)
-                .await?,
+            index_cache,
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })
@@ -88,7 +64,7 @@ impl AppState {
             }
 
             let Some(partial_response) = self.partial_responses.peek(bucket_request) else {
-                eprintln!(
+                warn!(
                     "Missing partial response for bucket request: {:?}",
                     bucket_request
                 );
@@ -112,7 +88,7 @@ impl AppState {
     ) {
         use crate::cache::IndexingRequest;
 
-        eprintln!("Pending files: {}", pending_files.len());
+        debug!("Pending files: {}", pending_files.len());
         for file in pending_files {
             let indexing_request = IndexingRequest {
                 facets: facets.clone(),
@@ -123,18 +99,31 @@ impl AppState {
 
             // Use try_send to avoid blocking if queue is full
             // Ignore full queue errors - newer requests will arrive soon
-            let _ = self.cache.try_send_request(indexing_request);
+            let _ = self.index_cache.try_send_request(indexing_request);
         }
     }
 
+    #[instrument(skip(self), fields(
+        after = request.after,
+        before = request.before,
+        time_range = request.before - request.after,
+        num_facets = request.facets.len(),
+    ))]
     pub async fn process_histogram_request(&mut self, request: &HistogramRequest) {
         // Create any partial responses we don't already have
         let bucket_requests = request.bucket_requests();
+        let num_buckets = bucket_requests.len();
         assert!(!bucket_requests.is_empty());
+
+        debug!(num_buckets, "Creating partial responses");
         self.create_partial_responses(&bucket_requests);
 
         // Figure out the files we will need to lookup for partial requests
         let pending_files = self.collect_partial_requests_files(&bucket_requests);
+        debug!(
+            pending_files = pending_files.len(),
+            "Collected pending files"
+        );
 
         // Send indexing requests
         let facets = &request.facets;
@@ -142,7 +131,7 @@ impl AppState {
         self.send_indexing_requests(facets, &pending_files, bucket_duration);
 
         // Progress partial responses
-        self.cache
+        self.index_cache
             .resolve_partial_responses(facets, &mut self.partial_responses, pending_files)
             .await;
 
@@ -151,6 +140,10 @@ impl AppState {
         self.promote_partial_responses();
     }
 
+    #[instrument(skip(self), fields(
+        after = request.after,
+        before = request.before,
+    ))]
     pub async fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResult {
         // Process the histogram request to ensure buckets are computed/in-progress
         self.process_histogram_request(&request).await;
@@ -160,19 +153,32 @@ impl AppState {
 
         // Collect the responses for each bucket
         let mut buckets = Vec::with_capacity(bucket_requests.len());
+        let mut complete_count = 0;
+        let mut partial_count = 0;
+
         for bucket_request in bucket_requests {
             let response = if let Some(complete) = self.complete_responses.get_mut(&bucket_request)
             {
+                complete_count += 1;
                 BucketResponse::Complete(complete.clone())
             } else if let Some(partial) = self.partial_responses.get_mut(&bucket_request) {
+                partial_count += 1;
                 BucketResponse::Partial(partial.clone())
             } else {
                 // This shouldn't happen after process_histogram_request, but handle it gracefully
+                warn!("Missing bucket response for request: {:?}", bucket_request);
                 continue;
             };
 
             buckets.push((bucket_request, response));
         }
+
+        debug!(
+            complete = complete_count,
+            partial = partial_count,
+            total = buckets.len(),
+            "Histogram result collected"
+        );
 
         HistogramResult { buckets }
     }
@@ -243,10 +249,10 @@ impl AppState {
         }
     }
 
-    /// Gracefully closes the state, ensuring all pending cache writes are flushed to disk.
+    /// Gracefully closes the histogram cache, ensuring all pending cache writes are flushed to disk.
     /// Should be called during application shutdown.
     pub async fn close(&self) -> Result<()> {
-        self.cache.close().await?;
+        self.index_cache.close().await?;
         Ok(())
     }
 
@@ -281,9 +287,9 @@ impl AppState {
             .expect("Failed to execute inferno-flamegraph");
 
         if status.success() {
-            println!("Flamegraph SVG generated at ~/mo/flamegraph.svg");
+            info!("Flamegraph SVG generated at ~/mo/flamegraph.svg");
         } else {
-            eprintln!("Failed to generate flamegraph SVG");
+            error!("Failed to generate flamegraph SVG");
         }
     }
 }

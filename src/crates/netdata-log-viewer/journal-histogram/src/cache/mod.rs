@@ -73,5 +73,5 @@ impl<'de> serde::Deserialize<'de> for FileIndexKey {
     }
 }
 
-/// Specialized hybrid cache for file indexes
-pub type FileIndexCache = HybridCache<FileIndexKey, FileIndex>;
+/// Specialized hybrid cache wrapper for file indexes.
+pub(crate) type FileIndexCache = HybridCache<FileIndexKey, FileIndex>;

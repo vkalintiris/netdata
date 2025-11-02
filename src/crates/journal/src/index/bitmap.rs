@@ -1,3 +1,5 @@
+use std::ops::RangeBounds;
+
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use roaring::{NonSortedIntegers, RoaringBitmap};
@@ -17,6 +19,15 @@ impl Bitmap {
         iterator: I,
     ) -> Result<Bitmap, NonSortedIntegers> {
         RoaringBitmap::from_sorted_iter(iterator).map(Bitmap)
+    }
+
+    pub fn insert_range<R>(range: R) -> Self
+    where
+        R: RangeBounds<u32>,
+    {
+        let mut bitmap = Self::new();
+        RoaringBitmap::insert_range(&mut bitmap, range);
+        bitmap
     }
 }
 

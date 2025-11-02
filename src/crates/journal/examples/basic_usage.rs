@@ -2,7 +2,7 @@
 
 use journal::file::JournalFile;
 use journal::file::Mmap;
-use journal::index::{FileIndex, FileIndexer};
+use journal::index::{FieldName, FieldValuePair, FileIndex, FileIndexer};
 use journal::repository::File;
 use rand::Rng;
 use std::collections::VecDeque;
@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 fn sequential(
     files: &[journal::repository::File],
-    field_names: &[&[u8]],
+    field_names: &[FieldName],
 ) -> Vec<(journal::repository::File, FileIndex)> {
     let start_time = Instant::now();
 
@@ -21,19 +21,21 @@ fn sequential(
     let mut file_indexes = Vec::new();
 
     let mut file_indexer = FileIndexer::default();
-    const SOURCE_TIMESTAMP_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
         let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).unwrap();
 
-        let Ok(jfi) = file_indexer.index(&journal_file, None, field_names, 10) else {
+        let source_timestamp_field = Some(&FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP"));
+
+        let Ok(jfi) = file_indexer.index(&journal_file, source_timestamp_field, field_names, 10)
+        else {
             continue;
         };
 
         let mut index_size = 0;
         for (data_payload, entry_indices) in jfi.bitmaps().iter() {
-            index_size += data_payload.len() + entry_indices.serialized_size();
+            index_size += data_payload.as_str().len() + entry_indices.serialized_size();
         }
 
         let path = file.path();
@@ -65,11 +67,9 @@ use rayon::prelude::*;
 
 fn parallel(
     files: &[journal::repository::File],
-    field_names: &[&[u8]],
+    field_names: &[FieldName],
 ) -> Vec<(journal::repository::File, FileIndex)> {
     let start_time = Instant::now();
-
-    const SOURCE_TIMESTAMP_FIELD: Option<&[u8]> = Some(b"_SOURCE_REALTIME_TIMESTAMP");
 
     // Process files in parallel
     let file_indexes: Vec<_> = files
@@ -81,13 +81,16 @@ fn parallel(
 
             let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
 
+            let source_timestamp_field =
+                Some(&FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP"));
+
             let jfi = file_indexer
-                .index(&journal_file, SOURCE_TIMESTAMP_FIELD, field_names, 3600)
+                .index(&journal_file, source_timestamp_field, field_names, 60)
                 .ok()?;
 
             let mut index_size = 0;
             for (data_payload, entry_indices) in jfi.bitmaps().iter() {
-                index_size += data_payload.len() + entry_indices.serialized_size();
+                index_size += data_payload.as_str().len() + entry_indices.serialized_size();
             }
 
             let path = file.path();
@@ -195,62 +198,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"ND_ALERT_STATUS",
     ];
 
-    let facets: Vec<&[u8]> = vec![
-        b"_HOSTNAME",
-        b"PRIORITY",
-        b"SYSLOG_FACILITY",
-        b"ERRNO",
-        b"SYSLOG_IDENTIFIER",
-        b"UNIT",
-        b"USER_UNIT",
-        b"MESSAGE_ID",
-        b"_BOOT_ID",
-        b"_SYSTEMD_OWNER_UID",
-        b"_UID",
-        b"OBJECT_SYSTEMD_OWNER_UID",
-        b"OBJECT_UID",
-        b"_GID",
-        b"OBJECT_GID",
-        b"_CAP_EFFECTIVE",
-        b"_AUDIT_LOGINUID",
-        b"OBJECT_AUDIT_LOGINUID",
-        b"CODE_FUNC",
-        b"ND_LOG_SOURCE",
-        b"CODE_FILE",
-        b"ND_ALERT_NAME",
-        b"ND_ALERT_CLASS",
-        b"_SELINUX_CONTEXT",
-        b"_MACHINE_ID",
-        b"ND_ALERT_TYPE",
-        b"_SYSTEMD_SLICE",
-        b"_EXE",
-        b"_SYSTEMD_UNIT",
-        b"_NAMESPACE",
-        b"_TRANSPORT",
-        b"_RUNTIME_SCOPE",
-        b"_STREAM_ID",
-        b"ND_NIDL_CONTEXT",
-        b"ND_ALERT_STATUS",
-        b"_SYSTEMD_CGROUP",
-        b"ND_NIDL_NODE",
-        b"ND_ALERT_COMPONENT",
-        b"_COMM",
-        b"_SYSTEMD_USER_UNIT",
-        b"_SYSTEMD_USER_SLICE",
-        b"_SYSTEMD_SESSION",
-        b"__logs_sources",
-    ];
-    // let facets: Vec<&[u8]> = vec![b"log.severity_number"];
-
-    // Initialize tracing
-    // tracing_subscriber::fmt()
-    //     .with_max_level(tracing::Level::INFO)
-    //     .init();
+    let facets: Vec<FieldName> = vec![
+        "_HOSTNAME",
+        "PRIORITY",
+        "SYSLOG_FACILITY",
+        "ERRNO",
+        "SYSLOG_IDENTIFIER",
+        "UNIT",
+        "USER_UNIT",
+        "MESSAGE_ID",
+        "_BOOT_ID",
+        "_SYSTEMD_OWNER_UID",
+        "_UID",
+        "OBJECT_SYSTEMD_OWNER_UID",
+        "OBJECT_UID",
+        "_GID",
+        "OBJECT_GID",
+        "_CAP_EFFECTIVE",
+        "_AUDIT_LOGINUID",
+        "OBJECT_AUDIT_LOGINUID",
+        "CODE_FUNC",
+        "ND_LOG_SOURCE",
+        "CODE_FILE",
+        "ND_ALERT_NAME",
+        "ND_ALERT_CLASS",
+        "_SELINUX_CONTEXT",
+        "_MACHINE_ID",
+        "ND_ALERT_TYPE",
+        "_SYSTEMD_SLICE",
+        "_EXE",
+        "_SYSTEMD_UNIT",
+        "_NAMESPACE",
+        "_TRANSPORT",
+        "_RUNTIME_SCOPE",
+        "_STREAM_ID",
+        "ND_NIDL_CONTEXT",
+        "ND_ALERT_STATUS",
+        "_SYSTEMD_CGROUP",
+        "ND_NIDL_NODE",
+        "ND_ALERT_COMPONENT",
+        "_COMM",
+        "_SYSTEMD_USER_UNIT",
+        "_SYSTEMD_USER_SLICE",
+        "_SYSTEMD_SESSION",
+        "__logs_sources",
+    ]
+    .into_iter()
+    .map(|s| FieldName::new_unchecked(s))
+    .collect();
 
     let mut registry = journal::registry::Registry::new()?;
     info!("Journal registry initialized");
 
-    for dir in ["/home/vk/repos/tmp/agent-events-journal"] {
+    let dirs = ["/home/vk/repos/tmp/agent-events-journal"];
+    // let dirs = ["/var/log/journal"];
+
+    for dir in dirs {
         match registry.watch_directory(dir) {
             Ok(_) => info!("Added directory: {}", dir),
             Err(e) => warn!("Failed to add directory {}: {}", dir, e),
@@ -262,54 +265,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     files.sort_by_key(|f| String::from(f.path()));
     files.reverse();
 
-    // for file in files.iter() {
-    //     println!("file: {:#?}", file.path);
-    // }
-    // files.truncate(5);
-
-    // let _ = sequential(&files, facets.as_slice());
+    // let _ = sequential(&files, &facets);
     let start = std::time::Instant::now();
-    let v = parallel(&files, facets.as_slice());
+    let v = parallel(&files, &facets);
     let elapsed = start.elapsed();
 
     let mut total_size = 0;
     let mut total_entries_index_size = 0;
     let mut total_entries = 0;
-    let mut priority_count = 0;
 
+    let priority_field = FieldName::new_unchecked("PRIORITY");
     let mut priority_keys = Vec::new();
 
     for i in 0..10 {
-        let key = format!("PRIORITY={}", i);
+        let key = priority_field.with_value(&i.to_string());
         priority_keys.push(key);
     }
 
-    for (f, fi) in v {
-        println!("Histogram for {}", f.path());
-        println!("{}", fi.histogram());
-
-        for k in &priority_keys {
-            if let Some(b) = fi.bitmaps().get(k) {
-                priority_count += b.len();
-            }
-        }
-
+    let mut unique_total = 0;
+    for (_f, fi) in v {
+        unique_total += allocative::size_of_unique(&fi);
         total_entries += fi.histogram().count();
         total_size += fi.memory_size();
         total_entries_index_size += fi.compress_entries_index().len();
     }
 
     println!("Total files: {}", files.len());
-    println!("Total size: {:#?} MiB", total_size / (1024 * 1024));
+    println!("Total memory size: {:#?} MiB", total_size / (1024 * 1024));
+    println!(
+        "Total allocative size: {:#?} MiB",
+        unique_total / (1024 * 1024)
+    );
     println!(
         "Compressed size: {:#?} MiB",
         total_entries_index_size / (1024 * 1024)
     );
     println!("Total entries: {:#?}", total_entries);
-    println!("Priority count: {:#?}", priority_count);
 
     println!("Building took: {:#?} msec", elapsed.as_millis());
-    println!("GiB/sec: {:#?}", 9400.0 / elapsed.as_millis() as f64);
+    println!("GiB/sec: {:#?}", 45000.0 / elapsed.as_millis() as f64);
 
     std::thread::sleep(std::time::Duration::from_secs(3600));
 

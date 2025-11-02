@@ -9,6 +9,15 @@ collapsible_if = "allow"
 [features]
 allocative = ["dep:allocative", "roaring/allocative"]
 indexing-stats = ["dep:hdrhistogram"]
+serde-api = ["dep:flatten-serde-json"]
+
+[profile.release]
+debug = true
+
+[profile.dev]
+opt-level = 1
+debug = true
+debug-assertions = true
 
 [dependencies]
 # Core dependencies
@@ -49,9 +58,13 @@ tracing = "0.1"
 allocative = { version = "0.3.4", optional = true }
 hdrhistogram = { version = "7.5", optional = true }
 tokio = { version = "1.35", features = ["rt", "sync", "macros", "rt-multi-thread"] }
+flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1", optional = true }
 
 [dev-dependencies]
 tempfile = { version = "3" }
+rayon = "1.10"
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = "0.3"
 
 [[example]]
 name = "basic_usage"
@@ -85,5 +98,12 @@ path = "examples/paths.rs"
 name = "head_tail_seqnum"
 path = "examples/head_tail_seqnum.rs"
 
-[profile.release]
-debug = true
+[[example]]
+name = "structured_logging"
+path = "examples/structured_logging.rs"
+required-features = ["serde-api"]
+
+[[example]]
+name = "filtered_retrieval"
+path = "examples/filtered_retrieval.rs"
+

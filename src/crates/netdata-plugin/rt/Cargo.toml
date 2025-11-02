@@ -12,6 +12,7 @@ workspace = true
 netdata-plugin-error = { path = "../error" }
 netdata-plugin-protocol = { path = "../protocol" }
 netdata-plugin-schema = { path = "../schema" }
+netdata-plugin-charts-derive = { path = "../charts-derive" }
 
 # Async runtime and tokio utilities
 tokio = { version = "1.0", features = ["full"] }
@@ -24,6 +25,9 @@ schemars = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 tracing-futures = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+itoa = { workspace = true }
 # tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

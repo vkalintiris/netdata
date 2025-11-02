@@ -111,6 +111,18 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
+// Charts module and re-exports
+pub mod charts;
+pub use charts::{
+    ChartDimensions, ChartHandle, ChartMetadata, ChartRegistry, ChartType,
+    DimensionAlgorithm, DimensionMetadata, InstancedChart, TrackedChart,
+};
+
+// Re-export the trait and derive macro
+// Note: In Rust, derive macros and traits can have the same name because they're in different namespaces
+pub use charts::NetdataChart;
+pub use netdata_plugin_charts_derive::NetdataChart;
+
 /// Internal control signals sent to running functions.
 enum RuntimeSignal {
     /// Signal to request progress update from a running function.
@@ -442,6 +454,11 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
 ///     Ok(())
 /// }
 /// ```
+///
+/// Type alias for the standard plugin runtime using stdin/stdout.
+/// This is the typical configuration for production Netdata plugins.
+pub type StdPluginRuntime = PluginRuntime<tokio::io::Stdin, tokio::io::Stdout>;
+
 pub struct PluginRuntime<R, W>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -464,6 +481,11 @@ where
 
     /// Token for initiating graceful shutdown.
     shutdown_token: CancellationToken,
+
+    /// Optional chart registry for managing metrics emission.
+    chart_registry: Option<ChartRegistry<W>>,
+    /// Handle to chart registry background task.
+    chart_registry_handle: Option<tokio::task::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
 }
 
 impl PluginRuntime<tokio::io::Stdin, tokio::io::Stdout> {
@@ -533,6 +555,8 @@ where
             futures: FuturesUnordered::new(),
 
             shutdown_token: CancellationToken::default(),
+            chart_registry: None,
+            chart_registry_handle: None,
         }
     }
 
@@ -556,6 +580,67 @@ where
         self.function_handlers.insert(name, Arc::new(adapter));
     }
 
+    /// Register a chart for metrics emission.
+    ///
+    /// Charts are automatically sampled at the given interval and emitted through
+    /// the shared message writer. Returns a handle that can be used to update
+    /// chart values from anywhere in your code.
+    ///
+    /// # Arguments
+    ///
+    /// * `initial` - The initial chart value
+    /// * `interval` - How often to sample and emit the chart
+    ///
+    /// # Returns
+    ///
+    /// A `ChartHandle` for updating the chart values
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let metrics = runtime.register_chart(
+    ///     MyMetrics::default(),
+    ///     Duration::from_secs(1),
+    /// );
+    ///
+    /// // Later, update from anywhere:
+    /// metrics.update(|m| {
+    ///     m.counter += 1;
+    /// });
+    /// ```
+    pub fn register_chart<T>(&mut self, initial: T, interval: Duration) -> ChartHandle<T>
+    where
+        T: NetdataChart + Default + PartialEq + Clone + Send + Sync + 'static,
+    {
+        let registry = self.chart_registry.get_or_insert_with(|| {
+            ChartRegistry::new(Arc::clone(&self.writer))
+        });
+        registry.register_chart(initial, interval)
+    }
+
+    /// Register an instanced chart for per-instance metrics.
+    ///
+    /// Similar to `register_chart`, but for charts that have multiple instances
+    /// (e.g., per-CPU core metrics, per-disk I/O stats).
+    ///
+    /// # Arguments
+    ///
+    /// * `initial` - The initial chart value with instance ID set
+    /// * `interval` - How often to sample and emit the chart
+    ///
+    /// # Returns
+    ///
+    /// A `ChartHandle` for updating the chart values
+    pub fn register_instanced_chart<T>(&mut self, initial: T, interval: Duration) -> ChartHandle<T>
+    where
+        T: InstancedChart + Default + PartialEq + Send + Sync + 'static,
+    {
+        let registry = self.chart_registry.get_or_insert_with(|| {
+            ChartRegistry::new(Arc::clone(&self.writer))
+        });
+        registry.register_instanced_chart(initial, interval)
+    }
+
     /// Start the plugin runtime and begin processing messages.
     ///
     /// This method:
@@ -571,11 +656,35 @@ where
     /// # Note
     ///
     /// This method runs indefinitely until shutdown is requested (via Ctrl-C or stdin closing).
-    #[instrument(skip_all)]
     pub async fn run(mut self) -> Result<()> {
         info!("Starting plugin runtime: {}", self.plugin_name);
 
         self.handle_ctr_c();
+
+        // Start chart registry if charts were registered
+        if let Some(registry) = self.chart_registry.take() {
+            let registry_token = registry.cancellation_token();
+            let shutdown_token = self.shutdown_token.clone();
+
+            let handle = tokio::spawn(async move {
+                tokio::select! {
+                    result = registry.run() => {
+                        if let Err(e) = &result {
+                            error!("Chart registry error: {}", e);
+                        }
+                        result
+                    }
+                    _ = shutdown_token.cancelled() => {
+                        registry_token.cancel();
+                        Ok(())
+                    }
+                }
+            });
+
+            self.chart_registry_handle = Some(handle);
+            info!("Chart registry started");
+        }
+
         self.declare_functions().await?;
         self.process_messages().await?;
         self.shutdown().await?;
@@ -604,7 +713,6 @@ where
     ///
     /// Sends a [`FunctionDeclaration`] message for each registered handler,
     /// informing Netdata about available functions and their metadata.
-    #[instrument(skip_all)]
     async fn declare_functions(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;
 
@@ -830,39 +938,48 @@ where
 
         if in_flight == 0 {
             info!("Clean shutdown - no in-flight functions");
-            return Ok(());
-        }
+        } else {
+            info!("Shutting down with {} in-flight functions...", in_flight);
 
-        info!("Shutting down with {} in-flight functions...", in_flight);
+            // Send cancel to all active transactions
+            for transaction in self.transaction_registry.values() {
+                transaction.cancellation_token.cancel();
+            }
 
-        // Send cancel to all active transactions
-        for transaction in self.transaction_registry.values() {
-            transaction.cancellation_token.cancel();
-        }
+            // Wait for functions to complete with a timeout
+            let timeout = Duration::from_secs(10);
+            let mut completed = 0;
 
-        // Wait for functions to complete with a timeout
-        let timeout = Duration::from_secs(10);
-        let mut completed = 0;
-
-        match tokio::time::timeout(timeout, async {
-            while let Some((transaction, result)) = self.futures.next().await {
-                if let Err(e) = self.handle_completed(transaction, result).await {
-                    error!("Error handling completed function during shutdown: {}", e);
+            match tokio::time::timeout(timeout, async {
+                while let Some((transaction, result)) = self.futures.next().await {
+                    if let Err(e) = self.handle_completed(transaction, result).await {
+                        error!("Error handling completed function during shutdown: {}", e);
+                    }
+                    completed += 1;
                 }
-                completed += 1;
+            })
+            .await
+            {
+                Ok(()) => {
+                    info!("Clean shutdown - all {} functions completed", completed);
+                }
+                Err(_) => {
+                    let aborted = in_flight - completed;
+                    warn!(
+                        "Shutdown timeout - {} functions completed, {} aborted",
+                        completed, aborted
+                    );
+                }
             }
-        })
-        .await
-        {
-            Ok(()) => {
-                info!("Clean shutdown - all {} functions completed", completed);
-            }
-            Err(_) => {
-                let aborted = in_flight - completed;
-                warn!(
-                    "Shutdown timeout - {} functions completed, {} aborted",
-                    completed, aborted
-                );
+        }
+
+        // Wait for chart registry to finish
+        if let Some(handle) = self.chart_registry_handle.take() {
+            info!("Waiting for chart registry to finish...");
+            match handle.await {
+                Ok(Ok(())) => info!("Chart registry shut down cleanly"),
+                Ok(Err(e)) => warn!("Chart registry error during shutdown: {}", e),
+                Err(e) => warn!("Chart registry task panicked: {}", e),
             }
         }
 

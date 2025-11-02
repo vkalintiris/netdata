@@ -267,4 +267,103 @@ impl Log {
 
         Ok(())
     }
+
+    /// Writes a journal entry from a serializable value.
+    ///
+    /// This method serializes the value to JSON, flattens it, and writes it to the journal.
+    /// The flattened structure converts nested JSON into KEY=VALUE pairs suitable for journal entries.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use serde::Serialize;
+    /// use journal::log::{Log, Config};
+    /// use std::path::Path;
+    ///
+    /// #[derive(Serialize)]
+    /// struct LogEntry {
+    ///     message: String,
+    ///     level: String,
+    ///     user: User,
+    /// }
+    ///
+    /// #[derive(Serialize)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut log = Log::new(Path::new("/var/log/journal"), Config::default())?;
+    ///
+    /// let entry = LogEntry {
+    ///     message: "User logged in".to_string(),
+    ///     level: "INFO".to_string(),
+    ///     user: User {
+    ///         id: 42,
+    ///         name: "alice".to_string(),
+    ///     },
+    /// };
+    ///
+    /// // This will write fields like:
+    /// // MESSAGE=User logged in
+    /// // LEVEL=INFO
+    /// // USER_ID=42
+    /// // USER_NAME=alice
+    /// log.write_structured(&entry)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "serde-api")]
+    pub fn write_structured<T: serde::Serialize>(&mut self, value: &T) -> Result<()> {
+        use flatten_serde_json::flatten;
+
+        // Serialize to JSON value
+        let json_value = serde_json::to_value(value)
+            .map_err(|_| JournalError::InvalidField)?;
+
+        // Flatten the JSON structure - requires a JSON object (Map)
+        let flattened = if let serde_json::Value::Object(map) = json_value {
+            flatten(&map)
+        } else {
+            // If not an object, return error
+            return Err(JournalError::InvalidField);
+        };
+
+        // Convert to journal field format (KEY=VALUE)
+        let mut fields: Vec<Vec<u8>> = Vec::with_capacity(flattened.len());
+
+        for (key, value) in flattened.iter() {
+            // Convert key to uppercase and replace dots with underscores
+            // (journal convention)
+            let journal_key = key.to_uppercase().replace('.', "_");
+
+            // Format as KEY=VALUE
+            let field = match value {
+                serde_json::Value::String(s) => {
+                    format!("{}={}", journal_key, s)
+                }
+                serde_json::Value::Number(n) => {
+                    format!("{}={}", journal_key, n)
+                }
+                serde_json::Value::Bool(b) => {
+                    format!("{}={}", journal_key, if *b { "true" } else { "false" })
+                }
+                serde_json::Value::Null => {
+                    format!("{}=", journal_key)
+                }
+                // Arrays and objects should be flattened already, but just in case
+                _ => {
+                    format!("{}={}", journal_key, value)
+                }
+            };
+
+            fields.push(field.into_bytes());
+        }
+
+        // Convert Vec<Vec<u8>> to Vec<&[u8]> for write_entry
+        let field_refs: Vec<&[u8]> = fields.iter().map(|f| f.as_slice()).collect();
+
+        self.write_entry(&field_refs)
+    }
 }

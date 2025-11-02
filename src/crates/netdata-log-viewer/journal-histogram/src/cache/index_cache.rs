@@ -36,7 +36,7 @@ use crate::response::BucketPartialResponse;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use journal::collections::HashSet;
-use journal::index::{FileIndex, FileIndexer};
+use journal::index::FileIndexer;
 use journal::repository::File;
 use journal::{JournalFile, file::Mmap};
 use lru::LruCache;
@@ -82,7 +82,7 @@ impl IndexCache {
     /// # Arguments
     /// * `runtime_handle` - Tokio runtime handle for async operations
     /// * `cache_dir` - Directory path for disk cache storage
-    /// * `memory_size` - Memory cache size in bytes
+    /// * `memory_capacity` - Memory cache capacity in items
     /// * `disk_capacity` - Disk cache capacity in bytes
     ///
     /// # Returns
@@ -215,7 +215,7 @@ impl IndexCache {
 
     fn indexing_worker(
         rx: Arc<std::sync::Mutex<Receiver<IndexingRequest>>>,
-        cache: foyer::HybridCache<super::FileIndexKey, FileIndex>,
+        cache: foyer::HybridCache<super::FileIndexKey, journal::index::FileIndex>,
         runtime_handle: tokio::runtime::Handle,
     ) {
         loop {

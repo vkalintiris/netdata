@@ -6,6 +6,150 @@ use super::file_index::FileIndex;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// High-level filter expression that operates on field names and field=value pairs.
+///
+/// This is the primary type used when constructing filters from user queries.
+/// Use [`Filter::match_field_name()`] to match any entry with a specific field,
+/// or [`Filter::match_field_value_pair()`] to match a specific field=value combination.
+///
+/// Filters can be combined using [`Filter::and()`] and [`Filter::or()`] for complex queries.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
+pub struct Filter {
+    inner: Arc<FilterExpr<FilterTarget>>,
+}
+
+impl Filter {
+    /// Create a filter that matches any entry with the given field name.
+    ///
+    /// Example: `Filter::match_field_name(FieldName::new("PRIORITY"))` matches any entry
+    /// that has a PRIORITY field, regardless of its value.
+    pub fn match_field_name(name: FieldName) -> Self {
+        Self {
+            inner: Arc::new(FilterExpr::Match(FilterTarget::Field(name))),
+        }
+    }
+
+    /// Create a filter that matches a specific field=value pair.
+    ///
+    /// Example: `Filter::match_field_value_pair(pair)` where pair is "PRIORITY=error"
+    /// matches only entries where PRIORITY equals "error".
+    pub fn match_field_value_pair(pair: FieldValuePair) -> Self {
+        Self {
+            inner: Arc::new(FilterExpr::Match(FilterTarget::Pair(pair))),
+        }
+    }
+
+    /// Combine multiple filters with AND logic.
+    ///
+    /// Returns a filter that matches only when all input filters match.
+    pub fn and(filters: Vec<Self>) -> Self {
+        let inner_filters: Vec<FilterExpr<FilterTarget>> =
+            filters.into_iter().map(|f| (*f.inner).clone()).collect();
+
+        Self {
+            inner: Arc::new(FilterExpr::and(inner_filters)),
+        }
+    }
+
+    /// Combine multiple filters with OR logic.
+    ///
+    /// Returns a filter that matches when any of the input filters match.
+    pub fn or(filters: Vec<Self>) -> Self {
+        let inner_filters: Vec<FilterExpr<FilterTarget>> =
+            filters.into_iter().map(|f| (*f.inner).clone()).collect();
+
+        Self {
+            inner: Arc::new(FilterExpr::or(inner_filters)),
+        }
+    }
+
+    /// Create a filter that matches nothing.
+    pub fn none() -> Self {
+        Self {
+            inner: Arc::new(FilterExpr::None),
+        }
+    }
+
+    /// Check if this is a None filter.
+    pub fn is_none(&self) -> bool {
+        matches!(self.inner.as_ref(), FilterExpr::None)
+    }
+
+    /// Convert this filter to a bitmap filter by resolving against a file index.
+    pub fn resolve(&self, file_index: &FileIndex) -> BitmapFilter {
+        BitmapFilter {
+            inner: self.inner.resolve(file_index),
+        }
+    }
+
+    /// Check if this filter contains a specific field name.
+    pub fn contains_field(&self, field_name: &FieldName) -> bool {
+        self.inner.contains_field(field_name)
+    }
+
+    /// Check if this filter contains a specific field=value pair.
+    pub fn contains_pair(&self, pair: &FieldValuePair) -> bool {
+        self.inner.contains_pair(pair)
+    }
+}
+
+impl std::fmt::Display for Filter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+impl PartialEq for Filter {
+    fn eq(&self, other: &Self) -> bool {
+        // Quick pointer equality check first
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return true;
+        }
+
+        // Fall back to value equality
+        self.inner == other.inner
+    }
+}
+
+impl Eq for Filter {}
+
+impl std::hash::Hash for Filter {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
+/// Low-level filter expression that operates on bitmaps.
+///
+/// This is the bitmap-based representation used after resolving a [`Filter`] against
+/// a [`FileIndex`]. Call [`Filter::resolve()`] to convert a high-level filter into
+/// a `BitmapFilter`, then call [`BitmapFilter::evaluate()`] to get the final bitmap
+/// of matching entry indices.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
+pub struct BitmapFilter {
+    pub(crate) inner: FilterExpr<Bitmap>,
+}
+
+impl BitmapFilter {
+    /// Evaluate this bitmap filter to get the final bitmap of matching entries.
+    pub fn evaluate(&self) -> Bitmap {
+        self.inner.evaluate()
+    }
+
+    /// Count the number of matching entries.
+    pub fn count(&self) -> u64 {
+        self.inner.count()
+    }
+
+    /// Check if there are any matching entries.
+    pub fn has_matches(&self) -> bool {
+        self.inner.has_matches()
+    }
+}
 
 /// Represents what a filter expression can match against.
 ///
@@ -96,16 +240,6 @@ impl FilterExpr<FilterTarget> {
             1 => flattened.into_iter().next().unwrap(),
             _ => FilterExpr::Disjunction(flattened),
         }
-    }
-
-    /// Combines this filter with another using AND logic
-    pub fn and_with(self, other: Self) -> Self {
-        Self::and(vec![self, other])
-    }
-
-    /// Combines this filter with another using OR logic
-    pub fn or_with(self, other: Self) -> Self {
-        Self::or(vec![self, other])
     }
 
     /// Convert a FilterExpr<FilterTarget> to FilterExpr<Bitmap> using the file index

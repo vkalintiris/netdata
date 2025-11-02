@@ -7,6 +7,7 @@ members = [
     "schema",
     "types",
     "bridge",
+    "charts-derive",
 ]
 
 [workspace.package]
@@ -37,3 +38,5 @@ notify = "8.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-futures = { version = "0.2.5" }
+parking_lot = "0.12"
+itoa = "1.0"

@@ -363,21 +363,13 @@ with `actix` might be too slow. In any case, I need to do two things:
 
 == Miscellaneous
 
-- Dynamic calculation of bucket duration when using `FileIndexer`.
-- Enable indexing based on source-time field.
 - Check if replacing the `HashMap` on the `FileIndexer` with an implicitly
   indexed vector, works and leads to lower memory consumption with faster
   execution time.
-- Check if I need to identify delta requests and extract the proper information
-  from the difference.
-- Simplify code.
-- Add tests throughout.
 - Support mapping of `OpenTelemetry` fields to `systemd` journal field names.
   Figure out how to do this efficiently and pay-zero cost by default.
 - Provide log entries for Netdata's table in the UI.
 - Facets for log sources.
 - Dynamic configuration for log directories.
-- Invalidate file index cache for different set of indexed fields.
 - Decide if we need different Netdata _function_ for systemd journals versus
   otel journals?
-- Auto-detect fields to index by sampling historical logs.

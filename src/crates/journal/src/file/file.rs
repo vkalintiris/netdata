@@ -2,10 +2,10 @@
 
 use super::mmap::{MemoryMap, MemoryMapMut, WindowManager};
 use crate::error::{JournalError, Result};
+use crate::file::guarded_cell::GuardedCell;
 use crate::file::hash;
 use crate::file::object::*;
 use crate::file::offset_array;
-use std::cell::{RefCell, UnsafeCell};
 use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 use std::num::NonZero;
@@ -325,9 +325,10 @@ impl BucketUtilization {
 ///
 /// `JournalFile` uses interior mutability to provide a safe API with the following characteristics:
 ///
-/// - The window manager is wrapped in an `UnsafeCell` to allow mutation through a shared reference.
-/// - A single `RefCell<bool>` guards access to ensure only one object can be active at a time.
-/// - Methods like `data_object()` return a `ValueGuard<T>` that automatically releases the lock
+/// - The window manager is wrapped in a `GuardedCell` which owns both the `WindowManager` and
+///   its guard flag, providing interior mutability with integrated guard-based exclusion.
+/// - The guard flag ensures only one object can be active at a time.
+/// - Methods like `data_object()` return a `ValueGuard<T>` that automatically releases the guard
 ///   when dropped.
 ///
 /// This design ensures that memory safety is maintained even though references to memory-mapped
@@ -338,11 +339,8 @@ pub struct JournalFile<M: MemoryMap> {
     data_hash_table_map: Option<M>,
     field_hash_table_map: Option<M>,
 
-    // Window manager for other objects
-    window_manager: UnsafeCell<WindowManager<M>>,
-
-    // Flag to track if any object is in use
-    object_in_use: RefCell<bool>,
+    // Window manager for other objects (owns the guard flag internally)
+    window_manager: GuardedCell<WindowManager<M>>,
 }
 
 fn map_hash_table<M: MemoryMap>(
@@ -421,14 +419,13 @@ impl<M: MemoryMap> JournalFile<M> {
         )?;
 
         // Create window manager for the rest of the objects
-        let window_manager = UnsafeCell::new(WindowManager::new(file, window_size, 16)?);
+        let window_manager = GuardedCell::new(WindowManager::new(file, window_size, 16)?);
 
         Ok(JournalFile {
             header_map,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
-            object_in_use: RefCell::new(false),
         })
     }
 
@@ -490,45 +487,36 @@ impl<M: MemoryMap> JournalFile<M> {
 
     pub fn object_header_ref(&self, position: NonZeroU64) -> Result<&ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let window_manager = self.window_manager.borrow_mut_checked()?;
         let header_slice = window_manager.get_slice(position.get(), size_needed)?;
         Ok(ObjectHeader::ref_from_bytes(header_slice).unwrap())
-    }
-
-    fn object_data_ref(&self, offset: NonZeroU64, size_needed: u64) -> Result<&[u8]> {
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        let object_slice = window_manager.get_slice(offset.get(), size_needed)?;
-        Ok(object_slice)
     }
 
     fn journal_object_ref<'a, T>(&'a self, offset: NonZeroU64) -> Result<ValueGuard<'a, T>>
     where
         T: JournalObject<&'a [u8]>,
     {
-        // Check if any object is already in use
-        let mut is_in_use = self.object_in_use.borrow_mut();
-        if *is_in_use {
-            return Err(JournalError::ValueGuardInUse);
-        }
-
         let is_compact = self
             .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
 
-        let size_needed = {
-            let header = self.object_header_ref(offset)?;
-            header.size
-        };
+        self.window_manager.with_guarded(offset, |wm| {
+            // Get the object header to determine size
+            let size_needed = {
+                let header_slice =
+                    wm.get_slice(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
+                let header = ObjectHeader::ref_from_bytes(header_slice).unwrap();
+                header.size
+            };
 
-        let data = self.object_data_ref(offset, size_needed)?;
-        let Some(value) = T::from_data(data, is_compact) else {
-            return Err(JournalError::ZerocopyFailure);
-        };
+            // Get the full object data
+            let data = wm.get_slice(offset.get(), size_needed)?;
 
-        // Mark as in use
-        *is_in_use = true;
+            // Parse the object
+            let value = T::from_data(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
 
-        Ok(ValueGuard::new(offset, value, &self.object_in_use))
+            Ok(value)
+        })
     }
 
     pub fn offset_array_ref(
@@ -727,7 +715,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         self.header_map.flush()?;
 
         // Sync file page cache to disk
-        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let window_manager = self.window_manager.get_mut();
         window_manager.sync()?;
 
         Ok(())
@@ -827,14 +815,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
         }
 
         // Create window manager for the rest of the objects
-        let window_manager = UnsafeCell::new(WindowManager::new(file, options.window_size, 32)?);
+        let window_manager = GuardedCell::new(WindowManager::new(file, options.window_size, 32)?);
 
         let mut jf = JournalFile {
             header_map,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
-            object_in_use: RefCell::new(false),
         };
 
         // write data hash table object header info
@@ -894,16 +881,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
     #[allow(clippy::mut_from_ref)]
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
-        let window_manager = unsafe { &mut *self.window_manager.get() };
+        let window_manager = self.window_manager.borrow_mut_checked()?;
         let header_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
         Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
-    }
-
-    #[allow(clippy::mut_from_ref)]
-    fn object_data_mut(&self, offset: NonZeroU64, size_needed: u64) -> Result<&mut [u8]> {
-        let window_manager = unsafe { &mut *self.window_manager.get() };
-        let object_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
-        Ok(object_slice)
     }
 
     fn journal_object_mut<'a, T>(
@@ -915,38 +895,42 @@ impl<M: MemoryMapMut> JournalFile<M> {
     where
         T: JournalObjectMut<&'a mut [u8]>,
     {
-        // Check if any object is already in use
-        let mut is_in_use = self.object_in_use.borrow_mut();
-        if *is_in_use {
-            return Err(JournalError::ValueGuardInUse);
-        }
-
         let is_compact = self
             .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
 
-        let size_needed = match size {
-            Some(size) => {
-                let header = self.object_header_mut(offset)?;
-                header.type_ = type_ as u8;
-                header.size = size;
-                size
-            }
-            None => {
-                let header = self.object_header_ref(offset)?;
-                if header.type_ != type_ as u8 {
-                    return Err(JournalError::InvalidObjectType);
+        self.window_manager.with_guarded(offset, |wm| {
+            // Get or set the size
+            let size_needed = match size {
+                Some(size) => {
+                    // Setting object header for a new object
+                    let header_slice =
+                        wm.get_slice_mut(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
+                    let header = ObjectHeader::mut_from_bytes(header_slice).unwrap();
+                    header.type_ = type_ as u8;
+                    header.size = size;
+                    size
                 }
-                header.size
-            }
-        };
+                None => {
+                    // Reading existing object header
+                    let header_slice =
+                        wm.get_slice(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
+                    let header = ObjectHeader::ref_from_bytes(header_slice).unwrap();
+                    if header.type_ != type_ as u8 {
+                        return Err(JournalError::InvalidObjectType);
+                    }
+                    header.size
+                }
+            };
 
-        let data = self.object_data_mut(offset, size_needed)?;
-        let value = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
+            // Get mutable object data
+            let data = wm.get_slice_mut(offset.get(), size_needed)?;
 
-        // Mark as in use
-        *is_in_use = true;
-        Ok(ValueGuard::new(offset, value, &self.object_in_use))
+            // Parse the mutable object
+            let value = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
+
+            Ok(value)
+        })
     }
 
     pub fn offset_array_mut(

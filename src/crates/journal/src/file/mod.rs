@@ -2,6 +2,7 @@
 pub mod cursor;
 pub mod file;
 pub mod filter;
+mod guarded_cell;
 mod hash;
 pub(crate) mod mmap;
 mod object;

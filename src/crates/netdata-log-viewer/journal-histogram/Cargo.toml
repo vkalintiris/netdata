@@ -1,5 +1,5 @@
 [package]
-name = "histogram-service"
+name = "journal-histogram"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -34,6 +34,9 @@ anyhow.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 chrono.workspace = true
+
+# Tracing
+tracing.workspace = true
 
 # Optional features
 allocative = { workspace = true, optional = true }

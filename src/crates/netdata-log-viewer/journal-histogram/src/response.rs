@@ -1,10 +1,10 @@
 use crate::request::{BucketRequest, RequestMetadata};
 use crate::ui;
 use journal::collections::{HashMap, HashSet};
-use journal::index::{FileIndex, FilterExpr, FilterTarget};
+use journal::index::{FileIndex, Filter};
 use journal::repository::File;
 use journal::{FieldName, FieldValuePair};
-use std::sync::Arc;
+use tracing::warn;
 
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
@@ -46,7 +46,7 @@ impl BucketPartialResponse {
         self.request_metadata.request.end
     }
 
-    pub fn filter_expr(&self) -> &Arc<FilterExpr<FilterTarget>> {
+    pub fn filter_expr(&self) -> &Filter {
         &self.request_metadata.request.filter_expr
     }
 
@@ -84,8 +84,8 @@ impl BucketPartialResponse {
         }
 
         // TODO: should `resolve`/`evaluate` return an `Option`?
-        let filter_expr = self.filter_expr().as_ref();
-        let filter_bitmap = if *filter_expr != FilterExpr::<FilterTarget>::None {
+        let filter_expr = self.filter_expr();
+        let filter_bitmap = if !filter_expr.is_none() {
             Some(filter_expr.resolve(file_index).evaluate())
         } else {
             None
@@ -364,7 +364,7 @@ impl HistogramResult {
 
         for (order, field_name) in field_names.into_iter().enumerate() {
             let Some(values) = field_to_values.get(&field_name) else {
-                eprintln!("Could not find values for field '{}'", field_name);
+                warn!("Could not find values for field '{}'", field_name);
                 continue;
             };
             let mut values = values.clone();

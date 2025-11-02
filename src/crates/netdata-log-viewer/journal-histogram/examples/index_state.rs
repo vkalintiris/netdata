@@ -1,5 +1,5 @@
-use histogram_service::{AppState, HistogramRequest};
-use journal::index::FilterExpr;
+use journal_histogram::{HistogramCache, HistogramRequest};
+use journal::index::Filter;
 
 use std::collections::HashSet;
 
@@ -67,19 +67,32 @@ async fn main() {
     // let path = "/home/vk/repos/tmp/aws";
     // let path = "/var/log/journal";
     let path = "/home/vk/repos/tmp/agent-events-journal";
-    let mut app_state = AppState::new(path, tokio::runtime::Handle::current())
-        .await
-        .unwrap();
+
+    // Create index cache
+    let cache_dir = "/mnt/ramfs/foyer-storage";
+    let memory_capacity = 10000;
+    let disk_capacity = 64 * 1024 * 1024;
+
+    let index_cache = journal_histogram::IndexCache::new(
+        tokio::runtime::Handle::current(),
+        cache_dir,
+        memory_capacity,
+        disk_capacity,
+    )
+    .await
+    .unwrap();
+
+    let mut histogram_cache = HistogramCache::new(index_cache, path).unwrap();
 
     use chrono::Utc;
 
     let before = Utc::now();
     let after = before - chrono::Duration::weeks(8);
 
-    let filter_expr = FilterExpr::None;
+    let filter_expr = Filter::none();
     let histogram_request = HistogramRequest::new(
-        after.timestamp() as u64,
-        before.timestamp() as u64,
+        after.timestamp() as u32,
+        before.timestamp() as u32,
         &[],
         &filter_expr,
     );
@@ -93,16 +106,16 @@ async fn main() {
         interval.tick().await;
 
         let instant = std::time::Instant::now();
-        let histogram_result = app_state.get_histogram(histogram_request.clone()).await;
+        let histogram_result = histogram_cache.get_histogram(histogram_request.clone()).await;
         iteration += 1;
         println!(
             "[Iteration {}] Elapsed: {}/{}, Partial: {}, Complete: {}, Total: {}",
             iteration,
             instant.elapsed().as_millis(),
             loop_start.elapsed().as_secs(),
-            app_state.partial_responses.len(),
-            app_state.complete_responses.len(),
-            app_state.partial_responses.len() + app_state.complete_responses.len()
+            histogram_cache.partial_responses.len(),
+            histogram_cache.complete_responses.len(),
+            histogram_cache.partial_responses.len() + histogram_cache.complete_responses.len()
         );
 
         if iteration > 15 {
@@ -119,5 +132,5 @@ async fn main() {
         }
     }
 
-    // app_state.close().await.expect("Failed to close cache");
+    // histogram_cache.close().await.expect("Failed to close cache");
 }

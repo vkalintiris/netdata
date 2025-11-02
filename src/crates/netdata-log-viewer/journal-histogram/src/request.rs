@@ -1,7 +1,7 @@
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use journal::collections::HashSet;
-use journal::index::{FilterExpr, FilterTarget};
+use journal::index::Filter;
 use journal::repository::File;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ pub struct BucketRequest {
     // Facets to use for file index
     pub facets: HistogramFacets,
     // Applied filter expression
-    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
+    pub filter_expr: Filter,
 }
 
 impl BucketRequest {
@@ -65,7 +65,7 @@ pub struct HistogramRequest {
     /// Facets to use for file indexes
     pub facets: HistogramFacets,
     /// Filter expression to apply
-    pub filter_expr: Arc<FilterExpr<FilterTarget>>,
+    pub filter_expr: Filter,
 }
 
 #[derive(Debug, Clone)]
@@ -201,13 +201,13 @@ impl HistogramRequest {
         after: u32,
         before: u32,
         facets: &[String],
-        filter_expr: &FilterExpr<FilterTarget>,
+        filter_expr: &Filter,
     ) -> Self {
         Self {
             after,
             before,
             facets: HistogramFacets::new(facets),
-            filter_expr: Arc::new(filter_expr.clone()),
+            filter_expr: filter_expr.clone(),
         }
     }
 
