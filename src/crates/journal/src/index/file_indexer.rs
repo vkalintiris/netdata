@@ -102,6 +102,9 @@ impl FileIndexer {
         field_names: &[FieldName],
         bucket_duration: u32,
     ) -> Result<FileIndex> {
+        // Get the File from the JournalFile
+        let file = journal_file.file();
+
         if false {
             let n_entries = journal_file.journal_header_ref().n_entries as _;
             self.source_timestamp_cursor_pairs.reserve(n_entries);
@@ -119,6 +122,12 @@ impl FileIndexer {
             self.entry_offsets = Vec::new();
             self.entry_offset_index = HashMap::default();
         }
+
+        // Capture indexing timestamp
+        let indexed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         // Collect all fields of the journal file
         let file_fields = collect_file_fields(journal_file);
@@ -149,13 +158,15 @@ impl FileIndexer {
         self.entry_offsets = Vec::new();
         self.entry_offset_index = HashMap::default();
 
-        Ok(FileIndex {
+        Ok(FileIndex::new(
+            file.clone(),
+            indexed_at,
             histogram,
             entry_offsets,
             file_fields,
             indexed_fields,
-            bitmaps: entries,
-        })
+            entries,
+        ))
     }
 
     fn build_entries_index(

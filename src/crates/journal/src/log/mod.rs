@@ -108,7 +108,7 @@ impl ActiveFile {
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true);
 
-        let mut journal_file = JournalFile::create(repository_file.path(), options)?;
+        let mut journal_file = JournalFile::create(&repository_file, options)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
@@ -134,7 +134,7 @@ impl ActiveFile {
 
         let mut journal_file = self
             .journal_file
-            .create_successor(repository_file.path(), max_file_size)?;
+            .create_successor(&repository_file, max_file_size)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {

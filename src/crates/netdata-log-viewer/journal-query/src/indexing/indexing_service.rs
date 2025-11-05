@@ -41,17 +41,12 @@ use journal::repository::File;
 use journal::{JournalFile, file::Mmap};
 use lru::LruCache;
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 use std::sync::{
-    Arc,
+    Arc, RwLock,
     mpsc::{Receiver, SyncSender, sync_channel},
 };
 use std::time::{Duration, Instant};
-
-#[cfg(feature = "indexing-stats")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(feature = "indexing-stats")]
-use hdrhistogram::Histogram;
 
 thread_local! {
     static FILE_INDEXER: RefCell<FileIndexer> = RefCell::new(FileIndexer::default());
@@ -70,14 +65,16 @@ pub struct IndexingRequest {
     pub instant: Instant,
 }
 
-/// Cache for file indexes with a background worker pool for concurrent indexing.
-pub struct IndexCache {
-    file_indexes: FileIndexCache,
-    indexing_tx: SyncSender<IndexingRequest>,
+/// Service for file indexing with a background worker pool for concurrent indexing.
+pub struct IndexingService {
+    file_index_cache: FileIndexCache,
+    worker_queue: SyncSender<IndexingRequest>,
+    /// LRU cache mapping File to its time range metadata.
+    time_range_cache: std::sync::RwLock<LruCache<File, crate::service::FileTimeRange>>,
 }
 
-impl IndexCache {
-    /// Creates a new IndexCache with hybrid memory + disk storage.
+impl IndexingService {
+    /// Creates a new IndexingService with hybrid memory + disk storage.
     ///
     /// # Arguments
     /// * `runtime_handle` - Tokio runtime handle for async operations
@@ -86,7 +83,7 @@ impl IndexCache {
     /// * `disk_capacity` - Disk cache capacity in bytes
     ///
     /// # Returns
-    /// Result containing the initialized IndexCache or an error
+    /// Result containing the initialized IndexingService or an error
     pub async fn new(
         runtime_handle: tokio::runtime::Handle,
         cache_dir: impl AsRef<std::path::Path>,
@@ -133,23 +130,44 @@ impl IndexCache {
         }
 
         Ok(Self {
-            file_indexes,
-            indexing_tx: tx,
+            file_index_cache: file_indexes,
+            worker_queue: tx,
+            time_range_cache: RwLock::new(LruCache::new(NonZeroUsize::new(10000).unwrap())),
         })
     }
 }
 
-impl IndexCache {
+impl IndexingService {
     /// Attempts to queue an indexing request. Returns `false` if the channel is full,
     /// in which case the request is dropped.
     pub fn try_send_request(&self, request: IndexingRequest) -> bool {
-        self.indexing_tx.try_send(request).is_ok()
+        self.worker_queue.try_send(request).is_ok()
+    }
+
+    /// Retrieves the cached time range for a file.
+    ///
+    /// Returns Unknown if the file has not been indexed yet.
+    pub fn get_time_range(&self, file: &File) -> crate::service::FileTimeRange {
+        self.time_range_cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.peek(file).copied())
+            .unwrap_or(crate::service::FileTimeRange::Unknown)
+    }
+
+    /// Stores the time range for a file in the cache.
+    ///
+    /// This should be called when a FileIndex is created or loaded.
+    pub fn set_time_range(&self, file: &File, time_range: crate::service::FileTimeRange) {
+        if let Ok(mut cache) = self.time_range_cache.write() {
+            cache.put(file.clone(), time_range);
+        }
     }
 
     /// Gracefully closes the cache, ensuring all pending writes are flushed to disk.
     /// Should be called during application shutdown.
     pub async fn close(&self) -> crate::error::Result<()> {
-        self.file_indexes.close().await?;
+        self.file_index_cache.close().await?;
         Ok(())
     }
 
@@ -188,11 +206,30 @@ impl IndexCache {
 
             // Apply timeout to the `obtain` operation
             match self
-                .file_indexes
+                .file_index_cache
                 .get_with_timeout(&cache_key, file_timeout)
                 .await
             {
                 Ok(CacheGetResult::Hit(file_index)) => {
+                    // Cache the time range from the FileIndex
+                    let (start, end) = file_index.histogram().time_range();
+                    let indexed_at = file_index.indexed_at();
+
+                    let time_range = if file.is_active() {
+                        crate::service::FileTimeRange::Active {
+                            start,
+                            end,
+                            indexed_at,
+                        }
+                    } else {
+                        crate::service::FileTimeRange::Bounded {
+                            start,
+                            end,
+                            indexed_at,
+                        }
+                    };
+                    self.set_time_range(&file, time_range);
+
                     use rayon::prelude::*;
                     let _count: usize = partial_responses
                         .iter_mut()
@@ -254,7 +291,7 @@ impl IndexCache {
             let file_index = FILE_INDEXER.with(|indexer| {
                 let mut file_indexer = indexer.borrow_mut();
                 let window_size = 32 * 1024 * 1024;
-                let journal_file = JournalFile::<Mmap>::open(task.file.path(), window_size).ok()?;
+                let journal_file = JournalFile::<Mmap>::open(&task.file, window_size).ok()?;
 
                 file_indexer
                     .index(&journal_file, None, &field_names, task.bucket_duration)

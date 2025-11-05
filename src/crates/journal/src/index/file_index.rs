@@ -5,6 +5,7 @@ use super::{
 use crate::collections::{HashMap, HashSet};
 use crate::error::{JournalError, Result};
 use crate::file::{JournalFile, Mmap};
+use crate::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use bincode;
@@ -23,6 +24,12 @@ pub enum Direction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct FileIndex {
+    // The file this index was created for
+    pub file: File,
+
+    // Unix timestamp (seconds since epoch) when this index was created
+    pub indexed_at: u64,
+
     // The journal file's histogram
     pub histogram: Histogram,
 
@@ -41,6 +48,8 @@ pub struct FileIndex {
 
 impl FileIndex {
     pub fn new(
+        file: File,
+        indexed_at: u64,
         histogram: Histogram,
         entry_offsets: Vec<u32>,
         fields: HashSet<FieldName>,
@@ -48,6 +57,8 @@ impl FileIndex {
         bitmaps: HashMap<FieldValuePair, Bitmap>,
     ) -> Self {
         Self {
+            file,
+            indexed_at,
             histogram,
             entry_offsets,
             file_fields: fields,
@@ -58,6 +69,14 @@ impl FileIndex {
 
     pub fn bucket_duration(&self) -> u32 {
         self.histogram.bucket_duration.get()
+    }
+
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
+    pub fn indexed_at(&self) -> u64 {
+        self.indexed_at
     }
 
     pub fn histogram(&self) -> &Histogram {

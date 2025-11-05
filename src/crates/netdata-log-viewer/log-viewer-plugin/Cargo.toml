@@ -24,7 +24,7 @@ opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 tokio = { workspace = true }
 
 # Business logic
-journal-histogram = { workspace = true }
+journal-query = { workspace = true }
 journal = { workspace = true }
 types = { path = "../types" }
 

@@ -13,16 +13,18 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, instrument, warn};
 use types::{
-    JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption, Pagination,
+    Auxiliary, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption, Pagination,
     RequestParam, RequiredParam, Version,
 };
+
+use journal_query::{HistogramRequest, HistogramService, IndexingService};
 
 // Import chart definitions
 use charts::Metrics;
 
 struct Journal {
     metrics: Metrics,
-    histogram_cache: Arc<RwLock<journal_histogram::HistogramCache>>,
+    histogram_cache: Arc<RwLock<HistogramService>>,
 }
 
 /// Builds a FilterExpr from the selections HashMap
@@ -150,6 +152,7 @@ fn accepted_params() -> Vec<RequestParam> {
         RequestParam::Tail,
         RequestParam::Sampling,
         RequestParam::Slice,
+        RequestParam::Auxiliary,
     ]
 }
 
@@ -212,12 +215,8 @@ impl FunctionHandler for Journal {
             "Creating histogram request: after={}, before={}",
             request.after, request.before
         );
-        let histogram_request = journal_histogram::HistogramRequest::new(
-            request.after,
-            request.before,
-            &[],
-            &filter_expr,
-        );
+        let histogram_request =
+            HistogramRequest::new(request.after, request.before, &[], &filter_expr);
 
         info!("Acquiring write lock on histogram cache");
         let mut cache = self.histogram_cache.write().await;
@@ -237,8 +236,8 @@ impl FunctionHandler for Journal {
         let mut partial_count = 0u64;
         for (_, response) in &histogram_result.buckets {
             match response {
-                journal_histogram::BucketResponse::Complete(_) => complete_count += 1,
-                journal_histogram::BucketResponse::Partial(_) => partial_count += 1,
+                journal_query::BucketResponse::Complete(_) => complete_count += 1,
+                journal_query::BucketResponse::Partial(_) => partial_count += 1,
             }
         }
 
@@ -272,6 +271,10 @@ impl FunctionHandler for Journal {
         });
 
         let response = JournalResponse {
+            auxiliary: Auxiliary {
+                hello: String::from("world"),
+            },
+            progress: 0,
             version: Version::default(),
             accepted_params: accepted_params(),
             required_params: required_params(),
@@ -327,9 +330,8 @@ impl FunctionHandler for Journal {
 
 /// Create shared histogram cache
 #[instrument(name = "create_histogram_cache")]
-fn create_histogram_cache(
-) -> std::result::Result<Arc<RwLock<journal_histogram::HistogramCache>>, Box<dyn std::error::Error>>
-{
+fn create_histogram_cache()
+-> std::result::Result<Arc<RwLock<HistogramService>>, Box<dyn std::error::Error>> {
     info!("Creating histogram cache");
 
     let path = "/var/log/journal";
@@ -343,9 +345,9 @@ fn create_histogram_cache(
     info!("Disk capacity: {} bytes", disk_capacity);
 
     // Create index cache synchronously in a blocking context
-    let index_cache = tokio::task::block_in_place(|| {
+    let indexing_service = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            journal_histogram::IndexCache::new(
+            IndexingService::new(
                 tokio::runtime::Handle::current(),
                 cache_dir,
                 memory_capacity,
@@ -355,12 +357,12 @@ fn create_histogram_cache(
         })
     })?;
 
-    info!("Index cache created successfully");
+    info!("Indexing service created successfully");
 
-    let histogram_cache = journal_histogram::HistogramCache::new(index_cache, path)?;
+    let histogram_service = HistogramService::new(indexing_service, path)?;
     info!("Histogram cache initialized");
 
-    Ok(Arc::new(RwLock::new(histogram_cache)))
+    Ok(Arc::new(RwLock::new(histogram_service)))
 }
 
 #[tokio::main]

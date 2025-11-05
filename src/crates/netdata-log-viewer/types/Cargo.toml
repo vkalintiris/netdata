@@ -9,6 +9,6 @@ workspace = true
 
 [dependencies]
 journal = { workspace = true }
-journal-histogram = { workspace = true }
+journal-query = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

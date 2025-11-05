@@ -33,7 +33,7 @@ impl Default for TracingConfig {
         Self {
             service_name: "log-viewer-plugin".to_string(),
             otlp_endpoint: "http://localhost:4318".to_string(),
-            default_log_level: "info,log_viewer_plugin=debug,journal_histogram=debug,journal=info"
+            default_log_level: "info,log_viewer_plugin=debug,journal_query=debug,journal=info"
                 .to_string(),
             enable_otel: true,
             force_stderr: false,

@@ -1,5 +1,5 @@
 [package]
-name = "journal-histogram"
+name = "journal-query"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

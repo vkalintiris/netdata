@@ -24,7 +24,7 @@ fn sequential(
 
     for file in files {
         let window_size = 8 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).unwrap();
+        let journal_file = JournalFile::<Mmap>::open(file, window_size).unwrap();
 
         let source_timestamp_field = Some(&FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP"));
 
@@ -79,7 +79,7 @@ fn parallel(
             let mut file_indexer = FileIndexer::default();
             let window_size = 64 * 1024 * 1024;
 
-            let journal_file = JournalFile::<Mmap>::open(file.path(), window_size).ok()?;
+            let journal_file = JournalFile::<Mmap>::open(file, window_size).ok()?;
 
             let source_timestamp_field =
                 Some(&FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP"));

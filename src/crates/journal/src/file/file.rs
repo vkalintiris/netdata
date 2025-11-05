@@ -280,8 +280,8 @@ impl JournalFileOptions {
         self
     }
 
-    pub fn create<M: MemoryMapMut>(self, path: impl AsRef<Path>) -> Result<JournalFile<M>> {
-        JournalFile::create(path, self)
+    pub fn create<M: MemoryMapMut>(self, file: &crate::repository::File) -> Result<JournalFile<M>> {
+        JournalFile::create(file, self)
     }
 }
 
@@ -334,6 +334,9 @@ impl BucketUtilization {
 /// This design ensures that memory safety is maintained even though references to memory-mapped
 /// regions could be invalidated when new objects are created.
 pub struct JournalFile<M: MemoryMap> {
+    // The validated File this journal represents
+    file: crate::repository::File,
+
     // Persistent memory maps for journal header and data/field hash tables
     header_map: M,
     data_hash_table_map: Option<M>,
@@ -392,15 +395,15 @@ impl<M: MemoryMap> JournalFile<M> {
         Ok(None)
     }
 
-    pub fn open(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
+    pub fn open(file: &crate::repository::File, window_size: u64) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
         // Open file and check its size
-        let file = OpenOptions::new().read(true).write(false).open(&path)?;
+        let fd = OpenOptions::new().read(true).write(false).open(file.path())?;
 
         // Create a memory map for the header
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let header_map = M::create(&file, 0, header_size)?;
+        let header_map = M::create(&fd, 0, header_size)?;
         let header = JournalHeader::ref_from_prefix(&header_map).unwrap().0;
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
@@ -408,25 +411,30 @@ impl<M: MemoryMap> JournalFile<M> {
 
         // Initialize the hash table maps if they exist
         let data_hash_table_map = map_hash_table(
-            &file,
+            &fd,
             header.data_hash_table_offset,
             header.data_hash_table_size,
         )?;
         let field_hash_table_map = map_hash_table(
-            &file,
+            &fd,
             header.field_hash_table_offset,
             header.field_hash_table_size,
         )?;
 
         // Create window manager for the rest of the objects
-        let window_manager = GuardedCell::new(WindowManager::new(file, window_size, 16)?);
+        let window_manager = GuardedCell::new(WindowManager::new(fd, window_size, 16)?);
 
         Ok(JournalFile {
+            file: file.clone(),
             header_map,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
         })
+    }
+
+    pub fn file(&self) -> &crate::repository::File {
+        &self.file
     }
 
     pub fn hash(&self, data: &[u8]) -> u64 {
@@ -724,7 +732,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     /// Creates a successor journal file with optimized bucket sizes based on this file's utilization
     pub fn create_successor(
         &self,
-        path: impl AsRef<Path>,
+        file: &crate::repository::File,
         max_file_size: Option<u64>,
     ) -> Result<Self> {
         let header = self.journal_header_ref();
@@ -739,16 +747,16 @@ impl<M: MemoryMapMut> JournalFile<M> {
         .with_optimized_buckets(bucket_utilization, max_file_size)
         .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
-        Self::create(path, options)
+        Self::create(file, options)
     }
 
-    pub fn create(path: impl AsRef<Path>, options: JournalFileOptions) -> Result<Self> {
-        let file = OpenOptions::new()
+    pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
+        let fd = OpenOptions::new()
             .create(true)
             .truncate(true)
             .read(true)
             .write(true)
-            .open(&path)?;
+            .open(file.path())?;
 
         // Calculate hash table sizes
         let data_hash_table_size =
@@ -794,19 +802,19 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
         // Create memory maps for hash tables
         let data_hash_table_map = map_hash_table(
-            &file,
+            &fd,
             header.data_hash_table_offset,
             header.data_hash_table_size,
         )?;
         let field_hash_table_map = map_hash_table(
-            &file,
+            &fd,
             header.field_hash_table_offset,
             header.field_hash_table_size,
         )?;
 
         // Create header memory map and write header
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let mut header_map = M::create(&file, 0, header_size)?;
+        let mut header_map = M::create(&fd, 0, header_size)?;
         {
             let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
             *header_mut = header;
@@ -815,9 +823,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
         }
 
         // Create window manager for the rest of the objects
-        let window_manager = GuardedCell::new(WindowManager::new(file, options.window_size, 32)?);
+        let window_manager = GuardedCell::new(WindowManager::new(fd, options.window_size, 32)?);
 
         let mut jf = JournalFile {
+            file: file.clone(),
             header_map,
             data_hash_table_map,
             field_hash_table_map,

@@ -1,5 +1,5 @@
-use journal_histogram::{HistogramCache, HistogramRequest};
 use journal::index::Filter;
+use journal_query::{HistogramRequest, HistogramService, IndexingService};
 
 use std::collections::HashSet;
 
@@ -73,7 +73,7 @@ async fn main() {
     let memory_capacity = 10000;
     let disk_capacity = 64 * 1024 * 1024;
 
-    let index_cache = journal_histogram::IndexCache::new(
+    let indexing_service = IndexingService::new(
         tokio::runtime::Handle::current(),
         cache_dir,
         memory_capacity,
@@ -82,7 +82,7 @@ async fn main() {
     .await
     .unwrap();
 
-    let mut histogram_cache = HistogramCache::new(index_cache, path).unwrap();
+    let mut histogram_service = HistogramService::new(indexing_service, path).unwrap();
 
     use chrono::Utc;
 
@@ -106,16 +106,18 @@ async fn main() {
         interval.tick().await;
 
         let instant = std::time::Instant::now();
-        let histogram_result = histogram_cache.get_histogram(histogram_request.clone()).await;
+        let histogram_result = histogram_service
+            .get_histogram(histogram_request.clone())
+            .await;
         iteration += 1;
         println!(
             "[Iteration {}] Elapsed: {}/{}, Partial: {}, Complete: {}, Total: {}",
             iteration,
             instant.elapsed().as_millis(),
             loop_start.elapsed().as_secs(),
-            histogram_cache.partial_responses.len(),
-            histogram_cache.complete_responses.len(),
-            histogram_cache.partial_responses.len() + histogram_cache.complete_responses.len()
+            histogram_service.partial_responses.len(),
+            histogram_service.complete_responses.len(),
+            histogram_service.partial_responses.len() + histogram_service.complete_responses.len()
         );
 
         if iteration > 15 {

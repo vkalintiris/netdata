@@ -1,14 +1,14 @@
-//! File index caching with background indexing workers.
+//! File indexing infrastructure with background indexing workers.
 //!
 //! This module provides two main abstractions:
 //! - [`HybridCache`]: A generic wrapper around foyer's hybrid cache
-//! - [`IndexCache`]: High-level cache with background worker pool for concurrent indexing
+//! - [`IndexingService`]: High-level service with background worker pool for concurrent indexing
 
 pub mod hybrid_cache;
-pub mod index_cache;
+pub mod indexing_service;
 
 pub use hybrid_cache::{CacheGetResult, HybridCache};
-pub use index_cache::{IndexCache, IndexingRequest};
+pub use indexing_service::{IndexingService, IndexingRequest};
 
 // Type alias for our specific use case
 #[cfg(feature = "allocative")]

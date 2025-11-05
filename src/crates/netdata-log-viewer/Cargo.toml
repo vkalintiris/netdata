@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "journal-histogram",
+    "journal-query",
     "log-viewer-plugin",
     "types",
 ]
@@ -58,7 +58,7 @@ netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "../netdata-plugin/schema" }
 journal = { path = "../journal" }
-journal-histogram = { path = "journal-histogram" }
+journal-query = { path = "journal-query" }
 
 [profile.release-min]
 inherits = "release"

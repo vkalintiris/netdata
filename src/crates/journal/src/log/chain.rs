@@ -93,7 +93,7 @@ impl Chain {
         };
 
         let window_size = 4096;
-        let jf = JournalFile::<Mmap>::open(file.path(), window_size)?;
+        let jf = JournalFile::<Mmap>::open(file, window_size)?;
 
         Ok(jf.journal_header_ref().tail_entry_seqnum)
     }

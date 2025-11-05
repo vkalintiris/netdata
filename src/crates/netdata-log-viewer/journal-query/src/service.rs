@@ -1,4 +1,4 @@
-use crate::cache::IndexCache;
+use crate::indexing::IndexingService;
 use crate::error::Result;
 use crate::request::{BucketRequest, HistogramFacets, HistogramRequest, RequestMetadata};
 use crate::response::{
@@ -16,12 +16,48 @@ use tracing::{debug, instrument, warn};
 #[cfg(feature = "allocative")]
 use tracing::{error, info};
 
+/// Time range information for a journal file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTimeRange {
+    /// File has not been indexed yet, explicit time range unknown.
+    /// These files will be queued for indexing and reported in subsequent poll cycles.
+    Unknown,
+    /// Active file currently being written to. The end time represents the latest
+    /// entry seen when the file was indexed, but new entries may have been written since.
+    /// The indexed_at timestamp allows consumers to decide whether to re-index for fresher data.
+    /// This is an explicit time range from the FileIndex.
+    Active {
+        start: u32,
+        end: u32,
+        indexed_at: u64, // Unix timestamp in seconds when the index was created
+    },
+    /// Archived file with known start and end times.
+    /// This is an explicit time range from the FileIndex.
+    Bounded {
+        start: u32,
+        end: u32,
+        indexed_at: u64, // Unix timestamp in seconds when the index was created
+    },
+}
+
+/// Extension of File that includes cached time range from the FileIndex.
+///
+/// This type augments a File with optional time range metadata obtained from
+/// the IndexingService. The time range represents the actual temporal span of log
+/// entries in the file (in seconds since epoch).
+#[derive(Debug, Clone)]
+pub struct FileWithRange {
+    pub file: File,
+    /// Cached time range from the FileIndex.
+    pub time_range: FileTimeRange,
+}
+
 #[cfg_attr(feature = "allocative", derive(Allocative))]
-pub struct HistogramCache {
+pub struct HistogramService {
     pub registry: Registry,
 
     #[cfg_attr(feature = "allocative", allocative(skip))]
-    pub index_cache: IndexCache,
+    pub indexing_service: IndexingService,
 
     #[cfg_attr(feature = "allocative", allocative(skip))]
     pub partial_responses: LruCache<BucketRequest, BucketPartialResponse>,
@@ -29,13 +65,13 @@ pub struct HistogramCache {
     pub complete_responses: LruCache<BucketRequest, BucketCompleteResponse>,
 }
 
-impl HistogramCache {
-    /// Creates a new HistogramCache from an IndexCache and journal directory path.
+impl HistogramService {
+    /// Creates a new HistogramService from an IndexingService and journal directory path.
     ///
     /// # Arguments
-    /// * `index_cache` - The IndexCache to use for file indexing
+    /// * `indexing` - The IndexingService to use for file indexing
     /// * `path` - Journal directory path to watch
-    pub fn new(index_cache: IndexCache, path: &str) -> Result<Self> {
+    pub fn new(indexing_service: IndexingService, path: &str) -> Result<Self> {
         let mut registry = Registry::new()?;
         registry.watch_directory(path)?;
 
@@ -43,10 +79,69 @@ impl HistogramCache {
 
         Ok(Self {
             registry,
-            index_cache,
+            indexing_service,
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })
+    }
+
+    /// Discovers files in the specified time range, augmented with explicit time range metadata.
+    ///
+    /// This method first uses the registry to discover candidate files based on rotation times,
+    /// then augments each file with explicit time range data from the IndexingService if available.
+    ///
+    /// Files with Unknown time ranges (not yet indexed) are included conservatively and will be
+    /// queued for indexing. The progressive response system handles reporting results as files
+    /// become indexed in subsequent poll cycles.
+    ///
+    /// # Arguments
+    /// * `start` - Start time in seconds since epoch
+    /// * `end` - End time in seconds since epoch
+    ///
+    /// # Returns
+    /// Vector of FileWithRange containing files and their explicit time ranges (or Unknown)
+    pub fn find_files_in_range(&self, start: u32, end: u32) -> Vec<FileWithRange> {
+        const USEC_PER_SEC: u64 = 1_000_000;
+        let start_usec = start as u64 * USEC_PER_SEC;
+        let end_usec = end as u64 * USEC_PER_SEC;
+
+        // Get candidates from registry (rotation-based discovery)
+        let candidates = self.registry.find_files_in_range(start, end);
+
+        // Augment with explicit time ranges from cache and filter
+        candidates
+            .into_iter()
+            .filter_map(|file| {
+                let time_range = self.indexing_service.get_time_range(&file);
+
+                // Filter based on explicit time range if available
+                let include = match time_range {
+                    FileTimeRange::Unknown => true, // Not indexed yet, keep conservatively
+                    FileTimeRange::Active {
+                        start: s, end: e, ..
+                    } => {
+                        let indexed_start = s as u64 * USEC_PER_SEC;
+                        let indexed_end = e as u64 * USEC_PER_SEC;
+                        // Use the cached end time for filtering, but note that the file
+                        // may have grown since indexed_at
+                        indexed_start < end_usec && indexed_end > start_usec
+                    }
+                    FileTimeRange::Bounded {
+                        start: s, end: e, ..
+                    } => {
+                        let indexed_start = s as u64 * USEC_PER_SEC;
+                        let indexed_end = e as u64 * USEC_PER_SEC;
+                        indexed_start < end_usec && indexed_end > start_usec
+                    }
+                };
+
+                if include {
+                    Some(FileWithRange { file, time_range })
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     // Creates indexing requests after deduplicating the files referenced
@@ -86,7 +181,7 @@ impl HistogramCache {
         pending_files: &HashSet<File>,
         bucket_duration: u32,
     ) {
-        use crate::cache::IndexingRequest;
+        use crate::indexing::IndexingRequest;
 
         debug!("Pending files: {}", pending_files.len());
         for file in pending_files {
@@ -99,7 +194,7 @@ impl HistogramCache {
 
             // Use try_send to avoid blocking if queue is full
             // Ignore full queue errors - newer requests will arrive soon
-            let _ = self.index_cache.try_send_request(indexing_request);
+            let _ = self.indexing_service.try_send_request(indexing_request);
         }
     }
 
@@ -131,7 +226,7 @@ impl HistogramCache {
         self.send_indexing_requests(facets, &pending_files, bucket_duration);
 
         // Progress partial responses
-        self.index_cache
+        self.indexing_service
             .resolve_partial_responses(facets, &mut self.partial_responses, pending_files)
             .await;
 
@@ -252,7 +347,7 @@ impl HistogramCache {
     /// Gracefully closes the histogram cache, ensuring all pending cache writes are flushed to disk.
     /// Should be called during application shutdown.
     pub async fn close(&self) -> Result<()> {
-        self.index_cache.close().await?;
+        self.indexing_service.close().await?;
         Ok(())
     }
 

@@ -70,6 +70,8 @@ pub enum RequestParam {
     Tail,
     Sampling,
     Slice,
+    #[serde(rename = "_auxiliary")]
+    Auxiliary,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,17 +143,26 @@ impl Default for Pagination {
 use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct Auxiliary {
+    pub hello: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct JournalResponse {
+    #[serde(rename = "_auxiliary")]
+    pub auxiliary: Auxiliary,
+    pub progress: u32,
+
     #[serde(rename = "v")]
     pub version: Version,
 
     pub accepted_params: Vec<RequestParam>,
     pub required_params: Vec<RequiredParam>,
 
-    pub facets: Vec<journal_histogram::ui::facet::Facet>,
+    pub facets: Vec<journal_query::ui::facet::Facet>,
 
-    pub available_histograms: Vec<journal_histogram::ui::available_histogram::AvailableHistogram>,
-    pub histogram: journal_histogram::ui::histogram::Histogram,
+    pub available_histograms: Vec<journal_query::ui::available_histogram::AvailableHistogram>,
+    pub histogram: journal_query::ui::histogram::Histogram,
     // FIXME: columns do not contain u32s
     pub columns: Value,
     pub data: Vec<u32>,
