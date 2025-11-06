@@ -38,7 +38,7 @@ use allocative::Allocative;
 use journal::collections::HashSet;
 use journal::index::FileIndexer;
 use journal::repository::File;
-use journal::{JournalFile, file::Mmap};
+use journal::{FieldName, JournalFile, file::Mmap};
 use lru::LruCache;
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -284,7 +284,7 @@ impl IndexingService {
             }
 
             // Extract field names from facets
-            let field_names: Vec<journal::FieldName> = task.facets.iter().cloned().collect();
+            let field_names: Vec<FieldName> = task.facets.iter().cloned().collect();
 
             // Create the file index
 

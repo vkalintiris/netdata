@@ -1,5 +1,6 @@
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
+use journal::FieldName;
 use journal::collections::HashSet;
 use journal::index::Filter;
 use journal::repository::File;
@@ -71,7 +72,7 @@ pub struct HistogramRequest {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct HistogramFacets {
-    fields: Arc<Vec<journal::FieldName>>,
+    fields: Arc<Vec<FieldName>>,
     precomputed_hash: u64,
 }
 
@@ -95,7 +96,7 @@ impl PartialEq for HistogramFacets {
 impl Eq for HistogramFacets {}
 
 impl HistogramFacets {
-    fn default_facets() -> Vec<journal::FieldName> {
+    fn default_facets() -> Vec<FieldName> {
         let v: Vec<&str> = vec![
             "_HOSTNAME",
             "PRIORITY",
@@ -143,9 +144,7 @@ impl HistogramFacets {
         ];
 
         // Convert to FieldName - use new_unchecked since these are trusted constants
-        v.into_iter()
-            .map(journal::FieldName::new_unchecked)
-            .collect()
+        v.into_iter().map(FieldName::new_unchecked).collect()
     }
 
     pub fn new(facets: &[String]) -> Self {
@@ -155,7 +154,7 @@ impl HistogramFacets {
             // Parse and validate each facet string into FieldName
             facets
                 .iter()
-                .filter_map(|s| journal::FieldName::new(s.clone()))
+                .filter_map(|s| FieldName::new(s.clone()))
                 .collect()
         };
 
@@ -176,12 +175,12 @@ impl HistogramFacets {
     }
 
     /// Returns an iterator over the facet field names
-    pub fn iter(&self) -> impl Iterator<Item = &journal::FieldName> {
+    pub fn iter(&self) -> impl Iterator<Item = &FieldName> {
         self.fields.iter()
     }
 
     /// Returns the facet fields as a slice
-    pub fn as_slice(&self) -> &[journal::FieldName] {
+    pub fn as_slice(&self) -> &[FieldName] {
         &self.fields
     }
 
