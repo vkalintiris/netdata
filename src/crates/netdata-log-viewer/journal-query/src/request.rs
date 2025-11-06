@@ -197,12 +197,7 @@ impl HistogramFacets {
 }
 
 impl HistogramRequest {
-    pub fn new(
-        after: u32,
-        before: u32,
-        facets: &[String],
-        filter_expr: &Filter,
-    ) -> Self {
+    pub fn new(after: u32, before: u32, facets: &[String], filter_expr: &Filter) -> Self {
         Self {
             after,
             before,
