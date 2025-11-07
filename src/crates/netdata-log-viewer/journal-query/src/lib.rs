@@ -9,12 +9,13 @@ pub use crate::request::HistogramRequest;
 
 mod response;
 pub use crate::response::BucketResponse;
-pub use crate::response::HistogramResult;
+pub use crate::response::HistogramResponse;
 
 mod service;
 pub use crate::service::HistogramService;
 
 pub mod ui;
 
-// Re-export field types from journal crate
+// Re-export types from journal crate
+pub use journal::index::Filter;
 pub use journal::{FieldName, FieldValuePair};

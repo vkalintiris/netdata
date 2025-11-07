@@ -1,5 +1,5 @@
 use journal::index::Filter;
-use journal_query::{HistogramRequest, HistogramService, IndexingService};
+use journal_query::{FieldName, HistogramRequest, HistogramService, IndexingService, ui};
 
 use std::collections::HashSet;
 
@@ -122,7 +122,8 @@ async fn main() {
             use std::io::Write;
 
             let mut file = File::create("/home/vk/output.json").unwrap();
-            let ui_response = histogram_result.ui_response("log.severity_number");
+            let severity_field = FieldName::new_unchecked("log.severity_number");
+            let ui_response = ui::Response::from_histogram(&histogram_result, &severity_field);
             let s = serde_json::to_string_pretty(&ui_response).unwrap();
             file.write_all(s.as_bytes()).unwrap();
 

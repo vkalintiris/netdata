@@ -1,3 +1,4 @@
+use journal_query::ui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -159,10 +160,10 @@ pub struct JournalResponse {
     pub accepted_params: Vec<RequestParam>,
     pub required_params: Vec<RequiredParam>,
 
-    pub facets: Vec<journal_query::ui::facet::Facet>,
+    pub facets: Vec<ui::Facet>,
 
-    pub available_histograms: Vec<journal_query::ui::available_histogram::AvailableHistogram>,
-    pub histogram: journal_query::ui::histogram::Histogram,
+    pub available_histograms: Vec<ui::AvailableHistogram>,
+    pub histogram: ui::Histogram,
     // FIXME: columns do not contain u32s
     pub columns: Value,
     pub data: Vec<u32>,

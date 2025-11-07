@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::indexing::{Facets, FileInfo, IndexingService, TimeRange};
 use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
 use crate::response::{
-    BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResult,
+    BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResponse,
 };
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
@@ -207,7 +207,7 @@ impl HistogramService {
         after = request.after,
         before = request.before,
     ))]
-    pub async fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResult {
+    pub async fn get_histogram(&mut self, request: HistogramRequest) -> HistogramResponse {
         // Process the histogram request to ensure buckets are computed/in-progress
         self.process_histogram_request(&request).await;
 
@@ -243,7 +243,7 @@ impl HistogramService {
             "Histogram result collected"
         );
 
-        HistogramResult { buckets }
+        HistogramResponse { buckets }
     }
 
     /// Creates responses for bucket requests that we don't have in our caches

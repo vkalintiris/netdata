@@ -17,7 +17,9 @@ use types::{
     RequestParam, RequiredParam, Version,
 };
 
-use journal_query::{HistogramRequest, HistogramService, IndexingService};
+use journal_query::{
+    FieldName, FieldValuePair, Filter, HistogramRequest, HistogramService, IndexingService, ui,
+};
 
 // Import chart definitions
 use charts::Metrics;
@@ -29,12 +31,10 @@ struct Journal {
 
 /// Builds a FilterExpr from the selections HashMap
 #[instrument(skip(selections))]
-fn build_filter_from_selections(
-    selections: &HashMap<String, Vec<String>>,
-) -> journal::index::Filter {
+fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Filter {
     if selections.is_empty() {
         info!("No selections provided, using empty filter");
-        return journal::index::Filter::none();
+        return Filter::none();
     }
 
     let mut field_filters = Vec::new();
@@ -61,8 +61,7 @@ fn build_filter_from_selections(
             .iter()
             .filter_map(|value| {
                 let pair_str = format!("{}={}", field, value);
-                journal::FieldValuePair::parse(&pair_str)
-                    .map(journal::index::Filter::match_field_value_pair)
+                FieldValuePair::parse(&pair_str).map(Filter::match_field_value_pair)
             })
             .collect();
 
@@ -71,16 +70,16 @@ fn build_filter_from_selections(
             continue;
         }
 
-        let field_filter = journal::index::Filter::or(value_filters);
+        let field_filter = Filter::or(value_filters);
         field_filters.push(field_filter);
     }
 
     if field_filters.is_empty() {
         info!("No valid field filters, using empty filter");
-        journal::index::Filter::none()
+        Filter::none()
     } else {
         info!("Created filter with {} field filters", field_filters.len());
-        journal::index::Filter::and(field_filters)
+        Filter::and(field_filters)
     }
 }
 
@@ -270,6 +269,9 @@ impl FunctionHandler for Journal {
             serde_json::json!({})
         });
 
+        // Get the PRIORITY field name for the histogram
+        let priority_field = FieldName::new_unchecked("PRIORITY");
+
         let response = JournalResponse {
             auxiliary: Auxiliary {
                 hello: String::from("world"),
@@ -278,9 +280,9 @@ impl FunctionHandler for Journal {
             version: Version::default(),
             accepted_params: accepted_params(),
             required_params: required_params(),
-            facets: histogram_result.ui_facets(),
-            histogram: histogram_result.ui_histogram("PRIORITY"),
-            available_histograms: histogram_result.ui_available_histograms(),
+            facets: ui::facets(&histogram_result),
+            histogram: ui::histogram(&histogram_result, &priority_field),
+            available_histograms: ui::available_histograms(&histogram_result),
             columns: data,
             data: Vec::new(),
             default_charts: Vec::new(),
