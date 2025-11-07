@@ -1,6 +1,5 @@
-use crate::request::{BucketRequest, RequestMetadata};
+use super::request::{BucketRequest, RequestMetadata};
 use journal::collections::{HashMap, HashSet};
-use journal::index::{FileIndex, Filter};
 use journal::repository::File;
 use journal::{FieldName, FieldValuePair};
 
@@ -30,98 +29,21 @@ pub(crate) struct BucketPartialResponse {
 }
 
 impl BucketPartialResponse {
-    pub(crate) fn duration(&self) -> u32 {
-        self.request_metadata.request.duration()
+    pub(crate) fn new(request_metadata: RequestMetadata) -> Self {
+        Self {
+            request_metadata,
+            fv_counts: Default::default(),
+            unindexed_fields: Default::default(),
+        }
     }
-
     pub(crate) fn files(&self) -> &HashSet<File> {
         &self.request_metadata.files
-    }
-
-    pub(crate) fn start_time(&self) -> u32 {
-        self.request_metadata.request.start
-    }
-
-    pub(crate) fn end_time(&self) -> u32 {
-        self.request_metadata.request.end
-    }
-
-    pub(crate) fn filter_expr(&self) -> &Filter {
-        &self.request_metadata.request.filter_expr
     }
 
     pub(crate) fn to_complete(&self) -> BucketCompleteResponse {
         BucketCompleteResponse {
             fv_counts: self.fv_counts.clone(),
             unindexed_fields: self.unindexed_fields.clone(),
-        }
-    }
-
-    pub(crate) fn update(&mut self, file: &File, file_index: &FileIndex) {
-        // Nothing to do if we the request does not contain this file
-        if !self.request_metadata.files.contains(file) {
-            return;
-        }
-
-        // Can not use file index, if it doesn't have sufficient granularity
-        if self.duration() < file_index.bucket_duration() {
-            return;
-        }
-
-        // Remove the file from the queue
-        self.request_metadata.files.remove(file);
-
-        // Track fields that exist in the file but were not indexed
-        // This allows the UI to distinguish between indexed and unindexed fields
-        for field in file_index.fields() {
-            if file_index.is_indexed(field) {
-                continue;
-            }
-
-            if let Some(field_name) = FieldName::new(field) {
-                self.unindexed_fields.insert(field_name);
-            }
-        }
-
-        // TODO: should `resolve`/`evaluate` return an `Option`?
-        let filter_expr = self.filter_expr();
-        let filter_bitmap = if !filter_expr.is_none() {
-            Some(filter_expr.resolve(file_index).evaluate())
-        } else {
-            None
-        };
-
-        let start_time = self.start_time();
-        let end_time = self.end_time();
-
-        for (indexed_field, field_bitmap) in file_index.bitmaps() {
-            // Calculate unfiltered count (all occurrences of this field=value)
-            let unfiltered_count = file_index
-                .count_bitmap_entries_in_range(field_bitmap, start_time, end_time)
-                .unwrap_or(0);
-
-            // Calculate filtered count (occurrences matching the filter expression)
-            // When no filter is specified, filtered = unfiltered (shows all entries)
-            let filtered_count = if let Some(filter_bitmap) = &filter_bitmap {
-                let filtered_bitmap = field_bitmap & filter_bitmap;
-                file_index
-                    .count_bitmap_entries_in_range(&filtered_bitmap, start_time, end_time)
-                    .unwrap_or(0)
-            } else {
-                unfiltered_count
-            };
-
-            // Update the counts for this field=value pair
-            // Parse the indexed_field string into a FieldValuePair
-            if let Some(pair) = FieldValuePair::parse(indexed_field) {
-                if let Some(counts) = self.fv_counts.get_mut(&pair) {
-                    counts.0 += unfiltered_count;
-                    counts.1 += filtered_count;
-                } else {
-                    self.fv_counts
-                        .insert(pair, (unfiltered_count, filtered_count));
-                }
-            }
         }
     }
 }

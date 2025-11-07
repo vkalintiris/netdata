@@ -1,13 +1,13 @@
-use crate::error::Result;
-use crate::indexing::{Facets, FileInfo, IndexingService, TimeRange};
-use crate::request::{BucketRequest, HistogramRequest, RequestMetadata};
-use crate::response::{
+use super::request::{BucketRequest, HistogramRequest, RequestMetadata};
+use super::response::{
     BucketCompleteResponse, BucketPartialResponse, BucketResponse, HistogramResponse,
 };
+use crate::error::Result;
+use crate::indexing::{Facets, IndexingService};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use journal::collections::{HashMap, HashSet};
-use journal::registry::Registry;
+use journal::collections::HashSet;
+use journal::registry::{Monitor, Registry};
 use journal::repository::File;
 use lru::LruCache;
 use std::num::NonZeroUsize;
@@ -36,7 +36,8 @@ impl HistogramService {
     /// * `path` - Journal directory path to watch
     /// * `indexing` - The IndexingService to use for file indexing
     pub fn new(path: &str, indexing_service: IndexingService) -> Result<Self> {
-        let mut registry = Registry::new()?;
+        let monitor = Monitor::new()?;
+        let mut registry = Registry::new(monitor);
         registry.watch_directory(path)?;
 
         let cache_capacity = NonZeroUsize::new(1000).unwrap();
@@ -47,123 +48,6 @@ impl HistogramService {
             partial_responses: LruCache::new(cache_capacity),
             complete_responses: LruCache::new(cache_capacity),
         })
-    }
-
-    /// Discovers files in the specified time range, augmented with explicit time range metadata.
-    ///
-    /// This method first uses the registry to discover candidate files based on rotation times,
-    /// then augments each file with explicit time range data from the IndexingService if available.
-    ///
-    /// Files with Unknown time ranges (not yet indexed) are included conservatively and will be
-    /// queued for indexing. The progressive response system handles reporting results as files
-    /// become indexed in subsequent poll cycles.
-    ///
-    /// This is a crate-internal method. External code should use `get_histogram()` which returns
-    /// structured histogram results.
-    ///
-    /// # Arguments
-    /// * `start` - Start time in seconds since epoch
-    /// * `end` - End time in seconds since epoch
-    ///
-    /// # Returns
-    /// Vector of FileInfo containing files and their explicit time ranges (or Unknown)
-    #[allow(dead_code)] // Used internally by histogram query pipeline
-    pub(crate) fn find_files_in_range(&self, start: u32, end: u32) -> Vec<FileInfo> {
-        const USEC_PER_SEC: u64 = 1_000_000;
-        let start_usec = start as u64 * USEC_PER_SEC;
-        let end_usec = end as u64 * USEC_PER_SEC;
-
-        // Get candidates from registry (rotation-based discovery)
-        let candidates = self.registry.find_files_in_range(start, end);
-
-        // Augment with explicit time ranges from cache and filter
-        candidates
-            .into_iter()
-            .filter_map(|file| {
-                let time_range = self.indexing_service.get_time_range(&file);
-
-                // Filter based on explicit time range if available
-                let include = match time_range {
-                    TimeRange::Unknown => true, // Not indexed yet, keep conservatively
-                    TimeRange::Active {
-                        start: s, end: e, ..
-                    } => {
-                        let indexed_start = s as u64 * USEC_PER_SEC;
-                        let indexed_end = e as u64 * USEC_PER_SEC;
-                        // Use the cached end time for filtering, but note that the file
-                        // may have grown since indexed_at
-                        indexed_start < end_usec && indexed_end > start_usec
-                    }
-                    TimeRange::Bounded {
-                        start: s, end: e, ..
-                    } => {
-                        let indexed_start = s as u64 * USEC_PER_SEC;
-                        let indexed_end = e as u64 * USEC_PER_SEC;
-                        indexed_start < end_usec && indexed_end > start_usec
-                    }
-                };
-
-                if include {
-                    Some(FileInfo::new(file, time_range))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    // Creates indexing requests after deduplicating the files referenced
-    // by the partial responses of our bucket requests.
-    fn collect_partial_requests_files(&self, bucket_requests: &[BucketRequest]) -> HashSet<File> {
-        if bucket_requests.is_empty() {
-            return HashSet::default();
-        }
-
-        let mut files = HashSet::default();
-
-        for bucket_request in bucket_requests.iter() {
-            if self.complete_responses.peek(bucket_request).is_some() {
-                continue;
-            }
-
-            let Some(partial_response) = self.partial_responses.peek(bucket_request) else {
-                warn!(
-                    "Missing partial response for bucket request: {:?}",
-                    bucket_request
-                );
-
-                continue;
-            };
-
-            for file in partial_response.files() {
-                files.insert(file.clone());
-            }
-        }
-
-        files
-    }
-
-    pub(crate) fn send_indexing_requests(
-        &self,
-        facets: &Facets,
-        pending_files: &HashSet<File>,
-        bucket_duration: u32,
-    ) {
-        use crate::indexing::IndexingRequest;
-
-        debug!("Pending files: {}", pending_files.len());
-        for file in pending_files {
-            let indexing_request = IndexingRequest {
-                facets: facets.clone(),
-                bucket_duration,
-                file: file.clone(),
-                instant: Instant::now(),
-            };
-
-            // Use try_send to avoid blocking if queue is full
-            // Ignore full queue errors - newer requests will arrive soon
-            let _ = self.indexing_service.try_send_request(indexing_request);
-        }
     }
 
     #[instrument(skip(self), fields(
@@ -177,7 +61,6 @@ impl HistogramService {
         let bucket_requests = request.bucket_requests();
         let num_buckets = bucket_requests.len();
         assert!(!bucket_requests.is_empty());
-
         debug!(num_buckets, "Creating partial responses");
         self.create_partial_responses(&bucket_requests);
 
@@ -246,20 +129,25 @@ impl HistogramService {
         HistogramResponse { buckets }
     }
 
+    /// Creates the request metadata, ie. the bucket request itself, along
+    /// with the files it needs.
+    fn create_request_metadata(&self, bucket_request: BucketRequest) -> RequestMetadata {
+        let files = self
+            .registry
+            .find_files_in_range(bucket_request.start, bucket_request.end);
+
+        RequestMetadata { files }
+    }
+
     /// Creates responses for bucket requests that we don't have in our caches
     fn create_partial_responses(&mut self, bucket_requests: &[BucketRequest]) {
-        // NOTE: we use `get()`, instead of `peek()`, when looking up responses
-        // in the LRU caches, to promote them to the head of the LRU list.
-        // This ensures that any newly-created responses will not evict any
-        // responses we've queried.
+        // NOTE: Use `get()`, instead of `peek()`, to make the request the
+        // most recently used in our caches.
         for bucket_request in bucket_requests {
-            // Ignore if we have the request in the cache of complete responses
-            if self.complete_responses.get(bucket_request).is_some() {
-                continue;
-            }
-
-            // Ignore if we have the request in the cache of partial responses
-            if self.partial_responses.get(bucket_request).is_some() {
+            // Ignore if we have this request in our LRU caches
+            if self.complete_responses.get(bucket_request).is_some()
+                || self.partial_responses.get(bucket_request).is_some()
+            {
                 continue;
             }
 
@@ -268,28 +156,64 @@ impl HistogramService {
             // that it needs to query.
 
             let request_metadata = self.create_request_metadata(bucket_request.clone());
-
-            let partial_response = BucketPartialResponse {
-                request_metadata,
-                fv_counts: HashMap::default(),
-                unindexed_fields: HashSet::default(),
-            };
+            let partial_response = BucketPartialResponse::new(request_metadata);
 
             self.partial_responses
                 .put(bucket_request.clone(), partial_response);
         }
     }
 
-    /// Creates the request metadata, ie. the bucket request itself, along
-    /// with the files it needs.
-    fn create_request_metadata(&self, bucket_request: BucketRequest) -> RequestMetadata {
-        let files = self
-            .registry
-            .find_files_in_range(bucket_request.start, bucket_request.end);
+    // Creates indexing requests after deduplicating the files referenced
+    // by the partial responses of our bucket requests.
+    fn collect_partial_requests_files(&self, bucket_requests: &[BucketRequest]) -> HashSet<File> {
+        if bucket_requests.is_empty() {
+            return HashSet::default();
+        }
 
-        RequestMetadata {
-            request: bucket_request,
-            files,
+        let mut files = HashSet::default();
+
+        for bucket_request in bucket_requests.iter() {
+            if self.complete_responses.peek(bucket_request).is_some() {
+                continue;
+            }
+
+            let Some(partial_response) = self.partial_responses.peek(bucket_request) else {
+                warn!(
+                    "Missing partial response for bucket request: {:?}",
+                    bucket_request
+                );
+
+                continue;
+            };
+
+            for file in partial_response.files() {
+                files.insert(file.clone());
+            }
+        }
+
+        files
+    }
+
+    pub(crate) fn send_indexing_requests(
+        &self,
+        facets: &Facets,
+        pending_files: &HashSet<File>,
+        bucket_duration: u32,
+    ) {
+        use crate::indexing::IndexingRequest;
+
+        debug!("Pending files: {}", pending_files.len());
+        for file in pending_files {
+            let indexing_request = IndexingRequest {
+                facets: facets.clone(),
+                bucket_duration,
+                file: file.clone(),
+                instant: Instant::now(),
+            };
+
+            // Use try_send to avoid blocking if queue is full
+            // Ignore full queue errors - newer requests will arrive soon
+            let _ = self.indexing_service.try_send_request(indexing_request);
         }
     }
 

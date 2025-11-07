@@ -31,8 +31,8 @@
 
 use super::hybrid_cache::CacheGetResult;
 use super::{Facets, FileIndexCache, FileIndexKey, TimeRange};
-use crate::request::BucketRequest;
-use crate::response::BucketPartialResponse;
+use crate::histogram::request::BucketRequest;
+use crate::histogram::response::BucketPartialResponse;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use journal::collections::HashSet;
@@ -171,17 +171,11 @@ impl IndexingService {
         Ok(())
     }
 
-    /// Updates partial responses with data from cached file indexes.
+    /// Resolves an index request by fetching file indexes from cache.
     ///
-    /// Attempts to fetch file indexes from cache with timeouts, updating all
-    /// partial responses with the retrieved data. Uses per-file and total timeouts
-    /// to ensure responsiveness.
-    pub(crate) async fn resolve_partial_responses(
-        &self,
-        facets: &Facets,
-        partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
-        pending_files: HashSet<File>,
-    ) {
+    /// Returns IndexProgress containing the indexed data and any files still pending.
+    /// This is a hermetic method that knows nothing about buckets or histograms.
+    pub(crate) async fn resolve_index_request(&self, request: &super::IndexRequest) -> super::IndexProgress {
         use std::time::Duration;
         use tokio::time::Instant;
 
@@ -190,7 +184,10 @@ impl IndexingService {
 
         let start = Instant::now();
 
-        for file in pending_files {
+        let mut progress = super::IndexProgress::new();
+        progress.pending_files = request.files.clone();
+
+        for file in &request.files {
             // Check if we've exceeded total timeout
             if start.elapsed() >= TOTAL_TIMEOUT {
                 break;
@@ -201,31 +198,135 @@ impl IndexingService {
             let file_timeout = remaining.min(PER_FILE_TIMEOUT);
 
             // Create cache key with file and facets
-            let cache_key = FileIndexKey::new(file.clone(), facets.clone());
+            let cache_key = FileIndexKey::new(file.clone(), request.facets.clone());
 
-            // Apply timeout to the `obtain` operation
+            // Apply timeout to the `get` operation
             match self.file_index_cache.get(&cache_key, file_timeout).await {
                 Ok(CacheGetResult::Hit(file_index)) => {
                     // Cache the time range from the FileIndex
                     let time_range = TimeRange::from_file_index(&file_index);
-                    self.set_time_range(&file, time_range);
+                    self.set_time_range(file, time_range);
 
-                    use rayon::prelude::*;
-                    let _count: usize = partial_responses
-                        .iter_mut()
-                        .par_bridge()
-                        .map(|(_bucket_request, partial_response)| {
-                            partial_response.update(&file, &file_index);
-                            1
-                        })
-                        .sum();
+                    // This file is no longer pending
+                    progress.pending_files.remove(file);
+
+                    // Track unindexed fields
+                    for field in file_index.fields() {
+                        if !file_index.is_indexed(field) {
+                            if let Some(field_name) = journal::FieldName::new(field) {
+                                progress.unindexed_fields.insert(field_name);
+                            }
+                        }
+                    }
+
+                    // Evaluate filter if needed
+                    let filter_bitmap = if !request.filter.is_none() {
+                        Some(request.filter.resolve(&file_index).evaluate())
+                    } else {
+                        None
+                    };
+
+                    // Count field=value pairs in this file
+                    for (indexed_field, field_bitmap) in file_index.bitmaps() {
+                        let unfiltered_count = file_index
+                            .count_bitmap_entries_in_range(field_bitmap, request.start, request.end)
+                            .unwrap_or(0);
+
+                        let filtered_count = if let Some(filter_bitmap) = &filter_bitmap {
+                            let filtered_bitmap = field_bitmap & filter_bitmap;
+                            file_index
+                                .count_bitmap_entries_in_range(&filtered_bitmap, request.start, request.end)
+                                .unwrap_or(0)
+                        } else {
+                            unfiltered_count
+                        };
+
+                        // Update counts
+                        if let Some(pair) = journal::FieldValuePair::parse(indexed_field) {
+                            let counts = progress.fv_counts.entry(pair).or_insert((0, 0));
+                            counts.0 += unfiltered_count;
+                            counts.1 += filtered_count;
+                        }
+                    }
                 }
                 Ok(CacheGetResult::Miss) => {
-                    // File not in cache, will be indexed by workers
+                    // File not in cache, remains pending
                 }
                 Err(_e) => {
-                    // Error fetching from cache, skip this file
+                    // Error fetching from cache, remains pending
                 }
+            }
+        }
+
+        progress
+    }
+
+    /// Updates partial responses with data from cached file indexes.
+    ///
+    /// Attempts to fetch file indexes from cache with timeouts, updating all
+    /// partial responses with the retrieved data. Uses per-file and total timeouts
+    /// to ensure responsiveness.
+    ///
+    /// NOTE: This method now uses resolve_index_request internally, which provides
+    /// a hermetic indexing API. The bucket-specific logic remains here.
+    pub(crate) async fn resolve_partial_responses(
+        &self,
+        facets: &Facets,
+        partial_responses: &mut LruCache<BucketRequest, BucketPartialResponse>,
+        pending_files: HashSet<File>,
+    ) {
+        // Process each partial response using the new hermetic API
+        // Collect bucket requests AND their files to avoid borrow checker issues
+        let bucket_data: Vec<_> = partial_responses
+            .iter()
+            .map(|(bucket_request, partial_response)| {
+                (
+                    bucket_request.clone(),
+                    partial_response.request_metadata.files.clone(),
+                )
+            })
+            .collect();
+
+        for (bucket_request, bucket_files) in bucket_data {
+            // Only process files that:
+            // 1. Are needed for this bucket (in bucket_files)
+            // 2. Haven't been indexed yet (in pending_files)
+            let files_to_process: HashSet<File> = bucket_files
+                .intersection(&pending_files)
+                .cloned()
+                .collect();
+
+            // Skip if no files to process
+            if files_to_process.is_empty() {
+                continue;
+            }
+
+            // Create an IndexRequest from the bucket request
+            let index_request = super::IndexRequest::new(
+                bucket_request.start,
+                bucket_request.end,
+                facets.clone(),
+                bucket_request.filter_expr.clone(),
+                files_to_process,
+            );
+
+            // Use the hermetic resolve_index_request method
+            let progress = self.resolve_index_request(&index_request).await;
+
+            // Update the partial response with the progress
+            if let Some(partial_response) = partial_responses.get_mut(&bucket_request) {
+                // Remove files that are no longer pending
+                partial_response.request_metadata.files.retain(|f| progress.pending_files.contains(f));
+
+                // Merge field-value counts
+                for (pair, (unfiltered, filtered)) in progress.fv_counts {
+                    let counts = partial_response.fv_counts.entry(pair).or_insert((0, 0));
+                    counts.0 += unfiltered;
+                    counts.1 += filtered;
+                }
+
+                // Merge unindexed fields
+                partial_response.unindexed_fields.extend(progress.unindexed_fields);
             }
         }
     }

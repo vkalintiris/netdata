@@ -22,10 +22,15 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 tokio = { workspace = true }
+notify = { workspace = true }
+thiserror = { workspace = true }
+foyer = { workspace = true }
 
 # Business logic
 journal-query = { workspace = true }
 types = { path = "../types" }
+
+journal ={ workspace = true }
 
 [lints]
 workspace = true

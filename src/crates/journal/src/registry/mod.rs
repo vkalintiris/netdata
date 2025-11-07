@@ -1,7 +1,5 @@
 pub mod error;
-pub(crate) mod monitor;
-
-pub use crate::registry::error::RegistryError;
+pub use error::RegistryError;
 
 use crate::collections::HashSet;
 use crate::registry::error::Result;
@@ -9,7 +7,8 @@ use crate::repository::{File, Repository, scan_journal_files};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 
-use monitor::Monitor;
+mod monitor;
+pub use monitor::Monitor;
 use notify::{
     Event,
     event::{EventKind, ModifyKind, RenameMode},
@@ -26,13 +25,13 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new() -> Result<Self> {
-        Ok(Self {
+    pub fn new(monitor: Monitor) -> Self {
+        Self {
             directories: Default::default(),
-            monitor: Monitor::new()?,
+            monitor,
             events: Default::default(),
             repository: Default::default(),
-        })
+        }
     }
 
     pub fn watch_directory(&mut self, path: &str) -> Result<()> {
@@ -46,7 +45,7 @@ impl Registry {
         self.directories.insert(String::from(path));
 
         for file in files {
-            self.repository.insert_file(file)?;
+            self.repository.insert(file)?;
         }
 
         Ok(())
@@ -58,41 +57,13 @@ impl Registry {
         }
 
         self.monitor.unwatch_directory(path)?;
-        self.repository.remove_directory_files(path);
+        self.repository.remove_directory(path);
 
         Ok(())
     }
 
     pub fn find_files_in_range(&self, start: u32, end: u32) -> HashSet<File> {
         self.repository.find_files_in_range(start, end)
-    }
-
-    /// Suggest histogram fields by analyzing cardinality in recent journal files.
-    ///
-    /// This function examines the last `max_files_per_chain` files in each chain,
-    /// computes the cardinality of all fields, and returns fields that have
-    /// cardinality between `min_cardinality` and `max_cardinality`.
-    ///
-    /// # Arguments
-    /// * `max_files_per_chain` - Maximum number of recent files to analyze per chain
-    /// * `min_cardinality` - Minimum cardinality threshold (fields below this are excluded)
-    /// * `max_cardinality` - Maximum cardinality threshold (fields above this are excluded)
-    ///
-    /// # Returns
-    /// A vector of field names that meet the cardinality criteria, sorted by name.
-    pub fn suggest_histogram_fields(
-        &self,
-        max_files_per_chain: usize,
-        max_cardinality: usize,
-    ) -> Result<Vec<String>> {
-        let start = std::time::Instant::now();
-        let suggested_fields = self
-            .repository
-            .suggest_histogram_fields(max_files_per_chain, max_cardinality)?;
-
-        eprintln!("Found suggested fields in {:?}", start.elapsed());
-
-        Ok(suggested_fields)
     }
 
     pub fn process_events(&mut self) -> Result<()> {
@@ -103,14 +74,14 @@ impl Registry {
                 EventKind::Create(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.repository.insert_file(file)?;
+                            self.repository.insert(file)?;
                         }
                     }
                 }
                 EventKind::Remove(_) => {
                     for path in &event.paths {
                         if let Some(file) = File::from_path(path) {
-                            self.repository.remove_file(&file)?;
+                            self.repository.remove(&file)?;
                         }
                     }
                 }
@@ -118,10 +89,10 @@ impl Registry {
                     // Handle renames: remove old, add new
                     if event.paths.len() >= 2 {
                         if let Some(old_file) = File::from_path(&event.paths[0]) {
-                            self.repository.remove_file(&old_file)?;
+                            self.repository.remove(&old_file)?;
                         }
                         if let Some(new_file) = File::from_path(&event.paths[1]) {
-                            self.repository.insert_file(new_file)?;
+                            self.repository.insert(new_file)?;
                         }
                     } else {
                         eprintln!("Uncaught rename event: {:#?}", event.paths);

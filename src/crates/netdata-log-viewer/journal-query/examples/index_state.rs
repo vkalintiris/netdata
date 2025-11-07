@@ -122,12 +122,14 @@ async fn main() {
             use std::io::Write;
 
             let mut file = File::create("/home/vk/output.json").unwrap();
-            let severity_field = FieldName::new_unchecked("log.severity_number");
+            let severity_field = FieldName::new_unchecked("PRIORITY");
             let ui_response = ui::Response::from_histogram(&histogram_result, &severity_field);
             let s = serde_json::to_string_pretty(&ui_response).unwrap();
             file.write_all(s.as_bytes()).unwrap();
 
-            println!("ui response length: {} MiB", s.len() / (1024 * 1024));
+            println!("s: {:#?}", s);
+
+            println!("ui response length: {} MiB", s.len());
             return;
         }
     }

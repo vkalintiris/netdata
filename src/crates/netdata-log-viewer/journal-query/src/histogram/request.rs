@@ -1,6 +1,6 @@
+use crate::indexing::Facets;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use crate::indexing::Facets;
 use journal::collections::HashSet;
 use journal::index::Filter;
 use journal::repository::File;
@@ -81,7 +81,7 @@ impl HistogramRequest {
     /// generate data for this histogram. The bucket duration is automatically
     /// determined by time range of the histogram request, and it's large
     /// enough to return at least 100 bucket requests.
-    pub fn bucket_requests(&self) -> Vec<BucketRequest> {
+    pub(crate) fn bucket_requests(&self) -> Vec<BucketRequest> {
         let bucket_duration = self.calculate_bucket_duration();
 
         // Buckets are aligned to their duration
@@ -162,15 +162,13 @@ impl HistogramRequest {
 /// Contains the original bucket request along with the set of files
 /// that will be used for providing the bucket response.
 ///
+/// Metadata for tracking which files still need to be processed.
+///
 /// We can identify partial vs. complete responses for a bucket request
-/// by checking if there are are any files that have not been processed
-/// yet.
+/// by checking if there are any files that have not been processed yet.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct RequestMetadata {
-    // The original request
-    pub request: BucketRequest,
-
     // Files we need to use to generate a full response
     pub files: HashSet<File>,
 }

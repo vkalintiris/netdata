@@ -247,7 +247,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map(|s| FieldName::new_unchecked(s))
     .collect();
 
-    let mut registry = journal::registry::Registry::new()?;
+    let monitor = journal::monitor::Monitor::new().unwrap();
+    let mut registry = journal::registry::Registry::new(monitor);
     info!("Journal registry initialized");
 
     let dirs = ["/home/vk/repos/tmp/agent-events-journal"];

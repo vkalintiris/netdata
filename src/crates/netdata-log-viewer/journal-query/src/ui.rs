@@ -217,7 +217,7 @@ impl Response {
     /// * `histogram_response` - The histogram response to convert
     /// * `field` - The field to generate the histogram for
     pub fn from_histogram(
-        histogram_response: &crate::response::HistogramResponse,
+        histogram_response: &crate::HistogramResponse,
         field: &crate::FieldName,
     ) -> Self {
         Self {
@@ -231,7 +231,7 @@ impl Response {
 /// Creates a list of facets from a HistogramResponse.
 ///
 /// Aggregates field=value counts across all buckets and groups them by field.
-pub fn facets(histogram_response: &crate::response::HistogramResponse) -> Vec<Facet> {
+pub fn facets(histogram_response: &crate::HistogramResponse) -> Vec<Facet> {
     use crate::FieldValuePair;
     use journal::collections::HashMap;
 
@@ -292,7 +292,7 @@ pub fn facets(histogram_response: &crate::response::HistogramResponse) -> Vec<Fa
 ///
 /// Returns one available histogram for each indexed field found in the buckets.
 pub fn available_histograms(
-    histogram_response: &crate::response::HistogramResponse,
+    histogram_response: &crate::HistogramResponse,
 ) -> Vec<AvailableHistogram> {
     use journal::collections::HashSet;
 
@@ -327,7 +327,7 @@ pub fn available_histograms(
 /// * `histogram_response` - The histogram response to convert
 /// * `field` - The field to generate the histogram for
 pub fn histogram(
-    histogram_response: &crate::response::HistogramResponse,
+    histogram_response: &crate::HistogramResponse,
     field: &crate::FieldName,
 ) -> Histogram {
     let field_str = field.as_str();
@@ -340,7 +340,7 @@ pub fn histogram(
 
 /// Creates a Chart for the given field from a HistogramResponse.
 fn chart_from_histogram(
-    histogram_response: &crate::response::HistogramResponse,
+    histogram_response: &crate::HistogramResponse,
     field: &crate::FieldName,
 ) -> Chart {
     let result = chart_result_from_histogram(histogram_response, field);
@@ -357,7 +357,7 @@ fn chart_from_histogram(
 
 /// Creates chart result data for the given field from a HistogramResponse.
 fn chart_result_from_histogram(
-    histogram_response: &crate::response::HistogramResponse,
+    histogram_response: &crate::HistogramResponse,
     field: &crate::FieldName,
 ) -> ChartResult {
     use journal::collections::HashSet;
@@ -422,7 +422,7 @@ fn chart_result_from_histogram(
 
 /// Creates chart view metadata for the given field from a HistogramResponse.
 fn chart_view_from_histogram(
-    histogram_response: &crate::response::HistogramResponse,
+    histogram_response: &crate::HistogramResponse,
     field: &crate::FieldName,
     labels: &[String],
 ) -> ChartView {

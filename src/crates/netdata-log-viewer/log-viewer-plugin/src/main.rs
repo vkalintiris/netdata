@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+mod catalog;
+use catalog::CatalogFunction;
+
 mod charts;
 mod tracing_config;
 
@@ -383,16 +386,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("log-viewer");
     info!("Plugin runtime created");
 
-    // Register all metric charts
     let metrics = Metrics::new(&mut runtime);
     info!("Metrics charts registered");
 
-    // Register journal function handler
     runtime.register_handler(Journal {
         metrics,
         histogram_cache,
     });
     info!("Journal function handler registered");
+
+    let (monitor, notify_rx) = match catalog::monitor::Monitor::new() {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to setup notify monitoring: {}", e);
+            return Ok(());
+        }
+    };
+
+    let catalog_function = CatalogFunction::new(monitor);
+
+    catalog_function
+        .watch_directory("/var/log/journal")
+        .unwrap();
+
+    runtime.register_handler(catalog_function.clone());
+    info!("Catalog function handler registered");
+
+    // Spawn task to process notify events
+    let catalog_function_clone = catalog_function.clone();
+    tokio::spawn(async move {
+        let mut notify_rx = notify_rx;
+        while let Some(event) = notify_rx.recv().await {
+            catalog_function_clone.process_notify_event(event);
+        }
+        info!("Notify event processing task terminated");
+    });
 
     info!("Starting plugin runtime - ready to process function calls");
     runtime.run().await?;

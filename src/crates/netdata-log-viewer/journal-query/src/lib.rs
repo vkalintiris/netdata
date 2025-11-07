@@ -1,18 +1,10 @@
 mod error;
 
-mod indexing;
+pub mod indexing;
 pub use crate::indexing::IndexingService;
 
-mod request;
-pub use crate::request::BucketRequest;
-pub use crate::request::HistogramRequest;
-
-mod response;
-pub use crate::response::BucketResponse;
-pub use crate::response::HistogramResponse;
-
-mod service;
-pub use crate::service::HistogramService;
+pub mod histogram;
+pub use crate::histogram::{HistogramRequest, HistogramResponse, HistogramService};
 
 pub mod ui;
 
