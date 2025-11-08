@@ -1,11 +1,7 @@
-//! Field facets configuration for indexing.
+//! Field facets configuration for indexing
 //!
 //! Facets determine which fields should be indexed when processing journal files.
-//! The Facets type uses Arc-based sharing and precomputed hashing for efficient
-//! use as a cache key component.
 
-#[cfg(feature = "allocative")]
-use allocative::Allocative;
 use journal::FieldName;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -13,8 +9,7 @@ use std::sync::Arc;
 /// Configuration specifying which fields should be indexed.
 ///
 /// Facets are used as part of the cache key for file indexes, since different
-/// field selections produce different indexes. The type is designed for efficient
-/// cloning (Arc-based) and hashing (precomputed hash).
+/// field selections produce different indexes.
 ///
 /// # Serialization
 ///
@@ -22,8 +17,7 @@ use std::sync::Arc;
 /// is NOT serialized - it is recomputed during deserialization to maintain the
 /// invariant that `precomputed_hash == hash(fields)`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "allocative", derive(Allocative))]
-pub(crate) struct Facets {
+pub struct Facets {
     fields: Arc<Vec<FieldName>>,
     precomputed_hash: u64,
 }
@@ -95,11 +89,10 @@ impl Facets {
             "__logs_sources",
         ];
 
-        // Convert to FieldName - use new_unchecked since these are trusted constants
         v.into_iter().map(FieldName::new_unchecked).collect()
     }
 
-    pub(crate) fn new(facets: &[String]) -> Self {
+    pub fn new(facets: &[String]) -> Self {
         let mut facets = if facets.is_empty() {
             Self::default_facets()
         } else {
@@ -128,24 +121,23 @@ impl Facets {
     }
 
     /// Returns an iterator over the facet field names
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &FieldName> {
+    pub fn iter(&self) -> impl Iterator<Item = &FieldName> {
         self.fields.iter()
     }
 
     /// Returns the facet fields as a slice
-    #[allow(dead_code)]
-    pub(crate) fn as_slice(&self) -> &[FieldName] {
+    pub fn as_slice(&self) -> &[FieldName] {
         &self.fields
     }
 
     /// Returns the number of facet fields
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.fields.len()
     }
 
     /// Returns true if there are no facet fields
     #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 }

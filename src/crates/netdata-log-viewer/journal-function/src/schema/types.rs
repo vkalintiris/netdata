@@ -1,4 +1,9 @@
-use journal_query::ui;
+//! Request and response types for the systemd-journal function.
+//!
+//! This module defines the API types used for communication between the Netdata
+//! dashboard and the systemd-journal function plugin.
+
+use super::ui;  // ui is a sibling module in schema
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

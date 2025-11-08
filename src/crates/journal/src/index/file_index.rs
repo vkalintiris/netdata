@@ -30,6 +30,9 @@ pub struct FileIndex {
     // Unix timestamp (seconds since epoch) when this index was created
     pub indexed_at: u64,
 
+    // True if the journal file was online (state=1) when indexed
+    pub was_online: bool,
+
     // The journal file's histogram
     pub histogram: Histogram,
 
@@ -50,6 +53,7 @@ impl FileIndex {
     pub fn new(
         file: File,
         indexed_at: u64,
+        was_online: bool,
         histogram: Histogram,
         entry_offsets: Vec<u32>,
         fields: HashSet<FieldName>,
@@ -59,6 +63,7 @@ impl FileIndex {
         Self {
             file,
             indexed_at,
+            was_online,
             histogram,
             entry_offsets,
             file_fields: fields,

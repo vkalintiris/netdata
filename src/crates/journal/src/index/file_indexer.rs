@@ -129,6 +129,9 @@ impl FileIndexer {
             .unwrap()
             .as_secs();
 
+        // Capture whether the file was online when indexed
+        let was_online = journal_file.journal_header_ref().state == 1;
+
         // Collect all fields of the journal file
         let file_fields = collect_file_fields(journal_file);
 
@@ -161,6 +164,7 @@ impl FileIndexer {
         Ok(FileIndex::new(
             file.clone(),
             indexed_at,
+            was_online,
             histogram,
             entry_offsets,
             file_fields,

@@ -27,10 +27,11 @@ thiserror = { workspace = true }
 foyer = { workspace = true }
 
 # Business logic
-journal-query = { workspace = true }
-types = { path = "../types" }
+# journal-query = { workspace = true }
+# types = { path = "../types" }
 
-journal ={ workspace = true }
+journal = { workspace = true }
+journal-function = { workspace = true }
 
 [lints]
 workspace = true

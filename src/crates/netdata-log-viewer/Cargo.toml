@@ -1,9 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "journal-query",
+    "journal-function",
     "log-viewer-plugin",
-    "types",
 ]
 
 [workspace.package]
@@ -50,6 +49,8 @@ foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
 parking_lot = "0.12"
 allocative = { version = "0.3.4" }
+roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative", features = ["serde"] }
+
 hdrhistogram = { version = "7.5" }
 rayon = "1.11.0"
 
@@ -58,6 +59,7 @@ netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "../netdata-plugin/schema" }
 journal = { path = "../journal" }
+journal-function = { path = "journal-function" }
 journal-query = { path = "journal-query" }
 
 [profile.release-min]
