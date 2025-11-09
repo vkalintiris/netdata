@@ -7,8 +7,8 @@ use super::{CatalogError, File, Result};
 use journal::collections::{HashMap, HashSet};
 use journal::repository::{Repository as BaseRepository, scan_journal_files};
 use notify::{
-    event::{EventKind, ModifyKind, RenameMode},
     Event, RecommendedWatcher, RecursiveMode, Watcher,
+    event::{EventKind, ModifyKind, RenameMode},
 };
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -145,19 +145,49 @@ impl Repository {
     }
 
     /// Find files in a time range
+    ///
+    /// Uses indexed metadata when available to filter out files that don't
+    /// overlap with the requested time range. Falls back to base repository
+    /// logic for files with unknown time ranges.
     fn find_files_in_range(&self, start: u32, end: u32) -> Vec<FileInfo> {
         let files: Vec<File> = self.base.find_files_in_range(start, end);
 
         files
             .into_iter()
-            .map(|file| {
-                self.file_metadata
-                    .get(&file)
-                    .cloned()
-                    .unwrap_or_else(|| FileInfo {
-                        file: file.clone(),
-                        time_range: TimeRange::Unknown,
-                    })
+            .filter_map(|file| {
+                let file_info =
+                    self.file_metadata
+                        .get(&file)
+                        .cloned()
+                        .unwrap_or_else(|| FileInfo {
+                            file: file.clone(),
+                            time_range: TimeRange::Unknown,
+                        });
+
+                // Filter based on time range metadata if available
+                let include = match file_info.time_range {
+                    TimeRange::Unknown => {
+                        // Don't know the time range yet, include it to be safe
+                        true
+                    }
+                    TimeRange::Active { end: file_end, .. } => {
+                        // Active file: include if it might overlap with requested range
+                        // (be conservative since it might have new data)
+                        file_end >= start
+                    }
+                    TimeRange::Bounded {
+                        start: file_start,
+                        end: file_end,
+                        ..
+                    } => {
+                        // Archived file: check for exact overlap
+                        // File range [file_start, file_end) overlaps with [start, end) if:
+                        // file_start < end && file_end > start
+                        file_start < end && file_end > start
+                    }
+                };
+
+                if include { Some(file_info) } else { None }
             })
             .collect()
     }

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use journal::file::{JournalFile, Mmap};
+use journal::repository::File as RepositoryFile;
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -44,7 +45,12 @@ fn main() -> Result<()> {
 fn print_entries(file_path: &PathBuf, format: OutputFormat) -> Result<()> {
     // Open the journal file with a reasonable window size
     let window_size = 8 * 1024 * 1024; // 8 MiB
-    let journal_file = JournalFile::<Mmap>::open(file_path, window_size)
+
+    // Convert PathBuf to repository::File
+    let repo_file = RepositoryFile::from_path(file_path)
+        .with_context(|| format!("Failed to parse journal file path: {}", file_path.display()))?;
+
+    let journal_file = JournalFile::<Mmap>::open(&repo_file, window_size)
         .with_context(|| format!("Failed to open journal file: {}", file_path.display()))?;
 
     // Get the entry list
@@ -134,7 +140,12 @@ fn print_entry_json_line(entry: &BTreeMap<String, String>) -> Result<()> {
 fn list_fields(file_path: &PathBuf) -> Result<()> {
     // Open the journal file with a reasonable window size
     let window_size = 8 * 1024 * 1024; // 8 MiB
-    let journal_file = JournalFile::<Mmap>::open(file_path, window_size)
+
+    // Convert PathBuf to repository::File
+    let repo_file = RepositoryFile::from_path(file_path)
+        .with_context(|| format!("Failed to parse journal file path: {}", file_path.display()))?;
+
+    let journal_file = JournalFile::<Mmap>::open(&repo_file, window_size)
         .with_context(|| format!("Failed to open journal file: {}", file_path.display()))?;
 
     // Iterate through all fields and collect them with their cardinality

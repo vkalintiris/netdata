@@ -10,12 +10,14 @@ use tracing::{error, info, instrument, warn};
 
 // Import types from journal-function crate
 use journal_function::{
-    Facets, FileIndexCache, FileInfo, HistogramRequest, HistogramResponse, HistogramService,
-    IndexingService, Monitor, Registry, Result as CatalogResult,
+    BucketCacheMetrics, BucketOperationsMetrics, Facets, FileIndexCache, FileIndexingMetrics,
+    FileInfo, HistogramRequest, HistogramResponse, HistogramService, IndexingService, Monitor,
+    Registry, Result as CatalogResult,
     histogram::{BucketCompleteResponse, BucketRequest, BucketResponse},
     schema::types,
     schema::ui,
 };
+use rt::ChartHandle;
 
 /*
  * CatalogFunction
@@ -204,8 +206,14 @@ pub struct CatalogFunction {
 }
 
 impl CatalogFunction {
-    /// Create a new catalog function with the given monitor and file index cache
-    pub fn new(monitor: Monitor, file_index_cache: FileIndexCache) -> Self {
+    /// Create a new catalog function with the given monitor, file index cache, and metrics
+    pub fn new(
+        monitor: Monitor,
+        file_index_cache: FileIndexCache,
+        file_indexing_metrics: ChartHandle<FileIndexingMetrics>,
+        bucket_cache_metrics: ChartHandle<BucketCacheMetrics>,
+        bucket_operations_metrics: ChartHandle<BucketOperationsMetrics>,
+    ) -> Self {
         let registry = Registry::new(monitor);
 
         // Create indexing service with 24 workers and queue capacity of 100
@@ -214,6 +222,7 @@ impl CatalogFunction {
             registry.clone(),
             24,
             100,
+            file_indexing_metrics,
         );
 
         // Create histogram service
@@ -221,6 +230,8 @@ impl CatalogFunction {
             registry.clone(),
             indexing_service.clone(),
             file_index_cache.clone(),
+            bucket_cache_metrics,
+            bucket_operations_metrics,
         );
 
         let inner = CatalogFunctionInner {
@@ -316,7 +327,14 @@ impl FunctionHandler for CatalogFunction {
         );
 
         // Get facets from request or use empty list
-        let facets: Vec<String> = Vec::new(); // TODO: Extract from request if provided
+        // FIXME: Need to review this
+        let facets: Vec<String> = request
+            .facets
+            .iter()
+            .filter(|f| *f != "__logs_sources") // Ignore special fields
+            .cloned()
+            .collect();
+
         let histogram_request =
             HistogramRequest::new(request.after, request.before, &facets, &filter_expr);
 
@@ -342,14 +360,11 @@ impl FunctionHandler for CatalogFunction {
         // Get the PRIORITY field name for the histogram
         let priority_field = FieldName::new_unchecked("PRIORITY");
 
-        // We need to convert our histogram response to the format expected by journal_query::ui
-        // let jq_histogram_response = convert_histogram_response(&histogram_result);
-
         let response = CatalogResponse {
             auxiliary: types::Auxiliary {
                 hello: String::from("world"),
             },
-            progress: 0,
+            progress: histogram_response.progress(),
             version: types::Version::default(),
             accepted_params: accepted_params(),
             required_params: required_params(),

@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
-use journal_function::{FileIndexCache, Monitor};
+use journal_function::{FileIndexCache, JournalMetrics, Monitor};
 
 mod catalog;
 use catalog::CatalogFunction;
 
 mod charts;
+use charts::Metrics;
 mod tracing_config;
 
 use rt::PluginRuntime;
@@ -363,7 +364,8 @@ use tracing::{error, info};
 // }
 
 /// Create a Foyer hybrid cache for file indexes
-async fn create_file_index_cache() -> std::result::Result<FileIndexCache, Box<dyn std::error::Error>> {
+async fn create_file_index_cache() -> std::result::Result<FileIndexCache, Box<dyn std::error::Error>>
+{
     use foyer::{
         BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCacheBuilder, IoEngineBuilder,
         PsyncIoEngineBuilder,
@@ -412,6 +414,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut runtime = PluginRuntime::new("log-viewer");
     info!("Plugin runtime created");
 
+    // Initialize plugin-level metrics
+    let _plugin_metrics = Metrics::new(&mut runtime);
+    info!("Plugin metrics initialized");
+
+    // Initialize journal-function metrics
+    let journal_metrics = JournalMetrics::new(&mut runtime);
+    info!("Journal metrics initialized");
+
     // Create file index cache with Foyer hybrid cache
     info!("Initializing file index cache");
     let file_index_cache = create_file_index_cache().await?;
@@ -425,7 +435,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let catalog_function = CatalogFunction::new(monitor, file_index_cache);
+    let catalog_function = CatalogFunction::new(
+        monitor,
+        file_index_cache,
+        journal_metrics.file_indexing.clone(),
+        journal_metrics.bucket_cache.clone(),
+        journal_metrics.bucket_operations.clone(),
+    );
 
     match catalog_function.watch_directory("/var/log/journal") {
         Ok(()) => {}

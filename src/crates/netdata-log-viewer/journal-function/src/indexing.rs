@@ -5,11 +5,12 @@
 //! - Stream that orchestrates cache checks and inline computation
 //! - Request/response types for indexing operations
 
-use super::{CatalogError, File, FileIndexCache, FileIndexKey, Result};
+use super::{CatalogError, File, FileIndexCache, FileIndexKey, FileIndexingMetrics, Result};
 use async_stream::stream;
 use futures::stream::Stream;
 use journal::index::{FileIndex, FileIndexer};
 use journal::{FieldName, JournalFile, file::Mmap};
+use rt::ChartHandle;
 use std::pin::Pin;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -45,11 +46,7 @@ fn is_fresh(index: &FileIndex) -> bool {
 /// Extracts time range and online status from the index and updates the registry
 /// with appropriate TimeRange metadata (Active for online files, Bounded for archived).
 /// Errors are silently ignored as registry updates are best-effort.
-fn update_registry_from_index(
-    registry: &crate::Registry,
-    file: &File,
-    index: &FileIndex,
-) {
+fn update_registry_from_index(registry: &crate::Registry, file: &File, index: &FileIndex) {
     let (start, end) = index.histogram().time_range();
     let time_range = if index.was_online {
         crate::TimeRange::Active {
@@ -140,6 +137,7 @@ impl FileIndexResponse {
 #[derive(Clone)]
 pub struct IndexingService {
     request_tx: SyncSender<FileIndexRequest>,
+    metrics: ChartHandle<FileIndexingMetrics>,
 }
 
 impl IndexingService {
@@ -150,6 +148,7 @@ impl IndexingService {
     /// * `registry` - Registry to update with file metadata after indexing
     /// * `num_workers` - Number of worker threads (typically 24)
     /// * `queue_capacity` - Bounded channel capacity (typically 100)
+    /// * `metrics` - Chart handle for tracking indexing metrics
     ///
     /// # Returns
     /// The initialized IndexingService
@@ -158,6 +157,7 @@ impl IndexingService {
         registry: crate::Registry,
         num_workers: usize,
         queue_capacity: usize,
+        metrics: ChartHandle<FileIndexingMetrics>,
     ) -> Self {
         let (request_tx, request_rx) = sync_channel(queue_capacity);
         let request_rx = Arc::new(Mutex::new(request_rx));
@@ -167,13 +167,17 @@ impl IndexingService {
             let cache = cache.clone();
             let registry = registry.clone();
             let request_rx = Arc::clone(&request_rx);
+            let metrics = metrics.clone();
 
             std::thread::spawn(move || {
-                Self::worker_loop(cache, registry, request_rx);
+                Self::worker_loop(cache, registry, request_rx, metrics);
             });
         }
 
-        Self { request_tx }
+        Self {
+            request_tx,
+            metrics,
+        }
     }
 
     /// Queues a file for background indexing (fire-and-forget).
@@ -186,11 +190,17 @@ impl IndexingService {
         let _ = self.request_tx.try_send(request);
     }
 
+    /// Gets the metrics handle.
+    pub fn metrics(&self) -> ChartHandle<FileIndexingMetrics> {
+        self.metrics.clone()
+    }
+
     /// Worker loop that processes indexing requests.
     fn worker_loop(
         cache: FileIndexCache,
         registry: crate::Registry,
         request_rx: Arc<Mutex<Receiver<FileIndexRequest>>>,
+        metrics: ChartHandle<FileIndexingMetrics>,
     ) {
         loop {
             let request = {
@@ -218,6 +228,11 @@ impl IndexingService {
 
             // Store in cache and update registry if successful
             if let Ok(index) = result {
+                // Track metric: one index computed
+                metrics.update(|m| {
+                    m.computed += 1;
+                });
+
                 // Update registry metadata
                 update_registry_from_index(&registry, &request.key.file, &index);
 
@@ -328,6 +343,7 @@ impl FileIndexStream {
 
         let failed_keys = Arc::new(Mutex::new(Vec::new()));
         let failed_keys_clone = failed_keys.clone();
+        let metrics = indexing_service.metrics();
 
         let inner = stream! {
             let mut total_time = Duration::ZERO;
@@ -352,6 +368,10 @@ impl FileIndexStream {
                         && bucket_duration % cached_index.bucket_duration() == 0 =>
                     {
                         // Cache hit with fresh data and compatible granularity (bucket boundaries align)
+                        // Track metric: one index retrieved from cache
+                        metrics.update(|m| {
+                            m.cached += 1;
+                        });
                         Ok(cached_index)
                     }
                     _ => {
@@ -363,6 +383,11 @@ impl FileIndexStream {
                             bucket_duration,
                         ) {
                             Ok(index) => {
+                                // Track metric: one index computed
+                                metrics.update(|m| {
+                                    m.computed += 1;
+                                });
+
                                 // Update registry metadata on cache miss
                                 update_registry_from_index(&registry, &key.file, &index);
 

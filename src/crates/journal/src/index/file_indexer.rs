@@ -185,7 +185,12 @@ impl FileIndexer {
             let field_data_iterator = match journal_file.field_data_objects(field_name.as_bytes()) {
                 Ok(field_data_iterator) => field_data_iterator,
                 Err(e) => {
-                    warn!("failed to iterate field data objects {:#?}", e);
+                    warn!(
+                        "failed to iterate field data objects for field '{}' in file {}: {:#?}",
+                        field_name.as_str(),
+                        journal_file.file().path(),
+                        e
+                    );
                     continue;
                 }
             };

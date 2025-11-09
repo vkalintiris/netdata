@@ -6,6 +6,7 @@
 //! and schema types for communicating with Netdata.
 
 pub mod cache;
+pub mod charts;
 pub mod error;
 pub mod facets;
 pub mod histogram;
@@ -15,6 +16,9 @@ pub mod schema;
 
 // Re-export commonly used types
 pub use cache::{Cache, FileIndexCache, FileIndexKey};
+pub use charts::{
+    BucketCacheMetrics, BucketOperationsMetrics, FileIndexingMetrics, JournalMetrics,
+};
 pub use error::{CatalogError, Result};
 pub use facets::Facets;
 pub use histogram::{

@@ -3,9 +3,9 @@
 //! This module provides types for converting histogram responses into UI-friendly formats,
 //! including facets, charts, and data points formatted for the Netdata dashboard.
 
+use crate::histogram::HistogramResponse; // HistogramResponse is from parent crate
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
-use crate::histogram::HistogramResponse;  // HistogramResponse is from parent crate
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -297,9 +297,7 @@ pub fn facets(histogram_response: &HistogramResponse) -> Vec<Facet> {
 /// Creates a list of available histograms from a HistogramResponse.
 ///
 /// Returns one available histogram for each indexed field found in the buckets.
-pub fn available_histograms(
-    histogram_response: &HistogramResponse,
-) -> Vec<AvailableHistogram> {
+pub fn available_histograms(histogram_response: &HistogramResponse) -> Vec<AvailableHistogram> {
     use journal::collections::HashSet;
 
     let mut indexed_fields = HashSet::default();
@@ -332,10 +330,7 @@ pub fn available_histograms(
 /// # Arguments
 /// * `histogram_response` - The histogram response to convert
 /// * `field` - The field to generate the histogram for
-pub fn histogram(
-    histogram_response: &HistogramResponse,
-    field: &journal::FieldName,
-) -> Histogram {
+pub fn histogram(histogram_response: &HistogramResponse, field: &journal::FieldName) -> Histogram {
     let field_str = field.as_str();
     Histogram {
         id: String::from(field_str),

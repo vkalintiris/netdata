@@ -3,13 +3,17 @@
 //! This module provides types and services for computing histograms of journal log entries
 //! over time ranges, with support for filtering and faceted field indexing.
 
-use super::{Facets, File, FileIndexCache, FileIndexStream, FileIndexKey, IndexingService, Registry};
 use super::Result;
+use super::{
+    BucketCacheMetrics, BucketOperationsMetrics, Facets, File, FileIndexCache, FileIndexKey,
+    FileIndexStream, IndexingService, Registry,
+};
 use futures::StreamExt;
 use journal::FieldName;
 use journal::collections::{HashMap, HashSet};
 use journal::index::Filter;
 use parking_lot::RwLock;
+use rt::ChartHandle;
 use std::time::Duration;
 use tracing::{debug, instrument};
 
@@ -158,7 +162,7 @@ impl HistogramRequest {
         VALID_DURATIONS
             .iter()
             .rev()
-            .find(|&&bucket_width| duration as u64 / bucket_width.as_secs() >= 100)
+            .find(|&&bucket_width| duration as u64 / bucket_width.as_secs() >= 50)
             .map(|d| d.as_secs())
             .unwrap_or(1) as u32
     }
@@ -312,6 +316,27 @@ impl HistogramResponse {
             .0
             .duration()
     }
+
+    pub fn progress(&self) -> u32 {
+        let mut partial_buckets = 0u32;
+        let mut complete_buckets = 0u32;
+
+        for (_, bucket_response) in self.buckets.iter() {
+            if bucket_response.is_partial() {
+                partial_buckets += 1;
+            };
+
+            if bucket_response.is_complete() {
+                complete_buckets += 1;
+            };
+        }
+
+        let total_buckets = partial_buckets + complete_buckets;
+
+        (complete_buckets * 100)
+            .checked_div(total_buckets)
+            .unwrap_or(0)
+    }
 }
 
 /// Service for computing histograms using the catalog's components.
@@ -321,6 +346,8 @@ pub struct HistogramService {
     file_index_cache: FileIndexCache,
     partial_responses: RwLock<HashMap<BucketRequest, BucketPartialResponse>>,
     complete_responses: RwLock<HashMap<BucketRequest, BucketCompleteResponse>>,
+    bucket_cache_metrics: ChartHandle<BucketCacheMetrics>,
+    bucket_operations_metrics: ChartHandle<BucketOperationsMetrics>,
 }
 
 impl HistogramService {
@@ -329,6 +356,8 @@ impl HistogramService {
         registry: Registry,
         indexing_service: IndexingService,
         file_index_cache: FileIndexCache,
+        bucket_cache_metrics: ChartHandle<BucketCacheMetrics>,
+        bucket_operations_metrics: ChartHandle<BucketOperationsMetrics>,
     ) -> Self {
         Self {
             registry,
@@ -336,6 +365,8 @@ impl HistogramService {
             file_index_cache,
             partial_responses: RwLock::new(HashMap::default()),
             complete_responses: RwLock::new(HashMap::default()),
+            bucket_cache_metrics,
+            bucket_operations_metrics,
         }
     }
 
@@ -352,10 +383,7 @@ impl HistogramService {
         debug!(num_buckets, "Processing histogram request");
 
         // Create partial responses for buckets we don't have
-        self.create_partial_responses(&bucket_requests)?;
-
-        // Collect files that need indexing
-        let files_to_index = self.collect_files_to_index(&bucket_requests);
+        let files_to_index = self.create_partial_responses(&bucket_requests)?;
         debug!(num_files = files_to_index.len(), "Files to index");
 
         // Create iterator to fetch/compute file indexes
@@ -392,6 +420,9 @@ impl HistogramService {
                             // Acquire write lock for each file update (released immediately after)
                             let mut partial_responses = self.partial_responses.write();
 
+                            // Get file's time range from the index
+                            let (file_start, file_end) = file_index.histogram().time_range();
+
                             // Find all bucket requests that need data from this file
                             for bucket_request in &bucket_requests {
                                 let partial = match partial_responses.get_mut(bucket_request) {
@@ -399,19 +430,25 @@ impl HistogramService {
                                     None => continue,
                                 };
 
-                                // Skip if this file is not needed for this bucket
-                                if !partial.files().contains(file) {
+                                // Check if we should process this file
+                                if partial.files().contains(file) {
+                                    partial.request_metadata.files.remove(file);
+                                } else {
+                                    continue;
+                                }
+
+                                // Skip if file's time range doesn't overlap with bucket's time range
+                                // File range [file_start, file_end) overlaps with [bucket_start, bucket_end) if:
+                                // file_start < bucket_end && file_end > bucket_start
+                                if file_start >= bucket_request.end
+                                    || file_end <= bucket_request.start
+                                {
                                     continue;
                                 }
 
                                 // Resolve filter to bitmap
                                 let filter_bitmap = if !bucket_request.filter_expr.is_none() {
-                                    Some(
-                                        bucket_request
-                                            .filter_expr
-                                            .resolve(&file_index)
-                                            .evaluate(),
-                                    )
+                                    Some(bucket_request.filter_expr.resolve(&file_index).evaluate())
                                 } else {
                                     None
                                 };
@@ -459,9 +496,6 @@ impl HistogramService {
                                         counts.1 += filtered_count;
                                     }
                                 }
-
-                                // Remove this file from the bucket's pending files
-                                partial.request_metadata.files.remove(file);
                             }
                             // Lock is dropped here automatically
                         }
@@ -481,26 +515,65 @@ impl HistogramService {
         let complete_responses = self.complete_responses.read();
         let partial_responses = self.partial_responses.read();
 
+        let mut served_complete = 0u64;
+        let mut served_partial = 0u64;
+
         let buckets = bucket_requests
             .into_iter()
             .filter_map(|bucket_request| {
                 if let Some(complete) = complete_responses.get(&bucket_request) {
+                    served_complete += 1;
                     Some((bucket_request, BucketResponse::complete(complete.clone())))
                 } else {
-                    partial_responses.get(&bucket_request).map(|partial| (bucket_request, BucketResponse::partial(partial.clone())))
+                    partial_responses.get(&bucket_request).map(|partial| {
+                        served_partial += 1;
+                        (bucket_request, BucketResponse::partial(partial.clone()))
+                    })
                 }
             })
             .collect();
+
+        // Update cache state metrics
+        self.bucket_cache_metrics.update(|m| {
+            m.partial = partial_responses.len() as u64;
+            m.complete = complete_responses.len() as u64;
+        });
+
+        // Update operations metrics
+        self.bucket_operations_metrics.update(|m| {
+            m.served_complete += served_complete;
+            m.served_partial += served_partial;
+        });
 
         Ok(HistogramResponse { buckets })
     }
 
     /// Creates partial responses for bucket requests that don't exist in caches.
-    fn create_partial_responses(&self, bucket_requests: &[BucketRequest]) -> Result<()> {
+    ///
+    /// Queries the registry once for the entire histogram time range for efficiency,
+    /// then assigns files to all buckets. The indexing/counting logic filters entries
+    /// by time range.
+    fn create_partial_responses(&self, bucket_requests: &[BucketRequest]) -> Result<HashSet<File>> {
         let complete_responses = self.complete_responses.read();
         let mut partial_responses = self.partial_responses.write();
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        // Collect buckets that need creation
+        let mut buckets_to_create = Vec::new();
+        let mut invalidated_count = 0u64;
+
         for bucket_request in bucket_requests {
+            // If bucket covers current time and exists in partial cache,
+            // remove it so it gets rebuilt with fresh data
+            if bucket_request.end > now && partial_responses.contains_key(bucket_request) {
+                partial_responses.remove(bucket_request);
+                invalidated_count += 1;
+            }
+
             // Skip if we already have a response
             if complete_responses.contains_key(bucket_request)
                 || partial_responses.contains_key(bucket_request)
@@ -508,33 +581,61 @@ impl HistogramService {
                 continue;
             }
 
-            // Find files for this bucket's time range
-            let file_infos = self
-                .registry
-                .find_files_in_range(bucket_request.start, bucket_request.end)?;
-            let files: HashSet<File> = file_infos.into_iter().map(|info| info.file).collect();
+            buckets_to_create.push(bucket_request.clone());
+        }
 
-            let request_metadata = RequestMetadata { files };
+        // Track invalidations
+        if invalidated_count > 0 {
+            self.bucket_operations_metrics.update(|m| {
+                m.invalidated += invalidated_count;
+            });
+        }
+
+        if buckets_to_create.is_empty() {
+            return Ok(HashSet::default());
+        }
+
+        // Assert buckets are sorted by time (development check)
+        assert!(
+            buckets_to_create
+                .windows(2)
+                .all(|w| w[0].start <= w[1].start),
+            "Buckets must be sorted by start time"
+        );
+        assert!(
+            buckets_to_create.windows(2).all(|w| w[0].end <= w[1].end),
+            "Buckets must be sorted by end time"
+        );
+
+        // Query registry once for entire histogram time range
+        let histogram_start = buckets_to_create.first().unwrap().start;
+        let histogram_end = buckets_to_create.last().unwrap().end;
+        let histogram_file_infos = self
+            .registry
+            .find_files_in_range(histogram_start, histogram_end)?;
+
+        // Convert to a set - all buckets will share this file set
+        let histogram_files: HashSet<File> =
+            histogram_file_infos.into_iter().map(|f| f.file).collect();
+
+        // Track bucket creations
+        let created_count = buckets_to_create.len() as u64;
+
+        // Create partial responses for each bucket using the same file set
+        for bucket_request in buckets_to_create {
+            let request_metadata = RequestMetadata {
+                files: histogram_files.clone(),
+            };
             let partial_response = BucketPartialResponse::new(request_metadata);
-
-            partial_responses.insert(bucket_request.clone(), partial_response);
+            partial_responses.insert(bucket_request, partial_response);
         }
 
-        Ok(())
-    }
+        // Update creation metric
+        self.bucket_operations_metrics.update(|m| {
+            m.created += created_count;
+        });
 
-    /// Collects all unique files that need indexing across all partial responses.
-    fn collect_files_to_index(&self, bucket_requests: &[BucketRequest]) -> HashSet<File> {
-        let mut files = HashSet::default();
-        let partial_responses = self.partial_responses.read();
-
-        for bucket_request in bucket_requests {
-            if let Some(partial) = partial_responses.get(bucket_request) {
-                files.extend(partial.files().iter().cloned());
-            }
-        }
-
-        files
+        Ok(histogram_files)
     }
 
     /// Promotes partial responses to complete responses when all files are indexed.
@@ -542,18 +643,33 @@ impl HistogramService {
         let mut partial_responses = self.partial_responses.write();
         let mut complete_responses = self.complete_responses.write();
 
-        {
-            let to_promote: Vec<BucketRequest> = partial_responses
-                .iter()
-                .filter(|(_, partial)| partial.files().is_empty())
-                .map(|(req, _)| req.clone())
-                .collect();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
 
-            for bucket_request in to_promote {
-                if let Some(partial) = partial_responses.remove(&bucket_request) {
-                    complete_responses.insert(bucket_request, partial.to_complete());
-                }
+        let to_promote: Vec<BucketRequest> = partial_responses
+            .iter()
+            .filter(|(bucket_request, partial)| {
+                // Only promote if all files are indexed AND bucket doesn't cover current time
+                partial.files().is_empty() && bucket_request.end < now
+            })
+            .map(|(req, _)| req.clone())
+            .collect();
+
+        let promoted_count = to_promote.len() as u64;
+
+        for bucket_request in to_promote {
+            if let Some(partial) = partial_responses.remove(&bucket_request) {
+                complete_responses.insert(bucket_request, partial.to_complete());
             }
+        }
+
+        // Update promotion metric
+        if promoted_count > 0 {
+            self.bucket_operations_metrics.update(|m| {
+                m.promoted += promoted_count;
+            });
         }
     }
 }

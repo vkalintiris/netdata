@@ -20,8 +20,10 @@ tracing = { workspace = true }
 notify = { workspace = true }
 foyer = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
+schemars = { workspace = true }
 
 journal = { workspace = true }
+rt = { path = "../../netdata-plugin/rt" }
 
 allocative = { workspace = true, optional = true }
 

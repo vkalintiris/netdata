@@ -87,6 +87,7 @@ impl Facets {
             "_SYSTEMD_USER_SLICE",
             // "_SYSTEMD_SESSION",
             "__logs_sources",
+            "log.severity_number",
         ];
 
         v.into_iter().map(FieldName::new_unchecked).collect()
