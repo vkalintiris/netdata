@@ -170,10 +170,12 @@ impl Repository {
                         // Don't know the time range yet, include it to be safe
                         true
                     }
-                    TimeRange::Active { end: file_end, .. } => {
-                        // Active file: include if it might overlap with requested range
-                        // (be conservative since it might have new data)
-                        file_end >= start
+                    TimeRange::Active { end: _file_end, .. } => {
+                        // We could have the following check: file_end >= start
+                        // However, imagine someone panning outside of the
+                        // active's file time range and then going back to
+                        // `now` with a small histogram time-range...
+                        true
                     }
                     TimeRange::Bounded {
                         start: file_start,

@@ -15,7 +15,7 @@ use journal::index::Filter;
 use parking_lot::RwLock;
 use rt::ChartHandle;
 use std::time::Duration;
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 /// A bucket request contains a [start, end) time range along with the
 /// filter that should be applied.
@@ -346,7 +346,7 @@ pub struct HistogramService {
     file_index_cache: FileIndexCache,
     partial_responses: RwLock<HashMap<BucketRequest, BucketPartialResponse>>,
     complete_responses: RwLock<HashMap<BucketRequest, BucketCompleteResponse>>,
-    bucket_cache_metrics: ChartHandle<BucketCacheMetrics>,
+    _bucket_cache_metrics: ChartHandle<BucketCacheMetrics>,
     bucket_operations_metrics: ChartHandle<BucketOperationsMetrics>,
 }
 
@@ -365,7 +365,7 @@ impl HistogramService {
             file_index_cache,
             partial_responses: RwLock::new(HashMap::default()),
             complete_responses: RwLock::new(HashMap::default()),
-            bucket_cache_metrics,
+            _bucket_cache_metrics: bucket_cache_metrics,
             bucket_operations_metrics,
         }
     }
@@ -392,18 +392,18 @@ impl HistogramService {
         let time_budget = Duration::from_secs(10); // TODO: Make configurable
 
         // Build file index keys
-        let keys: Vec<FileIndexKey> = files_to_index
+        let file_index_keys: Vec<FileIndexKey> = files_to_index
             .iter()
             .map(|file| FileIndexKey::new(file, &request.facets))
             .collect();
 
         // Create stream and process indexes
-        if !keys.is_empty() {
+        if !file_index_keys.is_empty() {
             let mut stream = FileIndexStream::new(
                 self.indexing_service.clone(),
                 self.file_index_cache.clone(),
                 self.registry.clone(),
-                keys,
+                file_index_keys,
                 source_timestamp_field,
                 bucket_duration,
                 time_budget,
@@ -412,10 +412,9 @@ impl HistogramService {
             // Process file indexes and update partial responses
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(response) => {
-                        if let Ok(file_index) = response.result {
-                            let file = &response.key.file;
-                            debug!("Successfully indexed file: {:?}", file.path());
+                    Ok(file_index_response) => {
+                        if let Ok(file_index) = file_index_response.result {
+                            let file = &file_index_response.key.file;
 
                             // Acquire write lock for each file update (released immediately after)
                             let mut partial_responses = self.partial_responses.write();
@@ -515,35 +514,18 @@ impl HistogramService {
         let complete_responses = self.complete_responses.read();
         let partial_responses = self.partial_responses.read();
 
-        let mut served_complete = 0u64;
-        let mut served_partial = 0u64;
-
         let buckets = bucket_requests
             .into_iter()
             .filter_map(|bucket_request| {
                 if let Some(complete) = complete_responses.get(&bucket_request) {
-                    served_complete += 1;
                     Some((bucket_request, BucketResponse::complete(complete.clone())))
                 } else {
-                    partial_responses.get(&bucket_request).map(|partial| {
-                        served_partial += 1;
-                        (bucket_request, BucketResponse::partial(partial.clone()))
-                    })
+                    partial_responses
+                        .get(&bucket_request)
+                        .map(|partial| (bucket_request, BucketResponse::partial(partial.clone())))
                 }
             })
             .collect();
-
-        // Update cache state metrics
-        self.bucket_cache_metrics.update(|m| {
-            m.partial = partial_responses.len() as u64;
-            m.complete = complete_responses.len() as u64;
-        });
-
-        // Update operations metrics
-        self.bucket_operations_metrics.update(|m| {
-            m.served_complete += served_complete;
-            m.served_partial += served_partial;
-        });
 
         Ok(HistogramResponse { buckets })
     }
@@ -608,11 +590,22 @@ impl HistogramService {
         );
 
         // Query registry once for entire histogram time range
-        let histogram_start = buckets_to_create.first().unwrap().start;
-        let histogram_end = buckets_to_create.last().unwrap().end;
+        let histogram_start = bucket_requests.first().unwrap().start;
+        let histogram_end = bucket_requests.last().unwrap().end;
         let histogram_file_infos = self
             .registry
             .find_files_in_range(histogram_start, histogram_end)?;
+
+        debug!(
+            "Found {} file infos in histograms time range [{},{})",
+            histogram_file_infos.len(),
+            histogram_start,
+            histogram_end
+        );
+
+        for (idx, file_info) in histogram_file_infos.iter().enumerate() {
+            debug!("[{}] {}", idx, file_info.file.path());
+        }
 
         // Convert to a set - all buckets will share this file set
         let histogram_files: HashSet<File> =
