@@ -15,7 +15,7 @@ use journal::index::Filter;
 use parking_lot::RwLock;
 use rt::ChartHandle;
 use std::time::Duration;
-use tracing::{debug, error, instrument};
+use tracing::{debug, instrument};
 
 /// A bucket request contains a [start, end) time range along with the
 /// filter that should be applied.

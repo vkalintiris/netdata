@@ -163,7 +163,7 @@ pub struct FileIndexKey {
 }
 
 impl FileIndexKey {
-    pub(crate) fn new(file: &File, facets: &Facets) -> Self {
+    pub fn new(file: &File, facets: &Facets) -> Self {
         Self {
             file: file.clone(),
             facets: facets.clone(),

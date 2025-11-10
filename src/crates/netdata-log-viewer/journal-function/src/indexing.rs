@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 // ============================================================================
 // Helper Functions
@@ -249,7 +249,7 @@ impl IndexingService {
         source_timestamp_field: &FieldName,
         bucket_duration: u32,
     ) -> Result<FileIndex> {
-        error!("Computing file index for {}", file.path());
+        info!("Computing file index for {}", file.path());
 
         let mut file_indexer = FileIndexer::default();
 
@@ -360,7 +360,7 @@ impl FileIndexStream {
 
                 let start = Instant::now();
 
-                // Try cache first (async for Foyer, sync for HashMap)
+                // Try cache first
                 let result = match cache.get(key).await {
                     Ok(Some(cached_index))
                         if is_fresh(&cached_index)
@@ -376,6 +376,7 @@ impl FileIndexStream {
                     }
                     _ => {
                         // Cache miss or incompatible granularity - compute inline
+                        tracing::info!("Computing file index for {}", key.file.path());
                         match IndexingService::compute_file_index(
                             &key.file,
                             key.facets.as_slice(),
@@ -430,6 +431,33 @@ impl FileIndexStream {
     /// of files that couldn't be indexed so far, enabling selective retries.
     pub fn remaining(&self) -> Vec<FileIndexKey> {
         self.failed_keys.lock().unwrap().clone()
+    }
+
+    /// Consumes the stream and collects all successfully indexed files.
+    ///
+    /// This is a convenience method for consuming the entire stream and
+    /// collecting all files that were successfully indexed. Files that fail
+    /// to index are silently skipped.
+    pub async fn collect_indexes(mut self) -> Result<Vec<journal::index::FileIndex>> {
+        use futures::stream::StreamExt;
+
+        let mut results = Vec::new();
+
+        while let Some(result) = self.next().await {
+            match result {
+                Ok(response) => {
+                    if let Ok(index) = response.result {
+                        results.push(index);
+                    }
+                }
+                Err(e) => {
+                    warn!("Streaming index collection timed out: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
     }
 }
 

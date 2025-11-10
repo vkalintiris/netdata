@@ -123,6 +123,15 @@ impl FileIndexer {
             self.entry_offset_index = HashMap::default();
         }
 
+        // NOTE: Capture the maximum valid entry offset at the start of indexing.
+        // This prevents race conditions when the journal file is being actively written to.
+        // The tail_object_offset from the header tells us the offset of the last object
+        // in the file at this moment. Any entry offset beyond this was added after we
+        // started indexing and should be ignored.
+        let Some(tail_object_offset) = journal_file.journal_header_ref().tail_object_offset else {
+            return Err(JournalError::InvalidOffset);
+        };
+
         // Capture indexing timestamp
         let indexed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -136,8 +145,12 @@ impl FileIndexer {
         let file_fields = collect_file_fields(journal_file);
 
         // Build the file histogram
-        let histogram =
-            self.build_histogram(journal_file, source_timestamp_field, bucket_duration)?;
+        let histogram = self.build_histogram(
+            journal_file,
+            source_timestamp_field,
+            bucket_duration,
+            tail_object_offset,
+        )?;
 
         // Use the (timestamp, entry-offset) pairs to construct a vector that
         // will contain entry offsets sorted by time
@@ -148,7 +161,7 @@ impl FileIndexer {
             .collect();
 
         // Create the bitmaps for field=value pairs
-        let entries = self.build_entries_index(journal_file, field_names)?;
+        let entries = self.build_entries_index(journal_file, field_names, tail_object_offset)?;
 
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
@@ -177,6 +190,7 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         field_names: &[FieldName],
+        tail_object_offset: NonZeroU64,
     ) -> Result<HashMap<FieldValuePair, Bitmap>> {
         let mut entries_index = HashMap::default();
 
@@ -226,13 +240,22 @@ impl FileIndexer {
                     continue;
                 }
 
-                // Map entry offsets where this data object appears to
-                // entry indices
+                // Map entry offsets where this data object appears to entry indices.
+                // Filter out any offsets that are beyond our initial snapshot's maximum
                 self.entry_indices.clear();
-                for entry_offset in self.entry_offsets.iter() {
-                    let Some(entry_index) = self.entry_offset_index.get(entry_offset) else {
-                        debug_assert!(false, "missing entry offset from index");
-                        continue;
+                for entry_offset in self
+                    .entry_offsets
+                    .iter()
+                    .copied()
+                    .filter(|offset| *offset <= tail_object_offset)
+                {
+                    let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
+                        // This should never happen given that we filter by the tail object offset.
+                        panic!(
+                            "missing entry offset {} from index (total offsets: {})",
+                            entry_offset,
+                            self.entry_offset_index.len()
+                        );
                     };
                     self.entry_indices.push(*entry_index as u32);
                 }
@@ -318,6 +341,7 @@ impl FileIndexer {
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field_name: Option<&FieldName>,
         bucket_duration: u32,
+        tail_object_offset: NonZeroU64,
     ) -> Result<Histogram> {
         // Collect information from the source timestamp field
         if let Some(source_field_name) = source_timestamp_field_name {
@@ -336,12 +360,17 @@ impl FileIndexer {
         self.entry_offsets.clear();
         journal_file.entry_offsets(&mut self.entry_offsets)?;
 
-        // Iterate the global entry offset array of the journal file and
-        // find entries for which we could not collect a timestamp. In this
-        // case, fall-back to using the journal file's realtime timestamp.
+        // Iterate through entry offsets and find entries for which we could
+        // not collect a timestamp. In this case, fall-back to using the journal
+        // file's realtime timestamp. Filter out offsets beyond our maximum.
         self.realtime_entry_offset_pairs.clear();
-        for entry_offset in self.entry_offsets.iter() {
-            if self.entry_offset_index.contains_key(entry_offset) {
+        for entry_offset in self
+            .entry_offsets
+            .iter()
+            .copied()
+            .filter(|offset| *offset <= tail_object_offset)
+        {
+            if self.entry_offset_index.contains_key(&entry_offset) {
                 // We have the timestamp of this entry offset
                 continue;
             }
@@ -350,13 +379,13 @@ impl FileIndexer {
             // the journal's file realtime timestamp.
 
             let timestamp = {
-                let entry = journal_file.entry_ref(*entry_offset)?;
+                let entry = journal_file.entry_ref(entry_offset)?;
                 entry.header.realtime
             };
 
             // Add the new (timestamp, entry-offset) pair
             self.realtime_entry_offset_pairs
-                .push((timestamp, *entry_offset));
+                .push((timestamp, entry_offset));
         }
 
         // At this point:
