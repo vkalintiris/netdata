@@ -266,7 +266,7 @@ impl FileIndex {
         anchor_timestamp: u64,
         direction: Direction,
         limit: usize,
-    ) -> Result<Vec<(u64, u32)>> {
+    ) -> Result<Vec<(File, u64, u64)>> {
         // FIXME/TODO: using just the (anchor_timestamp, limit) is not good enough,
         // we need a `skip` argument as well. This would handle the case where
         // we have more than `limit` entries with the same timestamp. Highly
@@ -324,7 +324,7 @@ impl FileIndex {
                 for &entry_offset in entry_offsets.iter().skip(start_idx).take(limit) {
                     let timestamp =
                         get_entry_timestamp(journal_file, source_timestamp_field, entry_offset)?;
-                    results.push((timestamp, entry_offset.get() as u32));
+                    results.push((self.file.clone(), timestamp, entry_offset.get()));
                 }
             }
             Direction::Backward => {
@@ -364,7 +364,7 @@ impl FileIndex {
                     let entry_offset = entry_offsets[i];
                     let timestamp =
                         get_entry_timestamp(journal_file, source_timestamp_field, entry_offset)?;
-                    results.push((timestamp, entry_offset.get() as u32));
+                    results.push((self.file.clone(), timestamp, entry_offset.get()));
                 }
             }
         }
