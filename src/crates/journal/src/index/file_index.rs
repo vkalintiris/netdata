@@ -206,6 +206,13 @@ where
     Ok(left)
 }
 
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub timestamp: u64,
+    pub file: File,
+    pub offset: u64,
+}
+
 impl FileIndex {
     /// Retrieve sorted (timestamp, entry offset) pairs with filtering.
     ///
@@ -260,13 +267,13 @@ impl FileIndex {
     /// ```
     pub fn retrieve_sorted_entries(
         &self,
-        journal_file: &JournalFile<Mmap>,
+        file: &File,
         source_timestamp_field: Option<&super::FieldName>,
         filter: Option<&super::Filter>,
         anchor_timestamp: u64,
         direction: Direction,
         limit: usize,
-    ) -> Result<Vec<(File, u64, u64)>> {
+    ) -> Result<Vec<LogEntry>> {
         // FIXME/TODO: using just the (anchor_timestamp, limit) is not good enough,
         // we need a `skip` argument as well. This would handle the case where
         // we have more than `limit` entries with the same timestamp. Highly
@@ -285,6 +292,9 @@ impl FileIndex {
             // Nothing matches
             return Ok(Vec::new());
         }
+
+        let window_size = 8 * 1024 * 1024;
+        let journal_file = JournalFile::open(file, window_size)?;
 
         // Collect the entry offsets in the bitmap
         // TODO: How should we handle zero offsets?
@@ -308,7 +318,7 @@ impl FileIndex {
                     entry_offsets.len(),
                     |entry_offset| {
                         let entry_timestamp = get_entry_timestamp(
-                            journal_file,
+                            &journal_file,
                             source_timestamp_field,
                             entry_offset,
                         )?;
@@ -323,8 +333,12 @@ impl FileIndex {
 
                 for &entry_offset in entry_offsets.iter().skip(start_idx).take(limit) {
                     let timestamp =
-                        get_entry_timestamp(journal_file, source_timestamp_field, entry_offset)?;
-                    results.push((self.file.clone(), timestamp, entry_offset.get()));
+                        get_entry_timestamp(&journal_file, source_timestamp_field, entry_offset)?;
+                    results.push(LogEntry {
+                        file: self.file.clone(),
+                        timestamp,
+                        offset: entry_offset.get(),
+                    });
                 }
             }
             Direction::Backward => {
@@ -337,7 +351,7 @@ impl FileIndex {
                     entry_offsets.len(),
                     |entry_offset| {
                         let entry_timestamp = get_entry_timestamp(
-                            journal_file,
+                            &journal_file,
                             source_timestamp_field,
                             entry_offset,
                         )?;
@@ -363,8 +377,12 @@ impl FileIndex {
                 for i in (0..=start_idx).rev().take(limit) {
                     let entry_offset = entry_offsets[i];
                     let timestamp =
-                        get_entry_timestamp(journal_file, source_timestamp_field, entry_offset)?;
-                    results.push((self.file.clone(), timestamp, entry_offset.get()));
+                        get_entry_timestamp(&journal_file, source_timestamp_field, entry_offset)?;
+                    results.push(LogEntry {
+                        file: self.file.clone(),
+                        timestamp,
+                        offset: entry_offset.get(),
+                    });
                 }
             }
         }

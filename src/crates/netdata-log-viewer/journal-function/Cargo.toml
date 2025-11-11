@@ -21,6 +21,8 @@ notify = { workspace = true }
 foyer = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 schemars = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+nix = { version = "0.30", features = ["user"] }
 
 journal = { workspace = true }
 rt = { path = "../../netdata-plugin/rt" }

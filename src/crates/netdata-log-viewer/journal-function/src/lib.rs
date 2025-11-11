@@ -11,6 +11,7 @@ pub mod error;
 pub mod facets;
 pub mod histogram;
 pub mod indexing;
+pub mod logs;
 pub mod registry;
 pub mod schema;
 

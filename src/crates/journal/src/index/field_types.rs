@@ -75,7 +75,8 @@ impl AsRef<str> for FieldName {
 
 /// A field=value pair (e.g., "PRIORITY=error", "SYSLOG_IDENTIFIER=systemd").
 ///
-/// Invariant: Always in the format "field=value" with exactly one '=' character.
+/// Invariant: Always in the format "field=value". The value portion may contain '=' characters.
+/// The split is always at the first '=' character.
 ///
 /// This type caches the split position for efficient field/value extraction
 /// without repeated parsing.
@@ -100,19 +101,14 @@ impl FieldValuePair {
 
     /// Parse a "field=value" string into a FieldValuePair.
     ///
-    /// Returns None if the string doesn't contain exactly one '=' or if
-    /// the field name is empty.
+    /// Returns None if the string doesn't contain '=' or if the field name is empty.
+    /// The value portion may contain '=' characters - parsing splits on the first '=' only.
     pub fn parse(s: impl AsRef<str>) -> Option<Self> {
         let s = s.as_ref();
         let split_pos = s.find('=')?;
 
         if split_pos == 0 {
             // Empty field name
-            return None;
-        }
-
-        // Verify there's only one '='
-        if s[split_pos + 1..].contains('=') {
             return None;
         }
 
@@ -224,9 +220,13 @@ mod tests {
         assert_eq!(pair.as_str(), "PRIORITY=error");
         assert_eq!(pair.as_bytes(), b"PRIORITY=error");
 
+        // Values can contain '=' characters
+        let pair = FieldValuePair::parse("MESSAGE=IN=eth0 OUT= MAC=aa:bb:cc").unwrap();
+        assert_eq!(pair.field(), "MESSAGE");
+        assert_eq!(pair.value(), "IN=eth0 OUT= MAC=aa:bb:cc");
+
         assert!(FieldValuePair::parse("PRIORITY").is_none());
         assert!(FieldValuePair::parse("=error").is_none());
-        assert!(FieldValuePair::parse("A=B=C").is_none());
     }
 
     #[test]

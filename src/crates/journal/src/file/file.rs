@@ -399,7 +399,10 @@ impl<M: MemoryMap> JournalFile<M> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
         // Open file and check its size
-        let fd = OpenOptions::new().read(true).write(false).open(file.path())?;
+        let fd = OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(file.path())?;
 
         // Create a memory map for the header
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
@@ -468,6 +471,17 @@ impl<M: MemoryMap> JournalFile<M> {
         }
 
         Ok(())
+    }
+
+    // Returns the data object offsets of the entry object at the specified
+    // offset
+    pub fn entry_data_object_offsets(
+        &self,
+        entry_offset: NonZeroU64,
+        offsets: &mut Vec<NonZeroU64>,
+    ) -> Result<()> {
+        let entry_guard = self.entry_ref(entry_offset)?;
+        entry_guard.collect_offsets(offsets)
     }
 
     pub fn journal_header_ref(&self) -> &JournalHeader {

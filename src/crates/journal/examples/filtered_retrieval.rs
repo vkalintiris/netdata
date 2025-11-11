@@ -1,8 +1,8 @@
 use clap::{Parser, ValueEnum};
 use journal::{
+    JournalFile,
     file::Mmap,
     index::{Direction, FieldName, FieldValuePair, FileIndexer, Filter},
-    JournalFile,
 };
 use std::path::PathBuf;
 use tracing::info;
@@ -51,7 +51,11 @@ struct Args {
     bucket_duration: u32,
 
     /// Fields to index (comma-separated, e.g., "PRIORITY,SYSLOG_IDENTIFIER")
-    #[arg(short, long, default_value = "PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT")]
+    #[arg(
+        short,
+        long,
+        default_value = "PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT"
+    )]
     indexed_fields: String,
 
     /// Source timestamp field to use for sorting
@@ -68,7 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     info!("Opening journal file: {}", args.file.display());
-    let journal_file = JournalFile::<Mmap>::open(&args.file, 8 * 1024 * 1024)?;
+    let file = journal::repository::File::from_str(args.file.to_str().unwrap()).unwrap();
+    let journal_file = JournalFile::<Mmap>::open(&file, 8 * 1024 * 1024)?;
 
     // Parse indexed fields
     let indexed_fields: Vec<FieldName> = args
@@ -80,8 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Indexed fields: {:?}", indexed_fields);
 
     // Create source field name
-    let source_field = FieldName::new(args.source_field)
-        .ok_or("Invalid source field name")?;
+    let source_field = FieldName::new(args.source_field).ok_or("Invalid source field name")?;
 
     // Build the file index
     info!("Building file index...");
@@ -135,8 +139,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
+    drop(journal_file);
+
     let results = file_index.retrieve_sorted_entries(
-        &journal_file,
+        &file,
         Some(&source_field),
         filter.as_ref(),
         args.timestamp,
@@ -145,10 +151,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     info!("Retrieved {} entries", results.len());
-    println!("\n{:<20} {:<12} {}", "Timestamp (μs)", "Offset", "Human-readable time");
+    println!(
+        "\n{:<20} {:<12} {}",
+        "Timestamp (μs)", "Offset", "Human-readable time"
+    );
     println!("{}", "-".repeat(70));
 
-    for (timestamp, offset) in results {
+    for (_file, timestamp, offset) in results {
         // Convert microseconds to seconds for human-readable format
         let seconds = timestamp / 1_000_000;
         let datetime = chrono::DateTime::from_timestamp(seconds as i64, 0)

@@ -2,7 +2,7 @@ pub mod histogram;
 pub use histogram::{Bucket, Histogram};
 
 pub mod file_index;
-pub use file_index::{Direction, FileIndex};
+pub use file_index::{Direction, FileIndex, LogEntry};
 
 pub mod file_indexer;
 pub use file_indexer::FileIndexer;

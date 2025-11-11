@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use clap::Parser;
-use journal::index::Filter;
-use journal::index::{FieldName, FieldValuePair, FileIndex};
+use journal::index::{FileIndex, LogEntry};
+use journal_function::logs::{create_systemd_journal_transformations, log_entries_to_table};
 use journal_function::*;
 use rt::StdPluginRuntime;
 use std::collections::HashMap;
@@ -16,9 +16,13 @@ struct Args {
     #[arg(long)]
     since: String,
 
-    /// End time (e.g., "2025-11-10 12:51:00")
+    /// End time (e.g., "2025-11-10 12:51:00"). If not specified, will retrieve up to the limit.
     #[arg(long)]
-    until: String,
+    until: Option<String>,
+
+    /// Maximum number of log entries to retrieve
+    #[arg(long, default_value = "20")]
+    limit: usize,
 
     /// Journal directories (e.g., /var/log/journal). Can be specified multiple times.
     #[arg(long = "directory", required = true)]
@@ -55,12 +59,23 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Parse timestamps
     let since_secs = parse_datetime(&args.since)? as u32;
-    let until_secs = parse_datetime(&args.until)? as u32;
+    let until_secs = if let Some(until_str) = &args.until {
+        parse_datetime(until_str)? as u32
+    } else {
+        u32::MAX
+    };
 
-    info!(
-        "Time range: {} - {} ({} - {} seconds since epoch)",
-        args.since, args.until, since_secs, until_secs
-    );
+    if let Some(until_str) = &args.until {
+        info!(
+            "Time range: {} - {} ({} - {} seconds since epoch)",
+            args.since, until_str, since_secs, until_secs
+        );
+    } else {
+        info!(
+            "Time range: {} - end ({} seconds since epoch, limit: {})",
+            args.since, since_secs, args.limit
+        );
+    }
 
     // Initialize monitoring and registry
     info!("\n[1] Initializing file system monitoring and registry...");
@@ -171,16 +186,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     // Print results
-    println!("\n{:=<80}", "");
-    println!("{:<60} {:<20} {:<20}", "File", "Start Time", "End Time");
-    println!("{:=<80}", "");
+    info!("\n{:=<80}", "");
+    info!("{:<60} {:<20} {:<20}", "File", "Start Time", "End Time");
+    info!("{:=<80}", "");
 
     for index in indexed_files.iter() {
         let (start, end) = index.histogram().time_range();
         let start_dt = Local.timestamp_opt(start as i64, 0).unwrap();
         let end_dt = Local.timestamp_opt(end as i64, 0).unwrap();
 
-        println!(
+        info!(
             "{:<60} {:<20} {:<20}",
             index.file.path(),
             start_dt.format("%Y-%m-%d %H:%M:%S"),
@@ -188,9 +203,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("{:=<80}", "");
+    info!("{:=<80}", "");
 
-    process(indexed_files, since_secs as u64);
+    // Convert seconds to microseconds for entry timestamp comparison
+    // (log entries use microseconds, but histogram/filtering uses seconds)
+    let log_entries = process(indexed_files, (since_secs as u64) * 1_000_000, args.limit);
+
+    info!(
+        "\n[11] Converting {} log entries to table format...",
+        log_entries.len()
+    );
+
+    // Define the columns we want to extract (timestamp is always the first column)
+    let columns = vec![
+        "PRIORITY".to_string(),
+        "MESSAGE".to_string(),
+        "_HOSTNAME".to_string(),
+        "SYSLOG_IDENTIFIER".to_string(),
+        "_UID".to_string(),
+        "_GID".to_string(),
+    ];
+
+    // Create transformation registry with systemd journal transformations
+    let transformations = create_systemd_journal_transformations();
+
+    // Convert log entries to table
+    let table = log_entries_to_table(log_entries, columns, &transformations)?;
+
+    info!(
+        "[12] Successfully created table with {} rows and {} columns",
+        table.row_count(),
+        table.column_count()
+    );
+
+    // Print the table using Display implementation
+    info!("\n{}", table);
 
     Ok(())
 }
@@ -199,15 +246,22 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 // Forward direction only for the time being
 // Returns a vector containing `(File, timestamp, entry-offset)` tuple items.
 // sorted by timestamp
-fn process(file_indexes: Vec<FileIndex>, anchor: u64) -> Vec<(File, u64, u64)> {
+fn process(file_indexes: Vec<FileIndex>, anchor_usec: u64, limit: usize) -> Vec<LogEntry> {
     // We will parameterize the function later
-    let source_timestamp_field = Some(journal::FieldName::new_unchecked(
-        "_SOURCE_REALTIME_TIMESTAMP",
-    ));
-    let filter = Some(Filter::match_field_value_pair(
-        FieldValuePair::parse("PRIORITY=3").unwrap(),
-    ));
-    let limit = 10;
+    // Use None to use the entry's realtime timestamp (in microseconds from epoch)
+    // which matches the histogram's time range
+    let source_timestamp_field = None;
+    // let source_timestamp_field = Some(journal::FieldName::new_unchecked(
+    //     "_SOURCE_REALTIME_TIMESTAMP",
+    // ));
+    // let source_timestamp_field = Some(journal::FieldName::new_unchecked(
+    //     "log.observed_time_unix_nano",
+    // ));
+    // Temporarily disable filter to see all entries
+    let filter = None;
+    // let filter = Some(Filter::match_field_value_pair(
+    //     FieldValuePair::parse("PRIORITY=4").unwrap(),
+    // ));
 
     // Handle edge cases
     if limit == 0 || file_indexes.is_empty() {
@@ -216,44 +270,41 @@ fn process(file_indexes: Vec<FileIndex>, anchor: u64) -> Vec<(File, u64, u64)> {
 
     // Filter to FileIndex instances that could contain relevant entries
     // (i.e., those whose end timestamp is at or after the anchor)
-    let mut relevant_indices: Vec<&FileIndex> = file_indexes
+    let mut relevant_indexes: Vec<&FileIndex> = file_indexes
         .iter()
-        .filter(|fi| fi.histogram.end_time() as u64 >= anchor)
+        .filter(|fi| fi.histogram.end_time() as u64 * 1_000_000 >= anchor_usec)
         .collect();
 
-    if relevant_indices.is_empty() {
+    if relevant_indexes.is_empty() {
         return Vec::new();
     }
 
     // Sort by start timestamp to process files in temporal order
-    relevant_indices.sort_by_key(|fi| fi.histogram.start_time());
+    relevant_indexes.sort_by_key(|fi| fi.histogram.start_time());
 
     // Initialize result vector with capacity for efficiency
-    let mut result: Vec<(File, u64, u64)> = Vec::with_capacity(limit);
+    let mut result: Vec<LogEntry> = Vec::with_capacity(limit);
 
-    for file_index in relevant_indices {
+    for file_index in relevant_indexes {
         // Pruning optimization: if we have a full result set and this FileIndex
         // starts after the latest timestamp in our results, we can skip all
         // remaining files since they cannot contribute earlier entries
         if result.len() >= limit {
-            let max_timestamp = result.last().unwrap().1;
+            let max_timestamp = result.last().unwrap().timestamp;
 
-            if file_index.histogram.start_time() as u64 > max_timestamp {
+            if file_index.histogram.start_time() as u64 * 1_000_000 > max_timestamp {
                 break;
             }
         }
 
         // Perform I/O to retrieve entries from this FileIndex
         let file = file_index.file();
-        let window_size = 8 * 1024 * 1024;
-        let journal_file =
-            journal::JournalFile::<journal::file::Mmap>::open(file, window_size).unwrap();
         let new_entries = file_index
             .retrieve_sorted_entries(
-                &journal_file,
+                file,
                 source_timestamp_field.as_ref(),
                 filter.as_ref(),
-                anchor,
+                anchor_usec,
                 journal::index::Direction::Forward,
                 limit,
             )
@@ -285,11 +336,7 @@ fn process(file_indexes: Vec<FileIndex>, anchor: u64) -> Vec<(File, u64, u64)> {
 ///
 /// # Returns
 /// A new vector containing the merged and limited results
-fn merge_sorted_limited(
-    a: Vec<(File, u64, u64)>,
-    b: Vec<(File, u64, u64)>,
-    limit: usize,
-) -> Vec<(File, u64, u64)> {
+fn merge_sorted_limited(a: Vec<LogEntry>, b: Vec<LogEntry>, limit: usize) -> Vec<LogEntry> {
     // Handle simple cases
     if a.is_empty() {
         return b.into_iter().take(limit).collect();
@@ -309,7 +356,7 @@ fn merge_sorted_limited(
             (true, false) => true,
             (false, true) => false,
             (false, false) => break,
-            (true, true) => a[i].1 <= b[j].1,
+            (true, true) => a[i].timestamp <= b[j].timestamp,
         };
 
         if take_from_a {
