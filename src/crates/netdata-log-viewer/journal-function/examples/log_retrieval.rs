@@ -1,7 +1,6 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use clap::Parser;
-use journal::index::{FileIndex, LogEntry};
-use journal_function::logs::{create_systemd_journal_transformations, log_entries_to_table};
+use journal_function::logs::{create_systemd_journal_transformations, log_entries_to_table, LogQuery};
 use journal_function::*;
 use rt::StdPluginRuntime;
 use std::collections::HashMap;
@@ -207,12 +206,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Convert seconds to microseconds for entry timestamp comparison
     // (log entries use microseconds, but histogram/filtering uses seconds)
-    let log_entries = process(indexed_files, (since_secs as u64) * 1_000_000, args.limit);
+    let anchor_usec = (since_secs as u64) * 1_000_000;
 
-    info!(
-        "\n[11] Converting {} log entries to table format...",
-        log_entries.len()
-    );
+    info!("\n[11] Querying log entries...");
+
+    // Query log entries using the builder
+    let log_entries = LogQuery::new(&indexed_files)
+        .with_anchor_usec(anchor_usec)
+        .with_limit(args.limit)
+        .execute();
+
+    info!("[12] Converting {} log entries to table...", log_entries.len());
 
     // Define the columns we want to extract (timestamp is always the first column)
     let columns = vec![
@@ -227,11 +231,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create transformation registry with systemd journal transformations
     let transformations = create_systemd_journal_transformations();
 
-    // Convert log entries to table
+    // Convert log entries to formatted table
     let table = log_entries_to_table(log_entries, columns, &transformations)?;
 
     info!(
-        "[12] Successfully created table with {} rows and {} columns",
+        "[13] Successfully created table with {} rows and {} columns",
         table.row_count(),
         table.column_count()
     );
@@ -240,132 +244,4 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     info!("\n{}", table);
 
     Ok(())
-}
-
-// Test WIP implementation, will be extended once we verify correctness.
-// Forward direction only for the time being
-// Returns a vector containing `(File, timestamp, entry-offset)` tuple items.
-// sorted by timestamp
-fn process(file_indexes: Vec<FileIndex>, anchor_usec: u64, limit: usize) -> Vec<LogEntry> {
-    // We will parameterize the function later
-    // Use None to use the entry's realtime timestamp (in microseconds from epoch)
-    // which matches the histogram's time range
-    let source_timestamp_field = None;
-    // let source_timestamp_field = Some(journal::FieldName::new_unchecked(
-    //     "_SOURCE_REALTIME_TIMESTAMP",
-    // ));
-    // let source_timestamp_field = Some(journal::FieldName::new_unchecked(
-    //     "log.observed_time_unix_nano",
-    // ));
-    // Temporarily disable filter to see all entries
-    let filter = None;
-    // let filter = Some(Filter::match_field_value_pair(
-    //     FieldValuePair::parse("PRIORITY=4").unwrap(),
-    // ));
-
-    // Handle edge cases
-    if limit == 0 || file_indexes.is_empty() {
-        return Vec::new();
-    }
-
-    // Filter to FileIndex instances that could contain relevant entries
-    // (i.e., those whose end timestamp is at or after the anchor)
-    let mut relevant_indexes: Vec<&FileIndex> = file_indexes
-        .iter()
-        .filter(|fi| fi.histogram.end_time() as u64 * 1_000_000 >= anchor_usec)
-        .collect();
-
-    if relevant_indexes.is_empty() {
-        return Vec::new();
-    }
-
-    // Sort by start timestamp to process files in temporal order
-    relevant_indexes.sort_by_key(|fi| fi.histogram.start_time());
-
-    // Initialize result vector with capacity for efficiency
-    let mut result: Vec<LogEntry> = Vec::with_capacity(limit);
-
-    for file_index in relevant_indexes {
-        // Pruning optimization: if we have a full result set and this FileIndex
-        // starts after the latest timestamp in our results, we can skip all
-        // remaining files since they cannot contribute earlier entries
-        if result.len() >= limit {
-            let max_timestamp = result.last().unwrap().timestamp;
-
-            if file_index.histogram.start_time() as u64 * 1_000_000 > max_timestamp {
-                break;
-            }
-        }
-
-        // Perform I/O to retrieve entries from this FileIndex
-        let file = file_index.file();
-        let new_entries = file_index
-            .retrieve_sorted_entries(
-                file,
-                source_timestamp_field.as_ref(),
-                filter.as_ref(),
-                anchor_usec,
-                journal::index::Direction::Forward,
-                limit,
-            )
-            .unwrap();
-        if new_entries.is_empty() {
-            continue;
-        }
-
-        // Merge the new entries with our existing results, maintaining
-        // sorted order and respecting the limit constraint
-        result = merge_sorted_limited(result, new_entries, limit);
-    }
-
-    result
-}
-
-/// Merges two sorted vectors into a single sorted vector with at most `limit` elements.
-///
-/// This function performs a two-pointer merge, which is efficient for combining
-/// sorted sequences. It only retains the smallest `limit` entries by timestamp.
-///
-/// Each vector contains items that are `(File, timestamp, entry_offset)` tuples,
-/// sorted by timestamp
-///
-/// # Arguments
-/// * `a` - First sorted vector
-/// * `b` - Second sorted vector
-/// * `limit` - Maximum number of elements in the result
-///
-/// # Returns
-/// A new vector containing the merged and limited results
-fn merge_sorted_limited(a: Vec<LogEntry>, b: Vec<LogEntry>, limit: usize) -> Vec<LogEntry> {
-    // Handle simple cases
-    if a.is_empty() {
-        return b.into_iter().take(limit).collect();
-    }
-    if b.is_empty() {
-        return a.into_iter().take(limit).collect();
-    }
-
-    // Allocate result vector with appropriate capacity
-    let mut result = Vec::with_capacity(limit);
-    let mut i = 0;
-    let mut j = 0;
-
-    // Two-pointer merge: always take the smaller element
-    while result.len() < limit {
-        let take_from_a = match (i < a.len(), j < b.len()) {
-            (true, false) => true,
-            (false, true) => false,
-            (false, false) => break,
-            (true, true) => a[i].timestamp <= b[j].timestamp,
-        };
-
-        if take_from_a {
-            result.push(a[i].clone());
-            i += 1;
-        } else {
-            result.push(b[j].clone());
-            j += 1;
-        }
-    }
-    result
 }
