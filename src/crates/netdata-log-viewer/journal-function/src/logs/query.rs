@@ -1,9 +1,15 @@
 //! Log querying from indexed journal files.
 //!
 //! This module provides the `LogQuery` builder for efficiently querying and
-//! merging log entries from multiple indexed journal files.
+//! merging log entries from multiple indexed journal files, as well as
+//! functions for extracting raw field data from journal entries.
 
-use journal::index::{Direction, FieldName, FileIndex, Filter, LogEntry};
+use journal::Result;
+use journal::file::{JournalFile, Mmap};
+use journal::index::{Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId};
+use journal::repository::File;
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 
 /// Builder for configuring and executing log queries from indexed journal files.
 ///
@@ -50,9 +56,7 @@ impl<'a> LogQuery<'a> {
             direction: Direction::Forward,
             anchor_usec: None,
             limit: None,
-            source_timestamp_field: Some(FieldName::new_unchecked(
-                "_SOURCE_REALTIME_TIMESTAMP",
-            )),
+            source_timestamp_field: Some(FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP")),
             filter: None,
         }
     }
@@ -130,21 +134,25 @@ impl<'a> LogQuery<'a> {
     ///
     /// This consumes the builder and returns a vector of log entries sorted by timestamp
     /// according to the configured direction.
-    pub fn execute(self) -> Vec<LogEntry> {
+    pub fn execute(self) -> Result<Vec<LogEntryData>> {
         // Compute anchor if not explicitly set
-        let anchor_usec = self.anchor_usec.unwrap_or_else(|| self.compute_default_anchor());
+        let anchor_usec = self
+            .anchor_usec
+            .unwrap_or_else(|| self.compute_default_anchor());
 
         // Convert limit to internal representation (usize::MAX for unlimited)
         let limit = self.limit.unwrap_or(usize::MAX);
 
-        retrieve_log_entries(
+        let log_entry_ids = retrieve_log_entries(
             self.file_indexes.to_vec(),
             anchor_usec,
             self.direction,
             limit,
             self.source_timestamp_field,
             self.filter,
-        )
+        );
+
+        extract_entry_data(&log_entry_ids)
     }
 }
 
@@ -152,8 +160,6 @@ impl<'a> LogQuery<'a> {
 ///
 /// This function efficiently retrieves log entries from multiple journal files,
 /// merging them in timestamp order while respecting the limit constraint.
-///
-/// Note: Most users should use `LogQuery` builder instead of calling this directly.
 ///
 /// # Arguments
 ///
@@ -167,14 +173,14 @@ impl<'a> LogQuery<'a> {
 /// # Returns
 ///
 /// A vector of log entries sorted by timestamp, limited to `limit` entries.
-pub fn retrieve_log_entries(
+fn retrieve_log_entries(
     file_indexes: Vec<FileIndex>,
     anchor_usec: u64,
     direction: Direction,
     limit: usize,
     source_timestamp_field: Option<FieldName>,
     filter: Option<Filter>,
-) -> Vec<LogEntry> {
+) -> Vec<LogEntryId> {
     // Handle edge cases
     if limit == 0 || file_indexes.is_empty() {
         return Vec::new();
@@ -215,7 +221,7 @@ pub fn retrieve_log_entries(
     }
 
     // Initialize result vector with capacity for efficiency
-    let mut collected_entries: Vec<LogEntry> = Vec::with_capacity(limit);
+    let mut collected_entries: Vec<LogEntryId> = Vec::with_capacity(limit);
 
     for file_index in relevant_indexes {
         // Pruning optimization: if we have a full result set, check if we can skip
@@ -230,7 +236,7 @@ pub fn retrieve_log_entries(
 
         // Perform I/O to retrieve entries from this FileIndex
         let file = file_index.file();
-        let new_entries = match file_index.retrieve_sorted_entries(
+        let new_entries = match file_index.find_log_entries(
             file,
             source_timestamp_field.as_ref(),
             filter.as_ref(),
@@ -260,7 +266,7 @@ pub fn retrieve_log_entries(
 /// or None if we can't determine (shouldn't happen with a full result set).
 fn can_prune_file(
     file_index: &FileIndex,
-    result: &[LogEntry],
+    result: &[LogEntryId],
     direction: Direction,
 ) -> Option<bool> {
     match direction {
@@ -294,11 +300,11 @@ fn can_prune_file(
 ///
 /// A new vector containing the merged and limited results
 fn merge_log_entries(
-    a: Vec<LogEntry>,
-    b: Vec<LogEntry>,
+    a: Vec<LogEntryId>,
+    b: Vec<LogEntryId>,
     limit: usize,
     direction: Direction,
-) -> Vec<LogEntry> {
+) -> Vec<LogEntryId> {
     // Handle simple cases
     if a.is_empty() {
         return b.into_iter().take(limit).collect();
@@ -334,4 +340,85 @@ fn merge_log_entries(
     }
 
     result
+}
+
+/// Raw field data extracted from a journal entry.
+///
+/// This is an intermediate representation between a `LogEntryId` (which only contains
+/// a file offset) and format-specific structures like `Table`, Arrow `RecordBatch`,
+/// or columnar data.
+///
+/// The fields are stored as `FieldValuePair` objects, which efficiently store the
+/// field name and value with a cached split position for fast access.
+#[derive(Debug, Clone)]
+pub struct LogEntryData {
+    /// Timestamp of the entry in microseconds since epoch
+    pub timestamp: u64,
+    /// All field=value pairs in this entry
+    pub fields: Vec<FieldValuePair>,
+}
+
+/// Extracts raw field data from multiple log entries efficiently.
+///
+/// This function groups entries by file and processes them in batches,
+/// minimizing file open/close overhead. It reads the journal files and
+/// extracts all field=value pairs without applying any transformations.
+///
+/// # Arguments
+///
+/// * `log_entries` - Slice of log entry IDs to extract data from
+///
+/// # Returns
+///
+/// A vector of `LogEntryData` in the same order as the input entries
+fn extract_entry_data(log_entries: &[LogEntryId]) -> Result<Vec<LogEntryData>> {
+    // Group entries by file to minimize file open/close operations
+    let mut entries_by_file: HashMap<&File, Vec<(usize, &LogEntryId)>> = HashMap::new();
+    for (idx, entry) in log_entries.iter().enumerate() {
+        entries_by_file
+            .entry(&entry.file)
+            .or_default()
+            .push((idx, entry));
+    }
+
+    // Pre-allocate result vector with exact capacity
+    let mut result = vec![None; log_entries.len()];
+
+    // Process each file's entries
+    for (file, file_entries) in entries_by_file {
+        let journal_file = JournalFile::<Mmap>::open(file, 2 * 1024 * 1024)?;
+        let mut data_offsets = Vec::new();
+
+        for (original_idx, entry) in file_entries {
+            // Read the entry at the specified offset
+            let entry_offset =
+                NonZeroU64::new(entry.offset).ok_or(journal::JournalError::InvalidOffset)?;
+            let entry_guard = journal_file.entry_ref(entry_offset)?;
+
+            // Collect all data object offsets for this entry
+            data_offsets.clear();
+            entry_guard.collect_offsets(&mut data_offsets)?;
+            drop(entry_guard);
+
+            // Extract all field=value pairs
+            let mut fields = Vec::new();
+            for data_offset in data_offsets.iter().copied() {
+                let data_guard = journal_file.data_ref(data_offset)?;
+                let payload_bytes = data_guard.payload_bytes();
+                let payload_str = String::from_utf8_lossy(payload_bytes);
+
+                if let Some(pair) = FieldValuePair::parse(&payload_str) {
+                    fields.push(pair);
+                }
+            }
+
+            result[original_idx] = Some(LogEntryData {
+                timestamp: entry.timestamp,
+                fields,
+            });
+        }
+    }
+
+    // Unwrap all Options (they're all Some at this point)
+    Ok(result.into_iter().map(|opt| opt.unwrap()).collect())
 }

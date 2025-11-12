@@ -3,7 +3,7 @@
 //! This module defines the API types used for communication between the Netdata
 //! dashboard and the systemd-journal function plugin.
 
-use super::ui;  // ui is a sibling module in schema
+use super::ui_types as ui; // ui_types is a sibling module in netdata
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -19,7 +19,7 @@ pub struct JournalRequest {
     pub before: u32,
 
     /// Maximum number of results to return
-    pub last: Option<u32>,
+    pub last: Option<usize>,
 
     /// List of facets to include in the response
     #[serde(default)]
@@ -169,9 +169,8 @@ pub struct JournalResponse {
 
     pub available_histograms: Vec<ui::AvailableHistogram>,
     pub histogram: ui::Histogram,
-    // FIXME: columns do not contain u32s
     pub columns: Value,
-    pub data: Vec<u32>,
+    pub data: Value,
     pub default_charts: Vec<u32>,
 
     // Hard-coded stuff

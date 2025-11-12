@@ -1,14 +1,13 @@
 //! Log entry formatting and display.
 //!
-//! This module provides types and transformations for converting log entries
-//! into formatted tables suitable for display in the Netdata dashboard.
+//! This module provides generic types for converting log entries
+//! into formatted tables.
 
 pub mod query;
 pub mod table;
-pub mod transformations;
 
-pub use query::LogQuery;
-pub use table::{log_entries_to_table, CellValue, ColumnInfo, Table};
-pub use transformations::{
-    create_systemd_journal_transformations, FieldTransformation, TransformationRegistry,
-};
+pub use query::{LogEntryData, LogQuery};
+pub use table::{CellValue, ColumnInfo, Table, entry_data_to_table};
+
+// Re-export transformations from netdata module for backward compatibility
+pub use crate::netdata::{FieldTransformation, TransformationRegistry, systemd_transformations};

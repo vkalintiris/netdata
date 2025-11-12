@@ -13,9 +13,7 @@ use journal_function::{
     BucketCacheMetrics, BucketOperationsMetrics, Facets, FileIndexCache, FileIndexKey,
     FileIndexingMetrics, FileInfo, HistogramRequest, HistogramResponse, HistogramService,
     IndexingService, Monitor, Registry, Result as CatalogResult,
-    histogram::{BucketCompleteResponse, BucketRequest, BucketResponse},
-    schema::types,
-    schema::ui,
+    netdata,
 };
 use rt::ChartHandle;
 
@@ -25,64 +23,13 @@ use rt::ChartHandle;
 use std::collections::HashMap;
 
 /// Request parameters for the catalog function (uses journal request structure)
-pub type CatalogRequest = types::JournalRequest;
+pub type CatalogRequest = netdata::JournalRequest;
 
 /// Response from the catalog function (uses journal response structure)
-pub type CatalogResponse = types::JournalResponse;
+pub type CatalogResponse = netdata::JournalResponse;
 
 use journal::index::Filter;
 use journal::{FieldName, FieldValuePair};
-
-/*
- * Helper Functions
- */
-
-/// Converts catalog's HistogramResponse to journal_query's HistogramResponse
-fn convert_histogram_response(catalog_response: &HistogramResponse) -> HistogramResponse {
-    let buckets = catalog_response
-        .buckets
-        .iter()
-        .map(|(bucket_req, bucket_resp)| {
-            // Convert BucketRequest
-            // Convert catalog::Facets (currently just clones as same type)
-            let jq_facets = Facets::new(
-                bucket_req
-                    .facets
-                    .iter()
-                    .map(|f| f.as_str().to_string())
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            );
-
-            let jq_bucket_req = BucketRequest {
-                start: bucket_req.start,
-                end: bucket_req.end,
-                facets: jq_facets,
-                filter_expr: bucket_req.filter_expr.clone(),
-            };
-
-            // Convert BucketResponse
-            let jq_bucket_resp = if bucket_resp.is_complete() {
-                BucketResponse::complete(BucketCompleteResponse {
-                    fv_counts: bucket_resp.fv_counts().clone(),
-                    unindexed_fields: bucket_resp.unindexed_fields().clone(),
-                })
-            } else {
-                // For partial responses, we need to extract the metadata
-                // Since catalog uses interior mutability, we can't access the inner partial data directly
-                // We'll convert partial to complete for simplicity since UI doesn't distinguish
-                BucketResponse::complete(BucketCompleteResponse {
-                    fv_counts: bucket_resp.fv_counts().clone(),
-                    unindexed_fields: bucket_resp.unindexed_fields().clone(),
-                })
-            };
-
-            (jq_bucket_req, jq_bucket_resp)
-        })
-        .collect();
-
-    HistogramResponse { buckets }
-}
 
 /// Builds a Filter from the selections HashMap
 #[instrument(skip(selections))]
@@ -138,8 +85,8 @@ fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Fi
     }
 }
 
-fn accepted_params() -> Vec<types::RequestParam> {
-    use types::RequestParam;
+fn accepted_params() -> Vec<netdata::RequestParam> {
+    use netdata::RequestParam;
 
     vec![
         RequestParam::Info,
@@ -162,16 +109,16 @@ fn accepted_params() -> Vec<types::RequestParam> {
     ]
 }
 
-fn required_params() -> Vec<types::RequiredParam> {
+fn required_params() -> Vec<netdata::RequiredParam> {
     let mut v = Vec::new();
 
-    let id = types::RequestParam::LogsSources;
+    let id = netdata::RequestParam::LogsSources;
     let name = String::from("Journal Sources");
     let help = String::from("Select the logs source to query");
     let type_ = String::from("multiselect");
     let mut options = Vec::new();
 
-    let o1 = types::MultiSelectionOption {
+    let o1 = netdata::MultiSelectionOption {
         id: String::from("all"),
         name: String::from("all"),
         pill: String::from("100GiB"),
@@ -179,7 +126,7 @@ fn required_params() -> Vec<types::RequiredParam> {
     };
     options.push(o1);
 
-    let required_param = types::RequiredParam::MultiSelection(types::MultiSelection {
+    let required_param = netdata::RequiredParam::MultiSelection(netdata::MultiSelection {
         id,
         name,
         help,
@@ -206,33 +153,41 @@ pub struct CatalogFunction {
 }
 
 impl CatalogFunction {
-    /// Test function: Query log entries and write to /tmp/log_query.txt
+    /// Query log entries from the indexed files (generic).
     ///
-    /// This is a temporary test function to verify log query integration.
-    async fn test_log_query(&self, after: u32, before: u32) {
-        use journal_function::logs::{
-            LogQuery, create_systemd_journal_transformations, log_entries_to_table,
-        };
+    /// This method:
+    /// 1. Finds journal files in the time range
+    /// 2. Retrieves indexed files from cache
+    /// 3. Queries log entries using LogQuery
+    /// 4. Returns raw log entry data
+    async fn query_logs(
+        &self,
+        after: u32,
+        before: u32,
+        facets: &[String],
+        limit: usize,
+    ) -> Vec<journal_function::logs::LogEntryData> {
+        use journal_function::logs::LogQuery;
 
-        info!("Testing log query for time range [{}, {})", after, before);
+        info!("Querying logs for time range [{}, {})", after, before);
 
         // Find files in the time range
         let file_infos = match self.inner.registry.find_files_in_range(after, before) {
             Ok(files) => files,
             Err(e) => {
                 warn!("Failed to find files in range: {}", e);
-                return;
+                return Vec::new();
             }
         };
 
         info!("Found {} files in range", file_infos.len());
 
-        // Collect indexed files from cache (limit to first 10 for testing)
+        // Collect indexed files from cache
         let mut indexed_files = Vec::new();
-        let facets = Facets::new(&[]);
+        let facets_obj = Facets::new(facets);
 
-        for file_info in file_infos.iter().take(10) {
-            let key = FileIndexKey::new(&file_info.file, &facets);
+        for file_info in file_infos.iter() {
+            let key = FileIndexKey::new(&file_info.file, &facets_obj);
             match self.inner.file_index_cache.get(&key).await {
                 Ok(Some(index)) => indexed_files.push(index),
                 Ok(None) => continue,
@@ -246,44 +201,24 @@ impl CatalogFunction {
         info!("Found {} indexed files in cache", indexed_files.len());
 
         if indexed_files.is_empty() {
-            info!("No indexed files available for log query test");
-            return;
+            info!("No indexed files available for log query");
+            return Vec::new();
         }
 
         // Query log entries
         let anchor_usec = after as u64 * 1_000_000;
-        let entries = LogQuery::new(&indexed_files)
+        match LogQuery::new(&indexed_files)
             .with_anchor_usec(anchor_usec)
-            .with_limit(100)
-            .execute();
-
-        info!("Retrieved {} log entries", entries.len());
-
-        if entries.is_empty() {
-            info!("No log entries found in the specified range");
-            return;
-        }
-
-        // Convert log entries to formatted table
-        let columns = vec![
-            "PRIORITY".to_string(),
-            "MESSAGE".to_string(),
-            "_HOSTNAME".to_string(),
-            "SYSLOG_IDENTIFIER".to_string(),
-        ];
-
-        let transformations = create_systemd_journal_transformations();
-
-        match log_entries_to_table(entries, columns, &transformations) {
-            Ok(table) => {
-                let output = format!("{}", table);
-                match std::fs::write("/tmp/log_query.txt", output) {
-                    Ok(_) => info!("Wrote log query test results to /tmp/log_query.txt"),
-                    Err(e) => warn!("Failed to write log query test results: {}", e),
-                }
+            .with_limit(limit)
+            .execute()
+        {
+            Ok(log_entries) => {
+                info!("Retrieved {} log entries", log_entries.len());
+                log_entries
             }
             Err(e) => {
-                warn!("Failed to create table from log entries: {}", e);
+                error!("Log query error: {}", e);
+                Vec::new()
             }
         }
     }
@@ -428,43 +363,40 @@ impl FunctionHandler for CatalogFunction {
         })?;
         info!("Histogram computation complete");
 
-        // Test: Query log entries and write to file
-        self.test_log_query(request.after, request.before).await;
+        let limit = request.last.unwrap_or(200);
+        let log_entries = self
+            .query_logs(request.after, request.before, &facets, limit)
+            .await;
 
-        // Read columns
-        let path = "/tmp/columns.json";
-        let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            warn!("Failed to read columns.json: {}", e);
-            "{}".to_string()
-        });
-        let data: serde_json::Value = serde_json::from_str(&contents).unwrap_or_else(|e| {
-            warn!("Failed to parse columns.json: {}", e);
-            serde_json::json!({})
-        });
+        // Build Netdata UI response (columns + data)
+        let (columns, data) = netdata::build_ui_response(&histogram_response, &log_entries);
+
+        // Get transformations for histogram chart labels
+        let transformations = netdata::systemd_transformations();
 
         // Get the PRIORITY field name for the histogram
         let priority_field = FieldName::new_unchecked("PRIORITY");
 
         let response = CatalogResponse {
-            auxiliary: types::Auxiliary {
+            auxiliary: netdata::Auxiliary {
                 hello: String::from("world"),
             },
             progress: histogram_response.progress(),
-            version: types::Version::default(),
+            version: netdata::Version::default(),
             accepted_params: accepted_params(),
             required_params: required_params(),
-            facets: ui::facets(&histogram_response),
-            histogram: ui::histogram(&histogram_response, &priority_field),
-            available_histograms: ui::available_histograms(&histogram_response),
-            columns: data,
-            data: Vec::new(),
+            facets: netdata::facets(&histogram_response, &transformations),
+            histogram: netdata::histogram(&histogram_response, &priority_field, &transformations),
+            available_histograms: netdata::available_histograms(&histogram_response),
+            columns,
+            data,
             default_charts: Vec::new(),
             show_ids: false,
             has_history: true,
             status: 200,
             response_type: String::from("table"),
             help: String::from("View, search and analyze systemd journal entries."),
-            pagination: types::Pagination::default(),
+            pagination: netdata::Pagination::default(),
         };
 
         info!(

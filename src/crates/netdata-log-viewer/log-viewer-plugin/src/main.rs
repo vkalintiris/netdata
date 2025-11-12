@@ -443,6 +443,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         journal_metrics.bucket_operations.clone(),
     );
 
+    // match catalog_function.watch_directory("/home/vk/repos/tmp/agent-events-journal") {
+    //     Ok(()) => {}
+    //     Err(e) => {
+    //         error!("Failed to watch directory: {:#?}", e);
+    //     }
+    // };
     match catalog_function.watch_directory("/var/log/journal") {
         Ok(()) => {}
         Err(e) => {

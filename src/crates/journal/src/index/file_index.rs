@@ -207,14 +207,14 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub timestamp: u64,
+pub struct LogEntryId {
     pub file: File,
     pub offset: u64,
+    pub timestamp: u64,
 }
 
 impl FileIndex {
-    /// Retrieve sorted (timestamp, entry offset) pairs with filtering.
+    /// Retrieve log entries with filtering.
     ///
     /// This method efficiently retrieves journal entries based on a timestamp anchor,
     /// direction, and optional filter. It uses binary search (partition point) to find
@@ -235,37 +235,13 @@ impl FileIndex {
     ///
     /// # Returns
     ///
-    /// A vector of (timestamp, entry_offset) pairs sorted by time according to direction:
+    /// A vector of `LogEntryId` items sorted by time according to direction:
     /// - Forward: Returns entries in ascending time order (oldest to newest after anchor)
     /// - Backward: Returns entries in descending time order (newest to oldest before/at anchor)
     ///
     /// The vector length will not exceed `limit`. Returns an empty vector if no entries
     /// match the criteria or if limit is 0.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use journal_file::index::{FileIndex, Filter, Direction, FieldName, FieldValuePair};
-    ///
-    /// // Get up to 100 error entries after timestamp 1000000000
-    /// let source_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP".to_string()).unwrap();
-    /// let filter = Filter::match_field_value_pair(
-    ///     FieldValuePair::parse("PRIORITY=3").unwrap()
-    /// );
-    /// let results = file_index.retrieve_sorted_entries(
-    ///     &journal_file,
-    ///     Some(&source_field),
-    ///     Some(&filter),
-    ///     1000000000,
-    ///     Direction::Forward,
-    ///     100
-    /// )?;
-    ///
-    /// for (timestamp, offset) in results {
-    ///     println!("Entry at {} with offset {}", timestamp, offset);
-    /// }
-    /// ```
-    pub fn retrieve_sorted_entries(
+    pub fn find_log_entries(
         &self,
         file: &File,
         source_timestamp_field: Option<&super::FieldName>,
@@ -273,7 +249,7 @@ impl FileIndex {
         anchor_timestamp: u64,
         direction: Direction,
         limit: usize,
-    ) -> Result<Vec<LogEntry>> {
+    ) -> Result<Vec<LogEntryId>> {
         // FIXME/TODO: using just the (anchor_timestamp, limit) is not good enough,
         // we need a `skip` argument as well. This would handle the case where
         // we have more than `limit` entries with the same timestamp. Highly
@@ -305,7 +281,7 @@ impl FileIndex {
             .map(|x| NonZeroU64::new(x as u64).unwrap())
             .collect();
 
-        let mut results = Vec::with_capacity(limit.min(entry_offsets.len()));
+        let mut log_entry_ids = Vec::with_capacity(limit.min(entry_offsets.len()));
 
         match direction {
             Direction::Forward => {
@@ -334,10 +310,10 @@ impl FileIndex {
                 for &entry_offset in entry_offsets.iter().skip(start_idx).take(limit) {
                     let timestamp =
                         get_entry_timestamp(&journal_file, source_timestamp_field, entry_offset)?;
-                    results.push(LogEntry {
+                    log_entry_ids.push(LogEntryId {
                         file: self.file.clone(),
-                        timestamp,
                         offset: entry_offset.get(),
+                        timestamp,
                     });
                 }
             }
@@ -366,7 +342,7 @@ impl FileIndex {
 
                 if partition_idx == 0 {
                     // All entries have timestamp > anchor, no results
-                    return Ok(results);
+                    return Ok(log_entry_ids);
                 }
 
                 // Start from the last entry <= anchor (at partition_idx - 1)
@@ -378,15 +354,15 @@ impl FileIndex {
                     let entry_offset = entry_offsets[i];
                     let timestamp =
                         get_entry_timestamp(&journal_file, source_timestamp_field, entry_offset)?;
-                    results.push(LogEntry {
+                    log_entry_ids.push(LogEntryId {
                         file: self.file.clone(),
-                        timestamp,
                         offset: entry_offset.get(),
+                        timestamp,
                     });
                 }
             }
         }
 
-        Ok(results)
+        Ok(log_entry_ids)
     }
 }

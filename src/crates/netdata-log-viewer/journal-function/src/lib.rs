@@ -3,7 +3,7 @@
 //! This crate provides the function handler infrastructure for the systemd-journal function,
 //! including error types, facets configuration, registry management with monitoring and metadata,
 //! caching infrastructure, indexing infrastructure, histogram service,
-//! and schema types for communicating with Netdata.
+//! and Netdata-specific formatting and protocol types.
 
 pub mod cache;
 pub mod charts;
@@ -12,8 +12,8 @@ pub mod facets;
 pub mod histogram;
 pub mod indexing;
 pub mod logs;
+pub mod netdata;
 pub mod registry;
-pub mod schema;
 
 // Re-export commonly used types
 pub use cache::{Cache, FileIndexCache, FileIndexKey};

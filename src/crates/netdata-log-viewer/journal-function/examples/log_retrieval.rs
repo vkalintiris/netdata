@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use clap::Parser;
-use journal_function::logs::{create_systemd_journal_transformations, log_entries_to_table, LogQuery};
+use journal_function::logs::{LogQuery, entry_data_to_table, systemd_transformations};
 use journal_function::*;
 use rt::StdPluginRuntime;
 use std::collections::HashMap;
@@ -214,9 +214,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let log_entries = LogQuery::new(&indexed_files)
         .with_anchor_usec(anchor_usec)
         .with_limit(args.limit)
-        .execute();
+        .execute()?;
 
-    info!("[12] Converting {} log entries to table...", log_entries.len());
+    info!(
+        "[12] Converting {} log entries to table...",
+        log_entries.len()
+    );
 
     // Define the columns we want to extract (timestamp is always the first column)
     let columns = vec![
@@ -229,10 +232,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Create transformation registry with systemd journal transformations
-    let transformations = create_systemd_journal_transformations();
+    let transformations = systemd_transformations();
 
     // Convert log entries to formatted table
-    let table = log_entries_to_table(log_entries, columns, &transformations)?;
+    let table = entry_data_to_table(&log_entries, columns, &transformations)?;
 
     info!(
         "[13] Successfully created table with {} rows and {} columns",

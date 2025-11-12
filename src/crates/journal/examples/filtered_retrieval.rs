@@ -141,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     drop(journal_file);
 
-    let results = file_index.retrieve_sorted_entries(
+    let results = file_index.find_log_entries(
         &file,
         Some(&source_field),
         filter.as_ref(),
