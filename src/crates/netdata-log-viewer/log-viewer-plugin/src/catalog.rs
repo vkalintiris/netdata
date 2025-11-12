@@ -10,9 +10,9 @@ use tracing::{error, info, instrument, warn};
 
 // Import types from journal-function crate
 use journal_function::{
-    BucketCacheMetrics, BucketOperationsMetrics, Facets, FileIndexCache, FileIndexingMetrics,
-    FileInfo, HistogramRequest, HistogramResponse, HistogramService, IndexingService, Monitor,
-    Registry, Result as CatalogResult,
+    BucketCacheMetrics, BucketOperationsMetrics, Facets, FileIndexCache, FileIndexKey,
+    FileIndexingMetrics, FileInfo, HistogramRequest, HistogramResponse, HistogramService,
+    IndexingService, Monitor, Registry, Result as CatalogResult,
     histogram::{BucketCompleteResponse, BucketRequest, BucketResponse},
     schema::types,
     schema::ui,
@@ -206,6 +206,88 @@ pub struct CatalogFunction {
 }
 
 impl CatalogFunction {
+    /// Test function: Query log entries and write to /tmp/log_query.txt
+    ///
+    /// This is a temporary test function to verify log query integration.
+    async fn test_log_query(&self, after: u32, before: u32) {
+        use journal_function::logs::{
+            LogQuery, create_systemd_journal_transformations, log_entries_to_table,
+        };
+
+        info!("Testing log query for time range [{}, {})", after, before);
+
+        // Find files in the time range
+        let file_infos = match self.inner.registry.find_files_in_range(after, before) {
+            Ok(files) => files,
+            Err(e) => {
+                warn!("Failed to find files in range: {}", e);
+                return;
+            }
+        };
+
+        info!("Found {} files in range", file_infos.len());
+
+        // Collect indexed files from cache (limit to first 10 for testing)
+        let mut indexed_files = Vec::new();
+        let facets = Facets::new(&[]);
+
+        for file_info in file_infos.iter().take(10) {
+            let key = FileIndexKey::new(&file_info.file, &facets);
+            match self.inner.file_index_cache.get(&key).await {
+                Ok(Some(index)) => indexed_files.push(index),
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("Failed to get index from cache: {}", e);
+                    continue;
+                }
+            }
+        }
+
+        info!("Found {} indexed files in cache", indexed_files.len());
+
+        if indexed_files.is_empty() {
+            info!("No indexed files available for log query test");
+            return;
+        }
+
+        // Query log entries
+        let anchor_usec = after as u64 * 1_000_000;
+        let entries = LogQuery::new(&indexed_files)
+            .with_anchor_usec(anchor_usec)
+            .with_limit(100)
+            .execute();
+
+        info!("Retrieved {} log entries", entries.len());
+
+        if entries.is_empty() {
+            info!("No log entries found in the specified range");
+            return;
+        }
+
+        // Convert log entries to formatted table
+        let columns = vec![
+            "PRIORITY".to_string(),
+            "MESSAGE".to_string(),
+            "_HOSTNAME".to_string(),
+            "SYSLOG_IDENTIFIER".to_string(),
+        ];
+
+        let transformations = create_systemd_journal_transformations();
+
+        match log_entries_to_table(entries, columns, &transformations) {
+            Ok(table) => {
+                let output = format!("{}", table);
+                match std::fs::write("/tmp/log_query.txt", output) {
+                    Ok(_) => info!("Wrote log query test results to /tmp/log_query.txt"),
+                    Err(e) => warn!("Failed to write log query test results: {}", e),
+                }
+            }
+            Err(e) => {
+                warn!("Failed to create table from log entries: {}", e);
+            }
+        }
+    }
+
     /// Create a new catalog function with the given monitor, file index cache, and metrics
     pub fn new(
         monitor: Monitor,
@@ -345,6 +427,9 @@ impl FunctionHandler for CatalogFunction {
             }
         })?;
         info!("Histogram computation complete");
+
+        // Test: Query log entries and write to file
+        self.test_log_query(request.after, request.before).await;
 
         // Read columns
         let path = "/tmp/columns.json";
