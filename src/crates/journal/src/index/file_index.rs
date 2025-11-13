@@ -13,9 +13,11 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
 /// Direction for iterating through entries
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     /// Iterate forward in time (from older to newer entries)
+    #[default]
     Forward,
     /// Iterate backward in time (from newer to older entries)
     Backward,

@@ -12,8 +12,7 @@ use tracing::{error, info, instrument, warn};
 use journal_function::{
     BucketCacheMetrics, BucketOperationsMetrics, Facets, FileIndexCache, FileIndexKey,
     FileIndexingMetrics, FileInfo, HistogramRequest, HistogramResponse, HistogramService,
-    IndexingService, Monitor, Registry, Result as CatalogResult,
-    netdata,
+    IndexingService, Monitor, Registry, Result as CatalogResult, netdata,
 };
 use rt::ChartHandle;
 
@@ -164,8 +163,10 @@ impl CatalogFunction {
         &self,
         after: u32,
         before: u32,
+        anchor: Option<u64>,
         facets: &[String],
         limit: usize,
+        direction: journal::index::Direction,
     ) -> Vec<journal_function::logs::LogEntryData> {
         use journal_function::logs::LogQuery;
 
@@ -206,8 +207,16 @@ impl CatalogFunction {
         }
 
         // Query log entries
-        let anchor_usec = after as u64 * 1_000_000;
+        // Use provided anchor (in microseconds), or compute from after/before based on direction
+        let anchor_usec = anchor.unwrap_or_else(|| {
+            match direction {
+                journal::index::Direction::Forward => after as u64 * 1_000_000,
+                journal::index::Direction::Backward => before as u64 * 1_000_000,
+            }
+        });
+
         match LogQuery::new(&indexed_files)
+            .with_direction(direction)
             .with_anchor_usec(anchor_usec)
             .with_limit(limit)
             .execute()
@@ -365,7 +374,14 @@ impl FunctionHandler for CatalogFunction {
 
         let limit = request.last.unwrap_or(200);
         let log_entries = self
-            .query_logs(request.after, request.before, &facets, limit)
+            .query_logs(
+                request.after,
+                request.before,
+                request.anchor,
+                &facets,
+                limit,
+                request.direction,
+            )
             .await;
 
         // Build Netdata UI response (columns + data)

@@ -4,6 +4,7 @@
 //! dashboard and the systemd-journal function plugin.
 
 use super::ui_types as ui; // ui_types is a sibling module in netdata
+use journal::index::Direction;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -12,11 +13,14 @@ pub struct JournalRequest {
     #[serde(default)]
     pub info: bool,
 
-    /// Unix timestamp for the start of the time range
+    /// Unix timestamp for the start of the time range (seconds)
     pub after: u32,
 
-    /// Unix timestamp for the end of the time range
+    /// Unix timestamp for the end of the time range (seconds)
     pub before: u32,
+
+    /// Anchor timestamp in microseconds for pagination
+    pub anchor: Option<u64>,
 
     /// Maximum number of results to return
     pub last: Option<usize>,
@@ -28,6 +32,10 @@ pub struct JournalRequest {
     /// Field name to use for histogram visualization
     #[serde(default)]
     pub histogram: String,
+
+    /// Direction for log retrieval (forward = oldest to newest, backward = newest to oldest)
+    #[serde(default)]
+    pub direction: Direction,
 
     /// Whether to slice the results
     pub slice: Option<bool>,
@@ -50,9 +58,11 @@ impl Default for JournalRequest {
             info: true,
             after: 0,
             before: 0,
+            anchor: None,
             last: Some(200),
             facets: Vec::new(),
             histogram: String::new(),
+            direction: Direction::Forward,
             slice: None,
             query: String::new(),
             selections: HashMap::new(),
