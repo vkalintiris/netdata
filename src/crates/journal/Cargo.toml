@@ -11,61 +11,58 @@ allocative = ["dep:allocative", "roaring/allocative"]
 indexing-stats = ["dep:hdrhistogram"]
 serde-api = ["dep:flatten-serde-json"]
 
-[profile.release]
-debug = true
-
-[profile.dev]
-opt-level = 1
-debug = true
-debug-assertions = true
-
 [dependencies]
 # Core dependencies
-static_assertions = "1.1"
-thiserror = "1.0"
-zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
-libc = "0.2"
-memmap2 = "0.9"
-uuid = { version = "1.0", features = ["v4", "rng", "serde"] }
-nix = { version = "0.30", features = ["user"] }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
+zerocopy = { workspace = true , features = ["derive"] }
+libc = { workspace = true }
+memmap2 = { workspace = true }
+uuid = { workspace = true , features = ["v4", "rng", "serde"] }
+nix = { workspace = true }
 
 # File format dependencies
-ruzstd = "0.8"
-zstd = "0.13"
-siphasher = "1.0"
-twox-hash = { version = "2.1", default-features = false, features = ["std"] }
-rand = "0.9"
-roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative", features = ["serde"] }
-lz4 = "1.25"
-serde = { version = "1.0", features = ["derive"] }
-rustc-hash = "2.1"
+ruzstd = { workspace = true }
+zstd = { workspace = true }
+siphasher = { workspace = true }
+
+twox-hash = { workspace = true, features = ["std"] }
+rand = { workspace = true }
+roaring = { workspace = true , features = ["serde"] }
+
+lz4 = { workspace = true }
+
+serde = { workspace =  true, features = ["derive"] }
+
+rustc-hash = { workspace = true }
 
 # File index depedencies
-bincode = { version = "1.3" }
+bincode = { workspace = true }
+notify = { workspace = true }
 
 # Registry dependencies
-notify = "8.2"
-parking_lot = "0.12"
-walkdir = "2.4"
-crossbeam-channel = "0.5"
-regex = "1.10"
-chrono = { version = "0.4", features = ["serde"] }
-bitvec = "1.0.1"
-serde_json = "1.0"
-anyhow = "1.0"
-arbitrary = "1.3"
+parking_lot = { workspace = true }
+walkdir = { workspace = true }
+crossbeam-channel = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+bitvec = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+arbitrary = { workspace = true }
 
-tracing = "0.1"
-allocative = { version = "0.3.4", optional = true }
-hdrhistogram = { version = "7.5", optional = true }
-tokio = { version = "1.35", features = ["rt", "sync", "macros", "rt-multi-thread"] }
-flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1", optional = true }
+tracing = { workspace = true }
+allocative = { workspace = true, optional = true }
+hdrhistogram = { workspace = true, optional = true }
+
+tokio = { workspace = true, features = ["rt", "sync", "macros", "rt-multi-thread"] }
+flatten-serde-json = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = { version = "3" }
-rayon = "1.10"
-clap = { version = "4.5", features = ["derive"] }
-tracing-subscriber = "0.3"
+tempfile = { workspace = true }
+rayon = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tracing-subscriber = { workspace = true }
 
 [[example]]
 name = "basic_usage"
