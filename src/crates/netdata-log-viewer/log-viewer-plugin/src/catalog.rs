@@ -374,8 +374,13 @@ impl FunctionHandler for CatalogFunction {
         // Get transformations for histogram chart labels
         let transformations = netdata::systemd_transformations();
 
-        // Get the PRIORITY field name for the histogram
-        let priority_field = FieldName::new_unchecked("PRIORITY");
+        // Determine which field to use for the histogram (default to PRIORITY if not specified)
+        let histogram_field_name = if request.histogram.is_empty() {
+            "PRIORITY"
+        } else {
+            &request.histogram
+        };
+        let histogram_field = FieldName::new_unchecked(histogram_field_name);
 
         let response = CatalogResponse {
             auxiliary: netdata::Auxiliary {
@@ -386,7 +391,7 @@ impl FunctionHandler for CatalogFunction {
             accepted_params: accepted_params(),
             required_params: required_params(),
             facets: netdata::facets(&histogram_response, &transformations),
-            histogram: netdata::histogram(&histogram_response, &priority_field, &transformations),
+            histogram: netdata::histogram(&histogram_response, &histogram_field, &transformations),
             available_histograms: netdata::available_histograms(&histogram_response),
             columns,
             data,

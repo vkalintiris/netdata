@@ -25,6 +25,10 @@ pub struct JournalRequest {
     #[serde(default)]
     pub facets: Vec<String>,
 
+    /// Field name to use for histogram visualization
+    #[serde(default)]
+    pub histogram: String,
+
     /// Whether to slice the results
     pub slice: Option<bool>,
 
@@ -48,6 +52,7 @@ impl Default for JournalRequest {
             before: 0,
             last: Some(200),
             facets: Vec::new(),
+            histogram: String::new(),
             slice: None,
             query: String::new(),
             selections: HashMap::new(),
