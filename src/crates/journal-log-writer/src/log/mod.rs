@@ -1,5 +1,5 @@
 mod chain;
-use chain::Chain;
+use chain::OwnedChain;
 
 mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, span, warn};
 
-fn create_chain(path: &Path) -> Result<Chain> {
+fn create_chain(path: &Path) -> Result<OwnedChain> {
     let machine_id = journal_core::file::file::load_machine_id()?;
 
     if path.exists() && !path.is_dir() {
@@ -38,7 +38,7 @@ fn create_chain(path: &Path) -> Result<Chain> {
         return Err(JournalError::InvalidFilename);
     }
 
-    Chain::new(path, machine_id)
+    OwnedChain::new(path, machine_id)
 }
 
 /// Tracks rotation state for size and count limits
@@ -89,7 +89,7 @@ pub struct ActiveFile {
 impl ActiveFile {
     /// Creates a new journal file with the given parameters
     fn create(
-        chain: &mut Chain,
+        chain: &mut OwnedChain,
         seqnum_id: uuid::Uuid,
         boot_id: uuid::Uuid,
         next_seqnum: u64,
@@ -119,7 +119,7 @@ impl ActiveFile {
     }
 
     /// Creates a successor file, inheriting settings from this file
-    fn rotate(self, chain: &mut Chain, max_file_size: Option<u64>) -> Result<Self> {
+    fn rotate(self, chain: &mut OwnedChain, max_file_size: Option<u64>) -> Result<Self> {
         let next_seqnum = self.writer.next_seqnum();
         let boot_id = self.writer.boot_id();
 
@@ -157,7 +157,7 @@ impl ActiveFile {
 }
 
 pub struct Log {
-    chain: Chain,
+    chain: OwnedChain,
     config: Config,
     active_file: Option<ActiveFile>,
     rotation_state: RotationState,

@@ -1,10 +1,12 @@
 pub mod error;
 pub mod file;
 pub mod collection;
+pub mod metadata;
 
 pub use crate::repository::error::{RepositoryError, Result};
 pub use crate::repository::file::{File, FileInner, Origin, Source, Status, scan_journal_files};
 pub use crate::repository::collection::{Chain, Repository};
+pub use crate::repository::metadata::{FileInfo, TimeRange};
 
 #[cfg(test)]
 mod tests {

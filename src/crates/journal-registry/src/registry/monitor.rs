@@ -1,18 +1,19 @@
 use super::error::Result;
-use crossbeam_channel::{Receiver, Sender, unbounded};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
+use tokio::sync::mpsc;
 
+/// File system watcher that sends events through an async channel
+#[derive(Debug)]
 pub struct Monitor {
     /// The watcher instance
     watcher: RecommendedWatcher,
-    /// Channel for events
-    event_receiver: Receiver<Event>,
 }
 
 impl Monitor {
-    pub fn new() -> Result<Self> {
-        let (event_sender, event_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
+    /// Create a new monitor and return it with its event receiver
+    pub fn new() -> Result<(Self, mpsc::UnboundedReceiver<Event>)> {
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         let watcher = RecommendedWatcher::new(
             move |res| {
@@ -23,32 +24,20 @@ impl Monitor {
             notify::Config::default(),
         )?;
 
-        Ok(Self {
-            watcher,
-            event_receiver,
-        })
+        Ok((Self { watcher }, event_receiver))
     }
 
+    /// Start watching a directory for file system events
     pub fn watch_directory(&mut self, path: &str) -> Result<()> {
-        // Start watching with notify
         self.watcher
-            .watch(Path::new(path), RecursiveMode::NonRecursive)?;
+            .watch(Path::new(path), RecursiveMode::Recursive)?;
 
         Ok(())
     }
 
+    /// Stop watching a directory
     pub fn unwatch_directory(&mut self, path: &str) -> Result<()> {
-        // Stop watching
         self.watcher.unwatch(Path::new(path))?;
         Ok(())
-    }
-
-    /// Collect all events from the queue
-    pub fn collect(&mut self, events: &mut Vec<Event>) {
-        events.clear();
-
-        while let Ok(event) = self.event_receiver.try_recv() {
-            events.push(event);
-        }
     }
 }

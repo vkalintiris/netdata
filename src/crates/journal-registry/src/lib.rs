@@ -30,4 +30,4 @@ pub mod registry;
 pub mod repository;
 
 pub use registry::{Monitor, Registry, RegistryError};
-pub use repository::{Chain, File, FileInner, Origin, Repository, RepositoryError, Source, Status};
+pub use repository::{Chain, File, FileInfo, FileInner, Origin, Repository, RepositoryError, Source, Status, TimeRange};

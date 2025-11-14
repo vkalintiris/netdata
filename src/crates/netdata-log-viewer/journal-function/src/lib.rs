@@ -13,7 +13,6 @@ pub mod histogram;
 pub mod indexing;
 pub mod logs;
 pub mod netdata;
-pub mod registry;
 
 // Re-export commonly used types
 pub use cache::{Cache, FileIndexCache, FileIndexKey};
@@ -29,5 +28,5 @@ pub use histogram::{
 pub use indexing::{
     FileIndexStream, FileIndexRequest, FileIndexResponse, IndexingService, IteratorError,
 };
-pub use journal_registry::File;
-pub use registry::{FileInfo, Monitor, Registry, TimeRange};
+// Re-export registry types from journal_registry
+pub use journal_registry::{File, FileInfo, Monitor, Registry, TimeRange};

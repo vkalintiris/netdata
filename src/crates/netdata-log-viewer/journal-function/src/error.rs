@@ -18,6 +18,10 @@ pub enum CatalogError {
     #[error("Repository error: {0}")]
     Repository(#[from] journal_registry::RepositoryError),
 
+    /// Error from registry operations
+    #[error("Registry error: {0}")]
+    Registry(#[from] journal_registry::RegistryError),
+
     /// Error when parsing a journal file path
     #[error("Failed to parse journal file path: {path}")]
     InvalidPath { path: String },

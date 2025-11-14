@@ -37,7 +37,7 @@ pub(crate) fn create_chain_file(
 /// Scans the directory for existing files, tracks their sizes, and enforces retention
 /// policies. Typically not used directly - see [`JournalLog`](crate::JournalLog) instead.
 #[derive(Debug)]
-pub struct Chain {
+pub struct OwnedChain {
     pub(crate) path: PathBuf,
     pub(crate) machine_id: Uuid,
 
@@ -46,7 +46,7 @@ pub struct Chain {
     pub(crate) total_size: u64,
 }
 
-impl Chain {
+impl OwnedChain {
     pub fn new(path: PathBuf, machine_id: Uuid) -> Result<Self> {
         #[cfg(debug_assertions)]
         {

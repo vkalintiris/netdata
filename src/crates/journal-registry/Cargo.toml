@@ -11,11 +11,12 @@ uuid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 notify = { workspace = true }
 walkdir = { workspace = true }
-crossbeam-channel = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+parking_lot = { workspace = true }
 
 # Optional allocative support for memory profiling
 allocative = { workspace = true, optional = true }
