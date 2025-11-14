@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
     info!("Watching journal directory: {:?}", args.journal_path);
 
     // Give the registry a moment to scan the directory
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Create file index cache (using simple HashMap for now)
     let file_index_cache = FileIndexCache::with_hashmap(std::collections::HashMap::new());
