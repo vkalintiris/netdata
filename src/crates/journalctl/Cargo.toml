@@ -8,7 +8,8 @@ name = "journalctl"
 path = "src/main.rs"
 
 [dependencies]
-journal = { path = "../journal" }
+journal-core = { workspace = true }
+journal-index = { workspace = true }
 clap = { workspace = true , features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

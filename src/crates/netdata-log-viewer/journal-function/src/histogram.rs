@@ -9,9 +9,9 @@ use super::{
     FileIndexStream, IndexingService, Registry,
 };
 use futures::StreamExt;
-use journal::FieldName;
-use journal::collections::{HashMap, HashSet};
-use journal::index::Filter;
+use journal_index::{FieldName, FieldValuePair};
+use journal_core::collections::{HashMap, HashSet};
+use journal_index::Filter;
 use parking_lot::RwLock;
 use rt::ChartHandle;
 use std::time::Duration;
@@ -185,7 +185,7 @@ pub(crate) struct BucketPartialResponse {
     pub(crate) request_metadata: RequestMetadata,
 
     /// Maps field=value pairs to (unfiltered, filtered) counts
-    pub(crate) fv_counts: HashMap<journal::FieldValuePair, (usize, usize)>,
+    pub(crate) fv_counts: HashMap<FieldValuePair, (usize, usize)>,
 
     /// Set of fields that are not indexed
     pub(crate) unindexed_fields: HashSet<FieldName>,
@@ -219,7 +219,7 @@ impl BucketPartialResponse {
 #[derive(Debug, Clone)]
 pub struct BucketCompleteResponse {
     /// Maps field=value pairs to (unfiltered, filtered) counts
-    pub fv_counts: HashMap<journal::FieldValuePair, (usize, usize)>,
+    pub fv_counts: HashMap<FieldValuePair, (usize, usize)>,
     /// Set of fields that are not indexed
     pub unindexed_fields: HashSet<FieldName>,
 }
@@ -273,7 +273,7 @@ impl BucketResponse {
     }
 
     /// Get a reference to the fv_counts HashMap regardless of variant.
-    pub fn fv_counts(&self) -> &HashMap<journal::FieldValuePair, (usize, usize)> {
+    pub fn fv_counts(&self) -> &HashMap<FieldValuePair, (usize, usize)> {
         match &self.0 {
             BucketResponseInner::Partial(partial) => &partial.fv_counts,
             BucketResponseInner::Complete(complete) => &complete.fv_counts,
@@ -640,7 +640,7 @@ impl HistogramService {
 
                                     // Update counts
                                     if let Some(pair) =
-                                        journal::FieldValuePair::parse(indexed_field)
+                                        FieldValuePair::parse(indexed_field)
                                     {
                                         let counts =
                                             partial.fv_counts.entry(pair).or_insert((0, 0));

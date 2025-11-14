@@ -4,8 +4,8 @@
 //! including file system monitoring, metadata management, and file collection.
 
 use super::{CatalogError, File, Result};
-use journal::collections::{HashMap, HashSet};
-use journal::repository::{Repository as BaseRepository, scan_journal_files};
+use journal_core::collections::{HashMap, HashSet};
+use journal_core::repository::{Repository as BaseRepository, scan_journal_files};
 use notify::{
     Event, RecommendedWatcher, RecursiveMode, Watcher,
     event::{EventKind, ModifyKind, RenameMode},

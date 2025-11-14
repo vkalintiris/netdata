@@ -9,7 +9,8 @@ use super::ui_types::{
     Histogram,
 };
 use crate::histogram::HistogramResponse;
-use journal::collections::HashSet;
+use journal_core::collections::HashSet;
+use journal_index::FieldName;
 
 /// Creates a list of available histograms from a HistogramResponse.
 ///
@@ -48,7 +49,7 @@ pub fn available_histograms(histogram_response: &HistogramResponse) -> Vec<Avail
 /// * `transformations` - Transformation registry for field value display
 pub fn histogram(
     histogram_response: &HistogramResponse,
-    field: &journal::FieldName,
+    field: &FieldName,
     transformations: &TransformationRegistry,
 ) -> Histogram {
     let field_str = field.as_str();
@@ -62,7 +63,7 @@ pub fn histogram(
 /// Creates a Chart for the given field from a HistogramResponse.
 fn chart_from_histogram(
     histogram_response: &HistogramResponse,
-    field: &journal::FieldName,
+    field: &FieldName,
     transformations: &TransformationRegistry,
 ) -> Chart {
     let result = chart_result_from_histogram(histogram_response, field, transformations);
@@ -74,7 +75,7 @@ fn chart_from_histogram(
 /// Creates chart result data for the given field from a HistogramResponse.
 fn chart_result_from_histogram(
     histogram_response: &HistogramResponse,
-    field: &journal::FieldName,
+    field: &FieldName,
     transformations: &TransformationRegistry,
 ) -> ChartResult {
     let field_str = field.as_str();
@@ -144,7 +145,7 @@ fn chart_result_from_histogram(
 /// Creates chart view metadata for the given field from a HistogramResponse.
 fn chart_view_from_histogram(
     histogram_response: &HistogramResponse,
-    field: &journal::FieldName,
+    field: &FieldName,
     labels: &[String],
 ) -> ChartView {
     let ids: Vec<String> = labels.iter().skip(1).cloned().collect();

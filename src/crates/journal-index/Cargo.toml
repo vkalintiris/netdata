@@ -1,0 +1,40 @@
+[package]
+name = "journal-index"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+collapsible_if = "allow"
+
+[features]
+allocative = ["dep:allocative", "roaring/allocative", "journal-core/allocative"]
+indexing-stats = ["dep:hdrhistogram"]
+
+[dependencies]
+# Journal core dependency
+journal-core = { path = "../journal-core" }
+
+# Core dependencies
+thiserror = { workspace = true }
+
+# Indexing dependencies
+roaring = { workspace = true , features = ["serde"] }
+bincode = { workspace = true }
+notify = { workspace = true }
+bitvec = { workspace = true }
+arbitrary = { workspace = true }
+
+serde = { workspace =  true, features = ["derive"] }
+rustc-hash = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+lz4 = { workspace = true }
+
+tracing = { workspace = true }
+allocative = { workspace = true, optional = true }
+hdrhistogram = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tracing-subscriber = { workspace = true }
+journal-core = { path = "../journal-core" }

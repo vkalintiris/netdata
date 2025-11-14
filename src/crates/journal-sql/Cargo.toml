@@ -9,7 +9,8 @@ datafusion = { path = "/home/vk/repos/crates/datafusion/datafusion/core" }
 datafusion-common = { path = "/home/vk/repos/crates/datafusion/datafusion/common" }
 
 # Workspace dependencies
-journal = { workspace = true }
+journal-core = { workspace = true }
+journal-index = { workspace = true }
 journal-function = { workspace = true }
 rt = { workspace = true }
 tokio = { workspace = true }

@@ -2,7 +2,7 @@
 //!
 //! Facets determine which fields should be indexed when processing journal files.
 
-use journal::FieldName;
+use journal_index::FieldName;
 use std::hash::Hash;
 use std::sync::Arc;
 

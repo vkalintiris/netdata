@@ -1,5 +1,5 @@
 [package]
-name = "journal"
+name = "journal-core"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,7 @@ edition = "2024"
 collapsible_if = "allow"
 
 [features]
-allocative = ["dep:allocative", "roaring/allocative"]
-indexing-stats = ["dep:hdrhistogram"]
-serde-api = ["dep:flatten-serde-json"]
+allocative = ["dep:allocative"]
 
 [dependencies]
 # Core dependencies
@@ -28,7 +26,6 @@ siphasher = { workspace = true }
 
 twox-hash = { workspace = true, features = ["std"] }
 rand = { workspace = true }
-roaring = { workspace = true , features = ["serde"] }
 
 lz4 = { workspace = true }
 
@@ -36,27 +33,20 @@ serde = { workspace =  true, features = ["derive"] }
 
 rustc-hash = { workspace = true }
 
-# File index depedencies
-bincode = { workspace = true }
-notify = { workspace = true }
-
 # Registry dependencies
 parking_lot = { workspace = true }
 walkdir = { workspace = true }
 crossbeam-channel = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-bitvec = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-arbitrary = { workspace = true }
+notify = { workspace = true }
 
 tracing = { workspace = true }
 allocative = { workspace = true, optional = true }
-hdrhistogram = { workspace = true, optional = true }
 
 tokio = { workspace = true, features = ["rt", "sync", "macros", "rt-multi-thread"] }
-flatten-serde-json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -73,35 +63,9 @@ name = "basic_usage_with_cache"
 path = "examples/basic_usage_with_cache.rs"
 
 [[example]]
-name = "histogram_viewer"
-path = "examples/histogram_viewer.rs"
-
-[[example]]
-name = "filtered_histogram_viewer"
-path = "examples/filtered_histogram_viewer.rs"
-
-[[example]]
-name = "file_index"
-path = "examples/file_index.rs"
-
-[[example]]
-name = "fuzzy_histogram_test"
-path = "examples/fuzzy_histogram_test.rs"
-
-[[example]]
 name = "paths"
 path = "examples/paths.rs"
 
 [[example]]
 name = "head_tail_seqnum"
 path = "examples/head_tail_seqnum.rs"
-
-[[example]]
-name = "structured_logging"
-path = "examples/structured_logging.rs"
-required-features = ["serde-api"]
-
-[[example]]
-name = "filtered_retrieval"
-path = "examples/filtered_retrieval.rs"
-

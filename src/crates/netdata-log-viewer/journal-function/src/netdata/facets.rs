@@ -6,8 +6,8 @@
 use crate::histogram::HistogramResponse;
 use super::transformations::TransformationRegistry;
 use super::ui_types::{Facet, FacetOption};
-use journal::FieldValuePair;
-use journal::collections::HashMap;
+use journal_index::FieldValuePair;
+use journal_core::collections::HashMap;
 
 /// Creates a list of facets from a HistogramResponse.
 ///

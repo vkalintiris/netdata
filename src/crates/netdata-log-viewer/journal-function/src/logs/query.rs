@@ -4,10 +4,10 @@
 //! merging log entries from multiple indexed journal files, as well as
 //! functions for extracting raw field data from journal entries.
 
-use journal::Result;
-use journal::file::{JournalFile, Mmap};
-use journal::index::{Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId};
-use journal::repository::File;
+use journal_core::Result;
+use journal_core::file::{JournalFile, Mmap};
+use journal_index::{Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId};
+use journal_core::repository::File;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
@@ -23,7 +23,7 @@ use std::num::NonZeroU64;
 /// # Example
 ///
 /// ```ignore
-/// use journal::index::Direction;
+/// use journal_index::Direction;
 /// use journal_function::logs::LogQuery;
 ///
 /// let entries = LogQuery::new(&file_indexes)
@@ -392,7 +392,7 @@ fn extract_entry_data(log_entries: &[LogEntryId]) -> Result<Vec<LogEntryData>> {
         for (original_idx, entry) in file_entries {
             // Read the entry at the specified offset
             let entry_offset =
-                NonZeroU64::new(entry.offset).ok_or(journal::JournalError::InvalidOffset)?;
+                NonZeroU64::new(entry.offset).ok_or(journal_core::JournalError::InvalidOffset)?;
             let entry_guard = journal_file.entry_ref(entry_offset)?;
 
             // Collect all data object offsets for this entry

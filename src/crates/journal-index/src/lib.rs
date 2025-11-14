@@ -1,3 +1,11 @@
+//! Indexing functionality for systemd journal files.
+//!
+//! This crate provides:
+//! - Histograms for time-based aggregation
+//! - File indexing for fast lookups
+//! - Bitmap-based filtering
+//! - Field type definitions
+
 pub mod histogram;
 pub use histogram::{Bucket, Histogram};
 

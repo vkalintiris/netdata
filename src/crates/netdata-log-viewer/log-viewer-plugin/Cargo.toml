@@ -30,7 +30,8 @@ foyer = { workspace = true }
 # journal-query = { workspace = true }
 # types = { path = "../types" }
 
-journal = { workspace = true }
+journal-core = { workspace = true }
+journal-index = { workspace = true }
 journal-function = { workspace = true }
 
 [lints]

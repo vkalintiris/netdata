@@ -4,7 +4,7 @@
 //! dashboard and the systemd-journal function plugin.
 
 use super::ui_types as ui; // ui_types is a sibling module in netdata
-use journal::index::Direction;
+use journal_index::Direction;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

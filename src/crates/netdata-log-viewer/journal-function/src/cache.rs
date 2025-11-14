@@ -151,7 +151,7 @@ where
 // ============================================================================
 
 use super::{Facets, File};
-use journal::index::FileIndex;
+use journal_index::FileIndex;
 
 /// Cache key for file indexes that includes both the file and the facets.
 /// Different facet configurations produce different indexes, so both are

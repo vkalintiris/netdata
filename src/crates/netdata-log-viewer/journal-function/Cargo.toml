@@ -24,7 +24,8 @@ schemars = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 nix = { workspace = true, features = ["user"] }
 
-journal = { workspace = true }
+journal-core = { workspace = true }
+journal-index = { workspace = true }
 rt = { path = "../../netdata-plugin/rt" }
 
 allocative = { workspace = true, optional = true }

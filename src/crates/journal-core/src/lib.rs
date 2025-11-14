@@ -1,14 +1,14 @@
-//! High-level and low-level APIs for working with systemd journal files.
+//! Core functionality for working with systemd journal files.
 //!
 //! This crate provides:
 //! - Low-level file I/O: [`mod@file`] module
 //! - High-level journaling with rotation: [`log`] module
-//! - File tracking and monitoring: [`registry`] module
+//! - File tracking and monitoring: [`registry`] and [`repository`] modules
 //!
 //! # Examples
 //!
 //! ```no_run
-//! use journal::log::{JournalLog, JournalLogConfig, RotationPolicy};
+//! use journal_core::log::{JournalLog, JournalLogConfig, RotationPolicy};
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!
 //! let config = JournalLogConfig::new("/var/log/journal")
@@ -44,14 +44,8 @@ pub mod repository;
 // Journal file tracking and monitoring
 pub mod registry;
 
-// Journal file indexing
-pub mod index;
-
 // Re-export commonly used types for convenience
 pub use error::{JournalError, Result};
-
-// Field types re-exports from index module
-pub use index::{FieldName, FieldValuePair};
 
 // File module re-exports
 pub use file::{

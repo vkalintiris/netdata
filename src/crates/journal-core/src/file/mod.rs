@@ -37,4 +37,7 @@ pub use crate::file::hash::journal_hash_data;
 // Internal re-exports needed by the crate itself (not part of public API)
 pub(crate) use object::*;
 
+// Re-export DataObject for journal-index
+pub use object::DataObject;
+
 pub type JournalFileMap = JournalFile<Mmap>;

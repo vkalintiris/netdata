@@ -8,8 +8,9 @@
 use super::{CatalogError, File, FileIndexCache, FileIndexKey, FileIndexingMetrics, Result};
 use async_stream::stream;
 use futures::stream::Stream;
-use journal::index::{FileIndex, FileIndexer};
-use journal::{FieldName, JournalFile, file::Mmap};
+use journal_index::{FileIndex, FileIndexer};
+use journal_index::FieldName;
+use journal_core::{JournalFile, file::Mmap};
 use rt::ChartHandle;
 use std::pin::Pin;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -76,7 +77,7 @@ pub struct FileIndexRequest {
     /// The file and facets to index
     pub key: FileIndexKey,
     /// Field name to use for timestamps when indexing
-    pub source_timestamp_field: journal::FieldName,
+    pub source_timestamp_field: FieldName,
     /// Duration of histogram buckets in seconds
     pub bucket_duration: u32,
     /// When this request was created (for age-based filtering)
@@ -87,7 +88,7 @@ impl FileIndexRequest {
     /// Creates a new file index request.
     pub fn new(
         key: FileIndexKey,
-        source_timestamp_field: journal::FieldName,
+        source_timestamp_field: FieldName,
         bucket_duration: u32,
     ) -> Self {
         Self {
@@ -105,12 +106,12 @@ pub struct FileIndexResponse {
     /// The file and facets that were indexed
     pub key: FileIndexKey,
     /// The result of the indexing operation
-    pub result: Result<journal::index::FileIndex>,
+    pub result: Result<FileIndex>,
 }
 
 impl FileIndexResponse {
     /// Creates a new file index response.
-    pub fn new(key: FileIndexKey, result: Result<journal::index::FileIndex>) -> Self {
+    pub fn new(key: FileIndexKey, result: Result<FileIndex>) -> Self {
         Self { key, result }
     }
 
@@ -438,7 +439,7 @@ impl FileIndexStream {
     /// This is a convenience method for consuming the entire stream and
     /// collecting all files that were successfully indexed. Files that fail
     /// to index are silently skipped.
-    pub async fn collect_indexes(mut self) -> Result<Vec<journal::index::FileIndex>> {
+    pub async fn collect_indexes(mut self) -> Result<Vec<FileIndex>> {
         use futures::stream::StreamExt;
 
         let mut results = Vec::new();

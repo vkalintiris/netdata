@@ -2,10 +2,10 @@ use super::{
     Bitmap, Histogram,
     field_types::{FieldName, FieldValuePair},
 };
-use crate::collections::{HashMap, HashSet};
-use crate::error::{JournalError, Result};
-use crate::file::{JournalFile, Mmap};
-use crate::repository::File;
+use journal_core::collections::{HashMap, HashSet};
+use journal_core::error::{JournalError, Result};
+use journal_core::file::{JournalFile, Mmap};
+use journal_core::repository::File;
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use bincode;

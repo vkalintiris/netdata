@@ -27,8 +27,8 @@ pub type CatalogRequest = netdata::JournalRequest;
 /// Response from the catalog function (uses journal response structure)
 pub type CatalogResponse = netdata::JournalResponse;
 
-use journal::index::Filter;
-use journal::{FieldName, FieldValuePair};
+use journal_index::Filter;
+use journal_index::{FieldName, FieldValuePair};
 
 /// Builds a Filter from the selections HashMap
 #[instrument(skip(selections))]
@@ -166,7 +166,7 @@ impl CatalogFunction {
         anchor: Option<u64>,
         facets: &[String],
         limit: usize,
-        direction: journal::index::Direction,
+        direction: journal_index::Direction,
     ) -> Vec<journal_function::logs::LogEntryData> {
         use journal_function::logs::LogQuery;
 
@@ -210,8 +210,8 @@ impl CatalogFunction {
         // Use provided anchor (in microseconds), or compute from after/before based on direction
         let anchor_usec = anchor.unwrap_or_else(|| {
             match direction {
-                journal::index::Direction::Forward => after as u64 * 1_000_000,
-                journal::index::Direction::Backward => before as u64 * 1_000_000,
+                journal_index::Direction::Forward => after as u64 * 1_000_000,
+                journal_index::Direction::Backward => before as u64 * 1_000_000,
             }
         });
 

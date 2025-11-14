@@ -19,7 +19,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 use futures::stream::{self, StreamExt};
-use journal::index::Direction;
+use journal_index::Direction;
 use journal_function::indexing::{FileIndexRequest, IndexingService};
 use journal_function::logs::{LogEntryData, LogQuery};
 use journal_function::{Facets, FileIndexCache, FileIndexKey, Registry};
@@ -123,7 +123,7 @@ impl JournalTableProvider {
         info!("Requesting indexing for {} files", file_infos.len());
         for file_info in file_infos.iter() {
             let key = FileIndexKey::new(&file_info.file, &facets_obj);
-            let source_timestamp_field = journal::FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP");
+            let source_timestamp_field = journal_index::FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP");
             let bucket_duration = 60; // 60 second buckets
             let request = FileIndexRequest::new(key, source_timestamp_field, bucket_duration);
             self.indexing_service.queue_indexing(request);

@@ -2,9 +2,9 @@ use super::{
     Bitmap, Histogram,
     field_types::{FieldName, FieldValuePair},
 };
-use crate::collections::{HashMap, HashSet};
-use crate::error::{JournalError, Result};
-use crate::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
+use journal_core::collections::{HashMap, HashSet};
+use journal_core::error::{JournalError, Result};
+use journal_core::file::{DataObject, HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
 #[cfg(feature = "allocative")]
 use allocative::Allocative;
 use std::num::{NonZeroU32, NonZeroU64};

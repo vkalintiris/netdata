@@ -1,6 +1,6 @@
 use super::query::LogEntryData;
 use crate::netdata::TransformationRegistry;
-use journal::Result;
+use journal_core::Result;
 use std::collections::HashMap;
 use std::fmt;
 

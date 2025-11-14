@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
-use journal::log::{Config, Log, RetentionPolicy, RotationPolicy};
-use journal::repository::Origin;
+use journal_core::log::{Config, Log, RetentionPolicy, RotationPolicy};
+use journal_core::repository::Origin;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
@@ -29,11 +29,11 @@ impl NetdataLogsService {
             .with_size_of_journal_files(logs_config.size_of_journal_files.as_u64())
             .with_duration_of_journal_files(logs_config.duration_of_journal_files);
 
-        let machine_id = journal::file::file::load_machine_id()?;
+        let machine_id = journal_core::file::file::load_machine_id()?;
         let origin = Origin {
             machine_id: Some(machine_id),
             namespace: None,
-            source: journal::repository::Source::System,
+            source: journal_core::repository::Source::System,
         };
 
         let path = std::path::Path::new(&logs_config.journal_dir);

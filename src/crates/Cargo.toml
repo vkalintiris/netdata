@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     # Individual crates
-    "journal",
+    "journal-core",
+    "journal-index",
     "journalctl",
     "journal-sql",
 
@@ -120,7 +121,8 @@ tower = "0.5"
 flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }
 
 # Internal workspace crates
-journal = { path = "journal" }
+journal-core = { path = "journal-core" }
+journal-index = { path = "journal-index" }
 journalctl = { path = "journalctl" }
 
 # Netdata plugin crates
