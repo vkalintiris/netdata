@@ -8,6 +8,7 @@ This directory contains a Cargo workspace with multiple crates for Netdata's Rus
 
 - **journal** - Low-level systemd journal file parser and indexer
 - **journalctl** - Binary utility for journal operations
+- **journal-sql** - SQL query interface for journal logs using Apache DataFusion
 
 ### Netdata Plugin Framework
 
@@ -50,6 +51,14 @@ Build a specific crate:
 cargo build -p journal
 cargo build -p log-viewer-plugin
 cargo build -p otel-plugin
+cargo build -p journal-sql
+```
+
+Run a binary crate:
+
+```bash
+cargo run -p journalctl -- --help
+cargo run -p journal-sql -- --help
 ```
 
 ## Testing

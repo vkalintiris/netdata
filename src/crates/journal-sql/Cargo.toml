@@ -1,0 +1,29 @@
+[package]
+name = "journal-sql"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# DataFusion (using local path)
+datafusion = { path = "/home/vk/repos/crates/datafusion/datafusion/core" }
+datafusion-common = { path = "/home/vk/repos/crates/datafusion/datafusion/common" }
+
+# Workspace dependencies
+journal = { workspace = true }
+journal-function = { workspace = true }
+rt = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+# Additional dependencies
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[[bin]]
+name = "journal-sql"
+path = "src/main.rs"

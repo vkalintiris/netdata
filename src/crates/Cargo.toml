@@ -4,6 +4,7 @@ members = [
     # Individual crates
     "journal",
     "journalctl",
+    "journal-sql",
 
     # Netdata plugin workspace members
     "netdata-plugin/error",
