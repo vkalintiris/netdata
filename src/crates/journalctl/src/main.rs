@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use journal_core::file::{JournalFile, Mmap};
-use journal_core::repository::File as RepositoryFile;
+use journal_registry::File as RepositoryFile;
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;

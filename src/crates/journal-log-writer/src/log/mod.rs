@@ -7,7 +7,7 @@ pub use config::{Config, RetentionPolicy, RotationPolicy};
 use journal_core::error::{JournalError, Result};
 use journal_core::file::mmap::MmapMut;
 use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, load_boot_id};
-use journal_core::repository;
+use journal_registry::repository;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 journal-core = { workspace = true }
+journal-registry = { workspace = true }
 
 uuid = { workspace = true }
 tracing = { workspace = true }

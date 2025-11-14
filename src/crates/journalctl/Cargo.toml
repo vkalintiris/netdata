@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 journal-core = { workspace = true }
 journal-index = { workspace = true }
+journal-registry = { workspace = true }
 clap = { workspace = true , features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

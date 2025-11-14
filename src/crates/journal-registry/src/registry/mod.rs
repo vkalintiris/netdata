@@ -1,7 +1,7 @@
 pub mod error;
 pub use error::RegistryError;
 
-use crate::collections::HashSet;
+use journal_common::collections::HashSet;
 use crate::registry::error::Result;
 use crate::repository::{File, Repository, scan_journal_files};
 #[cfg(feature = "allocative")]

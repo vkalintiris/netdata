@@ -1,4 +1,4 @@
-use journal_core::repository::Origin;
+use journal_registry::Origin;
 use std::time::Duration;
 
 /// Controls when journal files should be rotated

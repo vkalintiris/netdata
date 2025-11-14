@@ -1,4 +1,4 @@
-use crate::collections::{HashMap, VecDeque};
+use journal_common::collections::{HashMap, VecDeque};
 use crate::repository::error::Result;
 use crate::repository::file::{File, Origin, Status};
 #[cfg(feature = "allocative")]

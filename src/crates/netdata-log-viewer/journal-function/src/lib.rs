@@ -29,5 +29,5 @@ pub use histogram::{
 pub use indexing::{
     FileIndexStream, FileIndexRequest, FileIndexResponse, IndexingService, IteratorError,
 };
-pub use journal_core::repository::File;
+pub use journal_registry::File;
 pub use registry::{FileInfo, Monitor, Registry, TimeRange};

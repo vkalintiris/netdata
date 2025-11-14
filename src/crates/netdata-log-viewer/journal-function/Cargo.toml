@@ -26,6 +26,7 @@ nix = { workspace = true, features = ["user"] }
 
 journal-core = { workspace = true }
 journal-index = { workspace = true }
+journal-registry = { workspace = true }
 rt = { path = "../../netdata-plugin/rt" }
 
 allocative = { workspace = true, optional = true }

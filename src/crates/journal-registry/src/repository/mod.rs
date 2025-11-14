@@ -9,7 +9,7 @@ pub use crate::repository::collection::{Chain, Repository};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collections::VecDeque;
+    use journal_common::collections::VecDeque;
     use std::sync::Arc;
     use uuid::Uuid;
 

@@ -1,10 +1,11 @@
 //! Core functionality for working with systemd journal files.
 //!
-//! This crate provides:
-//! - Low-level file I/O: [`mod@file`] module
-//! - File tracking and monitoring: [`registry`] and [`repository`] modules
+//! This crate provides low-level file I/O for systemd journal files.
 //!
-//! For high-level journaling with rotation and retention, see the `journal-log-writer` crate.
+//! For related functionality:
+//! - High-level journaling with rotation and retention: see `journal-log-writer` crate
+//! - File tracking and monitoring: see `journal-registry` crate
+//! - Indexing and querying: see `journal-index` crate
 
 #[macro_use]
 extern crate static_assertions;
@@ -18,11 +19,10 @@ pub mod collections;
 // Low-level journal file format I/O
 pub mod file;
 
-// Journal file tracking and monitoring
-pub mod repository;
-
-// Journal file tracking and monitoring
-pub mod registry;
+// Re-export repository types from journal-registry for convenience
+pub mod repository {
+    pub use journal_registry::repository::*;
+}
 
 // Re-export commonly used types for convenience
 pub use error::{JournalError, Result};

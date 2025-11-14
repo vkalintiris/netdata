@@ -10,6 +10,9 @@ collapsible_if = "allow"
 allocative = ["dep:allocative"]
 
 [dependencies]
+journal-common = { workspace = true }
+journal-registry = { workspace = true }
+
 # Core dependencies
 static_assertions = { workspace = true }
 thiserror = { workspace = true }

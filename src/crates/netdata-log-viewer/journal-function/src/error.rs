@@ -16,7 +16,7 @@ pub enum CatalogError {
 
     /// Error from repository operations
     #[error("Repository error: {0}")]
-    Repository(#[from] journal_core::repository::RepositoryError),
+    Repository(#[from] journal_registry::RepositoryError),
 
     /// Error when parsing a journal file path
     #[error("Failed to parse journal file path: {path}")]

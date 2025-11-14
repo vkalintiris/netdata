@@ -5,7 +5,7 @@
 
 use super::{CatalogError, File, Result};
 use journal_core::collections::{HashMap, HashSet};
-use journal_core::repository::{Repository as BaseRepository, scan_journal_files};
+use journal_registry::repository::{Repository as BaseRepository, scan_journal_files};
 use notify::{
     Event, RecommendedWatcher, RecursiveMode, Watcher,
     event::{EventKind, ModifyKind, RenameMode},

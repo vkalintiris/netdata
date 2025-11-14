@@ -22,6 +22,7 @@ tonic = { workspace = true, features = ["gzip", "tls-ring"] }
 
 journal-core = { workspace = true }
 journal-log-writer = { workspace = true }
+journal-registry = { workspace = true }
 flatten_otel = { path = "../flatten_otel" }
 
 tracing = { workspace = true }

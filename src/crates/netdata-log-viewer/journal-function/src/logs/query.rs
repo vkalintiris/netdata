@@ -7,7 +7,7 @@
 use journal_core::Result;
 use journal_core::file::{JournalFile, Mmap};
 use journal_index::{Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId};
-use journal_core::repository::File;
+use journal_registry::File;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
