@@ -9,7 +9,7 @@ allocative = ["dep:allocative"]
 
 
 [dependencies]
-async-stream = "0.3"
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
@@ -21,8 +21,8 @@ notify = { workspace = true }
 foyer = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 schemars = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
-nix = { version = "0.30", features = ["user"] }
+chrono = { workspace = true, features = ["serde"] }
+nix = { workspace = true, features = ["user"] }
 
 journal = { workspace = true }
 rt = { path = "../../netdata-plugin/rt" }
@@ -30,9 +30,9 @@ rt = { path = "../../netdata-plugin/rt" }
 allocative = { workspace = true, optional = true }
 
 [dev-dependencies]
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-tracing-subscriber = "0.3"
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
