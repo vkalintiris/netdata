@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
-use journal_core::log::{Config, Log, RetentionPolicy, RotationPolicy};
+use journal_log_writer::{Config, Log, RetentionPolicy, RotationPolicy};
 use journal_core::repository::Origin;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,

@@ -4,7 +4,7 @@ pub mod file;
 pub mod filter;
 mod guarded_cell;
 mod hash;
-pub(crate) mod mmap;
+pub mod mmap;
 mod object;
 pub mod offset_array;
 pub mod reader;
@@ -26,7 +26,7 @@ pub use cursor::JournalCursor;
 pub use filter::{FilterExpr, JournalFilter, LogicalOp};
 
 // For FFI compatibility and advanced object manipulation
-pub use object::{EntryItemsType, HashableObject};
+pub use object::{EntryItemsType, HashableObject, JournalState};
 
 // Re-export commonly needed external types
 pub use mmap::{Mmap, MmapMut};

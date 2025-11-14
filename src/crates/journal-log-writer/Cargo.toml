@@ -1,0 +1,19 @@
+[package]
+name = "journal-log-writer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+journal-core = { workspace = true }
+
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+# Optional serde support for structured logging
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+flatten-serde-json = { workspace = true, optional = true }
+
+[features]
+serde-api = ["serde", "serde_json", "flatten-serde-json"]

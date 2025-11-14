@@ -1,10 +1,10 @@
-use crate::JournalFile;
-use crate::collections::HashMap;
-use crate::error::{JournalError, Result};
-use crate::file::Mmap;
+use journal_core::JournalFile;
+use journal_core::collections::HashMap;
+use journal_core::error::{JournalError, Result};
+use journal_core::file::Mmap;
 use crate::log::RetentionPolicy;
-use crate::repository;
-use crate::repository::File;
+use journal_core::repository;
+use journal_core::repository::File;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;

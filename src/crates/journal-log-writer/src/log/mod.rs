@@ -4,10 +4,10 @@ use chain::Chain;
 mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
 
-use crate::error::{JournalError, Result};
-use crate::file::mmap::MmapMut;
-use crate::file::{JournalFile, JournalFileOptions, JournalWriter, load_boot_id};
-use crate::repository;
+use journal_core::error::{JournalError, Result};
+use journal_core::file::mmap::MmapMut;
+use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, load_boot_id};
+use journal_core::repository;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, instrument, span, warn};
 
 fn create_chain(path: &Path) -> Result<Chain> {
-    let machine_id = crate::file::file::load_machine_id()?;
+    let machine_id = journal_core::file::file::load_machine_id()?;
 
     if path.exists() && !path.is_dir() {
         return Err(JournalError::NotADirectory);
@@ -229,7 +229,7 @@ impl Log {
 
     #[tracing::instrument(skip_all, fields(active_file))]
     fn rotate(&mut self) -> Result<()> {
-        use crate::file::JournalState;
+        use journal_core::file::JournalState;
 
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
