@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "log_viewer_plugin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "log-viewer-plugin"
+path = "src/main.rs"
+
 [dependencies]
 async-trait = { workspace = true }
 

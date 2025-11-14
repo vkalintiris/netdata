@@ -1,0 +1,20 @@
+[package]
+name = "journal-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "journal-tools"
+path = "src/main.rs"
+
+[dependencies]
+# Multi-call support
+multicall = { workspace = true }
+
+# Tool libraries
+journalctl = { workspace = true }
+journal-sql = { workspace = true }
+
+[lints]
+workspace = true

@@ -3,6 +3,10 @@ name = "journalctl"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "journalctl"
+path = "src/lib.rs"
+
 [[bin]]
 name = "journalctl"
 path = "src/main.rs"

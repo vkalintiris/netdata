@@ -27,6 +27,11 @@ members = [
     "netdata-otel/otel-plugin",
     "netdata-otel/flatten_otel",
     "netdata-otel/flog-otel",
+
+    # Multi-call binaries
+    "multicall",
+    "journal-tools",
+    "netdata-plugins",
 ]
 
 [workspace.package]
@@ -112,7 +117,7 @@ itoa = "1.0"
 atty = "0.2"
 bytesize = "1.3"
 bytesize-serde = "0.2"
-clap = { version = "4" }
+clap = { version = "4", features = ["derive"] }
 duct = "0.13"
 humantime = "2.2"
 humantime-serde = "1.1"
@@ -130,6 +135,7 @@ journal-index = { path = "journal-index" }
 journal-log-writer = { path = "journal-log-writer" }
 journal-registry = { path = "journal-registry" }
 journalctl = { path = "journalctl" }
+journal-sql = { path = "journal-sql" }
 
 # Netdata plugin crates
 netdata-plugin-error = { path = "netdata-plugin/error" }
@@ -149,6 +155,9 @@ log-viewer-plugin = { path = "netdata-log-viewer/log-viewer-plugin" }
 otel-plugin = { path = "netdata-otel/otel-plugin" }
 flatten_otel = { path = "netdata-otel/flatten_otel" }
 flog-otel = { path = "netdata-otel/flog-otel" }
+
+# Multi-call binary support
+multicall = { path = "multicall" }
 
 tempfile = { version = "3" }
 

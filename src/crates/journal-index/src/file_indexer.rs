@@ -295,9 +295,17 @@ impl FileIndexer {
             };
 
             let Some(ic) = data_object.inlined_cursor() else {
+                use journal_core::file::JournalState;
+
+                let file_state = JournalState::try_from(journal_file.journal_header_ref().state)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "UNKNOWN".to_string());
+
                 warn!(
-                    "missing inlined cursor for source timestamp {:?}",
-                    source_timestamp
+                    "orphaned data object (no entries) for _SOURCE_REALTIME_TIMESTAMP={} in {} (state: {})",
+                    source_timestamp,
+                    journal_file.file().path(),
+                    file_state
                 );
                 continue;
             };

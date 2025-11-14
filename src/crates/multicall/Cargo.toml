@@ -1,0 +1,11 @@
+[package]
+name = "multicall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# No external dependencies - uses only std
+
+[lints]
+workspace = true

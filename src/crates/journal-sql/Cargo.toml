@@ -3,6 +3,14 @@ name = "journal-sql"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "journal_sql"
+path = "src/lib.rs"
+
+[[bin]]
+name = "journal-sql"
+path = "src/main.rs"
+
 [dependencies]
 # DataFusion (using local path)
 datafusion = { path = "/home/vk/repos/crates/datafusion/datafusion/core" }
@@ -24,7 +32,3 @@ parking_lot = { workspace = true }
 # Additional dependencies
 async-trait = { workspace = true }
 futures = { workspace = true }
-
-[[bin]]
-name = "journal-sql"
-path = "src/main.rs"
