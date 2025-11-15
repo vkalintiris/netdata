@@ -31,7 +31,7 @@ members = [
     # Multi-call binaries
     "multicall",
     "journal-tools",
-    "netdata-plugins",
+    "netdata-plugins", "packelf-runtime", "packelf", "packelf-stub",
 ]
 
 [workspace.package]
@@ -167,7 +167,7 @@ debug = true
 debug-assertions = true
 
 [profile.release]
-debug = true
+debug = false
 lto = true
 opt-level = "z"
 strip = true

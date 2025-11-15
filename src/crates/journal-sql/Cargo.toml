@@ -12,8 +12,9 @@ name = "journal-sql"
 path = "src/main.rs"
 
 [dependencies]
-# DataFusion (using local path)
-datafusion = { path = "/home/vk/repos/crates/datafusion/datafusion/core" }
+# DataFusion (using local path with minimal features)
+# Only enabling 'sql' for SQL parsing and 'recursive_protection' for safety
+datafusion = { path = "/home/vk/repos/crates/datafusion/datafusion/core", default-features = false, features = ["sql", "recursive_protection"] }
 datafusion-common = { path = "/home/vk/repos/crates/datafusion/datafusion/common" }
 
 # Workspace dependencies

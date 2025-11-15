@@ -1,0 +1,9 @@
+[package]
+name = "packelf-stub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+packelf-runtime = { path = "../packelf-runtime" }
+nix = { workspace = true, features = ["fs", "process"] }

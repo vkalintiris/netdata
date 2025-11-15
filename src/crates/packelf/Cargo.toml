@@ -1,0 +1,23 @@
+[package]
+name = "packelf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+packelf-runtime = { path = "../packelf-runtime" }
+lz4_flex = "0.11"
+anyhow.workspace = true
+clap.workspace = true
+memmap2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["native_stub"]
+native_stub = []
+
+[lints]
+workspace = true
