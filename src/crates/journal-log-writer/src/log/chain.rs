@@ -188,7 +188,7 @@ impl OwnedChain {
         // Remove from filesystem
         if let Err(e) = std::fs::remove_file(file.path()) {
             // Log error but continue cleanup - file might already be deleted
-            error!("Failed to remove journal file {:?}: {}", file.path(), e);
+            error!("failed to remove journal file {:?}: {}", file.path(), e);
         }
 
         self.file_sizes.remove(&file);
@@ -208,7 +208,7 @@ impl OwnedChain {
             let file_size = self.file_sizes.get(&file).copied().unwrap_or(0);
 
             if let Err(e) = std::fs::remove_file(file.path()) {
-                error!("Failed to remove journal file {:?}: {}", file.path(), e);
+                error!("failed to remove journal file {:?}: {}", file.path(), e);
                 continue;
             }
 

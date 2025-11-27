@@ -23,46 +23,6 @@ use crate::logs_service::NetdataLogsService;
 mod metrics_service;
 use crate::metrics_service::NetdataMetricsService;
 
-fn initialize_tracing() {
-    use opentelemetry::trace::TracerProvider;
-    use opentelemetry_otlp::WithExportConfig;
-    use tracing_subscriber::{EnvFilter, prelude::*};
-
-    // Create Otel layer
-    let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint("http://localhost:4318")
-        .build()
-        .expect("Failed to build OTLP exporter");
-
-    let resource = opentelemetry_sdk::Resource::builder()
-        .with_service_name("otel-plugin")
-        .build();
-
-    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_batch_exporter(otlp_exporter)
-        .with_resource(resource)
-        .build();
-
-    let tracer = tracer_provider.tracer("otel-plugin");
-    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    // Create the fmt layer with your existing configuration
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-
-    // Create the environment filter
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("debug,histogram-backend=debug,tokio=trace,runtime=trace")
-    });
-
-    // Combine all layers
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(telemetry_layer)
-        .init();
-}
-
 /// Entry point for otel-plugin - can be called from multi-call binary
 ///
 /// # Arguments
@@ -77,7 +37,7 @@ pub fn run(args: Vec<String>) -> i32 {
 }
 
 async fn async_run(_args: Vec<String>) -> i32 {
-    initialize_tracing();
+    rt::init_tracing("info");
 
     match run_internal().await {
         Ok(()) => 0,

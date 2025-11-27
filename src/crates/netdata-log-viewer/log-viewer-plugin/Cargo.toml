@@ -7,10 +7,6 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[lib]
-name = "log_viewer_plugin"
-path = "src/lib.rs"
-
 [[bin]]
 name = "log-viewer-plugin"
 path = "src/main.rs"
@@ -26,16 +22,18 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-journald = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 tokio = { workspace = true }
 notify = { workspace = true }
 thiserror = { workspace = true }
 foyer = { workspace = true }
+
+# Configuration support
+anyhow = { workspace = true }
+bytesize = { workspace = true }
+bytesize-serde = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+num_cpus = "1"
+serde_yaml = { workspace = true }
 
 # Business logic
 # journal-engine = { workspace = true }

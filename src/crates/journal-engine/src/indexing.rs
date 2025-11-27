@@ -47,7 +47,7 @@ pub fn compute_file_index(
     source_timestamp_field: &FieldName,
     bucket_duration: Seconds,
 ) -> Result<FileIndex> {
-    info!("Computing file index for {}", file.path());
+    info!("computing file index for {}", file.path());
 
     let mut file_indexer = FileIndexer::default();
     let file_index =
@@ -438,7 +438,7 @@ impl FileIndexStream {
                     }
                     _ => {
                         // Cache miss or incompatible granularity - compute inline
-                        tracing::info!("Computing file index for {}", key.file.path());
+                        tracing::info!("computing file index for {}", key.file.path());
                         match compute_file_index(
                             &key.file,
                             key.facets.as_slice(),

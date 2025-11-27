@@ -7,10 +7,10 @@ pub mod error;
 pub use error::RegistryError;
 
 use crate::registry::error::Result;
-use crate::{File, FileInfo, TimeRange};
 use crate::repository::{Repository as BaseRepository, scan_journal_files};
-use journal_common::collections::{HashMap, HashSet};
+use crate::{File, FileInfo, TimeRange};
 use journal_common::Seconds;
+use journal_common::collections::{HashMap, HashSet};
 use notify::{
     Event,
     event::{EventKind, ModifyKind, RenameMode},
@@ -176,9 +176,9 @@ impl Registry {
             return Ok(());
         }
 
-        info!("Scanning directory: {}", path);
+        info!("scanning directory: {}", path);
         let files = scan_journal_files(path)?;
-        info!("Found {} journal files in {}", files.len(), path);
+        info!("found {} journal files in {}", files.len(), path);
 
         // Start watching with notify
         inner.monitor.watch_directory(path)?;
@@ -186,15 +186,15 @@ impl Registry {
 
         // Insert all discovered files into repository (automatically initializes metadata)
         for file in files {
-            debug!("Adding file to repository: {:?}", file.path());
+            debug!("adding file to repository: {:?}", file.path());
 
             if let Err(e) = inner.repository.insert(file) {
-                error!("Failed to insert file into repository: {}", e);
+                error!("failed to insert file into repository: {}", e);
             }
         }
 
         info!(
-            "Now watching directory: {} (total directories: {})",
+            "now watching directory: {} (total directories: {})",
             path,
             inner.watched_directories.len()
         );
@@ -206,7 +206,7 @@ impl Registry {
         let mut inner = self.inner.write();
 
         if !inner.watched_directories.contains(path) {
-            warn!("Directory {} is not being watched", path);
+            warn!("directory {} is not being watched", path);
             return Ok(());
         }
 
@@ -214,7 +214,7 @@ impl Registry {
         inner.repository.remove_directory(path); // Handles both repository and metadata cleanup
         inner.watched_directories.remove(path);
 
-        info!("Stopped watching directory: {}", path);
+        info!("stopped watching directory: {}", path);
         Ok(())
     }
 
@@ -227,27 +227,27 @@ impl Registry {
         match event.kind {
             EventKind::Create(_) => {
                 for path in &event.paths {
-                    debug!("Adding file to repository: {:?}", path);
+                    debug!("adding file to repository: {:?}", path);
 
                     if let Some(file) = File::from_path(path) {
                         if let Err(e) = inner.repository.insert(file) {
-                            error!("Failed to insert file: {}", e);
+                            error!("failed to insert file: {}", e);
                         }
                     } else {
-                        warn!("Path is not a valid journal file: {:?}", path);
+                        warn!("path is not a valid journal file: {:?}", path);
                     }
                 }
             }
             EventKind::Remove(_) => {
                 for path in &event.paths {
-                    debug!("Removing file from repository: {:?}", path);
+                    debug!("removing file from repository: {:?}", path);
 
                     if let Some(file) = File::from_path(path) {
                         if let Err(e) = inner.repository.remove(&file) {
-                            error!("Failed to remove file: {}", e);
+                            error!("failed to remove file: {}", e);
                         }
                     } else {
-                        warn!("Path is not a valid journal file: {:?}", path);
+                        warn!("path is not a valid journal file: {:?}", path);
                     }
                 }
             }
@@ -256,34 +256,34 @@ impl Registry {
                 if event.paths.len() >= 2 {
                     let old_path = &event.paths[0];
                     let new_path = &event.paths[1];
-                    info!("Rename event: {:?} -> {:?}", old_path, new_path);
+                    info!("rename event: {:?} -> {:?}", old_path, new_path);
 
                     if let Some(old_file) = File::from_path(old_path) {
-                        info!("Removing old file: {:?}", old_file.path());
+                        info!("removing old file: {:?}", old_file.path());
                         if let Err(e) = inner.repository.remove(&old_file) {
-                            error!("Failed to remove old file: {}", e);
+                            error!("failed to remove old file: {}", e);
                         }
                     }
 
                     if let Some(new_file) = File::from_path(new_path) {
-                        info!("Inserting new file: {:?}", new_file.path());
+                        info!("inserting new file: {:?}", new_file.path());
                         if let Err(e) = inner.repository.insert(new_file) {
-                            error!("Failed to insert new file: {}", e);
+                            error!("failed to insert new file: {}", e);
                         }
                     }
                 } else {
                     error!(
-                        "Rename event with unexpected path count: {:#?}",
+                        "rename event with unexpected path count: {:#?}",
                         event.paths
                     );
                 }
             }
             EventKind::Modify(ModifyKind::Name(rename_mode)) => {
-                error!("Unhandled rename mode: {:?}", rename_mode);
+                error!("unhandled rename mode: {:?}", rename_mode);
             }
             event_kind => {
                 // Ignore other events (content modifications, access, etc.)
-                trace!("Ignoring notify event kind: {:?}", event_kind);
+                trace!("ignoring notify event kind: {:?}", event_kind);
             }
         }
         Ok(())

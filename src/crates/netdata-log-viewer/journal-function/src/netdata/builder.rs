@@ -3,11 +3,11 @@
 //! This module provides convenience functions for building complete Netdata UI
 //! responses from log data and histogram information.
 
-use journal_engine::{Histogram, LogEntryData, Table, CellValue};
-use crate::netdata::transformations::{systemd_transformations, TransformationRegistry};
+use crate::netdata::transformations::{TransformationRegistry, systemd_transformations};
 use journal_core::Result;
-use std::collections::HashMap;
+use journal_engine::{CellValue, Histogram, LogEntryData, Table};
 use serde_json;
+use std::collections::HashMap;
 use tracing::{info, warn};
 
 /// Wrapper around entry_data_to_table that applies Netdata transformations.
@@ -39,7 +39,8 @@ fn entry_data_to_table_with_transformations(
         // Extract and transform requested fields
         for pair in &data.fields {
             if let Some(&col_idx) = column_map.get(pair.field()) {
-                row[col_idx] = transformations.transform_field(pair.field(), Some(pair.value().to_string()));
+                row[col_idx] =
+                    transformations.transform_field(pair.field(), Some(pair.value().to_string()));
             }
         }
 
@@ -100,7 +101,7 @@ pub fn build_ui_response(
     match entry_data_to_table_with_transformations(log_entries, field_names, &transformations) {
         Ok(table) => {
             info!(
-                "Table has {} rows and {} columns",
+                "table has {} rows and {} columns",
                 table.row_count(),
                 table.column_count()
             );
@@ -108,12 +109,12 @@ pub fn build_ui_response(
             // Transform to UI format
             let ui_data_rows = super::response::table_to_netdata_response(&table, &column_schema);
 
-            info!("Transformed to {} UI data rows", ui_data_rows.len());
+            info!("transformed to {} UI data rows", ui_data_rows.len());
 
             (columns, serde_json::json!(ui_data_rows))
         }
         Err(e) => {
-            warn!("Failed to create table from log entries: {}", e);
+            warn!("failed to create table from log entries: {}", e);
             (columns, serde_json::json!([]))
         }
     }

@@ -39,8 +39,6 @@ flatten_otel = { path = "../flatten_otel" }
 rt = { workspace = true }
 
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tracing-opentelemetry = { workspace = true }
 
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true , features = ["rt-tokio", "logs"] }

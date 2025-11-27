@@ -196,6 +196,10 @@ pub struct LogQueryParams {
     after: Option<Microseconds>,
     /// Optional upper time boundary (exclusive) in microseconds
     before: Option<Microseconds>,
+    /// Optional position to resume from for pagination.
+    /// When set, the query will skip the binary search and continue from this position.
+    /// The filter must remain unchanged between paginated queries.
+    resume_position: Option<usize>,
 }
 
 impl LogQueryParams {
@@ -233,6 +237,11 @@ impl LogQueryParams {
     pub fn before(&self) -> Option<Microseconds> {
         self.before
     }
+
+    /// Get the resume position for pagination
+    pub fn resume_position(&self) -> Option<usize> {
+        self.resume_position
+    }
 }
 
 /// Builder for constructing `LogQueryParams` with validation.
@@ -248,6 +257,7 @@ pub struct LogQueryParamsBuilder {
     filter: Option<super::Filter>,
     after: Option<Microseconds>,
     before: Option<Microseconds>,
+    resume_position: Option<usize>,
 }
 
 impl LogQueryParamsBuilder {
@@ -266,6 +276,7 @@ impl LogQueryParamsBuilder {
             filter: None,
             after: None,
             before: None,
+            resume_position: None,
         }
     }
 
@@ -299,6 +310,12 @@ impl LogQueryParamsBuilder {
         self
     }
 
+    /// Set the resume position for pagination
+    pub fn with_resume_position(mut self, position: usize) -> Self {
+        self.resume_position = Some(position);
+        self
+    }
+
     /// Build the LogQueryParams, validating optional constraints
     pub fn build(self) -> Result<LogQueryParams> {
         // Validate time boundaries if both are set
@@ -316,6 +333,7 @@ impl LogQueryParamsBuilder {
             filter: self.filter,
             after: self.after,
             before: self.before,
+            resume_position: self.resume_position,
         })
     }
 }
@@ -404,6 +422,9 @@ pub struct LogEntryId {
     pub offset: u64,
     /// Timestamp of the entry in microseconds since epoch.
     pub timestamp: Microseconds,
+    /// Position in the filtered entry_offsets vector.
+    /// Used for pagination to resume queries at the exact position.
+    pub position: usize,
 }
 
 impl FileIndex {
@@ -431,11 +452,6 @@ impl FileIndex {
         file: &File,
         params: &LogQueryParams,
     ) -> Result<Vec<LogEntryId>> {
-        // FIXME/TODO: using just the (anchor_timestamp, limit) is not good enough,
-        // we need a `skip` argument as well. This would handle the case where
-        // we have more than `limit` entries with the same timestamp. Highly
-        // unlikely, but we need UI to send this as well.
-
         // Resolve anchor to concrete timestamp
         // For single file queries, Head uses file start time and Tail uses file end time
         let anchor_usec = match params.anchor() {
@@ -479,29 +495,41 @@ impl FileIndex {
 
         match params.direction() {
             Direction::Forward => {
-                // Find the partition point: first index where timestamp >= anchor_timestamp
-                // Predicate returns true while timestamp < anchor_timestamp
-                // Result is the index of the first entry with timestamp >= anchor_timestamp
-                let start_idx = partition_point_entries(
-                    &entry_offsets,
-                    0,
-                    entry_offsets.len(),
-                    |entry_offset| {
-                        let entry_timestamp = get_entry_timestamp(
-                            &journal_file,
-                            params.source_timestamp_field(),
-                            entry_offset,
-                        )?;
-                        Ok(entry_timestamp < anchor_usec.get())
-                    },
-                )?;
+                // Determine starting index: use resume_position or binary search
+                let start_idx = if let Some(resume_pos) = params.resume_position() {
+                    // Resume from next position after the last returned entry
+                    resume_pos + 1
+                } else {
+                    // Find the partition point: first index where timestamp >= anchor_timestamp
+                    // Predicate returns true while timestamp < anchor_timestamp
+                    // Result is the index of the first entry with timestamp >= anchor_timestamp
+                    partition_point_entries(
+                        &entry_offsets,
+                        0,
+                        entry_offsets.len(),
+                        |entry_offset| {
+                            let entry_timestamp = get_entry_timestamp(
+                                &journal_file,
+                                params.source_timestamp_field(),
+                                entry_offset,
+                            )?;
+                            Ok(entry_timestamp < anchor_usec.get())
+                        },
+                    )?
+                };
 
                 // Edge cases for forward iteration:
                 // - start_idx == 0: anchor is <= all entries, start from first entry
                 // - start_idx == len: anchor is > all entries, no results
                 // - Otherwise: start from entry at start_idx (first entry >= anchor)
 
-                for &entry_offset in entry_offsets.iter().skip(start_idx) {
+                // Check bounds before slicing to avoid panic
+                if start_idx >= entry_offsets.len() {
+                    // No entries to return
+                    return Ok(log_entry_ids);
+                }
+
+                for (idx, &entry_offset) in entry_offsets[start_idx..].iter().enumerate() {
                     let timestamp = get_entry_timestamp(
                         &journal_file,
                         params.source_timestamp_field(),
@@ -524,6 +552,7 @@ impl FileIndex {
                         file: self.file.clone(),
                         offset: entry_offset.get(),
                         timestamp: Microseconds(timestamp),
+                        position: start_idx + idx,
                     });
 
                     // Stop when we reach the limit
@@ -533,40 +562,59 @@ impl FileIndex {
                 }
             }
             Direction::Backward => {
-                // Find the partition point: first index where timestamp > anchor_timestamp
-                // We want the LAST entry with timestamp <= anchor_timestamp
-                // which is at index (partition_point - 1)
-                let partition_idx = partition_point_entries(
-                    &entry_offsets,
-                    0,
-                    entry_offsets.len(),
-                    |entry_offset| {
-                        let entry_timestamp = get_entry_timestamp(
-                            &journal_file,
-                            params.source_timestamp_field(),
-                            entry_offset,
-                        )?;
-                        Ok(entry_timestamp <= anchor_usec.get())
-                    },
-                )?;
+                // Determine starting index: use resume_position or binary search
+                let start_idx = if let Some(resume_pos) = params.resume_position() {
+                    // Resume from previous position before the last returned entry
+                    if resume_pos == 0 {
+                        // No more entries to return
+                        return Ok(log_entry_ids);
+                    }
+                    // Check if resume_pos is out of bounds
+                    if resume_pos >= entry_offsets.len() {
+                        // Resume position is beyond valid range
+                        return Ok(log_entry_ids);
+                    }
+                    resume_pos - 1
+                } else {
+                    // Find the partition point: first index where timestamp > anchor_timestamp
+                    // We want the LAST entry with timestamp <= anchor_timestamp
+                    // which is at index (partition_point - 1)
+                    let partition_idx = partition_point_entries(
+                        &entry_offsets,
+                        0,
+                        entry_offsets.len(),
+                        |entry_offset| {
+                            let entry_timestamp = get_entry_timestamp(
+                                &journal_file,
+                                params.source_timestamp_field(),
+                                entry_offset,
+                            )?;
+                            Ok(entry_timestamp <= anchor_usec.get())
+                        },
+                    )?;
 
-                // Edge cases for backward iteration:
-                // - partition_idx == 0: all entries are > anchor, no results
-                // - partition_idx == len: anchor is >= all entries, start from last entry
-                // - Otherwise: start from entry at (partition_idx - 1), last entry <= anchor
+                    // Edge cases for backward iteration:
+                    // - partition_idx == 0: all entries are > anchor, no results
+                    // - partition_idx == len: anchor is >= all entries, start from last entry
+                    // - Otherwise: start from entry at (partition_idx - 1), last entry <= anchor
 
-                if partition_idx == 0 {
-                    // All entries have timestamp > anchor, no results
+                    if partition_idx == 0 {
+                        // All entries have timestamp > anchor, no results
+                        return Ok(log_entry_ids);
+                    }
+
+                    // Start from the last entry <= anchor (at partition_idx - 1)
+                    partition_idx - 1
+                };
+
+                // Check bounds before slicing to avoid panic
+                if start_idx >= entry_offsets.len() {
+                    // No entries to return
                     return Ok(log_entry_ids);
                 }
 
-                // Start from the last entry <= anchor (at partition_idx - 1)
-                // and iterate backwards, taking up to `limit` entries
-                let start_idx = partition_idx - 1;
-
                 // Iterate backwards: from start_idx down to 0
-                for i in (0..=start_idx).rev() {
-                    let entry_offset = entry_offsets[i];
+                for (idx, &entry_offset) in entry_offsets[..=start_idx].iter().rev().enumerate() {
                     let timestamp = get_entry_timestamp(
                         &journal_file,
                         params.source_timestamp_field(),
@@ -589,6 +637,7 @@ impl FileIndex {
                         file: self.file.clone(),
                         offset: entry_offset.get(),
                         timestamp: Microseconds(timestamp),
+                        position: start_idx - idx,
                     });
 
                     // Stop when we reach the limit

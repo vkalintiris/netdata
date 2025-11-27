@@ -35,7 +35,7 @@ use journal_index::{FieldName, FieldValuePair, Microseconds, Seconds};
 #[instrument(skip(selections))]
 fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Filter {
     if selections.is_empty() {
-        info!("No selections provided, using empty filter");
+        info!("no selections provided, using empty filter");
         return Filter::none();
     }
 
@@ -44,7 +44,7 @@ fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Fi
     for (field, values) in selections {
         // Ignore log sources. We've not implemented this functionality.
         if field == "__logs_sources" {
-            info!("Ignoring __logs_sources field");
+            info!("ignoring __logs_sources field");
             continue;
         }
 
@@ -53,7 +53,7 @@ fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Fi
         }
 
         info!(
-            "Building filter for field '{}' with {} values",
+            "building filter for field '{}' with {} values",
             field,
             values.len()
         );
@@ -77,10 +77,10 @@ fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Fi
     }
 
     if field_filters.is_empty() {
-        info!("No valid field filters, using empty filter");
+        info!("no valid field filters, using empty filter");
         Filter::none()
     } else {
-        info!("Created filter with {} field filters", field_filters.len());
+        info!("created filter with {} field filters", field_filters.len());
         Filter::and(field_filters)
     }
 }
@@ -171,7 +171,7 @@ impl CatalogFunction {
     ) -> Vec<journal_function::LogEntryData> {
         use journal_function::LogQuery;
 
-        info!("Querying logs for time range [{}, {})", after, before);
+        info!("querying logs for time range [{}, {})", after, before);
 
         // Find files in the time range
         let file_infos = match self
@@ -186,7 +186,7 @@ impl CatalogFunction {
             }
         };
 
-        info!("Found {} files in range", file_infos.len());
+        info!("found {} files in range", file_infos.len());
 
         // Collect indexed files from cache
         let mut indexed_files = Vec::new();
@@ -210,10 +210,10 @@ impl CatalogFunction {
             }
         }
 
-        info!("Found {} indexed files in cache", indexed_files.len());
+        info!("found {} indexed files in cache", indexed_files.len());
 
         if indexed_files.is_empty() {
-            info!("No indexed files available for log query");
+            info!("no indexed files available for log query");
             return Vec::new();
         }
 
@@ -255,7 +255,7 @@ impl CatalogFunction {
             .execute()
         {
             Ok(mut log_entries) => {
-                info!("Retrieved {} log entries", log_entries.len());
+                info!("retrieved {} log entries", log_entries.len());
 
                 // UI always expects logs sorted descending by timestamp (newest first)
                 // regardless of query direction
@@ -264,7 +264,7 @@ impl CatalogFunction {
                 log_entries
             }
             Err(e) => {
-                error!("Log query error: {}", e);
+                error!("log query error: {}", e);
                 Vec::new()
             }
         }
@@ -322,7 +322,7 @@ impl CatalogFunction {
         if let Err(e) = std::fs::create_dir_all(response_dir) {
             warn!("Failed to create /tmp/responses directory: {}", e);
         } else {
-            info!("Created /tmp/responses directory for response logging");
+            info!("created /tmp/responses directory for response logging");
         }
 
         let inner = CatalogFunctionInner {
@@ -364,7 +364,7 @@ impl CatalogFunction {
     pub fn watch_directory(&self, path: &str) -> Result<()> {
         self.inner.registry.watch_directory(path).map_err(|e| {
             netdata_plugin_error::NetdataPluginError::Other {
-                message: format!("Failed to watch directory: {}", e),
+                message: format!("failed to watch directory: {}", e),
             }
         })
     }
@@ -373,7 +373,7 @@ impl CatalogFunction {
     pub fn unwatch_directory(&self, path: &str) -> Result<()> {
         self.inner.registry.unwatch_directory(path).map_err(|e| {
             netdata_plugin_error::NetdataPluginError::Other {
-                message: format!("Failed to unwatch directory: {}", e),
+                message: format!("failed to unwatch directory: {}", e),
             }
         })
     }
@@ -387,7 +387,7 @@ impl CatalogFunction {
         {
             Ok(files) => files,
             Err(e) => {
-                error!("Failed to find files in range: {}", e);
+                error!("failed to find files in range: {}", e);
                 Vec::new()
             }
         }
@@ -396,7 +396,7 @@ impl CatalogFunction {
     /// Process a notify event
     pub fn process_notify_event(&self, event: notify::Event) {
         if let Err(e) = self.inner.registry.process_event(event) {
-            error!("Failed to process notify event: {}", e);
+            error!("failed to process notify event: {}", e);
         }
     }
 
@@ -421,13 +421,13 @@ impl CatalogFunction {
         match serde_json::to_string_pretty(response) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&filename, json) {
-                    warn!("Failed to write response to {}: {}", filename, e);
+                    warn!("failed to write response to {}: {}", filename, e);
                     return;
                 }
-                info!("Logged response to {}", filename);
+                info!("logged response to {}", filename);
             }
             Err(e) => {
-                warn!("Failed to serialize response to JSON: {}", e);
+                warn!("failed to serialize response to JSON: {}", e);
                 return;
             }
         }
@@ -459,9 +459,9 @@ impl CatalogFunction {
             // Remove files beyond MAX_RESPONSES
             for (path, _) in files.iter().skip(MAX_RESPONSES) {
                 if let Err(e) = std::fs::remove_file(path) {
-                    warn!("Failed to remove old response file {:?}: {}", path, e);
+                    warn!("failed to remove old response file {:?}: {}", path, e);
                 } else {
-                    info!("Removed old response file {:?}", path);
+                    info!("removed old response file {:?}", path);
                 }
             }
         }
@@ -479,17 +479,17 @@ impl FunctionHandler for CatalogFunction {
         num_selections = request.selections.len()
     ))]
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
-        info!("Processing catalog function call");
+        info!("processing catalog function call");
 
         let filter_expr = build_filter_from_selections(&request.selections);
 
         if request.after >= request.before {
             error!(
-                "Invalid time range: after={} >= before={}",
+                "invalid time range: after={} >= before={}",
                 request.after, request.before
             );
             return Err(netdata_plugin_error::NetdataPluginError::Other {
-                message: "Invalid time range: after must be less than before".to_string(),
+                message: "invalid time range: after must be less than before".to_string(),
             });
         }
 
@@ -507,14 +507,14 @@ impl FunctionHandler for CatalogFunction {
             .cloned()
             .collect();
 
-        info!("Getting histogram from catalog");
+        info!("getting histogram from catalog");
         let histogram = self
             .get_histogram(request.after, request.before, &facets, &filter_expr)
             .await
             .map_err(|e| netdata_plugin_error::NetdataPluginError::Other {
-                message: format!("Failed to get histogram: {}", e),
+                message: format!("failed to get histogram: {}", e),
             })?;
-        info!("Histogram computation complete");
+        info!("histogram computation complete");
 
         let limit = request.last.unwrap_or(200);
         let log_entries = self
@@ -579,7 +579,7 @@ impl FunctionHandler for CatalogFunction {
         };
 
         info!(
-            "Successfully created response with {} facets",
+            "successfully created response with {} facets",
             response.facets.len()
         );
 
@@ -590,19 +590,19 @@ impl FunctionHandler for CatalogFunction {
     }
 
     async fn on_cancellation(&self) -> Result<Self::Response> {
-        warn!("Catalog function call cancelled by Netdata");
+        warn!("catalog function call cancelled by Netdata");
 
         Err(netdata_plugin_error::NetdataPluginError::Other {
-            message: "Catalog function cancelled by user".to_string(),
+            message: "catalog function cancelled by user".to_string(),
         })
     }
 
     async fn on_progress(&self) {
-        info!("Progress report requested for catalog function call");
+        info!("progress report requested for catalog function call");
     }
 
     fn declaration(&self) -> FunctionDeclaration {
-        info!("Generating function declaration for systemd-journal");
+        info!("generating function declaration for systemd-journal");
         let mut func_decl = FunctionDeclaration::new(
             "systemd-journal",
             "Query and visualize systemd journal entries with histograms and facets",

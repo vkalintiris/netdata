@@ -214,3 +214,60 @@ fn test_empty_entry() {
     // Should not create any files (no rotation triggered)
     assert_eq!(count_journal_files(&dir), 0);
 }
+
+#[test]
+fn test_boot_id_injection() {
+    use journal_common::load_boot_id;
+    use std::process::Command;
+
+    let dir = TempDir::new().unwrap();
+    let config = test_config();
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+
+    // Write a single entry
+    let entry = [b"MESSAGE=Test entry" as &[u8], b"PRIORITY=6"];
+    log.write_entry(&entry).unwrap();
+    log.sync().unwrap();
+
+    // Find the created journal file
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    let journal_files: Vec<_> = fs::read_dir(&journal_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s == "journal")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert_eq!(journal_files.len(), 1, "Should have created exactly one journal file");
+
+    let journal_path = journal_files[0].path();
+    let boot_id = load_boot_id().unwrap();
+    let expected_boot_id = boot_id.as_simple().to_string();
+
+    // Use journalctl to verify _BOOT_ID field is present
+    let output = Command::new("journalctl")
+        .arg("--output=json")
+        .arg("--file")
+        .arg(&journal_path)
+        .output()
+        .expect("Failed to run journalctl");
+
+    assert!(output.status.success(), "journalctl should succeed");
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+
+    // Check that the output contains the expected _BOOT_ID field
+    let boot_id_field = format!("\"_BOOT_ID\":\"{}\"", expected_boot_id);
+    assert!(
+        output_str.contains(&boot_id_field),
+        "_BOOT_ID field with value {} should be present in journal entry output",
+        expected_boot_id
+    );
+}

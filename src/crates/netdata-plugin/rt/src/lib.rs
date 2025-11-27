@@ -114,8 +114,8 @@ use tracing::{debug, error, info, instrument, warn};
 // Charts module and re-exports
 pub mod charts;
 pub use charts::{
-    ChartDimensions, ChartHandle, ChartMetadata, ChartRegistry, ChartType,
-    DimensionAlgorithm, DimensionMetadata, InstancedChart, TrackedChart,
+    ChartDimensions, ChartHandle, ChartMetadata, ChartRegistry, ChartType, DimensionAlgorithm,
+    DimensionMetadata, InstancedChart, TrackedChart,
 };
 
 // Re-export the trait and derive macro
@@ -126,6 +126,10 @@ pub use netdata_plugin_charts_derive::NetdataChart;
 // Netdata environment utilities
 pub mod netdata_env;
 pub use netdata_env::{LogFormat, LogLevel, LogMethod, NetdataEnv, SyslogFacility};
+
+// Tracing initialization
+mod tracing_setup;
+pub use tracing_setup::init_tracing;
 
 /// Internal control signals sent to running functions.
 enum RuntimeSignal {
@@ -326,7 +330,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
             Some(bytes) => match serde_json::from_slice(bytes) {
                 Ok(p) => p,
                 Err(e) => {
-                    error!("Failed to deserialize request payload: {}", e);
+                    error!("failed to deserialize request payload: {}", e);
                     return FunctionResult {
                         transaction,
                         status: 400,
@@ -343,7 +347,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                         serde_json::to_vec(&json!({ "error": "Request payload is empty", }))
                             .expect("serializing a json value to work");
 
-                    error!("Failed to deserialize empty payload: {}", e);
+                    error!("failed to deserialize empty payload: {}", e);
                     return FunctionResult {
                         transaction,
                         status: 400,
@@ -402,7 +406,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                         payload,
                     },
                     Err(e) => {
-                        error!("Failed to serialize response: {}", e);
+                        error!("failed to serialize response: {}", e);
                         FunctionResult {
                             transaction,
                             status: 500,
@@ -414,7 +418,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                 }
             }
             Err(e) => {
-                error!("Handler error: {}", e);
+                error!("handler error: {}", e);
                 FunctionResult {
                     transaction,
                     status: 500,
@@ -489,7 +493,9 @@ where
     /// Optional chart registry for managing metrics emission.
     chart_registry: Option<ChartRegistry<W>>,
     /// Handle to chart registry background task.
-    chart_registry_handle: Option<tokio::task::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
+    chart_registry_handle: Option<
+        tokio::task::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    >,
 }
 
 impl PluginRuntime<tokio::io::Stdin, tokio::io::Stdout> {
@@ -639,9 +645,9 @@ where
     where
         T: NetdataChart + Default + PartialEq + Clone + Send + Sync + 'static,
     {
-        let registry = self.chart_registry.get_or_insert_with(|| {
-            ChartRegistry::new(Arc::clone(&self.writer))
-        });
+        let registry = self
+            .chart_registry
+            .get_or_insert_with(|| ChartRegistry::new(Arc::clone(&self.writer)));
         registry.register_chart(initial, interval)
     }
 
@@ -662,9 +668,9 @@ where
     where
         T: InstancedChart + Default + PartialEq + Send + Sync + 'static,
     {
-        let registry = self.chart_registry.get_or_insert_with(|| {
-            ChartRegistry::new(Arc::clone(&self.writer))
-        });
+        let registry = self
+            .chart_registry
+            .get_or_insert_with(|| ChartRegistry::new(Arc::clone(&self.writer)));
         registry.register_instanced_chart(initial, interval)
     }
 
@@ -684,7 +690,7 @@ where
     ///
     /// This method runs indefinitely until shutdown is requested (via Ctrl-C or stdin closing).
     pub async fn run(mut self) -> Result<()> {
-        info!("Starting plugin runtime: {}", self.plugin_name);
+        info!("starting plugin runtime: {}", self.plugin_name);
 
         self.handle_ctr_c();
 
@@ -697,7 +703,7 @@ where
                 tokio::select! {
                     result = registry.run() => {
                         if let Err(e) = &result {
-                            error!("Chart registry error: {}", e);
+                            error!("chart registry error: {}", e);
                         }
                         result
                     }
@@ -709,7 +715,7 @@ where
             });
 
             self.chart_registry_handle = Some(handle);
-            info!("Chart registry started");
+            info!("chart registry started");
         }
 
         self.declare_functions().await?;
@@ -726,11 +732,11 @@ where
         tokio::spawn(async move {
             match tokio::signal::ctrl_c().await {
                 Ok(()) => {
-                    info!("Received Ctrl-C signal, initiating graceful shutdown");
+                    info!("received ctrl-c signal, initiating graceful shutdown");
                     shutdown_token.cancel();
                 }
                 Err(e) => {
-                    error!("Failed to listen for Ctrl-C signal: {}", e);
+                    error!("failed to listen for Ctrl-C signal: {}", e);
                 }
             }
         });
@@ -744,11 +750,11 @@ where
         let mut writer = self.writer.lock().await;
 
         for (name, handler) in self.function_handlers.iter() {
-            info!("Declaring function: {}", name);
+            info!("declaring function: {}", name);
 
             let message = Message::FunctionDeclaration(Box::new(handler.declaration()));
             if let Err(e) = writer.send(message).await {
-                error!("Failed to declare function {}: {}", name, e);
+                error!("failed to declare function {}: {}", name, e);
                 return Err(e);
             }
         }
@@ -763,13 +769,13 @@ where
     /// Continuously processes incoming messages from Netdata and completed function futures.
     /// Handles function calls, cancellations, progress requests, and completions.
     async fn process_messages(&mut self) -> Result<()> {
-        info!("Starting message processing loop");
+        info!("starting message processing loop");
 
         loop {
             tokio::select! {
                 // Make the shutdown signal higher priority by putting it first
                 _ = self.shutdown_token.cancelled() => {
-                    info!("Shutdown requested... Stop processing messages from stdin");
+                    info!("shutdown requested... Stop processing messages from stdin");
                     // Reader will be dropped here, closing stdin
                     break;
                 }
@@ -804,13 +810,13 @@ where
                 self.handle_function_progress(&function_progress).await;
             }
             Some(Ok(msg)) => {
-                debug!("Received message: {:?}", msg);
+                debug!("received message: {:?}", msg);
             }
             Some(Err(e)) => {
-                error!("Error parsing message: {:?}", e);
+                error!("error parsing message: {:?}", e);
             }
             None => {
-                info!("Input stream ended");
+                info!("input stream ended");
                 self.shutdown_token.cancel();
                 return Ok(true); // Signal to break the loop
             }
@@ -864,7 +870,7 @@ where
 
         // Get handler
         let Some(handler) = self.function_handlers.get(&function_call.name).cloned() else {
-            error!("Could not find function {:#?}", function_call.name);
+            error!("could not find function {:#?}", function_call.name);
             return;
         };
 
@@ -908,7 +914,7 @@ where
             return;
         };
 
-        info!("Cancelling transaction {}", function_cancel.transaction);
+        info!("cancelling transaction {}", function_cancel.transaction);
         transaction.cancellation_token.cancel();
     }
 
@@ -921,14 +927,14 @@ where
             .get(&function_progress.transaction)
         else {
             warn!(
-                "Can not get progress of non-existing transaction {}",
+                "can not get progress of non-existing transaction {}",
                 function_progress.transaction
             );
             return;
         };
 
         info!(
-            "Requesting progress of transaction {}",
+            "requesting progress of transaction {}",
             function_progress.transaction
         );
         let _ = transaction.control_tx.send(RuntimeSignal::Progress).await;
@@ -964,9 +970,9 @@ where
         let in_flight = self.transaction_registry.len();
 
         if in_flight == 0 {
-            info!("Clean shutdown - no in-flight functions");
+            info!("clean shutdown - no in-flight functions");
         } else {
-            info!("Shutting down with {} in-flight functions...", in_flight);
+            info!("shutting down with {} in-flight functions...", in_flight);
 
             // Send cancel to all active transactions
             for transaction in self.transaction_registry.values() {
@@ -980,7 +986,7 @@ where
             match tokio::time::timeout(timeout, async {
                 while let Some((transaction, result)) = self.futures.next().await {
                     if let Err(e) = self.handle_completed(transaction, result).await {
-                        error!("Error handling completed function during shutdown: {}", e);
+                        error!("error handling completed function during shutdown: {}", e);
                     }
                     completed += 1;
                 }
@@ -988,12 +994,12 @@ where
             .await
             {
                 Ok(()) => {
-                    info!("Clean shutdown - all {} functions completed", completed);
+                    info!("clean shutdown - all {} functions completed", completed);
                 }
                 Err(_) => {
                     let aborted = in_flight - completed;
                     warn!(
-                        "Shutdown timeout - {} functions completed, {} aborted",
+                        "shutdown timeout - {} functions completed, {} aborted",
                         completed, aborted
                     );
                 }
@@ -1002,9 +1008,9 @@ where
 
         // Wait for chart registry to finish
         if let Some(handle) = self.chart_registry_handle.take() {
-            info!("Waiting for chart registry to finish...");
+            info!("waiting for chart registry to finish...");
             match handle.await {
-                Ok(Ok(())) => info!("Chart registry shut down cleanly"),
+                Ok(Ok(())) => info!("chart registry shut down cleanly"),
                 Ok(Err(e)) => warn!("Chart registry error during shutdown: {}", e),
                 Err(e) => warn!("Chart registry task panicked: {}", e),
             }

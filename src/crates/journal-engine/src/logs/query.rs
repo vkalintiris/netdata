@@ -14,6 +14,20 @@ use journal_registry::File;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+/// Pagination state for multi-file log queries.
+///
+/// This tracks the position in each file where we stopped reading,
+/// allowing queries to resume efficiently without re-scanning entries.
+///
+/// The state is tied to a specific query configuration (filter, anchor, direction, etc).
+/// Changing the query parameters while using the same pagination state will produce
+/// undefined results.
+#[derive(Debug, Clone, Default)]
+pub struct PaginationState {
+    /// Maps each file to the last position we read from it
+    pub file_positions: HashMap<File, usize>,
+}
+
 /// Builder for configuring and executing log queries from indexed journal files.
 ///
 /// This builder allows you to specify:
@@ -115,9 +129,39 @@ impl<'a> LogQuery<'a> {
     /// Returns an error if anchor or direction were not set, or if time boundaries are invalid.
     pub fn execute(self) -> Result<Vec<LogEntryData>> {
         let params = self.builder.build()?;
-        let log_entry_ids = retrieve_log_entries(self.file_indexes.to_vec(), params);
+        let (log_entry_ids, _state) =
+            retrieve_log_entries(self.file_indexes.to_vec(), params, None);
 
         extract_entry_data(&log_entry_ids)
+    }
+
+    /// Execute the query with pagination support.
+    ///
+    /// This consumes the builder and returns a page of log entries along with
+    /// pagination state that can be used to retrieve the next page.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Optional pagination state from a previous query. Pass `None` for the first page.
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple of (log entry data, new pagination state). If the pagination state
+    /// is empty (no file positions tracked), there are no more results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if anchor or direction were not set, or if time boundaries are invalid.
+    pub fn execute_page(
+        self,
+        state: Option<&PaginationState>,
+    ) -> Result<(Vec<LogEntryData>, PaginationState)> {
+        let params = self.builder.build()?;
+        let (log_entry_ids, new_state) =
+            retrieve_log_entries(self.file_indexes.to_vec(), params, state);
+
+        let data = extract_entry_data(&log_entry_ids)?;
+        Ok((data, new_state))
     }
 }
 
@@ -130,17 +174,20 @@ impl<'a> LogQuery<'a> {
 ///
 /// * `file_indexes` - Vector of indexed journal files to retrieve from
 /// * `params` - Query parameters (anchor, direction, limit, filter, boundaries)
+/// * `state` - Optional pagination state to resume from previous query
 ///
 /// # Returns
 ///
-/// A vector of log entries sorted by timestamp, limited to `params.limit` entries.
-fn retrieve_log_entries(file_indexes: Vec<FileIndex>, params: LogQueryParams) -> Vec<LogEntryId> {
-    // Unwrap limit: None means unlimited (usize::MAX)
-    let limit = params.limit().unwrap_or(usize::MAX);
-
+/// A tuple of (log entries, new pagination state). The entries are sorted by timestamp
+/// and limited to `params.limit`. The new state can be used to resume the query.
+fn retrieve_log_entries(
+    file_indexes: Vec<FileIndex>,
+    params: LogQueryParams,
+    state: Option<&PaginationState>,
+) -> (Vec<LogEntryId>, PaginationState) {
     // Handle edge cases
-    if limit == 0 || file_indexes.is_empty() {
-        return Vec::new();
+    if params.limit() == Some(0) || file_indexes.is_empty() {
+        return (Vec::new(), PaginationState::default());
     }
 
     // Resolve anchor to concrete timestamp for multi-file queries
@@ -183,7 +230,7 @@ fn retrieve_log_entries(file_indexes: Vec<FileIndex>, params: LogQueryParams) ->
     };
 
     if relevant_indexes.is_empty() {
-        return Vec::new();
+        return (Vec::new(), PaginationState::default());
     }
 
     // Sort files to process them in temporal order
@@ -199,7 +246,13 @@ fn retrieve_log_entries(file_indexes: Vec<FileIndex>, params: LogQueryParams) ->
     }
 
     // Initialize result vector with capacity for efficiency
-    let mut collected_entries: Vec<LogEntryId> = Vec::with_capacity(limit);
+    let (limit, mut collected_entries) = match params.limit() {
+        Some(limit) => (limit, Vec::with_capacity(limit)),
+        None => (usize::MAX, Vec::with_capacity(200)),
+    };
+
+    // Track the new pagination state, starting from the previous state if available
+    let mut new_state = state.cloned().unwrap_or_default();
 
     for file_index in relevant_indexes {
         // Pruning optimization: if we have a full result set, check if we can skip
@@ -216,7 +269,35 @@ fn retrieve_log_entries(file_indexes: Vec<FileIndex>, params: LogQueryParams) ->
 
         // Perform I/O to retrieve entries from this FileIndex
         let file = file_index.file();
-        let new_entries = match file_index.find_log_entries(file, &params) {
+
+        // Check if we have a resume position for this file
+        let resume_position = state.and_then(|s| s.file_positions.get(file).copied());
+
+        // Create params with resume position if available
+        let file_params = if let Some(pos) = resume_position {
+            let mut builder = LogQueryParamsBuilder::new(params.anchor(), params.direction());
+            if let Some(limit) = params.limit() {
+                builder = builder.with_limit(limit);
+            }
+            if let Some(field) = params.source_timestamp_field() {
+                builder = builder.with_source_timestamp_field(Some(field.clone()));
+            }
+            if let Some(filter) = params.filter() {
+                builder = builder.with_filter(filter.clone());
+            }
+            if let Some(after) = params.after() {
+                builder = builder.with_after(after);
+            }
+            if let Some(before) = params.before() {
+                builder = builder.with_before(before);
+            }
+            builder = builder.with_resume_position(pos);
+            builder.build().unwrap() // Safe because we're copying from valid params
+        } else {
+            params.clone()
+        };
+
+        let new_entries = match file_index.find_log_entries(file, &file_params) {
             Ok(entries) => entries,
             Err(_) => continue, // Skip files that fail to read
         };
@@ -231,7 +312,23 @@ fn retrieve_log_entries(file_indexes: Vec<FileIndex>, params: LogQueryParams) ->
             merge_log_entries(collected_entries, new_entries, limit, params.direction());
     }
 
-    collected_entries
+    // Update pagination state based on the last position for each file in collected_entries
+    // For forward direction: track the maximum position (we're progressing upward)
+    // For backward direction: track the minimum position (we're progressing downward)
+    for entry in &collected_entries {
+        new_state
+            .file_positions
+            .entry(entry.file.clone())
+            .and_modify(|pos| {
+                *pos = match params.direction() {
+                    Direction::Forward => (*pos).max(entry.position),
+                    Direction::Backward => (*pos).min(entry.position),
+                }
+            })
+            .or_insert(entry.position);
+    }
+
+    (collected_entries, new_state)
 }
 
 /// Check if we can prune (skip) a file based on its time range and current results.
@@ -395,7 +492,7 @@ fn extract_entry_data(log_entries: &[LogEntryId]) -> Result<Vec<LogEntryData>> {
                     if let Some(otel_name) = reverse_map.get(pair.field()) {
                         pair = FieldValuePair::new_unchecked(
                             FieldName::new_unchecked(otel_name),
-                            pair.value().to_string()
+                            pair.value().to_string(),
                         );
                     }
                     fields.push(pair);

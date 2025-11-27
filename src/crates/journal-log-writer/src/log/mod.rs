@@ -250,9 +250,15 @@ impl Log {
             }
         }
 
-        // Transform items to use remapped field names
-        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len());
-        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len());
+        // Inject _BOOT_ID field - this is required for journalctl boot filtering to work
+        let boot_id_field = format!("_BOOT_ID={}", self.boot_id.as_simple());
+
+        // Transform items to use remapped field names, prepending _BOOT_ID
+        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 1);
+        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 1);
+
+        // Prepend _BOOT_ID field first
+        transformed_items.push(boot_id_field.into_bytes());
 
         for item in items {
             if let Some(field_name) = extract_field_name(item) {
@@ -294,12 +300,17 @@ impl Log {
     /// Writes a remapping entry containing field name mappings.
     ///
     /// Format:
+    /// _BOOT_ID=<boot_id>
     /// ND_REMAPPING=1
     /// ND_<md5_1>=<otel_key_1>
     /// ND_<md5_2>=<otel_key_2>
     /// ...
     fn write_remapping_entry(&mut self, mappings: &[(Vec<u8>, String)]) -> Result<()> {
-        let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 1);
+        let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 2);
+
+        // Inject _BOOT_ID field first
+        let boot_id_field = format!("_BOOT_ID={}", self.boot_id.as_simple());
+        remapping_items.push(boot_id_field.into_bytes());
 
         // Add marker field
         remapping_items.push(REMAPPING_MARKER.to_vec());
