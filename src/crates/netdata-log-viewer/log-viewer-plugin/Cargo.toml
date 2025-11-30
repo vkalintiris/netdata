@@ -31,7 +31,6 @@ foyer = { workspace = true }
 anyhow = { workspace = true }
 bytesize = { workspace = true }
 bytesize-serde = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 num_cpus = "1"
 serde_yaml = { workspace = true }
 

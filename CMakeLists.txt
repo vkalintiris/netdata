@@ -3273,6 +3273,16 @@ set(logdir_POST "${LOG_DIR}")
 set(netdata_user_POST "${NETDATA_USER}")
 set(netdata_group_POST "${NETDATA_USER}")
 
+if(ENABLE_PLUGIN_OTEL)
+    configure_file(src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml.in
+                   src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml
+                   @ONLY)
+
+    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml
+            COMPONENT log-viewer-plugin
+            DESTINATION usr/lib/netdata/conf.d)
+endif()
+
 if(NOT OS_WINDOWS)
         configure_file(src/claim/netdata-claim.sh.in src/claim/netdata-claim.sh @ONLY)
         install(PROGRAMS

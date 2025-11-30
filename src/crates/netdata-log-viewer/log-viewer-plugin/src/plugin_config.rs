@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use bytesize::ByteSize;
-use clap::Parser;
 use rt::NetdataEnv;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Default value for workers (number of CPU cores)
 fn default_workers() -> usize {
@@ -76,37 +75,17 @@ pub struct Config {
     pub cache: CacheConfig,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "log-viewer-plugin")]
-#[command(about = "Netdata systemd journal log viewer plugin")]
-#[command(version = "0.1")]
-pub struct CliArgs {
-    /// Path to configuration file (overrides automatic Netdata config lookup)
-    #[arg(long = "config")]
-    pub config: Option<PathBuf>,
-
-    /// Collection interval (ignored, kept for compatibility with Netdata)
-    #[arg(hide = true, help = "Collection interval in seconds (ignored)")]
-    pub _update_frequency: Option<u32>,
-}
-
 pub struct PluginConfig {
     pub config: Config,
     pub netdata_env: NetdataEnv,
 }
 
 impl PluginConfig {
-    /// Load configuration from Netdata environment or CLI arguments
+    /// Load configuration from Netdata environment
     pub fn new() -> Result<Self> {
         let netdata_env = NetdataEnv::from_environment();
-        let cli_args = CliArgs::parse();
 
-        let mut config = if let Some(config_path) = cli_args.config {
-            // Explicit config file provided via --config
-            Config::from_yaml_file(&config_path).with_context(|| {
-                format!("Loading config from {}", config_path.display())
-            })?
-        } else if netdata_env.running_under_netdata() {
+        let mut config = if netdata_env.running_under_netdata() {
             // Running under Netdata - try user config first, fallback to stock config
             let user_config = netdata_env
                 .user_config_dir
@@ -142,7 +121,7 @@ impl PluginConfig {
                 Config::default()
             }
         } else {
-            // Not running under Netdata and no --config provided, use defaults
+            // Not running under Netdata, use defaults
             Config::default()
         };
 

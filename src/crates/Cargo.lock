@@ -1739,7 +1739,6 @@ dependencies = [
  "async-trait",
  "bytesize",
  "bytesize-serde",
- "clap",
  "foyer",
  "journal-core",
  "journal-function",

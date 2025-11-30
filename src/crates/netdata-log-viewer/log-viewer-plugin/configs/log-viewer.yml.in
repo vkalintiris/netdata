@@ -10,7 +10,7 @@ cache:
   # Directory to store the hybrid cache (memory + disk backed by Foyer)
   # Relative paths are resolved based on Netdata's cache directory
   # Default: /var/cache/netdata/log-viewer
-  directory: "log-viewer"
+  directory: "@cachedir_POST@/log-viewer"
 
   # Memory cache capacity (number of indexed journal entries to keep in memory)
   # Higher values improve query performance but use more RAM
