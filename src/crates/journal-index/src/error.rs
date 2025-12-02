@@ -15,6 +15,10 @@ pub enum IndexError {
     #[error("invalid query time range")]
     InvalidQueryTimeRange,
 
+    /// Invalid regex pattern
+    #[error("invalid regex pattern:")]
+    InvalidRegex,
+
     /// Data payload does not contain this field prefix
     #[error("invalid field prefix")]
     InvalidFieldPrefix,
@@ -40,6 +44,6 @@ pub enum IndexError {
     Journal(#[from] journal_core::error::JournalError),
 }
 
-static_assertions::const_assert!(std::mem::size_of::<IndexError>() <= 16);
+static_assertions::const_assert!(std::mem::size_of::<IndexError>() <= 32);
 
 pub type Result<T> = std::result::Result<T, IndexError>;

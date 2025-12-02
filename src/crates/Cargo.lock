@@ -1620,6 +1620,7 @@ dependencies = [
  "journal-common",
  "journal-core",
  "journal-registry",
+ "regex",
  "roaring",
  "serde",
  "static_assertions",

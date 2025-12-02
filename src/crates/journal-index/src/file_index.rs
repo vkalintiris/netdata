@@ -5,6 +5,7 @@ use journal_common::TimeRange;
 use journal_core::collections::{HashMap, HashSet};
 use journal_core::file::{JournalFile, Mmap};
 use journal_core::repository::File;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
@@ -200,6 +201,9 @@ pub struct LogQueryParams {
     /// When set, the query will skip the binary search and continue from this position.
     /// The filter must remain unchanged between paginated queries.
     resume_position: Option<usize>,
+    /// Optional regex for free text search against entry data objects.
+    /// If set, only entries where at least one data object's full payload matches will be returned.
+    regex: Option<Regex>,
 }
 
 impl LogQueryParams {
@@ -242,6 +246,11 @@ impl LogQueryParams {
     pub fn resume_position(&self) -> Option<usize> {
         self.resume_position
     }
+
+    /// Get the regex pattern for free text search
+    pub fn regex(&self) -> Option<&Regex> {
+        self.regex.as_ref()
+    }
 }
 
 /// Builder for constructing `LogQueryParams` with validation.
@@ -258,6 +267,7 @@ pub struct LogQueryParamsBuilder {
     after: Option<Microseconds>,
     before: Option<Microseconds>,
     resume_position: Option<usize>,
+    regex_pattern: Option<String>,
 }
 
 impl LogQueryParamsBuilder {
@@ -277,6 +287,7 @@ impl LogQueryParamsBuilder {
             after: None,
             before: None,
             resume_position: None,
+            regex_pattern: None,
         }
     }
 
@@ -316,6 +327,19 @@ impl LogQueryParamsBuilder {
         self
     }
 
+    /// Set the regex pattern for free text search.
+    ///
+    /// The regex will be matched against the full payload of each data object
+    /// (in "FIELD=value" format). Only entries where at least one data object
+    /// matches will be returned.
+    ///
+    /// The pattern will be compiled during `build()`. Invalid patterns will
+    /// cause `build()` to return an error.
+    pub fn with_regex(mut self, pattern: impl Into<String>) -> Self {
+        self.regex_pattern = Some(pattern.into());
+        self
+    }
+
     /// Build the LogQueryParams, validating optional constraints
     pub fn build(self) -> Result<LogQueryParams> {
         // Validate time boundaries if both are set
@@ -324,6 +348,13 @@ impl LogQueryParamsBuilder {
                 return Err(IndexError::InvalidQueryTimeRange);
             }
         }
+
+        // Compile regex pattern if provided
+        let regex = if let Some(pattern) = self.regex_pattern {
+            Some(Regex::new(&pattern).map_err(|_| IndexError::InvalidRegex)?)
+        } else {
+            None
+        };
 
         Ok(LogQueryParams {
             anchor: self.anchor,
@@ -334,6 +365,7 @@ impl LogQueryParamsBuilder {
             after: self.after,
             before: self.before,
             resume_position: self.resume_position,
+            regex,
         })
     }
 }
@@ -413,6 +445,79 @@ where
     Ok(left)
 }
 
+/// Check if an entry matches a regex pattern without using a cache (for benchmarking).
+///
+/// This is the original implementation that loads and checks each data object
+/// for every entry, without caching results.
+#[doc(hidden)]
+pub fn entry_matches_regex_uncached(
+    journal_file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    regex: &Regex,
+) -> Result<bool> {
+    let data_iter = journal_file.entry_data_objects(entry_offset)?;
+
+    for data_result in data_iter {
+        let data_object = data_result?;
+        let payload = data_object.payload_bytes();
+
+        // Try to match as UTF-8 string
+        if let Ok(payload_str) = std::str::from_utf8(payload) {
+            if regex.is_match(payload_str) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Check if an entry matches a regex pattern
+fn entry_matches_regex(
+    journal_file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    regex: &Regex,
+    data_match_cache: &mut HashMap<NonZeroU64, bool>,
+    data_offsets_scratch: &mut Vec<NonZeroU64>,
+) -> Result<bool> {
+    // Collect all data object offsets for this entry
+    data_offsets_scratch.clear();
+    {
+        let entry = journal_file.entry_ref(entry_offset)?;
+        entry.collect_offsets(data_offsets_scratch)?;
+    }
+
+    // Check each data object offset
+    for data_offset in data_offsets_scratch.iter().copied() {
+        // Check cache first
+        if let Some(&matches) = data_match_cache.get(&data_offset) {
+            if matches {
+                return Ok(true);
+            }
+            continue;
+        }
+
+        // Cache miss - load the data object and check if it matches
+        let data_object = journal_file.data_ref(data_offset)?;
+        let payload = data_object.payload_bytes();
+
+        let matches = if let Ok(payload_str) = std::str::from_utf8(payload) {
+            regex.is_match(payload_str)
+        } else {
+            false
+        };
+
+        // Update cache
+        data_match_cache.insert(data_offset, matches);
+
+        if matches {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 /// Identifies a specific log entry within a journal file.
 #[derive(Debug, Clone)]
 pub struct LogEntryId {
@@ -471,7 +576,7 @@ impl FileIndex {
             return Ok(Vec::new());
         }
 
-        let window_size = 8 * 1024 * 1024;
+        let window_size = 32 * 1024 * 1024;
         let journal_file = JournalFile::open(file, window_size)?;
 
         // Collect the entry offsets in the bitmap
@@ -492,6 +597,13 @@ impl FileIndex {
         let limit = params.limit().unwrap_or(entry_offsets.len());
 
         let mut log_entry_ids = Vec::with_capacity(limit.min(entry_offsets.len()));
+
+        // Cache for regex matching. We use a scratch buffer for collecting
+        // the data offsets of an entry, and a hash map that stores the
+        // evaluation of each data object against the provided regex. This
+        // ensures that we will evaluate each data object only once.
+        let mut data_offsets_scratch = Vec::new();
+        let mut data_match_cache = HashMap::default();
 
         match params.direction() {
             Direction::Forward => {
@@ -545,6 +657,19 @@ impl FileIndex {
                     if let Some(before) = params.before() {
                         if timestamp >= before.get() {
                             break; // Stop when we hit or exceed upper boundary
+                        }
+                    }
+
+                    // Check regex filter if present
+                    if let Some(regex) = params.regex() {
+                        if !entry_matches_regex(
+                            &journal_file,
+                            entry_offset,
+                            regex,
+                            &mut data_match_cache,
+                            &mut data_offsets_scratch,
+                        )? {
+                            continue;
                         }
                     }
 
@@ -630,6 +755,19 @@ impl FileIndex {
                     if let Some(after) = params.after() {
                         if timestamp < after.get() {
                             break; // Stop when we go below lower boundary
+                        }
+                    }
+
+                    // Check regex filter if present
+                    if let Some(regex) = params.regex() {
+                        if !entry_matches_regex(
+                            &journal_file,
+                            entry_offset,
+                            regex,
+                            &mut data_match_cache,
+                            &mut data_offsets_scratch,
+                        )? {
+                            continue;
                         }
                     }
 

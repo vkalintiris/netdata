@@ -17,6 +17,7 @@ allocative = [
 
 [dependencies]
 allocative = { workspace = true, optional = true }
+regex = { workspace = true }
 roaring = { workspace = true , features = ["serde"] }
 serde = { workspace =  true, features = ["derive"] }
 static_assertions = { workspace = true }
