@@ -105,7 +105,6 @@ fn accepted_params() -> Vec<netdata::RequestParam> {
         RequestParam::Tail,
         RequestParam::Sampling,
         RequestParam::Slice,
-        RequestParam::Auxiliary,
     ]
 }
 
@@ -556,9 +555,6 @@ impl FunctionHandler for CatalogFunction {
         };
 
         let response = CatalogResponse {
-            auxiliary: netdata::Auxiliary {
-                hello: String::from("world"),
-            },
             progress: histogram.progress_percent(),
             version: netdata::Version::default(),
             accepted_params: accepted_params(),

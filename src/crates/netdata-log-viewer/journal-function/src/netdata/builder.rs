@@ -80,6 +80,10 @@ pub fn build_ui_response(
     histogram: &Histogram,
     log_entries: &[LogEntryData],
 ) -> (serde_json::Value, serde_json::Value) {
+    if log_entries.is_empty() {
+        return (serde_json::json!([]), serde_json::json!([]));
+    }
+
     // Generate column schema from histogram
     let field_names: Vec<String> = histogram
         .discovered_fields()
@@ -91,10 +95,6 @@ pub fn build_ui_response(
         warn!("Failed to serialize column schema: {}", e);
         serde_json::json!({})
     });
-
-    if log_entries.is_empty() {
-        return (columns, serde_json::json!([]));
-    }
 
     let transformations = systemd_transformations();
 

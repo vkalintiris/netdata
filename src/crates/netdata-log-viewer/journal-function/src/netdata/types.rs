@@ -171,11 +171,6 @@ impl Default for Pagination {
 use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Auxiliary {
-    pub hello: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Items {
     #[serde(default)]
     pub evaluated: usize,
@@ -196,8 +191,6 @@ pub struct Items {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JournalResponse {
-    #[serde(rename = "_auxiliary")]
-    pub auxiliary: Auxiliary,
     pub progress: u32,
 
     #[serde(rename = "v")]
