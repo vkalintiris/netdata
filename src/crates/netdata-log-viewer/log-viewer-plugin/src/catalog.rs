@@ -543,31 +543,13 @@ impl FunctionHandler for CatalogFunction {
 
         let ui_histogram = netdata::histogram(&histogram, &histogram_field, &transformations);
 
-        let mut items_before = 0;
-        let mut items_after = 0;
-
-        if request.anchor.is_none() {
-            match request.direction {
-                journal_index::Direction::Backward => {
-                    if log_entries.len() >= request.last.unwrap_or(200) {
-                        items_before = 1;
-                    }
-                }
-                journal_index::Direction::Forward => {
-                    if log_entries.len() >= request.last.unwrap_or(200) {
-                        items_after = 1;
-                    }
-                }
-            }
-        }
-
         let items = netdata::Items {
             evaluated: u32::MAX as usize,
             unsampled: u32::MAX as usize,
             estimated: u32::MAX as usize,
             matched: ui_histogram.count(),
-            before: items_before,
-            after: items_after,
+            before: u32::MAX as usize,
+            after: u32::MAX as usize,
             returned: u32::MAX as usize,
             max_to_return: u32::MAX as usize,
         };
