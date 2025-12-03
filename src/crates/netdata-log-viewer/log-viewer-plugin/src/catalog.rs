@@ -170,6 +170,7 @@ impl CatalogFunction {
         before: u32,
         anchor: Option<u64>,
         facets: &[String],
+        filter: &Filter,
         limit: usize,
         direction: journal_index::Direction,
     ) -> (Vec<journal_function::LogEntryData>, bool, bool) {
@@ -253,12 +254,17 @@ impl CatalogFunction {
         };
 
         // Query with limit + 1 to detect if there are more entries in this direction
-        let mut log_entries = match LogQuery::new(&indexed_files, query_anchor, direction)
+        let mut query = LogQuery::new(&indexed_files, query_anchor, direction)
             .with_limit(limit + 1)
             .with_after_usec(after_usec)
-            .with_before_usec(before_usec)
-            .execute()
-        {
+            .with_before_usec(before_usec);
+
+        // Only apply filter if it's not Filter::none() (which matches nothing)
+        if !filter.is_none() {
+            query = query.with_filter(filter.clone());
+        }
+
+        let mut log_entries = match query.execute() {
             Ok(entries) => {
                 info!("retrieved {} log entries (limit + 1 query)", entries.len());
                 entries
@@ -300,12 +306,18 @@ impl CatalogFunction {
                 }
             };
 
-            match LogQuery::new(&indexed_files, opposite_anchor, opposite_direction)
-                .with_limit(1)
-                .with_after_usec(after_usec)
-                .with_before_usec(before_usec)
-                .execute()
-            {
+            let mut opposite_query =
+                LogQuery::new(&indexed_files, opposite_anchor, opposite_direction)
+                    .with_limit(1)
+                    .with_after_usec(after_usec)
+                    .with_before_usec(before_usec);
+
+            // Only apply filter if it's not Filter::none() (which matches nothing)
+            if !filter.is_none() {
+                opposite_query = opposite_query.with_filter(filter.clone());
+            }
+
+            match opposite_query.execute() {
                 Ok(entries) => !entries.is_empty(),
                 Err(e) => {
                     warn!("opposite direction query error: {}", e);
@@ -591,6 +603,7 @@ impl FunctionHandler for CatalogFunction {
                 request.before,
                 request.anchor,
                 &facets,
+                &filter_expr,
                 limit,
                 request.direction,
             )
