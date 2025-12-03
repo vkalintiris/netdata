@@ -158,7 +158,12 @@ impl CatalogFunction {
     /// 1. Finds journal files in the time range
     /// 2. Retrieves indexed files from cache
     /// 3. Queries log entries using LogQuery
-    /// 4. Returns raw log entry data
+    /// 4. Returns raw log entry data and pagination flags
+    ///
+    /// Returns: (entries, has_before, has_after)
+    /// - entries: The log entries matching the query
+    /// - has_before: true if there are more entries before the returned window
+    /// - has_after: true if there are more entries after the returned window
     async fn query_logs(
         &self,
         after: u32,
@@ -167,7 +172,7 @@ impl CatalogFunction {
         facets: &[String],
         limit: usize,
         direction: journal_index::Direction,
-    ) -> Vec<journal_function::LogEntryData> {
+    ) -> (Vec<journal_function::LogEntryData>, bool, bool) {
         use journal_function::LogQuery;
 
         info!("querying logs for time range [{}, {})", after, before);
@@ -181,7 +186,7 @@ impl CatalogFunction {
             Ok(files) => files,
             Err(e) => {
                 warn!("Failed to find files in range: {}", e);
-                return Vec::new();
+                return (Vec::new(), false, false);
             }
         };
 
@@ -213,7 +218,7 @@ impl CatalogFunction {
 
         if indexed_files.is_empty() {
             info!("no indexed files available for log query");
-            return Vec::new();
+            return (Vec::new(), false, false);
         }
 
         // Convert time range boundaries to microseconds
@@ -247,26 +252,90 @@ impl CatalogFunction {
             }
         };
 
-        match LogQuery::new(&indexed_files, query_anchor, direction)
-            .with_limit(limit)
+        // Query with limit + 1 to detect if there are more entries in this direction
+        let mut log_entries = match LogQuery::new(&indexed_files, query_anchor, direction)
+            .with_limit(limit + 1)
             .with_after_usec(after_usec)
             .with_before_usec(before_usec)
             .execute()
         {
-            Ok(mut log_entries) => {
-                info!("retrieved {} log entries", log_entries.len());
-
-                // UI always expects logs sorted descending by timestamp (newest first)
-                // regardless of query direction
-                log_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-
-                log_entries
+            Ok(entries) => {
+                info!("retrieved {} log entries (limit + 1 query)", entries.len());
+                entries
             }
             Err(e) => {
                 error!("log query error: {}", e);
-                Vec::new()
+                return (Vec::new(), false, false);
             }
+        };
+
+        // Check if we got more than limit entries (meaning there are more in this direction)
+        let has_more_in_query_direction = log_entries.len() > limit;
+        if has_more_in_query_direction {
+            log_entries.truncate(limit);
+            info!(
+                "truncated to {} entries, more available in query direction",
+                limit
+            );
         }
+
+        // Query 1 entry in the opposite direction to check if there are entries there
+        // However, if there's no anchor (initial query), we're starting from the time range
+        // boundary, so there are no entries in the opposite direction by definition.
+        let has_more_in_opposite_direction = if anchor.is_none() {
+            // No anchor: we're at the time range boundary, no entries in opposite direction
+            false
+        } else {
+            let opposite_direction = match direction {
+                journal_index::Direction::Forward => journal_index::Direction::Backward,
+                journal_index::Direction::Backward => journal_index::Direction::Forward,
+            };
+
+            let opposite_anchor = match opposite_direction {
+                journal_index::Direction::Forward => {
+                    journal_index::Anchor::Timestamp(Microseconds(anchor.unwrap() + 1))
+                }
+                journal_index::Direction::Backward => {
+                    journal_index::Anchor::Timestamp(Microseconds(anchor.unwrap() - 1))
+                }
+            };
+
+            match LogQuery::new(&indexed_files, opposite_anchor, opposite_direction)
+                .with_limit(1)
+                .with_after_usec(after_usec)
+                .with_before_usec(before_usec)
+                .execute()
+            {
+                Ok(entries) => !entries.is_empty(),
+                Err(e) => {
+                    warn!("opposite direction query error: {}", e);
+                    false
+                }
+            }
+        };
+
+        // Calculate has_before and has_after based on the query direction
+        let (has_before, has_after) = match direction {
+            journal_index::Direction::Forward => {
+                // Forward query: has_more means has_after, opposite check gives has_before
+                (has_more_in_opposite_direction, has_more_in_query_direction)
+            }
+            journal_index::Direction::Backward => {
+                // Backward query: has_more means has_before, opposite check gives has_after
+                (has_more_in_query_direction, has_more_in_opposite_direction)
+            }
+        };
+
+        info!(
+            "pagination flags: has_before={}, has_after={}",
+            has_before, has_after
+        );
+
+        // UI always expects logs sorted descending by timestamp (newest first)
+        // regardless of query direction
+        log_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        (log_entries, has_before, has_after)
     }
 
     /// Create a new catalog function with the given monitor and cache configuration.
@@ -516,7 +585,7 @@ impl FunctionHandler for CatalogFunction {
         info!("histogram computation complete");
 
         let limit = request.last.unwrap_or(200);
-        let log_entries = self
+        let (log_entries, has_before, has_after) = self
             .query_logs(
                 request.after,
                 request.before,
@@ -548,10 +617,11 @@ impl FunctionHandler for CatalogFunction {
             unsampled: u32::MAX as usize,
             estimated: u32::MAX as usize,
             matched: ui_histogram.count(),
-            before: u32::MAX as usize,
-            after: u32::MAX as usize,
-            returned: u32::MAX as usize,
-            max_to_return: u32::MAX as usize,
+            // UI treats these as booleans: 0 = false, >0 = true
+            before: if has_after { 1 } else { 0 },
+            after: if has_before { 1 } else { 0 },
+            returned: log_entries.len(),
+            max_to_return: limit,
         };
 
         let response = CatalogResponse {
