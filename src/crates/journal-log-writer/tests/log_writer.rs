@@ -53,7 +53,7 @@ fn test_write_single_entry() {
 
     let entry = [b"MESSAGE=Hello, World!" as &[u8], b"PRIORITY=6"];
 
-    log.write_entry(&entry).unwrap();
+    log.write_entry(&entry, None).unwrap();
     log.sync().unwrap();
 
     // Verify file was created
@@ -71,7 +71,7 @@ fn test_write_multiple_entries() {
     for i in 0..10 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry).unwrap();
+        log.write_entry(&entry, None).unwrap();
     }
 
     log.sync().unwrap();
@@ -94,7 +94,7 @@ fn test_rotation_by_entry_count() {
     for i in 0..12 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry).unwrap();
+        log.write_entry(&entry, None).unwrap();
     }
 
     log.sync().unwrap();
@@ -120,7 +120,7 @@ fn test_rotation_by_file_size() {
             "x".repeat(1000)
         );
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry).unwrap();
+        log.write_entry(&entry, None).unwrap();
     }
 
     log.sync().unwrap();
@@ -146,7 +146,7 @@ fn test_retention_by_file_count() {
     for i in 0..10 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry).unwrap();
+        log.write_entry(&entry, None).unwrap();
     }
 
     log.sync().unwrap();
@@ -184,7 +184,7 @@ fn test_retention_by_total_size() {
     for i in 0..20 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry).unwrap();
+        log.write_entry(&entry, None).unwrap();
     }
 
     log.sync().unwrap();
@@ -209,7 +209,7 @@ fn test_empty_entry() {
 
     // Write empty entry (should be no-op)
     let entry: [&[u8]; 0] = [];
-    log.write_entry(&entry).unwrap();
+    log.write_entry(&entry, None).unwrap();
 
     // Should not create any files (no rotation triggered)
     assert_eq!(count_journal_files(&dir), 0);
@@ -227,7 +227,7 @@ fn test_boot_id_injection() {
 
     // Write a single entry
     let entry = [b"MESSAGE=Test entry" as &[u8], b"PRIORITY=6"];
-    log.write_entry(&entry).unwrap();
+    log.write_entry(&entry, None).unwrap();
     log.sync().unwrap();
 
     // Find the created journal file

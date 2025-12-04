@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, span, warn};
 
-
 fn create_chain(path: &Path) -> Result<OwnedChain> {
     let machine_id = load_machine_id()
         .map_err(|e| WriterError::MachineId(format!("failed to load machine ID: {}", e)))?;
@@ -186,9 +185,7 @@ impl Log {
     /// - monotonic: microseconds since boot (CLOCK_MONOTONIC)
     fn capture_dual_timestamp(&self) -> Result<(u64, u64)> {
         let realtime = self.clock.now().get();
-        let monotonic = monotonic_now()
-            .map_err(|e| WriterError::Io(e))?
-            .get();
+        let monotonic = monotonic_now().map_err(|e| WriterError::Io(e))?.get();
         Ok((realtime, monotonic))
     }
 
@@ -222,7 +219,11 @@ impl Log {
     }
 
     /// Writes a journal entry.
-    pub fn write_entry(&mut self, items: &[&[u8]]) -> Result<()> {
+    ///
+    /// If `source_realtime_usec` is provided, a `_SOURCE_REALTIME_TIMESTAMP` field will be added
+    /// to record the original timestamp from the source (in microseconds since Unix epoch).
+    /// This is useful when ingesting logs from external sources that have their own timestamps.
+    pub fn write_entry(&mut self, items: &[&[u8]], source_realtime_usec: Option<u64>) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
@@ -268,11 +269,17 @@ impl Log {
         let boot_id_field = format!("_BOOT_ID={}", self.boot_id.as_simple());
 
         // Transform items to use remapped field names, prepending _BOOT_ID
-        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 1);
-        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 1);
+        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 2);
+        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 2);
 
         // Prepend _BOOT_ID field first
         transformed_items.push(boot_id_field.into_bytes());
+
+        // Add _SOURCE_REALTIME_TIMESTAMP if provided
+        if let Some(timestamp_usec) = source_realtime_usec {
+            let source_timestamp_field = format!("_SOURCE_REALTIME_TIMESTAMP={}", timestamp_usec);
+            transformed_items.push(source_timestamp_field.into_bytes());
+        }
 
         for item in items {
             if let Some(field_name) = extract_field_name(item) {
@@ -515,6 +522,6 @@ impl Log {
         // Convert Vec<Vec<u8>> to Vec<&[u8]> for write_entry
         let field_refs: Vec<&[u8]> = fields.iter().map(|f| f.as_slice()).collect();
 
-        self.write_entry(&field_refs)
+        self.write_entry(&field_refs, None)
     }
 }

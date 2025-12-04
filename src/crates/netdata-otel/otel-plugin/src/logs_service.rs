@@ -51,10 +51,28 @@ impl NetdataLogsService {
         Ok(NetdataLogsService { log: journal_log })
     }
 
-    fn json_to_entry_data(&self, json_value: &Value) -> Vec<Vec<u8>> {
+    fn json_to_entry_data(&self, json_value: &Value) -> (Vec<Vec<u8>>, Option<u64>) {
         let mut entry_data = Vec::new();
+        let mut source_timestamp_usec = None;
 
         if let Value::Object(obj) = json_value {
+            // Extract timestamps for source realtime timestamp
+            // Per OTLP spec: Use time_unix_nano if present (non-zero), otherwise use observed_time_unix_nano
+            let time_unix_nano = obj
+                .get("log.time_unix_nano")
+                .and_then(|v| v.as_u64())
+                .filter(|&t| t != 0);
+
+            let observed_time_unix_nano = obj
+                .get("log.observed_time_unix_nano")
+                .and_then(|v| v.as_u64())
+                .filter(|&t| t != 0);
+
+            // Convert from nanoseconds to microseconds (systemd journal uses microseconds)
+            source_timestamp_usec = time_unix_nano
+                .or(observed_time_unix_nano)
+                .map(|nano| nano / 1000);
+
             for (key, value) in obj {
                 let value_str = match value {
                     Value::String(s) => s.clone(),
@@ -69,7 +87,7 @@ impl NetdataLogsService {
             }
         }
 
-        entry_data
+        (entry_data, source_timestamp_usec)
     }
 }
 
@@ -88,14 +106,14 @@ impl LogsService for NetdataLogsService {
             tracing::Span::current().record("received_logs", entries.len());
 
             for entry in entries {
-                let entry_data = self.json_to_entry_data(&entry);
+                let (entry_data, source_timestamp_usec) = self.json_to_entry_data(&entry);
 
                 if entry_data.is_empty() {
                     continue;
                 }
 
                 let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-                if let Err(e) = self.log.lock().unwrap().write_entry(&entry_refs) {
+                if let Err(e) = self.log.lock().unwrap().write_entry(&entry_refs, source_timestamp_usec) {
                     eprintln!("Failed to write log entry: {}", e);
                     return Err(Status::internal(format!(
                         "Failed to write log entry: {}",
