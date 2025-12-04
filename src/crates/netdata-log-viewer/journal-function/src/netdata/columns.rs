@@ -49,6 +49,8 @@ pub struct ColumnSchema {
     #[serde(skip)]
     pub key: String,
 
+    pub id: String,
+
     /// Whether this column is a unique key
     pub unique_key: bool,
 
@@ -102,6 +104,7 @@ impl ColumnSchema {
     pub fn timestamp() -> Self {
         Self {
             index: 0,
+            id: "timestamp".to_string(),
             key: "timestamp".to_string(),
             unique_key: true,
             name: "Timestamp".to_string(),
@@ -129,6 +132,7 @@ impl ColumnSchema {
     pub fn row_options() -> Self {
         Self {
             index: 1,
+            id: "rowOptions".to_string(),
             key: "rowOptions".to_string(),
             unique_key: false,
             name: "rowOptions".to_string(),
@@ -187,6 +191,7 @@ impl ColumnSchema {
 
         Self {
             index,
+            id: name.clone(),
             key: name.clone(),
             unique_key: false,
             name,
