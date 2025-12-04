@@ -14,6 +14,7 @@ use crate::plugin_config::PluginConfig;
 
 pub struct NetdataLogsService {
     log: Arc<Mutex<Log>>,
+    store_otlp_json: bool,
 }
 
 impl NetdataLogsService {
@@ -48,7 +49,10 @@ impl NetdataLogsService {
                 )
             },
         )?));
-        Ok(NetdataLogsService { log: journal_log })
+        Ok(NetdataLogsService {
+            log: journal_log,
+            store_otlp_json: logs_config.store_otlp_json,
+        })
     }
 
     fn extract_timestamp_for_sorting(json_value: &Value) -> u64 {
@@ -92,6 +96,15 @@ impl NetdataLogsService {
             source_timestamp_usec = time_unix_nano
                 .or(observed_time_unix_nano)
                 .map(|nano| nano / 1000);
+
+            // Add OTLP_JSON field containing the complete JSON representation if enabled
+            // This preserves the full original message for debugging and reprocessing
+            if self.store_otlp_json {
+                if let Ok(json_str) = serde_json::to_string(json_value) {
+                    let kv_pair = format!("OTLP_JSON={}", json_str);
+                    entry_data.push(kv_pair.into_bytes());
+                }
+            }
 
             for (key, value) in obj {
                 let value_str = match value {

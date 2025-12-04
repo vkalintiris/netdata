@@ -151,6 +151,13 @@ pub struct LogsConfig {
     )]
     #[serde(with = "humantime_serde")]
     pub duration_of_journal_file: Duration,
+
+    /// Store the complete OTLP JSON representation in the OTLP_JSON field
+    /// This preserves the full original message for debugging and reprocessing,
+    /// but increases storage usage and write overhead
+    #[arg(long = "otel-logs-store-otlp-json", default_value = "false")]
+    #[serde(default)]
+    pub store_otlp_json: bool,
 }
 
 impl Default for LogsConfig {
@@ -163,6 +170,7 @@ impl Default for LogsConfig {
             size_of_journal_files: ByteSize::gb(1),
             duration_of_journal_files: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
             duration_of_journal_file: Duration::from_secs(2 * 60 * 60),       // 2 hours
+            store_otlp_json: false,
         }
     }
 }

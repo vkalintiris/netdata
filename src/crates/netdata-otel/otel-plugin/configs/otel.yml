@@ -47,3 +47,7 @@ logs:
 
   # Maximum time span that entries in a single journal file can cover (e.g., "2 hours", "1h", "30m").
   duration_of_journal_file: "2 hours"
+
+  # Store the complete OTLP JSON representation in the OTLP_JSON field.
+  # When enabled, each log entry includes the full original JSON message for debugging and reprocessing.
+  store_otlp_json: false
