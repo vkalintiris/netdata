@@ -7,10 +7,9 @@
 //!
 //! ```rust
 //! use schemars::JsonSchema;
-//! use serde::{Deserialize, Serialize};
 //! use netdata_plugin_schema::NetdataSchema;
 //!
-//! #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
+//! #[derive(Clone, Debug, JsonSchema)]
 //! #[schemars(
 //!     extend("x-ui-flavour" = "tabs"),
 //!     extend("x-config-id" = "my_plugin:my_config"),
@@ -30,9 +29,9 @@
 //! let netdata_schema = MyConfig::netdata_schema();
 //! println!("{}", serde_json::to_string_pretty(&netdata_schema).unwrap());
 //!
-//! // Generate config declaration if metadata is present
-//! if let Some(config_decl) = MyConfig::config_declaration() {
-//!     println!("Config ID: {}", config_decl.id);
+//! // Config declaration is included in the schema if x-config-* metadata is present
+//! if let Some(config_decl) = netdata_schema.get("configDeclaration") {
+//!     println!("Config ID: {}", config_decl["id"]);
 //! }
 //! ```
 

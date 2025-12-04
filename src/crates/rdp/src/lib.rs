@@ -172,15 +172,15 @@ fn tokenize<'a>(s: &'a str) -> Vec<Word<'a>> {
     }
 
     // Add the last word
-    if start < s.len()
-        && let Some(word) = create_word(
+    if start < s.len() {
+        if let Some(word) = create_word(
             &s[start..],
             first_type.unwrap(),
             has_lowercase,
             has_uppercase,
-        )
-    {
-        result.push(word);
+        ) {
+            result.push(word);
+        }
     }
 
     result

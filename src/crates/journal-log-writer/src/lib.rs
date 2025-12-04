@@ -34,7 +34,7 @@
 //!     b"MESSAGE=Hello, journal!" as &[u8],
 //!     b"PRIORITY=6",
 //! ];
-//! log.write_entry(&entry)?;
+//! log.write_entry(&entry, None)?;
 //! log.sync()?;
 //! # Ok(())
 //! # }
