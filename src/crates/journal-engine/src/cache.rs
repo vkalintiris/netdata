@@ -72,11 +72,17 @@ use crate::facets::Facets;
 use journal_index::FileIndex;
 use journal_registry::File;
 
-/// Cache key for file indexes that includes both the file and the facets.
+/// Cache version number. Increment this when the FileIndex or FileIndexKey
+/// schema changes to automatically invalidate old cache entries.
+const CACHE_VERSION: u32 = 1;
+
+/// Cache key for file indexes that includes the file, facets, and cache version.
 /// Different facet configurations produce different indexes, so both are
-/// needed to uniquely identify a cached index.
+/// needed to uniquely identify a cached index. The version ensures that
+/// schema changes automatically invalidate old cache entries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileIndexKey {
+    version: u32,
     pub(crate) file: File,
     pub(crate) facets: Facets,
 }
@@ -84,6 +90,7 @@ pub struct FileIndexKey {
 impl FileIndexKey {
     pub fn new(file: &File, facets: &Facets) -> Self {
         Self {
+            version: CACHE_VERSION,
             file: file.clone(),
             facets: facets.clone(),
         }
