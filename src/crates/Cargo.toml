@@ -21,7 +21,7 @@ members = [
 
     # Netdata log viewer workspace members
     "netdata-log-viewer/journal-function",
-    "netdata-log-viewer/log-viewer-plugin",
+    "netdata-log-viewer/journal-viewer-plugin",
 
     # Netdata OTEL workspace members
     "netdata-otel/otel-plugin",
@@ -146,7 +146,7 @@ rt = { path = "netdata-plugin/rt" }
 
 # Netdata log viewer crates
 journal-function = { path = "netdata-log-viewer/journal-function" }
-log-viewer-plugin = { path = "netdata-log-viewer/log-viewer-plugin" }
+journal-viewer-plugin = { path = "netdata-log-viewer/journal-viewer-plugin" }
 
 # Netdata OTEL crates
 otel-plugin = { path = "netdata-otel/otel-plugin" }

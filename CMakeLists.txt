@@ -193,7 +193,7 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL)
     )
     FetchContent_MakeAvailable(Corrosion)
     corrosion_import_crate(MANIFEST_PATH src/crates/Cargo.toml
-                           CRATES otel-plugin log-viewer-plugin)
+                           CRATES otel-plugin journal-viewer-plugin)
 endif()
 
 option(ENABLE_MIMALLOC "Enable mimalloc allocator" OFF)
@@ -3193,10 +3193,10 @@ if(ENABLE_PLUGIN_OTEL)
 
     install(DIRECTORY COMPONENT plugin-otel DESTINATION etc/netdata/otel.d/v1/metrics)
 
-    corrosion_install(TARGETS log-viewer-plugin
+    corrosion_install(TARGETS journal-viewer-plugin
                       PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
-                      COMPONENT log-viewer-plugin)
+                      COMPONENT journal-viewer-plugin)
 endif()
 
 #
@@ -3274,12 +3274,12 @@ set(netdata_user_POST "${NETDATA_USER}")
 set(netdata_group_POST "${NETDATA_USER}")
 
 if(ENABLE_PLUGIN_OTEL)
-    configure_file(src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml.in
-                   src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml
+    configure_file(src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml.in
+                   src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml
                    @ONLY)
 
-    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/log-viewer-plugin/configs/log-viewer.yml
-            COMPONENT log-viewer-plugin
+    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml
+            COMPONENT journal-viewer-plugin
             DESTINATION usr/lib/netdata/conf.d)
 endif()
 

@@ -16,29 +16,29 @@ This plugin provides a `systemd-journal` function that Netdata can call to query
        │ stdin/stdout
        │ (plugin protocol)
        ↓
-┌─────────────────────┐
-│  log-viewer-plugin  │
-│                     │
-│  ┌───────────────┐  │
-│  │ Journal       │  │
-│  │ Handler       │  │
-│  └───────────────┘  │
-│         ↓           │
-│  ┌───────────────┐  │
-│  │ Shared State  │  │
-│  │ (AppState)    │  │
-│  └───────────────┘  │
-│         ↓           │
-│  ┌───────────────┐  │
-│  │ histogram-    │  │
-│  │ service       │  │
-│  └───────────────┘  │
-│         ↓           │
-│  ┌───────────────┐  │
-│  │ journal       │  │
-│  │ (indexing)    │  │
-│  └───────────────┘  │
-└─────────────────────┘
+┌──────────────────────────┐
+│  journal-viewer-plugin   │
+│                          │
+│  ┌───────────────┐       │
+│  │ Journal       │       │
+│  │ Handler       │       │
+│  └───────────────┘       │
+│         ↓                │
+│  ┌───────────────┐       │
+│  │ Shared State  │       │
+│  │ (AppState)    │       │
+│  └───────────────┘       │
+│         ↓                │
+│  ┌───────────────┐       │
+│  │ histogram-    │       │
+│  │ service       │       │
+│  └───────────────┘       │
+│         ↓                │
+│  ┌───────────────┐       │
+│  │ journal       │       │
+│  │ (indexing)    │       │
+│  └───────────────┘       │
+└──────────────────────────┘
          ↓
     ┌─────────┐
     │ Jaeger  │ (tracing)
@@ -69,7 +69,7 @@ docker run -d --name jaeger \
 ### Building
 
 ```bash
-cargo build --bin log-viewer-plugin --release
+cargo build --bin journal-viewer-plugin --release
 ```
 
 ### Running
@@ -81,7 +81,7 @@ The plugin is designed to be spawned by Netdata:
 # Configure in /etc/netdata/netdata.conf:
 
 [plugins]
-    log-viewer = yes
+    journal-viewer = yes
 ```
 
 For development/testing:
@@ -106,7 +106,7 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for comprehensive documentation.
 ### Development Workflow
 
 1. **Make changes** to the plugin code
-2. **Rebuild** (fast, seconds): `cargo build --bin log-viewer-plugin`
+2. **Rebuild** (fast, seconds): `cargo build --bin journal-viewer-plugin`
 3. **Restart** Netdata: `sudo systemctl restart netdata`
 4. **View traces** in Jaeger: http://localhost:16686
 5. **Check logs**: `sudo journalctl -u netdata -f`
@@ -123,14 +123,14 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for comprehensive documentation.
 
 ```
 netdata-log-viewer/
-├── histogram-service/    # Core business logic (library)
-├── log-viewer-plugin/    # Netdata plugin (binary)
-├── types/                # Shared request/response types
-├── watcher-plugin/       # DEPRECATED - no longer needed
-├── lv/                   # DEPRECATED - no longer needed
-├── DEVELOPMENT.md        # Detailed development guide
-├── QUICKSTART.md         # Fast reference guide
-└── README.md            # This file
+├── histogram-service/       # Core business logic (library)
+├── journal-viewer-plugin/   # Netdata plugin (binary)
+├── types/                   # Shared request/response types
+├── watcher-plugin/          # DEPRECATED - no longer needed
+├── lv/                      # DEPRECATED - no longer needed
+├── DEVELOPMENT.md           # Detailed development guide
+├── QUICKSTART.md            # Fast reference guide
+└── README.md                # This file
 ```
 
 ## Configuration
@@ -142,7 +142,7 @@ The plugin is configured at compile time with sensible defaults:
 - **Memory cache**: 10,000 entries
 - **Disk cache**: 64 MiB
 
-To customize, edit `create_shared_state()` in `log-viewer-plugin/src/main.rs`.
+To customize, edit `create_shared_state()` in `journal-viewer-plugin/src/main.rs`.
 
 ## Observability
 
@@ -162,13 +162,13 @@ Control log verbosity with `RUST_LOG`:
 export RUST_LOG="debug"
 
 # Selective logging
-export RUST_LOG="log_viewer_plugin=trace,histogram_service=debug,journal=info"
+export RUST_LOG="journal_viewer_plugin=trace,histogram_service=debug,journal=info"
 ```
 
 ### Metrics (Netdata)
 
 The plugin reports its own metrics:
-- `log_viewer.journal_calls` - Successful/failed/cancelled function calls
+- `journal_viewer.journal_calls` - Successful/failed/cancelled function calls
 
 ## Function Interface
 
@@ -229,7 +229,7 @@ The plugin exposes the `systemd-journal` function:
 sudo tail -f /var/log/netdata/error.log
 
 # Run manually
-sudo -u netdata /path/to/log-viewer-plugin
+sudo -u netdata /path/to/journal-viewer-plugin
 ```
 
 ### No traces in Jaeger

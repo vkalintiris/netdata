@@ -1666,6 +1666,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "journal-viewer-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytesize",
+ "bytesize-serde",
+ "foyer",
+ "journal-core",
+ "journal-function",
+ "journal-index",
+ "journal-registry",
+ "netdata-plugin-error",
+ "netdata-plugin-protocol",
+ "netdata-plugin-schema",
+ "notify",
+ "num_cpus",
+ "rt",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1733,34 +1761,6 @@ name = "log"
 version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
-
-[[package]]
-name = "log-viewer-plugin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytesize",
- "bytesize-serde",
- "foyer",
- "journal-core",
- "journal-function",
- "journal-index",
- "journal-registry",
- "netdata-plugin-error",
- "netdata-plugin-protocol",
- "netdata-plugin-schema",
- "notify",
- "num_cpus",
- "rt",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "lz4"

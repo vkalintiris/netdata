@@ -1,4 +1,4 @@
-//! log-viewer-plugin standalone binary
+//! journal-viewer-plugin standalone binary
 
 #![allow(dead_code)]
 
@@ -50,7 +50,7 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
         config.cache.workers
     );
 
-    let mut runtime = PluginRuntime::new("log-viewer");
+    let mut runtime = PluginRuntime::new("journal-viewer");
     info!("plugin runtime created");
 
     // Initialize plugin-level metrics
