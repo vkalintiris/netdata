@@ -51,6 +51,26 @@ impl NetdataLogsService {
         Ok(NetdataLogsService { log: journal_log })
     }
 
+    fn extract_timestamp_for_sorting(json_value: &Value) -> u64 {
+        if let Value::Object(obj) = json_value {
+            // Extract timestamp for sorting (same logic as json_to_entry_data)
+            // Per OTLP spec: Use time_unix_nano if present (non-zero), otherwise use observed_time_unix_nano
+            let time_unix_nano = obj
+                .get("log.time_unix_nano")
+                .and_then(|v| v.as_u64())
+                .filter(|&t| t != 0);
+
+            let observed_time_unix_nano = obj
+                .get("log.observed_time_unix_nano")
+                .and_then(|v| v.as_u64())
+                .filter(|&t| t != 0);
+
+            time_unix_nano.or(observed_time_unix_nano).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
     fn json_to_entry_data(&self, json_value: &Value) -> (Vec<Vec<u8>>, Option<u64>) {
         let mut entry_data = Vec::new();
         let mut source_timestamp_usec = None;
@@ -102,8 +122,15 @@ impl LogsService for NetdataLogsService {
 
         let json_array = json_from_export_logs_service_request(&req);
 
-        if let Value::Array(entries) = json_array {
+        if let Value::Array(mut entries) = json_array {
             tracing::Span::current().record("received_logs", entries.len());
+
+            // Sort entries by their creation timestamp before writing to journal
+            // This ensures journal entries are written in chronological order, which:
+            // - Optimizes journal file structure and indexing
+            // - Improves query performance
+            // - Enhances compression efficiency
+            entries.sort_by_key(Self::extract_timestamp_for_sorting);
 
             for entry in entries {
                 let (entry_data, source_timestamp_usec) = self.json_to_entry_data(&entry);
