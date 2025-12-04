@@ -82,8 +82,6 @@ impl JournalRequest {
 #[serde(rename_all = "snake_case")]
 pub enum RequestParam {
     Info,
-    #[serde(rename = "__logs_sources")]
-    LogsSources,
     After,
     Before,
     Anchor,

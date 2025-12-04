@@ -90,7 +90,6 @@ fn accepted_params() -> Vec<netdata::RequestParam> {
 
     vec![
         RequestParam::Info,
-        RequestParam::LogsSources,
         RequestParam::After,
         RequestParam::Before,
         RequestParam::Anchor,
@@ -109,32 +108,7 @@ fn accepted_params() -> Vec<netdata::RequestParam> {
 }
 
 fn required_params() -> Vec<netdata::RequiredParam> {
-    let mut v = Vec::new();
-
-    let id = netdata::RequestParam::LogsSources;
-    let name = String::from("Journal Sources");
-    let help = String::from("Select the logs source to query");
-    let type_ = String::from("multiselect");
-    let mut options = Vec::new();
-
-    let o1 = netdata::MultiSelectionOption {
-        id: String::from("all"),
-        name: String::from("all"),
-        pill: String::from("100GiB"),
-        info: String::from("All the logs"),
-    };
-    options.push(o1);
-
-    let required_param = netdata::RequiredParam::MultiSelection(netdata::MultiSelection {
-        id,
-        name,
-        help,
-        type_,
-        options,
-    });
-
-    v.push(required_param);
-    v
+    Vec::new()
 }
 
 /// Inner state for CatalogFunction (enables cloning)
