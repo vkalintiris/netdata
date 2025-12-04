@@ -4,6 +4,7 @@ use rt::NetdataEnv;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use tracing::warn;
 
 /// Default value for workers (number of CPU cores)
 fn default_workers() -> usize {
@@ -13,14 +14,14 @@ fn default_workers() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalConfig {
-    /// Path to systemd journal directory to watch
-    pub path: String,
+    /// Paths to systemd journal directories to watch
+    pub paths: Vec<String>,
 }
 
 impl Default for JournalConfig {
     fn default() -> Self {
         Self {
-            path: String::from("/var/log/journal"),
+            paths: vec![String::from("/var/log/journal")],
         }
     }
 }
@@ -126,13 +127,11 @@ impl PluginConfig {
         };
 
         // Resolve relative paths
-        config.cache.directory = resolve_relative_path(
-            &config.cache.directory,
-            netdata_env.cache_dir.as_deref(),
-        );
+        config.cache.directory =
+            resolve_relative_path(&config.cache.directory, netdata_env.cache_dir.as_deref());
 
-        // Validate configuration
-        Self::validate(&config)?;
+        // Validate configuration (also performs deduplication)
+        Self::validate(&mut config)?;
 
         Ok(PluginConfig {
             config,
@@ -141,7 +140,26 @@ impl PluginConfig {
     }
 
     /// Validate configuration values
-    fn validate(config: &Config) -> Result<()> {
+    fn validate(config: &mut Config) -> Result<()> {
+        // Validate journal paths
+        if config.journal.paths.is_empty() {
+            anyhow::bail!("journal.paths must contain at least one path");
+        }
+
+        // Deduplicate paths while preserving order
+        let mut seen = std::collections::HashSet::new();
+        config
+            .journal
+            .paths
+            .retain(|path| seen.insert(path.clone()));
+
+        // Validate that journal paths exist (warning only)
+        for path in &config.journal.paths {
+            if !Path::new(path).exists() {
+                warn!("journal path does not exist: {}", path);
+            }
+        }
+
         if config.cache.memory_capacity == 0 {
             anyhow::bail!("cache.memory_capacity must be greater than 0");
         }
@@ -160,14 +178,6 @@ impl PluginConfig {
 
         if config.cache.queue_capacity == 0 {
             anyhow::bail!("cache.queue_capacity must be greater than 0");
-        }
-
-        // Validate that journal path exists (warning only)
-        if !Path::new(&config.journal.path).exists() {
-            eprintln!(
-                "WARNING: Journal path does not exist: {}",
-                config.journal.path
-            );
         }
 
         Ok(())

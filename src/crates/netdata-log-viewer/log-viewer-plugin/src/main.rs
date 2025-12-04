@@ -42,8 +42,8 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let config = &plugin_config.config;
 
     info!(
-        "configuration loaded: journal_path={}, cache_dir={}, memory_capacity={}, disk_capacity={}, workers={}",
-        config.journal.path,
+        "configuration loaded: journal_paths={:?}, cache_dir={}, memory_capacity={}, disk_capacity={}, workers={}",
+        config.journal.paths,
         config.cache.directory,
         config.cache.memory_capacity,
         config.cache.disk_capacity,
@@ -83,13 +83,17 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     .await?;
     info!("catalog function initialized");
 
-    // Watch configured journal directory
-    match catalog_function.watch_directory(&config.journal.path) {
-        Ok(()) => {}
-        Err(e) => {
-            error!("failed to watch directory: {:#?}", e);
+    // Watch configured journal directories
+    for path in &config.journal.paths {
+        match catalog_function.watch_directory(path) {
+            Ok(()) => {
+                info!("watching journal directory: {}", path);
+            }
+            Err(e) => {
+                error!("failed to watch directory {}: {:#?}", path, e);
+            }
         }
-    };
+    }
 
     runtime.register_handler(catalog_function.clone());
     info!("catalog function handler registered");

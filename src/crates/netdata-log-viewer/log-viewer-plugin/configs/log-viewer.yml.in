@@ -2,9 +2,13 @@
 # This file configures the systemd journal log viewer plugin for Netdata
 
 journal:
-  # Path to systemd journal directory to watch and index
-  # Default: /var/log/journal
-  path: "/var/log/journal"
+  # Paths to journal directories to watch and index. Multiple directories can
+  # be specified to monitor different journal sources. At least one path must
+  # be specified
+  paths:
+    - "/var/log/journal"
+    - "/run/log/journal"
+    - "@localstatedir_POST@/log/netdata/otel/v1"
 
 cache:
   # Directory to store the hybrid cache (memory + disk backed by Foyer)
