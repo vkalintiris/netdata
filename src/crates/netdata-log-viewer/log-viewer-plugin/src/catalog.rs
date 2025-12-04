@@ -42,13 +42,8 @@ fn build_filter_from_selections(selections: &HashMap<String, Vec<String>>) -> Fi
     let mut field_filters = Vec::new();
 
     for (field, values) in selections {
-        // Ignore log sources. We've not implemented this functionality.
-        if field == "__logs_sources" {
-            info!("ignoring __logs_sources field");
-            continue;
-        }
-
         if values.is_empty() {
+            error!("Ignoring selection of field without values");
             continue;
         }
 

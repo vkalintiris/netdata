@@ -237,6 +237,71 @@ impl Histogram {
     ) -> Option<usize> {
         self.count_entries_in_time_range(bitmap, start_time, end_time)
     }
+
+    /// Count all entries that fall within a time range (without filtering).
+    ///
+    /// This is similar to `count_entries_in_time_range` but counts ALL entries
+    /// in the range rather than only those marked in a bitmap. Useful for
+    /// computing unfiltered totals.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Binary search to find buckets overlapping the time range
+    /// 2. Extract entry index range from running counts
+    /// 3. Return the size of that range
+    ///
+    /// Returns `None` if the time range is not aligned to `bucket_duration` or
+    /// invalid.
+    pub fn count_all_entries_in_time_range(
+        &self,
+        start_time: Seconds,
+        end_time: Seconds,
+    ) -> Option<usize> {
+        // Validate inputs
+        if start_time >= end_time {
+            return None;
+        }
+
+        // Verify alignment to bucket_duration
+        if !is_multiple_of(start_time.0, self.bucket_duration.get())
+            || !is_multiple_of(end_time.0, self.bucket_duration.get())
+        {
+            return None;
+        }
+
+        // Handle empty histogram
+        if self.buckets.is_empty() {
+            return Some(0);
+        }
+
+        // Find the bucket indices for start and end times
+        let start_bucket_idx = self.buckets.partition_point(|b| b.start_time < start_time);
+
+        if start_bucket_idx >= self.buckets.len() {
+            return Some(0);
+        }
+
+        let end_bucket_idx = self
+            .buckets
+            .partition_point(|b| b.start_time < end_time)
+            .saturating_sub(1);
+
+        if start_bucket_idx > end_bucket_idx {
+            return Some(0);
+        }
+
+        // Get the running count boundaries
+        let start_running_count = if start_bucket_idx == 0 {
+            0
+        } else {
+            self.buckets[start_bucket_idx - 1].count + 1
+        };
+
+        let end_running_count = self.buckets[end_bucket_idx].count;
+
+        // Total entries in range
+        Some((end_running_count + 1 - start_running_count) as usize)
+    }
 }
 
 #[cfg(test)]

@@ -101,13 +101,21 @@ fn chart_result_from_histogram(
         .map(|v| transformations.transform_value(field_str, v))
         .collect();
 
+    // Add synthetic "(other)" label at the end for entries without this field
+    labels.push(String::from("(other)"));
+
     // Build data array using raw values for lookups
     let mut data = Vec::new();
 
     for (request, bucket_response) in &histogram_response.buckets {
         let timestamp = request.start;
-        let mut counts = Vec::with_capacity(raw_values.len());
+        // Reserve space for field values + "(other)"
+        let mut counts = Vec::with_capacity(raw_values.len() + 1);
 
+        // Sum up counts for all field values
+        let mut sum_with_field = 0;
+
+        // Count entries for each field value
         for raw_value in &raw_values {
             // Create FieldValuePair for lookup using raw (untransformed) value
             let pair = field.with_value(raw_value);
@@ -118,8 +126,14 @@ fn chart_result_from_histogram(
                 .map(|(_, filtered)| *filtered)
                 .unwrap_or(0);
 
+            sum_with_field += count;
             counts.push([count, 0, 0]);
         }
+
+        // Last entry: entries WITHOUT this field (total - sum of all field values)
+        let total_count = bucket_response.total_filtered_entries();
+        let count_without_field = total_count.saturating_sub(sum_with_field);
+        counts.push([count_without_field, 0, 0]);
 
         data.push(DataPoint {
             timestamp: timestamp.0 as u64 * std::time::Duration::from_secs(1).as_millis() as u64,
