@@ -263,6 +263,24 @@ impl Default for RealtimeClock {
     }
 }
 
+/// Gets the current monotonic timestamp in microseconds since boot.
+///
+/// Uses CLOCK_MONOTONIC which provides a monotonically increasing timestamp
+/// that is not affected by system clock adjustments but does not count time
+/// when the system is suspended.
+///
+/// This matches systemd's behavior for journal entry monotonic timestamps.
+pub fn monotonic_now() -> std::io::Result<Microseconds> {
+    use nix::sys::time::TimeValLike;
+    use nix::time::ClockId;
+
+    let ts = ClockId::CLOCK_MONOTONIC
+        .now()
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
+
+    Ok(Microseconds::new(ts.num_microseconds() as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1512,6 +1512,7 @@ name = "journal-common"
 version = "0.1.0"
 dependencies = [
  "allocative",
+ "nix",
  "rustc-hash",
  "serde",
  "uuid",
@@ -1638,6 +1639,7 @@ dependencies = [
  "journal-common",
  "journal-core",
  "journal-registry",
+ "nix",
  "rdp",
  "serde",
  "serde_json",

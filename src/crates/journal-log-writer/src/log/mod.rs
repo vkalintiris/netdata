@@ -5,7 +5,7 @@ mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::{Result, WriterError};
-use journal_common::{RealtimeClock, load_boot_id, load_machine_id};
+use journal_common::{RealtimeClock, load_boot_id, load_machine_id, monotonic_now};
 use journal_core::field_map::{
     FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
 };
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, span, warn};
+
 
 fn create_chain(path: &Path) -> Result<OwnedChain> {
     let machine_id = load_machine_id()
@@ -178,6 +179,19 @@ pub struct Log {
 }
 
 impl Log {
+    /// Captures both realtime and monotonic timestamps, similar to systemd's dual_timestamp_now().
+    ///
+    /// Returns (realtime_usec, monotonic_usec) where:
+    /// - realtime: microseconds since Unix epoch (CLOCK_REALTIME), monotonically increasing
+    /// - monotonic: microseconds since boot (CLOCK_MONOTONIC)
+    fn capture_dual_timestamp(&self) -> Result<(u64, u64)> {
+        let realtime = self.clock.now().get();
+        let monotonic = monotonic_now()
+            .map_err(|e| WriterError::Io(e))?
+            .get();
+        Ok((realtime, monotonic))
+    }
+
     /// Creates a new journal log.
     pub fn new(path: &Path, config: Config) -> Result<Self> {
         let chain = create_chain(path)?;
@@ -285,8 +299,7 @@ impl Log {
             items_refs.push(item.as_slice());
         }
 
-        let realtime = self.clock.now().get();
-        let monotonic = realtime;
+        let (realtime, monotonic) = self.capture_dual_timestamp()?;
 
         let active_file = self.active_file.as_mut().unwrap();
         active_file.write_entry(&items_refs, realtime, monotonic)?;
@@ -327,8 +340,7 @@ impl Log {
         // Build references
         let items_refs: Vec<&[u8]> = remapping_items.iter().map(|v| v.as_slice()).collect();
 
-        let realtime = self.clock.now().get();
-        let monotonic = realtime;
+        let (realtime, monotonic) = self.capture_dual_timestamp()?;
 
         let active_file = self.active_file.as_mut().unwrap();
         active_file.write_entry(&items_refs, realtime, monotonic)?;

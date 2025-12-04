@@ -16,6 +16,7 @@ rdp = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+nix = { workspace = true, features = ["time"] }
 
 # Optional serde support for structured logging
 serde = { workspace = true, optional = true }
