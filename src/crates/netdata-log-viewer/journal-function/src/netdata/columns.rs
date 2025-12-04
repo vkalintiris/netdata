@@ -177,10 +177,8 @@ impl ColumnSchema {
         };
 
         // Determine visibility - most fields hidden by default
-        let visible = matches!(
-            name.as_str(),
-            "MESSAGE" | "_HOSTNAME" | "ND_JOURNAL_PROCESS"
-        );
+        // Only MESSAGE is visible by default (timestamp is always visible)
+        let visible = name == "MESSAGE";
 
         // Determine if filter should be expanded by default
         let default_expanded_filter =
@@ -242,11 +240,17 @@ pub fn generate_column_schema(discovered_fields: &[String]) -> StdHashMap<String
     columns.insert(row_options.key.clone(), row_options);
 
     // Add discovered fields starting at index 2
-    for (offset, field_name) in discovered_fields.iter().enumerate() {
-        let index = offset + 2; // Start after timestamp (0) and rowOptions (1)
+    // Skip special columns (timestamp, rowOptions) if they appear in discovered_fields
+    let mut index = 2;
+    for field_name in discovered_fields.iter() {
+        // Skip special column names to avoid overwriting them
+        if field_name == "timestamp" || field_name == "rowOptions" {
+            continue;
+        }
 
         let schema = ColumnSchema::for_field(index, field_name);
         columns.insert(schema.key.clone(), schema);
+        index += 1;
     }
 
     columns
