@@ -3196,7 +3196,7 @@ if(ENABLE_PLUGIN_OTEL)
     corrosion_install(TARGETS journal-viewer-plugin
                       PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
-                      COMPONENT journal-viewer-plugin)
+                      COMPONENT plugin-journal-viewer)
 endif()
 
 #
@@ -3279,7 +3279,7 @@ if(ENABLE_PLUGIN_OTEL)
                    @ONLY)
 
     install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml
-            COMPONENT journal-viewer-plugin
+            COMPONENT plugin-journal-viewer
             DESTINATION usr/lib/netdata/conf.d)
 endif()
 
