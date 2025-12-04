@@ -191,12 +191,6 @@ pub struct BucketPartialResponse {
 
     /// Set of fields that are not indexed
     pub(crate) unindexed_fields: HashSet<FieldName>,
-
-    /// Total entries in this bucket's time range (unfiltered)
-    pub(crate) total_entries: usize,
-
-    /// Total entries in this bucket's time range (filtered)
-    pub(crate) total_filtered_entries: usize,
 }
 
 impl BucketPartialResponse {
@@ -205,8 +199,6 @@ impl BucketPartialResponse {
             request_metadata,
             fv_counts: Default::default(),
             unindexed_fields: Default::default(),
-            total_entries: 0,
-            total_filtered_entries: 0,
         }
     }
 
@@ -218,8 +210,6 @@ impl BucketPartialResponse {
         BucketCompleteResponse {
             fv_counts: self.fv_counts.clone(),
             unindexed_fields: self.unindexed_fields.clone(),
-            total_entries: self.total_entries,
-            total_filtered_entries: self.total_filtered_entries,
         }
     }
 }
@@ -234,10 +224,6 @@ pub struct BucketCompleteResponse {
     pub fv_counts: HashMap<FieldValuePair, (usize, usize)>,
     /// Set of fields that are not indexed
     pub unindexed_fields: HashSet<FieldName>,
-    /// Total entries in this bucket's time range (unfiltered)
-    pub total_entries: usize,
-    /// Total entries in this bucket's time range (filtered)
-    pub total_filtered_entries: usize,
 }
 
 /// Internal enum for bucket response variants.
@@ -293,22 +279,6 @@ impl BucketResponse {
         match &self.0 {
             BucketResponseInner::Partial(partial) => &partial.fv_counts,
             BucketResponseInner::Complete(complete) => &complete.fv_counts,
-        }
-    }
-
-    /// Get the total number of entries in this bucket (unfiltered).
-    pub fn total_entries(&self) -> usize {
-        match &self.0 {
-            BucketResponseInner::Partial(partial) => partial.total_entries,
-            BucketResponseInner::Complete(complete) => complete.total_entries,
-        }
-    }
-
-    /// Get the total number of filtered entries in this bucket.
-    pub fn total_filtered_entries(&self) -> usize {
-        match &self.0 {
-            BucketResponseInner::Partial(partial) => partial.total_filtered_entries,
-            BucketResponseInner::Complete(complete) => complete.total_filtered_entries,
         }
     }
 }
@@ -616,30 +586,6 @@ impl HistogramEngine {
                                         }
                                     }
                                 }
-
-                                // Count total entries in time range (unfiltered and filtered)
-                                let total_entries_in_range = file_index
-                                    .count_all_entries_in_time_range(
-                                        bucket_request.start,
-                                        bucket_request.end,
-                                    )
-                                    .unwrap_or(0);
-
-                                let total_filtered_entries_in_range =
-                                    if let Some(ref filter_bitmap) = filter_bitmap {
-                                        file_index
-                                            .count_entries_in_time_range(
-                                                filter_bitmap,
-                                                bucket_request.start,
-                                                bucket_request.end,
-                                            )
-                                            .unwrap_or(0)
-                                    } else {
-                                        total_entries_in_range
-                                    };
-
-                                partial.total_entries += total_entries_in_range;
-                                partial.total_filtered_entries += total_filtered_entries_in_range;
 
                                 // Count field=value pairs in this file for this bucket's time range
                                 for (indexed_field, field_bitmap) in file_index.bitmaps() {

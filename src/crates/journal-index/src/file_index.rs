@@ -150,19 +150,6 @@ impl FileIndex {
         self.histogram
             .count_entries_in_time_range(bitmap, start_time, end_time)
     }
-
-    /// Count all entries (unfiltered) that fall within a time range.
-    ///
-    /// This counts ALL entries in the time range without applying any bitmap filter.
-    /// Useful for computing total entry counts regardless of field values or filters.
-    pub fn count_all_entries_in_time_range(
-        &self,
-        start_time: Seconds,
-        end_time: Seconds,
-    ) -> Option<usize> {
-        self.histogram
-            .count_all_entries_in_time_range(start_time, end_time)
-    }
 }
 
 /// Direction for iterating through entries
