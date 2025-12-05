@@ -1,6 +1,6 @@
 # Logs tab
 
-The Logs tab is using the [`journal-viwer` plugin](/docs/logs/README.md), to present a structured view into your infrastructure's `systemd` logs.
+The Logs tab is using the [`journal-viewer` plugin](/docs/logs/README.md), to present a structured view into your infrastructure's `systemd` logs.
 
 We have a thorough section explaining how you can [work with logs](https://learn.netdata.cloud/docs/logs), detailing how the plugin works, and what other utilities are used under the hood to provide you with the visualizations and the log entries.
 
