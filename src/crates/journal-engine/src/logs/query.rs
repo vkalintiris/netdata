@@ -119,6 +119,18 @@ impl<'a> LogQuery<'a> {
         self
     }
 
+    /// Set a regex pattern for full-text search (optional).
+    ///
+    /// Only entries where at least one data object (in "FIELD=value" format)
+    /// matches the regex will be included in the results.
+    ///
+    /// The pattern will be compiled when the query is executed. Invalid patterns
+    /// will cause execute() to return an error.
+    pub fn with_regex(mut self, pattern: impl Into<String>) -> Self {
+        self.builder = self.builder.with_regex(pattern);
+        self
+    }
+
     /// Execute the query and return log entries.
     ///
     /// This consumes the builder and returns a vector of log entries sorted by timestamp
@@ -290,6 +302,9 @@ fn retrieve_log_entries(
             }
             if let Some(before) = params.before() {
                 builder = builder.with_before(before);
+            }
+            if let Some(regex) = params.regex() {
+                builder = builder.with_regex(regex.as_str());
             }
             builder = builder.with_resume_position(pos);
             builder.build().unwrap() // Safe because we're copying from valid params

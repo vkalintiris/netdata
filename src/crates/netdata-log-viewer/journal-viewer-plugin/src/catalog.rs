@@ -7,7 +7,7 @@ use netdata_plugin_schema::HttpAccess;
 use rt::FunctionHandler;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 // Import types from journal-function crate
 use journal_function::{
@@ -145,6 +145,7 @@ impl CatalogFunction {
         anchor: Option<u64>,
         facets: &[String],
         filter: &Filter,
+        search_query: &str,
         limit: usize,
         direction: journal_index::Direction,
     ) -> (Vec<journal_function::LogEntryData>, bool, bool) {
@@ -238,13 +239,22 @@ impl CatalogFunction {
             query = query.with_filter(filter.clone());
         }
 
+        // Apply regex search if search_query is not empty
+        if !search_query.is_empty() {
+            debug!("applying regex filter to log query: {:?}", search_query);
+            query = query.with_regex(search_query);
+        }
+
         let mut log_entries = match query.execute() {
             Ok(entries) => {
                 info!("retrieved {} log entries (limit + 1 query)", entries.len());
                 entries
             }
             Err(e) => {
-                error!("log query error: {}", e);
+                error!("log query execution failed: {}", e);
+                if !search_query.is_empty() {
+                    error!("query may have failed due to invalid regex pattern: {:?}", search_query);
+                }
                 return (Vec::new(), false, false);
             }
         };
@@ -291,10 +301,19 @@ impl CatalogFunction {
                 opposite_query = opposite_query.with_filter(filter.clone());
             }
 
+            // Apply regex search if search_query is not empty
+            if !search_query.is_empty() {
+                debug!("applying regex filter to opposite direction query");
+                opposite_query = opposite_query.with_regex(search_query);
+            }
+
             match opposite_query.execute() {
                 Ok(entries) => !entries.is_empty(),
                 Err(e) => {
                     warn!("opposite direction query error: {}", e);
+                    if !search_query.is_empty() {
+                        warn!("opposite direction query may have failed due to invalid regex pattern");
+                    }
                     false
                 }
             }
@@ -535,6 +554,13 @@ impl FunctionHandler for CatalogFunction {
     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
         info!("processing catalog function call");
 
+        // Log if regex search is being used
+        if !request.query.is_empty() {
+            info!("regex search query provided: {:?}", request.query);
+        } else {
+            debug!("no regex search query provided");
+        }
+
         let filter_expr = build_filter_from_selections(&request.selections);
 
         if request.after >= request.before {
@@ -578,6 +604,7 @@ impl FunctionHandler for CatalogFunction {
                 request.anchor,
                 &facets,
                 &filter_expr,
+                &request.query,
                 limit,
                 request.direction,
             )
