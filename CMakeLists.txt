@@ -3274,11 +3274,11 @@ set(netdata_user_POST "${NETDATA_USER}")
 set(netdata_group_POST "${NETDATA_USER}")
 
 if(ENABLE_PLUGIN_OTEL)
-    configure_file(src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml.in
-                   src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml
+    configure_file(src/crates/netdata-log-viewer/journal-viewer-plugin/configs/journal-viewer.yml.in
+                   src/crates/netdata-log-viewer/journal-viewer-plugin/configs/journal-viewer.yml
                    @ONLY)
 
-    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/journal-viewer-plugin/configs/log-viewer.yml
+    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/journal-viewer-plugin/configs/journal-viewer.yml
             COMPONENT plugin-journal-viewer
             DESTINATION usr/lib/netdata/conf.d)
 endif()
