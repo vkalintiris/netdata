@@ -1,0 +1,26 @@
+[package]
+name = "slotlog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+prost = "0.14"
+tonic = { workspace = true }
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+slotlog-consumer = { path = "../slotlog-consumer" }
+slotlog-producer = { path = "../slotlog-producer" }
+tokio = { workspace = true }
+
+[[example]]
+name = "integration"
+path = "examples/integration.rs"
+
+[[example]]
+name = "late_data"
+path = "examples/late_data.rs"

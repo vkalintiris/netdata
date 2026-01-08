@@ -1,0 +1,21 @@
+[package]
+name = "slotlog-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+slotlog = { path = "../slotlog" }
+slotlog-consumer = { path = "../slotlog-consumer" }
+slotlog-producer = { path = "../slotlog-producer" }
+tonic = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "bench-producer"
+path = "src/bin/bench-producer.rs"
+
+[[bin]]
+name = "bench-consumer"
+path = "src/bin/bench-consumer.rs"

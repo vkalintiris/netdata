@@ -1,0 +1,522 @@
+// Slot Log Protocol
+//
+// This protocol defines communication between a metrics producer (which ingests
+// OpenTelemetry metrics and aggregates them into time slots) and a consumer
+// (which processes the aggregated data, e.g., for storage or output generation).
+//
+// The protocol is designed around several key principles:
+//
+// 1. SLOT-BASED BATCHING: All metric observations are grouped into fixed-interval
+//    time slots. Each SlotLog represents one slot's worth of data, providing a
+//    clear transaction boundary.
+//
+// 2. CONSUMER-ASSIGNED IDENTIFIERS: The consumer assigns numeric IDs to charts
+//    and dimensions. This allows the consumer to use dense vector storage with
+//    direct indexing, optimizing the hot path of update processing. The producer
+//    bears the cost of maintaining name-to-ID mappings.
+//
+// 3. REGISTRATION BEFORE REFERENCE: A chart or dimension must be registered
+//    (and assigned an ID) before it can be referenced in updates. The response
+//    mechanism provides ID assignments back to the producer.
+//
+// 4. LATE DATA AS A SEPARATE CONCERN: Data arriving after a slot has been
+//    finalized is carried in a separate field (late_updates). Consumers decide
+//    their own policy for handling late data.
+//
+// 5. DELETION WITH OPTIONAL COMPACTION: Charts and dimensions can be deleted.
+//    If the consumer compacts its storage, it returns new ID mappings that the
+//    producer must apply.
+
+syntax = "proto3";
+
+package nm.slotlog.v1;
+
+option java_multiple_files = true;
+option java_package = "com.netdata.nm.slotlog.v1";
+
+// ============================================================================
+// SERVICE DEFINITION
+// ============================================================================
+
+// MetricsProcessor is the service that consumers implement to receive slot logs.
+//
+// The protocol follows a strict request-response pattern: the producer sends
+// a SlotLog and waits for a SlotLogResponse before sending the next SlotLog.
+// This ensures that ID assignments from registrations are available before
+// subsequent updates reference them.
+//
+// NOTE: The synchronous nature of this RPC does not limit ingest throughput,
+// provided the producer buffers incoming metrics upstream of transmission.
+// For the time being, we don't care about this scenario.
+service MetricsProcessor {
+  // ProcessSlot handles a single slot's data and returns ID assignments.
+  //
+  // Producer behavior:
+  //   - Constructs a SlotLog containing all data for the current slot
+  //   - Includes registrations for any new charts or dimensions
+  //   - Waits for response before constructing the next SlotLog
+  //   - Applies any ID assignments or remappings from the response
+  //
+  // Consumer behavior:
+  //   - Processes registrations first, assigning IDs
+  //   - Processes updates using assigned IDs
+  //   - Processes deletions, optionally compacting storage
+  //   - Returns ID assignments and any remappings
+  rpc ProcessSlot(SlotLog) returns (SlotLogResponse);
+}
+
+// ============================================================================
+// SLOT LOG - Producer to Consumer
+// ============================================================================
+
+// SlotLog represents all metric data and metadata changes for a single time slot.
+//
+// Processing order (consumer MUST follow this order):
+//   1. registrations - Create new charts and dimensions, assign IDs
+//   2. updates - Apply values and register new dimensions on existing charts
+//   3. deletions - Remove charts or dimensions, optionally compact
+//   4. late_updates - Apply values for past slots (consumer policy determines handling)
+//
+// Producer responsibilities:
+//   - Aggregate all metric observations into the appropriate slot
+//   - Track which charts/dimensions need registration vs. already have IDs
+//   - Buffer late data that needs registration until IDs are assigned
+//
+// Consumer responsibilities:
+//   - Assign dense, sequential IDs to new charts and dimensions
+//   - Store data efficiently using the assigned IDs as indices
+//   - Decide policy for late_updates (accept, reject, or conditionally accept)
+message SlotLog {
+  // The timestamp identifying this slot, in seconds since Unix epoch.
+  // This is the slot's start time, aligned to the collection interval.
+  //
+  // Example: With a 1-second interval, timestamps are 0, 1, 2, ...
+  // Example: With a 10-second interval, timestamps are 0, 10, 20, ...
+  //
+  // Producer: Sets this to the current slot being finalized.
+  // Consumer: Uses this as the time coordinate for storing/emitting data.
+  uint64 timestamp = 1;
+
+  // New charts being registered in this slot.
+  //
+  // A chart appears here when the producer first sees data for it, OR when
+  // late-arriving data references a chart that wasn't previously registered.
+  //
+  // Producer: Includes charts that don't yet have assigned IDs.
+  // Consumer: Assigns a ChartId to each, returned in SlotLogResponse.
+  repeated ChartRegistration registrations = 2;
+
+  // Updates for the current slot (timestamp).
+  //
+  // Contains values for charts that already have assigned IDs, plus any
+  // new dimensions being added to existing charts.
+  //
+  // Producer: Only includes charts/dimensions with known IDs.
+  // Consumer: Applies values using direct index access.
+  repeated ChartUpdate updates = 3;
+
+  // Charts or dimensions being deleted.
+  //
+  // Deletions take effect after updates are processed. A chart can receive
+  // a final update and be deleted in the same SlotLog.
+  //
+  // Producer: Includes when a metric source is removed or reconfigured.
+  // Consumer: Removes entries from storage. May compact and return remappings.
+  repeated Deletion deletions = 4;
+
+  // Updates for past slots (late-arriving data).
+  //
+  // When metric data arrives after its slot has been finalized, it appears
+  // here instead of in 'updates'. The slot_timestamp field indicates which
+  // past slot the data belongs to.
+  //
+  // Late data requiring new registrations is delayed by one slot:
+  //   - Slot N: Registration appears in 'registrations', no late_update yet
+  //   - Response N: Consumer assigns ID
+  //   - Slot N+1: Late update appears here with the assigned ID
+  //
+  // Producer: Tracks pending late data until IDs are assigned.
+  // Consumer: Policy-dependent. May accept within a time window, store
+  //           separately for later merging, or discard.
+  repeated LateUpdate late_updates = 5;
+}
+
+// ============================================================================
+// REGISTRATION TYPES
+// ============================================================================
+
+// ChartRegistration defines a new chart and its initial dimensions.
+//
+// A "chart" corresponds to a Netdata chart: a named collection of dimensions
+// that share a time axis and are visualized together.
+//
+// Producer: Sends when first observing data for a metric (or on late discovery).
+// Consumer: Creates storage for the chart, assigns ChartId and DimensionIdx values.
+message ChartRegistration {
+  // Human-readable name for the chart.
+  //
+  // Typically derived from the OpenTelemetry metric name plus any distinguishing
+  // attributes (e.g., "http.server.duration.host=web01.method=GET").
+  //
+  // Producer: Constructs from metric metadata. Must be unique across all charts.
+  // Consumer: May use for display, logging, or building reverse lookup tables.
+  string name = 1;
+
+  // The type of aggregation this chart uses.
+  //
+  // Determined by the OpenTelemetry metric type and temporality. Affects how
+  // values should be interpreted and visualized.
+  //
+  // Producer: Infers from OTLP metric metadata.
+  // Consumer: May use to select storage strategy or visualization defaults.
+  ChartType chart_type = 2;
+
+  // Initial dimensions for this chart.
+  //
+  // Dimensions can be added later via ChartUpdate.new_dimensions, but any
+  // dimensions known at chart creation time should be included here.
+  //
+  // Producer: Includes all dimensions observed in the first slot.
+  // Consumer: Assigns sequential DimensionIdx values (0, 1, 2, ...).
+  repeated DimensionRegistration dimensions = 3;
+}
+
+// DimensionRegistration defines a new dimension within a chart.
+//
+// A "dimension" corresponds to a Netdata dimension: a single time series
+// within a chart, identified by name.
+message DimensionRegistration {
+  // Human-readable name for the dimension.
+  //
+  // Typically derived from an OpenTelemetry attribute that distinguishes
+  // this time series from others in the same metric.
+  //
+  // Producer: Constructs from metric attributes. Must be unique within the chart.
+  // Consumer: May use for display or building reverse lookup tables.
+  string name = 1;
+
+  // Initial value for this dimension, if available.
+  //
+  // When a dimension is registered as part of chart creation or late discovery,
+  // the value that triggered the registration can be included here to avoid
+  // a separate update.
+  //
+  // Producer: Includes the triggering observation's aggregated value.
+  // Consumer: Applies as the value for this dimension in the current slot.
+  optional double value = 2;
+}
+
+// ChartType indicates the semantic meaning of values in a chart.
+//
+// This affects how consumers should interpret, store, and visualize the data.
+enum ChartType {
+  // Unspecified type. Should not be used in practice.
+  CHART_TYPE_UNSPECIFIED = 0;
+
+  // Gauge: Values represent instantaneous measurements.
+  //
+  // Examples: CPU usage percentage, memory bytes used, temperature.
+  //
+  // Aggregation within a slot: Last value by timestamp (or average).
+  // Gap filling: Repeat last known value.
+  // Visualization: Line chart, current value display.
+  CHART_TYPE_GAUGE = 1;
+
+  // Delta Sum: Values represent changes since the last observation.
+  //
+  // Examples: Requests processed since last report, bytes transferred.
+  //
+  // Aggregation within a slot: Sum of all deltas.
+  // Gap filling: Zero (no change observed).
+  // Visualization: Bar chart, rate calculation.
+  CHART_TYPE_DELTA_SUM = 2;
+
+  // Cumulative Sum: Values represent running totals since a start time.
+  //
+  // Examples: Total requests since process start, total bytes allocated.
+  //
+  // Aggregation within a slot: Compute delta from previous slot's value.
+  // Gap filling: Assume no change (repeat previous cumulative value).
+  // Visualization: Rate chart (after delta computation).
+  //
+  // Note: The first slot after process start yields no value (no baseline).
+  // Resets (counter wraps or process restart) are detected via start_time
+  // changes in the source data.
+  CHART_TYPE_CUMULATIVE_SUM = 3;
+}
+
+// ============================================================================
+// UPDATE TYPES
+// ============================================================================
+
+// ChartUpdate contains values for an existing chart in the current slot.
+//
+// All referenced IDs (chart_id, dim_idx) must have been previously assigned
+// by the consumer via SlotLogResponse.
+message ChartUpdate {
+  // The consumer-assigned ID for this chart.
+  //
+  // Producer: Obtained from a previous SlotLogResponse.chart_assignments.
+  // Consumer: Used as direct index into chart storage (e.g., charts[chart_id]).
+  uint32 chart_id = 1;
+
+  // New dimensions being added to this chart.
+  //
+  // Dimensions can be discovered after chart creation (e.g., a new HTTP
+  // endpoint starts being called). These are registered here rather than
+  // in SlotLog.registrations because the chart already exists.
+  //
+  // Producer: Includes dimensions observed for the first time on this chart.
+  // Consumer: Assigns DimensionIdx values, returned in SlotLogResponse.
+  //           Values in DimensionRegistration.value apply to the current slot.
+  repeated DimensionRegistration new_dimensions = 2;
+
+  // Values for existing dimensions.
+  //
+  // Only dimensions with previously assigned indices appear here.
+  // Dimensions without values in this slot are handled by consumer policy
+  // (typically gap-filled based on ChartType).
+  //
+  // Producer: Includes all dimensions that received data in this slot.
+  // Consumer: Applies values using direct index access.
+  repeated DimensionValue values = 3;
+}
+
+// DimensionValue is a single value for a dimension.
+message DimensionValue {
+  // The consumer-assigned index for this dimension within its chart.
+  //
+  // Producer: Obtained from a previous SlotLogResponse.
+  // Consumer: Used as direct index (e.g., chart.dimensions[dim_idx]).
+  uint32 dim_idx = 1;
+
+  // The aggregated value for this dimension in this slot.
+  //
+  // Absent (null) indicates no value could be computed. This occurs for:
+  //   - First slot of a CUMULATIVE_SUM (no baseline for delta)
+  //   - Aggregation failures or invalid source data
+  //
+  // Producer: Sets based on aggregation result.
+  // Consumer: Stores as-is. May emit as "unknown" or skip in output.
+  optional double value = 2;
+}
+
+// ============================================================================
+// LATE UPDATE TYPES
+// ============================================================================
+
+// LateUpdate contains values for a past slot.
+//
+// Late data is metric observations that arrived after their slot was finalized.
+// This can happen due to network delays, buffering, or clock skew.
+//
+// The consumer decides how to handle late updates based on its own policy:
+//   - Accept all late updates (simplest)
+//   - Accept within a time window (e.g., 1024 slots / ~17 minutes)
+//   - Store separately and merge at query time
+//   - Discard entirely (strict real-time mode)
+message LateUpdate {
+  // The timestamp of the slot this data belongs to.
+  //
+  // This will be less than the containing SlotLog.timestamp.
+  //
+  // Producer: The original slot computed from the observation's timestamp.
+  // Consumer: The time coordinate for storing/applying this update.
+  uint64 slot_timestamp = 1;
+
+  // The consumer-assigned ID for the chart.
+  //
+  // If late data is for an unregistered chart, the registration appears in
+  // SlotLog.registrations first, and the late_update is delayed to the next
+  // SlotLog (after IDs are assigned).
+  //
+  // Producer: Must have a valid, previously-assigned ID.
+  // Consumer: Used as direct index into chart storage.
+  uint32 chart_id = 2;
+
+  // New dimensions discovered via late data.
+  //
+  // Rare, but possible if a new dimension's first observation arrives late.
+  // Like chart registration, this triggers a one-slot delay:
+  //   - Slot N: new_dimensions lists the dimension (registration)
+  //   - Response N: Consumer assigns DimensionIdx
+  //   - Slot N+1: values includes the late value with assigned index
+  //
+  // Producer: Includes dimensions not yet registered for this chart.
+  // Consumer: Assigns indices, applies any included values to slot_timestamp.
+  repeated DimensionRegistration new_dimensions = 3;
+
+  // Values for existing dimensions.
+  //
+  // All dim_idx values must have been previously assigned.
+  //
+  // Producer: Aggregated values from late-arriving observations.
+  // Consumer: Policy-dependent handling for the specified slot_timestamp.
+  repeated DimensionValue values = 4;
+}
+
+// ============================================================================
+// DELETION TYPES
+// ============================================================================
+
+// Deletion requests removal of a chart or specific dimensions.
+//
+// After processing deletions, the consumer may compact its storage to reclaim
+// space and maintain dense indexing. If compaction changes IDs, the new
+// mappings are returned in SlotLogResponse.remapping.
+message Deletion {
+  // The consumer-assigned ID of the chart to modify or delete.
+  //
+  // Producer: The ID of a chart that should be removed or trimmed.
+  // Consumer: Removes the chart or specified dimensions from storage.
+  uint32 chart_id = 1;
+
+  // Specific dimensions to delete within the chart.
+  //
+  // If empty, the entire chart is deleted.
+  // If non-empty, only the listed dimensions are deleted; the chart remains.
+  //
+  // Producer: Dimension indices to remove (empty = remove whole chart).
+  // Consumer: Removes specified dimensions. May compact remaining dimensions.
+  repeated uint32 dimension_indices = 2;
+}
+
+// ============================================================================
+// SLOT LOG RESPONSE - Consumer to Producer
+// ============================================================================
+
+// SlotLogResponse returns ID assignments and any storage remappings.
+//
+// The producer MUST apply all assignments and remappings before constructing
+// the next SlotLog. This ensures that subsequent updates reference valid IDs.
+message SlotLogResponse {
+  // ID assignments for newly registered charts.
+  //
+  // One entry per chart in SlotLog.registrations, in the same order.
+  // Each entry contains the chart's assigned ID and indices for its dimensions.
+  //
+  // Producer: Stores mappings (chart_name -> chart_id, dim_name -> dim_idx).
+  // Consumer: Has allocated storage at these indices.
+  repeated ChartAssignment chart_assignments = 1;
+
+  // ID assignments for new dimensions on existing charts.
+  //
+  // One entry per ChartUpdate in SlotLog.updates, in the same order.
+  // Each entry contains indices for that update's new_dimensions.
+  //
+  // If a ChartUpdate had no new_dimensions, its entry here is empty.
+  //
+  // Producer: Stores mappings (chart_id, dim_name) -> dim_idx.
+  // Consumer: Has allocated storage at these indices.
+  repeated DimensionAssignments dimension_assignments = 2;
+
+  // ID assignments for new dimensions in late updates.
+  //
+  // One entry per LateUpdate in SlotLog.late_updates, in the same order.
+  // Each entry contains indices for that late update's new_dimensions.
+  //
+  // Producer: Stores mappings, can now include values in next SlotLog.
+  // Consumer: Has allocated storage at these indices.
+  repeated DimensionAssignments late_dimension_assignments = 3;
+
+  // Remapping information if the consumer compacted storage.
+  //
+  // Compaction may occur after deletions to maintain dense indexing.
+  // All ID references in the producer's state must be updated accordingly.
+  //
+  // If absent or empty, no remapping occurred.
+  //
+  // Producer: Applies all mappings to internal state before next SlotLog.
+  // Consumer: Only included if compaction changed existing IDs.
+  optional Remapping remapping = 4;
+}
+
+// ChartAssignment provides the assigned ID for a newly registered chart.
+message ChartAssignment {
+  // The consumer-assigned ID for this chart.
+  //
+  // Consumer: Typically the next sequential integer (charts.len() before insert).
+  // Producer: Stores as the ID to use in all future updates for this chart.
+  uint32 chart_id = 1;
+
+  // Assigned indices for the chart's initial dimensions.
+  //
+  // One index per dimension in ChartRegistration.dimensions, in the same order.
+  // Indices are typically sequential starting from 0.
+  //
+  // Consumer: Dimensions are stored at these indices within the chart.
+  // Producer: Stores mappings for each dimension name.
+  repeated uint32 dimension_indices = 2;
+}
+
+// DimensionAssignments provides assigned indices for new dimensions.
+//
+// Used for both ChartUpdate.new_dimensions and LateUpdate.new_dimensions.
+message DimensionAssignments {
+  // Assigned indices for new dimensions, in the same order as the registration.
+  //
+  // Consumer: Dimensions are stored at these indices within the chart.
+  // Producer: Stores mappings (chart_id, dim_name) -> index.
+  repeated uint32 indices = 1;
+}
+
+// ============================================================================
+// REMAPPING TYPES
+// ============================================================================
+
+// Remapping contains ID changes resulting from consumer storage compaction.
+//
+// When charts or dimensions are deleted, the consumer may compact storage
+// to maintain dense indexing. This changes the IDs of remaining entries.
+//
+// Example: Charts [A=0, B=1, C=2], delete B, compact -> [A=0, C=1]
+// Remapping: { charts: [{old: 2, new: 1}] }
+//
+// The producer applies these mappings to all stored IDs before the next SlotLog.
+message Remapping {
+  // Chart ID changes.
+  //
+  // Only charts whose IDs changed are listed. Charts that were deleted
+  // are not listed (the producer should have tracked the deletion).
+  //
+  // Producer: For each mapping, update all references from old_id to new_id.
+  // Consumer: Has already moved chart data to the new indices.
+  repeated ChartIdMapping charts = 1;
+
+  // Dimension index changes, grouped by chart.
+  //
+  // Only dimensions whose indices changed are listed.
+  //
+  // Producer: For each mapping, update stored dimension indices.
+  // Consumer: Has already moved dimension data to the new indices.
+  repeated ChartDimensionRemapping dimensions = 2;
+}
+
+// ChartIdMapping indicates a single chart ID change.
+message ChartIdMapping {
+  // The previous ID for this chart.
+  uint32 old_id = 1;
+
+  // The new ID for this chart.
+  uint32 new_id = 2;
+}
+
+// ChartDimensionRemapping contains dimension index changes for one chart.
+message ChartDimensionRemapping {
+  // The chart these dimension changes apply to.
+  //
+  // Note: This is the NEW chart ID (after any chart remapping).
+  uint32 chart_id = 1;
+
+  // Individual dimension index changes.
+  repeated DimensionIdMapping mappings = 2;
+}
+
+// DimensionIdMapping indicates a single dimension index change.
+message DimensionIdMapping {
+  // The previous index for this dimension.
+  uint32 old_idx = 1;
+
+  // The new index for this dimension.
+  uint32 new_idx = 2;
+}
