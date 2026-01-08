@@ -1,0 +1,16 @@
+[package]
+name = "nm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+opentelemetry-proto = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
+serde_regex = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, features = ["gzip"] }
+twox-hash = { workspace = true, features = ["xxhash64"] }

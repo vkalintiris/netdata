@@ -1,0 +1,29 @@
+receivers:
+  hostmetrics:
+    collection_interval: 5s
+    # root_path: /hostfs
+    scrapers:
+      cpu:
+      disk:
+      load:
+      filesystem:
+      memory:
+      network:
+      # nfs:
+      paging:
+      processes:
+      system:
+      # process:
+
+exporters:
+  otlp:
+    endpoint: "localhost:4317"
+    # endpoint: "host.docker.internal:4317"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      exporters: [otlp]

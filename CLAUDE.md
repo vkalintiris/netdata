@@ -1,49 +1,52 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+The primary goal of this git worktree is adding support for ingesting
+OpenTelemetry metrics to Netdata via an external plugin.
 
-THE MOST IMPORTANT RULES ARE:
+## Existing ingestion pipeline
 
-1. You MUST ALWAYS find the root cause of a problem, before giving a solution.
-2. Patching without understanding the problem IS NOT ALLOWED.
-3. Before patching code, we MUST understand the code base and the potential implications of our changes.
-4. We do not duplicate code. We first check if similar code already exists and to reuse it.
+There's an existing implementation in the `otel-plugin` crate that tries to
+automatically discover the collection frequency of incoming metrics.
 
-## Collector Consistency Requirements
+Due to OpenTelemetry's event-based model, metrics do not have a constant or
+implicit collection interval.
 
-When working on collectors (especially Go collectors), ALL of the following files MUST be kept in sync before creating a PR:
+## New ingestion pipeline
 
-1. **The code** - All .go files implementing the collector
-2. **metadata.yaml** - Proper information for the Netdata integrations page, including:
-   - Metric descriptions with correct units
-   - Alert definitions
-   - Setup instructions
-   - Configuration examples
-3. **config_schema.json** - Schema for dynamic configuration in the dashboard
-4. **Stock config file** (.conf file) - Example configuration users edit manually
-5. **Health alerts** (health.d/*.conf) - Alert definitions for the collector metrics
-6. **README.md** - Comprehensive documentation describing:
-   - What the collector monitors
-   - How it works
-   - Configuration options
-   - Troubleshooting
+The `nm` crate is the playground of the new plugin that will try to address
+the limitations of the existing `otel-plugin`.
 
-These files MUST be consistent with each other. For example:
-- If units change in code, they MUST be updated in metadata.yaml
-- If new metrics are added, they MUST be documented in metadata.yaml and README.md
-- If configuration options change, they MUST be updated in config_schema.json, stock config, and documentation
+It will do so by defining a global collection interval that will be applied
+to all the Netdata charts it will create.
 
-## C code
-- gcc, clang, glibc and muslc
-- libnetdata.h includes everything in libnetdata (just a couple of exceptions) so there is no need to include individual libnetdata headers
-- Functions with 'z' suffix (mallocz, reallocz, callocz, strdupz, etc.) handle allocation failures automatically by calling fatal() to exit Netdata
-- The freez() function accepts NULL pointers without crashing
-- Resuable, generic, module agnostic code, goes to libnetdata
-- Double linked lists are managed with DOUBLE_LINKED_LIST_* macros
-- json-c for json parsing
-- buffer_json_* for manual json generation
+As part of this effort it needs to perform proper aggregation of incoming
+metrics and account for the different aggregation temporalities.
 
-## Naming Conventions
-- "Netdata Agent" (capitalized) when referring to the product
-- "`netdata`" (lowercase, code-formatted) when referring to the process
-- See DICTIONARY.md for precise terminology
+Currently:
+
+- We only care about gauges and sums, ie. no histograms, exponential histogram and summaries.
+- The collection interval is not configurable, it should be assumed to be 1 second.
+- OpenTelemetry's event-based model means we might get multiple values within a given collection interval, or none for a given collection interval.
+
+## OpenTelemetry and Netdata plugins context
+
+- OpenTelemetry's specification can be found at ~/repos/tmp/otel-netdata/opentelemetry-specification.
+- OpenTelemetry's protobuf message definitions can be found at ~/repos/tmp/otel-netdata/opentelemetry-proto.
+- OpenTelemetry's Rust SDK can provide more information by looking at a concrete implementation and can be found at ~/repos/tmp/otel-netdata/opentelemetry-rust.
+- Netdata's external plugin documentation can be found at ~/repos/tmp/otel-netdata/netdata/src/plugins.d.
+
+Regarding, Netdata's external plugin protocol:
+
+An undocumented feature is setting explicitly the timestamp of a chart update,
+(ie. for a given collection interval slot). This feature supports only monotonically
+increasing timestamps (ie. you can not specify an older collection interval slot
+once it's been set). The existing `otel-plugin` makes use of this feature.
+
+## Notes
+
+The core issue revolves around proper handling of aggregation temporalities
+and mapping the event-based model of OpenTelemetry to Netdata's fixed/regular
+time-based collection interval model.
+
+You are an expert in the observability/monitoring domain and provide
+suggestions that are correct, coherent, and identify/handle all the corner cases.

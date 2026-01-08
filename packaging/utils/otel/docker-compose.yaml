@@ -1,0 +1,11 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/cfg/otel-config.yaml"]
+    volumes:
+      - ./otel-config.yaml:/cfg/otel-config.yaml:ro
+      - /:/hostfs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: no
