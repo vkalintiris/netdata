@@ -1,11 +1,8 @@
 //! Configuration types and management for metric processing.
 
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -126,73 +123,5 @@ impl ChartConfigManager {
                 eprintln!("Failed to parse default configs YAML: {}", e);
             }
         }
-    }
-
-    pub fn load_user_configs<P: AsRef<Path>>(&mut self, config_dir: P) -> Result<()> {
-        // check dir
-        let config_path = config_dir.as_ref();
-        if !config_path.exists() {
-            return Err(anyhow::anyhow!(
-                "Configuration directory does not exist: {}",
-                config_path.display()
-            ));
-        }
-        if !config_path.is_dir() {
-            return Err(anyhow::anyhow!(
-                "Configuration path is not a directory: {}",
-                config_path.display()
-            ));
-        }
-
-        // collect the yaml files
-        let mut config_files: Vec<_> = std::fs::read_dir(config_path)
-            .with_context(|| {
-                format!(
-                    "Failed to read chart config directory: {}",
-                    config_path.display()
-                )
-            })?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.is_file()
-                    && matches!(
-                        path.extension().and_then(|s| s.to_str()),
-                        Some("yml" | "yaml")
-                    )
-                {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        config_files.sort();
-
-        // deserialize and merge user configs
-        let mut merged_configs: ConfigMap = HashMap::new();
-        for path in config_files {
-            match fs::read_to_string(&path) {
-                Ok(contents) => match serde_yaml::from_str::<MetricConfigs>(&contents) {
-                    Ok(metric_configs) => {
-                        for (metric_name, configs) in metric_configs.metrics {
-                            merged_configs
-                                .entry(metric_name)
-                                .or_default()
-                                .extend(configs);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to parse YAML file {}: {}", path.display(), e);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Failed to read file {}: {}", path.display(), e);
-                }
-            }
-        }
-        self.user = Arc::new(merged_configs);
-
-        Ok(())
     }
 }

@@ -3,16 +3,16 @@ receivers:
     collection_interval: 5s
     # root_path: /hostfs
     scrapers:
-      cpu:
-      disk:
+      # cpu:
+      # disk:
       load:
-      filesystem:
-      memory:
-      network:
+      # filesystem:
+      # memory:
+      # network:
       # nfs:
-      paging:
-      processes:
-      system:
+      # paging:
+      # processes:
+      # system:
       # process:
 
 exporters:

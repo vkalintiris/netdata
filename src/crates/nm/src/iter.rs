@@ -115,15 +115,6 @@ impl MetricRef<'_> {
         }
     }
 
-    /// Returns true if this is a monotonic Sum.
-    /// Returns None for non-Sum metrics.
-    pub fn is_monotonic(&self) -> Option<bool> {
-        match &self.metric.data {
-            Some(metric::Data::Sum(s)) => Some(s.is_monotonic),
-            _ => None,
-        }
-    }
-
     /// Returns the metric data kind (for pattern matching on the metric type).
     pub fn data_kind(&self) -> Option<MetricDataKind> {
         self.metric.data.as_ref().map(MetricDataKind::from)
@@ -164,12 +155,6 @@ impl DataPointContext<'_> {
     /// Returns None for Gauge and Summary metrics.
     pub fn aggregation_temporality(&self) -> Option<AggregationTemporality> {
         self.metric_ref.aggregation_temporality()
-    }
-
-    /// Returns true if this data point belongs to a monotonic Sum.
-    /// Returns None for non-Sum metrics.
-    pub fn is_monotonic(&self) -> Option<bool> {
-        self.metric_ref.is_monotonic()
     }
 
     /// Returns the metric data kind.

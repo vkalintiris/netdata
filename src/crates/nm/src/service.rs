@@ -80,33 +80,14 @@ impl ChartManager {
             let data_kind = dp.data_kind()?;
             let temporality = dp.aggregation_temporality();
 
-            let chart = Chart::from_metric(
-                chart_name.to_string(),
-                data_kind,
-                temporality,
-                self.config,
-            )?;
+            let chart =
+                Chart::from_metric(chart_name.to_string(), data_kind, temporality, self.config)?;
 
             self.charts
                 .insert(chart_name.to_string(), ChartState::new(chart));
         }
 
         self.charts.get_mut(chart_name)
-    }
-
-    /// Trigger eager finalization for all charts.
-    fn eager_finalize_all(&mut self) -> Vec<(String, Vec<FinalizedSlot>)> {
-        self.charts
-            .iter_mut()
-            .filter_map(|(name, state)| {
-                let finalized = state.chart.eager_finalize();
-                if finalized.is_empty() {
-                    None
-                } else {
-                    Some((name.clone(), finalized))
-                }
-            })
-            .collect()
     }
 
     /// Trigger tick-based finalization for all charts.
@@ -128,11 +109,6 @@ impl ChartManager {
     /// Get chart state for outputting dimension names.
     fn get_chart(&self, name: &str) -> Option<&ChartState> {
         self.charts.get(name)
-    }
-
-    /// Get the chart config.
-    pub fn config(&self) -> &ChartConfig {
-        &self.config
     }
 }
 
@@ -178,11 +154,6 @@ impl TickTaskHandle {
     pub fn abort(&self) {
         self.handle.abort();
     }
-
-    /// Wait for the task to complete.
-    pub async fn join(self) -> Result<(), tokio::task::JoinError> {
-        self.handle.await
-    }
 }
 
 /// Spawn a background task that periodically calls tick on the chart manager.
@@ -202,6 +173,8 @@ pub fn spawn_tick_task(
             let current_ns = current_time_ns();
             let mut manager = chart_manager.write().await;
             let finalized_charts = manager.tick_all(current_ns);
+
+            println!("Num finalized charts: {}", finalized_charts.len());
 
             // Emit finalized slots
             for (chart_name, finalized_slots) in finalized_charts {
@@ -230,11 +203,6 @@ impl NetdataMetricsService {
             chart_config_manager,
             chart_manager,
         }
-    }
-
-    /// Get a clone of the chart manager Arc for use with the tick task.
-    pub fn chart_manager(&self) -> Arc<RwLock<ChartManager>> {
-        Arc::clone(&self.chart_manager)
     }
 
     async fn process_request(&self, req: &mut ExportMetricsServiceRequest) {
@@ -277,26 +245,13 @@ impl NetdataMetricsService {
                 .chart
                 .ingest(dimension_id, value, timestamp_ns, start_time_ns);
         }
-
-        // Eager finalize and emit
-        let finalized_charts = chart_manager.eager_finalize_all();
-
-        for (chart_name, finalized_slots) in finalized_charts {
-            let chart_state = chart_manager.get_chart(&chart_name);
-
-            for slot in finalized_slots {
-                emit_slot(&chart_name, &slot, chart_state);
-            }
-        }
     }
 }
 
 impl Default for NetdataMetricsService {
     fn default() -> Self {
         Self {
-            chart_config_manager: Arc::new(RwLock::new(
-                ChartConfigManager::with_default_configs(),
-            )),
+            chart_config_manager: Arc::new(RwLock::new(ChartConfigManager::with_default_configs())),
             chart_manager: Arc::new(RwLock::new(ChartManager::new(ChartConfig::default()))),
         }
     }
