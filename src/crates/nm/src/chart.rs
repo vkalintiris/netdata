@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Chart management for Netdata metrics.
 //!
 //! A `Chart` wraps a `SlotManager` with the appropriate aggregator type based on
@@ -16,7 +14,7 @@ use crate::slot::{DimensionId, FinalizedSlot, SlotManager};
 pub struct ChartConfig {
     /// Collection interval in seconds
     pub interval_secs: u64,
-    /// Grace period in seconds for accepting late data
+    /// Grace period in seconds before finalizing an idle slot
     pub grace_period_secs: u64,
 }
 
@@ -115,14 +113,15 @@ impl Chart {
 
     /// Ingest a data point for a dimension.
     ///
-    /// Returns `true` if accepted, `false` if rejected (e.g., too late).
+    /// Returns `Some(FinalizedSlot)` if this ingestion caused the previous
+    /// active slot to be finalized (because data arrived for a newer slot).
     pub fn ingest(
         &mut self,
         dimension_id: DimensionId,
         value: f64,
         timestamp_ns: u64,
         start_time_ns: u64,
-    ) -> bool {
+    ) -> Option<FinalizedSlot> {
         match &mut self.inner {
             ChartInner::Gauge(mgr) => mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns),
             ChartInner::DeltaSum(mgr) => {
@@ -134,39 +133,30 @@ impl Chart {
         }
     }
 
-    /// Process a tick and finalize any slots that are ready.
-    pub fn tick(&mut self, current_time_ns: u64) -> Vec<FinalizedSlot> {
+    /// Check if the grace period has expired and finalize if so.
+    pub fn tick(&mut self) -> Option<FinalizedSlot> {
         match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.tick(current_time_ns),
-            ChartInner::DeltaSum(mgr) => mgr.tick(current_time_ns),
-            ChartInner::CumulativeSum(mgr) => mgr.tick(current_time_ns),
+            ChartInner::Gauge(mgr) => mgr.tick(),
+            ChartInner::DeltaSum(mgr) => mgr.tick(),
+            ChartInner::CumulativeSum(mgr) => mgr.tick(),
         }
     }
 
-    /// Eager finalization for low-latency happy path.
-    pub fn eager_finalize(&mut self) -> Vec<FinalizedSlot> {
+    /// Force finalize the active slot.
+    pub fn finalize(&mut self) -> Option<FinalizedSlot> {
         match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.eager_finalize(),
-            ChartInner::DeltaSum(mgr) => mgr.eager_finalize(),
-            ChartInner::CumulativeSum(mgr) => mgr.eager_finalize(),
+            ChartInner::Gauge(mgr) => mgr.finalize(),
+            ChartInner::DeltaSum(mgr) => mgr.finalize(),
+            ChartInner::CumulativeSum(mgr) => mgr.finalize(),
         }
     }
 
-    /// Force finalize all pending slots.
-    pub fn finalize_all(&mut self) -> Vec<FinalizedSlot> {
-        match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.finalize_all(),
-            ChartInner::DeltaSum(mgr) => mgr.finalize_all(),
-            ChartInner::CumulativeSum(mgr) => mgr.finalize_all(),
-        }
-    }
-
-    /// Get the number of pending slots.
-    pub fn pending_slot_count(&self) -> usize {
+    /// Check if there's an active slot.
+    pub fn has_active_slot(&self) -> bool {
         match &self.inner {
-            ChartInner::Gauge(mgr) => mgr.pending_slot_count(),
-            ChartInner::DeltaSum(mgr) => mgr.pending_slot_count(),
-            ChartInner::CumulativeSum(mgr) => mgr.pending_slot_count(),
+            ChartInner::Gauge(mgr) => mgr.has_active_slot(),
+            ChartInner::DeltaSum(mgr) => mgr.has_active_slot(),
+            ChartInner::CumulativeSum(mgr) => mgr.has_active_slot(),
         }
     }
 
@@ -254,13 +244,14 @@ mod tests {
         );
 
         chart.ingest(1, 42.0, ns(5), 0);
-        chart.ingest(1, 50.0, ns(15), 0); // slot 10
 
-        let finalized = chart.eager_finalize();
+        // Data for slot 10 finalizes slot 0
+        let finalized = chart.ingest(1, 50.0, ns(15), 0);
 
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].slot_timestamp, 0);
-        assert_eq!(finalized[0].dimensions[0].value, Some(42.0));
+        assert!(finalized.is_some());
+        let finalized = finalized.unwrap();
+        assert_eq!(finalized.slot_timestamp, 0);
+        assert_eq!(finalized.dimensions[0].value, Some(42.0));
     }
 
     #[test]
@@ -278,13 +269,15 @@ mod tests {
 
         // Slot 0: establish baseline
         chart.ingest(1, 100.0, ns(5), start_time);
-        chart.finalize_all();
 
-        // Slot 10: should compute delta
-        chart.ingest(1, 150.0, ns(15), start_time);
-        let finalized = chart.finalize_all();
+        // Slot 10: finalize slot 0 (returns None for first slot)
+        let finalized = chart.ingest(1, 150.0, ns(15), start_time);
+        assert!(finalized.is_some());
+        assert_eq!(finalized.unwrap().dimensions[0].value, None);
 
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].dimensions[0].value, Some(50.0)); // 150 - 100
+        // Finalize slot 10
+        let finalized = chart.finalize();
+        assert!(finalized.is_some());
+        assert_eq!(finalized.unwrap().dimensions[0].value, Some(50.0)); // 150 - 100
     }
 }

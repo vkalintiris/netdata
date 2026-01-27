@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -16,14 +16,14 @@ use twox_hash::XxHash64;
 
 use crate::chart::{Chart, ChartConfig};
 use crate::config::ChartConfigManager;
-use crate::iter::{DataPointContext, DataPointContextIterExt};
+use crate::iter::DataPointContextIterExt;
 use crate::otel;
 use crate::slot::{DimensionId, FinalizedSlot};
 use std::fmt::Write;
 
 /// State for a chart including dimension name mappings.
-struct ChartState {
-    chart: Chart,
+pub struct ChartState {
+    pub chart: Chart,
     /// Map from dimension ID to dimension name (for output)
     dimension_names: HashMap<DimensionId, String>,
 }
@@ -37,7 +37,7 @@ impl ChartState {
     }
 
     /// Get or create the dimension ID for a dimension name.
-    fn dimension_id(&mut self, name: &str) -> DimensionId {
+    pub fn dimension_id(&mut self, name: &str) -> DimensionId {
         let mut hasher = XxHash64::default();
         name.hash(&mut hasher);
         let id = hasher.finish();
@@ -50,7 +50,7 @@ impl ChartState {
     }
 
     /// Get the dimension name for an ID.
-    fn dimension_name(&self, id: DimensionId) -> Option<&str> {
+    pub fn dimension_name(&self, id: DimensionId) -> Option<&str> {
         self.dimension_names.get(&id).map(|s| s.as_str())
     }
 }
@@ -71,10 +71,10 @@ impl ChartManager {
 
     /// Get or create a chart for the given data point context.
     /// Returns None if the metric type is not supported.
-    fn get_or_create_chart(
+    pub fn get_or_create_chart(
         &mut self,
         chart_name: &str,
-        dp: &DataPointContext<'_>,
+        dp: &crate::iter::DataPointContext<'_>,
     ) -> Option<&mut ChartState> {
         if !self.charts.contains_key(chart_name) {
             let data_kind = dp.data_kind()?;
@@ -91,23 +91,18 @@ impl ChartManager {
     }
 
     /// Trigger tick-based finalization for all charts.
-    /// This finalizes slots that have passed their grace period.
-    pub fn tick_all(&mut self, current_time_ns: u64) -> Vec<(String, Vec<FinalizedSlot>)> {
+    /// Returns charts that had their active slot finalized due to grace period expiration.
+    pub fn tick_all(&mut self) -> Vec<(String, FinalizedSlot)> {
         self.charts
             .iter_mut()
             .filter_map(|(name, state)| {
-                let finalized = state.chart.tick(current_time_ns);
-                if finalized.is_empty() {
-                    None
-                } else {
-                    Some((name.clone(), finalized))
-                }
+                state.chart.tick().map(|slot| (name.clone(), slot))
             })
             .collect()
     }
 
     /// Get chart state for outputting dimension names.
-    fn get_chart(&self, name: &str) -> Option<&ChartState> {
+    pub fn get_chart(&self, name: &str) -> Option<&ChartState> {
         self.charts.get(name)
     }
 }
@@ -130,18 +125,8 @@ fn emit_slot(chart_name: &str, slot: &FinalizedSlot, chart_state: Option<&ChartS
             None => "U".to_string(), // Unknown/undefined in Netdata
         };
 
-        let gap_indicator = if dim.is_gap_fill { " (gap-fill)" } else { "" };
-
-        println!("  DIM {} = {}{}", dim_name, value_str, gap_indicator);
+        println!("  DIM {} = {}", dim_name, value_str);
     }
-}
-
-/// Get current time in nanoseconds since Unix epoch.
-fn current_time_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos() as u64
 }
 
 /// Handle for the background tick task.
@@ -159,7 +144,7 @@ impl TickTaskHandle {
 /// Spawn a background task that periodically calls tick on the chart manager.
 ///
 /// The tick interval determines how often we check for slots that have passed
-/// their grace period. A reasonable default is the collection interval.
+/// their grace period.
 pub fn spawn_tick_task(
     chart_manager: Arc<RwLock<ChartManager>>,
     tick_interval: Duration,
@@ -170,18 +155,17 @@ pub fn spawn_tick_task(
         loop {
             interval.tick().await;
 
-            let current_ns = current_time_ns();
             let mut manager = chart_manager.write().await;
-            let finalized_charts = manager.tick_all(current_ns);
+            let finalized_charts = manager.tick_all();
 
-            println!("Num finalized charts: {}", finalized_charts.len());
+            if !finalized_charts.is_empty() {
+                println!("Tick finalized {} charts", finalized_charts.len());
+            }
 
             // Emit finalized slots
-            for (chart_name, finalized_slots) in finalized_charts {
-                let chart_state = manager.get_chart(&chart_name);
-                for slot in finalized_slots {
-                    emit_slot(&chart_name, &slot, chart_state);
-                }
+            for (chart_name, slot) in &finalized_charts {
+                let chart_state = manager.get_chart(chart_name);
+                emit_slot(chart_name, slot, chart_state);
             }
         }
     });
@@ -191,7 +175,7 @@ pub fn spawn_tick_task(
 
 pub struct NetdataMetricsService {
     pub chart_config_manager: Arc<RwLock<ChartConfigManager>>,
-    chart_manager: Arc<RwLock<ChartManager>>,
+    pub chart_manager: Arc<RwLock<ChartManager>>,
 }
 
 impl NetdataMetricsService {
@@ -211,6 +195,9 @@ impl NetdataMetricsService {
         let ccm = self.chart_config_manager.read().await;
         let mut chart_manager = self.chart_manager.write().await;
         let mut chart_name_buf = String::with_capacity(128);
+
+        // Collect slots finalized during ingestion (due to newer slot data arriving)
+        let mut finalized_during_ingest: Vec<(String, FinalizedSlot)> = Vec::new();
 
         for dp in req.datapoint_iter(&ccm) {
             // Skip non-number data points (histograms, etc.)
@@ -240,10 +227,22 @@ impl NetdataMetricsService {
             // Get dimension ID
             let dimension_id = chart_state.dimension_id(dimension_name);
 
-            // Ingest the data point
-            chart_state
-                .chart
-                .ingest(dimension_id, value, timestamp_ns, start_time_ns);
+            // Ingest the data point - may return a finalized slot if this
+            // data belongs to a newer slot
+            if let Some(finalized) = chart_state.chart.ingest(
+                dimension_id,
+                value,
+                timestamp_ns,
+                start_time_ns,
+            ) {
+                finalized_during_ingest.push((chart_name_buf.clone(), finalized));
+            }
+        }
+
+        // Emit any slots that were finalized during ingestion
+        for (chart_name, slot) in &finalized_during_ingest {
+            let chart_state = chart_manager.get_chart(chart_name);
+            emit_slot(chart_name, slot, chart_state);
         }
     }
 }

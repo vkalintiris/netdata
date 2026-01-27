@@ -1,15 +1,13 @@
-#![allow(dead_code)]
-
 //! Slot management for mapping OpenTelemetry's event-based metrics to Netdata's
 //! fixed-interval collection model.
 //!
-//! The `SlotManager` handles:
-//! - Assigning data points to slots based on timestamp
-//! - Buffering data within the grace period
-//! - Finalizing slots in order
-//! - Gap-filling for dimensions without data
+//! The `SlotManager` tracks a single active slot and:
+//! - Drops data for previous slots
+//! - Finalizes the active slot when data arrives for a newer slot
+//! - Finalizes the active slot after a grace period with no data
 
 use std::collections::{BTreeSet, HashMap};
+use std::time::Instant;
 
 use crate::aggregation::Aggregator;
 
@@ -38,39 +36,34 @@ pub struct FinalizedSlot {
 pub struct FinalizedDimension {
     pub dimension_id: DimensionId,
     /// The value to emit. `None` if no value could be produced
-    /// (e.g., first observation for cumulative, or dimension not yet seen).
+    /// (e.g., first observation for cumulative).
     pub value: Option<f64>,
-    /// Whether this value came from gap filling (no data received for this slot)
-    pub is_gap_fill: bool,
 }
 
-/// Manages slot timing and aggregation for a single chart.
+/// Manages a single active slot for a chart.
 ///
 /// Generic over the aggregator type - all dimensions in a chart use the same
 /// aggregator type since they have the same metric semantics.
 pub struct SlotManager<A: Aggregator + Default> {
     /// Collection interval in seconds
     interval_secs: u64,
-    /// Grace period in seconds for accepting late data
+    /// Grace period in seconds before finalizing an idle slot
     grace_period_secs: u64,
 
     /// Per-dimension aggregators (maintain cross-slot state)
     dimensions: HashMap<DimensionId, A>,
 
-    /// Buffered data points: (slot_timestamp, dimension_id) -> points
-    buffered: HashMap<(u64, DimensionId), Vec<BufferedPoint>>,
-
-    /// Set of slots with pending data (ordered for sequential finalization)
-    pending_slots: BTreeSet<u64>,
-
     /// All known dimensions (for gap filling)
     known_dimensions: BTreeSet<DimensionId>,
 
-    /// Last finalized slot timestamp (for monotonicity enforcement)
-    last_finalized_slot: Option<u64>,
+    /// The currently active slot timestamp (if any)
+    active_slot: Option<u64>,
 
-    /// Timestamp of the most recent data point seen (for eager finalization)
-    latest_data_timestamp_ns: u64,
+    /// Buffered points for the active slot: dimension_id -> points
+    buffered: HashMap<DimensionId, Vec<BufferedPoint>>,
+
+    /// When the active slot last received data (for grace period timeout)
+    last_data_instant: Option<Instant>,
 }
 
 impl<A: Aggregator + Default> SlotManager<A> {
@@ -80,11 +73,10 @@ impl<A: Aggregator + Default> SlotManager<A> {
             interval_secs,
             grace_period_secs,
             dimensions: HashMap::new(),
-            buffered: HashMap::new(),
-            pending_slots: BTreeSet::new(),
             known_dimensions: BTreeSet::new(),
-            last_finalized_slot: None,
-            latest_data_timestamp_ns: 0,
+            active_slot: None,
+            buffered: HashMap::new(),
+            last_data_instant: None,
         }
     }
 
@@ -96,33 +88,47 @@ impl<A: Aggregator + Default> SlotManager<A> {
 
     /// Ingest a data point for a dimension.
     ///
-    /// Returns `true` if the point was accepted, `false` if it was dropped
-    /// (e.g., for a slot that's already been finalized).
+    /// Returns `Some(FinalizedSlot)` if this ingestion caused the previous
+    /// active slot to be finalized (because data arrived for a newer slot).
+    /// Returns `None` if the data was buffered or dropped.
     pub fn ingest(
         &mut self,
         dimension_id: DimensionId,
         value: f64,
         timestamp_ns: u64,
         start_time_ns: u64,
-    ) -> bool {
-        let slot = self.slot_for_timestamp(timestamp_ns);
-
-        // Reject data for already-finalized slots
-        if let Some(last) = self.last_finalized_slot {
-            if slot <= last {
-                return false;
-            }
-        }
+    ) -> Option<FinalizedSlot> {
+        let data_slot = self.slot_for_timestamp(timestamp_ns);
 
         // Track this dimension
         self.known_dimensions.insert(dimension_id);
-
-        // Ensure we have an aggregator for this dimension
         self.dimensions.entry(dimension_id).or_default();
 
-        // Buffer the point
+        let finalized = match self.active_slot {
+            None => {
+                // No active slot yet - this becomes the active slot
+                self.active_slot = Some(data_slot);
+                None
+            }
+            Some(active) if data_slot < active => {
+                // Data for a previous slot - drop it
+                return None;
+            }
+            Some(active) if data_slot > active => {
+                // Data for a newer slot - finalize current and start new
+                let finalized = self.finalize_active_slot();
+                self.active_slot = Some(data_slot);
+                finalized
+            }
+            Some(_) => {
+                // Data for the current active slot
+                None
+            }
+        };
+
+        // Buffer the point for the active slot
         self.buffered
-            .entry((slot, dimension_id))
+            .entry(dimension_id)
             .or_default()
             .push(BufferedPoint {
                 value,
@@ -130,164 +136,76 @@ impl<A: Aggregator + Default> SlotManager<A> {
                 start_time_ns,
             });
 
-        // Track pending slot
-        self.pending_slots.insert(slot);
+        // Update last data time
+        self.last_data_instant = Some(Instant::now());
 
-        // Track latest timestamp for eager finalization
-        if timestamp_ns > self.latest_data_timestamp_ns {
-            self.latest_data_timestamp_ns = timestamp_ns;
-        }
-
-        true
+        finalized
     }
 
-    /// Process a tick and finalize any slots that are ready.
+    /// Check if the grace period has expired and finalize if so.
     ///
-    /// A slot is ready for finalization when:
-    /// - Its time window has passed (wall_time > slot_end), AND
-    /// - The grace period has expired (wall_time > slot_end + grace_period)
-    ///
-    /// Returns finalized slots in chronological order.
-    pub fn tick(&mut self, current_time_ns: u64) -> Vec<FinalizedSlot> {
-        let current_time_secs = current_time_ns / 1_000_000_000;
-        let finalization_threshold = current_time_secs.saturating_sub(self.grace_period_secs);
+    /// Returns `Some(FinalizedSlot)` if the active slot was finalized due to
+    /// grace period expiration, `None` otherwise.
+    pub fn tick(&mut self) -> Option<FinalizedSlot> {
+        let last_data = self.last_data_instant?;
+        let grace_period = std::time::Duration::from_secs(self.grace_period_secs);
 
-        self.finalize_slots_before(finalization_threshold)
+        if last_data.elapsed() >= grace_period {
+            self.finalize_active_slot()
+        } else {
+            None
+        }
     }
 
-    /// Eager finalization: finalize slots that have passed their time window
-    /// and for which we've received data for a later slot.
-    ///
-    /// This provides low-latency emission in the happy path where data
-    /// arrives promptly.
-    ///
-    /// Call this after ingesting data to potentially finalize older slots.
-    pub fn eager_finalize(&mut self) -> Vec<FinalizedSlot> {
-        if self.pending_slots.is_empty() {
-            return Vec::new();
-        }
-
-        // Find the latest slot with data
-        let latest_slot = *self.pending_slots.iter().next_back().unwrap();
-
-        // Finalize all slots before the latest one (they won't receive more data
-        // if we're already seeing data for a later slot)
-        self.finalize_slots_before(latest_slot)
-    }
-
-    /// Finalize all slots with timestamp < threshold.
-    fn finalize_slots_before(&mut self, threshold_secs: u64) -> Vec<FinalizedSlot> {
-        let mut result = Vec::new();
-
-        // Collect slots to finalize
-        let slots_to_finalize: Vec<u64> = self
-            .pending_slots
-            .iter()
-            .take_while(|&&slot| slot < threshold_secs)
-            .copied()
-            .collect();
-
-        // Also check for gap slots between last_finalized and first pending
-        let first_pending = slots_to_finalize.first().copied();
-        let gap_slots = self.find_gap_slots(first_pending, threshold_secs);
-
-        // Merge and sort all slots to finalize
-        let mut all_slots: Vec<u64> = gap_slots
-            .into_iter()
-            .chain(slots_to_finalize.iter().copied())
-            .collect();
-        all_slots.sort_unstable();
-        all_slots.dedup();
-
-        for slot in all_slots {
-            if let Some(finalized) = self.finalize_slot(slot) {
-                result.push(finalized);
-            }
-        }
-
-        result
-    }
-
-    /// Find gap slots between the last finalized slot and the threshold.
-    fn find_gap_slots(&self, first_pending: Option<u64>, threshold_secs: u64) -> Vec<u64> {
-        let start = match self.last_finalized_slot {
-            Some(last) => last + self.interval_secs,
-            None => return Vec::new(), // No baseline yet, can't gap-fill
-        };
-
-        let end = first_pending.unwrap_or(threshold_secs);
-
-        let mut gaps = Vec::new();
-        let mut slot = start;
-        while slot < end && slot < threshold_secs {
-            if !self.pending_slots.contains(&slot) {
-                gaps.push(slot);
-            }
-            slot += self.interval_secs;
-        }
-        gaps
-    }
-
-    /// Finalize a single slot.
-    fn finalize_slot(&mut self, slot: u64) -> Option<FinalizedSlot> {
-        // Skip if already finalized
-        if let Some(last) = self.last_finalized_slot {
-            if slot <= last {
-                return None;
-            }
-        }
+    /// Finalize the active slot and return it.
+    fn finalize_active_slot(&mut self) -> Option<FinalizedSlot> {
+        let slot_timestamp = self.active_slot.take()?;
 
         let mut dimensions = Vec::with_capacity(self.known_dimensions.len());
 
         for &dim_id in &self.known_dimensions {
             let aggregator = self.dimensions.get_mut(&dim_id);
-            let buffered_points = self.buffered.remove(&(slot, dim_id));
+            let buffered_points = self.buffered.remove(&dim_id);
 
-            let (value, is_gap_fill) = match (aggregator, buffered_points) {
+            let value = match (aggregator, buffered_points) {
                 (Some(agg), Some(points)) if !points.is_empty() => {
                     // Feed all buffered points to the aggregator
                     for point in points {
                         agg.ingest(point.value, point.timestamp_ns, point.start_time_ns);
                     }
-                    // Finalize and get the value
-                    (agg.finalize_slot(), false)
+                    agg.finalize_slot()
                 }
                 (Some(agg), _) => {
-                    // No data for this slot - gap fill
-                    (Some(agg.gap_fill()), true)
+                    // No data for this dimension in this slot - gap fill
+                    Some(agg.gap_fill())
                 }
-                (None, _) => {
-                    // Dimension not yet initialized (shouldn't happen)
-                    (None, true)
-                }
+                (None, _) => None,
             };
 
             dimensions.push(FinalizedDimension {
                 dimension_id: dim_id,
                 value,
-                is_gap_fill,
             });
         }
 
-        // Update state
-        self.pending_slots.remove(&slot);
-        self.last_finalized_slot = Some(slot);
+        // Clear any remaining buffered data and reset timing
+        self.buffered.clear();
+        self.last_data_instant = None;
 
         Some(FinalizedSlot {
-            slot_timestamp: slot,
+            slot_timestamp,
             dimensions,
         })
     }
 
-    /// Force finalize all pending slots. Useful for shutdown or testing.
-    pub fn finalize_all(&mut self) -> Vec<FinalizedSlot> {
-        let threshold = u64::MAX;
-        self.finalize_slots_before(threshold)
+    /// Force finalize the active slot. Useful for shutdown or testing.
+    pub fn finalize(&mut self) -> Option<FinalizedSlot> {
+        self.finalize_active_slot()
     }
 
-    /// Get the number of pending slots.
-    pub fn pending_slot_count(&self) -> usize {
-        self.pending_slots.len()
+    /// Check if there's an active slot.
+    pub fn has_active_slot(&self) -> bool {
+        self.active_slot.is_some()
     }
 
     /// Get the number of known dimensions.
@@ -307,7 +225,7 @@ mod tests {
     use crate::aggregation::{CumulativeSumAggregator, DeltaSumAggregator, GaugeAggregator};
 
     const INTERVAL_SECS: u64 = 10;
-    const GRACE_PERIOD_SECS: u64 = 30; // 3 intervals
+    const GRACE_PERIOD_SECS: u64 = 5;
 
     fn ns(secs: u64) -> u64 {
         secs * 1_000_000_000
@@ -321,7 +239,6 @@ mod tests {
             let mgr: SlotManager<GaugeAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            // Timestamps within the same 10-second slot should map to same slot
             assert_eq!(mgr.slot_for_timestamp(ns(0)), 0);
             assert_eq!(mgr.slot_for_timestamp(ns(5)), 0);
             assert_eq!(mgr.slot_for_timestamp(ns(9)), 0);
@@ -344,89 +261,126 @@ mod tests {
         }
 
         #[test]
-        fn ingest_tracks_pending_slots() {
+        fn ingest_sets_active_slot() {
             let mut mgr: SlotManager<GaugeAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            mgr.ingest(1, 42.0, ns(5), 0); // slot 0
-            mgr.ingest(1, 43.0, ns(15), 0); // slot 10
+            assert!(!mgr.has_active_slot());
 
-            assert_eq!(mgr.pending_slot_count(), 2);
+            mgr.ingest(1, 42.0, ns(5), 0);
+
+            assert!(mgr.has_active_slot());
         }
 
         #[test]
-        fn rejects_data_for_finalized_slots() {
+        fn drops_data_for_previous_slot() {
             let mut mgr: SlotManager<GaugeAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            // Ingest and finalize slot 0
-            mgr.ingest(1, 42.0, ns(5), 0);
-            mgr.finalize_all();
+            // Set active slot to 10
+            mgr.ingest(1, 50.0, ns(15), 0);
 
-            // Try to ingest for slot 0 again - should be rejected
-            let accepted = mgr.ingest(1, 99.0, ns(5), 0);
-            assert!(!accepted);
+            // Try to ingest for slot 0 - should be dropped
+            let result = mgr.ingest(1, 42.0, ns(5), 0);
+            assert!(result.is_none());
+
+            // Finalize and check only the slot 10 value is present
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.slot_timestamp, 10);
+            assert_eq!(finalized.dimensions[0].value, Some(50.0));
         }
     }
 
-    mod gauge_finalization {
+    mod finalization {
         use super::*;
 
         #[test]
-        fn finalizes_with_last_value() {
+        fn finalizes_on_newer_slot_data() {
             let mut mgr: SlotManager<GaugeAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            // Multiple values in same slot - should use last by timestamp
+            // Slot 0
+            mgr.ingest(1, 42.0, ns(5), 0);
+
+            // Slot 10 - should finalize slot 0
+            let finalized = mgr.ingest(1, 50.0, ns(15), 0);
+
+            assert!(finalized.is_some());
+            let finalized = finalized.unwrap();
+            assert_eq!(finalized.slot_timestamp, 0);
+            assert_eq!(finalized.dimensions[0].value, Some(42.0));
+        }
+
+        #[test]
+        fn no_finalization_for_same_slot() {
+            let mut mgr: SlotManager<GaugeAggregator> =
+                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
+
+            mgr.ingest(1, 42.0, ns(5), 0);
+            let result = mgr.ingest(1, 43.0, ns(7), 0);
+
+            assert!(result.is_none());
+            assert!(mgr.has_active_slot());
+        }
+
+        #[test]
+        fn force_finalize() {
+            let mut mgr: SlotManager<GaugeAggregator> =
+                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
+
+            mgr.ingest(1, 42.0, ns(5), 0);
+
+            let finalized = mgr.finalize();
+
+            assert!(finalized.is_some());
+            assert!(!mgr.has_active_slot());
+        }
+    }
+
+    mod gauge_aggregation {
+        use super::*;
+
+        #[test]
+        fn keeps_last_value_by_timestamp() {
+            let mut mgr: SlotManager<GaugeAggregator> =
+                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
+
             mgr.ingest(1, 10.0, ns(1), 0);
             mgr.ingest(1, 30.0, ns(3), 0); // Latest
             mgr.ingest(1, 20.0, ns(2), 0);
 
-            let finalized = mgr.finalize_all();
-
-            assert_eq!(finalized.len(), 1);
-            assert_eq!(finalized[0].slot_timestamp, 0);
-            assert_eq!(finalized[0].dimensions.len(), 1);
-            assert_eq!(finalized[0].dimensions[0].value, Some(30.0));
-            assert!(!finalized[0].dimensions[0].is_gap_fill);
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.dimensions[0].value, Some(30.0));
         }
 
         #[test]
-        fn gap_fills_with_last_value() {
+        fn gap_fills_missing_dimension() {
             let mut mgr: SlotManager<GaugeAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            // Slot 0: has data
-            mgr.ingest(1, 42.0, ns(5), 0);
-            mgr.finalize_all();
+            // Slot 0: both dimensions
+            mgr.ingest(1, 10.0, ns(5), 0);
+            mgr.ingest(2, 20.0, ns(5), 0);
 
-            // Slot 10: no data, but we force finalization
-            // We need to add a slot 20 to create a gap at slot 10
-            mgr.ingest(1, 50.0, ns(25), 0); // slot 20
+            // Finalize slot 0 via newer slot data, only dim 1 has data
+            mgr.ingest(1, 15.0, ns(15), 0);
+            let finalized = mgr.finalize().unwrap();
 
-            // Now finalize everything including the gap at slot 10
-            let finalized = mgr.finalize_all();
-
-            // Should have slots 10 and 20
-            assert_eq!(finalized.len(), 2);
-
-            // Slot 10 should be gap-filled with 42.0
-            assert_eq!(finalized[0].slot_timestamp, 10);
-            assert_eq!(finalized[0].dimensions[0].value, Some(42.0));
-            assert!(finalized[0].dimensions[0].is_gap_fill);
-
-            // Slot 20 should have actual data
-            assert_eq!(finalized[1].slot_timestamp, 20);
-            assert_eq!(finalized[1].dimensions[0].value, Some(50.0));
-            assert!(!finalized[1].dimensions[0].is_gap_fill);
+            // Dim 2 should be gap-filled with previous value (20.0)
+            let dim2 = finalized
+                .dimensions
+                .iter()
+                .find(|d| d.dimension_id == 2)
+                .unwrap();
+            assert_eq!(dim2.value, Some(20.0));
         }
     }
 
-    mod delta_sum_finalization {
+    mod delta_sum_aggregation {
         use super::*;
 
         #[test]
-        fn sums_deltas_in_slot() {
+        fn sums_deltas() {
             let mut mgr: SlotManager<DeltaSumAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
@@ -434,33 +388,12 @@ mod tests {
             mgr.ingest(1, 20.0, ns(2), ns(1));
             mgr.ingest(1, 5.0, ns(3), ns(2));
 
-            let finalized = mgr.finalize_all();
-
-            assert_eq!(finalized[0].dimensions[0].value, Some(35.0));
-        }
-
-        #[test]
-        fn gap_fills_with_zero() {
-            let mut mgr: SlotManager<DeltaSumAggregator> =
-                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
-
-            // Slot 0
-            mgr.ingest(1, 10.0, ns(5), 0);
-            mgr.finalize_all();
-
-            // Skip slot 10, add slot 20
-            mgr.ingest(1, 5.0, ns(25), ns(15));
-
-            let finalized = mgr.finalize_all();
-
-            // Slot 10 should be gap-filled with 0
-            assert_eq!(finalized[0].slot_timestamp, 10);
-            assert_eq!(finalized[0].dimensions[0].value, Some(0.0));
-            assert!(finalized[0].dimensions[0].is_gap_fill);
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.dimensions[0].value, Some(35.0));
         }
     }
 
-    mod cumulative_sum_finalization {
+    mod cumulative_sum_aggregation {
         use super::*;
 
         const START_TIME: u64 = 1_000_000_000;
@@ -472,10 +405,8 @@ mod tests {
 
             mgr.ingest(1, 100.0, ns(5), START_TIME);
 
-            let finalized = mgr.finalize_all();
-
-            // First observation - no delta can be computed
-            assert_eq!(finalized[0].dimensions[0].value, None);
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.dimensions[0].value, None);
         }
 
         #[test]
@@ -483,15 +414,17 @@ mod tests {
             let mut mgr: SlotManager<CumulativeSumAggregator> =
                 SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
 
-            // Slot 0: establish baseline
+            // Slot 0: baseline
             mgr.ingest(1, 100.0, ns(5), START_TIME);
-            mgr.finalize_all();
 
-            // Slot 10: should compute delta
-            mgr.ingest(1, 150.0, ns(15), START_TIME);
-            let finalized = mgr.finalize_all();
+            // Slot 10: finalize slot 0 and buffer slot 10 data
+            let finalized = mgr.ingest(1, 150.0, ns(15), START_TIME);
+            assert!(finalized.is_some());
+            assert_eq!(finalized.unwrap().dimensions[0].value, None); // First slot
 
-            assert_eq!(finalized[0].dimensions[0].value, Some(50.0));
+            // Finalize slot 10
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.dimensions[0].value, Some(50.0)); // 150 - 100
         }
 
         #[test]
@@ -501,114 +434,15 @@ mod tests {
 
             // Establish baseline
             mgr.ingest(1, 100.0, ns(5), START_TIME);
-            mgr.finalize_all();
-
             mgr.ingest(1, 150.0, ns(15), START_TIME);
-            mgr.finalize_all();
+            mgr.finalize();
 
             // Restart with new start_time
             let new_start = START_TIME + 1_000_000;
             mgr.ingest(1, 20.0, ns(25), new_start);
 
-            let finalized = mgr.finalize_all();
-
-            // Should return 0 for restart slot
-            assert_eq!(finalized[0].dimensions[0].value, Some(0.0));
-        }
-    }
-
-    mod timing {
-        use super::*;
-
-        #[test]
-        fn tick_respects_grace_period() {
-            let mut mgr: SlotManager<GaugeAggregator> =
-                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
-
-            // Add data for slot 0
-            mgr.ingest(1, 42.0, ns(5), 0);
-
-            // Tick at t=20 (slot 0 ended at t=10, grace period is 30s)
-            // Slot 0 should NOT be finalized yet (10 + 30 = 40)
-            let finalized = mgr.tick(ns(20));
-            assert!(finalized.is_empty());
-
-            // Tick at t=45 (past grace period for slot 0)
-            let finalized = mgr.tick(ns(45));
-            assert_eq!(finalized.len(), 1);
-            assert_eq!(finalized[0].slot_timestamp, 0);
-        }
-
-        #[test]
-        fn eager_finalize_on_later_data() {
-            let mut mgr: SlotManager<GaugeAggregator> =
-                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
-
-            // Add data for slot 0
-            mgr.ingest(1, 42.0, ns(5), 0);
-
-            // No eager finalization yet - only one slot
-            let finalized = mgr.eager_finalize();
-            assert!(finalized.is_empty());
-
-            // Add data for slot 10
-            mgr.ingest(1, 50.0, ns(15), 0);
-
-            // Now slot 0 should be eagerly finalized
-            let finalized = mgr.eager_finalize();
-            assert_eq!(finalized.len(), 1);
-            assert_eq!(finalized[0].slot_timestamp, 0);
-            assert_eq!(finalized[0].dimensions[0].value, Some(42.0));
-
-            // Slot 10 still pending
-            assert_eq!(mgr.pending_slot_count(), 1);
-        }
-    }
-
-    mod multiple_dimensions {
-        use super::*;
-
-        #[test]
-        fn tracks_multiple_dimensions() {
-            let mut mgr: SlotManager<GaugeAggregator> =
-                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
-
-            mgr.ingest(1, 10.0, ns(5), 0);
-            mgr.ingest(2, 20.0, ns(5), 0);
-            mgr.ingest(3, 30.0, ns(5), 0);
-
-            let finalized = mgr.finalize_all();
-
-            assert_eq!(finalized.len(), 1);
-            assert_eq!(finalized[0].dimensions.len(), 3);
-        }
-
-        #[test]
-        fn gap_fills_missing_dimensions() {
-            let mut mgr: SlotManager<GaugeAggregator> =
-                SlotManager::new(INTERVAL_SECS, GRACE_PERIOD_SECS);
-
-            // Slot 0: both dimensions have data
-            mgr.ingest(1, 10.0, ns(5), 0);
-            mgr.ingest(2, 20.0, ns(5), 0);
-            mgr.finalize_all();
-
-            // Slot 10: only dimension 1 has data
-            mgr.ingest(1, 15.0, ns(15), 0);
-
-            let finalized = mgr.finalize_all();
-
-            assert_eq!(finalized[0].dimensions.len(), 2);
-
-            // Find dimension 2's result
-            let dim2 = finalized[0]
-                .dimensions
-                .iter()
-                .find(|d| d.dimension_id == 2)
-                .unwrap();
-
-            assert_eq!(dim2.value, Some(20.0)); // Gap-filled with previous value
-            assert!(dim2.is_gap_fill);
+            let finalized = mgr.finalize().unwrap();
+            assert_eq!(finalized.dimensions[0].value, Some(0.0));
         }
     }
 }
