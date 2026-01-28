@@ -90,18 +90,17 @@ impl ChartManager {
         self.charts.get_mut(chart_name)
     }
 
-    /// Trigger tick-based finalization for all charts.
-    /// Returns charts that had their active slot finalized due to grace period expiration.
-    pub fn tick_all(&mut self) -> Vec<(String, FinalizedSlot)> {
-        self.charts
-            .iter_mut()
-            .filter_map(|(name, state)| state.chart.tick().map(|slot| (name.clone(), slot)))
-            .collect()
-    }
-
-    /// Get chart state for outputting dimension names.
-    pub fn get_chart(&self, name: &str) -> Option<&ChartState> {
-        self.charts.get(name)
+    /// Trigger tick-based finalization for all charts, emitting any finalized slots.
+    /// Returns the number of charts that were finalized.
+    pub fn tick_all_and_emit(&mut self) -> usize {
+        let mut count = 0;
+        for (name, state) in &mut self.charts {
+            if let Some(slot) = state.chart.tick() {
+                emit_slot(name, &slot, Some(state));
+                count += 1;
+            }
+        }
+        count
     }
 }
 
@@ -118,12 +117,10 @@ fn emit_slot(chart_name: &str, slot: &FinalizedSlot, chart_state: Option<&ChartS
             .and_then(|s| s.dimension_name(dim.dimension_id))
             .unwrap_or("unknown");
 
-        let value_str = match dim.value {
-            Some(v) => format!("{:.6}", v),
-            None => "U".to_string(), // Unknown/undefined in Netdata
-        };
-
-        println!("  DIM {} = {}", dim_name, value_str);
+        match dim.value {
+            Some(v) => println!("  DIM {} = {:.6}", dim_name, v),
+            None => println!("  DIM {} = U", dim_name),
+        }
     }
 }
 
@@ -154,16 +151,10 @@ pub fn spawn_tick_task(
             interval.tick().await;
 
             let mut manager = chart_manager.write().await;
-            let finalized_charts = manager.tick_all();
+            let count = manager.tick_all_and_emit();
 
-            if !finalized_charts.is_empty() {
-                println!("Tick finalized {} charts", finalized_charts.len());
-            }
-
-            // Emit finalized slots
-            for (chart_name, slot) in &finalized_charts {
-                let chart_state = manager.get_chart(chart_name);
-                emit_slot(chart_name, slot, chart_state);
+            if count > 0 {
+                println!("Tick finalized {} charts", count);
             }
         }
     });
