@@ -194,9 +194,6 @@ impl NetdataMetricsService {
         let mut chart_manager = self.chart_manager.write().await;
         let mut chart_name_buf = String::with_capacity(128);
 
-        // Collect slots finalized during ingestion (due to newer slot data arriving)
-        let mut finalized_during_ingest: Vec<(String, FinalizedSlot)> = Vec::new();
-
         for dp in req.datapoint_iter(&ccm) {
             // Skip non-number data points (histograms, etc.)
             let Some(value) = dp.datapoint_ref.value_as_f64() else {
@@ -232,14 +229,8 @@ impl NetdataMetricsService {
                     .chart
                     .ingest(dimension_id, value, timestamp_ns, start_time_ns)
             {
-                finalized_during_ingest.push((chart_name_buf.clone(), finalized));
+                emit_slot(&chart_name_buf, &finalized, Some(chart_state));
             }
-        }
-
-        // Emit any slots that were finalized during ingestion
-        for (chart_name, slot) in &finalized_during_ingest {
-            let chart_state = chart_manager.get_chart(chart_name);
-            emit_slot(chart_name, slot, chart_state);
         }
     }
 }
