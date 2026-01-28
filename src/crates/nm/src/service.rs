@@ -95,9 +95,7 @@ impl ChartManager {
     pub fn tick_all(&mut self) -> Vec<(String, FinalizedSlot)> {
         self.charts
             .iter_mut()
-            .filter_map(|(name, state)| {
-                state.chart.tick().map(|slot| (name.clone(), slot))
-            })
+            .filter_map(|(name, state)| state.chart.tick().map(|slot| (name.clone(), slot)))
             .collect()
     }
 
@@ -229,12 +227,11 @@ impl NetdataMetricsService {
 
             // Ingest the data point - may return a finalized slot if this
             // data belongs to a newer slot
-            if let Some(finalized) = chart_state.chart.ingest(
-                dimension_id,
-                value,
-                timestamp_ns,
-                start_time_ns,
-            ) {
+            if let Some(finalized) =
+                chart_state
+                    .chart
+                    .ingest(dimension_id, value, timestamp_ns, start_time_ns)
+            {
                 finalized_during_ingest.push((chart_name_buf.clone(), finalized));
             }
         }

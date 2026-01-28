@@ -78,9 +78,10 @@ impl Chart {
     /// Create a new chart with the given name and aggregation type.
     pub fn new(name: String, aggregation_type: ChartAggregationType, config: ChartConfig) -> Self {
         let inner = match aggregation_type {
-            ChartAggregationType::Gauge => {
-                ChartInner::Gauge(SlotManager::new(config.interval_secs, config.grace_period_secs))
-            }
+            ChartAggregationType::Gauge => ChartInner::Gauge(SlotManager::new(
+                config.interval_secs,
+                config.grace_period_secs,
+            )),
             ChartAggregationType::DeltaSum => ChartInner::DeltaSum(SlotManager::new(
                 config.interval_secs,
                 config.grace_period_secs,

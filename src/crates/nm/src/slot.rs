@@ -6,21 +6,13 @@
 //! - Finalizes the active slot when data arrives for a newer slot
 //! - Finalizes the active slot after a grace period with no data
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use crate::aggregation::Aggregator;
 
 /// Identifier for a dimension within a chart.
 pub type DimensionId = u64;
-
-/// A data point buffered for later processing.
-#[derive(Debug, Clone, Copy)]
-struct BufferedPoint {
-    value: f64,
-    timestamp_ns: u64,
-    start_time_ns: u64,
-}
 
 /// Result of finalizing a slot - contains values for all dimensions.
 #[derive(Debug)]
@@ -59,8 +51,8 @@ pub struct SlotManager<A: Aggregator + Default> {
     /// The currently active slot timestamp (if any)
     active_slot: Option<u64>,
 
-    /// Buffered points for the active slot: dimension_id -> points
-    buffered: HashMap<DimensionId, Vec<BufferedPoint>>,
+    /// Dimensions that received data in the current slot
+    received_data: HashSet<DimensionId>,
 
     /// When the active slot last received data (for grace period timeout)
     last_data_instant: Option<Instant>,
@@ -75,7 +67,7 @@ impl<A: Aggregator + Default> SlotManager<A> {
             dimensions: HashMap::new(),
             known_dimensions: BTreeSet::new(),
             active_slot: None,
-            buffered: HashMap::new(),
+            received_data: HashSet::new(),
             last_data_instant: None,
         }
     }
@@ -126,15 +118,12 @@ impl<A: Aggregator + Default> SlotManager<A> {
             }
         };
 
-        // Buffer the point for the active slot
-        self.buffered
-            .entry(dimension_id)
-            .or_default()
-            .push(BufferedPoint {
-                value,
-                timestamp_ns,
-                start_time_ns,
-            });
+        // Pass directly to the aggregator
+        self.dimensions
+            .get_mut(&dimension_id)
+            .unwrap()
+            .ingest(value, timestamp_ns, start_time_ns);
+        self.received_data.insert(dimension_id);
 
         // Update last data time
         self.last_data_instant = Some(Instant::now());
@@ -164,22 +153,15 @@ impl<A: Aggregator + Default> SlotManager<A> {
         let mut dimensions = Vec::with_capacity(self.known_dimensions.len());
 
         for &dim_id in &self.known_dimensions {
-            let aggregator = self.dimensions.get_mut(&dim_id);
-            let buffered_points = self.buffered.remove(&dim_id);
-
-            let value = match (aggregator, buffered_points) {
-                (Some(agg), Some(points)) if !points.is_empty() => {
-                    // Feed all buffered points to the aggregator
-                    for point in points {
-                        agg.ingest(point.value, point.timestamp_ns, point.start_time_ns);
-                    }
+            let value = if let Some(agg) = self.dimensions.get_mut(&dim_id) {
+                if self.received_data.contains(&dim_id) {
                     agg.finalize_slot()
-                }
-                (Some(agg), _) => {
+                } else {
                     // No data for this dimension in this slot - gap fill
                     Some(agg.gap_fill())
                 }
-                (None, _) => None,
+            } else {
+                None
             };
 
             dimensions.push(FinalizedDimension {
@@ -188,8 +170,8 @@ impl<A: Aggregator + Default> SlotManager<A> {
             });
         }
 
-        // Clear any remaining buffered data and reset timing
-        self.buffered.clear();
+        // Clear received data tracking and reset timing
+        self.received_data.clear();
         self.last_data_instant = None;
 
         Some(FinalizedSlot {
