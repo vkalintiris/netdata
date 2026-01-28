@@ -7,7 +7,7 @@ use opentelemetry_proto::tonic::metrics::v1::AggregationTemporality;
 
 use crate::aggregation::{CumulativeSumAggregator, DeltaSumAggregator, GaugeAggregator};
 use crate::iter::MetricDataKind;
-use crate::slot::{DimensionId, FinalizedSlot, SlotManager};
+use crate::slot::{DimensionId, FinalizedDimension, SlotManager};
 
 /// Configuration for chart timing.
 #[derive(Debug, Clone, Copy)]
@@ -114,59 +114,45 @@ impl Chart {
 
     /// Ingest a data point for a dimension.
     ///
-    /// Returns `Some(FinalizedSlot)` if this ingestion caused the previous
-    /// active slot to be finalized (because data arrived for a newer slot).
+    /// If this ingestion causes the previous active slot to be finalized
+    /// (because data arrived for a newer slot), the `dimensions` buffer
+    /// is filled with dimension values and the slot timestamp is returned.
     pub fn ingest(
         &mut self,
         dimension_id: DimensionId,
         value: f64,
         timestamp_ns: u64,
         start_time_ns: u64,
-    ) -> Option<FinalizedSlot> {
+        dimensions: &mut Vec<FinalizedDimension>,
+    ) -> Option<u64> {
         match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns),
+            ChartInner::Gauge(mgr) => {
+                mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns, dimensions)
+            }
             ChartInner::DeltaSum(mgr) => {
-                mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns)
+                mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns, dimensions)
             }
             ChartInner::CumulativeSum(mgr) => {
-                mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns)
+                mgr.ingest(dimension_id, value, timestamp_ns, start_time_ns, dimensions)
             }
         }
     }
 
     /// Check if the grace period has expired and finalize if so.
-    pub fn tick(&mut self) -> Option<FinalizedSlot> {
+    pub fn tick(&mut self, dimensions: &mut Vec<FinalizedDimension>) -> Option<u64> {
         match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.tick(),
-            ChartInner::DeltaSum(mgr) => mgr.tick(),
-            ChartInner::CumulativeSum(mgr) => mgr.tick(),
+            ChartInner::Gauge(mgr) => mgr.tick(dimensions),
+            ChartInner::DeltaSum(mgr) => mgr.tick(dimensions),
+            ChartInner::CumulativeSum(mgr) => mgr.tick(dimensions),
         }
     }
 
-    /// Force finalize the active slot.
-    pub fn finalize(&mut self) -> Option<FinalizedSlot> {
+    /// Force finalize the active slot. Useful for shutdown or flushing remaining data.
+    pub fn finalize(&mut self, dimensions: &mut Vec<FinalizedDimension>) -> Option<u64> {
         match &mut self.inner {
-            ChartInner::Gauge(mgr) => mgr.finalize(),
-            ChartInner::DeltaSum(mgr) => mgr.finalize(),
-            ChartInner::CumulativeSum(mgr) => mgr.finalize(),
-        }
-    }
-
-    /// Check if there's an active slot.
-    pub fn has_active_slot(&self) -> bool {
-        match &self.inner {
-            ChartInner::Gauge(mgr) => mgr.has_active_slot(),
-            ChartInner::DeltaSum(mgr) => mgr.has_active_slot(),
-            ChartInner::CumulativeSum(mgr) => mgr.has_active_slot(),
-        }
-    }
-
-    /// Get the number of known dimensions.
-    pub fn dimension_count(&self) -> usize {
-        match &self.inner {
-            ChartInner::Gauge(mgr) => mgr.dimension_count(),
-            ChartInner::DeltaSum(mgr) => mgr.dimension_count(),
-            ChartInner::CumulativeSum(mgr) => mgr.dimension_count(),
+            ChartInner::Gauge(mgr) => mgr.finalize(dimensions),
+            ChartInner::DeltaSum(mgr) => mgr.finalize(dimensions),
+            ChartInner::CumulativeSum(mgr) => mgr.finalize(dimensions),
         }
     }
 }
@@ -243,16 +229,16 @@ mod tests {
                 grace_period_secs: 30,
             },
         );
+        let mut dimensions = Vec::new();
 
-        chart.ingest(1, 42.0, ns(5), 0);
+        chart.ingest(1, 42.0, ns(5), 0, &mut dimensions);
 
         // Data for slot 10 finalizes slot 0
-        let finalized = chart.ingest(1, 50.0, ns(15), 0);
+        let slot_timestamp = chart.ingest(1, 50.0, ns(15), 0, &mut dimensions);
 
-        assert!(finalized.is_some());
-        let finalized = finalized.unwrap();
-        assert_eq!(finalized.slot_timestamp, 0);
-        assert_eq!(finalized.dimensions[0].value, Some(42.0));
+        assert!(slot_timestamp.is_some());
+        assert_eq!(slot_timestamp.unwrap(), 0);
+        assert_eq!(dimensions[0].value, Some(42.0));
     }
 
     #[test]
@@ -267,18 +253,19 @@ mod tests {
                 grace_period_secs: 30,
             },
         );
+        let mut dimensions = Vec::new();
 
         // Slot 0: establish baseline
-        chart.ingest(1, 100.0, ns(5), start_time);
+        chart.ingest(1, 100.0, ns(5), start_time, &mut dimensions);
 
         // Slot 10: finalize slot 0 (returns None for first slot)
-        let finalized = chart.ingest(1, 150.0, ns(15), start_time);
-        assert!(finalized.is_some());
-        assert_eq!(finalized.unwrap().dimensions[0].value, None);
+        let slot_timestamp = chart.ingest(1, 150.0, ns(15), start_time, &mut dimensions);
+        assert!(slot_timestamp.is_some());
+        assert_eq!(dimensions[0].value, None);
 
         // Finalize slot 10
-        let finalized = chart.finalize();
-        assert!(finalized.is_some());
-        assert_eq!(finalized.unwrap().dimensions[0].value, Some(50.0)); // 150 - 100
+        let slot_timestamp = chart.finalize(&mut dimensions);
+        assert!(slot_timestamp.is_some());
+        assert_eq!(dimensions[0].value, Some(50.0)); // 150 - 100
     }
 }
