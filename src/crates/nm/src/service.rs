@@ -18,6 +18,7 @@ use crate::chart::{Chart, ChartConfig};
 use crate::config::ChartConfigManager;
 use crate::iter::DataPointContextIterExt;
 use crate::otel;
+use crate::output::{DebugOutput, DimensionValue, MetricsOutput};
 use crate::slot::{DimensionId, FinalizedDimension};
 use std::fmt::Write;
 
@@ -92,11 +93,15 @@ impl ChartManager {
 
     /// Trigger tick-based finalization for all charts, emitting any finalized slots.
     /// Returns the number of charts that were finalized.
-    pub fn tick_all_and_emit(&mut self, dimensions: &mut Vec<FinalizedDimension>) -> usize {
+    pub fn tick_all_and_emit(
+        &mut self,
+        dimensions: &mut Vec<FinalizedDimension>,
+        output: &mut impl MetricsOutput,
+    ) -> usize {
         let mut count = 0;
         for (name, state) in &mut self.charts {
             if let Some(slot_timestamp) = state.chart.tick(dimensions) {
-                emit_slot(name, slot_timestamp, dimensions, state);
+                emit_dimensions(output, name, slot_timestamp, dimensions, state);
                 count += 1;
             }
         }
@@ -104,29 +109,23 @@ impl ChartManager {
     }
 }
 
-/// Emit a finalized slot to Netdata.
-fn emit_slot(
+/// Build dimension values and emit via the output trait.
+fn emit_dimensions(
+    output: &mut impl MetricsOutput,
     chart_name: &str,
     slot_timestamp: u64,
     dimensions: &[FinalizedDimension],
     chart_state: &ChartState,
 ) {
-    // For now, just print the values. Later this will use the Netdata plugin protocol.
-    println!(
-        "CHART {} @ {} (slot_timestamp={})",
-        chart_name, slot_timestamp, slot_timestamp
-    );
+    let dim_values: Vec<DimensionValue<'_>> = dimensions
+        .iter()
+        .map(|d| DimensionValue {
+            name: chart_state.dimension_name(d.dimension_id).unwrap_or("unknown"),
+            value: d.value,
+        })
+        .collect();
 
-    for dim in dimensions {
-        let dim_name = chart_state
-            .dimension_name(dim.dimension_id)
-            .unwrap_or("unknown");
-
-        match dim.value {
-            Some(v) => println!("  DIM {} = {:.6}", dim_name, v),
-            None => println!("  DIM {} = U", dim_name),
-        }
-    }
+    output.emit_update(chart_name, slot_timestamp, &dim_values);
 }
 
 /// Handle for the background tick task.
@@ -152,12 +151,13 @@ pub fn spawn_tick_task(
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tick_interval);
         let mut dimensions = Vec::new();
+        let mut output = DebugOutput;
 
         loop {
             interval.tick().await;
 
             let mut manager = chart_manager.write().await;
-            let count = manager.tick_all_and_emit(&mut dimensions);
+            let count = manager.tick_all_and_emit(&mut dimensions, &mut output);
 
             if count > 0 {
                 println!("Tick finalized {} charts", count);
@@ -191,6 +191,7 @@ impl NetdataMetricsService {
         let mut chart_manager = self.chart_manager.write().await;
         let mut chart_name_buf = String::with_capacity(128);
         let mut dimensions = Vec::new();
+        let mut output = DebugOutput;
 
         for dp in req.datapoint_iter(&ccm) {
             // Skip non-number data points (histograms, etc.)
@@ -229,7 +230,7 @@ impl NetdataMetricsService {
                 start_time_ns,
                 &mut dimensions,
             ) {
-                emit_slot(&chart_name_buf, slot_timestamp, &dimensions, chart_state);
+                emit_dimensions(&mut output, &chart_name_buf, slot_timestamp, &dimensions, chart_state);
             }
         }
     }

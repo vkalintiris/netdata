@@ -3,6 +3,7 @@ mod chart;
 mod config;
 mod iter;
 mod otel;
+mod output;
 mod service;
 mod slot;
 
