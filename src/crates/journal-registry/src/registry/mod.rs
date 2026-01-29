@@ -17,6 +17,7 @@ use notify::{
 };
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 mod monitor;
@@ -135,6 +136,45 @@ impl Default for Repository {
 }
 
 // ============================================================================
+// Pending Directory (for deferred watching)
+// ============================================================================
+
+/// A directory that failed to watch and is pending retry
+#[derive(Clone)]
+struct PendingDirectory {
+    path: String,
+    last_error: String,
+    attempts: u32,
+    next_retry: Instant,
+}
+
+impl PendingDirectory {
+    /// Create a new pending directory entry
+    fn new(path: String, error: String) -> Self {
+        Self {
+            path,
+            last_error: error,
+            attempts: 1,
+            next_retry: Instant::now() + Duration::from_secs(5),
+        }
+    }
+
+    /// Record a failure and update backoff timing
+    fn record_failure(&mut self, error: String) {
+        self.last_error = error;
+        self.attempts += 1;
+        // Exponential backoff: 5s, 10s, 20s, 40s, 80s, 160s, 300s (cap)
+        let delay_secs = std::cmp::min(5 * 2u64.pow(self.attempts - 1), 300);
+        self.next_retry = Instant::now() + Duration::from_secs(delay_secs);
+    }
+
+    /// Check if this directory is due for a retry
+    fn is_due(&self) -> bool {
+        Instant::now() >= self.next_retry
+    }
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
@@ -142,6 +182,7 @@ impl Default for Repository {
 struct RegistryInner {
     repository: Repository,
     watched_directories: HashSet<String>,
+    pending_directories: HashMap<String, PendingDirectory>,
     monitor: Monitor,
 }
 
@@ -157,6 +198,7 @@ impl Registry {
         let inner = RegistryInner {
             repository: Repository::new(),
             watched_directories: HashSet::default(),
+            pending_directories: HashMap::default(),
             monitor,
         };
 
@@ -328,5 +370,112 @@ impl Registry {
             time_range,
         };
         inner.repository.update_file_info(file_info);
+    }
+
+    /// Watch a directory, deferring it for retry if it fails
+    ///
+    /// This is useful for directories that may not exist yet but will be created later.
+    pub fn watch_directory_or_defer(&self, path: &str) {
+        if let Err(e) = self.watch_directory(path) {
+            self.defer_directory(path, e.to_string());
+        }
+    }
+
+    /// Add a directory to the pending list for retry
+    ///
+    /// Called when watch_directory fails. The directory will be retried with exponential backoff.
+    pub fn defer_directory(&self, path: &str, error: String) {
+        let mut inner = self.inner.write();
+        inner
+            .pending_directories
+            .entry(path.to_string())
+            .and_modify(|p| p.record_failure(error.clone()))
+            .or_insert_with(|| PendingDirectory::new(path.to_string(), error));
+        info!("deferred watching directory (will retry): {}", path);
+    }
+
+    /// Retry all pending directories that are due
+    ///
+    /// Returns list of paths that successfully started watching.
+    pub fn retry_pending_directories(&self) -> Vec<String> {
+        let mut succeeded = Vec::new();
+        let mut inner = self.inner.write();
+
+        let due_paths: Vec<String> = inner
+            .pending_directories
+            .values()
+            .filter(|p| p.is_due())
+            .map(|p| p.path.clone())
+            .collect();
+
+        for path in due_paths {
+            debug!("retrying deferred directory: {}", path);
+
+            // Try to scan and watch
+            match Self::try_watch_directory_inner(&mut inner, &path) {
+                Ok(()) => {
+                    inner.pending_directories.remove(&path);
+                    succeeded.push(path);
+                }
+                Err(e) => {
+                    if let Some(pending) = inner.pending_directories.get_mut(&path) {
+                        pending.record_failure(e.to_string());
+                        debug!(
+                            "retry failed for {}: {} (attempt {}, next retry in {:?})",
+                            path,
+                            e,
+                            pending.attempts,
+                            pending.next_retry.saturating_duration_since(Instant::now())
+                        );
+                    }
+                }
+            }
+        }
+
+        succeeded
+    }
+
+    /// Get list of pending directories (for diagnostics)
+    ///
+    /// Returns tuples of (path, attempt_count).
+    pub fn pending_directories(&self) -> Vec<(String, u32)> {
+        self.inner
+            .read()
+            .pending_directories
+            .values()
+            .map(|p| (p.path.clone(), p.attempts))
+            .collect()
+    }
+
+    /// Internal helper to watch a directory without holding the lock across operations
+    fn try_watch_directory_inner(inner: &mut RegistryInner, path: &str) -> Result<()> {
+        if inner.watched_directories.contains(path) {
+            warn!("directory {} is already being watched", path);
+            return Ok(());
+        }
+
+        info!("scanning directory: {}", path);
+        let files = scan_journal_files(path)?;
+        info!("found {} journal files in {}", files.len(), path);
+
+        // Start watching with notify
+        inner.monitor.watch_directory(path)?;
+        inner.watched_directories.insert(String::from(path));
+
+        // Insert all discovered files into repository
+        for file in files {
+            debug!("adding file to repository: {:?}", file.path());
+
+            if let Err(e) = inner.repository.insert(file) {
+                error!("failed to insert file into repository: {}", e);
+            }
+        }
+
+        info!(
+            "now watching directory: {} (total directories: {})",
+            path,
+            inner.watched_directories.len()
+        );
+        Ok(())
     }
 }

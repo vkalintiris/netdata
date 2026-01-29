@@ -73,17 +73,28 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     .await?;
     info!("catalog function initialized");
 
-    // Watch configured journal directories
+    // Watch configured journal directories (defers missing directories for retry)
     for path in &config.journal.paths {
-        match catalog_function.watch_directory(path) {
-            Ok(()) => {
-                info!("watching journal directory: {}", path);
-            }
-            Err(e) => {
-                error!("failed to watch directory {}: {:#?}", path, e);
+        catalog_function.watch_directory_or_defer(path);
+    }
+
+    // Spawn task to retry deferred directories with exponential backoff
+    let catalog_for_retry = catalog_function.clone();
+    tokio::spawn(async move {
+        // Initial delay before first retry check
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            let succeeded = catalog_for_retry.retry_pending_directories();
+            for path in succeeded {
+                info!("now watching previously deferred directory: {}", path);
             }
         }
-    }
+    });
 
     runtime.register_handler(catalog_function.clone());
     info!("catalog function handler registered");

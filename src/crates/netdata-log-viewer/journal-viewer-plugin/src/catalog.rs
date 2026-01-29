@@ -476,6 +476,20 @@ impl CatalogFunction {
         })
     }
 
+    /// Watch a directory, deferring it for retry if it fails
+    ///
+    /// This is useful for directories that may not exist yet but will be created later.
+    pub fn watch_directory_or_defer(&self, path: &str) {
+        self.inner.registry.watch_directory_or_defer(path)
+    }
+
+    /// Retry all pending directories that are due
+    ///
+    /// Returns list of paths that successfully started watching.
+    pub fn retry_pending_directories(&self) -> Vec<String> {
+        self.inner.registry.retry_pending_directories()
+    }
+
     /// Process a notify event
     pub fn process_notify_event(&self, event: notify::Event) {
         if let Err(e) = self.inner.registry.process_event(event) {
