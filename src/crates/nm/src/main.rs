@@ -5,7 +5,6 @@ mod iter;
 mod otel;
 mod output;
 mod service;
-mod slot;
 
 use std::sync::Arc;
 use std::time::Duration;

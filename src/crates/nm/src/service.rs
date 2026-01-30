@@ -13,12 +13,11 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
-use crate::chart::{Chart, ChartConfig};
+use crate::chart::{Chart, ChartConfig, FinalizedDimension};
 use crate::config::ChartConfigManager;
 use crate::iter::DataPointContextIterExt;
 use crate::otel;
 use crate::output::{DebugOutput, DimensionValue, MetricsOutput};
-use crate::slot::FinalizedDimension;
 
 /// Manages all charts for the service.
 pub struct ChartManager {
