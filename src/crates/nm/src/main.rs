@@ -16,7 +16,7 @@ use tonic::transport::Server;
 
 use chart::ChartConfig;
 use config::ChartConfigManager;
-use service::{ChartManager, NetdataMetricsService, spawn_tick_task};
+use service::{ChartManager, NetdataMetricsService, create_shared_output, spawn_tick_task};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,12 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ccm = Arc::new(RwLock::new(ChartConfigManager::with_default_configs()));
     let chart_manager = Arc::new(RwLock::new(ChartManager::new(chart_config)));
+    let output = create_shared_output();
 
     // Create the service
-    let svc = NetdataMetricsService::new(ccm, Arc::clone(&chart_manager));
+    let svc = NetdataMetricsService::new(ccm, Arc::clone(&chart_manager), Arc::clone(&output));
 
     // Spawn the background tick task
-    let tick_handle = spawn_tick_task(chart_manager, tick_interval);
+    let tick_handle = spawn_tick_task(chart_manager, output, tick_interval);
 
     println!(
         "Started background tick task (interval: {}s)",

@@ -1,7 +1,7 @@
 //! gRPC service implementation for OTLP metrics ingestion.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,56 +9,29 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     metrics_service_server::MetricsService,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
-use twox_hash::XxHash64;
 
 use crate::chart::{Chart, ChartConfig};
 use crate::config::ChartConfigManager;
 use crate::iter::DataPointContextIterExt;
 use crate::otel;
-use crate::output::{DebugOutput, DimensionValue, MetricsOutput};
-use crate::slot::{DimensionId, FinalizedDimension};
+use crate::output::NetdataOutput;
+use crate::slot::FinalizedDimension;
 use std::fmt::Write;
 
-/// State for a chart including dimension name mappings.
-pub struct ChartState {
-    pub chart: Chart,
-    /// Map from dimension ID to dimension name (for output)
-    dimension_names: HashMap<DimensionId, String>,
-}
+/// Shared output type for Netdata protocol emission.
+pub type SharedOutput = Arc<Mutex<NetdataOutput<io::Stdout>>>;
 
-impl ChartState {
-    fn new(chart: Chart) -> Self {
-        Self {
-            chart,
-            dimension_names: HashMap::new(),
-        }
-    }
-
-    /// Get or create the dimension ID for a dimension name.
-    pub fn dimension_id(&mut self, name: &str) -> DimensionId {
-        let mut hasher = XxHash64::default();
-        name.hash(&mut hasher);
-        let id = hasher.finish();
-
-        self.dimension_names
-            .entry(id)
-            .or_insert_with(|| name.to_string());
-
-        id
-    }
-
-    /// Get the dimension name for an ID.
-    pub fn dimension_name(&self, id: DimensionId) -> Option<&str> {
-        self.dimension_names.get(&id).map(|s| s.as_str())
-    }
+/// Create a new shared output that writes to stdout.
+pub fn create_shared_output() -> SharedOutput {
+    Arc::new(Mutex::new(NetdataOutput::stdout()))
 }
 
 /// Manages all charts for the service.
 pub struct ChartManager {
-    charts: HashMap<String, ChartState>,
+    charts: HashMap<String, Chart>,
     config: ChartConfig,
 }
 
@@ -76,16 +49,47 @@ impl ChartManager {
         &mut self,
         chart_name: &str,
         dp: &crate::iter::DataPointContext<'_>,
-    ) -> Option<&mut ChartState> {
+    ) -> Option<&mut Chart> {
         if !self.charts.contains_key(chart_name) {
             let data_kind = dp.data_kind()?;
             let temporality = dp.aggregation_temporality();
 
-            let chart =
-                Chart::from_metric(chart_name.to_string(), data_kind, temporality, self.config)?;
+            // Extract metadata from OTLP metric
+            let metric = &dp.metric_ref.metric;
 
-            self.charts
-                .insert(chart_name.to_string(), ChartState::new(chart));
+            // Title: use description if available, otherwise metric name
+            let title = if metric.description.is_empty() {
+                metric.name.clone()
+            } else {
+                metric.description.clone()
+            };
+
+            // Units: use metric unit if available, otherwise "value"
+            let units = if metric.unit.is_empty() {
+                "value".to_string()
+            } else {
+                metric.unit.clone()
+            };
+
+            // Family: derive from metric name (first part before '.')
+            let family = metric
+                .name
+                .split('.')
+                .next()
+                .unwrap_or(&metric.name)
+                .to_string();
+
+            let chart = Chart::from_metric(
+                chart_name.to_string(),
+                title,
+                units,
+                family,
+                data_kind,
+                temporality,
+                self.config,
+            )?;
+
+            self.charts.insert(chart_name.to_string(), chart);
         }
 
         self.charts.get_mut(chart_name)
@@ -93,39 +97,20 @@ impl ChartManager {
 
     /// Trigger tick-based finalization for all charts, emitting any finalized slots.
     /// Returns the number of charts that were finalized.
-    pub fn tick_all_and_emit(
+    pub fn tick_all_and_emit<W: io::Write>(
         &mut self,
         dimensions: &mut Vec<FinalizedDimension>,
-        output: &mut impl MetricsOutput,
+        output: &mut NetdataOutput<W>,
     ) -> usize {
         let mut count = 0;
-        for (name, state) in &mut self.charts {
-            if let Some(slot_timestamp) = state.chart.tick(dimensions) {
-                emit_dimensions(output, name, slot_timestamp, dimensions, state);
+        for chart in self.charts.values_mut() {
+            if let Some(slot_timestamp) = chart.tick(dimensions) {
+                chart.emit(output, slot_timestamp, dimensions);
                 count += 1;
             }
         }
         count
     }
-}
-
-/// Build dimension values and emit via the output trait.
-fn emit_dimensions(
-    output: &mut impl MetricsOutput,
-    chart_name: &str,
-    slot_timestamp: u64,
-    dimensions: &[FinalizedDimension],
-    chart_state: &ChartState,
-) {
-    let dim_values: Vec<DimensionValue<'_>> = dimensions
-        .iter()
-        .map(|d| DimensionValue {
-            name: chart_state.dimension_name(d.dimension_id).unwrap_or("unknown"),
-            value: d.value,
-        })
-        .collect();
-
-    output.emit_update(chart_name, slot_timestamp, &dim_values);
 }
 
 /// Handle for the background tick task.
@@ -146,22 +131,19 @@ impl TickTaskHandle {
 /// their grace period.
 pub fn spawn_tick_task(
     chart_manager: Arc<RwLock<ChartManager>>,
+    output: SharedOutput,
     tick_interval: Duration,
 ) -> TickTaskHandle {
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tick_interval);
         let mut dimensions = Vec::new();
-        let mut output = DebugOutput;
 
         loop {
             interval.tick().await;
 
             let mut manager = chart_manager.write().await;
-            let count = manager.tick_all_and_emit(&mut dimensions, &mut output);
-
-            if count > 0 {
-                println!("Tick finalized {} charts", count);
-            }
+            let mut output = output.lock().await;
+            manager.tick_all_and_emit(&mut dimensions, &mut *output);
         }
     });
 
@@ -171,16 +153,19 @@ pub fn spawn_tick_task(
 pub struct NetdataMetricsService {
     pub chart_config_manager: Arc<RwLock<ChartConfigManager>>,
     pub chart_manager: Arc<RwLock<ChartManager>>,
+    pub output: SharedOutput,
 }
 
 impl NetdataMetricsService {
     pub fn new(
         chart_config_manager: Arc<RwLock<ChartConfigManager>>,
         chart_manager: Arc<RwLock<ChartManager>>,
+        output: SharedOutput,
     ) -> Self {
         Self {
             chart_config_manager,
             chart_manager,
+            output,
         }
     }
 
@@ -189,9 +174,9 @@ impl NetdataMetricsService {
 
         let ccm = self.chart_config_manager.read().await;
         let mut chart_manager = self.chart_manager.write().await;
+        let mut output = self.output.lock().await;
         let mut chart_name_buf = String::with_capacity(128);
         let mut dimensions = Vec::new();
-        let mut output = DebugOutput;
 
         for dp in req.datapoint_iter(&ccm) {
             // Skip non-number data points (histograms, etc.)
@@ -213,24 +198,24 @@ impl NetdataMetricsService {
             );
 
             // Get or create the chart
-            let Some(chart_state) = chart_manager.get_or_create_chart(&chart_name_buf, &dp) else {
+            let Some(chart) = chart_manager.get_or_create_chart(&chart_name_buf, &dp) else {
                 // Unsupported metric type
                 continue;
             };
 
             // Get dimension ID
-            let dimension_id = chart_state.dimension_id(dimension_name);
+            let dimension_id = chart.dimension_id(dimension_name);
 
             // Ingest the data point - may finalize the previous slot if this
             // data belongs to a newer slot
-            if let Some(slot_timestamp) = chart_state.chart.ingest(
+            if let Some(slot_timestamp) = chart.ingest(
                 dimension_id,
                 value,
                 timestamp_ns,
                 start_time_ns,
                 &mut dimensions,
             ) {
-                emit_dimensions(&mut output, &chart_name_buf, slot_timestamp, &dimensions, chart_state);
+                chart.emit(&mut *output, slot_timestamp, &dimensions);
             }
         }
     }
@@ -241,6 +226,7 @@ impl Default for NetdataMetricsService {
         Self {
             chart_config_manager: Arc::new(RwLock::new(ChartConfigManager::with_default_configs())),
             chart_manager: Arc::new(RwLock::new(ChartManager::new(ChartConfig::default()))),
+            output: Arc::new(Mutex::new(NetdataOutput::stdout())),
         }
     }
 }
