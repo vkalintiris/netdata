@@ -13,12 +13,12 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
-use crate::chart::{Chart, ChartConfig};
+use crate::chart::Chart;
+use crate::slot::SlotConfig;
 use crate::config::ChartConfigManager;
 use crate::iter::DataPointContextIterExt;
 use crate::otel;
 use crate::output::NetdataOutput;
-use crate::slot::FinalizedDimension;
 use std::fmt::Write;
 
 /// Shared output type for Netdata protocol emission.
@@ -32,11 +32,11 @@ pub fn create_shared_output() -> SharedOutput {
 /// Manages all charts for the service.
 pub struct ChartManager {
     charts: HashMap<String, Chart>,
-    config: ChartConfig,
+    config: SlotConfig,
 }
 
 impl ChartManager {
-    pub fn new(config: ChartConfig) -> Self {
+    pub fn new(config: SlotConfig) -> Self {
         Self {
             charts: HashMap::new(),
             config,
@@ -97,15 +97,10 @@ impl ChartManager {
 
     /// Trigger tick-based finalization for all charts, emitting any finalized slots.
     /// Returns the number of charts that were finalized.
-    pub fn tick_all_and_emit<W: io::Write>(
-        &mut self,
-        dimensions: &mut Vec<FinalizedDimension>,
-        output: &mut NetdataOutput<W>,
-    ) -> usize {
+    pub fn tick_all_and_emit<W: io::Write>(&mut self, output: &mut NetdataOutput<W>) -> usize {
         let mut count = 0;
         for chart in self.charts.values_mut() {
-            if let Some(slot_timestamp) = chart.tick(dimensions) {
-                chart.emit(output, slot_timestamp, dimensions);
+            if chart.tick(output) {
                 count += 1;
             }
         }
@@ -136,14 +131,13 @@ pub fn spawn_tick_task(
 ) -> TickTaskHandle {
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tick_interval);
-        let mut dimensions = Vec::new();
 
         loop {
             interval.tick().await;
 
             let mut manager = chart_manager.write().await;
             let mut output = output.lock().await;
-            manager.tick_all_and_emit(&mut dimensions, &mut *output);
+            manager.tick_all_and_emit(&mut *output);
         }
     });
 
@@ -176,7 +170,6 @@ impl NetdataMetricsService {
         let mut chart_manager = self.chart_manager.write().await;
         let mut output = self.output.lock().await;
         let mut chart_name_buf = String::with_capacity(128);
-        let mut dimensions = Vec::new();
 
         for dp in req.datapoint_iter(&ccm) {
             // Skip non-number data points (histograms, etc.)
@@ -203,20 +196,15 @@ impl NetdataMetricsService {
                 continue;
             };
 
-            // Get dimension ID
-            let dimension_id = chart.dimension_id(dimension_name);
-
-            // Ingest the data point - may finalize the previous slot if this
-            // data belongs to a newer slot
-            if let Some(slot_timestamp) = chart.ingest(
-                dimension_id,
+            // Ingest the data point - may finalize and emit the previous slot
+            // if this data belongs to a newer slot
+            chart.ingest(
+                dimension_name,
                 value,
                 timestamp_ns,
                 start_time_ns,
-                &mut dimensions,
-            ) {
-                chart.emit(&mut *output, slot_timestamp, &dimensions);
-            }
+                &mut *output,
+            );
         }
     }
 }
@@ -225,7 +213,7 @@ impl Default for NetdataMetricsService {
     fn default() -> Self {
         Self {
             chart_config_manager: Arc::new(RwLock::new(ChartConfigManager::with_default_configs())),
-            chart_manager: Arc::new(RwLock::new(ChartManager::new(ChartConfig::default()))),
+            chart_manager: Arc::new(RwLock::new(ChartManager::new(SlotConfig::default()))),
             output: Arc::new(Mutex::new(NetdataOutput::stdout())),
         }
     }

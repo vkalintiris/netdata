@@ -23,6 +23,11 @@ impl<W: Write> NetdataOutput<W> {
         Self { writer }
     }
 
+    /// Get a reference to the underlying writer.
+    pub fn writer(&self) -> &W {
+        &self.writer
+    }
+
     /// Write the CHART definition command.
     pub fn write_chart_definition(
         &mut self,
