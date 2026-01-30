@@ -1,7 +1,7 @@
 //! gRPC service implementation for OTLP metrics ingestion.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,53 +12,17 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
-use twox_hash::XxHash64;
 
 use crate::chart::{Chart, ChartConfig};
 use crate::config::ChartConfigManager;
 use crate::iter::DataPointContextIterExt;
 use crate::otel;
 use crate::output::{DebugOutput, DimensionValue, MetricsOutput};
-use crate::slot::{DimensionId, FinalizedDimension};
-use std::fmt::Write;
-
-/// State for a chart including dimension name mappings.
-pub struct ChartState {
-    pub chart: Chart,
-    /// Map from dimension ID to dimension name (for output)
-    dimension_names: HashMap<DimensionId, String>,
-}
-
-impl ChartState {
-    fn new(chart: Chart) -> Self {
-        Self {
-            chart,
-            dimension_names: HashMap::new(),
-        }
-    }
-
-    /// Get or create the dimension ID for a dimension name.
-    pub fn dimension_id(&mut self, name: &str) -> DimensionId {
-        let mut hasher = XxHash64::default();
-        name.hash(&mut hasher);
-        let id = hasher.finish();
-
-        self.dimension_names
-            .entry(id)
-            .or_insert_with(|| name.to_string());
-
-        id
-    }
-
-    /// Get the dimension name for an ID.
-    pub fn dimension_name(&self, id: DimensionId) -> Option<&str> {
-        self.dimension_names.get(&id).map(|s| s.as_str())
-    }
-}
+use crate::slot::FinalizedDimension;
 
 /// Manages all charts for the service.
 pub struct ChartManager {
-    charts: HashMap<String, ChartState>,
+    charts: HashMap<String, Chart>,
     config: ChartConfig,
 }
 
@@ -76,16 +40,14 @@ impl ChartManager {
         &mut self,
         chart_name: &str,
         dp: &crate::iter::DataPointContext<'_>,
-    ) -> Option<&mut ChartState> {
+    ) -> Option<&mut Chart> {
         if !self.charts.contains_key(chart_name) {
             let data_kind = dp.data_kind()?;
             let temporality = dp.aggregation_temporality();
 
-            let chart =
-                Chart::from_metric(chart_name.to_string(), data_kind, temporality, self.config)?;
+            let chart = Chart::from_metric(data_kind, temporality, self.config)?;
 
-            self.charts
-                .insert(chart_name.to_string(), ChartState::new(chart));
+            self.charts.insert(chart_name.to_string(), chart);
         }
 
         self.charts.get_mut(chart_name)
@@ -99,9 +61,9 @@ impl ChartManager {
         output: &mut impl MetricsOutput,
     ) -> usize {
         let mut count = 0;
-        for (name, state) in &mut self.charts {
-            if let Some(slot_timestamp) = state.chart.tick(dimensions) {
-                emit_dimensions(output, name, slot_timestamp, dimensions, state);
+        for (name, chart) in &mut self.charts {
+            if let Some(slot_timestamp) = chart.tick(dimensions) {
+                emit_dimensions(output, name, slot_timestamp, dimensions);
                 count += 1;
             }
         }
@@ -115,12 +77,11 @@ fn emit_dimensions(
     chart_name: &str,
     slot_timestamp: u64,
     dimensions: &[FinalizedDimension],
-    chart_state: &ChartState,
 ) {
     let dim_values: Vec<DimensionValue<'_>> = dimensions
         .iter()
         .map(|d| DimensionValue {
-            name: chart_state.dimension_name(d.dimension_id).unwrap_or("unknown"),
+            name: &d.name,
             value: d.value,
         })
         .collect();
@@ -190,7 +151,7 @@ impl NetdataMetricsService {
         let ccm = self.chart_config_manager.read().await;
         let mut chart_manager = self.chart_manager.write().await;
         let mut chart_name_buf = String::with_capacity(128);
-        let mut dimensions = Vec::new();
+        let mut finalized = Vec::new();
         let mut output = DebugOutput;
 
         for dp in req.datapoint_iter(&ccm) {
@@ -213,24 +174,21 @@ impl NetdataMetricsService {
             );
 
             // Get or create the chart
-            let Some(chart_state) = chart_manager.get_or_create_chart(&chart_name_buf, &dp) else {
+            let Some(chart) = chart_manager.get_or_create_chart(&chart_name_buf, &dp) else {
                 // Unsupported metric type
                 continue;
             };
 
-            // Get dimension ID
-            let dimension_id = chart_state.dimension_id(dimension_name);
-
             // Ingest the data point - may finalize the previous slot if this
             // data belongs to a newer slot
-            if let Some(slot_timestamp) = chart_state.chart.ingest(
-                dimension_id,
+            if let Some(slot_timestamp) = chart.ingest(
+                dimension_name,
                 value,
                 timestamp_ns,
                 start_time_ns,
-                &mut dimensions,
+                &mut finalized,
             ) {
-                emit_dimensions(&mut output, &chart_name_buf, slot_timestamp, &dimensions, chart_state);
+                emit_dimensions(&mut output, &chart_name_buf, slot_timestamp, &finalized);
             }
         }
     }
