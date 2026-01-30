@@ -1,19 +1,12 @@
 //! Chart management for Netdata metrics.
 //!
-//! A `Chart` represents a Netdata chart backed by a `SlotManager` with the
-//! appropriate aggregator type based on the OpenTelemetry metric's data kind
-//! and aggregation temporality.
-
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::io;
+//! A `Chart` wraps a `SlotManager` with the appropriate aggregator type based on
+//! the OpenTelemetry metric's data kind and aggregation temporality.
 
 use opentelemetry_proto::tonic::metrics::v1::AggregationTemporality;
-use twox_hash::XxHash64;
 
 use crate::aggregation::{CumulativeSumAggregator, DeltaSumAggregator, GaugeAggregator};
 use crate::iter::MetricDataKind;
-use crate::output::NetdataOutput;
 use crate::slot::{DimensionId, FinalizedDimension, SlotManager};
 
 /// Configuration for chart timing.
@@ -65,30 +58,14 @@ impl ChartAggregationType {
 
 /// A Netdata chart backed by a slot manager.
 ///
-/// Contains all state for a chart including:
-/// - The underlying slot manager for aggregation
-/// - Metadata (title, units, family) for Netdata
-/// - Dimension name mappings
-/// - Protocol state (whether definitions have been emitted)
+/// Wraps the appropriate `SlotManager` type based on the metric's aggregation semantics.
 pub struct Chart {
-    /// The chart's ID (for Netdata identification)
-    name: String,
+    /// The chart's name (for Netdata identification)
+    pub name: String,
     /// The aggregation type
-    aggregation_type: ChartAggregationType,
+    pub aggregation_type: ChartAggregationType,
     /// The underlying slot manager (type-erased via enum)
     inner: ChartInner,
-    /// Chart title (for Netdata UI)
-    title: String,
-    /// Chart units (for Netdata UI)
-    units: String,
-    /// Chart family (for Netdata grouping)
-    family: String,
-    /// Collection interval in seconds
-    update_every: u64,
-    /// Map from dimension ID to dimension name
-    dimension_names: HashMap<DimensionId, String>,
-    /// Whether the chart definition (including all dimensions) has been emitted to Netdata
-    defined: bool,
 }
 
 enum ChartInner {
@@ -98,20 +75,8 @@ enum ChartInner {
 }
 
 impl Chart {
-    /// Create a chart from metric metadata.
-    ///
-    /// Returns `None` if the metric type is not supported (e.g., histograms).
-    pub fn from_metric(
-        name: String,
-        title: String,
-        units: String,
-        family: String,
-        data_kind: MetricDataKind,
-        temporality: Option<AggregationTemporality>,
-        config: ChartConfig,
-    ) -> Option<Self> {
-        let aggregation_type = ChartAggregationType::from_metric(data_kind, temporality)?;
-
+    /// Create a new chart with the given name and aggregation type.
+    pub fn new(name: String, aggregation_type: ChartAggregationType, config: ChartConfig) -> Self {
         let inner = match aggregation_type {
             ChartAggregationType::Gauge => ChartInner::Gauge(SlotManager::new(
                 config.interval_secs,
@@ -127,45 +92,24 @@ impl Chart {
             )),
         };
 
-        Some(Self {
+        Self {
             name,
             aggregation_type,
             inner,
-            title,
-            units,
-            family,
-            update_every: config.interval_secs,
-            dimension_names: HashMap::new(),
-            defined: false,
-        })
-    }
-
-    /// Get the aggregation type.
-    pub fn aggregation_type(&self) -> ChartAggregationType {
-        self.aggregation_type
-    }
-
-    /// Get or create the dimension ID for a dimension name.
-    ///
-    /// If a new dimension is added, the chart will be marked as needing
-    /// re-definition (CHART + all DIMENSIONs will be re-emitted on next emit).
-    pub fn dimension_id(&mut self, name: &str) -> DimensionId {
-        let mut hasher = XxHash64::default();
-        name.hash(&mut hasher);
-        let id = hasher.finish();
-
-        if !self.dimension_names.contains_key(&id) {
-            self.dimension_names.insert(id, name.to_string());
-            // New dimension added - need to re-emit chart definition
-            self.defined = false;
         }
-
-        id
     }
 
-    /// Get the dimension name for an ID.
-    pub fn dimension_name(&self, id: DimensionId) -> Option<&str> {
-        self.dimension_names.get(&id).map(|s| s.as_str())
+    /// Create a chart from metric metadata.
+    ///
+    /// Returns `None` if the metric type is not supported.
+    pub fn from_metric(
+        name: String,
+        data_kind: MetricDataKind,
+        temporality: Option<AggregationTemporality>,
+        config: ChartConfig,
+    ) -> Option<Self> {
+        let aggregation_type = ChartAggregationType::from_metric(data_kind, temporality)?;
+        Some(Self::new(name, aggregation_type, config))
     }
 
     /// Ingest a data point for a dimension.
@@ -211,49 +155,6 @@ impl Chart {
             ChartInner::CumulativeSum(mgr) => mgr.finalize(dimensions),
         }
     }
-
-    /// Emit a chart update to the Netdata output.
-    ///
-    /// If the chart hasn't been defined yet (or a new dimension was added),
-    /// emits the full chart definition (CHART + all DIMENSIONs) first.
-    pub fn emit<W: io::Write>(
-        &mut self,
-        output: &mut NetdataOutput<W>,
-        slot_timestamp: u64,
-        dimensions: &[FinalizedDimension],
-    ) {
-        // Emit chart definition with all dimensions if not yet defined
-        if !self.defined {
-            output.write_chart_definition(
-                &self.name,
-                &self.title,
-                &self.units,
-                &self.family,
-                self.update_every,
-            );
-
-            // Emit all known dimensions as part of the chart definition
-            for dim_name in self.dimension_names.values() {
-                output.write_dimension_definition(dim_name);
-            }
-
-            self.defined = true;
-        }
-
-        // Emit the update
-        output.write_begin(&self.name);
-
-        for dim in dimensions {
-            if let Some(value) = dim.value {
-                let dim_name = self.dimension_name(dim.dimension_id).unwrap_or("unknown");
-                output.write_set(dim_name, value);
-            }
-            // Dimensions with None value are not emitted (gap-fill)
-        }
-
-        output.write_end(slot_timestamp);
-        output.flush();
-    }
 }
 
 #[cfg(test)]
@@ -264,26 +165,10 @@ mod tests {
         secs * 1_000_000_000
     }
 
-    fn test_chart(data_kind: MetricDataKind, temporality: Option<AggregationTemporality>, config: ChartConfig) -> Chart {
-        Chart::from_metric(
-            "test".to_string(),
-            "Test Chart".to_string(),
-            "value".to_string(),
-            "test".to_string(),
-            data_kind,
-            temporality,
-            config,
-        )
-        .expect("test chart should be supported")
-    }
-
     #[test]
     fn creates_gauge_chart() {
         let chart = Chart::from_metric(
             "test.gauge".to_string(),
-            "Test Gauge".to_string(),
-            "value".to_string(),
-            "test".to_string(),
             MetricDataKind::Gauge,
             None,
             ChartConfig::default(),
@@ -291,16 +176,13 @@ mod tests {
 
         assert!(chart.is_some());
         let chart = chart.unwrap();
-        assert_eq!(chart.aggregation_type(), ChartAggregationType::Gauge);
+        assert_eq!(chart.aggregation_type, ChartAggregationType::Gauge);
     }
 
     #[test]
     fn creates_delta_sum_chart() {
         let chart = Chart::from_metric(
             "test.delta".to_string(),
-            "Test Delta".to_string(),
-            "value".to_string(),
-            "test".to_string(),
             MetricDataKind::Sum,
             Some(AggregationTemporality::Delta),
             ChartConfig::default(),
@@ -308,16 +190,13 @@ mod tests {
 
         assert!(chart.is_some());
         let chart = chart.unwrap();
-        assert_eq!(chart.aggregation_type(), ChartAggregationType::DeltaSum);
+        assert_eq!(chart.aggregation_type, ChartAggregationType::DeltaSum);
     }
 
     #[test]
     fn creates_cumulative_sum_chart() {
         let chart = Chart::from_metric(
             "test.cumulative".to_string(),
-            "Test Cumulative".to_string(),
-            "value".to_string(),
-            "test".to_string(),
             MetricDataKind::Sum,
             Some(AggregationTemporality::Cumulative),
             ChartConfig::default(),
@@ -325,16 +204,13 @@ mod tests {
 
         assert!(chart.is_some());
         let chart = chart.unwrap();
-        assert_eq!(chart.aggregation_type(), ChartAggregationType::CumulativeSum);
+        assert_eq!(chart.aggregation_type, ChartAggregationType::CumulativeSum);
     }
 
     #[test]
     fn rejects_unsupported_types() {
         let chart = Chart::from_metric(
             "test.histogram".to_string(),
-            "Test Histogram".to_string(),
-            "value".to_string(),
-            "test".to_string(),
             MetricDataKind::Histogram,
             None,
             ChartConfig::default(),
@@ -345,9 +221,9 @@ mod tests {
 
     #[test]
     fn gauge_chart_ingests_and_finalizes() {
-        let mut chart = test_chart(
-            MetricDataKind::Gauge,
-            None,
+        let mut chart = Chart::new(
+            "test".to_string(),
+            ChartAggregationType::Gauge,
             ChartConfig {
                 interval_secs: 10,
                 grace_period_secs: 30,
@@ -355,11 +231,10 @@ mod tests {
         );
         let mut dimensions = Vec::new();
 
-        let dim_id = chart.dimension_id("value");
-        chart.ingest(dim_id, 42.0, ns(5), 0, &mut dimensions);
+        chart.ingest(1, 42.0, ns(5), 0, &mut dimensions);
 
         // Data for slot 10 finalizes slot 0
-        let slot_timestamp = chart.ingest(dim_id, 50.0, ns(15), 0, &mut dimensions);
+        let slot_timestamp = chart.ingest(1, 50.0, ns(15), 0, &mut dimensions);
 
         assert!(slot_timestamp.is_some());
         assert_eq!(slot_timestamp.unwrap(), 0);
@@ -370,9 +245,9 @@ mod tests {
     fn cumulative_chart_computes_deltas() {
         let start_time = 1_000_000_000u64;
 
-        let mut chart = test_chart(
-            MetricDataKind::Sum,
-            Some(AggregationTemporality::Cumulative),
+        let mut chart = Chart::new(
+            "test".to_string(),
+            ChartAggregationType::CumulativeSum,
             ChartConfig {
                 interval_secs: 10,
                 grace_period_secs: 30,
@@ -380,13 +255,11 @@ mod tests {
         );
         let mut dimensions = Vec::new();
 
-        let dim_id = chart.dimension_id("value");
-
         // Slot 0: establish baseline
-        chart.ingest(dim_id, 100.0, ns(5), start_time, &mut dimensions);
+        chart.ingest(1, 100.0, ns(5), start_time, &mut dimensions);
 
         // Slot 10: finalize slot 0 (returns None for first slot)
-        let slot_timestamp = chart.ingest(dim_id, 150.0, ns(15), start_time, &mut dimensions);
+        let slot_timestamp = chart.ingest(1, 150.0, ns(15), start_time, &mut dimensions);
         assert!(slot_timestamp.is_some());
         assert_eq!(dimensions[0].value, None);
 
