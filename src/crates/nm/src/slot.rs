@@ -29,7 +29,7 @@ pub struct FinalizedDimension {
 /// aggregator type since they have the same metric semantics.
 pub struct SlotManager<A: Aggregator + Default> {
     /// Collection interval in seconds
-    interval_secs: u64,
+    collection_interval_secs: u64,
     /// Grace period in seconds before finalizing an idle slot
     grace_period_secs: u64,
 
@@ -53,7 +53,7 @@ impl<A: Aggregator + Default> SlotManager<A> {
     /// Create a new slot manager with the given timing configuration.
     pub fn new(interval_secs: u64, grace_period_secs: u64) -> Self {
         Self {
-            interval_secs,
+            collection_interval_secs: interval_secs,
             grace_period_secs,
             aggregators: HashMap::new(),
             dimension_ids: BTreeSet::new(),
@@ -66,7 +66,7 @@ impl<A: Aggregator + Default> SlotManager<A> {
     /// Compute the slot timestamp for a given nanosecond timestamp.
     fn slot_for_timestamp(&self, timestamp_ns: u64) -> u64 {
         let timestamp_secs = timestamp_ns / 1_000_000_000;
-        (timestamp_secs / self.interval_secs) * self.interval_secs
+        (timestamp_secs / self.collection_interval_secs) * self.collection_interval_secs
     }
 
     /// Ingest a data point for a dimension.
@@ -347,10 +347,7 @@ mod tests {
             mgr.finalize(&mut dimensions).unwrap();
 
             // Dim 2 should be gap-filled with previous value (20.0)
-            let dim2 = dimensions
-                .iter()
-                .find(|d| d.dimension_id == 2)
-                .unwrap();
+            let dim2 = dimensions.iter().find(|d| d.dimension_id == 2).unwrap();
             assert_eq!(dim2.value, Some(20.0));
         }
     }
