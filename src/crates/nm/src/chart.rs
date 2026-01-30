@@ -150,11 +150,9 @@ impl Chart {
 
     /// Ingest a data point for a dimension.
     ///
-    /// If this ingestion causes the previous active slot to be finalized
-    /// (because data arrived for a newer slot), the `finalized` buffer
-    /// is filled with dimension values and the slot timestamp is returned.
-    ///
-    /// Returns `None` if no finalization occurred (data was ingested or dropped).
+    /// If this data belongs to a newer slot, the current slot is finalized
+    /// into the provided buffer and the slot timestamp is returned.
+    /// Data for older slots is dropped.
     pub fn ingest(
         &mut self,
         dimension_name: &str,
@@ -176,10 +174,10 @@ impl Chart {
                 return None;
             }
             Some(active) if data_slot > active => {
-                // Data for a newer slot - finalize current and start new
-                let slot_timestamp = self.finalize_active_slot_into(finalized);
+                // Data for a newer slot - finalize current slot first
+                let slot_ts = self.finalize_active_slot_into(finalized);
                 self.active_slot = Some(data_slot);
-                slot_timestamp
+                slot_ts
             }
             Some(_) => {
                 // Data for the current active slot
@@ -199,17 +197,18 @@ impl Chart {
 
     /// Check if the grace period has expired and finalize if so.
     ///
-    /// If the active slot is finalized due to grace period expiration,
-    /// the `finalized` buffer is filled and the slot timestamp is returned.
+    /// Returns the slot timestamp if finalization occurred.
     pub fn tick(&mut self, finalized: &mut Vec<FinalizedDimension>) -> Option<u64> {
-        let last_data = self.last_data_instant?;
-        let grace_period = std::time::Duration::from_secs(self.grace_period_secs);
+        let grace_expired = self
+            .last_data_instant
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(self.grace_period_secs))
+            .unwrap_or(false);
 
-        if last_data.elapsed() >= grace_period {
-            self.finalize_active_slot_into(finalized)
-        } else {
-            None
+        if !grace_expired {
+            return None;
         }
+
+        self.finalize_active_slot_into(finalized)
     }
 
     /// Force finalize the active slot. Useful for shutdown or flushing remaining data.
@@ -453,9 +452,8 @@ mod tests {
             // Set active slot to 10
             chart.ingest("dim1", 50.0, ns(15), 0, &mut finalized);
 
-            // Try to ingest for slot 0 - should be dropped
-            let result = chart.ingest("dim1", 42.0, ns(5), 0, &mut finalized);
-            assert!(result.is_none());
+            // Try to ingest for slot 0 - should be dropped (no effect)
+            chart.ingest("dim1", 42.0, ns(5), 0, &mut finalized);
 
             // Finalize and check only the slot 10 value is present
             let slot_timestamp = chart.finalize(&mut finalized).unwrap();
@@ -468,19 +466,21 @@ mod tests {
         use super::*;
 
         #[test]
-        fn finalizes_on_newer_slot_data() {
+        fn ingest_finalizes_on_newer_slot_data() {
             let mut chart = gauge_chart();
             let mut finalized = Vec::new();
 
             // Slot 0
             chart.ingest("dim1", 42.0, ns(5), 0, &mut finalized);
 
-            // Slot 10 - should finalize slot 0
+            // Slot 10 data - triggers finalization of slot 0
             let slot_timestamp = chart.ingest("dim1", 50.0, ns(15), 0, &mut finalized);
-
-            assert!(slot_timestamp.is_some());
-            assert_eq!(slot_timestamp.unwrap(), 0);
+            assert_eq!(slot_timestamp, Some(0));
             assert_eq!(finalized[0].value, Some(42.0));
+
+            // Slot 10 data should now be in active slot
+            chart.finalize(&mut finalized).unwrap();
+            assert_eq!(finalized[0].value, Some(50.0));
         }
 
         #[test]
@@ -494,7 +494,10 @@ mod tests {
             // Same slot data doesn't trigger finalization
             assert!(result.is_none());
 
-            // But active slot still exists and can be finalized
+            // Tick should not finalize (no grace period expiry)
+            assert!(chart.tick(&mut finalized).is_none());
+
+            // But active slot still exists and can be force-finalized
             assert!(chart.finalize(&mut finalized).is_some());
         }
 
@@ -539,11 +542,18 @@ mod tests {
             chart.ingest("dim1", 10.0, ns(5), 0, &mut finalized);
             chart.ingest("dim2", 20.0, ns(5), 0, &mut finalized);
 
-            // Finalize slot 0 via newer slot data, only dim 1 has data
-            chart.ingest("dim1", 15.0, ns(15), 0, &mut finalized);
-            chart.finalize(&mut finalized).unwrap();
+            // Slot 10 data (only dim1) - triggers finalization of slot 0
+            let slot_ts = chart.ingest("dim1", 15.0, ns(15), 0, &mut finalized);
+            assert_eq!(slot_ts, Some(0));
 
-            // Dim 2 should be gap-filled with previous value (20.0)
+            // Slot 0: dim1=10, dim2=20
+            let dim1 = finalized.iter().find(|d| d.name == "dim1").unwrap();
+            let dim2 = finalized.iter().find(|d| d.name == "dim2").unwrap();
+            assert_eq!(dim1.value, Some(10.0));
+            assert_eq!(dim2.value, Some(20.0));
+
+            // Finalize slot 10: dim2 should be gap-filled with previous value
+            chart.finalize(&mut finalized).unwrap();
             let dim2 = finalized.iter().find(|d| d.name == "dim2").unwrap();
             assert_eq!(dim2.value, Some(20.0));
         }
@@ -590,9 +600,9 @@ mod tests {
             // Slot 0: baseline
             chart.ingest("dim1", 100.0, ns(5), START_TIME, &mut finalized);
 
-            // Slot 10: finalize slot 0 and buffer slot 10 data
-            let slot_timestamp = chart.ingest("dim1", 150.0, ns(15), START_TIME, &mut finalized);
-            assert!(slot_timestamp.is_some());
+            // Slot 10: triggers finalization of slot 0
+            let slot_ts = chart.ingest("dim1", 150.0, ns(15), START_TIME, &mut finalized);
+            assert_eq!(slot_ts, Some(0));
             assert_eq!(finalized[0].value, None); // First slot
 
             // Finalize slot 10
@@ -605,15 +615,17 @@ mod tests {
             let mut chart = cumulative_sum_chart();
             let mut finalized = Vec::new();
 
-            // Establish baseline
+            // Establish baseline in slot 0
             chart.ingest("dim1", 100.0, ns(5), START_TIME, &mut finalized);
-            chart.ingest("dim1", 150.0, ns(15), START_TIME, &mut finalized);
-            chart.finalize(&mut finalized);
 
-            // Restart with new start_time
+            // Slot 10: triggers finalization of slot 0
+            chart.ingest("dim1", 150.0, ns(15), START_TIME, &mut finalized);
+
+            // Slot 20: restart with new start_time, triggers finalization of slot 10
             let new_start = START_TIME + 1_000_000;
             chart.ingest("dim1", 20.0, ns(25), new_start, &mut finalized);
 
+            // Finalize slot 20
             chart.finalize(&mut finalized).unwrap();
             assert_eq!(finalized[0].value, Some(0.0));
         }
@@ -648,9 +660,9 @@ mod tests {
             chart.ingest("dim2", 200.0, ns(5), 0, &mut finalized);
             chart.ingest("dim3", 300.0, ns(5), 0, &mut finalized);
 
-            // Slot 10: only dim1 gets new data
+            // Slot 10: only dim1 gets new data - triggers finalization of slot 0
             let slot_ts = chart.ingest("dim1", 110.0, ns(15), 0, &mut finalized);
-            assert_eq!(slot_ts, Some(0)); // Slot 0 finalized
+            assert_eq!(slot_ts, Some(0));
 
             // Verify slot 0 values
             assert_eq!(finalized.len(), 3);
@@ -661,9 +673,9 @@ mod tests {
             assert_eq!(dim2.value, Some(200.0));
             assert_eq!(dim3.value, Some(300.0));
 
-            // Slot 20: only dim2 gets new data, dim1 and dim3 should gap-fill
+            // Slot 20: only dim2 gets new data - triggers finalization of slot 10
             let slot_ts = chart.ingest("dim2", 220.0, ns(25), 0, &mut finalized);
-            assert_eq!(slot_ts, Some(10)); // Slot 10 finalized
+            assert_eq!(slot_ts, Some(10));
 
             // Verify slot 10: dim1=110 (new), dim2=200 (gap-fill), dim3=300 (gap-fill)
             let dim1 = finalized.iter().find(|d| d.name == "dim1").unwrap();

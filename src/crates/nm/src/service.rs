@@ -178,15 +178,10 @@ impl NetdataMetricsService {
                 continue;
             };
 
-            // Ingest the data point - may finalize the previous slot if this
-            // data belongs to a newer slot
-            if let Some(slot_timestamp) = chart.ingest(
-                dimension_name,
-                value,
-                timestamp_ns,
-                start_time_ns,
-                &mut finalized,
-            ) {
+            // Ingest the data point - emit if slot was finalized
+            if let Some(slot_timestamp) =
+                chart.ingest(dimension_name, value, timestamp_ns, start_time_ns, &mut finalized)
+            {
                 emit_dimensions(&mut output, &chart_name_buf, slot_timestamp, &finalized);
             }
         }
