@@ -14,9 +14,9 @@ use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::
 use tokio::sync::RwLock;
 use tonic::transport::Server;
 
+use chart::ChartConfig;
 use config::ChartConfigManager;
 use service::{ChartManager, NetdataMetricsService, create_shared_output, spawn_tick_task};
-use slot::SlotConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,11 +25,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Listening for OTLP metrics on {}", addr);
 
     // Create shared state
-    let slot_config = SlotConfig::default();
-    let tick_interval = Duration::from_secs(slot_config.interval_secs);
+    let chart_config = ChartConfig::default();
+    let tick_interval = Duration::from_secs(chart_config.interval_secs);
 
     let ccm = Arc::new(RwLock::new(ChartConfigManager::with_default_configs()));
-    let chart_manager = Arc::new(RwLock::new(ChartManager::new(slot_config)));
+    let chart_manager = Arc::new(RwLock::new(ChartManager::new(chart_config)));
     let output = create_shared_output();
 
     // Create the service
