@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use opentelemetry_proto::tonic::metrics::v1::AggregationTemporality;
 
-use crate::aggregation::{Aggregator, CumulativeSumAggregator, DeltaSumAggregator, GaugeAggregator};
+use crate::aggregation::{
+    Aggregator, CumulativeSumAggregator, DeltaSumAggregator, GaugeAggregator,
+};
 use crate::iter::MetricDataKind;
 use crate::slot::{Dimension, FinalizedDimension};
 
@@ -133,9 +135,6 @@ impl Chart {
     ) -> Option<u64> {
         let data_slot = self.slot_for_timestamp(timestamp_ns);
 
-        // Ensure dimension exists
-        self.inner.get_or_create_dimension(dimension_name);
-
         let slot_timestamp = match self.active_slot {
             None => {
                 // No active slot yet - this becomes the active slot
@@ -159,7 +158,8 @@ impl Chart {
         };
 
         // Ingest into the dimension's aggregator
-        self.inner.ingest(dimension_name, value, timestamp_ns, start_time_ns);
+        self.inner
+            .ingest(dimension_name, value, timestamp_ns, start_time_ns);
 
         // Update last data time
         self.last_data_instant = Some(Instant::now());
@@ -205,41 +205,38 @@ impl Chart {
 }
 
 impl ChartInner {
-    /// Get or create a dimension with the given name.
-    fn get_or_create_dimension(&mut self, name: &str) {
-        match self {
-            ChartInner::Gauge(dims) => {
-                dims.entry(name.to_string()).or_insert_with(|| Dimension::new(name.to_string()));
-            }
-            ChartInner::DeltaSum(dims) => {
-                dims.entry(name.to_string()).or_insert_with(|| Dimension::new(name.to_string()));
-            }
-            ChartInner::CumulativeSum(dims) => {
-                dims.entry(name.to_string()).or_insert_with(|| Dimension::new(name.to_string()));
-            }
-        }
-    }
-
-    /// Ingest a value into a dimension's aggregator.
+    /// Ingest a value into a dimension's aggregator, creating the dimension if needed.
     fn ingest(&mut self, name: &str, value: f64, timestamp_ns: u64, start_time_ns: u64) {
         match self {
             ChartInner::Gauge(dims) => {
-                if let Some(dim) = dims.get_mut(name) {
-                    dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
-                    dim.has_data_in_slot = true;
-                }
+                let dim = if let Some(dim) = dims.get_mut(name) {
+                    dim
+                } else {
+                    dims.insert(name.to_string(), Dimension::new(name.to_string()));
+                    dims.get_mut(name).unwrap()
+                };
+                dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
+                dim.has_data_in_slot = true;
             }
             ChartInner::DeltaSum(dims) => {
-                if let Some(dim) = dims.get_mut(name) {
-                    dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
-                    dim.has_data_in_slot = true;
-                }
+                let dim = if let Some(dim) = dims.get_mut(name) {
+                    dim
+                } else {
+                    dims.insert(name.to_string(), Dimension::new(name.to_string()));
+                    dims.get_mut(name).unwrap()
+                };
+                dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
+                dim.has_data_in_slot = true;
             }
             ChartInner::CumulativeSum(dims) => {
-                if let Some(dim) = dims.get_mut(name) {
-                    dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
-                    dim.has_data_in_slot = true;
-                }
+                let dim = if let Some(dim) = dims.get_mut(name) {
+                    dim
+                } else {
+                    dims.insert(name.to_string(), Dimension::new(name.to_string()));
+                    dims.get_mut(name).unwrap()
+                };
+                dim.aggregator.ingest(value, timestamp_ns, start_time_ns);
+                dim.has_data_in_slot = true;
             }
         }
     }
@@ -370,8 +367,7 @@ mod tests {
 
         #[test]
         fn rejects_unsupported_types() {
-            let chart =
-                Chart::from_metric(MetricDataKind::Histogram, None, ChartConfig::default());
+            let chart = Chart::from_metric(MetricDataKind::Histogram, None, ChartConfig::default());
             assert!(chart.is_none());
         }
     }
