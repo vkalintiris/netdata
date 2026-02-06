@@ -55,8 +55,8 @@
 //!         })
 //!     }
 //!
-//!     async fn on_progress(&self, _transaction: String) {
-//!         // Report progress if needed
+//!     async fn on_progress(&self, _transaction: String) -> Option<(usize, usize)> {
+//!         None // No progress to report
 //!     }
 //!
 //!     fn declaration(&self) -> FunctionDeclaration {
@@ -97,8 +97,8 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::{
-    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgressRequest, FunctionResult,
-    Message, MessageReader, MessageWriter,
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgressRequest,
+    FunctionProgressResponse, FunctionResult, Message, MessageReader, MessageWriter,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -164,6 +164,8 @@ struct FunctionContext {
     cancellation_token: CancellationToken,
     /// Receiver for runtime control signals (e.g., progress requests).
     signal_rx: Mutex<mpsc::Receiver<RuntimeSignal>>,
+    /// Sender for outbound messages (e.g., progress reports back to the agent).
+    outbound_tx: mpsc::Sender<Message>,
 }
 
 /// Type alias for a future that produces a function result.
@@ -217,8 +219,8 @@ type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 ///         })
 ///     }
 ///
-///     async fn on_progress(&self, _transaction: String) {
-///         // Not needed for quick operations
+///     async fn on_progress(&self, _transaction: String) -> Option<(usize, usize)> {
+///         None // Not needed for quick operations
 ///     }
 ///
 ///     fn declaration(&self) -> FunctionDeclaration {
@@ -274,14 +276,15 @@ pub trait FunctionHandler: Send + Sync + 'static {
     /// Handle progress report requests while the function is running.
     ///
     /// Called when Netdata requests a progress update from a long-running function.
-    /// This method should log or report the current progress but doesn't need
-    /// to return a value (progress is typically reported through logging).
+    /// Return `Some((done, all))` to send a progress report back to the agent,
+    /// which extends the function timeout by 10 seconds. Return `None` to skip
+    /// sending a progress report.
     ///
     /// # Note
     ///
     /// This is called asynchronously while `on_call` is still running,
     /// so any shared state must be properly synchronized.
-    async fn on_progress(&self, transaction: String);
+    async fn on_progress(&self, transaction: String) -> Option<(usize, usize)>;
 
     /// Provide the function's declaration metadata.
     ///
@@ -378,7 +381,14 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                 Some(msg) = signal_rx.recv() => {
                     match msg {
                         RuntimeSignal::Progress => {
-                            handler.on_progress(transaction.clone()).await;
+                            if let Some((done, all)) = handler.on_progress(transaction.clone()).await {
+                                let msg = Message::FunctionProgressResponse(Box::new(FunctionProgressResponse {
+                                    transaction: transaction.clone(),
+                                    done,
+                                    all,
+                                }));
+                                let _ = ctx.outbound_tx.send(msg).await;
+                            }
                         }
                     }
                 }
@@ -501,6 +511,11 @@ where
     /// Token for initiating graceful shutdown.
     shutdown_token: CancellationToken,
 
+    /// Sender for outbound messages from function handlers (e.g., progress reports).
+    outbound_tx: mpsc::Sender<Message>,
+    /// Receiver for outbound messages from function handlers.
+    outbound_rx: mpsc::Receiver<Message>,
+
     /// Optional chart registry for managing metrics emission.
     chart_registry: Option<ChartRegistry<W>>,
     /// Handle to chart registry background task.
@@ -566,6 +581,8 @@ where
     /// }
     /// ```
     pub fn with_streams(name: &str, reader: R, writer: W) -> Self {
+        let (outbound_tx, outbound_rx) = mpsc::channel(32);
+
         Self {
             plugin_name: String::from(name),
             reader: MessageReader::new(reader),
@@ -576,6 +593,8 @@ where
             futures: FuturesUnordered::new(),
 
             shutdown_token: CancellationToken::default(),
+            outbound_tx,
+            outbound_rx,
             chart_registry: None,
             chart_registry_handle: None,
         }
@@ -819,6 +838,9 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
                 Some((transaction, result)) = self.futures.next() => {
                     self.handle_completed(transaction, result).await?;
                 }
+                Some(msg) = self.outbound_rx.recv() => {
+                    self.writer.lock().await.send(msg).await?;
+                }
             }
         }
 
@@ -915,6 +937,7 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
             function_call,
             cancellation_token: cancellation_token.clone(),
             signal_rx: Mutex::new(control_rx),
+            outbound_tx: self.outbound_tx.clone(),
         });
 
         // Create new transaction

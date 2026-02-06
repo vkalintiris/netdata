@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &time_range,
         timeout,
         IndexingLimits::default(),
+        None,
     )
     .await?;
 

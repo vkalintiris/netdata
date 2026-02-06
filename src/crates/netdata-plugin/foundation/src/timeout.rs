@@ -61,6 +61,15 @@ impl Timeout {
         let deadline_us = elapsed_us + self.budget_us;
         self.deadline_us.store(deadline_us, Ordering::Relaxed);
     }
+
+    /// Force the timeout to expire immediately.
+    ///
+    /// This is used to signal cancellation to synchronous code that checks
+    /// `is_expired()` periodically. Since the deadline is shared via `Arc`,
+    /// all clones will see the expiration.
+    pub fn expire(&self) {
+        self.deadline_us.store(0, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +126,26 @@ mod tests {
 
         assert!((remaining1.as_secs() as i64 - remaining2.as_secs() as i64).abs() < 1);
         assert!(remaining1.as_secs() >= 9); // ~10 seconds (reset to initial budget)
+    }
+
+    #[test]
+    fn test_timeout_expire() {
+        let timeout = Timeout::new(Duration::from_secs(10));
+        assert!(!timeout.is_expired());
+
+        timeout.expire();
+        assert!(timeout.is_expired());
+        assert_eq!(timeout.remaining(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_timeout_expire_visible_to_clones() {
+        let timeout1 = Timeout::new(Duration::from_secs(10));
+        let timeout2 = timeout1.clone();
+
+        assert!(!timeout2.is_expired());
+        timeout1.expire();
+        assert!(timeout2.is_expired());
     }
 
     #[tokio::test]

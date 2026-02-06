@@ -7,6 +7,7 @@ use netdata_plugin_schema::HttpAccess;
 use parking_lot::RwLock;
 use rt::FunctionHandler;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, instrument, warn};
 
 // Import types from journal-function crate
@@ -101,6 +102,8 @@ struct TransactionInner {
     report_progress: bool,
     cancel_call: bool,
     timeout: Option<journal_function::Timeout>,
+    progress_indexed: Option<Arc<AtomicUsize>>,
+    progress_total: Option<usize>,
 }
 
 /// Represents a tracked transaction for a function call.
@@ -122,6 +125,8 @@ impl Transaction {
                 report_progress: false,
                 cancel_call: false,
                 timeout,
+                progress_indexed: None,
+                progress_total: None,
             })),
         }
     }
@@ -164,6 +169,32 @@ impl Transaction {
     fn reset_timeout(&self) {
         if let Some(timeout) = &self.inner.read().timeout {
             timeout.reset();
+        }
+    }
+
+    /// Force the timeout to expire immediately.
+    ///
+    /// This is used on cancellation to signal synchronous code (running in
+    /// `spawn_blocking`) to stop at its next per-file timeout check.
+    fn expire_timeout(&self) {
+        if let Some(timeout) = &self.inner.read().timeout {
+            timeout.expire();
+        }
+    }
+
+    /// Register a progress counter and total for tracking indexing progress.
+    fn set_progress_tracking(&self, counter: Arc<AtomicUsize>, total: usize) {
+        let mut inner = self.inner.write();
+        inner.progress_indexed = Some(counter);
+        inner.progress_total = Some(total);
+    }
+
+    /// Get the current indexing progress as (done, total), if tracking is active.
+    fn get_progress(&self) -> Option<(usize, usize)> {
+        let inner = self.inner.read();
+        match (&inner.progress_indexed, inner.progress_total) {
+            (Some(indexed), Some(total)) => Some((indexed.load(Ordering::Relaxed), total)),
+            _ => None,
         }
     }
 }
@@ -273,7 +304,6 @@ impl CatalogFunction {
     /// - has_before: true if there are more entries before the returned window
     /// - has_after: true if there are more entries after the returned window
     fn query_logs_from_indexes(
-        &self,
         indexed_files: &[journal_index::FileIndex],
         time_range: &journal_function::QueryTimeRange,
         anchor: Option<u64>,
@@ -281,6 +311,7 @@ impl CatalogFunction {
         search_query: &str,
         limit: usize,
         direction: journal_index::Direction,
+        timeout: Option<journal_function::Timeout>,
     ) -> (Vec<journal_function::LogEntryData>, bool, bool) {
         use journal_function::LogQuery;
 
@@ -324,6 +355,10 @@ impl CatalogFunction {
             .with_limit(limit + 1)
             .with_after_usec(after_usec)
             .with_before_usec(before_usec);
+
+        if let Some(ref t) = timeout {
+            query = query.with_timeout(t.clone());
+        }
 
         // Only apply filter if it's not Filter::none() (which matches nothing)
         if !filter.is_none() {
@@ -381,6 +416,10 @@ impl CatalogFunction {
                     .with_limit(1)
                     .with_after_usec(after_usec)
                     .with_before_usec(before_usec);
+
+            if let Some(ref t) = timeout {
+                opposite_query = opposite_query.with_timeout(t.clone());
+            }
 
             // Only apply filter if it's not Filter::none() (which matches nothing)
             if !filter.is_none() {
@@ -566,14 +605,18 @@ impl FunctionHandler for CatalogFunction {
             .collect();
 
         // Index all files
+        let progress_counter = Arc::new(AtomicUsize::new(0));
+        txn.set_progress_tracking(progress_counter.clone(), keys.len());
+
         let op_start = std::time::Instant::now();
         let indexed_files = journal_function::batch_compute_file_indexes(
             &self.inner.cache,
             &self.inner.registry,
             keys,
             &time_range,
-            timeout,
+            timeout.clone(),
             self.inner.indexing_limits,
+            Some(progress_counter),
         )
         .await
         .map_err(|e| {
@@ -615,19 +658,55 @@ impl FunctionHandler for CatalogFunction {
             })?;
         let histogram_duration = op_start.elapsed();
 
-        // Query logs from pre-indexed files
+        // Query logs from pre-indexed files, wrapped in spawn_blocking so the
+        // async runtime can handle cancellation and progress while this runs.
         let op_start = std::time::Instant::now();
         let limit = request.last.unwrap_or(200);
         let file_indexes: Vec<_> = indexed_files.iter().map(|(_, idx)| idx.clone()).collect();
-        let (log_entries, has_before, has_after) = self.query_logs_from_indexes(
-            &file_indexes,
-            &time_range,
-            request.anchor,
-            &filter_expr,
-            &request.query,
-            limit,
-            request.direction,
-        );
+
+        let query_filter = filter_expr.clone();
+        let query_search = request.query.clone();
+        let query_direction = request.direction;
+        let query_anchor = request.anchor;
+        let query_time_range = time_range.clone();
+        let query_timeout = timeout.clone();
+
+        let query_task = tokio::task::spawn_blocking(move || {
+            CatalogFunction::query_logs_from_indexes(
+                &file_indexes,
+                &query_time_range,
+                query_anchor,
+                &query_filter,
+                &query_search,
+                limit,
+                query_direction,
+                Some(query_timeout),
+            )
+        });
+
+        // Poll the blocking task with periodic timeout checks, allowing
+        // cancellation (via timeout expiry) to take effect between polls.
+        tokio::pin!(query_task);
+
+        let (log_entries, has_before, has_after) = loop {
+            tokio::select! {
+                result = &mut query_task => {
+                    match result {
+                        Ok(result) => break result,
+                        Err(e) => {
+                            error!("[{}] log query task panicked: {}", txn.id(), e);
+                            break (Vec::new(), false, false);
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                    if timeout.is_expired() {
+                        warn!("[{}] log query timed out, returning empty results", txn.id());
+                        break (Vec::new(), false, false);
+                    }
+                }
+            }
+        };
         let query_logs_duration = op_start.elapsed();
         debug!(
             "[{}] retrieved {} log entries (has before: {}, has after: {})",
@@ -706,6 +785,11 @@ impl FunctionHandler for CatalogFunction {
     async fn on_cancellation(&self, transaction: String) -> Result<Self::Response> {
         warn!("catalog function call {} cancelled by Netdata", transaction);
 
+        // Expire the timeout to signal any spawn_blocking tasks to stop
+        if let Some(txn) = self.inner.transaction_registry.get(&transaction) {
+            txn.expire_timeout();
+        }
+
         // Mark the transaction as cancelled
         self.inner.transaction_registry.cancel(&transaction);
 
@@ -717,26 +801,27 @@ impl FunctionHandler for CatalogFunction {
         })
     }
 
-    async fn on_progress(&self, transaction: String) {
+    async fn on_progress(&self, transaction: String) -> Option<(usize, usize)> {
         info!(
             "progress report requested for catalog function call {}",
             transaction
         );
 
-        // Mark the transaction for progress reporting and reset the timeout
         if let Some(txn) = self.inner.transaction_registry.get(&transaction) {
             txn.set_report_progress(true);
             txn.reset_timeout();
+            let progress = txn.get_progress();
             info!(
-                "Transaction {} marked for progress reporting and timeout reset to initial budget (elapsed: {:?})",
-                transaction,
-                txn.elapsed()
+                "Transaction {} progress: {:?} (elapsed: {:?})",
+                transaction, progress, txn.elapsed()
             );
+            progress
         } else {
             warn!(
                 "Progress requested for non-existent transaction {}",
                 transaction
             );
+            None
         }
     }
 
