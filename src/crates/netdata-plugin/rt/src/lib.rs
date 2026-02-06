@@ -43,19 +43,19 @@
 //!     type Request = MyRequest;
 //!     type Response = MyResponse;
 //!
-//!     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
+//!     async fn on_call(&self, _transaction: String, request: Self::Request) -> Result<Self::Response> {
 //!         Ok(MyResponse {
 //!             greeting: format!("Hello, {}!", request.name),
 //!         })
 //!     }
 //!
-//!     async fn on_cancellation(&self) -> Result<Self::Response> {
+//!     async fn on_cancellation(&self, _transaction: String) -> Result<Self::Response> {
 //!         Err(netdata_plugin_error::NetdataPluginError::Other {
 //!             message: "Operation cancelled".to_string(),
 //!         })
 //!     }
 //!
-//!     async fn on_progress(&self) {
+//!     async fn on_progress(&self, _transaction: String) {
 //!         // Report progress if needed
 //!     }
 //!
@@ -97,8 +97,8 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use netdata_plugin_error::Result;
 use netdata_plugin_protocol::{
-    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgress, FunctionResult, Message,
-    MessageReader, MessageWriter,
+    FunctionCall, FunctionCancel, FunctionDeclaration, FunctionProgressRequest, FunctionResult,
+    Message, MessageReader, MessageWriter,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -205,19 +205,19 @@ type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 ///     type Request = AddRequest;
 ///     type Response = AddResponse;
 ///
-///     async fn on_call(&self, request: Self::Request) -> Result<Self::Response> {
+///     async fn on_call(&self, _transaction: String, request: Self::Request) -> Result<Self::Response> {
 ///         Ok(AddResponse {
 ///             sum: request.a + request.b,
 ///         })
 ///     }
 ///
-///     async fn on_cancellation(&self) -> Result<Self::Response> {
+///     async fn on_cancellation(&self, _transaction: String) -> Result<Self::Response> {
 ///         Err(netdata_plugin_error::NetdataPluginError::Other {
 ///             message: "Addition cancelled".to_string(),
 ///         })
 ///     }
 ///
-///     async fn on_progress(&self) {
+///     async fn on_progress(&self, _transaction: String) {
 ///         // Not needed for quick operations
 ///     }
 ///
@@ -838,8 +838,9 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
             Some(Ok(Message::FunctionCancel(function_cancel))) => {
                 self.handle_function_cancel(function_cancel.as_ref());
             }
-            Some(Ok(Message::FunctionProgress(function_progress))) => {
-                self.handle_function_progress(&function_progress).await;
+            Some(Ok(Message::FunctionProgressRequest(function_progress_request))) => {
+                self.handle_function_progress_request(&function_progress_request)
+                    .await;
             }
             Some(Ok(msg)) => {
                 debug!("received message: {:?}", msg);
@@ -953,21 +954,24 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
     /// Handle a progress report request.
     ///
     /// Sends a progress signal to the corresponding running function.
-    async fn handle_function_progress(&mut self, function_progress: &FunctionProgress) {
+    async fn handle_function_progress_request(
+        &mut self,
+        function_progress_request: &FunctionProgressRequest,
+    ) {
         let Some(transaction) = self
             .transaction_registry
-            .get(&function_progress.transaction)
+            .get(&function_progress_request.transaction)
         else {
             warn!(
                 "can not get progress of non-existing transaction {}",
-                function_progress.transaction
+                function_progress_request.transaction
             );
             return;
         };
 
         info!(
             "requesting progress of transaction {}",
-            function_progress.transaction
+            function_progress_request.transaction
         );
         let _ = transaction.control_tx.send(RuntimeSignal::Progress).await;
     }
