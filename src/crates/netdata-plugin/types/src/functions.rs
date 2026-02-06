@@ -82,4 +82,8 @@ pub struct FunctionCancel {
 pub struct FunctionProgress {
     /// Transaction ID of the function call that should report the progress
     pub transaction: String,
+    /// Number of units completed (used in outbound progress reports to the agent)
+    pub done: Option<usize>,
+    /// Total number of units to complete (used in outbound progress reports to the agent)
+    pub all: Option<usize>,
 }

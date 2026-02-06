@@ -199,8 +199,16 @@ impl Encoder<Message> for MessageParser {
                     .as_bytes(),
                 );
             }
-            Message::FunctionProgress(_) => {
-                unimplemented!()
+            Message::FunctionProgress(progress) => {
+                dst.extend_from_slice(
+                    format!(
+                        "FUNCTION_PROGRESS {} {} {}\n",
+                        quote_if_needed(&progress.transaction),
+                        progress.done.unwrap_or(0),
+                        progress.all.unwrap_or(0),
+                    )
+                    .as_bytes(),
+                );
             }
         }
 

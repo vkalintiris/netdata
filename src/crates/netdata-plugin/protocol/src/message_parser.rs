@@ -269,7 +269,11 @@ impl MessageParser {
         let mut words = WordIterator::new(args);
 
         let transaction = words.next_string()?;
-        let function_progress = Box::new(FunctionProgress { transaction });
+        let function_progress = Box::new(FunctionProgress {
+            transaction,
+            done: None,
+            all: None,
+        });
 
         Some(Message::FunctionProgress(function_progress))
     }
