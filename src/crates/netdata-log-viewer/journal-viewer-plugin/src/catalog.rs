@@ -717,7 +717,7 @@ impl FunctionHandler for CatalogFunction {
         })
     }
 
-    async fn on_progress(&self, transaction: String) {
+    async fn on_progress(&self, transaction: String) -> Option<(usize, usize)> {
         info!(
             "progress report requested for catalog function call {}",
             transaction
@@ -732,11 +732,13 @@ impl FunctionHandler for CatalogFunction {
                 transaction,
                 txn.elapsed()
             );
+            None
         } else {
             warn!(
                 "Progress requested for non-existent transaction {}",
                 transaction
             );
+            None
         }
     }
 
