@@ -5,7 +5,6 @@
 //! functions for extracting raw field data from journal entries.
 
 use crate::error::Result;
-use tokio_util::sync::CancellationToken;
 use journal_core::file::{JournalFile, Mmap};
 use journal_index::{
     Anchor, Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId, LogQueryParams,
@@ -16,6 +15,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 /// Pagination state for multi-file log queries.
@@ -167,8 +167,13 @@ impl<'a> LogQuery<'a> {
     /// Returns an error if anchor or direction were not set, or if time boundaries are invalid.
     pub fn execute(self) -> Result<Vec<LogEntryData>> {
         let params = self.builder.build()?;
-        let (log_entry_ids, _state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, None, self.cancellation.as_ref(), self.progress.as_ref());
+        let (log_entry_ids, _state) = retrieve_log_entries(
+            self.file_indexes.to_vec(),
+            params,
+            None,
+            self.cancellation.as_ref(),
+            self.progress.as_ref(),
+        );
 
         extract_entry_data(&log_entry_ids)
     }
@@ -195,8 +200,13 @@ impl<'a> LogQuery<'a> {
         state: Option<&PaginationState>,
     ) -> Result<(Vec<LogEntryData>, PaginationState)> {
         let params = self.builder.build()?;
-        let (log_entry_ids, new_state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, state, self.cancellation.as_ref(), self.progress.as_ref());
+        let (log_entry_ids, new_state) = retrieve_log_entries(
+            self.file_indexes.to_vec(),
+            params,
+            state,
+            self.cancellation.as_ref(),
+            self.progress.as_ref(),
+        );
 
         let data = extract_entry_data(&log_entry_ids)?;
         Ok((data, new_state))
@@ -269,6 +279,11 @@ fn retrieve_log_entries(
         }
     };
 
+    if let Some(counter) = progress {
+        let filtered = file_indexes.len() - relevant_indexes.len();
+        counter.fetch_add(filtered, Ordering::Relaxed);
+    }
+
     if relevant_indexes.is_empty() {
         return (Vec::new(), PaginationState::default());
     }
@@ -298,10 +313,16 @@ fn retrieve_log_entries(
         // Check cancellation before processing each file
         if let Some(token) = cancellation {
             if token.is_cancelled() {
-                warn!("log query cancelled after processing {} files, returning partial results",
-                    new_state.file_positions.len());
+                warn!(
+                    "log query cancelled after processing {} files, returning partial results",
+                    new_state.file_positions.len()
+                );
                 break;
             }
+        }
+
+        if let Some(counter) = progress {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
 
         // Pruning optimization: if we have a full result set, check if we can skip
@@ -357,17 +378,9 @@ fn retrieve_log_entries(
             }
         };
 
-        if new_entries.is_empty() {
-            continue;
-        }
-
-        // Merge the new entries with our existing results, maintaining
-        // sorted order and respecting the limit constraint
-        collected_entries =
-            merge_log_entries(collected_entries, new_entries, limit, params.direction());
-
-        if let Some(counter) = progress {
-            counter.fetch_add(1, Ordering::Relaxed);
+        if !new_entries.is_empty() {
+            collected_entries =
+                merge_log_entries(collected_entries, new_entries, limit, params.direction());
         }
     }
 
