@@ -13,6 +13,10 @@ pub struct JournalMetrics {
     pub file_indexing: ChartHandle<FileIndexingMetrics>,
     pub bucket_cache: ChartHandle<BucketCacheMetrics>,
     pub bucket_operations: ChartHandle<BucketOperationsMetrics>,
+    pub foyer_memory_state: ChartHandle<FoyerMemoryStateMetrics>,
+    pub foyer_memory_events: ChartHandle<FoyerMemoryEventsMetrics>,
+    pub foyer_disk_io: ChartHandle<FoyerDiskIoMetrics>,
+    pub foyer_disk_ops: ChartHandle<FoyerDiskOpsMetrics>,
 }
 
 impl JournalMetrics {
@@ -25,6 +29,14 @@ impl JournalMetrics {
                 .register_chart(BucketCacheMetrics::default(), Duration::from_secs(1)),
             bucket_operations: runtime
                 .register_chart(BucketOperationsMetrics::default(), Duration::from_secs(1)),
+            foyer_memory_state: runtime
+                .register_chart(FoyerMemoryStateMetrics::default(), Duration::from_secs(1)),
+            foyer_memory_events: runtime
+                .register_chart(FoyerMemoryEventsMetrics::default(), Duration::from_secs(1)),
+            foyer_disk_io: runtime
+                .register_chart(FoyerDiskIoMetrics::default(), Duration::from_secs(1)),
+            foyer_disk_ops: runtime
+                .register_chart(FoyerDiskOpsMetrics::default(), Duration::from_secs(1)),
         }
     }
 }
@@ -93,4 +105,87 @@ pub struct BucketOperationsMetrics {
     /// Buckets invalidated (removed because covering current time)
     #[schemars(extend("x-dimension-algorithm" = "incremental"))]
     pub invalidated: u64,
+}
+
+// ============================================================================
+// Foyer Cache Metrics
+// ============================================================================
+
+/// Foyer in-memory cache usage and capacity
+#[derive(JsonSchema, NetdataChart, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[schemars(
+    extend("x-chart-id" = "journal.foyer_memory_state"),
+    extend("x-chart-title" = "Foyer In-Memory Cache State"),
+    extend("x-chart-units" = "bytes"),
+    extend("x-chart-type" = "stacked"),
+    extend("x-chart-family" = "foyer_cache"),
+    extend("x-chart-context" = "journal.foyer_memory_state"),
+)]
+pub struct FoyerMemoryStateMetrics {
+    /// Current memory usage
+    #[schemars(extend("x-dimension-algorithm" = "absolute"))]
+    pub usage: u64,
+    /// Maximum memory capacity
+    #[schemars(extend("x-dimension-algorithm" = "absolute"))]
+    pub capacity: u64,
+}
+
+/// Foyer in-memory cache eviction events
+#[derive(JsonSchema, NetdataChart, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[schemars(
+    extend("x-chart-id" = "journal.foyer_memory_events"),
+    extend("x-chart-title" = "Foyer In-Memory Cache Events"),
+    extend("x-chart-units" = "events/s"),
+    extend("x-chart-type" = "line"),
+    extend("x-chart-family" = "foyer_cache"),
+    extend("x-chart-context" = "journal.foyer_memory_events"),
+)]
+pub struct FoyerMemoryEventsMetrics {
+    /// Entries evicted to make room for new ones
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub evictions: u64,
+    /// Entries replaced on insertion
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub replacements: u64,
+    /// Entries explicitly removed
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub removals: u64,
+}
+
+/// Foyer disk cache I/O throughput
+#[derive(JsonSchema, NetdataChart, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[schemars(
+    extend("x-chart-id" = "journal.foyer_disk_io"),
+    extend("x-chart-title" = "Foyer Disk Cache I/O"),
+    extend("x-chart-units" = "bytes/s"),
+    extend("x-chart-type" = "area"),
+    extend("x-chart-family" = "foyer_cache"),
+    extend("x-chart-context" = "journal.foyer_disk_io"),
+)]
+pub struct FoyerDiskIoMetrics {
+    /// Bytes written to disk cache
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub write_bytes: u64,
+    /// Bytes read from disk cache
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub read_bytes: u64,
+}
+
+/// Foyer disk cache I/O operations
+#[derive(JsonSchema, NetdataChart, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[schemars(
+    extend("x-chart-id" = "journal.foyer_disk_ops"),
+    extend("x-chart-title" = "Foyer Disk Cache Operations"),
+    extend("x-chart-units" = "ops/s"),
+    extend("x-chart-type" = "line"),
+    extend("x-chart-family" = "foyer_cache"),
+    extend("x-chart-context" = "journal.foyer_disk_ops"),
+)]
+pub struct FoyerDiskOpsMetrics {
+    /// Write I/O operations
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub write_ops: u64,
+    /// Read I/O operations
+    #[schemars(extend("x-dimension-algorithm" = "incremental"))]
+    pub read_ops: u64,
 }

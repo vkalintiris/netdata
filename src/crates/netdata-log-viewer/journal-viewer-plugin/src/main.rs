@@ -1,6 +1,6 @@
 //! journal-viewer-plugin standalone binary
 
-use journal_function::IndexingLimits;
+use journal_function::{IndexingLimits, JournalMetrics};
 use journal_registry::Monitor;
 
 mod catalog;
@@ -95,6 +95,47 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     runtime.register_handler(catalog_function.clone());
     info!("catalog function handler registered");
+
+    // Register cache metrics charts
+    let metrics = JournalMetrics::new(&mut runtime);
+
+    // Spawn task to poll foyer cache metrics every second
+    let metrics_catalog = catalog_function.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let cache = metrics_catalog.cache();
+
+            // Memory cache state
+            let usage = cache.memory().usage() as u64;
+            let capacity = cache.memory().capacity() as u64;
+            metrics.foyer_memory_state.update(|m| {
+                m.usage = usage;
+                m.capacity = capacity;
+            });
+
+            // Event counters
+            let snap = metrics_catalog.event_counters().get();
+            metrics.foyer_memory_events.update(|m| {
+                m.evictions = snap.evictions;
+                m.replacements = snap.replacements;
+                m.removals = snap.removals;
+            });
+
+            // Disk I/O stats
+            let stats = cache.statistics();
+            metrics.foyer_disk_io.update(|m| {
+                m.write_bytes = stats.disk_write_bytes() as u64;
+                m.read_bytes = stats.disk_read_bytes() as u64;
+            });
+            metrics.foyer_disk_ops.update(|m| {
+                m.write_ops = stats.disk_write_ios() as u64;
+                m.read_ops = stats.disk_read_ios() as u64;
+            });
+        }
+    });
 
     // Spawn task to process notify events
     let catalog_function_clone = catalog_function.clone();

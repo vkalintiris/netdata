@@ -13,8 +13,8 @@ use tracing::{debug, error, info, instrument, warn};
 
 // Import types from journal-function crate
 use journal_function::{
-    Facets, FileIndexCache, FileIndexCacheBuilder, FileIndexKey, HistogramEngine, IndexingLimits,
-    Monitor, Registry, Result as CatalogResult, netdata,
+    CacheEventCounters, Facets, FileIndexCache, FileIndexCacheBuilder, FileIndexKey,
+    HistogramEngine, IndexingLimits, Monitor, Registry, Result as CatalogResult, netdata,
 };
 
 /*
@@ -181,6 +181,7 @@ struct CatalogFunctionInner {
     histogram_engine: Arc<HistogramEngine>,
     transaction_registry: TransactionRegistry,
     indexing_limits: IndexingLimits,
+    event_counters: Arc<CacheEventCounters>,
 }
 
 /// Function handler that provides catalog information about journal files
@@ -384,12 +385,16 @@ impl CatalogFunction {
     ) -> CatalogResult<Self> {
         let registry = Registry::new(monitor);
 
+        // Create event counters for cache metrics
+        let event_counters = Arc::new(CacheEventCounters::default());
+
         // Create file index cache with disk-backed storage
         let cache = FileIndexCacheBuilder::new()
             .with_cache_path(cache_dir)
             .with_memory_capacity(memory_capacity)
             .with_disk_capacity(disk_capacity)
             .with_block_size(4 * 1024 * 1024)
+            .with_event_listener(Arc::clone(&event_counters))
             .build()
             .await?;
 
@@ -402,6 +407,7 @@ impl CatalogFunction {
             histogram_engine: Arc::new(histogram_engine),
             transaction_registry: TransactionRegistry::new(),
             indexing_limits,
+            event_counters,
         };
 
         Ok(Self {
@@ -423,6 +429,16 @@ impl CatalogFunction {
         if let Err(e) = self.inner.registry.process_event(event) {
             error!("failed to process notify event: {}", e);
         }
+    }
+
+    /// Returns the cache event counters for metrics collection.
+    pub fn event_counters(&self) -> &Arc<CacheEventCounters> {
+        &self.inner.event_counters
+    }
+
+    /// Returns a reference to the underlying file index cache.
+    pub fn cache(&self) -> &FileIndexCache {
+        &self.inner.cache
     }
 }
 

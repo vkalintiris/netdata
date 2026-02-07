@@ -9,12 +9,69 @@ use crate::{
     error::{EngineError, Result},
     query_time_range::QueryTimeRange,
 };
-use tokio_util::sync::CancellationToken;
+use foyer::{Event, EventListener};
 use journal_index::{FileIndex, FileIndexer, IndexingLimits};
 use journal_registry::Registry;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
+
+// ============================================================================
+// Cache Event Counters
+// ============================================================================
+
+/// Snapshot of cache event counts at a point in time.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheEventSnapshot {
+    pub evictions: u64,
+    pub replacements: u64,
+    pub removals: u64,
+    pub clears: u64,
+}
+
+/// Thread-safe counters for foyer cache eviction events.
+///
+/// Attach an `Arc<CacheEventCounters>` to the cache via
+/// `FileIndexCacheBuilder::with_event_listener` and read the accumulated
+/// values with [`get()`](Self::get).
+#[derive(Debug, Default)]
+pub struct CacheEventCounters {
+    evictions: AtomicU64,
+    replacements: AtomicU64,
+    removals: AtomicU64,
+    clears: AtomicU64,
+}
+
+impl CacheEventCounters {
+    /// Returns a plain snapshot of all counters.
+    pub fn get(&self) -> CacheEventSnapshot {
+        CacheEventSnapshot {
+            evictions: self.evictions.load(Ordering::Relaxed),
+            replacements: self.replacements.load(Ordering::Relaxed),
+            removals: self.removals.load(Ordering::Relaxed),
+            clears: self.clears.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl EventListener for CacheEventCounters {
+    type Key = FileIndexKey;
+    type Value = FileIndex;
+
+    fn on_leave(&self, reason: Event, _key: &Self::Key, _value: &Self::Value)
+    where
+        Self::Key: foyer::Key,
+        Self::Value: foyer::Value,
+    {
+        match reason {
+            Event::Evict => self.evictions.fetch_add(1, Ordering::Relaxed),
+            Event::Replace => self.replacements.fetch_add(1, Ordering::Relaxed),
+            Event::Remove => self.removals.fetch_add(1, Ordering::Relaxed),
+            Event::Clear => self.clears.fetch_add(1, Ordering::Relaxed),
+        };
+    }
+}
 
 // ============================================================================
 // File Index Cache Builder
@@ -26,6 +83,7 @@ pub struct FileIndexCacheBuilder {
     memory_capacity: Option<usize>,
     disk_capacity: Option<usize>,
     block_size: Option<usize>,
+    event_listener: Option<Arc<CacheEventCounters>>,
 }
 
 impl FileIndexCacheBuilder {
@@ -42,6 +100,7 @@ impl FileIndexCacheBuilder {
             memory_capacity: None,
             disk_capacity: None,
             block_size: None,
+            event_listener: None,
         }
     }
 
@@ -69,6 +128,13 @@ impl FileIndexCacheBuilder {
         self
     }
 
+    /// Attaches a cache event listener that counts evictions, replacements,
+    /// removals and clears.
+    pub fn with_event_listener(mut self, listener: Arc<CacheEventCounters>) -> Self {
+        self.event_listener = Some(listener);
+        self
+    }
+
     /// Builds the FileIndexCache with the configured settings.
     pub async fn build(self) -> Result<FileIndexCache> {
         use foyer::{
@@ -93,9 +159,15 @@ impl FileIndexCacheBuilder {
         })?;
 
         // Build Foyer hybrid cache
-        let cache = HybridCacheBuilder::new()
+        let mut builder = HybridCacheBuilder::new()
             .with_name("file-index-cache")
-            .with_policy(foyer::HybridCachePolicy::WriteOnInsertion)
+            .with_policy(foyer::HybridCachePolicy::WriteOnInsertion);
+
+        if let Some(listener) = self.event_listener {
+            builder = builder.with_event_listener(listener);
+        }
+
+        let cache = builder
             .memory(memory_capacity)
             .with_shards(4)
             .storage()
