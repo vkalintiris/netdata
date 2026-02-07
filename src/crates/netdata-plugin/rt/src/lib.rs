@@ -420,6 +420,7 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
 
         let ticker = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 let (done, total) = progress.load();
@@ -566,10 +567,10 @@ where
     /// Token for initiating graceful shutdown.
     shutdown_token: CancellationToken,
 
-    /// Sender for outbound messages from function handlers (e.g., progress reports).
+    /// Sender for outbound messages (progress reports, function results).
     outbound_tx: mpsc::Sender<Message>,
-    /// Receiver for outbound messages from function handlers.
-    outbound_rx: mpsc::Receiver<Message>,
+    /// Receiver for outbound messages — consumed by the writer task.
+    outbound_rx: Option<mpsc::Receiver<Message>>,
 
     /// Optional chart registry for managing metrics emission.
     chart_registry: Option<ChartRegistry<W>>,
@@ -649,7 +650,7 @@ where
 
             shutdown_token: CancellationToken::default(),
             outbound_tx,
-            outbound_rx,
+            outbound_rx: Some(outbound_rx),
             chart_registry: None,
             chart_registry_handle: None,
         }
@@ -804,8 +805,31 @@ where
         }
 
         self.declare_functions().await?;
+
+        // Spawn a dedicated writer task so stdout I/O never blocks the
+        // main select loop (which must keep reading stdin).
+        let writer = Arc::clone(&self.writer);
+        let mut outbound_rx = self
+            .outbound_rx
+            .take()
+            .expect("outbound_rx consumed only once");
+
+        let writer_task = tokio::spawn(async move {
+            while let Some(msg) = outbound_rx.recv().await {
+                if let Err(e) = writer.lock().await.send(msg).await {
+                    error!("outbound writer error: {}", e);
+                    break;
+                }
+            }
+        });
+
         self.process_messages().await?;
         self.shutdown().await?;
+
+        // All outbound senders (including those in handler contexts) are now
+        // dropped, so the writer task will drain and exit.
+        drop(self);
+        let _ = writer_task.await;
 
         Ok(())
     }
@@ -879,24 +903,13 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
 
         loop {
             tokio::select! {
-                // https://docs.rs/tokio/1.49.0/tokio/macro.select.html#fairness
-                biased;
-
-                // Handle shutdown above all
                 _ = self.shutdown_token.cancelled() => {
                     info!("shutdown requested, stop processing messages from stdin");
                     break;
                 }
-                // Flush outbound messages (progress reports) before reading inbound,
-                // so the agent sees progress before deciding to cancel.
-                Some(msg) = self.outbound_rx.recv() => {
-                    self.writer.lock().await.send(msg).await?;
-                }
-                // Deliver results prior to accepting more work
                 Some((transaction, result)) = self.futures.next() => {
                     self.handle_completed(transaction, result).await?;
                 }
-                // Function calls/cancels
                 message = self.reader.next() => {
                     if self.handle_message(message).await? {
                         break;
@@ -1034,18 +1047,16 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> PluginRuntime<R,
 
     /// Handle a completed function execution.
     ///
-    /// Removes the transaction from the registry and sends the result back to Netdata.
+    /// Removes the transaction from the registry and sends the result
+    /// through the outbound channel (written to stdout by the writer task).
     async fn handle_completed(
         &mut self,
         transaction: String,
         result: FunctionResult,
     ) -> Result<()> {
         self.transaction_registry.remove(&transaction);
-        self.writer
-            .lock()
-            .await
-            .send(Message::FunctionResult(Box::new(result)))
-            .await?;
+        let msg = Message::FunctionResult(Box::new(result));
+        let _ = self.outbound_tx.send(msg).await;
         Ok(())
     }
 
