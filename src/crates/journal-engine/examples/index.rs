@@ -127,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cancellation,
         IndexingLimits::default(),
         None,
+        None,
     )
     .await?;
 

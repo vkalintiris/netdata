@@ -124,6 +124,13 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 m.removals = snap.removals;
             });
 
+            // File indexing stats
+            let idx = metrics_catalog.indexing_counters().get();
+            metrics.file_indexing.update(|m| {
+                m.computed = idx.computed;
+                m.cached = idx.cache_hits;
+            });
+
             // Disk I/O stats
             let stats = cache.statistics();
             metrics.foyer_disk_io.update(|m| {

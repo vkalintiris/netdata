@@ -74,6 +74,55 @@ impl EventListener for CacheEventCounters {
 }
 
 // ============================================================================
+// Indexing Counters
+// ============================================================================
+
+/// Snapshot of indexing statistics at a point in time.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexingSnapshot {
+    /// Files served directly from cache (fresh + compatible bucket).
+    pub cache_hits: u64,
+    /// Files not found in cache.
+    pub cache_misses: u64,
+    /// Cached entries that were stale and needed recomputation.
+    pub stale: u64,
+    /// Cached entries with incompatible bucket duration.
+    pub incompatible_bucket: u64,
+    /// Files successfully indexed (new computation).
+    pub computed: u64,
+    /// File indexing attempts that failed.
+    pub errors: u64,
+}
+
+/// Thread-safe counters for file indexing operations.
+///
+/// Pass an `Arc<IndexingCounters>` to [`batch_compute_file_indexes`] and read
+/// the accumulated values with [`get()`](Self::get).
+#[derive(Debug, Default)]
+pub struct IndexingCounters {
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+    stale: AtomicU64,
+    incompatible_bucket: AtomicU64,
+    computed: AtomicU64,
+    errors: AtomicU64,
+}
+
+impl IndexingCounters {
+    /// Returns a plain snapshot of all counters.
+    pub fn get(&self) -> IndexingSnapshot {
+        IndexingSnapshot {
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            stale: self.stale.load(Ordering::Relaxed),
+            incompatible_bucket: self.incompatible_bucket.load(Ordering::Relaxed),
+            computed: self.computed.load(Ordering::Relaxed),
+            errors: self.errors.load(Ordering::Relaxed),
+        }
+    }
+}
+
+// ============================================================================
 // File Index Cache Builder
 // ============================================================================
 
@@ -214,6 +263,7 @@ impl Default for FileIndexCacheBuilder {
 /// * `cancellation` - Token to signal cancellation from the caller
 /// * `indexing_limits` - Configuration limits for indexing (cardinality, payload size)
 /// * `progress_counter` - Optional atomic counter incremented after each file is indexed
+/// * `indexing_counters` - Optional shared counters for cache hit/miss/computation statistics
 ///
 /// # Returns
 /// Vector of responses for each key. Successful responses contain the file index.
@@ -226,6 +276,7 @@ pub async fn batch_compute_file_indexes(
     cancellation: CancellationToken,
     indexing_limits: IndexingLimits,
     progress_counter: Option<Arc<AtomicUsize>>,
+    indexing_counters: Option<Arc<IndexingCounters>>,
 ) -> Result<Vec<(FileIndexKey, FileIndex)>> {
     let bucket_duration = time_range.bucket_duration_seconds();
     // Phase 1: Batch check cache for all keys upfront
@@ -295,6 +346,13 @@ pub async fn batch_compute_file_indexes(
         cache_hits, cache_misses, stale_entries, incompatible_bucket
     );
 
+    if let Some(ref counters) = indexing_counters {
+        counters.cache_hits.fetch_add(cache_hits, Ordering::Relaxed);
+        counters.cache_misses.fetch_add(cache_misses, Ordering::Relaxed);
+        counters.stale.fetch_add(stale_entries, Ordering::Relaxed);
+        counters.incompatible_bucket.fetch_add(incompatible_bucket, Ordering::Relaxed);
+    }
+
     // Phase 3: Spawn single blocking task with rayon for parallel computation
     //
     // The cancellation token is cloned into the blocking task so that cancellation
@@ -356,6 +414,8 @@ pub async fn batch_compute_file_indexes(
     };
 
     // Phase 4: Update registry and cache, then collect responses
+    let mut computed = 0u64;
+    let mut errors = 0u64;
     for (key, response) in computed_results {
         match response {
             Ok(index) => {
@@ -370,6 +430,7 @@ pub async fn batch_compute_file_indexes(
 
                 cache.insert(key.clone(), index.clone());
                 responses.push((key, index));
+                computed += 1;
             }
             Err(e) => {
                 error!(
@@ -377,8 +438,14 @@ pub async fn batch_compute_file_indexes(
                     key.file.path(),
                     e
                 );
+                errors += 1;
             }
         }
+    }
+
+    if let Some(ref counters) = indexing_counters {
+        counters.computed.fetch_add(computed, Ordering::Relaxed);
+        counters.errors.fetch_add(errors, Ordering::Relaxed);
     }
 
     Ok(responses)

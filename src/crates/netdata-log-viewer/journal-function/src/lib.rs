@@ -12,7 +12,7 @@ pub mod netdata;
 pub use journal_engine::{
     BucketRequest, BucketResponse, CacheEventCounters, CellValue, ColumnInfo, Facets,
     FileIndexCache, FileIndexCacheBuilder, FileIndexKey, Histogram, HistogramEngine,
-    IndexingLimits, LogEntryData, LogQuery, QueryTimeRange, Result, Table,
+    IndexingCounters, IndexingLimits, LogEntryData, LogQuery, QueryTimeRange, Result, Table,
     batch_compute_file_indexes, calculate_bucket_duration, entry_data_to_table,
 };
 

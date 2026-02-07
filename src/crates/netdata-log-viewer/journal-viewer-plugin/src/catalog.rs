@@ -14,7 +14,8 @@ use tracing::{debug, error, info, instrument, warn};
 // Import types from journal-function crate
 use journal_function::{
     CacheEventCounters, Facets, FileIndexCache, FileIndexCacheBuilder, FileIndexKey,
-    HistogramEngine, IndexingLimits, Monitor, Registry, Result as CatalogResult, netdata,
+    HistogramEngine, IndexingCounters, IndexingLimits, Monitor, Registry,
+    Result as CatalogResult, netdata,
 };
 
 /*
@@ -182,6 +183,7 @@ struct CatalogFunctionInner {
     transaction_registry: TransactionRegistry,
     indexing_limits: IndexingLimits,
     event_counters: Arc<CacheEventCounters>,
+    indexing_counters: Arc<IndexingCounters>,
 }
 
 /// Function handler that provides catalog information about journal files
@@ -385,8 +387,9 @@ impl CatalogFunction {
     ) -> CatalogResult<Self> {
         let registry = Registry::new(monitor);
 
-        // Create event counters for cache metrics
+        // Create counters for cache and indexing metrics
         let event_counters = Arc::new(CacheEventCounters::default());
+        let indexing_counters = Arc::new(IndexingCounters::default());
 
         // Create file index cache with disk-backed storage
         let cache = FileIndexCacheBuilder::new()
@@ -408,6 +411,7 @@ impl CatalogFunction {
             transaction_registry: TransactionRegistry::new(),
             indexing_limits,
             event_counters,
+            indexing_counters,
         };
 
         Ok(Self {
@@ -434,6 +438,11 @@ impl CatalogFunction {
     /// Returns the cache event counters for metrics collection.
     pub fn event_counters(&self) -> &Arc<CacheEventCounters> {
         &self.inner.event_counters
+    }
+
+    /// Returns the indexing counters for metrics collection.
+    pub fn indexing_counters(&self) -> &Arc<IndexingCounters> {
+        &self.inner.indexing_counters
     }
 
     /// Returns a reference to the underlying file index cache.
@@ -539,6 +548,7 @@ impl FunctionHandler for CatalogFunction {
             ctx.cancellation.clone(),
             self.inner.indexing_limits,
             Some(ctx.progress.done_counter()),
+            Some(Arc::clone(&self.inner.indexing_counters)),
         )
         .await
         .map_err(|e| {
