@@ -99,6 +99,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, mpsc};
@@ -125,40 +126,76 @@ pub use netdata_env::{LogFormat, LogLevel, LogMethod, NetdataEnv, SyslogFacility
 mod tracing_setup;
 pub use tracing_setup::init_tracing;
 
-/// Handle for pushing progress reports from a function handler to the agent.
+/// Atomic progress state shared between handlers and the runtime ticker.
 ///
-/// The agent uses these reports to extend the function's timeout.
-/// Call [`report`](Self::report) at natural phase boundaries in long-running operations.
+/// Handlers write counters from any context (async, `spawn_blocking`, rayon),
+/// and the runtime sends progress to the agent once per second.
+///
+/// # Example
+///
+/// ```ignore
+/// // Set total work items before handing the counter to workers.
+/// ctx.progress.set_total(files.len());
+///
+/// // Give the done counter to a rayon/blocking worker.
+/// let counter = ctx.progress.done_counter();
+/// rayon::spawn(move || {
+///     // ... process item ...
+///     counter.fetch_add(1, Ordering::Relaxed);
+/// });
+///
+/// // Or update both at once from async code.
+/// ctx.progress.update(done, total);
+/// ```
 #[derive(Clone)]
-pub struct ProgressSender {
-    transaction: String,
-    outbound_tx: mpsc::Sender<Message>,
+pub struct ProgressState {
+    done: Arc<AtomicUsize>,
+    total: Arc<AtomicUsize>,
 }
 
-impl ProgressSender {
-    /// Report progress to the Netdata agent.
-    ///
-    /// The agent uses these reports to extend the function's timeout.
-    /// Call this at natural phase boundaries in long-running operations.
-    pub async fn report(&self, done: usize, total: usize) {
-        let msg = Message::FunctionProgressResponse(Box::new(FunctionProgressResponse {
-            transaction: self.transaction.clone(),
-            done,
-            all: total,
-        }));
-        let _ = self.outbound_tx.send(msg).await;
+impl ProgressState {
+    fn new() -> Self {
+        Self {
+            done: Arc::new(AtomicUsize::new(0)),
+            total: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Update both done and total. Safe from any context.
+    pub fn update(&self, done: usize, total: usize) {
+        self.done.store(done, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    /// Set the total work items (e.g. before handing `done_counter` to workers).
+    pub fn set_total(&self, total: usize) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    /// Get a clone of the done counter for sharing with worker threads.
+    /// Workers call `counter.fetch_add(1, Ordering::Relaxed)` directly.
+    pub fn done_counter(&self) -> Arc<AtomicUsize> {
+        self.done.clone()
+    }
+
+    fn load(&self) -> (usize, usize) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
     }
 }
 
 /// Context provided to function handlers during execution.
 ///
-/// Contains the transaction identifier, a progress sender for pushing progress
-/// reports, and a cancellation token that signals when the function should stop.
+/// Contains the transaction identifier, atomic progress state, and a
+/// cancellation token that signals when the function should stop.
 pub struct FunctionCallContext {
     /// Unique identifier for this function call.
     transaction: String,
-    /// Handle for pushing progress reports to the agent.
-    pub progress: ProgressSender,
+    /// Atomic progress state. The runtime reads these counters once per
+    /// second and sends progress to the agent automatically.
+    pub progress: ProgressState,
     /// Token that signals when the function should stop.
     /// Check `is_cancelled()` in sync code, or `await cancelled()` in async code.
     pub cancellation: CancellationToken,
@@ -371,12 +408,38 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
         // Build the function call context
         let call_ctx = FunctionCallContext {
             transaction: transaction.clone(),
-            progress: ProgressSender {
-                transaction: transaction.clone(),
-                outbound_tx: ctx.outbound_tx.clone(),
-            },
+            progress: ProgressState::new(),
             cancellation: ctx.cancellation_token.clone(),
         };
+
+        // Spawn a background ticker that reads the atomic progress counters
+        // once per second and sends FunctionProgressResponse to the agent.
+        let progress = call_ctx.progress.clone();
+        let ticker_tx = ctx.outbound_tx.clone();
+        let ticker_transaction = transaction.clone();
+
+        let ticker = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let (done, total) = progress.load();
+                if total > 0 {
+                    let msg =
+                        Message::FunctionProgressResponse(Box::new(FunctionProgressResponse {
+                            transaction: ticker_transaction.clone(),
+                            done,
+                            all: total,
+                        }));
+                    tracing::error!(
+                        "[{}] progress {}/{}",
+                        ticker_transaction.clone(),
+                        done,
+                        total
+                    );
+                    let _ = ticker_tx.send(msg).await;
+                }
+            }
+        });
 
         let handler = self.handler.clone();
 
@@ -388,6 +451,8 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
                 })
             }
         };
+
+        ticker.abort();
 
         let current_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

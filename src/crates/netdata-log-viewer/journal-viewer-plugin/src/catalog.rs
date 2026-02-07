@@ -209,6 +209,7 @@ impl CatalogFunction {
         limit: usize,
         direction: journal_index::Direction,
         cancellation: Option<CancellationToken>,
+        progress: Option<Arc<AtomicUsize>>,
     ) -> (Vec<journal_function::LogEntryData>, bool, bool) {
         use journal_function::LogQuery;
 
@@ -255,6 +256,10 @@ impl CatalogFunction {
 
         if let Some(ref t) = cancellation {
             query = query.with_cancellation(t.clone());
+        }
+
+        if let Some(counter) = progress {
+            query = query.with_progress(counter);
         }
 
         // Only apply filter if it's not Filter::none() (which matches nothing)
@@ -506,9 +511,8 @@ impl FunctionHandler for CatalogFunction {
             .map(|f| FileIndexKey::new(&f.file, &facets, Some(source_timestamp_field.clone())))
             .collect();
 
-        // Index all files
-        let progress_counter = Arc::new(AtomicUsize::new(0));
-        let total_files = keys.len();
+        // Index all files, then query the same files — total covers both phases.
+        ctx.progress.set_total(2 * keys.len());
 
         let op_start = std::time::Instant::now();
         let indexed_files = journal_function::batch_compute_file_indexes(
@@ -518,16 +522,13 @@ impl FunctionHandler for CatalogFunction {
             &time_range,
             ctx.cancellation.clone(),
             self.inner.indexing_limits,
-            Some(progress_counter),
+            Some(ctx.progress.done_counter()),
         )
         .await
         .map_err(|e| {
             let msg = format!("[{}] failed to index files: {}", txn.id(), e);
             netdata_plugin_error::NetdataPluginError::Other { message: msg }
         })?;
-
-        // Report progress after indexing phase
-        ctx.progress.report(indexed_files.len(), total_files + 2).await;
         let indexing_duration = op_start.elapsed();
 
         debug!(
@@ -563,14 +564,12 @@ impl FunctionHandler for CatalogFunction {
             })?;
         let histogram_duration = op_start.elapsed();
 
-        // Report progress after histogram phase
-        ctx.progress.report(indexed_files.len() + 1, total_files + 2).await;
-
         // Query logs from pre-indexed files, wrapped in spawn_blocking so the
         // async runtime can handle cancellation while this runs.
         let op_start = std::time::Instant::now();
         let limit = request.last.unwrap_or(200);
         let file_indexes: Vec<_> = indexed_files.iter().map(|(_, idx)| idx.clone()).collect();
+        let query_progress = ctx.progress.done_counter();
 
         let query_filter = filter_expr.clone();
         let query_search = request.query.clone();
@@ -589,6 +588,7 @@ impl FunctionHandler for CatalogFunction {
                 limit,
                 query_direction,
                 Some(query_cancellation),
+                Some(query_progress),
             )
         });
 

@@ -14,6 +14,8 @@ use journal_index::{
 use journal_registry::File;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::warn;
 
 /// Pagination state for multi-file log queries.
@@ -53,6 +55,7 @@ pub struct LogQuery<'a> {
     file_indexes: &'a [FileIndex],
     builder: LogQueryParamsBuilder,
     cancellation: Option<CancellationToken>,
+    progress: Option<Arc<AtomicUsize>>,
 }
 
 impl<'a> LogQuery<'a> {
@@ -77,6 +80,7 @@ impl<'a> LogQuery<'a> {
                 Some(FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP")),
             ),
             cancellation: None,
+            progress: None,
         }
     }
 
@@ -144,6 +148,15 @@ impl<'a> LogQuery<'a> {
         self
     }
 
+    /// Set a progress counter for the query (optional).
+    ///
+    /// When set, the counter is incremented (via `fetch_add`) after each file
+    /// is processed in `retrieve_log_entries`.
+    pub fn with_progress(mut self, counter: Arc<AtomicUsize>) -> Self {
+        self.progress = Some(counter);
+        self
+    }
+
     /// Execute the query and return log entries.
     ///
     /// This consumes the builder and returns a vector of log entries sorted by timestamp
@@ -155,7 +168,7 @@ impl<'a> LogQuery<'a> {
     pub fn execute(self) -> Result<Vec<LogEntryData>> {
         let params = self.builder.build()?;
         let (log_entry_ids, _state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, None, self.cancellation.as_ref());
+            retrieve_log_entries(self.file_indexes.to_vec(), params, None, self.cancellation.as_ref(), self.progress.as_ref());
 
         extract_entry_data(&log_entry_ids)
     }
@@ -183,7 +196,7 @@ impl<'a> LogQuery<'a> {
     ) -> Result<(Vec<LogEntryData>, PaginationState)> {
         let params = self.builder.build()?;
         let (log_entry_ids, new_state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, state, self.cancellation.as_ref());
+            retrieve_log_entries(self.file_indexes.to_vec(), params, state, self.cancellation.as_ref(), self.progress.as_ref());
 
         let data = extract_entry_data(&log_entry_ids)?;
         Ok((data, new_state))
@@ -210,6 +223,7 @@ fn retrieve_log_entries(
     params: LogQueryParams,
     state: Option<&PaginationState>,
     cancellation: Option<&CancellationToken>,
+    progress: Option<&Arc<AtomicUsize>>,
 ) -> (Vec<LogEntryId>, PaginationState) {
     // Handle edge cases
     if params.limit() == Some(0) || file_indexes.is_empty() {
@@ -351,6 +365,10 @@ fn retrieve_log_entries(
         // sorted order and respecting the limit constraint
         collected_entries =
             merge_log_entries(collected_entries, new_entries, limit, params.direction());
+
+        if let Some(counter) = progress {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     // Update pagination state based on the last position for each file in collected_entries
