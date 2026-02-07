@@ -9,7 +9,7 @@ use crate::{
     error::{EngineError, Result},
     query_time_range::QueryTimeRange,
 };
-use foundation::Timeout;
+use tokio_util::sync::CancellationToken;
 use journal_index::{FileIndex, FileIndexer, IndexingLimits};
 use journal_registry::Registry;
 use std::sync::Arc;
@@ -139,19 +139,19 @@ impl Default for FileIndexCacheBuilder {
 /// * `registry` - Registry to update with file metadata
 /// * `keys` - Vector of (file, facets, source_timestamp_field) to fetch/compute indexes for
 /// * `time_range` - Query time range for bucket duration calculation
-/// * `timeout` - Timeout for the entire operation (can be extended dynamically)
+/// * `cancellation` - Token to signal cancellation from the caller
 /// * `indexing_limits` - Configuration limits for indexing (cardinality, payload size)
 /// * `progress_counter` - Optional atomic counter incremented after each file is indexed
 ///
 /// # Returns
 /// Vector of responses for each key. Successful responses contain the file index.
-/// If timeout expires, returns TimeBudgetExceeded error.
+/// If cancelled, returns Cancelled error.
 pub async fn batch_compute_file_indexes(
     cache: &FileIndexCache,
     registry: &Registry,
     keys: Vec<FileIndexKey>,
     time_range: &QueryTimeRange,
-    timeout: Timeout,
+    cancellation: CancellationToken,
     indexing_limits: IndexingLimits,
     progress_counter: Option<Arc<AtomicUsize>>,
 ) -> Result<Vec<(FileIndexKey, FileIndex)>> {
@@ -169,13 +169,10 @@ pub async fn batch_compute_file_indexes(
         }
     });
 
-    let cache_lookup_results: Vec<(FileIndexKey, Result<Option<FileIndex>>)> =
-        tokio::time::timeout(
-            timeout.remaining(),
-            futures::future::join_all(cache_lookup_futures),
-        )
-        .await
-        .map_err(|_| EngineError::TimeBudgetExceeded)?;
+    let cache_lookup_results: Vec<(FileIndexKey, Result<Option<FileIndex>>)> = tokio::select! {
+        results = futures::future::join_all(cache_lookup_futures) => results,
+        _ = cancellation.cancelled() => return Err(EngineError::Cancelled),
+    };
 
     // Phase 2: Separate cache hits from misses, check freshness and compatibility
     let mut responses = Vec::with_capacity(keys.len());
@@ -217,8 +214,8 @@ pub async fn batch_compute_file_indexes(
         }
     }
 
-    if timeout.is_expired() {
-        return Err(EngineError::TimeBudgetExceeded);
+    if cancellation.is_cancelled() {
+        return Err(EngineError::Cancelled);
     }
 
     trace!(
@@ -228,25 +225,24 @@ pub async fn batch_compute_file_indexes(
 
     // Phase 3: Spawn single blocking task with rayon for parallel computation
     //
-    // The timeout is cloned into the blocking task so that deadline resets (from
-    // progress reporting) are visible to the per-file expiry check.
-    let timeout_for_blocking = timeout.clone();
+    // The cancellation token is cloned into the blocking task so that cancellation
+    // is visible to the per-file check.
+    let cancellation_for_blocking = cancellation.clone();
 
     let compute_task = tokio::task::spawn_blocking(move || {
         use rayon::prelude::*;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let timed_out = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
 
         keys_to_compute
             .into_par_iter()
             .map(|key| {
-                // Check time budget before processing (uses the shared atomic deadline,
-                // so resets from progress reporting are visible here)
-                if timeout_for_blocking.is_expired() || timed_out.load(Ordering::Relaxed) {
-                    timed_out.store(true, Ordering::Relaxed);
-                    return (key, Err(EngineError::TimeBudgetExceeded));
+                // Check cancellation before processing
+                if cancellation_for_blocking.is_cancelled() || cancelled.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return (key, Err(EngineError::Cancelled));
                 }
 
                 let mut file_indexer = FileIndexer::new(indexing_limits);
@@ -270,31 +266,20 @@ pub async fn batch_compute_file_indexes(
             .collect::<Vec<(FileIndexKey, Result<FileIndex>)>>()
     });
 
-    // Poll the blocking task with periodic timeout checks. We can't use a single
-    // tokio::time::timeout() because the Timeout deadline may be extended by
-    // progress-triggered resets happening concurrently.
-    tokio::pin!(compute_task);
-
-    let computed_results = loop {
-        tokio::select! {
-            result = &mut compute_task => {
-                match result {
-                    Ok(results) => break results,
-                    Err(e) => {
-                        return Err(EngineError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Blocking task panicked: {}", e),
-                        )));
-                    }
+    let computed_results = tokio::select! {
+        result = compute_task => {
+            match result {
+                Ok(results) => results,
+                Err(e) => {
+                    return Err(EngineError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Blocking task panicked: {}", e),
+                    )));
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                if timeout.is_expired() {
-                    // The blocking task will also stop processing new files via
-                    // its own is_expired() check, but we stop waiting here.
-                    return Err(EngineError::TimeBudgetExceeded);
-                }
-            }
+        }
+        _ = cancellation.cancelled() => {
+            return Err(EngineError::Cancelled);
         }
     };
 

@@ -5,7 +5,7 @@
 //! functions for extracting raw field data from journal entries.
 
 use crate::error::Result;
-use foundation::Timeout;
+use tokio_util::sync::CancellationToken;
 use journal_core::file::{JournalFile, Mmap};
 use journal_index::{
     Anchor, Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId, LogQueryParams,
@@ -52,7 +52,7 @@ pub struct PaginationState {
 pub struct LogQuery<'a> {
     file_indexes: &'a [FileIndex],
     builder: LogQueryParamsBuilder,
-    timeout: Option<Timeout>,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<'a> LogQuery<'a> {
@@ -76,7 +76,7 @@ impl<'a> LogQuery<'a> {
             builder: LogQueryParamsBuilder::new(anchor, direction).with_source_timestamp_field(
                 Some(FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP")),
             ),
-            timeout: None,
+            cancellation: None,
         }
     }
 
@@ -135,13 +135,12 @@ impl<'a> LogQuery<'a> {
         self
     }
 
-    /// Set a timeout for the query (optional).
+    /// Set a cancellation token for the query (optional).
     ///
-    /// When set, the query will check the timeout before processing each file
-    /// and return early with partial results if the timeout has expired.
-    /// This also allows external cancellation via `Timeout::expire()`.
-    pub fn with_timeout(mut self, timeout: Timeout) -> Self {
-        self.timeout = Some(timeout);
+    /// When set, the query will check the token before processing each file
+    /// and return early with partial results if cancelled.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
         self
     }
 
@@ -156,7 +155,7 @@ impl<'a> LogQuery<'a> {
     pub fn execute(self) -> Result<Vec<LogEntryData>> {
         let params = self.builder.build()?;
         let (log_entry_ids, _state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, None, self.timeout.as_ref());
+            retrieve_log_entries(self.file_indexes.to_vec(), params, None, self.cancellation.as_ref());
 
         extract_entry_data(&log_entry_ids)
     }
@@ -184,7 +183,7 @@ impl<'a> LogQuery<'a> {
     ) -> Result<(Vec<LogEntryData>, PaginationState)> {
         let params = self.builder.build()?;
         let (log_entry_ids, new_state) =
-            retrieve_log_entries(self.file_indexes.to_vec(), params, state, self.timeout.as_ref());
+            retrieve_log_entries(self.file_indexes.to_vec(), params, state, self.cancellation.as_ref());
 
         let data = extract_entry_data(&log_entry_ids)?;
         Ok((data, new_state))
@@ -210,7 +209,7 @@ fn retrieve_log_entries(
     file_indexes: Vec<FileIndex>,
     params: LogQueryParams,
     state: Option<&PaginationState>,
-    timeout: Option<&Timeout>,
+    cancellation: Option<&CancellationToken>,
 ) -> (Vec<LogEntryId>, PaginationState) {
     // Handle edge cases
     if params.limit() == Some(0) || file_indexes.is_empty() {
@@ -282,10 +281,10 @@ fn retrieve_log_entries(
     let mut new_state = state.cloned().unwrap_or_default();
 
     for file_index in relevant_indexes {
-        // Check timeout/cancellation before processing each file
-        if let Some(timeout) = timeout {
-            if timeout.is_expired() {
-                warn!("log query timed out after processing {} files, returning partial results",
+        // Check cancellation before processing each file
+        if let Some(token) = cancellation {
+            if token.is_cancelled() {
+                warn!("log query cancelled after processing {} files, returning partial results",
                     new_state.file_positions.len());
                 break;
             }
