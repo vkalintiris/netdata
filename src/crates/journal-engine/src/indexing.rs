@@ -174,7 +174,6 @@ pub async fn batch_compute_file_indexes(
             let cached = cache
                 .get(&key_clone)
                 .await
-                .map(|entry| entry.map(|e| e.value().clone()))
                 .map_err(EngineError::from);
             (key_clone, cached)
         }

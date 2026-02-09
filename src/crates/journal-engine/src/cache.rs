@@ -1,7 +1,7 @@
 //! Cache types for journal file indexes
 
 use crate::facets::Facets;
-use foyer::{HybridCache, HybridCacheEntry};
+use foyer::HybridCache;
 use journal_index::{FieldName, FileIndex};
 use journal_registry::File;
 use serde::{Deserialize, Serialize};
@@ -55,11 +55,11 @@ impl FileIndexCache {
     }
 
     /// Gets a value from the cache by key.
-    pub async fn get(
-        &self,
-        key: &FileIndexKey,
-    ) -> foyer::Result<Option<HybridCacheEntry<FileIndexKey, FileIndex>>> {
-        self.inner.get(key).await
+    pub async fn get(&self, key: &FileIndexKey) -> foyer::Result<Option<FileIndex>> {
+        self.inner
+            .get(key)
+            .await
+            .map(|entry| entry.map(|e| e.value().clone()))
     }
 
     /// Returns the memory usage in bytes (sum of all cached item weights).
