@@ -11,6 +11,11 @@ fn default_workers() -> usize {
     num_cpus::get()
 }
 
+/// Default value for memory_budget (32MB)
+fn default_memory_budget() -> ByteSize {
+    ByteSize::mb(32)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalConfig {
@@ -35,8 +40,15 @@ pub struct CacheConfig {
     /// Directory to store the hybrid cache (memory + disk)
     pub directory: String,
 
-    /// Memory cache capacity (number of entries to cache in memory)
-    pub memory_capacity: usize,
+    /// Deprecated: This field is ignored. Use memory_budget instead.
+    #[serde(default)]
+    pub memory_capacity: Option<usize>,
+
+    /// Memory budget for the in-memory cache.
+    /// Accepts human-readable sizes: "32MB", "128MB", "512MB"
+    /// Default: 32MB
+    #[serde(default = "default_memory_budget", with = "bytesize_serde")]
+    pub memory_budget: ByteSize,
 
     /// Disk cache size (total size of disk-backed cache)
     #[serde(with = "bytesize_serde")]
@@ -58,7 +70,8 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             directory: String::from("/var/cache/netdata/log-viewer"),
-            memory_capacity: 1000,
+            memory_capacity: None,
+            memory_budget: default_memory_budget(),
             disk_capacity: ByteSize::mb(32),
             block_size: ByteSize::mb(4),
             workers: default_workers(),
@@ -214,8 +227,16 @@ impl PluginConfig {
             }
         }
 
-        if config.cache.memory_capacity == 0 {
-            anyhow::bail!("cache.memory_capacity must be greater than 0");
+        // Warn about deprecated memory_capacity option
+        if config.cache.memory_capacity.is_some() {
+            warn!(
+                "cache.memory_capacity is deprecated and ignored. \
+                 Use cache.memory_budget instead (default: 32MB)"
+            );
+        }
+
+        if config.cache.memory_budget.as_u64() == 0 {
+            anyhow::bail!("cache.memory_budget must be greater than 0");
         }
 
         if config.cache.disk_capacity.as_u64() == 0 {

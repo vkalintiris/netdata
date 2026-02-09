@@ -9,11 +9,11 @@ use crate::{
     error::{EngineError, Result},
     query_time_range::QueryTimeRange,
 };
-use tokio_util::sync::CancellationToken;
 use journal_index::{FileIndex, FileIndexer, IndexingLimits};
 use journal_registry::Registry;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
 
 // ============================================================================
@@ -23,7 +23,7 @@ use tracing::{error, trace};
 /// Builder for constructing a FileIndexCache with custom configuration.
 pub struct FileIndexCacheBuilder {
     cache_path: Option<std::path::PathBuf>,
-    memory_capacity: Option<usize>,
+    memory_budget: Option<usize>,
     disk_capacity: Option<usize>,
     block_size: Option<usize>,
 }
@@ -33,13 +33,13 @@ impl FileIndexCacheBuilder {
     ///
     /// All options use defaults if not explicitly set:
     /// - Cache path: temp directory + "journal-engine-cache"
-    /// - Memory capacity: 128 entries
+    /// - Memory budget: 32 MB
     /// - Disk capacity: 16 MB
     /// - Block size: 4 MB
     pub fn new() -> Self {
         Self {
             cache_path: None,
-            memory_capacity: None,
+            memory_budget: None,
             disk_capacity: None,
             block_size: None,
         }
@@ -51,9 +51,13 @@ impl FileIndexCacheBuilder {
         self
     }
 
-    /// Sets the memory capacity (number of items to keep in memory).
-    pub fn with_memory_capacity(mut self, capacity: usize) -> Self {
-        self.memory_capacity = Some(capacity);
+    /// Sets the memory budget in bytes.
+    ///
+    /// The cache uses a weigher function to measure the actual memory size of each
+    /// `FileIndex` entry using the `allocative` crate. The cache will evict entries
+    /// when the total weight exceeds this budget.
+    pub fn with_memory_budget(mut self, budget: usize) -> Self {
+        self.memory_budget = Some(budget);
         self
     }
 
@@ -80,7 +84,7 @@ impl FileIndexCacheBuilder {
         let cache_path = self
             .cache_path
             .unwrap_or_else(|| std::env::temp_dir().join("journal-engine-cache"));
-        let memory_capacity = self.memory_capacity.unwrap_or(128);
+        let memory_budget = self.memory_budget.unwrap_or(32 * 1024 * 1024); // 32 MB
         let disk_capacity = self.disk_capacity.unwrap_or(16 * 1024 * 1024);
         let block_size = self.block_size.unwrap_or(4 * 1024 * 1024);
 
@@ -92,12 +96,19 @@ impl FileIndexCacheBuilder {
             )))
         })?;
 
-        // Build Foyer hybrid cache
-        let cache = HybridCacheBuilder::new()
+        // Build Foyer hybrid cache with memory budget measured in bytes.
+        // The weigher function uses allocative to measure the actual memory
+        // footprint of each FileIndex entry. Foyer calls the weigher only on
+        // insertion and on disk-to-memory promotion, it then caches the result
+        // for the entry's lifetime.
+        let inner = HybridCacheBuilder::new()
             .with_name("file-index-cache")
             .with_policy(foyer::HybridCachePolicy::WriteOnInsertion)
-            .memory(memory_capacity)
+            .memory(memory_budget)
             .with_shards(4)
+            .with_weighter(|_key: &FileIndexKey, value: &FileIndex| {
+                allocative::size_of_unique(value)
+            })
             .storage()
             .with_io_engine(PsyncIoEngineBuilder::new().build().await?)
             .with_engine_config(
@@ -111,7 +122,7 @@ impl FileIndexCacheBuilder {
             .build()
             .await?;
 
-        Ok(cache)
+        Ok(FileIndexCache::new(inner))
     }
 }
 
@@ -164,7 +175,7 @@ pub async fn batch_compute_file_indexes(
                 .get(&key_clone)
                 .await
                 .map(|entry| entry.map(|e| e.value().clone()))
-                .map_err(|e| e.into());
+                .map_err(EngineError::from);
             (key_clone, cached)
         }
     });
@@ -231,7 +242,6 @@ pub async fn batch_compute_file_indexes(
 
     let compute_task = tokio::task::spawn_blocking(move || {
         use rayon::prelude::*;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let cancelled = Arc::new(AtomicBool::new(false));

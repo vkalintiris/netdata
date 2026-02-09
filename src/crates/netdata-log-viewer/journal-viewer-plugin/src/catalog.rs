@@ -372,13 +372,13 @@ impl CatalogFunction {
     /// # Arguments
     /// * `monitor` - File system monitor for watching journal directories
     /// * `cache_dir` - Directory path for disk cache storage
-    /// * `memory_capacity` - Number of file indexes to keep in memory
+    /// * `memory_budget` - Memory budget for in-memory cache in bytes
     /// * `disk_capacity` - Disk cache size in bytes
     /// * `indexing_limits` - Configuration limits for indexing (cardinality, payload size)
     pub async fn new(
         monitor: Monitor,
         cache_dir: impl Into<std::path::PathBuf>,
-        memory_capacity: usize,
+        memory_budget: usize,
         disk_capacity: usize,
         indexing_limits: IndexingLimits,
     ) -> CatalogResult<Self> {
@@ -387,7 +387,7 @@ impl CatalogFunction {
         // Create file index cache with disk-backed storage
         let cache = FileIndexCacheBuilder::new()
             .with_cache_path(cache_dir)
-            .with_memory_capacity(memory_capacity)
+            .with_memory_budget(memory_budget)
             .with_disk_capacity(disk_capacity)
             .with_block_size(4 * 1024 * 1024)
             .build()
@@ -654,6 +654,18 @@ impl FunctionHandler for CatalogFunction {
             max_to_return: limit,
         };
 
+        let cache_usage = self.inner.cache.memory_usage();
+        let cache_capacity = self.inner.cache.memory_capacity();
+        let cache_stats = netdata::CacheStats {
+            usage: cache_usage,
+            capacity: cache_capacity,
+            usage_ratio: if cache_capacity > 0 {
+                (cache_usage as f64 / cache_capacity as f64) * 100.0
+            } else {
+                0.0
+            },
+        };
+
         let response = CatalogResponse {
             progress: 100, // All responses are now complete
             version: netdata::Version::default(),
@@ -666,6 +678,7 @@ impl FunctionHandler for CatalogFunction {
             data,
             default_charts: Vec::new(),
             items,
+            cache_stats,
             show_ids: false,
             has_history: true,
             status: 200,

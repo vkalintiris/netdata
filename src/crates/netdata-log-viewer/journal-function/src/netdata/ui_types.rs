@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Top-level response containing facets, available histograms, and a histogram.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Response {
     pub facets: Vec<Facet>,
     pub available_histograms: Vec<AvailableHistogram>,
@@ -20,7 +20,7 @@ pub struct Response {
 
 /// Represents an available histogram option.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct AvailableHistogram {
     pub id: String,
     pub name: String,
@@ -29,7 +29,7 @@ pub struct AvailableHistogram {
 
 /// A facet represents a field with multiple value options.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Facet {
     pub id: String,
     pub name: String,
@@ -39,7 +39,7 @@ pub struct Facet {
 
 /// A single option within a facet.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct FacetOption {
     pub id: String,
     pub name: String,
@@ -49,7 +49,7 @@ pub struct FacetOption {
 
 /// A histogram for a specific field.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Histogram {
     pub id: String,
     pub name: String,
@@ -64,7 +64,7 @@ impl Histogram {
 
 /// A chart containing view metadata and result data.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Chart {
     pub view: ChartView,
     pub result: ChartResult,
@@ -78,7 +78,7 @@ impl Chart {
 
 /// Chart view metadata describing how to display the chart.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct ChartView {
     pub title: String,
     pub after: u32,
@@ -91,7 +91,7 @@ pub struct ChartView {
 
 /// Dimensions for the chart view.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct ChartDimensions {
     pub ids: Vec<String>,
     pub names: Vec<String>,
@@ -100,7 +100,7 @@ pub struct ChartDimensions {
 
 /// Chart result data containing labels, point metadata, and time series data.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct ChartResult {
     pub labels: Vec<String>,
     pub point: ChartPoint,
@@ -123,7 +123,7 @@ impl ChartResult {
 
 /// Point metadata for chart result.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct ChartPoint {
     pub value: u64,
     pub arp: u64,
@@ -132,7 +132,7 @@ pub struct ChartPoint {
 
 /// A single data point in a time series.
 #[derive(Debug)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct DataPoint {
     pub timestamp: u64,
     pub items: Vec<[usize; 3]>,

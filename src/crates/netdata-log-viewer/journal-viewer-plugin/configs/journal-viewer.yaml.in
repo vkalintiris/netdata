@@ -16,10 +16,12 @@ cache:
   # Default: /var/cache/netdata/log-viewer
   directory: "@cachedir_POST@/log-viewer"
 
-  # Memory cache capacity (number of indexed journal entries to keep in memory)
-  # Higher values improve query performance but use more RAM
-  # Default: 1000
-  memory_capacity: 1000
+  # Memory budget for the in-memory cache.
+  # Accepts human-readable sizes: "32MB", "128MB", "512MB", etc.
+  # The cache uses accurate memory measurement for each entry,
+  # so this directly limits memory consumption.
+  # Default: 32MB
+  memory_budget: "32MB"
 
   # Disk cache size (maximum size of the disk-backed cache)
   # Accepts human-readable sizes: "32MB", "64MB", "1GB", etc.

@@ -14,7 +14,7 @@ use std::fmt;
 ///
 /// This represents just the field name without any associated value.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct FieldName(String);
 
 impl FieldName {
@@ -76,7 +76,7 @@ impl AsRef<str> for FieldName {
 /// Invariant: Always in the format "field=value". The value portion may contain '=' characters.
 /// The split is always at the first '=' character.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct FieldValuePair {
     // Store the formatted string for efficient HashMap lookups
     key: String,

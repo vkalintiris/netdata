@@ -8,14 +8,14 @@ use uuid::Uuid;
 
 /// Status of a journal file
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub enum Status {
     /// Active journal file currently being written to
     Active,
     /// Archived journal file that has been rotated and is no longer being written to
     Archived {
         /// Sequence number ID for ordering entries across files
-        #[cfg_attr(feature = "allocative", allocative(skip))]
+        #[allocative(skip)]
         seqnum_id: Uuid,
         /// Sequence number of the first entry in this file
         head_seqnum: u64,
@@ -133,7 +133,7 @@ impl Status {
 
 /// Source of journal entries
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub enum Source {
     /// System-wide journal (system.journal)
     System,
@@ -171,10 +171,10 @@ impl Source {
 
 /// Origin identifies where a journal file comes from
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Origin {
     /// Machine ID from which the journal originates
-    #[cfg_attr(feature = "allocative", allocative(skip))]
+    #[allocative(skip)]
     pub machine_id: Option<Uuid>,
     /// Optional namespace for isolated journal instances
     pub namespace: Option<String>,
@@ -183,7 +183,7 @@ pub struct Origin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub(crate) struct FileInner {
     pub(crate) path: String,
     pub(crate) origin: Origin,
@@ -191,7 +191,7 @@ pub(crate) struct FileInner {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct File {
     pub(super) inner: Arc<FileInner>,
 }

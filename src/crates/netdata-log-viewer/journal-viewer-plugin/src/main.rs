@@ -44,10 +44,10 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let config = &plugin_config.config;
 
     info!(
-        "configuration loaded: journal_paths={:?}, cache_dir={}, memory_capacity={}, disk_capacity={}, workers={}, max_unique_values_per_field={}, max_field_payload_size={}",
+        "configuration loaded: journal_paths={:?}, cache_dir={}, memory_budget={}, disk_capacity={}, workers={}, max_unique_values_per_field={}, max_field_payload_size={}",
         config.journal.paths,
         config.cache.directory,
-        config.cache.memory_capacity,
+        config.cache.memory_budget,
         config.cache.disk_capacity,
         config.cache.workers,
         config.indexing.max_unique_values_per_field,
@@ -73,7 +73,7 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let catalog_function = CatalogFunction::new(
         monitor,
         &config.cache.directory,
-        config.cache.memory_capacity,
+        config.cache.memory_budget.as_u64() as usize,
         config.cache.disk_capacity.as_u64() as usize,
         indexing_limits,
     )

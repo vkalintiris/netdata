@@ -14,7 +14,7 @@ use tracing::error;
 /// This ordering is maintained automatically by [`insert_file()`](Self::insert_file)
 /// and is critical for correct time-range queries.
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Chain {
     /// Ordered collection of files maintaining the sorting invariant
     pub(crate) files: VecDeque<File>,
@@ -173,7 +173,7 @@ impl Chain {
 }
 
 #[derive(Default, Debug)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub(super) struct Directory {
     pub(super) chains: HashMap<Origin, Chain>,
 }
@@ -191,7 +191,7 @@ pub(super) struct Directory {
 /// This structure allows efficient querying and management of journal files
 /// from multiple directories and origins.
 #[derive(Default)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Repository {
     /// Maps journal directory paths to their contents
     pub(super) directories: HashMap<String, Directory>,

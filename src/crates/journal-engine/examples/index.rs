@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = FileIndexCacheBuilder::new()
         // .with_cache_path("/mnt/slow-disk/foyer-cache")
         .with_cache_path("/tmp/foyer-cache")
-        .with_memory_capacity(1000)
+        .with_memory_budget(1024 * 1024 * 1024) // 1 GB
         .with_disk_capacity(2048 * 1024 * 1024)
         .with_block_size(4 * 1024 * 1024)
         .build()

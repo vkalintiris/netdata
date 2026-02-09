@@ -26,7 +26,7 @@ pub fn extract_field_name(item: &[u8]) -> Option<&[u8]> {
 
 /// Bidirectional mapping registry between original field names and their systemd-compatible versions.
 #[derive(Debug, Default)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct FieldMap {
     /// Maps original field name → remapped name (ND_<md5>)
     otel_to_systemd: HashMap<Vec<u8>, String>,
