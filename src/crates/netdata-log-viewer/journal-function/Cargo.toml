@@ -7,10 +7,8 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[features]
-allocative = ["dep:allocative"]
-
 [dependencies]
+allocative = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -31,8 +29,6 @@ journal-index = { workspace = true }
 journal-engine = { workspace = true }
 journal-registry = { workspace = true }
 rt = { path = "../../netdata-plugin/rt" }
-
-allocative = { workspace = true, optional = true }
 
 [dev-dependencies]
 chrono = { workspace = true }

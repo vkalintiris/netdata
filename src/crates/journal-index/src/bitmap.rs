@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Wraps [`RoaringBitmap`] and supports bitwise AND/OR operations for combining filters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 #[serde(transparent)]
 pub struct Bitmap(pub RoaringBitmap);
 

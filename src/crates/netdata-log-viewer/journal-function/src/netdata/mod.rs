@@ -18,8 +18,8 @@ pub use builder::build_ui_response;
 
 // Protocol types
 pub use types::{
-    Items, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption, Pagination,
-    RequestParam, RequiredParam, Version,
+    CacheStats, Items, JournalRequest, JournalResponse, MultiSelection, MultiSelectionOption,
+    Pagination, RequestParam, RequiredParam, Version,
 };
 
 // Log formatting

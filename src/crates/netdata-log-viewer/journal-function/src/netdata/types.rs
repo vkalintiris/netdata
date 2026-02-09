@@ -187,6 +187,17 @@ pub struct Items {
     pub max_to_return: usize,
 }
 
+/// Statistics about the in-memory file index cache.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CacheStats {
+    /// Current memory usage in bytes (sum of all cached FileIndex weights).
+    pub usage: usize,
+    /// Maximum memory capacity in bytes.
+    pub capacity: usize,
+    /// Usage ratio as a percentage (0.0 to 100.0).
+    pub usage_ratio: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JournalResponse {
     pub progress: u32,
@@ -206,6 +217,9 @@ pub struct JournalResponse {
     pub default_charts: Vec<u32>,
 
     pub items: Items,
+
+    /// In-memory cache statistics.
+    pub cache_stats: CacheStats,
 
     // Hard-coded stuff
     pub show_ids: bool,

@@ -21,7 +21,7 @@ use tracing::{error, trace};
 /// file at the time it was indexed. For actively-written files, the index may
 /// become stale and need rebuilding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct FileIndex {
     // The file this index was created for
     file: File,

@@ -10,14 +10,14 @@ use std::ops::{Add, Rem, Sub};
 ///
 /// Used for histogram buckets, time ranges, and coarse-grained time operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Seconds(pub u32);
 
 /// Timestamp in microseconds since Unix epoch.
 ///
 /// Used for journal entry timestamps and fine-grained time operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Microseconds(pub u64);
 
 impl Seconds {

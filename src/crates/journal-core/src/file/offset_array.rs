@@ -172,7 +172,7 @@ impl std::fmt::Debug for Node {
 
 /// A linked list of offset arrays
 #[derive(Copy, Clone)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct List {
     head_offset: NonZeroU64,
     total_items: NonZeroUsize,
@@ -325,7 +325,7 @@ impl List {
 
 /// A cursor pointing to a specific position within an offset array chain
 #[derive(Clone, Copy)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Cursor {
     list: List,
     array_offset: NonZeroU64,
@@ -505,7 +505,7 @@ impl std::fmt::Debug for Cursor {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct InlinedCursor {
     inlined_offset: NonZeroU64,
     cursor: Option<Cursor>,

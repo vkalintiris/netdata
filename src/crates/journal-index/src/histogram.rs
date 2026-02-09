@@ -19,7 +19,7 @@ use std::num::NonZeroU32;
 /// - Bucket [0, 60) contains entries with indices 0-4 (5 entries)
 /// - Bucket [60, 120) contains entries with indices 5-9 (5 entries)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Bucket {
     /// Start time of this bucket (aligned to bucket_duration)
     pub start_time: Seconds,
@@ -34,7 +34,7 @@ pub struct Bucket {
 /// - `start_time % bucket_duration == 0` for all buckets
 /// - Always contains at least one bucket
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Histogram {
     /// Fixed size of each time bucket in seconds
     pub bucket_duration: NonZeroU32,

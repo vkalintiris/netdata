@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// - Matching a field name (e.g., "PRIORITY" matches any PRIORITY value)
 /// - Matching a specific field=value pair (e.g., "PRIORITY=error")
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 enum FilterTarget {
     /// Match any entry that has this field, regardless of value
     Field(FieldName),
@@ -24,7 +24,7 @@ enum FilterTarget {
 ///
 /// Filters can be combined using [`Filter::and()`] and [`Filter::or()`] for complex queries.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 pub struct Filter {
     inner: Arc<FilterExpr<FilterTarget>>,
 }
@@ -109,7 +109,7 @@ impl std::fmt::Display for Filter {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+#[derive(allocative::Allocative)]
 enum FilterExpr<T> {
     None,
     Match(T),
