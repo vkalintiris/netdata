@@ -1363,6 +1363,8 @@ set(API_PLUGIN_FILES
         src/web/api/functions/function-progress.h
         src/web/api/functions/function-streaming.c
         src/web/api/functions/function-streaming.h
+        src/web/api/functions/function-fanout.c
+        src/web/api/functions/function-fanout.h
         src/web/api/queries/rrdr.c
         src/web/api/queries/rrdr.h
         src/web/api/queries/query.c

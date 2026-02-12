@@ -44,6 +44,18 @@ void global_functions_add(void) {
     rrd_function_add_inline(
         localhost,
         NULL,
+        "fanout",
+        120,
+        RRDFUNCTIONS_PRIORITY_DEFAULT,
+        RRDFUNCTIONS_VERSION_DEFAULT,
+        RRDFUNCTIONS_FANOUT_HELP,
+        "top",
+        HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA,
+        function_fanout);
+
+    rrd_function_add_inline(
+        localhost,
+        NULL,
         "netdata-metrics-cardinality",
         10,
         RRDFUNCTIONS_PRIORITY_DEFAULT + 1,

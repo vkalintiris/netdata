@@ -9,6 +9,7 @@
 #include "function-streaming.h"
 #include "function-progress.h"
 #include "function-bearer_get_token.h"
+#include "function-fanout.h"
 
 void global_functions_add(void);
 
