@@ -1,0 +1,12 @@
+  # Basic fanout with default 120s timeout                                                                                                                                                                         
+  curl -s "http://localhost:20000/api/v1/function?function=fanout+netdata-streaming&timeout=120" | jq .
+                                                                                                                                                                                                                   
+  # With explicit 10s timeout                               
+  curl -s "http://localhost:20000/api/v1/function?function=fanout+netdata-streaming+timeout:10&timeout=120" | jq .
+
+  # Fanout a function that no host has (should return 404)
+  curl -s "http://localhost:20000/api/v1/function?function=fanout+nonexistent-function&timeout=10" | jq .
+
+  # No target function (should return 400 with usage)
+  curl -s "http://localhost:20000/api/v1/function?function=fanout&timeout=10" | jq .
+

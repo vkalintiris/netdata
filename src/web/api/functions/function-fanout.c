@@ -3,8 +3,12 @@
 // Fan-out function: dispatches a function call to all nodes that have it registered,
 // collects their responses concurrently, and returns a combined JSON result.
 //
-// Usage:  fanout <function-name> [arguments...]
-// Example: fanout otel-signal-viewer after:-3600 before:0
+// Usage:  fanout <function-name> [arguments...] [timeout:SECONDS]
+// Example: fanout otel-signal-viewer after:-3600 before:0 timeout:10
+//
+// The timeout:SECONDS argument is consumed by fanout and not forwarded to the
+// target function. It controls both the per-child rrd_function_run() timeout
+// and the condvar wait deadline. Defaults to 120s if not specified.
 //
 // The implementation uses two passes over rrdhost_root_index:
 //  1. Count how many hosts have the target function (to pre-allocate the results array).
@@ -66,7 +70,12 @@ static void fanout_result_callback(BUFFER *wb __maybe_unused, int code, void *da
     netdata_mutex_unlock(&state->mutex);
 }
 
-int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const char *source) {
+int function_fanout(struct rrd_function_execute *rfe, void *data __maybe_unused) {
+    BUFFER *wb = rfe->result.wb;
+    const char *function = rfe->function;
+    BUFFER *payload = rfe->payload;
+    const char *source = rfe->source;
+
     // skip "fanout" prefix to get the target command
     const char *target_cmd = function;
     while(*target_cmd && !isspace((uint8_t)*target_cmd))
@@ -79,20 +88,73 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
         wb->content_type = CT_APPLICATION_JSON;
         buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
         buffer_json_member_add_uint64(wb, "status", HTTP_RESP_BAD_REQUEST);
-        buffer_json_member_add_string(wb, "error", "Usage: fanout <function> [arguments...]");
+        buffer_json_member_add_string(wb, "error", "Usage: fanout <function> [arguments...] [timeout:SECONDS]");
         buffer_json_member_add_string(wb, "help", RRDFUNCTIONS_FANOUT_HELP);
         buffer_json_finalize(wb);
-        return HTTP_RESP_BAD_REQUEST;
+        int code = HTTP_RESP_BAD_REQUEST;
+        if(rfe->result.cb)
+            rfe->result.cb(wb, code, rfe->result.data);
+        return code;
     }
 
-    // extract target function name (first word of target_cmd)
+    // parse timeout:SECONDS from the arguments and build the command to forward
+    // to children (with the timeout argument stripped out)
+    int timeout_s = 120;
     char target_function_name[256];
+    char child_cmd[4096];
     {
+        size_t cmd_len = 0;
+        child_cmd[0] = '\0';
+        target_function_name[0] = '\0';
+
         const char *s = target_cmd;
-        size_t i = 0;
-        while(*s && !isspace((uint8_t)*s) && i < sizeof(target_function_name) - 1)
-            target_function_name[i++] = *s++;
-        target_function_name[i] = '\0';
+        while(*s) {
+            // skip leading spaces
+            while(*s && isspace((uint8_t)*s))
+                s++;
+            if(!*s) break;
+
+            // find end of this token
+            const char *token_start = s;
+            while(*s && !isspace((uint8_t)*s))
+                s++;
+            size_t token_len = (size_t)(s - token_start);
+
+            if(token_len > 8 && !strncmp(token_start, "timeout:", 8)) {
+                timeout_s = (int)strtol(token_start + 8, NULL, 10);
+                if(timeout_s <= 0) timeout_s = 120;
+                continue;
+            }
+
+            // first non-timeout token is the function name
+            if(!target_function_name[0]) {
+                size_t copy_len = token_len < sizeof(target_function_name) - 1 ? token_len : sizeof(target_function_name) - 1;
+                memcpy(target_function_name, token_start, copy_len);
+                target_function_name[copy_len] = '\0';
+            }
+
+            // append token to child_cmd
+            if(cmd_len > 0 && cmd_len < sizeof(child_cmd) - 1)
+                child_cmd[cmd_len++] = ' ';
+            size_t copy_len = token_len < sizeof(child_cmd) - cmd_len - 1 ? token_len : sizeof(child_cmd) - cmd_len - 1;
+            memcpy(child_cmd + cmd_len, token_start, copy_len);
+            cmd_len += copy_len;
+            child_cmd[cmd_len] = '\0';
+        }
+    }
+
+    if(!target_function_name[0]) {
+        buffer_flush(wb);
+        wb->content_type = CT_APPLICATION_JSON;
+        buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
+        buffer_json_member_add_uint64(wb, "status", HTTP_RESP_BAD_REQUEST);
+        buffer_json_member_add_string(wb, "error", "Usage: fanout <function> [arguments...] [timeout:SECONDS]");
+        buffer_json_member_add_string(wb, "help", RRDFUNCTIONS_FANOUT_HELP);
+        buffer_json_finalize(wb);
+        int code = HTTP_RESP_BAD_REQUEST;
+        if(rfe->result.cb)
+            rfe->result.cb(wb, code, rfe->result.data);
+        return code;
     }
 
     // first pass: count hosts that have the target function
@@ -114,7 +176,10 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
         buffer_json_member_add_string(wb, "error", "No hosts have the requested function");
         buffer_json_member_add_string(wb, "function", target_function_name);
         buffer_json_finalize(wb);
-        return HTTP_RESP_NOT_FOUND;
+        int code = HTTP_RESP_NOT_FOUND;
+        if(rfe->result.cb)
+            rfe->result.cb(wb, code, rfe->result.data);
+        return code;
     }
 
     // allocate state
@@ -127,7 +192,6 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
     netdata_cond_init(&state.cond);
 
     // second pass: dispatch function calls
-    int timeout_s = 120;
     int idx = 0;
     {
         RRDHOST *host;
@@ -144,7 +208,7 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
 
             rrd_function_run(
                 host, r->wb, timeout_s,
-                HTTP_ACCESS_ALL, target_cmd,
+                HTTP_ACCESS_ALL, child_cmd,
                 false, NULL,
                 fanout_result_callback, r,
                 NULL, NULL,
@@ -163,6 +227,12 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
         usec_t now_ut = now_realtime_usec();
         if(now_ut >= deadline_ut)
             break;
+
+        if(rfe->is_cancelled.cb && rfe->is_cancelled.cb(rfe->is_cancelled.data))
+            break;
+
+        if(rfe->progress.cb)
+            rfe->progress.cb(rfe->transaction, rfe->progress.data, state.completed, state.total);
 
         uint64_t remaining_ns = (deadline_ut - now_ut) * NSEC_PER_USEC;
         if(remaining_ns > 100 * NSEC_PER_MSEC)
@@ -212,6 +282,11 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
 
     buffer_json_finalize(wb);
 
+    int code = HTTP_RESP_OK;
+
+    if(rfe->result.cb)
+        rfe->result.cb(wb, code, rfe->result.data);
+
     // cleanup
     for(int i = 0; i < state.total; i++)
         buffer_free(state.results[i].wb);
@@ -220,5 +295,5 @@ int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const cha
     netdata_mutex_destroy(&state.mutex);
     netdata_cond_destroy(&state.cond);
 
-    return HTTP_RESP_OK;
+    return code;
 }

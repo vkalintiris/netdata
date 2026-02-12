@@ -7,6 +7,6 @@
 
 #define RRDFUNCTIONS_FANOUT_HELP "Fan out a function call to all nodes that support it and collect their results."
 
-int function_fanout(BUFFER *wb, const char *function, BUFFER *payload, const char *source);
+int function_fanout(struct rrd_function_execute *rfe, void *data);
 
 #endif //NETDATA_FUNCTION_FANOUT_H

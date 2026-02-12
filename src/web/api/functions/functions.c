@@ -41,7 +41,7 @@ void global_functions_add(void) {
         HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA,
         function_bearer_get_token);
 
-    rrd_function_add_inline(
+    rrd_function_add(
         localhost,
         NULL,
         "fanout",
@@ -51,7 +51,9 @@ void global_functions_add(void) {
         RRDFUNCTIONS_FANOUT_HELP,
         "top",
         HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA,
-        function_fanout);
+        false,
+        function_fanout,
+        NULL);
 
     rrd_function_add_inline(
         localhost,
