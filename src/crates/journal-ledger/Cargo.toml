@@ -1,0 +1,24 @@
+[package]
+name = "journal-ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "journal_ledger"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bridge = { path = "../netdata-plugin/bridge" }
+ferryboat = { workspace = true }
+log-index = { workspace = true }
+netdata-plugin-types = { path = "../netdata-plugin/types" }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+wal = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

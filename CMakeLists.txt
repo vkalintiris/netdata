@@ -3335,7 +3335,7 @@ if(ENABLE_PLUGIN_OTEL)
                       RUNTIME DESTINATION usr/libexec/netdata/plugins.d
                       COMPONENT plugin-otel)
 
-    install(FILES src/crates/netdata-otel/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yaml
+    install(FILES src/crates/otel-ingestor/configs/otel.d/v1/metrics/hostmetrics-receiver.yaml
             COMPONENT plugin-otel
             DESTINATION usr/lib/netdata/conf.d/otel.d/v1/metrics)
 
@@ -3462,11 +3462,11 @@ install(PROGRAMS
 # otel config
 #
 if(ENABLE_PLUGIN_OTEL)
-    configure_file(src/crates/netdata-otel/otel-plugin/configs/otel.yaml.in
-                   src/crates/netdata-otel/otel-plugin/configs/otel.yaml
+    configure_file(src/crates/otel-plugin/configs/otel.yaml.in
+                   src/crates/otel-plugin/configs/otel.yaml
                    @ONLY)
 
-    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-otel/otel-plugin/configs/otel.yaml
+    install(FILES ${CMAKE_BINARY_DIR}/src/crates/otel-plugin/configs/otel.yaml
             COMPONENT plugin-otel
             DESTINATION usr/lib/netdata/conf.d)
 endif()
@@ -3475,11 +3475,11 @@ endif()
 # otel-signal-viewer config
 #
 if(ENABLE_PLUGIN_OTEL_SIGNAL_VIEWER)
-    configure_file(src/crates/netdata-log-viewer/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml.in
-                   src/crates/netdata-log-viewer/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml
+    configure_file(src/crates/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml.in
+                   src/crates/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml
                    @ONLY)
 
-    install(FILES ${CMAKE_BINARY_DIR}/src/crates/netdata-log-viewer/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml
+    install(FILES ${CMAKE_BINARY_DIR}/src/crates/otel-signal-viewer-plugin/configs/otel-signal-viewer.yaml
             COMPONENT plugin-otel-signal-viewer
             DESTINATION usr/lib/netdata/conf.d)
 endif()

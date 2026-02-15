@@ -244,47 +244,6 @@ type FunctionFuture = BoxFuture<'static, (String, FunctionResult)>;
 ///
 /// * `Request` - The type of the incoming request payload (must be deserializable from JSON)
 /// * `Response` - The type of the response payload (must be serializable to JSON)
-///
-/// # Example
-///
-/// ```
-/// use async_trait::async_trait;
-/// use netdata_plugin_error::Result;
-/// use serde::{Deserialize, Serialize};
-///
-/// #[derive(Deserialize)]
-/// struct AddRequest {
-///     a: i32,
-///     b: i32,
-/// }
-///
-/// #[derive(Serialize)]
-/// struct AddResponse {
-///     sum: i32,
-/// }
-///
-/// struct AddHandler;
-///
-/// #[async_trait]
-/// impl FunctionHandler for AddHandler {
-///     type Request = AddRequest;
-///     type Response = AddResponse;
-///
-///     async fn on_call(
-///         &self,
-///         _ctx: FunctionCallContext,
-///         request: Self::Request,
-///     ) -> Result<Self::Response> {
-///         Ok(AddResponse {
-///             sum: request.a + request.b,
-///         })
-///     }
-///
-///     fn declaration(&self) -> FunctionDeclaration {
-///         FunctionDeclaration::new("add", "Adds two numbers")
-///     }
-/// }
-/// ```
 #[async_trait]
 pub trait FunctionHandler: Send + Sync + 'static {
     /// The request payload type that will be deserialized from JSON.
