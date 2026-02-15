@@ -253,7 +253,7 @@ impl Log {
                 }
 
                 // Generate remapped name and add to list
-                let remapped_name = rdp::encode_full(field_name);
+                let remapped_name = sd_compat::remap(field_name);
                 new_mappings.push((field_name.to_vec(), remapped_name));
             }
         }

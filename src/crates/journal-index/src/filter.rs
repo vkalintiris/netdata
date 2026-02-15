@@ -175,12 +175,13 @@ impl FilterExpr<FilterTarget> {
             FilterExpr::None => FilterExpr::None,
             FilterExpr::Match(target) => match target {
                 FilterTarget::Field(field_name) => {
-                    // Find all field=value pairs with matching field name
+                    // Find all field=value pairs with matching field name via prefix search
+                    let prefix = format!("{}=", field_name.as_str());
                     let matches: Vec<_> = file_index
-                        .bitmaps()
-                        .iter()
-                        .filter(|(pair, _)| pair.field() == field_name.as_str())
-                        .map(|(_, bitmap)| FilterExpr::Match(bitmap.clone()))
+                        .fst_index()
+                        .prefix_values(prefix.as_bytes())
+                        .into_iter()
+                        .map(|bitmap| FilterExpr::Match(bitmap.clone()))
                         .collect();
 
                     match matches.len() {
@@ -191,7 +192,7 @@ impl FilterExpr<FilterTarget> {
                 }
                 FilterTarget::Pair(pair) => {
                     // Lookup specific field=value pair
-                    if let Some(bitmap) = file_index.bitmaps().get(pair) {
+                    if let Some(bitmap) = file_index.fst_index().get(pair.as_bytes()) {
                         FilterExpr::Match(bitmap.clone())
                     } else {
                         FilterExpr::None

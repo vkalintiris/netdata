@@ -16,7 +16,7 @@ pub use histogram::{Bucket, Histogram};
 
 pub mod file_index;
 pub use file_index::{
-    Anchor, Direction, FileIndex, LogEntryId, LogQueryParams, LogQueryParamsBuilder,
+    Anchor, Direction, FileIndex, FstIndex, LogEntryId, LogQueryParams, LogQueryParamsBuilder,
 };
 
 pub mod file_indexer;

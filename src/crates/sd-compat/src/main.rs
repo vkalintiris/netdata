@@ -1,4 +1,4 @@
-use rdp::encode_full;
+use sd_compat::remap;
 
 fn main() {
     let mut aws_keys = vec![
@@ -229,7 +229,7 @@ fn main() {
     let mut all_output = String::new();
 
     for otel_key in &aws_keys {
-        let systemd_key = encode_full(otel_key.as_bytes());
+        let systemd_key = remap(otel_key.as_bytes());
         let line = format!("{:<40} {}\n", otel_key, systemd_key);
         print!("{}", line);
         all_output.push_str(&line);

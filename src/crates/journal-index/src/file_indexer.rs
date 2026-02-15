@@ -28,6 +28,7 @@ pub const DEFAULT_MAX_FIELD_PAYLOAD_SIZE: usize = 100;
 /// These limits protect against unbounded memory growth when indexing
 /// journal files with high-cardinality fields or large payloads.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct IndexingLimits {
     /// Maximum number of unique values to index per field.
     ///
@@ -203,13 +204,17 @@ impl FileIndexer {
             .collect();
 
         // Create the bitmaps for field=value pairs
+        let universe_size = self.source_timestamp_entry_offset_pairs.len() as u32;
         let entries = self.build_entries_index(
             &journal_file,
             &field_map,
             field_names,
             tail_object_offset,
+            universe_size,
             was_online,
         )?;
+        let fst_index = fst_index::FstIndex::build(entries)
+            .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
 
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
@@ -227,30 +232,20 @@ impl FileIndexer {
             entry_offsets,
             file_fields,
             indexed_fields,
-            entries,
+            fst_index,
         ))
     }
 
-    /// Build bitmap indexes for field=value pairs.
-    ///
-    /// For each field in `field_names`, this iterates through all data objects
-    /// for that field and creates a bitmap mapping each unique field=value pair
-    /// to the entry indices where it appears.
-    ///
-    /// Only entries with offsets <= `tail_object_offset` are included in the
-    /// bitmaps, ensuring a consistent snapshot.
-    ///
-    /// Fields with more than `self.limits.max_unique_values_per_field` unique values
-    /// will have their indexing truncated to prevent unbounded memory growth.
     fn build_entries_index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        field_map: &HashMap<String, String>,
+        field_map: &HashMap<Box<str>, Box<str>>,
         field_names: &[FieldName],
         tail_object_offset: NonZeroU64,
+        universe_size: u32,
         was_online: bool,
-    ) -> Result<HashMap<FieldValuePair, Bitmap>> {
-        let mut entries_index = HashMap::default();
+    ) -> Result<Vec<(FieldValuePair, Bitmap)>> {
+        let mut entries_index = Vec::new();
         let mut truncated_fields: Vec<&FieldName> = Vec::new();
         let mut fields_with_large_payloads: Vec<&FieldName> = Vec::new();
 
@@ -286,8 +281,11 @@ impl FileIndexer {
                     break;
                 }
 
-                // Get the payload and the inlined cursor for this data object
-                let (data_payload, inlined_cursor) = {
+                // Extract the key and inlined cursor from the data object.
+                // The data object must be dropped before continuing the loop
+                // body because its ValueGuard holds a reference to the mmap
+                // window.
+                let (key, inlined_cursor) = {
                     let Ok(data_object) = data_object else {
                         continue;
                     };
@@ -305,19 +303,24 @@ impl FileIndexer {
                         continue;
                     };
 
-                    let data_payload =
-                        String::from_utf8_lossy(data_object.raw_payload()).into_owned();
+                    let Ok(data_payload) = std::str::from_utf8(data_object.raw_payload()) else {
+                        continue;
+                    };
+
+                    // Extract the value from the "FIELD=value" payload and
+                    // construct the key using the otel field name.
+                    let Some(eq_pos) = data_payload.find('=') else {
+                        warn!("Invalid field=value format: {}", data_payload);
+                        continue;
+                    };
+                    let value = &data_payload[eq_pos + 1..];
+                    let key = FieldValuePair::from_parts(field_name.as_str(), value);
+
                     let Some(inlined_cursor) = data_object.inlined_cursor() else {
                         continue;
                     };
 
-                    (data_payload, inlined_cursor)
-                };
-
-                // Parse the payload into a FieldValuePair (format is "FIELD=value")
-                let Some(pair) = FieldValuePair::parse(&data_payload) else {
-                    warn!("Invalid field=value format: {}", data_payload);
-                    continue;
+                    (key, inlined_cursor)
                 };
 
                 // Collect the offset of entries where this data object appears
@@ -350,14 +353,21 @@ impl FileIndexer {
                 }
                 self.entry_indices.sort_unstable();
 
-                // Create the bitmap for the entry indices
-                let mut bitmap = Bitmap::from_sorted_iter(self.entry_indices.iter().copied())
-                    .expect("sorted entry indices");
+                // Create the bitmap for the entry indices, choosing normal
+                // or complement representation based on density.
+                let cardinality = self.entry_indices.len() as u64;
+                let half_universe = universe_size as u64 / 2;
+
+                let mut bitmap = if cardinality > half_universe {
+                    // Dense: store the complement (values NOT in the bitmap).
+                    let complement = SortedComplement::new(&self.entry_indices, universe_size);
+                    Bitmap::from_sorted_iter_complemented(complement, universe_size)
+                } else {
+                    Bitmap::from_sorted_iter(self.entry_indices.iter().copied(), universe_size)
+                };
                 bitmap.optimize();
 
-                let field_name = FieldName::new_unchecked(field_name);
-                let k = FieldValuePair::new_unchecked(field_name, String::from(pair.value()));
-                entries_index.insert(k, bitmap);
+                entries_index.push((key, bitmap));
 
                 unique_values_count += 1;
             }
@@ -599,5 +609,47 @@ impl FileIndexer {
             bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
         )
+    }
+}
+
+/// Iterator that yields values in `0..universe_size` that are NOT present in a
+/// sorted slice. Used to efficiently build complement bitmaps for dense entry sets.
+struct SortedComplement<'a> {
+    values: &'a [u32],
+    idx: usize,
+    current: u32,
+    universe_size: u32,
+}
+
+impl<'a> SortedComplement<'a> {
+    fn new(sorted_values: &'a [u32], universe_size: u32) -> Self {
+        Self {
+            values: sorted_values,
+            idx: 0,
+            current: 0,
+            universe_size,
+        }
+    }
+}
+
+impl Iterator for SortedComplement<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        loop {
+            if self.current >= self.universe_size {
+                return None;
+            }
+
+            let val = self.current;
+            self.current += 1;
+
+            if self.idx < self.values.len() && self.values[self.idx] == val {
+                self.idx += 1;
+                continue;
+            }
+
+            return Some(val);
+        }
     }
 }

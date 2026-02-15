@@ -535,7 +535,7 @@ impl<M: MemoryMap> JournalFile<M> {
         iterator
     }
 
-    pub fn load_fields(&self) -> Result<HashMap<String, String>> {
+    pub fn load_fields(&self) -> Result<HashMap<Box<str>, Box<str>>> {
         let remapping_payload = b"ND_REMAPPING=1".as_slice();
         let hash = self.hash(remapping_payload);
 
@@ -572,8 +572,8 @@ impl<M: MemoryMap> JournalFile<M> {
                             return Err(JournalError::InvalidField);
                         };
 
-                        let systemd_name = String::from(field);
-                        let otel_name = String::from(value);
+                        let systemd_name: Box<str> = field.into();
+                        let otel_name: Box<str> = value.into();
 
                         field_map.insert(otel_name, systemd_name);
                     }
@@ -592,8 +592,8 @@ impl<M: MemoryMap> JournalFile<M> {
             if field.payload.starts_with(b"ND") {
                 continue;
             }
-            let s = String::from_utf8(field.raw_payload().to_vec()).expect("utf8 data");
-            field_map.insert(s.clone(), s);
+            let s = std::str::from_utf8(field.raw_payload()).expect("utf8 data");
+            field_map.insert(s.into(), s.into());
         }
 
         Ok(field_map)
@@ -753,6 +753,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.signature = *b"LPKSHHRH";
 
         // Set flags based on options configuration
+        header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
         if options.enable_keyed_hash {
             header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
         }
@@ -979,7 +980,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, EntryObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let size = size.map(|n| std::mem::size_of::<EntryObjectHeader>() as u64 + n);
         self.journal_object_mut(ObjectType::Entry, offset, size)
     }
 
@@ -988,7 +989,15 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, DataObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let is_compact = self
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let compact_extra = if is_compact {
+            std::mem::size_of::<CompactDataFields>() as u64
+        } else {
+            0
+        };
+        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + compact_extra + n);
         self.journal_object_mut(ObjectType::Data, offset, size)
     }
 

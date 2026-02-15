@@ -8,7 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-allocative = ["dep:allocative"]
+allocative = ["dep:allocative", "journal-index/allocative"]
 
 [dependencies]
 async-stream = { workspace = true }
@@ -35,7 +35,10 @@ allocative = { workspace = true, optional = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
-tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tempfile = { workspace = true }
 uuid = { workspace = true }
 journal-common = { workspace = true }
+tikv-jemallocator = { workspace = true }

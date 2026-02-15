@@ -6,10 +6,12 @@ members = [
     "journal-common",
     "journal-core",
     "journal-index",
+    "fst-index",
+    "treight",
     "journal-log-writer",
     "journal-engine",
     "journal-registry",
-    "rdp",
+    "sd-compat",
 
     # Netdata plugin workspace members
     "netdata-plugin/error",
@@ -27,6 +29,10 @@ members = [
     # Netdata OTEL workspace members
     "netdata-otel/otel-plugin",
     "netdata-otel/flatten_otel",
+
+    # Stress test tools
+    "jetstream-otel-bridge",
+    "certstream-otel-bridge",
 ]
 
 [workspace.package]
@@ -54,7 +60,9 @@ rand = "0.9"
 lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
 lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
 md5 = "0.7"
+arrayvec = "0.7"
 
+fst = { version = "0.4.7" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }
 serde = { version = "1.0" }
 rustc-hash = "2.1"
@@ -79,6 +87,7 @@ serde_regex = "1.1.0"
 tokio = { version = "1.45", features = ["full"] }
 
 # Tracing
+console-subscriber = "0.5"
 tracing = { version = "0.1" }
 tracing-journald = "0.3"
 tracing-futures = { version = "0.2.5" }
@@ -105,6 +114,8 @@ foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
 parking_lot = "0.12"
 allocative = { version = "0.3.4" }
+bumpalo = "3"
+tikv-jemallocator = "0.6"
 
 hdrhistogram = { version = "7.5" }
 rayon = "1.11.0"
@@ -130,12 +141,13 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 # Internal workspace crates
 journal-common = { path = "journal-common" }
 journal-core = { path = "journal-core" }
-journal-index = { path = "journal-index" }
+journal-index = { path = "journal-index", default-features = false }
 journal-log-writer = { path = "journal-log-writer" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 journalctl = { path = "journalctl" }
-rdp = { path = "rdp" }
+fst-index = { path = "fst-index" }
+sd-compat = { path = "sd-compat" }
 
 # Netdata plugin crates
 netdata-plugin-error = { path = "netdata-plugin/error" }
@@ -155,9 +167,15 @@ otel-signal-viewer-plugin = { path = "netdata-log-viewer/otel-signal-viewer-plug
 otel-plugin = { path = "netdata-otel/otel-plugin" }
 flatten_otel = { path = "netdata-otel/flatten_otel" }
 
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+url = "2"
+
 tempfile = { version = "3" }
 
 proptest = "1.9"
+zstd = "0.13"
+futures-util = { version = "0.3", features = ["sink"] }
 
 [profile.dev]
 opt-level = 1
