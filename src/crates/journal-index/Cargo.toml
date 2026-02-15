@@ -12,7 +12,8 @@ allocative = [
     "dep:allocative",
     "roaring/allocative",
     "journal-core/allocative",
-    "journal-common/allocative"
+    "journal-common/allocative",
+    "journal-registry/allocative"
 ]
 
 [dependencies]
@@ -29,5 +30,12 @@ journal-common = { workspace = true }
 journal-registry = { workspace = true }
 
 [dev-dependencies]
+allocative = { workspace = true }
+clap = { workspace = true }
 tempfile = { workspace = true }
+tree8 = { path = "../tree8", features = ["allocative", "roaring"] }
 uuid = { workspace = true }
+
+[[example]]
+name = "tree8_comparison"
+required-features = ["allocative"]

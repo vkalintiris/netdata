@@ -28,6 +28,7 @@ pub const DEFAULT_MAX_FIELD_PAYLOAD_SIZE: usize = 100;
 /// These limits protect against unbounded memory growth when indexing
 /// journal files with high-cardinality fields or large payloads.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct IndexingLimits {
     /// Maximum number of unique values to index per field.
     ///
