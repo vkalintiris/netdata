@@ -8,7 +8,10 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-allocative = ["dep:allocative"]
+default = ["bitmap-roaring"]
+allocative = ["dep:allocative", "journal-index/allocative"]
+bitmap-roaring = ["journal-index/bitmap-roaring"]
+bitmap-treight = ["journal-index/bitmap-treight"]
 
 [dependencies]
 async-stream = { workspace = true }

@@ -288,7 +288,7 @@ impl HistogramEngine {
                     };
 
                     // Count total entries in this file for this bucket's time range
-                    let all_entries = Bitmap::insert_range(0..file_index.total_entries() as u32);
+                    let all_entries = Bitmap::full(file_index.total_entries() as u32);
                     let unfiltered_total = file_index
                         .count_entries_in_time_range(
                             &all_entries,

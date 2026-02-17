@@ -159,8 +159,8 @@ fn bench_remove_range_roaring(bitmaps: &[Bitmap], universe_size: u32) -> u64 {
     let t0 = Instant::now();
     for bm in bitmaps {
         let mut b = bm.clone();
-        b.remove_range(..lo);
-        b.remove_range(hi..);
+        b.0.remove_range(..lo);
+        b.0.remove_range(hi..);
         black_box(b.len());
     }
     t0.elapsed().as_micros() as u64
@@ -430,7 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let roaring_bitmaps: Vec<Bitmap> = raw_data
             .iter()
             .map(|values| {
-                let mut bm = Bitmap::from_sorted_iter(values.iter().copied()).unwrap();
+                let mut bm = Bitmap::from_sorted_iter(values.iter().copied(), universe_size);
                 bm.optimize();
                 bm
             })
@@ -468,7 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Measure sizes.
         let roaring_serial: u64 = roaring_bitmaps
             .iter()
-            .map(|bm| bm.serialized_size() as u64)
+            .map(|bm| bm.0.serialized_size() as u64)
             .sum();
         let roaring_heap: u64 = roaring_bitmaps
             .iter()

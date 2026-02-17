@@ -204,8 +204,14 @@ impl FileIndexer {
             .collect();
 
         // Create the bitmaps for field=value pairs
-        let entries =
-            self.build_entries_index(&journal_file, &field_map, field_names, tail_object_offset)?;
+        let universe_size = self.source_timestamp_entry_offset_pairs.len() as u32;
+        let entries = self.build_entries_index(
+            &journal_file,
+            &field_map,
+            field_names,
+            tail_object_offset,
+            universe_size,
+        )?;
 
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
@@ -244,6 +250,7 @@ impl FileIndexer {
         field_map: &HashMap<String, String>,
         field_names: &[FieldName],
         tail_object_offset: NonZeroU64,
+        universe_size: u32,
     ) -> Result<HashMap<FieldValuePair, Bitmap>> {
         let mut entries_index = HashMap::default();
         let mut truncated_fields: Vec<&FieldName> = Vec::new();
@@ -345,9 +352,18 @@ impl FileIndexer {
                 }
                 self.entry_indices.sort_unstable();
 
-                // Create the bitmap for the entry indices
-                let mut bitmap = Bitmap::from_sorted_iter(self.entry_indices.iter().copied())
-                    .expect("sorted entry indices");
+                // Create the bitmap for the entry indices, choosing normal
+                // or complement representation based on density.
+                let cardinality = self.entry_indices.len() as u64;
+                let half_universe = universe_size as u64 / 2;
+
+                let mut bitmap = if cardinality > half_universe {
+                    // Dense: store the complement (values NOT in the bitmap).
+                    let complement = SortedComplement::new(&self.entry_indices, universe_size);
+                    Bitmap::from_sorted_iter_complemented(complement, universe_size)
+                } else {
+                    Bitmap::from_sorted_iter(self.entry_indices.iter().copied(), universe_size)
+                };
                 bitmap.optimize();
 
                 let field_name = FieldName::new_unchecked(field_name);
@@ -584,5 +600,47 @@ impl FileIndexer {
             bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
         )
+    }
+}
+
+/// Iterator that yields values in `0..universe_size` that are NOT present in a
+/// sorted slice. Used to efficiently build complement bitmaps for dense entry sets.
+struct SortedComplement<'a> {
+    values: &'a [u32],
+    idx: usize,
+    current: u32,
+    universe_size: u32,
+}
+
+impl<'a> SortedComplement<'a> {
+    fn new(sorted_values: &'a [u32], universe_size: u32) -> Self {
+        Self {
+            values: sorted_values,
+            idx: 0,
+            current: 0,
+            universe_size,
+        }
+    }
+}
+
+impl Iterator for SortedComplement<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        loop {
+            if self.current >= self.universe_size {
+                return None;
+            }
+
+            let val = self.current;
+            self.current += 1;
+
+            if self.idx < self.values.len() && self.values[self.idx] == val {
+                self.idx += 1;
+                continue;
+            }
+
+            return Some(val);
+        }
     }
 }

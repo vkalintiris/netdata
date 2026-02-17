@@ -818,7 +818,13 @@ impl Bitmap {
     }
 
     /// Test whether `value` is in the bitmap.
+    ///
+    /// Values outside `0..universe_size` always return `false`, regardless
+    /// of whether the bitmap is inverted.
     pub fn contains(&self, value: u32) -> bool {
+        if value >= self.inner.universe_size() {
+            return false;
+        }
         self.inner.contains(value) ^ self.inverted
     }
 
@@ -854,6 +860,158 @@ impl Bitmap {
     pub fn heap_bytes(&self) -> usize {
         self.inner.heap_bytes()
     }
+
+    /// Build a bitmap with all values in the given range set.
+    ///
+    /// Values outside `0..universe_size` are clamped/ignored.
+    pub fn from_range(range: impl std::ops::RangeBounds<u32>, universe_size: u32) -> Self {
+        use std::ops::Bound;
+
+        let start = match range.start_bound() {
+            Bound::Included(&n) => n,
+            Bound::Excluded(&n) => n.saturating_add(1),
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&n) => n.saturating_add(1).min(universe_size),
+            Bound::Excluded(&n) => n.min(universe_size),
+            Bound::Unbounded => universe_size,
+        };
+
+        if start >= end {
+            return Self::empty(universe_size);
+        }
+
+        let range_len = (end - start) as u64;
+        let half_universe = universe_size as u64 / 2;
+
+        if range_len > half_universe {
+            // Dense: store the complement (values outside the range).
+            let complement = (0..start).chain(end..universe_size);
+            Self::from_sorted_iter_complemented(complement, universe_size)
+        } else {
+            Self::from_sorted_iter(start..end, universe_size)
+        }
+    }
+
+    /// Iterate over set bits in ascending order.
+    ///
+    /// For normal bitmaps, delegates to the underlying `RawBitmap` iterator.
+    /// For inverted bitmaps, yields all values in `0..universe_size` that are
+    /// NOT in the underlying raw bitmap.
+    pub fn iter(&self) -> BitmapIter<'_> {
+        if self.inverted {
+            BitmapIter::Complement(ComplementIter {
+                raw_iter: self.inner.iter(),
+                next_raw: None,
+                current: 0,
+                universe_size: self.inner.universe_size(),
+                started: false,
+            })
+        } else {
+            BitmapIter::Normal(self.inner.iter())
+        }
+    }
+
+    /// Count the number of set bits within a range.
+    ///
+    /// For inverted bitmaps, computes `range_len - raw.range_cardinality(range)`.
+    pub fn range_cardinality(&self, range: impl std::ops::RangeBounds<u32>) -> u64 {
+        use std::ops::Bound;
+
+        if self.inverted {
+            let start = match range.start_bound() {
+                Bound::Included(&n) => n,
+                Bound::Excluded(&n) => n.saturating_add(1),
+                Bound::Unbounded => 0,
+            };
+            let end = match range.end_bound() {
+                Bound::Included(&n) => n.saturating_add(1),
+                Bound::Excluded(&n) => n,
+                Bound::Unbounded => self.inner.universe_size(),
+            };
+            let end = end.min(self.inner.universe_size());
+
+            if start >= end {
+                return 0;
+            }
+
+            let range_len = (end - start) as u64;
+            let raw_count = self.inner.range_cardinality(start..end);
+            range_len - raw_count
+        } else {
+            self.inner.range_cardinality(range)
+        }
+    }
+}
+
+/// Iterator over set bits of a [`Bitmap`].
+///
+/// Handles both normal and inverted (complement) representations.
+pub enum BitmapIter<'a> {
+    /// Normal: yields values present in the raw bitmap.
+    Normal(Iter<'a>),
+    /// Complement: yields values in `0..universe_size` NOT in the raw bitmap.
+    Complement(ComplementIter<'a>),
+}
+
+impl Iterator for BitmapIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        match self {
+            BitmapIter::Normal(iter) => iter.next(),
+            BitmapIter::Complement(iter) => iter.next(),
+        }
+    }
+}
+
+/// Iterator that yields values in `0..universe_size` that are NOT in the raw bitmap.
+pub struct ComplementIter<'a> {
+    raw_iter: Iter<'a>,
+    next_raw: Option<u32>,
+    current: u32,
+    universe_size: u32,
+    started: bool,
+}
+
+impl Iterator for ComplementIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        if !self.started {
+            self.next_raw = self.raw_iter.next();
+            self.started = true;
+        }
+
+        loop {
+            if self.current >= self.universe_size {
+                return None;
+            }
+
+            let val = self.current;
+            self.current += 1;
+
+            match self.next_raw {
+                Some(raw_val) if raw_val == val => {
+                    // This value is in the raw bitmap (i.e., unset in the logical bitmap).
+                    // Skip it and advance the raw iterator.
+                    self.next_raw = self.raw_iter.next();
+                    continue;
+                }
+                _ => return Some(val),
+            }
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Bitmap {
+    type Item = u32;
+    type IntoIter = BitmapIter<'a>;
+
+    fn into_iter(self) -> BitmapIter<'a> {
+        self.iter()
+    }
 }
 
 impl BitAnd for &Bitmap {
@@ -865,8 +1023,27 @@ impl BitAnd for &Bitmap {
     /// - N ∩ I → A - B (normal)
     /// - I ∩ N → B - A (normal)
     /// - I ∩ I → A | B (inverted)
+    ///
+    /// Short-circuits when either operand is logically empty (annihilator)
+    /// or logically full (identity).
     fn bitand(self, rhs: Self) -> Bitmap {
-        assert_eq!(
+        // Short-circuit: empty AND anything = empty.
+        if self.is_empty() {
+            return self.clone();
+        }
+        if rhs.is_empty() {
+            return rhs.clone();
+        }
+
+        // Short-circuit: full AND anything = anything.
+        if self.inverted && self.inner.is_empty() {
+            return rhs.clone();
+        }
+        if rhs.inverted && rhs.inner.is_empty() {
+            return self.clone();
+        }
+
+        debug_assert_eq!(
             self.inner.universe_size(),
             rhs.inner.universe_size(),
             "universe_size mismatch: {} vs {}",
@@ -894,8 +1071,27 @@ impl BitOr for &Bitmap {
     /// - N ∪ I → B - A (inverted)
     /// - I ∪ N → A - B (inverted)
     /// - I ∪ I → A & B (inverted)
+    ///
+    /// Short-circuits when either operand is logically empty (identity)
+    /// or logically full (annihilator).
     fn bitor(self, rhs: Self) -> Bitmap {
-        assert_eq!(
+        // Short-circuit: empty OR anything = anything.
+        if self.is_empty() {
+            return rhs.clone();
+        }
+        if rhs.is_empty() {
+            return self.clone();
+        }
+
+        // Short-circuit: full OR anything = full.
+        if self.inverted && self.inner.is_empty() {
+            return self.clone();
+        }
+        if rhs.inverted && rhs.inner.is_empty() {
+            return rhs.clone();
+        }
+
+        debug_assert_eq!(
             self.inner.universe_size(),
             rhs.inner.universe_size(),
             "universe_size mismatch: {} vs {}",
@@ -2674,6 +2870,30 @@ mod tests {
         assert!(bm.contains(15));
         assert!(bm.contains(63));
         assert!(bm.is_inverted());
+    }
+
+    #[test]
+    fn test_bitmap_contains_out_of_bounds() {
+        // Normal bitmap: out-of-bounds values are not contained.
+        let normal = Bitmap::from_sorted_iter([0, 1, 2].into_iter(), 5);
+        assert!(!normal.contains(5));
+        assert!(!normal.contains(100));
+
+        // Inverted bitmap: out-of-bounds values must NOT be contained,
+        // even though the bitmap logically represents "all values except ...".
+        let inverted = Bitmap::from_sorted_iter_complemented([1].into_iter(), 5);
+        assert!(inverted.contains(0));
+        assert!(!inverted.contains(1));
+        assert!(inverted.contains(4));
+        assert!(!inverted.contains(5));
+        assert!(!inverted.contains(100));
+
+        // full() bitmap: contains everything in 0..universe_size, nothing outside.
+        let full = Bitmap::full(5);
+        assert!(full.contains(0));
+        assert!(full.contains(4));
+        assert!(!full.contains(5));
+        assert!(!full.contains(u32::MAX));
     }
 
     #[test]

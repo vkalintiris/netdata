@@ -560,7 +560,7 @@ impl FileIndex {
         let bitmap = params
             .filter()
             .map(|f| f.evaluate(self))
-            .unwrap_or_else(|| Bitmap::insert_range(0..self.entry_offsets.len() as u32));
+            .unwrap_or_else(|| Bitmap::full(self.entry_offsets.len() as u32));
 
         if bitmap.is_empty() {
             // Nothing matches

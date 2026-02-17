@@ -8,9 +8,13 @@ rust-version.workspace = true
 workspace = true
 
 [features]
+default = ["bitmap-roaring"]
+bitmap-roaring = ["dep:roaring"]
+bitmap-treight = ["dep:treight"]
 allocative = [
     "dep:allocative",
-    "roaring/allocative",
+    "roaring?/allocative",
+    "treight?/allocative",
     "journal-core/allocative",
     "journal-common/allocative",
     "journal-registry/allocative"
@@ -19,7 +23,8 @@ allocative = [
 [dependencies]
 allocative = { workspace = true, optional = true }
 regex = { workspace = true }
-roaring = { workspace = true , features = ["serde"] }
+roaring = { workspace = true, features = ["serde"], optional = true }
+treight = { path = "../treight", features = ["serde"], optional = true }
 serde = { workspace =  true, features = ["derive"] }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
