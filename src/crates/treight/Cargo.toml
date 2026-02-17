@@ -1,5 +1,5 @@
 [package]
-name = "tree8"
+name = "treight"
 version = "0.1.0"
 edition = "2021"
 description = "Compressed bitmap using an 8-way bit-tree (as used by GNU idutils)"

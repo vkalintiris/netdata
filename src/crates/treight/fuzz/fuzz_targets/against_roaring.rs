@@ -70,9 +70,9 @@ struct FuzzInput {
     ops: Vec<Operation>,
 }
 
-/// Assert that a tree8 RawBitmap and a RoaringBitmap contain the same elements.
-fn check_equal(t: &tree8::RawBitmap, r: &roaring::RoaringBitmap) {
-    assert_eq!(t.len(), r.len(), "len mismatch: tree8={} roaring={}", t.len(), r.len());
+/// Assert that a treight RawBitmap and a RoaringBitmap contain the same elements.
+fn check_equal(t: &treight::RawBitmap, r: &roaring::RoaringBitmap) {
+    assert_eq!(t.len(), r.len(), "len mismatch: treight={} roaring={}", t.len(), r.len());
     assert_eq!(t.min(), r.min(), "min mismatch");
     assert_eq!(t.max(), r.max(), "max mismatch");
     assert_eq!(t.is_empty(), r.is_empty(), "is_empty mismatch");
@@ -82,9 +82,9 @@ fn check_equal(t: &tree8::RawBitmap, r: &roaring::RoaringBitmap) {
     assert_eq!(t_vals, r_vals, "iter mismatch");
 }
 
-/// Build a (tree8, roaring) pair from sorted-deduped values.
-fn make_pair(vals: &[u32], universe: u32) -> (tree8::RawBitmap, roaring::RoaringBitmap) {
-    let t = tree8::RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
+/// Build a (treight, roaring) pair from sorted-deduped values.
+fn make_pair(vals: &[u32], universe: u32) -> (treight::RawBitmap, roaring::RoaringBitmap) {
+    let t = treight::RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
     let r = roaring::RoaringBitmap::from_sorted_iter(vals.iter().copied()).unwrap();
     (t, r)
 }
@@ -184,7 +184,7 @@ fuzz_target!(|input: FuzzInput| {
             Operation::SerializeRoundtrip => {
                 let mut buf = Vec::new();
                 lhs_t.serialize_into(&mut buf).unwrap();
-                let restored = tree8::RawBitmap::deserialize_from(&buf[..]).unwrap();
+                let restored = treight::RawBitmap::deserialize_from(&buf[..]).unwrap();
                 assert_eq!(lhs_t, restored, "serialize roundtrip mismatch");
             }
         }
@@ -196,7 +196,7 @@ fuzz_target!(|input: FuzzInput| {
 
     // Also verify estimate_data_size matches actual for the final bitmaps.
     let lhs_final_vals: Vec<u32> = lhs_t.iter().collect();
-    let est = tree8::estimate_data_size(universe, lhs_final_vals.iter().copied());
+    let est = treight::estimate_data_size(universe, lhs_final_vals.iter().copied());
     assert_eq!(
         est,
         lhs_t.data().len(),

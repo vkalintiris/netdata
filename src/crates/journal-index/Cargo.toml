@@ -33,9 +33,9 @@ journal-registry = { workspace = true }
 allocative = { workspace = true }
 clap = { workspace = true }
 tempfile = { workspace = true }
-tree8 = { path = "../tree8", features = ["allocative", "roaring"] }
+treight = { path = "../treight", features = ["allocative", "roaring"] }
 uuid = { workspace = true }
 
 [[example]]
-name = "tree8_comparison"
+name = "treight_comparison"
 required-features = ["allocative"]

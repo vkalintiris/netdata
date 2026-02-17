@@ -1,11 +1,11 @@
-//! Compare roaring bitmap vs tree8 for journal file indexing.
+//! Compare roaring bitmap vs treight for journal file indexing.
 //!
 //! Accepts a single journal file or a directory (recursively discovers journal files).
 //! Measures construction time, serialized size, and heap allocation for both.
-//! Benchmarks both tree8::RawBitmap and tree8::Bitmap (high-level wrapper).
+//! Benchmarks both treight::RawBitmap and treight::Bitmap (high-level wrapper).
 //!
 //! Usage:
-//!     cargo run --release --example tree8_comparison --features allocative -p journal-index \
+//!     cargo run --release --example treight_comparison --features allocative -p journal-index \
 //!         -- /var/log/journal/ --max-files 20
 
 use clap::Parser;
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser)]
-#[command(about = "Compare roaring bitmap vs tree8 for journal file indexing")]
+#[command(about = "Compare roaring bitmap vs treight for journal file indexing")]
 struct Args {
     /// Path to a journal file or directory (recursively discovers journal files)
     path: PathBuf,
@@ -96,8 +96,8 @@ fn bench_set_ops_roaring(bitmaps: &[Bitmap]) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-/// Benchmark alternating AND/OR on tree8::RawBitmap in batches.
-fn bench_set_ops_raw(bitmaps: &[tree8::RawBitmap]) -> u64 {
+/// Benchmark alternating AND/OR on treight::RawBitmap in batches.
+fn bench_set_ops_raw(bitmaps: &[treight::RawBitmap]) -> u64 {
     let t0 = Instant::now();
     for chunk in bitmaps.chunks(SET_OPS_BATCH) {
         let mut acc = chunk[0].clone();
@@ -113,8 +113,8 @@ fn bench_set_ops_raw(bitmaps: &[tree8::RawBitmap]) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-/// Benchmark alternating AND/OR on tree8::Bitmap in batches.
-fn bench_set_ops_bitmap(bitmaps: &[tree8::Bitmap]) -> u64 {
+/// Benchmark alternating AND/OR on treight::Bitmap in batches.
+fn bench_set_ops_bitmap(bitmaps: &[treight::Bitmap]) -> u64 {
     let t0 = Instant::now();
     for chunk in bitmaps.chunks(SET_OPS_BATCH) {
         let mut acc = chunk[0].clone();
@@ -141,7 +141,7 @@ fn bench_range_cardinality_roaring(bitmaps: &[Bitmap], universe_size: u32) -> u6
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_range_cardinality_raw(bitmaps: &[tree8::RawBitmap], universe_size: u32) -> u64 {
+fn bench_range_cardinality_raw(bitmaps: &[treight::RawBitmap], universe_size: u32) -> u64 {
     let lo = universe_size / 4;
     let hi = universe_size * 3 / 4;
     let t0 = Instant::now();
@@ -166,7 +166,7 @@ fn bench_remove_range_roaring(bitmaps: &[Bitmap], universe_size: u32) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_remove_range_raw(bitmaps: &[tree8::RawBitmap], universe_size: u32) -> u64 {
+fn bench_remove_range_raw(bitmaps: &[treight::RawBitmap], universe_size: u32) -> u64 {
     let lo = universe_size / 4;
     let hi = universe_size * 3 / 4;
     let t0 = Instant::now();
@@ -189,7 +189,7 @@ fn bench_iter_roaring(bitmaps: &[Bitmap]) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_iter_raw(bitmaps: &[tree8::RawBitmap]) -> u64 {
+fn bench_iter_raw(bitmaps: &[treight::RawBitmap]) -> u64 {
     let t0 = Instant::now();
     for bm in bitmaps {
         let s: u64 = bm.iter().map(|v| v as u64).sum();
@@ -198,10 +198,10 @@ fn bench_iter_raw(bitmaps: &[tree8::RawBitmap]) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-/// Hybrid benchmarks: convert tree8::RawBitmap → roaring on-the-fly, then operate.
+/// Hybrid benchmarks: convert treight::RawBitmap → roaring on-the-fly, then operate.
 /// The conversion cost is included since that's what a real hybrid approach would pay.
 
-fn bench_set_ops_hybrid(bitmaps: &[tree8::RawBitmap]) -> u64 {
+fn bench_set_ops_hybrid(bitmaps: &[treight::RawBitmap]) -> u64 {
     let t0 = Instant::now();
     for chunk in bitmaps.chunks(SET_OPS_BATCH) {
         let mut acc = roaring::RoaringBitmap::from(&chunk[0]);
@@ -218,7 +218,7 @@ fn bench_set_ops_hybrid(bitmaps: &[tree8::RawBitmap]) -> u64 {
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_range_cardinality_hybrid(bitmaps: &[tree8::RawBitmap], universe_size: u32) -> u64 {
+fn bench_range_cardinality_hybrid(bitmaps: &[treight::RawBitmap], universe_size: u32) -> u64 {
     let lo = universe_size / 4;
     let hi = universe_size * 3 / 4;
     let t0 = Instant::now();
@@ -229,7 +229,7 @@ fn bench_range_cardinality_hybrid(bitmaps: &[tree8::RawBitmap], universe_size: u
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_remove_range_hybrid(bitmaps: &[tree8::RawBitmap], universe_size: u32) -> u64 {
+fn bench_remove_range_hybrid(bitmaps: &[treight::RawBitmap], universe_size: u32) -> u64 {
     let lo = universe_size / 4;
     let hi = universe_size * 3 / 4;
     let t0 = Instant::now();
@@ -242,7 +242,7 @@ fn bench_remove_range_hybrid(bitmaps: &[tree8::RawBitmap], universe_size: u32) -
     t0.elapsed().as_micros() as u64
 }
 
-fn bench_iter_hybrid(bitmaps: &[tree8::RawBitmap]) -> u64 {
+fn bench_iter_hybrid(bitmaps: &[treight::RawBitmap]) -> u64 {
     let t0 = Instant::now();
     for bm in bitmaps {
         let rb = roaring::RoaringBitmap::from(bm);
@@ -294,8 +294,8 @@ struct Totals {
     bm_data: u64,
     bm_heap: u64,
     roaring_build_us: u64,
-    tree8_raw_build_us: u64,
-    tree8_bm_build_us: u64,
+    treight_raw_build_us: u64,
+    treight_bm_build_us: u64,
     roaring_ops_us: u64,
     raw_ops_us: u64,
     bm_ops_us: u64,
@@ -315,14 +315,14 @@ struct Totals {
 // Per-file table columns:
 //   Roaring Ser   - roaring serialized size (wire/disk format)
 //   Roaring Heap  - roaring heap allocation (via allocative crate)
-//   Raw Data      - tree8::RawBitmap data payload bytes (always normal representation)
-//   Raw Heap      - tree8::RawBitmap heap allocation (via allocative crate)
-//   Bitmap Data   - tree8::Bitmap data payload bytes (normal or complemented)
-//   Bitmap Heap   - tree8::Bitmap heap allocation (via allocative crate)
-//   Size %        - Bitmap Data vs Roaring Ser as % change (negative = tree8 smaller)
+//   Raw Data      - treight::RawBitmap data payload bytes (always normal representation)
+//   Raw Heap      - treight::RawBitmap heap allocation (via allocative crate)
+//   Bitmap Data   - treight::Bitmap data payload bytes (normal or complemented)
+//   Bitmap Heap   - treight::Bitmap heap allocation (via allocative crate)
+//   Size %        - Bitmap Data vs Roaring Ser as % change (negative = treight smaller)
 //   Build Roar    - time to build all roaring bitmaps (from_sorted_iter + optimize)
-//   Build T8      - time to build all tree8::Bitmap   (from_sorted_iter, high-level wrapper)
-//   Time %        - Build T8 vs Build Roar as % change (negative = tree8 faster)
+//   Build T8      - time to build all treight::Bitmap   (from_sorted_iter, high-level wrapper)
+//   Time %        - Build T8 vs Build Roar as % change (negative = treight faster)
 
 fn print_row(label: &str, entries: usize, bitmaps: usize, t: &Totals) {
     println!(
@@ -338,8 +338,8 @@ fn print_row(label: &str, entries: usize, bitmaps: usize, t: &Totals) {
         fmt_bytes(t.bm_heap),
         fmt_pct(t.bm_data as f64, t.roaring_serial as f64),
         fmt_us(t.roaring_build_us),
-        fmt_us(t.tree8_bm_build_us),
-        fmt_pct(t.tree8_bm_build_us as f64, t.roaring_build_us as f64),
+        fmt_us(t.treight_bm_build_us),
+        fmt_pct(t.treight_bm_build_us as f64, t.roaring_build_us as f64),
     );
 }
 
@@ -437,33 +437,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         let roaring_build_us = t0.elapsed().as_micros() as u64;
 
-        // Benchmark tree8::RawBitmap construction.
+        // Benchmark treight::RawBitmap construction.
         let t0 = Instant::now();
-        let tree8_raw_bitmaps: Vec<tree8::RawBitmap> = raw_data
+        let treight_raw_bitmaps: Vec<treight::RawBitmap> = raw_data
             .iter()
-            .map(|values| tree8::RawBitmap::from_sorted_iter(values.iter().copied(), universe_size))
+            .map(|values| treight::RawBitmap::from_sorted_iter(values.iter().copied(), universe_size))
             .collect();
-        let tree8_raw_build_us = t0.elapsed().as_micros() as u64;
+        let treight_raw_build_us = t0.elapsed().as_micros() as u64;
 
-        // Benchmark tree8::Bitmap construction (high-level wrapper).
+        // Benchmark treight::Bitmap construction (high-level wrapper).
         // Choose normal vs complemented representation based on density:
         // when more than half the bits are set, store the complement instead.
         let t0 = Instant::now();
-        let tree8_bitmaps: Vec<tree8::Bitmap> = raw_data
+        let treight_bitmaps: Vec<treight::Bitmap> = raw_data
             .iter()
             .map(|values| {
                 if (values.len() as u64) * 2 > universe_size as u64 {
                     let complement = sorted_complement(values, universe_size);
-                    tree8::Bitmap::from_sorted_iter_complemented(
+                    treight::Bitmap::from_sorted_iter_complemented(
                         complement.into_iter(),
                         universe_size,
                     )
                 } else {
-                    tree8::Bitmap::from_sorted_iter(values.iter().copied(), universe_size)
+                    treight::Bitmap::from_sorted_iter(values.iter().copied(), universe_size)
                 }
             })
             .collect();
-        let tree8_bm_build_us = t0.elapsed().as_micros() as u64;
+        let treight_bm_build_us = t0.elapsed().as_micros() as u64;
 
         // Measure sizes.
         let roaring_serial: u64 = roaring_bitmaps
@@ -474,43 +474,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|bm| allocative::size_of_unique_allocated_data(bm) as u64)
             .sum();
-        let raw_data: u64 = tree8_raw_bitmaps
+        let raw_data: u64 = treight_raw_bitmaps
             .iter()
             .map(|bm| bm.data().len() as u64)
             .sum();
-        let raw_heap: u64 = tree8_raw_bitmaps
+        let raw_heap: u64 = treight_raw_bitmaps
             .iter()
             .map(|bm| allocative::size_of_unique_allocated_data(bm) as u64)
             .sum();
-        let bm_data: u64 = tree8_bitmaps
+        let bm_data: u64 = treight_bitmaps
             .iter()
             .map(|bm| bm.raw().data().len() as u64)
             .sum();
-        let bm_heap: u64 = tree8_bitmaps
+        let bm_heap: u64 = treight_bitmaps
             .iter()
             .map(|bm| allocative::size_of_unique_allocated_data(bm) as u64)
             .sum();
 
         // Benchmark set operations (alternating AND/OR in batches).
         let roaring_ops_us = bench_set_ops_roaring(&roaring_bitmaps);
-        let raw_ops_us = bench_set_ops_raw(&tree8_raw_bitmaps);
-        let bm_ops_us = bench_set_ops_bitmap(&tree8_bitmaps);
-        let hybrid_ops_us = bench_set_ops_hybrid(&tree8_raw_bitmaps);
+        let raw_ops_us = bench_set_ops_raw(&treight_raw_bitmaps);
+        let bm_ops_us = bench_set_ops_bitmap(&treight_bitmaps);
+        let hybrid_ops_us = bench_set_ops_hybrid(&treight_raw_bitmaps);
 
         // Benchmark range_cardinality (middle 50% of universe).
         let roaring_range_card_us = bench_range_cardinality_roaring(&roaring_bitmaps, universe_size);
-        let raw_range_card_us = bench_range_cardinality_raw(&tree8_raw_bitmaps, universe_size);
-        let hybrid_range_card_us = bench_range_cardinality_hybrid(&tree8_raw_bitmaps, universe_size);
+        let raw_range_card_us = bench_range_cardinality_raw(&treight_raw_bitmaps, universe_size);
+        let hybrid_range_card_us = bench_range_cardinality_hybrid(&treight_raw_bitmaps, universe_size);
 
         // Benchmark remove_range (restrict to middle 50% of universe).
         let roaring_remove_range_us = bench_remove_range_roaring(&roaring_bitmaps, universe_size);
-        let raw_remove_range_us = bench_remove_range_raw(&tree8_raw_bitmaps, universe_size);
-        let hybrid_remove_range_us = bench_remove_range_hybrid(&tree8_raw_bitmaps, universe_size);
+        let raw_remove_range_us = bench_remove_range_raw(&treight_raw_bitmaps, universe_size);
+        let hybrid_remove_range_us = bench_remove_range_hybrid(&treight_raw_bitmaps, universe_size);
 
         // Benchmark full iteration.
         let roaring_iter_us = bench_iter_roaring(&roaring_bitmaps);
-        let raw_iter_us = bench_iter_raw(&tree8_raw_bitmaps);
-        let hybrid_iter_us = bench_iter_hybrid(&tree8_raw_bitmaps);
+        let raw_iter_us = bench_iter_raw(&treight_raw_bitmaps);
+        let hybrid_iter_us = bench_iter_hybrid(&treight_raw_bitmaps);
 
         let row = Totals {
             files: 1,
@@ -523,8 +523,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bm_data,
             bm_heap,
             roaring_build_us,
-            tree8_raw_build_us,
-            tree8_bm_build_us,
+            treight_raw_build_us,
+            treight_bm_build_us,
             roaring_ops_us,
             raw_ops_us,
             bm_ops_us,
@@ -553,8 +553,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         grand.bm_data += bm_data;
         grand.bm_heap += bm_heap;
         grand.roaring_build_us += roaring_build_us;
-        grand.tree8_raw_build_us += tree8_raw_build_us;
-        grand.tree8_bm_build_us += tree8_bm_build_us;
+        grand.treight_raw_build_us += treight_raw_build_us;
+        grand.treight_bm_build_us += treight_bm_build_us;
         grand.roaring_ops_us += roaring_ops_us;
         grand.raw_ops_us += raw_ops_us;
         grand.bm_ops_us += bm_ops_us;
@@ -584,7 +584,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
 
-    println!("  Storage (Raw = tree8::RawBitmap, T8 = tree8::Bitmap, RB = roaring):");
+    println!("  Storage (Raw = treight::RawBitmap, T8 = treight::Bitmap, RB = roaring):");
     println!(
         "    RB serialized:    {:>10}",
         fmt_bytes(grand.roaring_serial)
@@ -598,7 +598,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    T8 data:          {:>10}", fmt_bytes(grand.bm_data));
     println!("    T8 heap (alloc):  {:>10}", fmt_bytes(grand.bm_heap));
     println!(
-        "    Raw vs RB ser:    {:>10}  (negative = tree8 smaller)",
+        "    Raw vs RB ser:    {:>10}  (negative = treight smaller)",
         fmt_pct(grand.raw_data as f64, grand.roaring_serial as f64)
     );
     println!(
@@ -622,17 +622,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "    T8 RawBitmap:     {:>9}  ({})",
-        fmt_us(grand.tree8_raw_build_us),
+        fmt_us(grand.treight_raw_build_us),
         fmt_pct(
-            grand.tree8_raw_build_us as f64,
+            grand.treight_raw_build_us as f64,
             grand.roaring_build_us as f64
         )
     );
     println!(
         "    T8 Bitmap:        {:>9}  ({})  (negative = T8 faster)",
-        fmt_us(grand.tree8_bm_build_us),
+        fmt_us(grand.treight_bm_build_us),
         fmt_pct(
-            grand.tree8_bm_build_us as f64,
+            grand.treight_bm_build_us as f64,
             grand.roaring_build_us as f64
         )
     );

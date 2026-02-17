@@ -1,5 +1,5 @@
 [package]
-name = "tree8-fuzz"
+name = "treight-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
-tree8 = { path = "..", features = ["roaring"] }
+treight = { path = "..", features = ["roaring"] }
 roaring = { path = "../../../../../../crates/roaring-rs/roaring" }
 
 [[bin]]

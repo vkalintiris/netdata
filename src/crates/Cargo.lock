@@ -1696,7 +1696,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "tree8",
+ "treight",
  "uuid",
 ]
 
@@ -3562,7 +3562,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree8"
+name = "treight"
 version = "0.1.0"
 dependencies = [
  "allocative",

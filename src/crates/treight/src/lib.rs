@@ -1,7 +1,7 @@
 use std::io;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Sub, SubAssign};
 
-/// Compute the number of levels in the tree8 for a given universe size.
+/// Compute the number of levels in the treight for a given universe size.
 ///
 /// Returns 0 for universe_size == 0.
 pub fn ceil_log8(universe_size: u32) -> u32 {
@@ -19,16 +19,16 @@ pub fn ceil_log8(universe_size: u32) -> u32 {
     levels
 }
 
-/// Compute the exact tree8 data size for a sorted sequence of values,
+/// Compute the exact treight data size for a sorted sequence of values,
 /// without actually building the tree.
 ///
-/// This is useful for deciding whether converting a roaring bitmap to tree8
+/// This is useful for deciding whether converting a roaring bitmap to treight
 /// would save space:
 ///
 /// ```ignore
-/// let tree8_bytes = tree8::estimate_data_size(universe_size, roaring_bm.iter());
+/// let treight_bytes = treight::estimate_data_size(universe_size, roaring_bm.iter());
 /// let roaring_bytes = roaring_bm.serialized_size();
-/// if tree8_bytes < roaring_bytes { /* convert */ }
+/// if treight_bytes < roaring_bytes { /* convert */ }
 /// ```
 ///
 /// The values **must** be yielded in ascending order (as roaring iterators do).
@@ -169,7 +169,7 @@ impl RawBitmap {
         self.levels
     }
 
-    /// The raw tree8 data bytes.
+    /// The raw treight data bytes.
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -932,7 +932,7 @@ fn child_index(level: u32, value: u32) -> u8 {
     ((value >> (3 * level)) & 7) as u8
 }
 
-/// A single node byte from a serialized tree8.
+/// A single node byte from a serialized treight.
 ///
 /// Each bit indicates whether the corresponding child (0..8) is present.
 #[derive(Clone, Copy)]
@@ -993,7 +993,7 @@ fn skip_subtree_at(data: &[u8], mut pos: usize, level: u32) -> usize {
     pos
 }
 
-/// Cursor for reading nodes sequentially from a serialized tree8.
+/// Cursor for reading nodes sequentially from a serialized treight.
 struct NodeReader<'a> {
     nodes: &'a [u8],
     pos: usize,
@@ -1509,7 +1509,7 @@ mod tests {
 
     #[test]
     fn test_build_universe8_bit0() {
-        // universe=8, 1 level. Value 0 → tree8 [0x01]
+        // universe=8, 1 level. Value 0 → treight [0x01]
         let bm = RawBitmap::from_sorted_iter([0].into_iter(), 8);
         assert_eq!(bm.data(), &[0x01]);
     }

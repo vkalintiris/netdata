@@ -6,7 +6,7 @@ members = [
     "journal-common",
     "journal-core",
     "journal-index",
-    "tree8",
+    "treight",
     "journal-log-writer",
     "journal-engine",
     "journal-registry",
