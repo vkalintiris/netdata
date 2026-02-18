@@ -63,10 +63,6 @@ struct Args {
     #[arg(default_value = "/mnt/slow-disk/otel-aws")]
     dir: PathBuf,
 
-    /// Build an FST index alongside the bitmap index.
-    #[arg(long)]
-    fst: bool,
-
     /// Maximum number of journal files to index after discovery.
     #[arg(long)]
     max_files: Option<usize>,
@@ -176,8 +172,6 @@ struct AllocBreakdown {
 struct RunStats {
     /// Which backend was used.
     backend: String,
-    /// Whether FST indexing was enabled.
-    fst_enabled: bool,
     /// Wall-clock time for the batch indexing call.
     index_duration: Duration,
     /// Process memory info after indexing.
@@ -245,6 +239,11 @@ fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
         ..Default::default()
     };
 
+    let fst_idx = file_index.fst_index();
+    stats.fst_bytes = fst_idx.fst_bytes();
+    stats.fst_keys = fst_idx.len();
+    stats.bitmap_count = fst_idx.len();
+
     #[cfg(feature = "allocative")]
     {
         use allocative::size_of_unique_allocated_data as alloc_size;
@@ -254,35 +253,13 @@ fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
         stats.alloc.entry_offsets = alloc_size(file_index.entry_offsets()) as u64;
         stats.alloc.file_fields = alloc_size(file_index.fields()) as u64;
         stats.alloc.indexed_fields = alloc_size(file_index.indexed_fields()) as u64;
-        stats.alloc.bitmaps = alloc_size(file_index.bitmaps()) as u64;
+        stats.alloc.fst_bitmaps = alloc_size(fst_idx.values()) as u64;
     }
 
-    for (_fv, bitmap) in file_index.bitmaps() {
-        stats.bitmap_count += 1;
-
-        #[cfg(feature = "bitmap-treight")]
+    #[cfg(feature = "bitmap-treight")]
+    for bitmap in fst_idx.values() {
         if bitmap.0.is_inverted() {
             stats.inverted_count += 1;
-        }
-
-        let _ = &bitmap;
-    }
-
-    if let Some(fst_idx) = file_index.fst_index() {
-        stats.fst_bytes = fst_idx.fst_bytes();
-        stats.fst_keys = fst_idx.len();
-
-        #[cfg(feature = "allocative")]
-        {
-            stats.alloc.fst_bitmaps =
-                allocative::size_of_unique_allocated_data(fst_idx.bitmaps()) as u64;
-        }
-
-        #[cfg(feature = "bitmap-treight")]
-        for bitmap in fst_idx.bitmaps().iter() {
-            if bitmap.0.is_inverted() {
-                stats.inverted_count += 1;
-            }
         }
     }
 
@@ -359,28 +336,14 @@ fn print_stats(stats: &RunStats) {
     let alloc = stats.total_alloc();
     let fst_map = stats.total_fst_bytes() as u64;
     let fst_keys = stats.total_fst_keys();
-
-    // "bitmap storage" = whichever structure holds the key→bitmap mapping.
-    //   Without FST: HashMap<FieldValuePair, Bitmap>  (alloc.bitmaps)
-    //   With FST:    fst::Map + Vec<Bitmap>            (fst_map + alloc.fst_bitmaps)
-    let bitmap_storage = if stats.fst_enabled {
-        fst_map + alloc.fst_bitmaps
-    } else {
-        alloc.bitmaps
-    };
-
-    // True total = allocative total (excludes FST) + FST data
+    let bitmap_storage = fst_map + alloc.fst_bitmaps;
     let true_total = alloc.total + fst_map + alloc.fst_bitmaps;
 
     let inverted = stats.total_inverted();
-    let total_bitmaps = stats.total_bitmaps() + fst_keys;
+    let total_bitmaps = stats.total_bitmaps();
 
     println!();
-    println!(
-        "=== Index stats ({}{}) ===",
-        stats.backend,
-        if stats.fst_enabled { " + FST" } else { "" },
-    );
+    println!("=== Index stats ({} + FST) ===", stats.backend);
     println!("  files:            {}", stats.total_files());
     println!("  entries:          {}", stats.total_entries());
     println!("  key-value pairs:  {total_bitmaps}");
@@ -399,29 +362,21 @@ fn print_stats(stats: &RunStats) {
     println!("    indexed_fields: {}", fmt_bytes(alloc.indexed_fields));
     println!("    histogram:      {}", fmt_bytes(alloc.histogram));
     println!("    file:           {}", fmt_bytes(alloc.file));
-
-    if stats.fst_enabled {
-        println!(
-            "    bitmaps:        {} (FST + Vec<Bitmap>)",
-            fmt_bytes(bitmap_storage)
-        );
-        println!(
-            "      fst map:      {} ({} keys, {} B/key)",
-            fmt_bytes(fst_map),
-            fst_keys,
-            if fst_keys > 0 {
-                fst_map / fst_keys as u64
-            } else {
-                0
-            },
-        );
-        println!("      bitmap data:  {}", fmt_bytes(alloc.fst_bitmaps));
-    } else {
-        println!(
-            "    bitmaps:        {} (HashMap)",
-            fmt_bytes(bitmap_storage)
-        );
-    }
+    println!(
+        "    bitmaps:        {} (FST + Vec<Bitmap>)",
+        fmt_bytes(bitmap_storage)
+    );
+    println!(
+        "      fst map:      {} ({} keys, {} B/key)",
+        fmt_bytes(fst_map),
+        fst_keys,
+        if fst_keys > 0 {
+            fst_map / fst_keys as u64
+        } else {
+            0
+        },
+    );
+    println!("      bitmap data:  {}", fmt_bytes(alloc.fst_bitmaps));
 
     println!("  --- timing ---");
     println!("  index time:       {:.2?}", stats.index_duration);
@@ -451,10 +406,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("scanning directory: {}", args.dir.display());
     info!("bitmap backend: {}", backend_name());
-    info!(
-        "FST indexing: {}",
-        if args.fst { "enabled" } else { "disabled" }
-    );
     info!("cardinality limit: {}", args.cardinality);
 
     // Create registry and scan directory
@@ -532,7 +483,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let indexing_limits = IndexingLimits {
         max_unique_values_per_field: args.cardinality,
-        build_fst: args.fst,
         ..Default::default()
     };
 
@@ -554,7 +504,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Collect stats.
     let mut run_stats = RunStats {
         backend: backend_name().to_string(),
-        fst_enabled: args.fst,
         index_duration,
         mem: mem_info(),
         ..Default::default()
@@ -574,7 +523,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Collect stats.
         let run_stats = RunStats {
             backend: backend_name().to_string(),
-            fst_enabled: args.fst,
             index_duration,
             mem: mem_info(),
             ..Default::default()

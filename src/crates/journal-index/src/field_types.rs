@@ -200,6 +200,12 @@ impl AsRef<str> for FieldValuePair {
     }
 }
 
+impl AsRef<[u8]> for FieldValuePair {
+    fn as_ref(&self) -> &[u8] {
+        self.key.as_bytes()
+    }
+}
+
 // Conversion helpers for backward compatibility
 impl From<FieldValuePair> for String {
     fn from(pair: FieldValuePair) -> String {

@@ -8,7 +8,13 @@ description = "Generic associative index backed by a finite state transducer"
 [lints]
 workspace = true
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 fst = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

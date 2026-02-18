@@ -322,7 +322,7 @@ impl HistogramEngine {
                     }
 
                     // Count field=value pairs in this file for this bucket's time range
-                    for (indexed_field, field_bitmap) in file_index.bitmaps() {
+                    file_index.fst_index().for_each(|key, field_bitmap| {
                         let unfiltered_count = file_index
                             .count_entries_in_time_range(
                                 field_bitmap,
@@ -345,12 +345,14 @@ impl HistogramEngine {
                         };
 
                         // Update counts
-                        if let Some(pair) = FieldValuePair::parse(indexed_field) {
+                        if let Some(pair) =
+                            std::str::from_utf8(key).ok().and_then(FieldValuePair::parse)
+                        {
                             let counts = response.fv_counts.entry(pair).or_insert((0, 0));
                             counts.0 += unfiltered_count;
                             counts.1 += filtered_count;
                         }
-                    }
+                    });
                 }
             }
 

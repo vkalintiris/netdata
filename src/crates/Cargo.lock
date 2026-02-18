@@ -1005,6 +1005,8 @@ name = "fst-index"
 version = "0.1.0"
 dependencies = [
  "fst",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1699,7 +1701,6 @@ name = "journal-index"
 version = "0.1.3"
 dependencies = [
  "allocative",
- "bumpalo",
  "clap",
  "fst",
  "fst-index",

@@ -43,11 +43,6 @@ pub struct IndexingLimits {
     /// will be skipped. This prevents large binary data or encoded content
     /// from consuming excessive memory.
     pub max_field_payload_size: usize,
-
-    /// When true, build an FST (finite state transducer) index alongside the
-    /// HashMap-based bitmap index. Used for benchmarking FST construction
-    /// overhead and memory usage.
-    pub build_fst: bool,
 }
 
 impl Default for IndexingLimits {
@@ -55,7 +50,6 @@ impl Default for IndexingLimits {
         Self {
             max_unique_values_per_field: DEFAULT_MAX_UNIQUE_VALUES_PER_FIELD,
             max_field_payload_size: DEFAULT_MAX_FIELD_PAYLOAD_SIZE,
-            build_fst: false,
         }
     }
 }
@@ -211,37 +205,14 @@ impl FileIndexer {
 
         // Create the bitmaps for field=value pairs
         let universe_size = self.source_timestamp_entry_offset_pairs.len() as u32;
-        let (bitmaps, fst_index) = if self.limits.build_fst {
-            // Use bumpalo to arena-allocate the temporary HashMap keys,
-            // avoiding per-key heap allocations that cause fragmentation.
-            let bump = bumpalo::Bump::new();
-            // let bump = bumpalo::Bump::with_capacity(4 * 1024 * 1024);
-            let bump_entries = self.build_entries_index_with(
-                &journal_file,
-                &field_map,
-                field_names,
-                tail_object_offset,
-                universe_size,
-                |_field_name, data_payload| {
-                    let eq_pos = data_payload.find('=')?;
-                    if eq_pos == 0 {
-                        return None;
-                    }
-                    Some(&*bump.alloc_str(data_payload))
-                },
-            )?;
-            let fst = Self::build_fst_index(bump_entries)?;
-            (HashMap::default(), Some(fst))
-        } else {
-            let entries = self.build_entries_index(
-                &journal_file,
-                &field_map,
-                field_names,
-                tail_object_offset,
-                universe_size,
-            )?;
-            (entries, None)
-        };
+        let entries = self.build_entries_index(
+            &journal_file,
+            &field_map,
+            field_names,
+            tail_object_offset,
+            universe_size,
+        )?;
+        let fst_index = Self::build_fst_index(entries)?;
 
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
@@ -259,7 +230,6 @@ impl FileIndexer {
             entry_offsets,
             file_fields,
             indexed_fields,
-            bitmaps,
             fst_index,
         ))
     }

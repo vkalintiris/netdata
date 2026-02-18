@@ -360,6 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut indexer = FileIndexer::new(IndexingLimits {
         max_unique_values_per_field: args.max_unique_values,
         max_field_payload_size: args.max_payload_size,
+        ..Default::default()
     });
     let bucket_duration = Seconds(600);
 
@@ -411,11 +412,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let total_entries = file_index.total_entries();
         let universe_size = total_entries as u32;
-        let bitmaps = file_index.bitmaps();
-        let bitmap_count = bitmaps.len();
+        let fst_idx = file_index.fst_index();
+        let bitmap_count = fst_idx.len();
 
         // Extract sorted values from each bitmap (raw input for all constructions).
-        let raw_data: Vec<Vec<u32>> = bitmaps.values().map(|bm| bm.iter().collect()).collect();
+        let raw_data: Vec<Vec<u32>> = fst_idx.values().iter().map(|bm| bm.iter().collect()).collect();
 
         // Benchmark roaring construction (from_sorted_iter + optimize).
         let t0 = Instant::now();

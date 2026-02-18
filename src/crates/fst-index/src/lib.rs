@@ -30,6 +30,40 @@
 use fst::automaton::Automaton;
 use fst::{IntoStreamer, Streamer};
 
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::FstIndex;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct FstIndexHelper<T> {
+        fst_bytes: Vec<u8>,
+        values: Vec<T>,
+    }
+
+    impl<T: Serialize + Clone> Serialize for FstIndex<T> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let helper = FstIndexHelper {
+                fst_bytes: self.map.as_fst().as_bytes().to_vec(),
+                values: self.values.clone(),
+            };
+            helper.serialize(serializer)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for FstIndex<T> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let helper = FstIndexHelper::<T>::deserialize(deserializer)?;
+            let map =
+                fst::Map::new(helper.fst_bytes).map_err(serde::de::Error::custom)?;
+            Ok(FstIndex {
+                map,
+                values: helper.values,
+            })
+        }
+    }
+}
+
 /// Error type for FST index construction.
 #[derive(Debug)]
 pub struct BuildError(String);
@@ -202,6 +236,14 @@ impl<T> FstIndex<T> {
         while let Some((key, idx)) = stream.next() {
             f(key, &self.values[idx as usize]);
         }
+    }
+
+    /// Call `f` for each `(key, value)` pair in the index.
+    ///
+    /// Equivalent to `prefix_for_each(b"", f)` but with clearer intent.
+    /// Values are visited in key-sorted order.
+    pub fn for_each(&self, f: impl FnMut(&[u8], &T)) {
+        self.prefix_for_each(b"", f);
     }
 
     /// Get a slice of all values, ordered by their sorted key.
@@ -399,5 +441,54 @@ mod tests {
     fn fst_bytes_is_nonzero() {
         let index = FstIndex::build([("a", 1u32)]).unwrap();
         assert!(index.fst_bytes() > 0);
+    }
+
+    #[test]
+    fn for_each_visits_all() {
+        let index = FstIndex::build([("a", 1u32), ("b", 2), ("c", 3)]).unwrap();
+        let mut collected = Vec::new();
+        index.for_each(|key, val| {
+            collected.push((key.to_vec(), *val));
+        });
+        assert_eq!(
+            collected,
+            vec![
+                (b"a".to_vec(), 1),
+                (b"b".to_vec(), 2),
+                (b"c".to_vec(), 3),
+            ]
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip() {
+        let index = FstIndex::build([
+            ("alpha", 1u32),
+            ("beta", 2),
+            ("gamma", 3),
+        ])
+        .unwrap();
+
+        let json = serde_json::to_string(&index).unwrap();
+        let deserialized: FstIndex<u32> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.len(), 3);
+        assert_eq!(deserialized.get(b"alpha"), Some(&1));
+        assert_eq!(deserialized.get(b"beta"), Some(&2));
+        assert_eq!(deserialized.get(b"gamma"), Some(&3));
+        assert_eq!(deserialized.get(b"delta"), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_empty() {
+        let index: FstIndex<u32> = FstIndex::build(Vec::<(&str, u32)>::new()).unwrap();
+
+        let json = serde_json::to_string(&index).unwrap();
+        let deserialized: FstIndex<u32> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.len(), 0);
+        assert!(deserialized.is_empty());
     }
 }

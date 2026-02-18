@@ -1,6 +1,4 @@
-use crate::{
-    Bitmap, FieldName, FieldValuePair, Histogram, IndexError, Microseconds, Result, Seconds,
-};
+use crate::{Bitmap, FieldName, Histogram, IndexError, Microseconds, Result, Seconds};
 use journal_core::collections::{HashMap, HashSet};
 use journal_core::file::{JournalFile, Mmap};
 use journal_core::repository::File;
@@ -8,6 +6,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use tracing::{error, trace};
+
+/// FST-based index that maps `FieldValuePair` byte strings to `Bitmap`s.
+///
+/// This is a type alias over the generic `fst_index::FstIndex<Bitmap>`. The
+/// FST stores keys in sorted order and maps each to its position in a parallel
+/// `Vec<Bitmap>`, giving O(key_length) exact lookups and efficient prefix
+/// searches with significantly less memory overhead than a `HashMap` for keys.
+pub type FstIndex = fst_index::FstIndex<Bitmap>;
 
 /// Index for a single journal file, enabling efficient querying and filtering.
 ///
@@ -37,22 +43,10 @@ pub struct FileIndex {
     file_fields: HashSet<FieldName>,
     // Set of fields that were requested to be indexed
     indexed_fields: HashSet<FieldName>,
-    // Bitmap for each indexed field=value pair
-    bitmaps: HashMap<FieldValuePair, Bitmap>,
-    // Optional FST index mapping FieldValuePair keys to sorted indices.
-    // Built when IndexingLimits::build_fst is true. Used for benchmarking.
-    #[serde(skip)]
+    // FST index mapping FieldValuePair byte strings to Bitmaps
     #[cfg_attr(feature = "allocative", allocative(skip))]
-    fst_index: Option<FstIndex>,
+    fst_index: FstIndex,
 }
-
-/// FST-based index that maps `FieldValuePair` byte strings to `Bitmap`s.
-///
-/// This is a type alias over the generic `fst_index::FstIndex<Bitmap>`. The
-/// FST stores keys in sorted order and maps each to its position in a parallel
-/// `Vec<Bitmap>`, giving O(key_length) exact lookups and efficient prefix
-/// searches with significantly less memory overhead than a `HashMap` for keys.
-pub type FstIndex = fst_index::FstIndex<Bitmap>;
 
 impl FileIndex {
     /// Create a new file index.
@@ -65,8 +59,7 @@ impl FileIndex {
         entry_offsets: Vec<u32>,
         fields: HashSet<FieldName>,
         indexed_fields: HashSet<FieldName>,
-        bitmaps: HashMap<FieldValuePair, Bitmap>,
-        fst_index: Option<FstIndex>,
+        fst_index: FstIndex,
     ) -> Self {
         Self {
             file,
@@ -76,7 +69,6 @@ impl FileIndex {
             entry_offsets,
             file_fields: fields,
             indexed_fields,
-            bitmaps,
             fst_index,
         }
     }
@@ -157,14 +149,9 @@ impl FileIndex {
         &self.indexed_fields
     }
 
-    /// Get all indexed field=value pairs with their bitmaps.
-    pub fn bitmaps(&self) -> &HashMap<FieldValuePair, Bitmap> {
-        &self.bitmaps
-    }
-
-    /// Get the optional FST index, if one was built during indexing.
-    pub fn fst_index(&self) -> Option<&FstIndex> {
-        self.fst_index.as_ref()
+    /// Get the FST index mapping field=value pairs to bitmaps.
+    pub fn fst_index(&self) -> &FstIndex {
+        &self.fst_index
     }
 
     /// Check if a field is indexed.

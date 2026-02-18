@@ -442,13 +442,13 @@ fn test_file_index_metadata() {
     assert_eq!(file_index.total_entries(), 3);
 
     // Verify bitmaps exist for indexed field values
-    let bitmaps = file_index.bitmaps();
-    assert!(bitmaps.contains_key(&FieldValuePair::parse("PRIORITY=3").unwrap()));
-    assert!(bitmaps.contains_key(&FieldValuePair::parse("PRIORITY=6").unwrap()));
-    assert!(bitmaps.contains_key(&FieldValuePair::parse("_HOSTNAME=server1").unwrap()));
+    let fst = file_index.fst_index();
+    assert!(fst.contains_key(b"PRIORITY=3"));
+    assert!(fst.contains_key(b"PRIORITY=6"));
+    assert!(fst.contains_key(b"_HOSTNAME=server1"));
 
     // MESSAGE field values should not be indexed
-    assert!(!bitmaps.contains_key(&FieldValuePair::parse("MESSAGE=test message").unwrap()));
+    assert!(!fst.contains_key(b"MESSAGE=test message"));
 }
 
 #[test]
@@ -484,26 +484,20 @@ fn test_source_timestamp_ordering() {
     assert_eq!(file_index.end_time().0, expected_end);
 
     // Verify bitmaps reflect the new ordering
-    let bitmaps = file_index.bitmaps();
+    let fst = file_index.fst_index();
 
     // PRIORITY=6 should be at index 0 (entry with source_time=1_000_000)
-    let priority_6_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=6").unwrap())
-        .unwrap();
+    let priority_6_bitmap = fst.get(b"PRIORITY=6").unwrap();
     assert_eq!(priority_6_bitmap.len(), 1);
     assert!(priority_6_bitmap.contains(0));
 
     // PRIORITY=7 should be at index 1 (entry with source_time=2_000_000)
-    let priority_7_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=7").unwrap())
-        .unwrap();
+    let priority_7_bitmap = fst.get(b"PRIORITY=7").unwrap();
     assert_eq!(priority_7_bitmap.len(), 1);
     assert!(priority_7_bitmap.contains(1));
 
     // PRIORITY=3 should be at index 2 (entry with source_time=3_000_000)
-    let priority_3_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=3").unwrap())
-        .unwrap();
+    let priority_3_bitmap = fst.get(b"PRIORITY=3").unwrap();
     assert_eq!(priority_3_bitmap.len(), 1);
     assert!(priority_3_bitmap.contains(2));
 }
@@ -530,26 +524,20 @@ fn test_indexing_without_source_timestamp() {
         .unwrap();
 
     // Verify entries maintain their natural order
-    let bitmaps = file_index.bitmaps();
+    let fst = file_index.fst_index();
 
     // PRIORITY=3 should be at index 0
-    let priority_3_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=3").unwrap())
-        .unwrap();
+    let priority_3_bitmap = fst.get(b"PRIORITY=3").unwrap();
     assert_eq!(priority_3_bitmap.len(), 1);
     assert!(priority_3_bitmap.contains(0));
 
     // PRIORITY=6 should be at index 1
-    let priority_6_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=6").unwrap())
-        .unwrap();
+    let priority_6_bitmap = fst.get(b"PRIORITY=6").unwrap();
     assert_eq!(priority_6_bitmap.len(), 1);
     assert!(priority_6_bitmap.contains(1));
 
     // PRIORITY=7 should be at index 2
-    let priority_7_bitmap = bitmaps
-        .get(&FieldValuePair::parse("PRIORITY=7").unwrap())
-        .unwrap();
+    let priority_7_bitmap = fst.get(b"PRIORITY=7").unwrap();
     assert_eq!(priority_7_bitmap.len(), 1);
     assert!(priority_7_bitmap.contains(2));
 }
