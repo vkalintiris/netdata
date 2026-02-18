@@ -38,6 +38,9 @@
 // # Let's say it's 259:0, Set a 10MB/s read and write limit
 // echo "259:0 rbps=10485760 wbps=10485760" | sudo tee /sys/fs/cgroup/slow-io/io.max
 
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use clap::Parser;
 use journal_engine::{
     Facets, FileIndexCacheBuilder, FileIndexKey, IndexingLimits, QueryTimeRange,
@@ -310,6 +313,8 @@ fn random_facets_from_response_json(n: usize) -> Result<Vec<String>, Box<dyn std
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(n as u64);
     names.shuffle(&mut rng);
+
+    tracing::warn!("Using {}/{} facets", n, names.len());
     names.truncate(n);
 
     Ok(names)
@@ -371,7 +376,8 @@ fn print_stats(stats: &RunStats) {
     let total_bitmaps = stats.total_bitmaps() + fst_keys;
 
     println!();
-    println!("=== Index stats ({}{}) ===",
+    println!(
+        "=== Index stats ({}{}) ===",
         stats.backend,
         if stats.fst_enabled { " + FST" } else { "" },
     );
@@ -395,15 +401,26 @@ fn print_stats(stats: &RunStats) {
     println!("    file:           {}", fmt_bytes(alloc.file));
 
     if stats.fst_enabled {
-        println!("    bitmaps:        {} (FST + Vec<Bitmap>)", fmt_bytes(bitmap_storage));
-        println!("      fst map:      {} ({} keys, {} B/key)",
+        println!(
+            "    bitmaps:        {} (FST + Vec<Bitmap>)",
+            fmt_bytes(bitmap_storage)
+        );
+        println!(
+            "      fst map:      {} ({} keys, {} B/key)",
             fmt_bytes(fst_map),
             fst_keys,
-            if fst_keys > 0 { fst_map / fst_keys as u64 } else { 0 },
+            if fst_keys > 0 {
+                fst_map / fst_keys as u64
+            } else {
+                0
+            },
         );
         println!("      bitmap data:  {}", fmt_bytes(alloc.fst_bitmaps));
     } else {
-        println!("    bitmaps:        {} (HashMap)", fmt_bytes(bitmap_storage));
+        println!(
+            "    bitmaps:        {} (HashMap)",
+            fmt_bytes(bitmap_storage)
+        );
     }
 
     println!("  --- timing ---");
@@ -550,6 +567,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     print_stats(&run_stats);
+
+    drop(responses);
+    tracing::warn!("After dropping responses");
+    {
+        // Collect stats.
+        let run_stats = RunStats {
+            backend: backend_name().to_string(),
+            fst_enabled: args.fst,
+            index_duration,
+            mem: mem_info(),
+            ..Default::default()
+        };
+
+        print_stats(&run_stats);
+    }
 
     // Close the cache to flush and shut down I/O tasks gracefully
     cache.close().await?;

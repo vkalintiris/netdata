@@ -22,6 +22,7 @@ allocative = [
 
 [dependencies]
 allocative = { workspace = true, optional = true }
+bumpalo = { workspace = true }
 fst = { workspace = true }
 regex = { workspace = true }
 roaring = { workspace = true, features = ["serde"], optional = true }

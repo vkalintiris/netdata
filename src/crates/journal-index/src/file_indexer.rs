@@ -211,21 +211,35 @@ impl FileIndexer {
 
         // Create the bitmaps for field=value pairs
         let universe_size = self.source_timestamp_entry_offset_pairs.len() as u32;
-        let entries = self.build_entries_index(
-            &journal_file,
-            &field_map,
-            field_names,
-            tail_object_offset,
-            universe_size,
-        )?;
-
-        // Optionally build an FST index from the bitmaps HashMap.
-        // The FST + Vec<Bitmap> replaces the HashMap, so we drop the
-        // HashMap to get an accurate memory comparison.
         let (bitmaps, fst_index) = if self.limits.build_fst {
-            let fst = Self::build_fst_index(entries)?;
+            // Use bumpalo to arena-allocate the temporary HashMap keys,
+            // avoiding per-key heap allocations that cause fragmentation.
+            let bump = bumpalo::Bump::new();
+            // let bump = bumpalo::Bump::with_capacity(4 * 1024 * 1024);
+            let bump_entries = self.build_entries_index_with(
+                &journal_file,
+                &field_map,
+                field_names,
+                tail_object_offset,
+                universe_size,
+                |_field_name, data_payload| {
+                    let eq_pos = data_payload.find('=')?;
+                    if eq_pos == 0 {
+                        return None;
+                    }
+                    Some(&*bump.alloc_str(data_payload))
+                },
+            )?;
+            let fst = Self::build_fst_index(bump_entries)?;
             (HashMap::default(), Some(fst))
         } else {
+            let entries = self.build_entries_index(
+                &journal_file,
+                &field_map,
+                field_names,
+                tail_object_offset,
+                universe_size,
+            )?;
             (entries, None)
         };
 
@@ -250,17 +264,6 @@ impl FileIndexer {
         ))
     }
 
-    /// Build bitmap indexes for field=value pairs.
-    ///
-    /// For each field in `field_names`, this iterates through all data objects
-    /// for that field and creates a bitmap mapping each unique field=value pair
-    /// to the entry indices where it appears.
-    ///
-    /// Only entries with offsets <= `tail_object_offset` are included in the
-    /// bitmaps, ensuring a consistent snapshot.
-    ///
-    /// Fields with more than `self.limits.max_unique_values_per_field` unique values
-    /// will have their indexing truncated to prevent unbounded memory growth.
     fn build_entries_index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
@@ -269,6 +272,31 @@ impl FileIndexer {
         tail_object_offset: NonZeroU64,
         universe_size: u32,
     ) -> Result<HashMap<FieldValuePair, Bitmap>> {
+        self.build_entries_index_with(
+            journal_file,
+            field_map,
+            field_names,
+            tail_object_offset,
+            universe_size,
+            |field_name, data_payload| {
+                let pair = FieldValuePair::parse(data_payload)?;
+                Some(FieldValuePair::new_unchecked(
+                    FieldName::new_unchecked(field_name),
+                    String::from(pair.value()),
+                ))
+            },
+        )
+    }
+
+    fn build_entries_index_with<K: std::hash::Hash + Eq>(
+        &mut self,
+        journal_file: &JournalFile<Mmap>,
+        field_map: &HashMap<String, String>,
+        field_names: &[FieldName],
+        tail_object_offset: NonZeroU64,
+        universe_size: u32,
+        make_key: impl Fn(&FieldName, &str) -> Option<K>,
+    ) -> Result<HashMap<K, Bitmap>> {
         let mut entries_index = HashMap::default();
         let mut truncated_fields: Vec<&FieldName> = Vec::new();
         let mut fields_with_large_payloads: Vec<&FieldName> = Vec::new();
@@ -333,8 +361,8 @@ impl FileIndexer {
                     (data_payload, inlined_cursor)
                 };
 
-                // Parse the payload into a FieldValuePair (format is "FIELD=value")
-                let Some(pair) = FieldValuePair::parse(&data_payload) else {
+                // Validate format and construct the key via the caller's closure
+                let Some(key) = make_key(field_name, &data_payload) else {
                     warn!("Invalid field=value format: {}", data_payload);
                     continue;
                 };
@@ -383,9 +411,7 @@ impl FileIndexer {
                 };
                 bitmap.optimize();
 
-                let field_name = FieldName::new_unchecked(field_name);
-                let k = FieldValuePair::new_unchecked(field_name, String::from(pair.value()));
-                entries_index.insert(k, bitmap);
+                entries_index.insert(key, bitmap);
 
                 unique_values_count += 1;
             }
@@ -625,11 +651,11 @@ impl FileIndexer {
     ///
     /// Consumes the HashMap, sorts the keys, builds an FST map (key → index),
     /// and extracts the bitmaps into a Vec ordered by sorted key.
-    fn build_fst_index(
-        bitmaps: HashMap<FieldValuePair, Bitmap>,
+    fn build_fst_index<K: std::hash::Hash + Eq + Ord + AsRef<str>>(
+        bitmaps: HashMap<K, Bitmap>,
     ) -> Result<crate::file_index::FstIndex> {
         // Collect into (key, bitmap) pairs and sort by key.
-        let mut pairs: Vec<(FieldValuePair, Bitmap)> = bitmaps.into_iter().collect();
+        let mut pairs: Vec<(K, Bitmap)> = bitmaps.into_iter().collect();
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         // Build the FST map and extract bitmaps in sorted order.
@@ -637,7 +663,7 @@ impl FileIndexer {
         let mut bitmap_vec = Vec::with_capacity(pairs.len());
         for (idx, (key, bitmap)) in pairs.into_iter().enumerate() {
             builder
-                .insert(key.as_bytes(), idx as u64)
+                .insert(key.as_ref().as_bytes(), idx as u64)
                 .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
             bitmap_vec.push(bitmap);
         }
