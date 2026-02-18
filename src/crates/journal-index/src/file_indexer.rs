@@ -241,33 +241,8 @@ impl FileIndexer {
         field_names: &[FieldName],
         tail_object_offset: NonZeroU64,
         universe_size: u32,
-    ) -> Result<HashMap<FieldValuePair, Bitmap>> {
-        self.build_entries_index_with(
-            journal_file,
-            field_map,
-            field_names,
-            tail_object_offset,
-            universe_size,
-            |field_name, data_payload| {
-                let pair = FieldValuePair::parse(data_payload)?;
-                Some(FieldValuePair::new_unchecked(
-                    FieldName::new_unchecked(field_name),
-                    String::from(pair.value()),
-                ))
-            },
-        )
-    }
-
-    fn build_entries_index_with<K: std::hash::Hash + Eq>(
-        &mut self,
-        journal_file: &JournalFile<Mmap>,
-        field_map: &HashMap<String, String>,
-        field_names: &[FieldName],
-        tail_object_offset: NonZeroU64,
-        universe_size: u32,
-        make_key: impl Fn(&FieldName, &str) -> Option<K>,
-    ) -> Result<HashMap<K, Bitmap>> {
-        let mut entries_index = HashMap::default();
+    ) -> Result<Vec<(FieldValuePair, Bitmap)>> {
+        let mut entries_index = Vec::new();
         let mut truncated_fields: Vec<&FieldName> = Vec::new();
         let mut fields_with_large_payloads: Vec<&FieldName> = Vec::new();
 
@@ -331,11 +306,15 @@ impl FileIndexer {
                     (data_payload, inlined_cursor)
                 };
 
-                // Validate format and construct the key via the caller's closure
-                let Some(key) = make_key(field_name, &data_payload) else {
+                // Validate format and construct the key
+                let Some(pair) = FieldValuePair::parse(&data_payload) else {
                     warn!("Invalid field=value format: {}", data_payload);
                     continue;
                 };
+                let key = FieldValuePair::new_unchecked(
+                    FieldName::new_unchecked(field_name),
+                    String::from(pair.value()),
+                );
 
                 // Collect the offset of entries where this data object appears
                 self.entry_offsets.clear();
@@ -381,7 +360,7 @@ impl FileIndexer {
                 };
                 bitmap.optimize();
 
-                entries_index.insert(key, bitmap);
+                entries_index.push((key, bitmap));
 
                 unique_values_count += 1;
             }
@@ -617,13 +596,13 @@ impl FileIndexer {
 }
 
 impl FileIndexer {
-    /// Build an FST-based index that replaces the HashMap.
+    /// Build an FST-based index from a vec of `(FieldValuePair, Bitmap)` pairs.
     ///
-    /// Consumes the HashMap, sorts the keys, and builds an `FstIndex<Bitmap>`.
-    fn build_fst_index<K: std::hash::Hash + Eq + Ord + AsRef<[u8]>>(
-        bitmaps: HashMap<K, Bitmap>,
+    /// Sorts the keys internally and builds an `FstIndex<Bitmap>`.
+    fn build_fst_index(
+        entries: Vec<(FieldValuePair, Bitmap)>,
     ) -> Result<crate::file_index::FstIndex> {
-        fst_index::FstIndex::build(bitmaps).map_err(|e| IndexError::FstBuildError(e.to_string()))
+        fst_index::FstIndex::build(entries).map_err(|e| IndexError::FstBuildError(e.to_string()))
     }
 }
 
