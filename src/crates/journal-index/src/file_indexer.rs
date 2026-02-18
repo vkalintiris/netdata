@@ -427,7 +427,7 @@ impl FileIndexer {
 
         // Log summary of indexing issues
         if !truncated_fields.is_empty() {
-            let field_names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
+            let _field_names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
             // warn!(
             //     "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
             //     journal_file.file().path(),
@@ -437,7 +437,7 @@ impl FileIndexer {
             // );
         }
         if !fields_with_large_payloads.is_empty() {
-            let field_names: Vec<&str> = fields_with_large_payloads
+            let _field_names: Vec<&str> = fields_with_large_payloads
                 .iter()
                 .map(|f| f.as_str())
                 .collect();
@@ -649,31 +649,11 @@ impl FileIndexer {
 impl FileIndexer {
     /// Build an FST-based index that replaces the HashMap.
     ///
-    /// Consumes the HashMap, sorts the keys, builds an FST map (key → index),
-    /// and extracts the bitmaps into a Vec ordered by sorted key.
-    fn build_fst_index<K: std::hash::Hash + Eq + Ord + AsRef<str>>(
+    /// Consumes the HashMap, sorts the keys, and builds an `FstIndex<Bitmap>`.
+    fn build_fst_index<K: std::hash::Hash + Eq + Ord + AsRef<[u8]>>(
         bitmaps: HashMap<K, Bitmap>,
     ) -> Result<crate::file_index::FstIndex> {
-        // Collect into (key, bitmap) pairs and sort by key.
-        let mut pairs: Vec<(K, Bitmap)> = bitmaps.into_iter().collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-        // Build the FST map and extract bitmaps in sorted order.
-        let mut builder = fst::MapBuilder::memory();
-        let mut bitmap_vec = Vec::with_capacity(pairs.len());
-        for (idx, (key, bitmap)) in pairs.into_iter().enumerate() {
-            builder
-                .insert(key.as_ref().as_bytes(), idx as u64)
-                .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
-            bitmap_vec.push(bitmap);
-        }
-
-        let bytes = builder
-            .into_inner()
-            .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
-
-        let map = fst::Map::new(bytes).map_err(|e| IndexError::FstBuildError(e.to_string()))?;
-        Ok(crate::file_index::FstIndex::new(map, bitmap_vec))
+        fst_index::FstIndex::build(bitmaps).map_err(|e| IndexError::FstBuildError(e.to_string()))
     }
 }
 

@@ -102,11 +102,7 @@ fn bench_set_ops_raw(bitmaps: &[treight::RawBitmap]) -> u64 {
     for chunk in bitmaps.chunks(SET_OPS_BATCH) {
         let mut acc = chunk[0].clone();
         for (i, bm) in chunk[1..].iter().enumerate() {
-            acc = if i % 2 == 0 {
-                &acc & bm
-            } else {
-                &acc | bm
-            };
+            acc = if i % 2 == 0 { &acc & bm } else { &acc | bm };
         }
         black_box(acc.len());
     }
@@ -119,11 +115,7 @@ fn bench_set_ops_bitmap(bitmaps: &[treight::Bitmap]) -> u64 {
     for chunk in bitmaps.chunks(SET_OPS_BATCH) {
         let mut acc = chunk[0].clone();
         for (i, bm) in chunk[1..].iter().enumerate() {
-            acc = if i % 2 == 0 {
-                &acc & bm
-            } else {
-                &acc | bm
-            };
+            acc = if i % 2 == 0 { &acc & bm } else { &acc | bm };
         }
         black_box(acc.len());
     }
@@ -441,7 +433,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t0 = Instant::now();
         let treight_raw_bitmaps: Vec<treight::RawBitmap> = raw_data
             .iter()
-            .map(|values| treight::RawBitmap::from_sorted_iter(values.iter().copied(), universe_size))
+            .map(|values| {
+                treight::RawBitmap::from_sorted_iter(values.iter().copied(), universe_size)
+            })
             .collect();
         let treight_raw_build_us = t0.elapsed().as_micros() as u64;
 
@@ -498,9 +492,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let hybrid_ops_us = bench_set_ops_hybrid(&treight_raw_bitmaps);
 
         // Benchmark range_cardinality (middle 50% of universe).
-        let roaring_range_card_us = bench_range_cardinality_roaring(&roaring_bitmaps, universe_size);
+        let roaring_range_card_us =
+            bench_range_cardinality_roaring(&roaring_bitmaps, universe_size);
         let raw_range_card_us = bench_range_cardinality_raw(&treight_raw_bitmaps, universe_size);
-        let hybrid_range_card_us = bench_range_cardinality_hybrid(&treight_raw_bitmaps, universe_size);
+        let hybrid_range_card_us =
+            bench_range_cardinality_hybrid(&treight_raw_bitmaps, universe_size);
 
         // Benchmark remove_range (restrict to middle 50% of universe).
         let roaring_remove_range_us = bench_remove_range_roaring(&roaring_bitmaps, universe_size);
@@ -639,10 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("  Set operations (alternating AND/OR, batches of {SET_OPS_BATCH}):");
-    println!(
-        "    RB:               {:>9}",
-        fmt_us(grand.roaring_ops_us)
-    );
+    println!("    RB:               {:>9}", fmt_us(grand.roaring_ops_us));
     println!(
         "    T8 RawBitmap:     {:>9}  ({})",
         fmt_us(grand.raw_ops_us),
@@ -707,10 +700,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("  Iteration (full scan, all bitmaps):");
-    println!(
-        "    RB:               {:>9}",
-        fmt_us(grand.roaring_iter_us)
-    );
+    println!("    RB:               {:>9}", fmt_us(grand.roaring_iter_us));
     println!(
         "    T8 RawBitmap:     {:>9}  ({})",
         fmt_us(grand.raw_iter_us),

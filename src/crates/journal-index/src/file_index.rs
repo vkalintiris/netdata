@@ -46,67 +46,13 @@ pub struct FileIndex {
     fst_index: Option<FstIndex>,
 }
 
-/// FST-based index that replaces `HashMap<FieldValuePair, Bitmap>`.
+/// FST-based index that maps `FieldValuePair` byte strings to `Bitmap`s.
 ///
-/// Maps `FieldValuePair` byte strings to indices via a finite state transducer,
-/// with the bitmaps stored in a `Vec` ordered by sorted key. This is the
-/// structure that would replace the HashMap in production.
-pub struct FstIndex {
-    map: fst::Map<Vec<u8>>,
-    bitmaps: Vec<Bitmap>,
-}
-
-impl std::fmt::Debug for FstIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FstIndex")
-            .field("keys", &self.map.len())
-            .field("fst_bytes", &self.map.as_fst().as_bytes().len())
-            .field("bitmaps", &self.bitmaps.len())
-            .finish()
-    }
-}
-
-impl Clone for FstIndex {
-    fn clone(&self) -> Self {
-        let bytes = self.map.as_fst().as_bytes().to_vec();
-        Self {
-            map: fst::Map::new(bytes).expect("cloning valid FST"),
-            bitmaps: self.bitmaps.clone(),
-        }
-    }
-}
-
-impl FstIndex {
-    /// Create an FstIndex from an FST map and its corresponding bitmaps.
-    pub fn new(map: fst::Map<Vec<u8>>, bitmaps: Vec<Bitmap>) -> Self {
-        Self { map, bitmaps }
-    }
-
-    /// Number of keys stored in the FST.
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Size in bytes of the serialized FST data (keys only).
-    pub fn fst_bytes(&self) -> usize {
-        self.map.as_fst().as_bytes().len()
-    }
-
-    /// Get a reference to the bitmaps vector.
-    pub fn bitmaps(&self) -> &Vec<Bitmap> {
-        &self.bitmaps
-    }
-
-    /// Look up a key in the FST, returning its sorted index.
-    pub fn get(&self, key: &[u8]) -> Option<u64> {
-        self.map.get(key)
-    }
-
-    /// Look up a key and return the corresponding bitmap.
-    pub fn get_bitmap(&self, key: &[u8]) -> Option<&Bitmap> {
-        self.map.get(key).map(|idx| &self.bitmaps[idx as usize])
-    }
-}
+/// This is a type alias over the generic `fst_index::FstIndex<Bitmap>`. The
+/// FST stores keys in sorted order and maps each to its position in a parallel
+/// `Vec<Bitmap>`, giving O(key_length) exact lookups and efficient prefix
+/// searches with significantly less memory overhead than a `HashMap` for keys.
+pub type FstIndex = fst_index::FstIndex<Bitmap>;
 
 impl FileIndex {
     /// Create a new file index.

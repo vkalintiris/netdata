@@ -1001,6 +1001,13 @@ name = "fst"
 version = "0.4.7"
 
 [[package]]
+name = "fst-index"
+version = "0.1.0"
+dependencies = [
+ "fst",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1695,6 +1702,7 @@ dependencies = [
  "bumpalo",
  "clap",
  "fst",
+ "fst-index",
  "journal-common",
  "journal-core",
  "journal-registry",

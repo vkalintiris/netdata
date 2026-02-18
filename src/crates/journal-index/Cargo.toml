@@ -24,6 +24,7 @@ allocative = [
 allocative = { workspace = true, optional = true }
 bumpalo = { workspace = true }
 fst = { workspace = true }
+fst-index = { workspace = true }
 regex = { workspace = true }
 roaring = { workspace = true, features = ["serde"], optional = true }
 treight = { path = "../treight", features = ["serde"], optional = true }

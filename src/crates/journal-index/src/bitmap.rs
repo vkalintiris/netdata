@@ -35,10 +35,7 @@ mod imp {
             iterator: I,
             _universe_size: u32,
         ) -> Self {
-            Bitmap(
-                RoaringBitmap::from_sorted_iter(iterator)
-                    .expect("bitmap input must be sorted"),
-            )
+            Bitmap(RoaringBitmap::from_sorted_iter(iterator).expect("bitmap input must be sorted"))
         }
 
         /// Create a bitmap from a sorted iterator of the **complement** values

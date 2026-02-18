@@ -6,6 +6,7 @@ members = [
     "journal-common",
     "journal-core",
     "journal-index",
+    "fst-index",
     "treight",
     "journal-log-writer",
     "journal-engine",
@@ -137,6 +138,7 @@ journal-log-writer = { path = "journal-log-writer" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 journalctl = { path = "journalctl" }
+fst-index = { path = "fst-index" }
 rdp = { path = "rdp" }
 
 # Netdata plugin crates

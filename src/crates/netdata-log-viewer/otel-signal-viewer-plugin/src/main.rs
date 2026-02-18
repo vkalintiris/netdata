@@ -69,6 +69,7 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let indexing_limits = IndexingLimits {
         max_unique_values_per_field: config.indexing.max_unique_values_per_field,
         max_field_payload_size: config.indexing.max_field_payload_size,
+        build_fst: false,
     };
     let catalog_function = CatalogFunction::new(
         monitor,
