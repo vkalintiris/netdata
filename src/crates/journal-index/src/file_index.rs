@@ -39,6 +39,73 @@ pub struct FileIndex {
     indexed_fields: HashSet<FieldName>,
     // Bitmap for each indexed field=value pair
     bitmaps: HashMap<FieldValuePair, Bitmap>,
+    // Optional FST index mapping FieldValuePair keys to sorted indices.
+    // Built when IndexingLimits::build_fst is true. Used for benchmarking.
+    #[serde(skip)]
+    #[cfg_attr(feature = "allocative", allocative(skip))]
+    fst_index: Option<FstIndex>,
+}
+
+/// FST-based index that replaces `HashMap<FieldValuePair, Bitmap>`.
+///
+/// Maps `FieldValuePair` byte strings to indices via a finite state transducer,
+/// with the bitmaps stored in a `Vec` ordered by sorted key. This is the
+/// structure that would replace the HashMap in production.
+pub struct FstIndex {
+    map: fst::Map<Vec<u8>>,
+    bitmaps: Vec<Bitmap>,
+}
+
+impl std::fmt::Debug for FstIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FstIndex")
+            .field("keys", &self.map.len())
+            .field("fst_bytes", &self.map.as_fst().as_bytes().len())
+            .field("bitmaps", &self.bitmaps.len())
+            .finish()
+    }
+}
+
+impl Clone for FstIndex {
+    fn clone(&self) -> Self {
+        let bytes = self.map.as_fst().as_bytes().to_vec();
+        Self {
+            map: fst::Map::new(bytes).expect("cloning valid FST"),
+            bitmaps: self.bitmaps.clone(),
+        }
+    }
+}
+
+impl FstIndex {
+    /// Create an FstIndex from an FST map and its corresponding bitmaps.
+    pub fn new(map: fst::Map<Vec<u8>>, bitmaps: Vec<Bitmap>) -> Self {
+        Self { map, bitmaps }
+    }
+
+    /// Number of keys stored in the FST.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Size in bytes of the serialized FST data (keys only).
+    pub fn fst_bytes(&self) -> usize {
+        self.map.as_fst().as_bytes().len()
+    }
+
+    /// Get a reference to the bitmaps vector.
+    pub fn bitmaps(&self) -> &Vec<Bitmap> {
+        &self.bitmaps
+    }
+
+    /// Look up a key in the FST, returning its sorted index.
+    pub fn get(&self, key: &[u8]) -> Option<u64> {
+        self.map.get(key)
+    }
+
+    /// Look up a key and return the corresponding bitmap.
+    pub fn get_bitmap(&self, key: &[u8]) -> Option<&Bitmap> {
+        self.map.get(key).map(|idx| &self.bitmaps[idx as usize])
+    }
 }
 
 impl FileIndex {
@@ -53,6 +120,7 @@ impl FileIndex {
         fields: HashSet<FieldName>,
         indexed_fields: HashSet<FieldName>,
         bitmaps: HashMap<FieldValuePair, Bitmap>,
+        fst_index: Option<FstIndex>,
     ) -> Self {
         Self {
             file,
@@ -63,6 +131,7 @@ impl FileIndex {
             file_fields: fields,
             indexed_fields,
             bitmaps,
+            fst_index,
         }
     }
 
@@ -122,14 +191,34 @@ impl FileIndex {
         self.histogram.total_entries()
     }
 
+    /// Get a reference to the histogram.
+    pub fn histogram(&self) -> &Histogram {
+        &self.histogram
+    }
+
+    /// Get a reference to the entry offsets vector.
+    pub fn entry_offsets(&self) -> &Vec<u32> {
+        &self.entry_offsets
+    }
+
     /// Get all field names present in this file.
     pub fn fields(&self) -> &HashSet<FieldName> {
         &self.file_fields
     }
 
+    /// Get all indexed field names.
+    pub fn indexed_fields(&self) -> &HashSet<FieldName> {
+        &self.indexed_fields
+    }
+
     /// Get all indexed field=value pairs with their bitmaps.
     pub fn bitmaps(&self) -> &HashMap<FieldValuePair, Bitmap> {
         &self.bitmaps
+    }
+
+    /// Get the optional FST index, if one was built during indexing.
+    pub fn fst_index(&self) -> Option<&FstIndex> {
+        self.fst_index.as_ref()
     }
 
     /// Check if a field is indexed.

@@ -43,6 +43,11 @@ pub struct IndexingLimits {
     /// will be skipped. This prevents large binary data or encoded content
     /// from consuming excessive memory.
     pub max_field_payload_size: usize,
+
+    /// When true, build an FST (finite state transducer) index alongside the
+    /// HashMap-based bitmap index. Used for benchmarking FST construction
+    /// overhead and memory usage.
+    pub build_fst: bool,
 }
 
 impl Default for IndexingLimits {
@@ -50,6 +55,7 @@ impl Default for IndexingLimits {
         Self {
             max_unique_values_per_field: DEFAULT_MAX_UNIQUE_VALUES_PER_FIELD,
             max_field_payload_size: DEFAULT_MAX_FIELD_PAYLOAD_SIZE,
+            build_fst: false,
         }
     }
 }
@@ -213,6 +219,16 @@ impl FileIndexer {
             universe_size,
         )?;
 
+        // Optionally build an FST index from the bitmaps HashMap.
+        // The FST + Vec<Bitmap> replaces the HashMap, so we drop the
+        // HashMap to get an accurate memory comparison.
+        let (bitmaps, fst_index) = if self.limits.build_fst {
+            let fst = Self::build_fst_index(entries)?;
+            (HashMap::default(), Some(fst))
+        } else {
+            (entries, None)
+        };
+
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
 
@@ -229,7 +245,8 @@ impl FileIndexer {
             entry_offsets,
             file_fields,
             indexed_fields,
-            entries,
+            bitmaps,
+            fst_index,
         ))
     }
 
@@ -385,25 +402,25 @@ impl FileIndexer {
         // Log summary of indexing issues
         if !truncated_fields.is_empty() {
             let field_names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
-            warn!(
-                "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
-                journal_file.file().path(),
-                truncated_fields.len(),
-                self.limits.max_unique_values_per_field,
-                field_names
-            );
+            // warn!(
+            //     "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
+            //     journal_file.file().path(),
+            //     truncated_fields.len(),
+            //     self.limits.max_unique_values_per_field,
+            //     field_names
+            // );
         }
         if !fields_with_large_payloads.is_empty() {
             let field_names: Vec<&str> = fields_with_large_payloads
                 .iter()
                 .map(|f| f.as_str())
                 .collect();
-            tracing::info!(
-                "File '{}': {} field(s) had values skipped due to large payloads: {:?}",
-                journal_file.file().path(),
-                fields_with_large_payloads.len(),
-                field_names
-            );
+            // tracing::info!(
+            //     "File '{}': {} field(s) had values skipped due to large payloads: {:?}",
+            //     journal_file.file().path(),
+            //     fields_with_large_payloads.len(),
+            //     field_names
+            // );
         }
 
         Ok(entries_index)
@@ -600,6 +617,37 @@ impl FileIndexer {
             bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
         )
+    }
+}
+
+impl FileIndexer {
+    /// Build an FST-based index that replaces the HashMap.
+    ///
+    /// Consumes the HashMap, sorts the keys, builds an FST map (key → index),
+    /// and extracts the bitmaps into a Vec ordered by sorted key.
+    fn build_fst_index(
+        bitmaps: HashMap<FieldValuePair, Bitmap>,
+    ) -> Result<crate::file_index::FstIndex> {
+        // Collect into (key, bitmap) pairs and sort by key.
+        let mut pairs: Vec<(FieldValuePair, Bitmap)> = bitmaps.into_iter().collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        // Build the FST map and extract bitmaps in sorted order.
+        let mut builder = fst::MapBuilder::memory();
+        let mut bitmap_vec = Vec::with_capacity(pairs.len());
+        for (idx, (key, bitmap)) in pairs.into_iter().enumerate() {
+            builder
+                .insert(key.as_bytes(), idx as u64)
+                .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
+            bitmap_vec.push(bitmap);
+        }
+
+        let bytes = builder
+            .into_inner()
+            .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
+
+        let map = fst::Map::new(bytes).map_err(|e| IndexError::FstBuildError(e.to_string()))?;
+        Ok(crate::file_index::FstIndex::new(map, bitmap_vec))
     }
 }
 
