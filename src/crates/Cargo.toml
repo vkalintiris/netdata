@@ -57,7 +57,7 @@ lz4_flex = { version = "0.12", default-features = false, features = ["std", "saf
 lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
 md5 = "0.7"
 
-fst = { path = "../../../../crates/fst" }
+fst = { version = "0.4.7" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }
 serde = { version = "1.0" }
 rustc-hash = "2.1"

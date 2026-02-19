@@ -8,9 +8,8 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["bitmap-roaring"]
+default = ["bitmap-treight"]
 allocative = ["dep:allocative", "journal-index/allocative"]
-bitmap-roaring = ["journal-index/bitmap-roaring"]
 bitmap-treight = ["journal-index/bitmap-treight"]
 
 [dependencies]
