@@ -15,26 +15,26 @@ use std::fmt;
 /// This represents just the field name without any associated value.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
-pub struct FieldName(String);
+pub struct FieldName(Box<str>);
 
 impl FieldName {
     /// Create a new FieldName without validation.
     ///
     /// Use this when you know the string is a valid field name
     /// (e.g., from trusted sources like hardcoded constants).
-    pub fn new_unchecked(name: impl Into<String>) -> Self {
-        Self(name.into())
+    pub fn new_unchecked(name: impl AsRef<str>) -> Self {
+        Self(name.as_ref().into())
     }
 
     /// Create a FieldName with validation.
     ///
     /// Returns None if the name contains '=' or is empty.
-    pub fn new(name: impl Into<String>) -> Option<Self> {
-        let name = name.into();
+    pub fn new(name: impl AsRef<str>) -> Option<Self> {
+        let name = name.as_ref();
         if name.is_empty() || name.contains('=') {
             None
         } else {
-            Some(Self(name))
+            Some(Self(name.into()))
         }
     }
 
@@ -48,9 +48,9 @@ impl FieldName {
         self.0.as_bytes()
     }
 
-    /// Convert into the inner String.
+    /// Convert into an owned String.
     pub fn into_inner(self) -> String {
-        self.0
+        self.0.into()
     }
 
     /// Combine this field name with a value to create a FieldValuePair.

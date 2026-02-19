@@ -538,7 +538,7 @@ fn extract_entry_data(log_entries: &[LogEntryId]) -> Result<Vec<LogEntryData>> {
         // Load and reverse the field mapping (systemd -> OTEL)
         // This allows us to reverse-map systemd field names back to their original OTEL names
         let field_map = journal_file.load_fields()?;
-        let reverse_map: HashMap<String, String> = field_map
+        let reverse_map: HashMap<Box<str>, Box<str>> = field_map
             .into_iter()
             .map(|(otel, systemd)| (systemd, otel))
             .collect();

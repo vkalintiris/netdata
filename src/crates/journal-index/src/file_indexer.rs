@@ -212,7 +212,8 @@ impl FileIndexer {
             tail_object_offset,
             universe_size,
         )?;
-        let fst_index = Self::build_fst_index(entries)?;
+        let fst_index = fst_index::FstIndex::build(entries)
+            .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
 
         // Convert field_names to HashSet<FieldName> for indexed_fields
         let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
@@ -237,7 +238,7 @@ impl FileIndexer {
     fn build_entries_index(
         &mut self,
         journal_file: &JournalFile<Mmap>,
-        field_map: &HashMap<String, String>,
+        field_map: &HashMap<Box<str>, Box<str>>,
         field_names: &[FieldName],
         tail_object_offset: NonZeroU64,
         universe_size: u32,
@@ -592,17 +593,6 @@ impl FileIndexer {
             bucket_duration,
             self.source_timestamp_entry_offset_pairs.as_slice(),
         )
-    }
-}
-
-impl FileIndexer {
-    /// Build an FST-based index from a vec of `(FieldValuePair, Bitmap)` pairs.
-    ///
-    /// Sorts the keys internally and builds an `FstIndex<Bitmap>`.
-    fn build_fst_index(
-        entries: Vec<(FieldValuePair, Bitmap)>,
-    ) -> Result<crate::file_index::FstIndex> {
-        fst_index::FstIndex::build(entries).map_err(|e| IndexError::FstBuildError(e.to_string()))
     }
 }
 

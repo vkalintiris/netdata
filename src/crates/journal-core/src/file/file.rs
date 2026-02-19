@@ -535,7 +535,7 @@ impl<M: MemoryMap> JournalFile<M> {
         iterator
     }
 
-    pub fn load_fields(&self) -> Result<HashMap<String, String>> {
+    pub fn load_fields(&self) -> Result<HashMap<Box<str>, Box<str>>> {
         let remapping_payload = b"ND_REMAPPING=1".as_slice();
         let hash = self.hash(remapping_payload);
 
@@ -572,8 +572,8 @@ impl<M: MemoryMap> JournalFile<M> {
                             return Err(JournalError::InvalidField);
                         };
 
-                        let systemd_name = String::from(field);
-                        let otel_name = String::from(value);
+                        let systemd_name: Box<str> = field.into();
+                        let otel_name: Box<str> = value.into();
 
                         field_map.insert(otel_name, systemd_name);
                     }
@@ -592,8 +592,8 @@ impl<M: MemoryMap> JournalFile<M> {
             if field.payload.starts_with(b"ND") {
                 continue;
             }
-            let s = String::from_utf8(field.raw_payload().to_vec()).expect("utf8 data");
-            field_map.insert(s.clone(), s);
+            let s = std::str::from_utf8(field.raw_payload()).expect("utf8 data");
+            field_map.insert(s.into(), s.into());
         }
 
         Ok(field_map)
