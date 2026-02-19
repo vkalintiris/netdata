@@ -8,11 +8,9 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["bitmap-treight"]
-bitmap-treight = ["dep:treight"]
 allocative = [
     "dep:allocative",
-    "treight?/allocative",
+    "treight/allocative",
     "journal-core/allocative",
     "journal-common/allocative",
     "journal-registry/allocative"
@@ -23,7 +21,7 @@ allocative = { workspace = true, optional = true }
 fst = { workspace = true }
 fst-index = { workspace = true, features = ["serde"] }
 regex = { workspace = true }
-treight = { path = "../treight", features = ["serde"], optional = true }
+treight = { path = "../treight", features = ["serde"] }
 serde = { workspace =  true, features = ["derive"] }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }

@@ -1,14 +1,10 @@
 //! Benchmark for batch_compute_file_indexes.
 //!
 //! Points at a directory of journal files, indexes them, and prints bitmap
-//! statistics useful for comparing the roaring vs treight backends.
+//! statistics.
 //!
-//! Run with roaring (default):
+//! Usage:
 //!     cargo run --release -p journal-engine --example index -- /var/log/journal
-//!
-//! Run with treight:
-//!     cargo run --release -p journal-engine --example index \
-//!         --no-default-features --features bitmap-treight -- /var/log/journal
 
 // # 1. Create a mount point
 //
@@ -222,14 +218,7 @@ impl RunStats {
 }
 
 fn backend_name() -> &'static str {
-    #[cfg(feature = "bitmap-treight")]
-    {
-        "treight"
-    }
-    #[cfg(not(feature = "bitmap-treight"))]
-    {
-        "roaring"
-    }
+    "treight"
 }
 
 fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
@@ -253,10 +242,13 @@ fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
         stats.alloc.entry_offsets = alloc_size(file_index.entry_offsets()) as u64;
         stats.alloc.file_fields = alloc_size(file_index.fields()) as u64;
         stats.alloc.indexed_fields = alloc_size(file_index.indexed_fields()) as u64;
-        stats.alloc.fst_bitmaps = alloc_size(fst_idx.values()) as u64;
+        stats.alloc.fst_bitmaps = fst_idx
+            .values()
+            .iter()
+            .map(|b| alloc_size(b) as u64)
+            .sum();
     }
 
-    #[cfg(feature = "bitmap-treight")]
     for bitmap in fst_idx.values() {
         if bitmap.0.is_inverted() {
             stats.inverted_count += 1;
