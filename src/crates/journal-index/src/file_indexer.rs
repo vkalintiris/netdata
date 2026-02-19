@@ -305,13 +305,14 @@ impl FileIndexer {
                         continue;
                     };
 
-                    // Validate format and construct the key using the otel
-                    // field name and the value from the data payload.
-                    let Some(pair) = FieldValuePair::parse(data_payload) else {
+                    // Extract the value from the "FIELD=value" payload and
+                    // construct the key using the otel field name.
+                    let Some(eq_pos) = data_payload.find('=') else {
                         warn!("Invalid field=value format: {}", data_payload);
                         continue;
                     };
-                    let key = FieldValuePair::from_parts(field_name.as_str(), pair.value());
+                    let value = &data_payload[eq_pos + 1..];
+                    let key = FieldValuePair::from_parts(field_name.as_str(), value);
 
                     let Some(inlined_cursor) = data_object.inlined_cursor() else {
                         continue;
