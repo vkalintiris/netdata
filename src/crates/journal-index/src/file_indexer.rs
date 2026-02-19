@@ -279,8 +279,11 @@ impl FileIndexer {
                     break;
                 }
 
-                // Get the payload and the inlined cursor for this data object
-                let (data_payload, inlined_cursor) = {
+                // Extract the key and inlined cursor from the data object.
+                // The data object must be dropped before continuing the loop
+                // body because its ValueGuard holds a reference to the mmap
+                // window.
+                let (key, inlined_cursor) = {
                     let Ok(data_object) = data_object else {
                         continue;
                     };
@@ -298,24 +301,24 @@ impl FileIndexer {
                         continue;
                     };
 
-                    let data_payload =
-                        String::from_utf8_lossy(data_object.raw_payload()).into_owned();
+                    let Ok(data_payload) = std::str::from_utf8(data_object.raw_payload()) else {
+                        continue;
+                    };
+
+                    // Validate format and construct the key using the otel
+                    // field name and the value from the data payload.
+                    let Some(pair) = FieldValuePair::parse(data_payload) else {
+                        warn!("Invalid field=value format: {}", data_payload);
+                        continue;
+                    };
+                    let key = FieldValuePair::from_parts(field_name.as_str(), pair.value());
+
                     let Some(inlined_cursor) = data_object.inlined_cursor() else {
                         continue;
                     };
 
-                    (data_payload, inlined_cursor)
+                    (key, inlined_cursor)
                 };
-
-                // Validate format and construct the key
-                let Some(pair) = FieldValuePair::parse(&data_payload) else {
-                    warn!("Invalid field=value format: {}", data_payload);
-                    continue;
-                };
-                let key = FieldValuePair::new_unchecked(
-                    FieldName::new_unchecked(field_name),
-                    String::from(pair.value()),
-                );
 
                 // Collect the offset of entries where this data object appears
                 self.entry_offsets.clear();
