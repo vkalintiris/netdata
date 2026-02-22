@@ -59,3 +59,7 @@ tempfile = { workspace = true }
 rayon = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true }
+fst-index = { workspace = true, features = ["serde"] }
+treight = { path = "../treight", features = ["serde"] }
+bincode = { workspace = true }
+zstd = "0.13"
