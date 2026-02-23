@@ -33,6 +33,7 @@ members = [
     # Stress test tools
     "tree-sitter-journal",
     "jetstream-otel-bridge",
+    "certstream-otel-bridge",
 ]
 
 [workspace.package]
