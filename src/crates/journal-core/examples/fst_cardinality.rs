@@ -19,6 +19,7 @@ use journal_registry::repository::File;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU64;
+use std::time::Instant;
 
 /// Unified value type for the FST index.
 ///
@@ -30,6 +31,24 @@ enum IndexValue {
     Cardinality(u64),
     /// Bitmap of entry indices matching this field=value pair.
     Bitmap(treight::Bitmap),
+}
+
+/// Compress with zstd and print size + time for levels 1 and 9.
+fn report_zstd(label: &str, data: &[u8]) {
+    for level in [1, 9] {
+        let t = Instant::now();
+        let compressed =
+            zstd::encode_all(data, level).expect("zstd compress failed");
+        let elapsed = t.elapsed();
+        let ratio = data.len() as f64 / compressed.len() as f64;
+        println!(
+            "  {label} zstd level {level:>2}: {} bytes ({:.1} KiB)  ratio {:.2}x  {:.1}ms",
+            compressed.len(),
+            compressed.len() as f64 / 1024.0,
+            ratio,
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    }
 }
 
 fn main() {
@@ -132,7 +151,70 @@ fn main() {
         }
     }
 
-    // Step 5: Build full FST mapping key=value → data object offset
+    // Step 5: Reconstruct log entries as text lines
+    println!("=== Log Text Baseline ===");
+    {
+        let mut text_buf: Vec<u8> = Vec::new();
+        let mut decompress_buf: Vec<u8> = Vec::new();
+        let mut entries_written = 0u64;
+        let mut errors = 0u64;
+
+        for &entry_offset in &entry_offsets {
+            let data_iter = match journal_file.entry_data_objects(entry_offset) {
+                Ok(iter) => iter,
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            let line_start = text_buf.len();
+            let mut first = true;
+
+            for data_result in data_iter {
+                let data_guard = match data_result {
+                    Ok(g) => g,
+                    Err(_) => {
+                        errors += 1;
+                        continue;
+                    }
+                };
+
+                let payload: &[u8] = if data_guard.is_compressed() {
+                    decompress_buf.clear();
+                    match data_guard.decompress(&mut decompress_buf) {
+                        Ok(_) => &decompress_buf,
+                        Err(_) => continue,
+                    }
+                } else {
+                    data_guard.raw_payload()
+                };
+
+                if !first {
+                    text_buf.push(b' ');
+                }
+                first = false;
+                text_buf.extend_from_slice(payload);
+            }
+
+            if text_buf.len() > line_start {
+                text_buf.push(b'\n');
+                entries_written += 1;
+            }
+        }
+
+        let text_size = text_buf.len();
+        println!("  Entries:    {} ({} errors)", entries_written, errors);
+        println!(
+            "  Text size:  {} bytes ({:.1} MiB)",
+            text_size,
+            text_size as f64 / (1024.0 * 1024.0)
+        );
+        report_zstd("text", &text_buf);
+    }
+    println!();
+
+    // Step 6: Build full FST mapping key=value → data object offset
     println!("=== Full FST (key=value → data object offset) ===");
 
     let mut all_entries: Vec<(String, u64)> = Vec::new();
@@ -176,21 +258,10 @@ fn main() {
         full_serialized.len(),
         full_serialized.len() as f64 / 1024.0
     );
-    for level in [1, 3, 9, 19] {
-        let compressed =
-            zstd::encode_all(full_serialized.as_slice(), level).expect("zstd compress failed");
-        let ratio = full_serialized.len() as f64 / compressed.len() as f64;
-        println!(
-            "  zstd level {:>2}: {} bytes ({:.1} KiB)  ratio {:.2}x",
-            level,
-            compressed.len(),
-            compressed.len() as f64 / 1024.0,
-            ratio,
-        );
-    }
+    report_zstd("full", &full_serialized);
     println!();
 
-    // Step 6: Build unified FST
+    // Step 7: Build unified FST
     //
     // Key scheme:
     //   "FIELD"       → IndexValue::Cardinality(n)   (every field)
@@ -203,10 +274,8 @@ fn main() {
     let mut total_bitmap_data_bytes: usize = 0;
 
     for (field, &card) in &field_cardinality {
-        // Every field gets a cardinality entry (key has no '=')
         entries.push((field.clone(), IndexValue::Cardinality(card as u64)));
 
-        // Low-cardinality fields also get bitmap entries
         if card > max_cardinality {
             continue;
         }
@@ -305,7 +374,7 @@ fn main() {
     );
     println!();
 
-    // Step 7: Serialize and compress
+    // Step 8: Serialize and compress unified FST
     println!("=== Unified FST: Serialized + Compressed ===");
 
     let serialized = bincode::serialize(&unified_fst).expect("failed to serialize");
@@ -314,18 +383,6 @@ fn main() {
         serialized.len(),
         serialized.len() as f64 / 1024.0
     );
-
-    for level in [1, 3, 9, 19] {
-        let compressed =
-            zstd::encode_all(serialized.as_slice(), level).expect("zstd compress failed");
-        let ratio = serialized.len() as f64 / compressed.len() as f64;
-        println!(
-            "  zstd level {:>2}: {} bytes ({:.1} KiB)  ratio {:.2}x",
-            level,
-            compressed.len(),
-            compressed.len() as f64 / 1024.0,
-            ratio,
-        );
-    }
+    report_zstd("unified", &serialized);
     println!();
 }
