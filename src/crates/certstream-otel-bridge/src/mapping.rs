@@ -18,12 +18,6 @@ fn str_val(s: &str) -> Option<AnyValue> {
     })
 }
 
-fn float_val(f: f64) -> Option<AnyValue> {
-    Some(AnyValue {
-        value: Some(any_value::Value::DoubleValue(f)),
-    })
-}
-
 fn kv(key: &str, value: Option<AnyValue>) -> KeyValue {
     KeyValue {
         key: key.to_string(),
@@ -84,56 +78,13 @@ pub fn event_to_log_record(data: &CertData, raw_json: &serde_json::Value) -> Log
 
     let time_unix_nano = (data.seen * 1e9) as u64;
 
-    let domains_array = AnyValue {
-        value: Some(any_value::Value::ArrayValue(ArrayValue {
-            values: data
-                .leaf_cert
-                .all_domains
-                .iter()
-                .map(|d| AnyValue {
-                    value: Some(any_value::Value::StringValue(d.clone())),
-                })
-                .collect(),
-        })),
-    };
-
-    let mut attributes = vec![
-        kv("cert.update_type", str_val(&data.update_type)),
-        kv("cert.fingerprint", str_val(&data.leaf_cert.fingerprint)),
-        kv(
-            "cert.serial_number",
-            str_val(&data.leaf_cert.serial_number),
-        ),
-        kv("cert.source.name", str_val(&data.source.name)),
-        kv("cert.source.url", str_val(&data.source.url)),
-        kv(
-            "cert.domains",
-            Some(domains_array),
-        ),
-        kv("cert.not_before", float_val(data.leaf_cert.not_before)),
-        kv("cert.not_after", float_val(data.leaf_cert.not_after)),
-    ];
-
-    if let Some(cn) = &data.leaf_cert.subject.cn {
-        attributes.push(kv("cert.subject.cn", str_val(cn)));
-    }
-    if let Some(aggregated) = &data.leaf_cert.subject.aggregated {
-        attributes.push(kv("cert.subject.aggregated", str_val(aggregated)));
-    }
-    if let Some(cn) = &data.leaf_cert.issuer.cn {
-        attributes.push(kv("cert.issuer.cn", str_val(cn)));
-    }
-    if let Some(o) = &data.leaf_cert.issuer.o {
-        attributes.push(kv("cert.issuer.o", str_val(o)));
-    }
-
     LogRecord {
         time_unix_nano,
         observed_time_unix_nano: now_ns,
         severity_number: SEVERITY_INFO,
         severity_text: "INFO".to_string(),
         body: Some(json_to_any_value(raw_json)),
-        attributes,
+        attributes: vec![],
         event_name: "certificate_update".to_string(),
         ..Default::default()
     }

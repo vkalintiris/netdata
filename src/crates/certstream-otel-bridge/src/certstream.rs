@@ -26,6 +26,7 @@ pub struct CertData {
     pub leaf_cert: LeafCert,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct Source {
     pub name: String,

@@ -753,6 +753,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.signature = *b"LPKSHHRH";
 
         // Set flags based on options configuration
+        header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
         if options.enable_keyed_hash {
             header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
         }
