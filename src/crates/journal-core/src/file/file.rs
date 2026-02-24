@@ -980,7 +980,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, EntryObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let size = size.map(|n| std::mem::size_of::<EntryObjectHeader>() as u64 + n);
         self.journal_object_mut(ObjectType::Entry, offset, size)
     }
 
@@ -989,7 +989,15 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, DataObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let is_compact = self
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let compact_extra = if is_compact {
+            std::mem::size_of::<CompactDataFields>() as u64
+        } else {
+            0
+        };
+        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + compact_extra + n);
         self.journal_object_mut(ObjectType::Data, offset, size)
     }
 
