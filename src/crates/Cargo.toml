@@ -31,7 +31,6 @@ members = [
     "netdata-otel/flatten_otel",
 
     # Stress test tools
-    "tree-sitter-journal",
     "jetstream-otel-bridge",
     "certstream-otel-bridge",
 ]
@@ -134,11 +133,6 @@ tonic = "0.14"
 tower = "0.5"
 
 flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }
-
-# Tree-sitter
-tree-sitter = "0.25"
-tree-sitter-rust = "0.24"
-tree-sitter-c = "0.24"
 
 # Internal workspace crates
 journal-common = { path = "journal-common" }
