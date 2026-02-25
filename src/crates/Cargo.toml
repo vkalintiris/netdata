@@ -60,6 +60,7 @@ rand = "0.9"
 lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
 lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
 md5 = "0.7"
+arrayvec = "0.7"
 
 fst = { version = "0.4.7" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }

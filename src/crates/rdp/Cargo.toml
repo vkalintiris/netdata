@@ -16,4 +16,5 @@ name = "rdp"
 path = "src/main.rs"
 
 [dependencies]
+arrayvec = { workspace = true }
 md5 = { workspace = true }
