@@ -1,5 +1,5 @@
 [package]
-name = "rdp"
+name = "sd-compat"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ rust-version.workspace = true
 workspace = true
 
 [lib]
-name = "rdp"
+name = "sd_compat"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rdp"
+name = "sd-compat"
 path = "src/main.rs"
 
 [dependencies]

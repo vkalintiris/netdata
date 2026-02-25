@@ -15,4 +15,4 @@ roaring = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
-proptest = "1"
+proptest = { workspace = true }

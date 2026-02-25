@@ -1,4 +1,4 @@
-use rdp::remap;
+use sd_compat::remap;
 
 fn main() {
     let mut aws_keys = vec![

@@ -160,7 +160,7 @@ mod tests {
 
         // Add first mapping
         let otel_name = b"my.field.name".to_vec();
-        let systemd_name = rdp::remap(&otel_name);
+        let systemd_name = sd_compat::remap(&otel_name);
         assert!(registry.add_otel_mapping(otel_name.clone(), systemd_name.clone()));
 
         assert!(!registry.is_empty());
@@ -182,7 +182,7 @@ mod tests {
 
         // Add different mapping
         let otel_name2 = b"trace-id".to_vec();
-        let systemd_name2 = rdp::remap(&otel_name2);
+        let systemd_name2 = sd_compat::remap(&otel_name2);
         assert!(registry.add_otel_mapping(otel_name2.clone(), systemd_name2.clone()));
 
         assert_eq!(registry.len(), 2);

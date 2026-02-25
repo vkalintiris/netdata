@@ -12,7 +12,7 @@ allocative = ["dep:allocative"]
 [dependencies]
 journal-common = { workspace = true }
 journal-registry = { workspace = true }
-rdp = { workspace = true }
+sd-compat = { workspace = true }
 
 # Core dependencies
 static_assertions = { workspace = true }
@@ -62,4 +62,4 @@ tracing-subscriber = { workspace = true }
 fst-index = { workspace = true, features = ["serde"] }
 treight = { path = "../treight", features = ["serde"] }
 bincode = { workspace = true }
-zstd = "0.13"
+zstd = { workspace = true }

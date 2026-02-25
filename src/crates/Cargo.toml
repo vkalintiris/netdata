@@ -11,7 +11,7 @@ members = [
     "journal-log-writer",
     "journal-engine",
     "journal-registry",
-    "rdp",
+    "sd-compat",
 
     # Netdata plugin workspace members
     "netdata-plugin/error",
@@ -87,6 +87,7 @@ serde_regex = "1.1.0"
 tokio = { version = "1.45", features = ["full"] }
 
 # Tracing
+console-subscriber = "0.5"
 tracing = { version = "0.1" }
 tracing-journald = "0.3"
 tracing-futures = { version = "0.2.5" }
@@ -144,7 +145,7 @@ journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 journalctl = { path = "journalctl" }
 fst-index = { path = "fst-index" }
-rdp = { path = "rdp" }
+sd-compat = { path = "sd-compat" }
 
 # Netdata plugin crates
 netdata-plugin-error = { path = "netdata-plugin/error" }
@@ -171,6 +172,8 @@ url = "2"
 tempfile = { version = "3" }
 
 proptest = "1.9"
+zstd = "0.13"
+futures-util = { version = "0.3", features = ["sink"] }
 
 [profile.dev]
 opt-level = 1

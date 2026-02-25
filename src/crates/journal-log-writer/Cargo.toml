@@ -11,7 +11,7 @@ workspace = true
 journal-common = { workspace = true }
 journal-core = { workspace = true }
 journal-registry = { workspace = true }
-rdp = { workspace = true }
+sd-compat = { workspace = true }
 
 uuid = { workspace = true, features = ["v4"] }
 tracing = { workspace = true }
