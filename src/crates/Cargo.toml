@@ -35,6 +35,7 @@ members = [
     "jetstream-otel-bridge",
     "certstream-otel-bridge",
     "wiki-otel-bridge",
+    "github-otel-bridge",
 ]
 
 [workspace.package]
@@ -181,6 +182,7 @@ zstd = "0.13"
 fsst-rs = { path = "/home/vk/repos/crates/fsst" }
 gix-chunk = { path = "/home/vk/repos/crates/gitoxide/gix-chunk" }
 futures-util = { version = "0.3", features = ["sink"] }
+flate2 = "1"
 reqwest = { version = "0.12", features = ["stream"] }
 reqwest-eventsource = "0.6"
 
