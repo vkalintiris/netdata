@@ -1,13 +1,13 @@
 //! Explore FST size and field cardinality for a journal file's data objects.
 //!
 //! Builds a unified FST where:
-//! - Every field gets a `FIELD` key → `IndexValue::Cardinality(n)`
-//! - Low-cardinality fields additionally get `FIELD=value` keys → `IndexValue::Bitmap(bitmap)`
+//! - Low-cardinality `FIELD=value` keys → `IndexValue::Bitmap(bitmap)`
+//! - High-cardinality `FIELD=value` keys → `IndexValue::Counts(entry_count, field_cardinality)`
 //!
 //! This means:
-//! - Iterating keys without `=` gives the full field list with cardinalities
+//! - Every field=value pair is present in the FST
 //! - Low-cardinality fields have bitmaps for fast filtered queries
-//! - High-cardinality fields are still discoverable with their cardinality
+//! - High-cardinality fields store lightweight metadata (entry count + field cardinality)
 //!
 //! Usage:
 //!   cargo run --release --example fst_cardinality -- <journal-file> [--max-cardinality N]
@@ -23,14 +23,15 @@ use std::time::Instant;
 
 /// Unified value type for the FST index.
 ///
-/// Keys without `=` map to `Cardinality` (every field has one).
-/// Keys with `=` (i.e. `FIELD=value`) map to `Bitmap` (low-cardinality fields only).
+/// Every `FIELD=value` key is present:
+/// - Low-cardinality fields → `Bitmap` (entry indices for fast filtering)
+/// - High-cardinality fields → `Counts` (lightweight metadata)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum IndexValue {
-    /// Number of unique values for this field.
-    Cardinality(u64),
-    /// Bitmap of entry indices matching this field=value pair.
+    /// Low-cardinality field=value: bitmap of entry indices.
     Bitmap(treight::Bitmap),
+    /// High-cardinality field=value: (entry_count, field_cardinality).
+    Counts(u64, u64),
 }
 
 /// Compress with zstd and print size + time for levels 1 and 9.
@@ -264,26 +265,24 @@ fn main() {
     // Step 7: Build unified FST
     //
     // Key scheme:
-    //   "FIELD"       → IndexValue::Cardinality(n)   (every field)
-    //   "FIELD=value" → IndexValue::Bitmap(bitmap)    (low-cardinality fields only)
+    //   "FIELD=value" → IndexValue::Bitmap(bitmap)            (low-cardinality fields)
+    //   "FIELD=value" → IndexValue::Counts(entries, card)     (high-cardinality fields)
     println!("=== Unified FST ===");
 
     let mut entries: Vec<(String, IndexValue)> = Vec::new();
     let mut scratch_offsets: Vec<NonZeroU64> = Vec::new();
     let mut scratch_indices: Vec<u32> = Vec::new();
     let mut total_bitmap_data_bytes: usize = 0;
+    let mut bitmap_key_count: usize = 0;
+    let mut counts_key_count: usize = 0;
 
     for (field, &card) in &field_cardinality {
-        entries.push((field.clone(), IndexValue::Cardinality(card as u64)));
-
-        if card > max_cardinality {
-            continue;
-        }
-
         let field_data_iter = match journal_file.field_data_objects(field.as_bytes()) {
             Ok(iter) => iter,
             Err(_) => continue,
         };
+
+        let is_low_card = card <= max_cardinality;
 
         for data_result in field_data_iter {
             let (key, inlined_cursor) = {
@@ -320,41 +319,49 @@ fn main() {
                 continue;
             }
 
-            scratch_indices.clear();
-            for offset in scratch_offsets
-                .iter()
-                .copied()
-                .filter(|o| *o <= tail_object_offset)
-            {
-                if let Some(&idx) = entry_offset_index.get(&offset) {
-                    scratch_indices.push(idx);
+            if is_low_card {
+                scratch_indices.clear();
+                for offset in scratch_offsets
+                    .iter()
+                    .copied()
+                    .filter(|o| *o <= tail_object_offset)
+                {
+                    if let Some(&idx) = entry_offset_index.get(&offset) {
+                        scratch_indices.push(idx);
+                    }
                 }
+                scratch_indices.sort_unstable();
+
+                total_bitmap_data_bytes +=
+                    treight::estimate_data_size(universe_size, scratch_indices.iter().copied());
+
+                let bitmap = treight::Bitmap::from_sorted_iter(
+                    scratch_indices.iter().copied(),
+                    universe_size,
+                );
+
+                entries.push((key, IndexValue::Bitmap(bitmap)));
+                bitmap_key_count += 1;
+            } else {
+                let entry_count = scratch_offsets
+                    .iter()
+                    .filter(|o| **o <= tail_object_offset)
+                    .count() as u64;
+
+                entries.push((key, IndexValue::Counts(entry_count, card as u64)));
+                counts_key_count += 1;
             }
-            scratch_indices.sort_unstable();
-
-            total_bitmap_data_bytes +=
-                treight::estimate_data_size(universe_size, scratch_indices.iter().copied());
-
-            let bitmap = treight::Bitmap::from_sorted_iter(
-                scratch_indices.iter().copied(),
-                universe_size,
-            );
-
-            entries.push((key, IndexValue::Bitmap(bitmap)));
         }
     }
 
     let unified_fst: fst_index::FstIndex<IndexValue> =
         fst_index::FstIndex::build(entries).expect("failed to build unified FST");
 
-    let cardinality_keys = field_cardinality.len();
-    let bitmap_keys = unified_fst.len() - cardinality_keys;
-
     println!(
-        "  Total keys:       {} ({} cardinality + {} bitmap)",
+        "  Total keys:       {} ({} bitmap + {} counts)",
         unified_fst.len(),
-        cardinality_keys,
-        bitmap_keys
+        bitmap_key_count,
+        counts_key_count
     );
     println!(
         "  Low-card fields:  {} (cardinality <= {})",

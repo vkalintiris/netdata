@@ -63,3 +63,6 @@ fst-index = { workspace = true, features = ["serde"] }
 treight = { path = "../treight", features = ["serde"] }
 bincode = { workspace = true }
 zstd = { workspace = true }
+fsst-rs = { workspace = true }
+gix-chunk = { workspace = true }
+memmap2 = { workspace = true }

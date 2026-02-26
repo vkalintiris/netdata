@@ -175,6 +175,8 @@ tempfile = { version = "3" }
 
 proptest = "1.9"
 zstd = "0.13"
+fsst-rs = { path = "/home/vk/repos/crates/fsst" }
+gix-chunk = { path = "/home/vk/repos/crates/gitoxide/gix-chunk" }
 futures-util = { version = "0.3", features = ["sink"] }
 
 [profile.dev]
