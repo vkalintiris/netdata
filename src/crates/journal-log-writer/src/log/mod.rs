@@ -178,6 +178,7 @@ pub struct Log {
     boot_id_field: Vec<u8>,
     machine_id_field: Vec<u8>,
     hostname_field: Vec<u8>,
+    bump: bumpalo::Bump,
 }
 
 impl Log {
@@ -230,6 +231,7 @@ impl Log {
             boot_id_field,
             machine_id_field,
             hostname_field,
+            bump: bumpalo::Bump::new(),
         })
     }
 
@@ -253,7 +255,7 @@ impl Log {
         }
 
         // Collect new incompatible field names that need remapping
-        let mut new_mappings: Vec<(Vec<u8>, String)> = Vec::new();
+        let mut new_mappings: Vec<(Vec<u8>, arrayvec::ArrayString<64>)> = Vec::new();
 
         for item in items {
             if let Some(field_name) = extract_field_name(item) {
@@ -277,54 +279,53 @@ impl Log {
         if !new_mappings.is_empty() {
             self.write_remapping_entry(&new_mappings)?;
 
-            // Update registry
-            for (otel_name, systemd_name) in new_mappings.iter() {
+            // Update registry (drain to avoid cloning)
+            for (otel_name, systemd_name) in new_mappings.drain(..) {
                 self.remapping_registry
-                    .add_otel_mapping(otel_name.clone(), systemd_name.clone());
+                    .add_otel_mapping(otel_name, systemd_name);
             }
-        }
-
-        // Transform items to use remapped field names, prepending system fields
-        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 4);
-        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 4);
-
-        // Prepend system fields (matching systemd journald behavior)
-        transformed_items.push(self.boot_id_field.clone());
-        transformed_items.push(self.machine_id_field.clone());
-        transformed_items.push(self.hostname_field.clone());
-
-        // Add _SOURCE_REALTIME_TIMESTAMP if provided
-        if let Some(timestamp_usec) = source_realtime_usec {
-            let source_timestamp_field = format!("_SOURCE_REALTIME_TIMESTAMP={}", timestamp_usec);
-            transformed_items.push(source_timestamp_field.into_bytes());
-        }
-
-        for item in items {
-            if let Some(field_name) = extract_field_name(item) {
-                if let Some(remapped_name) = self.remapping_registry.get_systemd_name(field_name) {
-                    // Need to remap: create new item with remapped field name
-                    let equals_pos = item.iter().position(|&b| b == b'=').unwrap();
-                    let value = &item[equals_pos..]; // includes '='
-                    let mut new_item = Vec::with_capacity(remapped_name.len() + value.len());
-                    new_item.extend_from_slice(remapped_name.as_bytes());
-                    new_item.extend_from_slice(value);
-                    transformed_items.push(new_item);
-                } else {
-                    // No remapping needed, use original
-                    transformed_items.push(item.to_vec());
-                }
-            } else {
-                // No field name (shouldn't happen with valid items)
-                transformed_items.push(item.to_vec());
-            }
-        }
-
-        // Build references for the underlying write
-        for item in &transformed_items {
-            items_refs.push(item.as_slice());
         }
 
         let (realtime, monotonic) = self.capture_dual_timestamp()?;
+
+        // Reset bump allocator — all per-entry temporaries are freed at once
+        self.bump.reset();
+
+        // Build items_refs borrowing directly from self fields and input
+        let mut items_refs =
+            bumpalo::collections::Vec::with_capacity_in(items.len() + 4, &self.bump);
+
+        // System fields — zero-copy references to cached fields
+        items_refs.push(self.boot_id_field.as_slice());
+        items_refs.push(self.machine_id_field.as_slice());
+        items_refs.push(self.hostname_field.as_slice());
+
+        // Optional timestamp — bump-allocated
+        if let Some(ts) = source_realtime_usec {
+            let ts_str = bumpalo::format!(in &self.bump, "_SOURCE_REALTIME_TIMESTAMP={}", ts);
+            items_refs.push(ts_str.into_bump_str().as_bytes());
+        }
+
+        // Items — zero-copy for passthrough, bump-allocated for remapped
+        for item in items {
+            if let Some(field_name) = extract_field_name(item) {
+                if let Some(remapped_name) = self.remapping_registry.get_systemd_name(field_name) {
+                    let eq_pos = item.iter().position(|&b| b == b'=').unwrap();
+                    let value = &item[eq_pos..]; // includes '='
+                    let mut new_item = bumpalo::collections::Vec::with_capacity_in(
+                        remapped_name.len() + value.len(),
+                        &self.bump,
+                    );
+                    new_item.extend_from_slice(remapped_name.as_bytes());
+                    new_item.extend_from_slice(value);
+                    items_refs.push(new_item.into_bump_slice());
+                } else {
+                    items_refs.push(item);
+                }
+            } else {
+                items_refs.push(item);
+            }
+        }
 
         let active_file = self.active_file.as_mut().unwrap();
         active_file.write_entry(&items_refs, realtime, monotonic)?;
@@ -345,7 +346,7 @@ impl Log {
     /// ND_<md5_1>=<otel_key_1>
     /// ND_<md5_2>=<otel_key_2>
     /// ...
-    fn write_remapping_entry(&mut self, mappings: &[(Vec<u8>, String)]) -> Result<()> {
+    fn write_remapping_entry(&mut self, mappings: &[(Vec<u8>, arrayvec::ArrayString<64>)]) -> Result<()> {
         let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 4);
 
         // Inject system fields first (matching systemd journald behavior)

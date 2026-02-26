@@ -10,6 +10,7 @@ mod encoder;
 mod parser;
 mod tokenizer;
 
+use arrayvec::ArrayString;
 use encoder::encode;
 
 /// Returns the fully encoded key: `ND` + structure encoding + `_` + normalized key.
@@ -41,22 +42,22 @@ use encoder::encode;
 /// use sd_compat::remap;
 ///
 /// // Simple lowercase field
-/// assert_eq!(remap(b"hello"), "NDE_HELLO");
+/// assert_eq!(remap(b"hello").as_str(), "NDE_HELLO");
 ///
 /// // With dot separators (2 A's — no compression)
-/// assert_eq!(remap(b"log.body.hostname"), "NDAAE_LB_HOSTNAME");
+/// assert_eq!(remap(b"log.body.hostname").as_str(), "NDAAE_LB_HOSTNAME");
 ///
 /// // Many nested levels — structure compression (9 A's → 9A, then E for end)
-/// assert_eq!(remap(b"my.very.deeply.nested.field.that.ends.in.the.abyss"), "ND9AE_MY_VERY_DEEPLY_NESTED_FIELD_THAT_ENDS_IN_THE_ABYSS");
+/// assert_eq!(remap(b"my.very.deeply.nested.field.that.ends.in.the.abyss").as_str(), "ND9AE_MY_VERY_DEEPLY_NESTED_FIELD_THAT_ENDS_IN_THE_ABYSS");
 ///
 /// // With camel case (2-char checksum + structure)
-/// assert_eq!(remap(b"log.body.HostName"), "ND3RAAO_LB_HOSTNAME");
+/// assert_eq!(remap(b"log.body.HostName").as_str(), "ND3RAAO_LB_HOSTNAME");
 ///
 /// // With hyphens
-/// assert_eq!(remap(b"hello-world"), "NDCE_HELLO_WORLD");
+/// assert_eq!(remap(b"hello-world").as_str(), "NDCE_HELLO_WORLD");
 ///
 /// // With resource.attributes prefix — compression (3 A's → 3A)
-/// assert_eq!(remap(b"resource.attributes.host.name"), "ND3AE_RA_HOST_NAME");
+/// assert_eq!(remap(b"resource.attributes.host.name").as_str(), "ND3AE_RA_HOST_NAME");
 ///
 /// // With invalid characters (space) — falls back to MD5
 /// let md5_result = remap(b"field name");
@@ -75,7 +76,7 @@ use encoder::encode;
 /// assert!(result.starts_with("ND_"));
 /// assert!(result.len() <= 64);
 /// ```
-pub fn remap(key: &[u8]) -> String {
+pub fn remap(key: &[u8]) -> ArrayString<64> {
     // Detect common prefix on the raw key, keep only the suffix for normalization.
     let (short_prefix, suffix) = if let Some(rest) = key.strip_prefix(b"resource.attributes.") {
         ("RA_", rest)
@@ -87,7 +88,7 @@ pub fn remap(key: &[u8]) -> String {
         ("", key)
     };
 
-    let mut remapped_key = String::with_capacity(64);
+    let mut remapped_key = ArrayString::<64>::new();
     remapped_key.push_str("ND");
 
     // If encoding contains non-valid bytes, or the length of the remapped
@@ -96,7 +97,10 @@ pub fn remap(key: &[u8]) -> String {
     if !encode(key, &mut remapped_key)
         || remapped_key.len() + 1 + short_prefix.len() + suffix.len() > 64
     {
-        return format!("ND_{:X}", md5::compute(key));
+        use std::fmt::Write;
+        let mut result = ArrayString::<64>::new();
+        write!(result, "ND_{:X}", md5::compute(key)).expect("MD5 fits in 64 bytes");
+        return result;
     }
 
     remapped_key.push('_');
@@ -121,39 +125,39 @@ mod tests {
 
     #[test]
     fn remap_simple_lowercase() {
-        assert_eq!(remap(b"hello"), "NDE_HELLO");
+        assert_eq!(remap(b"hello").as_str(), "NDE_HELLO");
     }
 
     #[test]
     fn remap_dot_separated() {
-        assert_eq!(remap(b"foo.bar"), "NDAE_FOO_BAR");
+        assert_eq!(remap(b"foo.bar").as_str(), "NDAE_FOO_BAR");
     }
 
     #[test]
     fn remap_hyphen_replaced() {
-        assert_eq!(remap(b"hello-world"), "NDCE_HELLO_WORLD");
+        assert_eq!(remap(b"hello-world").as_str(), "NDCE_HELLO_WORLD");
     }
 
     #[test]
     fn remap_camel_case_has_checksum() {
-        assert_eq!(remap(b"log.body.HostName"), "ND3RAAO_LB_HOSTNAME");
+        assert_eq!(remap(b"log.body.HostName").as_str(), "ND3RAAO_LB_HOSTNAME");
     }
 
     // --- prefix shortening ---
 
     #[test]
     fn remap_resource_attributes_prefix() {
-        assert_eq!(remap(b"resource.attributes.host.name"), "ND3AE_RA_HOST_NAME");
+        assert_eq!(remap(b"resource.attributes.host.name").as_str(), "ND3AE_RA_HOST_NAME");
     }
 
     #[test]
     fn remap_log_attributes_prefix() {
-        assert_eq!(remap(b"log.attributes.logtag"), "NDAAE_LA_LOGTAG");
+        assert_eq!(remap(b"log.attributes.logtag").as_str(), "NDAAE_LA_LOGTAG");
     }
 
     #[test]
     fn remap_log_body_prefix() {
-        assert_eq!(remap(b"log.body.hostname"), "NDAAE_LB_HOSTNAME");
+        assert_eq!(remap(b"log.body.hostname").as_str(), "NDAAE_LB_HOSTNAME");
     }
 
     // --- MD5 fallback ---
@@ -415,7 +419,7 @@ mod tests {
 
         for (key, expected) in cases {
             assert_eq!(
-                remap(key),
+                remap(key).as_str(),
                 *expected,
                 "key: {:?}",
                 std::str::from_utf8(key).unwrap()

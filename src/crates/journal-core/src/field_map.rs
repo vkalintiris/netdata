@@ -1,3 +1,5 @@
+use arrayvec::ArrayString;
+
 use crate::collections::{HashMap, HashSet};
 
 pub const REMAPPING_MARKER: &[u8] = b"ND_REMAPPING=1";
@@ -28,10 +30,10 @@ pub fn extract_field_name(item: &[u8]) -> Option<&[u8]> {
 #[derive(Debug, Default)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct FieldMap {
-    /// Maps original field name → remapped name (ND_<md5>)
-    otel_to_systemd: HashMap<Vec<u8>, String>,
-    /// Maps remapped name (ND_<md5>) → original field name
-    systemd_to_otel: HashMap<String, Vec<u8>>,
+    /// Maps original field name → remapped name
+    otel_to_systemd: HashMap<Vec<u8>, ArrayString<64>>,
+    /// Maps remapped name → original field name
+    systemd_to_otel: HashMap<ArrayString<64>, Vec<u8>>,
 }
 
 impl FieldMap {
@@ -46,7 +48,7 @@ impl FieldMap {
     /// Adds a new mapping to the registry.
     ///
     /// Returns `true` if this is a new mapping, `false` if it already existed.
-    pub fn add_otel_mapping(&mut self, otel_name: Vec<u8>, systemd_name: String) -> bool {
+    pub fn add_otel_mapping(&mut self, otel_name: Vec<u8>, systemd_name: ArrayString<64>) -> bool {
         if self.otel_to_systemd.contains_key(&otel_name) {
             return false;
         }
@@ -68,7 +70,8 @@ impl FieldMap {
     ///
     /// Returns `None` if no mapping exists for this systemd name.
     pub fn get_otel_name(&self, systemd_name: &str) -> Option<&[u8]> {
-        self.systemd_to_otel.get(systemd_name).map(|v| v.as_slice())
+        let key = ArrayString::<64>::from(systemd_name).ok()?;
+        self.systemd_to_otel.get(&key).map(|v| v.as_slice())
     }
 
     /// Returns `true` if the registry contains a mapping for this original field name.

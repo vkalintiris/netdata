@@ -1,3 +1,5 @@
+use arrayvec::ArrayString;
+
 use crate::parser::{Field, Node, parse};
 use crate::tokenizer::{Separator, tokenize};
 
@@ -21,7 +23,7 @@ fn compute_checksum(s: &[u8]) -> [char; 2] {
 
 /// Flushes a run of identical characters using RLE compression.
 /// Runs of 1-2 are kept as-is; runs of 3+ become `<count><char>`, splitting at 9.
-fn flush_run(result: &mut String, ch: u8, count: usize) {
+fn flush_run(result: &mut ArrayString<64>, ch: u8, count: usize) {
     let mut remaining = count;
 
     while remaining > 9 {
@@ -59,7 +61,7 @@ fn flush_run(result: &mut String, ch: u8, count: usize) {
 ///
 /// Consecutive identical characters are RLE-compressed inline (e.g. `"AAAE"` → `"3AE"`).
 /// If a checksum is provided, it is prepended verbatim (never compressed).
-fn encode_nodes(nodes: &[Node], checksum: Option<[char; 2]>, result: &mut String) {
+fn encode_nodes(nodes: &[Node], checksum: Option<[char; 2]>, result: &mut ArrayString<64>) {
     // Prepend the checksum for camel case disambiguation.
     // Checksum chars (A-Z, 0-9) don't interfere with the RLE compression
     // below because they are pushed before the run tracker starts.
@@ -124,7 +126,7 @@ fn encode_nodes(nodes: &[Node], checksum: Option<[char; 2]>, result: &mut String
 /// identical characters compressed (e.g. `"AAAE"` → `"3AE"`).
 /// If the input contains camel case fields, a 2-character checksum is prepended.
 /// Returns `false` if the input contains invalid characters.
-pub(crate) fn encode(source: &[u8], result: &mut String) -> bool {
+pub(crate) fn encode(source: &[u8], result: &mut ArrayString<64>) -> bool {
     let Some(tokens) = tokenize(source) else {
         return false;
     };
@@ -150,8 +152,8 @@ mod tests {
     use super::*;
 
     fn encode_str(source: &[u8]) -> Option<String> {
-        let mut result = String::new();
-        encode(source, &mut result).then_some(result)
+        let mut result = ArrayString::<64>::new();
+        encode(source, &mut result).then_some(result.as_str().into())
     }
 
     // --- encode_nodes boundary values ---
@@ -217,7 +219,7 @@ mod tests {
             b"log.body.HostNaMe",
         ];
 
-        let encoded: Vec<String> = inputs.iter().map(|b| encode_str(b).unwrap()).collect();
+        let encoded: Vec<_> = inputs.iter().map(|b| encode_str(b).unwrap()).collect();
 
         // All should have the same structure but different checksums
         for e in &encoded {
@@ -312,7 +314,7 @@ mod tests {
         assert!(encode_str(b"foo@bar").is_none());
         assert!(encode_str(b"\xff").is_none());
         // Also verify encode() directly returns false
-        let mut buf = String::new();
+        let mut buf = ArrayString::<64>::new();
         assert!(!encode(b"hello world", &mut buf));
     }
 

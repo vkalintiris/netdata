@@ -13,6 +13,7 @@ allocative = ["dep:allocative"]
 journal-common = { workspace = true }
 journal-registry = { workspace = true }
 sd-compat = { workspace = true }
+arrayvec = { workspace = true }
 
 # Core dependencies
 static_assertions = { workspace = true }
