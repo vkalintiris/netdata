@@ -124,7 +124,8 @@ impl<T> FstIndex<T> {
         let mut pairs: Vec<(K, T)> = iter.into_iter().collect();
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        let mut builder = fst::MapBuilder::memory();
+        let bump = bumpalo::Bump::with_capacity(32 * 1024 * 1024);
+        let mut builder = fst::MapBuilder::memory(&bump);
         let mut values = Vec::with_capacity(pairs.len());
 
         for (idx, (key, value)) in pairs.into_iter().enumerate() {
@@ -149,7 +150,8 @@ impl<T> FstIndex<T> {
     pub fn build_from_sorted<K: AsRef<[u8]>>(
         iter: impl IntoIterator<Item = (K, T)>,
     ) -> Result<Self, BuildError> {
-        let mut builder = fst::MapBuilder::memory();
+        let bump = bumpalo::Bump::with_capacity(32 * 1024 * 1024);
+        let mut builder = fst::MapBuilder::memory(&bump);
         let mut values = Vec::new();
 
         for (idx, (key, value)) in iter.into_iter().enumerate() {

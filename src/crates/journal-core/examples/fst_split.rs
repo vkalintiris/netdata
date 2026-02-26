@@ -18,6 +18,7 @@
 //! Usage:
 //!   cargo run --release -p journal-core --example fst_split -- <journal-file> [--max-cardinality N]
 
+use arrayvec::ArrayString;
 use journal_core::file::file::JournalFile;
 use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
@@ -29,6 +30,47 @@ use std::num::NonZeroU64;
 use std::time::Instant;
 
 const ZSTD_LEVEL: i32 = 1;
+const MAX_KEY_LEN: usize = 256;
+
+fn rss_mib() -> f64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    for line in status.lines() {
+        if line.starts_with("VmRSS:") {
+            let kb: f64 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            return kb / 1024.0;
+        }
+    }
+    0.0
+}
+
+fn peak_rss_mib() -> f64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    for line in status.lines() {
+        if line.starts_with("VmHWM:") {
+            let kb: f64 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            return kb / 1024.0;
+        }
+    }
+    0.0
+}
+
+/// Stack-allocated key for FST entries. Avoids heap allocation for the ~924K
+/// keys collected during field processing.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Key(ArrayString<MAX_KEY_LEN>);
+
+impl AsRef<[u8]> for Key {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+unsafe extern "C" {
+    fn mallopt(param: i32, value: i32) -> i32;
+}
+const M_MMAP_THRESHOLD: i32 = -3;
+
+
 
 /// Value type for the primary FST.
 ///
@@ -47,6 +89,11 @@ enum PrimaryValue {
 }
 
 fn main() {
+    // Lock glibc's mmap threshold at the default 128 KiB, preventing dynamic
+    // adjustment that raises it over time.  Allocations >= this size use mmap
+    // and are returned to the OS immediately on free.
+    unsafe { mallopt(M_MMAP_THRESHOLD, 128 * 1024); }
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
@@ -138,13 +185,14 @@ fn main() {
     //   - High-card: use header.n_entries directly (no chain traversal)
     let t_build = Instant::now();
 
-    let mut primary_entries: Vec<(String, PrimaryValue)> = Vec::new();
-    let mut hc_field_data: Vec<(u16, String, Vec<(String, u64)>)> = Vec::new();
+    let mut primary_entries: Vec<(Key, PrimaryValue)> = Vec::new();
+    let mut hc_field_data: Vec<(u16, String, Vec<(Key, u64)>)> = Vec::new();
     let mut next_hc_index: u16 = 0;
     let mut scratch_offsets: Vec<NonZeroU64> = Vec::new();
     let mut scratch_indices: Vec<u32> = Vec::new();
     let mut low_card_fields: Vec<String> = Vec::new();
     let mut high_card_count: usize = 0;
+    let mut skipped_too_long: usize = 0;
 
     for field_name in &field_names {
         let field_data_iter = match journal_file.field_data_objects(field_name.as_bytes()) {
@@ -152,7 +200,9 @@ fn main() {
             Err(_) => continue,
         };
 
-        // Single pass: collect key, n_entries, and inlined_cursor from each data object
+        // Single pass: collect key, n_entries, and inlined_cursor from each data object.
+        // Keys are stored in stack-allocated ArrayString<256>; payloads longer than
+        // 256 bytes are skipped (they are data blobs, not useful FST keys).
         let mut collected = Vec::new();
         for data_result in field_data_iter {
             let data_guard = match data_result {
@@ -163,16 +213,23 @@ fn main() {
             let key = if data_guard.is_compressed() {
                 let mut buf = Vec::new();
                 match data_guard.decompress(&mut buf) {
-                    Ok(_) => std::str::from_utf8(&buf).ok().map(|s| s.to_string()),
+                    Ok(_) => std::str::from_utf8(&buf)
+                        .ok()
+                        .and_then(|s| ArrayString::from(s).ok())
+                        .map(Key),
                     Err(_) => None,
                 }
             } else {
                 std::str::from_utf8(data_guard.raw_payload())
                     .ok()
-                    .map(|s| s.to_string())
+                    .and_then(|s| ArrayString::from(s).ok())
+                    .map(Key)
             };
 
-            let Some(key) = key else { continue };
+            let Some(key) = key else {
+                skipped_too_long += 1;
+                continue;
+            };
             let n_entries = data_guard.header.n_entries.map_or(0, |n| n.get());
             let Some(ic) = data_guard.inlined_cursor() else {
                 continue;
@@ -183,11 +240,13 @@ fn main() {
 
         let cardinality = collected.len();
 
+        let field_key = Key(ArrayString::from(field_name).expect("field name exceeds MAX_KEY_LEN"));
+
         if cardinality <= max_cardinality {
             // Low-cardinality: bare FIELD key + bitmaps for each value
             low_card_fields.push(field_name.clone());
             primary_entries.push((
-                field_name.clone(),
+                field_key,
                 PrimaryValue::Field {
                     cardinality: cardinality as u64,
                     chunk_index: None,
@@ -229,7 +288,7 @@ fn main() {
             next_hc_index += 1;
 
             primary_entries.push((
-                field_name.clone(),
+                field_key,
                 PrimaryValue::Field {
                     cardinality: cardinality as u64,
                     chunk_index: Some(chunk_idx),
@@ -237,7 +296,7 @@ fn main() {
             ));
 
             // Collect (key, n_entries) pairs — FST build deferred to parallel phase
-            let fst_entries: Vec<(String, u64)> = collected
+            let fst_entries: Vec<(Key, u64)> = collected
                 .into_iter()
                 .map(|(key, n_entries, _)| (key, n_entries))
                 .collect();
@@ -252,6 +311,9 @@ fn main() {
         max_cardinality
     );
     println!("High-cardinality fields: {}", high_card_count);
+    if skipped_too_long > 0 {
+        println!("Skipped (key > {} bytes): {}", MAX_KEY_LEN, skipped_too_long);
+    }
     println!();
 
     let primary_fst: fst_index::FstIndex<PrimaryValue> =
@@ -276,7 +338,7 @@ fn main() {
     // Build HC FSTs in parallel — each field's FST is independent
     let mut hc_chunks: Vec<(u16, String, Vec<u8>)> = hc_field_data
         .into_par_iter()
-        .map(|(chunk_idx, field_name, fst_entries)| {
+        .map(|(chunk_idx, field_name, fst_entries): (u16, String, Vec<(Key, u64)>)| {
             let hc_fst: fst_index::FstIndex<u64> =
                 fst_index::FstIndex::build(fst_entries).expect("failed to build HC FST");
             let packed =
@@ -317,6 +379,11 @@ fn main() {
     }
     writer.write_to(&mut out).expect("write split-fst");
     drop(out);
+
+    println!("=== RSS after write ===");
+    println!("  RSS:      {:.1} MiB", rss_mib());
+    println!("  Peak RSS: {:.1} MiB", peak_rss_mib());
+    println!();
 
     let write_elapsed = t_write.elapsed();
 
@@ -452,6 +519,10 @@ fn main() {
         primary_packed.len() as f64 / 1024.0,
         file_size as f64 / 1024.0
     );
+
+    println!("=== Final RSS ===");
+    println!("  RSS:      {:.1} MiB", rss_mib());
+    println!("  Peak RSS: {:.1} MiB", peak_rss_mib());
 
     // Cleanup
     std::fs::remove_file(&output_path).ok();

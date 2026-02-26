@@ -62,6 +62,7 @@ tracing-subscriber = { workspace = true }
 fst-index = { workspace = true, features = ["serde"] }
 treight = { path = "../treight", features = ["serde"] }
 split-fst = { workspace = true }
+arrayvec = { workspace = true }
 bincode = { workspace = true }
 zstd = { workspace = true }
 fsst-rs = { workspace = true }

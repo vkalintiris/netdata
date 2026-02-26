@@ -63,7 +63,7 @@ lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "x
 md5 = "0.7"
 arrayvec = "0.7"
 
-fst = { version = "0.4.7" }
+fst = { path = "/home/vk/repos/crates/fst" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }
 serde = { version = "1.0" }
 rustc-hash = "2.1"
@@ -115,7 +115,7 @@ foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
 parking_lot = "0.12"
 allocative = { version = "0.3.4" }
-bumpalo = "3"
+bumpalo = { path = "/home/vk/repos/crates/bumpalo", features = ["collections"] }
 tikv-jemallocator = "0.6"
 
 hdrhistogram = { version = "7.5" }

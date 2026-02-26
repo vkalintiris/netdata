@@ -13,6 +13,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 fst = { workspace = true }
+bumpalo = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
