@@ -5,7 +5,7 @@ mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::{Result, WriterError};
-use journal_common::{RealtimeClock, load_boot_id, load_machine_id, monotonic_now};
+use journal_common::{RealtimeClock, load_boot_id, load_hostname, load_machine_id, monotonic_now};
 use journal_core::field_map::{
     FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
 };
@@ -175,6 +175,9 @@ pub struct Log {
     current_seqnum: u64,
     remapping_registry: FieldMap,
     clock: RealtimeClock,
+    boot_id_field: Vec<u8>,
+    machine_id_field: Vec<u8>,
+    hostname_field: Vec<u8>,
 }
 
 impl Log {
@@ -195,6 +198,10 @@ impl Log {
 
         let current_seqnum = chain.tail_seqnum()?;
         let boot_id = load_boot_id()?;
+        let machine_id = load_machine_id()
+            .map_err(|e| WriterError::MachineId(format!("failed to load machine ID: {}", e)))?;
+        let hostname = load_hostname()
+            .map_err(|e| WriterError::Io(e))?;
         let seqnum_id = uuid::Uuid::new_v4();
         let rotation_state = RotationState::new(&config.rotation_policy);
 
@@ -204,6 +211,11 @@ impl Log {
         } else {
             RealtimeClock::new()
         };
+
+        // Pre-format injected fields (cached for the lifetime of this Log)
+        let boot_id_field = format!("_BOOT_ID={}", boot_id.as_simple()).into_bytes();
+        let machine_id_field = format!("_MACHINE_ID={}", machine_id.as_simple()).into_bytes();
+        let hostname_field = format!("_HOSTNAME={}", hostname).into_bytes();
 
         Ok(Log {
             chain,
@@ -215,6 +227,9 @@ impl Log {
             current_seqnum,
             remapping_registry: FieldMap::new(),
             clock,
+            boot_id_field,
+            machine_id_field,
+            hostname_field,
         })
     }
 
@@ -269,15 +284,14 @@ impl Log {
             }
         }
 
-        // Inject _BOOT_ID field - this is required for journalctl boot filtering to work
-        let boot_id_field = format!("_BOOT_ID={}", self.boot_id.as_simple());
+        // Transform items to use remapped field names, prepending system fields
+        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 4);
+        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 4);
 
-        // Transform items to use remapped field names, prepending _BOOT_ID
-        let mut transformed_items: Vec<Vec<u8>> = Vec::with_capacity(items.len() + 2);
-        let mut items_refs: Vec<&[u8]> = Vec::with_capacity(items.len() + 2);
-
-        // Prepend _BOOT_ID field first
-        transformed_items.push(boot_id_field.into_bytes());
+        // Prepend system fields (matching systemd journald behavior)
+        transformed_items.push(self.boot_id_field.clone());
+        transformed_items.push(self.machine_id_field.clone());
+        transformed_items.push(self.hostname_field.clone());
 
         // Add _SOURCE_REALTIME_TIMESTAMP if provided
         if let Some(timestamp_usec) = source_realtime_usec {
@@ -325,16 +339,19 @@ impl Log {
     ///
     /// Format:
     /// _BOOT_ID=<boot_id>
+    /// _MACHINE_ID=<machine_id>
+    /// _HOSTNAME=<hostname>
     /// ND_REMAPPING=1
     /// ND_<md5_1>=<otel_key_1>
     /// ND_<md5_2>=<otel_key_2>
     /// ...
     fn write_remapping_entry(&mut self, mappings: &[(Vec<u8>, String)]) -> Result<()> {
-        let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 2);
+        let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 4);
 
-        // Inject _BOOT_ID field first
-        let boot_id_field = format!("_BOOT_ID={}", self.boot_id.as_simple());
-        remapping_items.push(boot_id_field.into_bytes());
+        // Inject system fields first (matching systemd journald behavior)
+        remapping_items.push(self.boot_id_field.clone());
+        remapping_items.push(self.machine_id_field.clone());
+        remapping_items.push(self.hostname_field.clone());
 
         // Add marker field
         remapping_items.push(REMAPPING_MARKER.to_vec());

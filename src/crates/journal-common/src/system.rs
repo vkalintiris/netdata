@@ -74,6 +74,27 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
     ))
 }
 
+/// Loads the hostname from the system.
+///
+/// On Linux and macOS, this uses `nix::unistd::gethostname()`.
+/// On other platforms, this returns an error.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn load_hostname() -> io::Result<String> {
+    let hostname = nix::unistd::gethostname()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    hostname
+        .into_string()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "hostname is not valid UTF-8"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn load_hostname() -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Hostname loading not supported on this platform",
+    ))
+}
+
 /// Loads the boot ID from the system.
 ///
 /// On Linux, this reads from `/proc/sys/kernel/random/boot_id`.

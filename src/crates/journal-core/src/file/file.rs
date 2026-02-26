@@ -562,6 +562,14 @@ impl<M: MemoryMap> JournalFile<M> {
                         let data_object = self.data_ref(data_offset)?;
                         let payload = data_object.raw_payload();
 
+                        // Only process ND-prefixed fields as remappings.
+                        // Remapping entries also contain non-remapping fields
+                        // (e.g. _BOOT_ID) that must be skipped to avoid
+                        // treating their values as otel field names.
+                        if !payload.starts_with(b"ND") {
+                            continue;
+                        }
+
                         if payload == remapping_payload {
                             continue;
                         }
