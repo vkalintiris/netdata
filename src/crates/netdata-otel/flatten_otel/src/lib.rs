@@ -7,6 +7,7 @@ use opentelemetry_proto::tonic::{
 };
 
 mod logs;
+pub mod logs_direct;
 mod metrics;
 
 pub use logs::{json_from_export_logs_service_request, json_from_log_record};

@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
-use flatten_otel::json_from_export_logs_service_request;
+use flatten_otel::logs_direct;
 use journal_common::load_machine_id;
 use journal_log_writer::{Config, Log, RetentionPolicy, RotationPolicy};
 use journal_registry::Origin;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
-use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
@@ -54,74 +53,6 @@ impl NetdataLogsService {
             store_otlp_json: logs_config.store_otlp_json,
         })
     }
-
-    fn extract_timestamp_for_sorting(json_value: &Value) -> u64 {
-        if let Value::Object(obj) = json_value {
-            // Extract timestamp for sorting (same logic as json_to_entry_data)
-            // Per OTLP spec: Use time_unix_nano if present (non-zero), otherwise use observed_time_unix_nano
-            let time_unix_nano = obj
-                .get("log.time_unix_nano")
-                .and_then(|v| v.as_u64())
-                .filter(|&t| t != 0);
-
-            let observed_time_unix_nano = obj
-                .get("log.observed_time_unix_nano")
-                .and_then(|v| v.as_u64())
-                .filter(|&t| t != 0);
-
-            time_unix_nano.or(observed_time_unix_nano).unwrap_or(0)
-        } else {
-            0
-        }
-    }
-
-    fn json_to_entry_data(&self, json_value: &Value) -> (Vec<Vec<u8>>, Option<u64>) {
-        let mut entry_data = Vec::new();
-        let mut source_timestamp_usec = None;
-
-        if let Value::Object(obj) = json_value {
-            // Extract timestamps for source realtime timestamp
-            // Per OTLP spec: Use time_unix_nano if present (non-zero), otherwise use observed_time_unix_nano
-            let time_unix_nano = obj
-                .get("log.time_unix_nano")
-                .and_then(|v| v.as_u64())
-                .filter(|&t| t != 0);
-
-            let observed_time_unix_nano = obj
-                .get("log.observed_time_unix_nano")
-                .and_then(|v| v.as_u64())
-                .filter(|&t| t != 0);
-
-            // Convert from nanoseconds to microseconds (systemd journal uses microseconds)
-            source_timestamp_usec = time_unix_nano
-                .or(observed_time_unix_nano)
-                .map(|nano| nano / 1000);
-
-            // Add OTLP_JSON field containing the complete JSON representation if enabled
-            // This preserves the full original message for debugging and reprocessing
-            if self.store_otlp_json {
-                if let Ok(json_str) = serde_json::to_string(json_value) {
-                    let kv_pair = format!("OTLP_JSON={}", json_str);
-                    entry_data.push(kv_pair.into_bytes());
-                }
-            }
-
-            for (key, value) in obj {
-                let value_str = match value {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Null => "null".to_string(),
-                    _ => serde_json::to_string(value).unwrap_or_default(),
-                };
-
-                let kv_pair = format!("{}={}", key, value_str);
-                entry_data.push(kv_pair.into_bytes());
-            }
-        }
-
-        (entry_data, source_timestamp_usec)
-    }
 }
 
 #[tonic::async_trait]
@@ -133,53 +64,38 @@ impl LogsService for NetdataLogsService {
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let req = request.into_inner();
 
-        let json_array = json_from_export_logs_service_request(&req);
+        let bump = bumpalo::Bump::new();
+        let mut entries = logs_direct::prepare_log_entries(&bump, &req, self.store_otlp_json);
 
-        if let Value::Array(mut entries) = json_array {
-            tracing::Span::current().record("received_logs", entries.len());
+        tracing::Span::current().record("received_logs", entries.len());
 
-            // Sort entries by their creation timestamp before writing to journal
-            // This ensures journal entries are written in chronological order, which:
-            // - Optimizes journal file structure and indexing
-            // - Improves query performance
-            // - Enhances compression efficiency
-            entries.sort_by_key(Self::extract_timestamp_for_sorting);
+        // Sort entries by their creation timestamp before writing to journal
+        entries.sort_by_key(|e| e.sort_key);
 
-            for entry in entries {
-                let (entry_data, source_timestamp_usec) = self.json_to_entry_data(&entry);
-
-                if entry_data.is_empty() {
-                    continue;
-                }
-
-                let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-                if let Err(e) = self
-                    .log
-                    .lock()
-                    .unwrap()
-                    .write_entry(&entry_refs, source_timestamp_usec)
-                {
-                    eprintln!("Failed to write log entry: {}", e);
-                    return Err(Status::internal(format!(
-                        "Failed to write log entry: {}",
-                        e
-                    )));
-                }
+        let mut log = self.log.lock().unwrap();
+        for entry in entries.iter() {
+            if entry.items.is_empty() {
+                continue;
             }
-
-            if let Err(e) = self.log.lock().unwrap().sync() {
-                eprintln!("Failed to sync journal file: {}", e);
+            if let Err(e) = log.write_entry(entry.items, entry.source_timestamp_usec) {
+                eprintln!("Failed to write log entry: {}", e);
                 return Err(Status::internal(format!(
-                    "Failed to sync journal file: {}",
+                    "Failed to write log entry: {}",
                     e
                 )));
             }
         }
 
-        let reply = ExportLogsServiceResponse {
-            partial_success: None,
-        };
+        if let Err(e) = log.sync() {
+            eprintln!("Failed to sync journal file: {}", e);
+            return Err(Status::internal(format!(
+                "Failed to sync journal file: {}",
+                e
+            )));
+        }
 
-        Ok(Response::new(reply))
+        Ok(Response::new(ExportLogsServiceResponse {
+            partial_success: None,
+        }))
     }
 }
