@@ -34,6 +34,7 @@ members = [
     # Stress test tools
     "jetstream-otel-bridge",
     "certstream-otel-bridge",
+    "wiki-otel-bridge",
 ]
 
 [workspace.package]
@@ -180,6 +181,8 @@ zstd = "0.13"
 fsst-rs = { path = "/home/vk/repos/crates/fsst" }
 gix-chunk = { path = "/home/vk/repos/crates/gitoxide/gix-chunk" }
 futures-util = { version = "0.3", features = ["sink"] }
+reqwest = { version = "0.12", features = ["stream"] }
+reqwest-eventsource = "0.6"
 
 [profile.dev]
 opt-level = 1

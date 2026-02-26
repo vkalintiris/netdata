@@ -75,6 +75,46 @@ pub fn json_to_any_value(value: &serde_json::Value) -> AnyValue {
     }
 }
 
+/// Keys promoted from the top-level JSON object to log record attributes or
+/// timestamp fields. These are stripped from the body to avoid duplication.
+const PROMOTED_ROOT_KEYS: &[&str] = &["did", "kind", "time_us"];
+
+/// Keys promoted from the `commit` sub-object.
+const PROMOTED_COMMIT_KEYS: &[&str] = &["operation", "collection", "rkey", "rev", "cid"];
+
+/// Keys promoted from the `identity` sub-object.
+const PROMOTED_IDENTITY_KEYS: &[&str] = &["handle"];
+
+/// Keys promoted from the `account` sub-object.
+const PROMOTED_ACCOUNT_KEYS: &[&str] = &["active", "status"];
+
+/// Strip keys that have been promoted to log record attributes / timestamp
+/// from the raw JSON so the body carries only the remaining fields.
+fn strip_promoted_keys(raw_json: &serde_json::Value) -> serde_json::Value {
+    let mut body = raw_json.clone();
+    if let Some(obj) = body.as_object_mut() {
+        for key in PROMOTED_ROOT_KEYS {
+            obj.remove(*key);
+        }
+        if let Some(commit) = obj.get_mut("commit").and_then(|c| c.as_object_mut()) {
+            for key in PROMOTED_COMMIT_KEYS {
+                commit.remove(*key);
+            }
+        }
+        if let Some(identity) = obj.get_mut("identity").and_then(|i| i.as_object_mut()) {
+            for key in PROMOTED_IDENTITY_KEYS {
+                identity.remove(*key);
+            }
+        }
+        if let Some(account) = obj.get_mut("account").and_then(|a| a.as_object_mut()) {
+            for key in PROMOTED_ACCOUNT_KEYS {
+                account.remove(*key);
+            }
+        }
+    }
+    body
+}
+
 /// Convert a Jetstream Event into an OTel LogRecord.
 pub fn event_to_log_record(event: &Event, raw_json: &serde_json::Value) -> LogRecord {
     let now_ns = std::time::SystemTime::now()
@@ -113,12 +153,14 @@ pub fn event_to_log_record(event: &Event, raw_json: &serde_json::Value) -> LogRe
         }
     }
 
+    let body = strip_promoted_keys(raw_json);
+
     LogRecord {
         time_unix_nano: event.time_us * 1000,
         observed_time_unix_nano: now_ns,
         severity_number: SEVERITY_INFO,
         severity_text: "INFO".to_string(),
-        body: Some(json_to_any_value(raw_json)),
+        body: Some(json_to_any_value(&body)),
         attributes,
         event_name: event.kind.to_string(),
         ..Default::default()
