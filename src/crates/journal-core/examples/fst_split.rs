@@ -25,20 +25,10 @@ use journal_registry::repository::File;
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::io::Write;
 use std::num::NonZeroU64;
 use std::time::Instant;
 
-const MAGIC: &[u8; 4] = b"SFST";
-const VERSION: u32 = 1;
-const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
 const ZSTD_LEVEL: i32 = 1;
-
-const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
-
-fn hc_chunk_id(index: u16) -> gix_chunk::Id {
-    [b'H', b'C', (index >> 8) as u8, (index & 0xff) as u8]
-}
 
 /// Value type for the primary FST.
 ///
@@ -266,10 +256,8 @@ fn main() {
 
     let primary_fst: fst_index::FstIndex<PrimaryValue> =
         fst_index::FstIndex::build(primary_entries).expect("failed to build primary FST");
-    let primary_serialized =
-        bincode::serialize(&primary_fst).expect("failed to serialize primary FST");
-    let primary_compressed =
-        zstd::encode_all(&primary_serialized[..], ZSTD_LEVEL).expect("zstd compress primary");
+    let primary_packed =
+        split_fst::pack(&primary_fst, ZSTD_LEVEL).expect("pack primary");
 
     println!("=== Primary FST ===");
     println!("  Keys:     {}", primary_fst.len());
@@ -279,102 +267,61 @@ fn main() {
         primary_fst.fst_bytes() as f64 / 1024.0
     );
     println!(
-        "  Bincode:  {} bytes ({:.1} KiB)",
-        primary_serialized.len(),
-        primary_serialized.len() as f64 / 1024.0
-    );
-    println!(
-        "  Zstd:     {} bytes ({:.1} KiB)  ratio {:.2}x",
-        primary_compressed.len(),
-        primary_compressed.len() as f64 / 1024.0,
-        primary_serialized.len() as f64 / primary_compressed.len() as f64,
+        "  Packed:   {} bytes ({:.1} KiB)",
+        primary_packed.len(),
+        primary_packed.len() as f64 / 1024.0,
     );
     println!();
 
     // Build HC FSTs in parallel — each field's FST is independent
-    let mut hc_chunks: Vec<(u16, String, Vec<u8>, usize)> = hc_field_data
+    let mut hc_chunks: Vec<(u16, String, Vec<u8>)> = hc_field_data
         .into_par_iter()
         .map(|(chunk_idx, field_name, fst_entries)| {
             let hc_fst: fst_index::FstIndex<u64> =
                 fst_index::FstIndex::build(fst_entries).expect("failed to build HC FST");
-            let serialized = bincode::serialize(&hc_fst).expect("failed to serialize HC FST");
-            let raw_size = serialized.len();
-            let compressed =
-                zstd::encode_all(&serialized[..], ZSTD_LEVEL).expect("zstd compress HC FST");
-            (chunk_idx, field_name, compressed, raw_size)
+            let packed =
+                split_fst::pack(&hc_fst, ZSTD_LEVEL).expect("pack HC FST");
+            (chunk_idx, field_name, packed)
         })
         .collect();
 
     // Sort by chunk index (par_iter may reorder)
-    hc_chunks.sort_by_key(|(idx, _, _, _)| *idx);
+    hc_chunks.sort_by_key(|(idx, _, _)| *idx);
 
     let build_elapsed = t_build.elapsed();
 
     println!("=== High-Cardinality Chunks ===");
-    for (idx, field, compressed, raw_size) in &hc_chunks {
+    for (idx, field, packed) in &hc_chunks {
         println!(
-            "  HC[{:>3}] {:<40} {} → {} bytes ({:.1} KiB, {:.2}x)",
+            "  HC[{:>3}] {:<40} {} bytes ({:.1} KiB)",
             idx,
             field,
-            raw_size,
-            compressed.len(),
-            compressed.len() as f64 / 1024.0,
-            *raw_size as f64 / compressed.len() as f64,
+            packed.len(),
+            packed.len() as f64 / 1024.0,
         );
     }
     println!();
 
-    // ── Step 7: Write the gix-chunk file ────────────────────────────────
+    // ── Step 7: Write the split-fst file ──────────────────────────────
     let t_write = Instant::now();
 
-    let num_chunks = 1 + hc_chunks.len(); // primary + per-field
     let output_path = format!("{}.split_fst", journal_path);
     let mut out = std::io::BufWriter::new(
         std::fs::File::create(&output_path).expect("failed to create output file"),
     );
 
-    // Write header: magic + version + num_chunks
-    out.write_all(MAGIC).expect("write magic");
-    out.write_all(&VERSION.to_le_bytes()).expect("write version");
-    out.write_all(&(num_chunks as u32).to_le_bytes())
-        .expect("write num_chunks");
-
-    // Plan chunks with compressed sizes
-    let mut index = gix_chunk::file::Index::for_writing();
-    index.plan_chunk(CHUNK_PRIMARY, primary_compressed.len() as u64);
-    for (idx, _, compressed, _) in &hc_chunks {
-        index.plan_chunk(hc_chunk_id(*idx), compressed.len() as u64);
+    let mut writer = split_fst::Writer::new();
+    writer.set_primary(primary_packed.clone());
+    for (_, _, packed) in &hc_chunks {
+        writer.add_chunk(packed.clone());
     }
-
-    // Write TOC, then chunk data
-    let mut chunk_writer = index
-        .into_write(&mut out, HEADER_SIZE)
-        .expect("failed to write TOC");
-
-    // Primary chunk (compressed)
-    let id = chunk_writer.next_chunk().expect("expected primary chunk");
-    assert_eq!(id, CHUNK_PRIMARY);
-    chunk_writer
-        .write_all(&primary_compressed)
-        .expect("write primary chunk");
-
-    // HC chunks (compressed)
-    for (idx, _, compressed, _) in &hc_chunks {
-        let id = chunk_writer.next_chunk().expect("expected HC chunk");
-        assert_eq!(id, hc_chunk_id(*idx));
-        chunk_writer.write_all(compressed).expect("write HC chunk");
-    }
-
-    assert!(chunk_writer.next_chunk().is_none(), "unexpected extra chunk");
-    chunk_writer.into_inner();
-    out.flush().expect("flush");
+    writer.write_to(&mut out).expect("write split-fst");
     drop(out);
 
     let write_elapsed = t_write.elapsed();
 
     let file_size = std::fs::metadata(&output_path).expect("stat").len();
-    let hc_total_compressed: usize = hc_chunks.iter().map(|(_, _, c, _)| c.len()).sum();
-    let hc_total_raw: usize = hc_chunks.iter().map(|(_, _, _, r)| *r).sum();
+    let hc_total_packed: usize = hc_chunks.iter().map(|(_, _, p)| p.len()).sum();
 
     println!("=== Written File ===");
     println!("  Path:         {}", output_path);
@@ -383,22 +330,15 @@ fn main() {
         file_size,
         file_size as f64 / 1024.0
     );
-    println!("  Header:       {} bytes", HEADER_SIZE);
     println!(
-        "  TOC:          {} bytes",
-        gix_chunk::file::Index::size_for_entries(num_chunks)
+        "  Primary:      {} bytes ({:.1} KiB)",
+        primary_packed.len(),
+        primary_packed.len() as f64 / 1024.0
     );
     println!(
-        "  Primary:      {} → {} bytes ({:.1} KiB)",
-        primary_serialized.len(),
-        primary_compressed.len(),
-        primary_compressed.len() as f64 / 1024.0
-    );
-    println!(
-        "  HC total:     {} → {} bytes ({:.1} KiB)",
-        hc_total_raw,
-        hc_total_compressed,
-        hc_total_compressed as f64 / 1024.0
+        "  HC total:     {} bytes ({:.1} KiB)",
+        hc_total_packed,
+        hc_total_packed as f64 / 1024.0
     );
     println!(
         "  Build time:   {:.1}ms",
@@ -418,58 +358,33 @@ fn main() {
     let mmap = unsafe { memmap2::Mmap::map(&read_file) }.expect("mmap");
     let file_data = &mmap[..];
 
-    // Parse header
-    assert_eq!(&file_data[0..4], MAGIC, "bad magic");
-    let version = u32::from_le_bytes(file_data[4..8].try_into().unwrap());
-    assert_eq!(version, VERSION, "bad version");
-    let num_chunks_read = u32::from_le_bytes(file_data[8..12].try_into().unwrap());
+    let reader = split_fst::Reader::open(file_data).expect("open split-fst");
 
-    println!("  Magic:      {:?}", std::str::from_utf8(&file_data[0..4]).unwrap());
-    println!("  Version:    {}", version);
-    println!("  Num chunks: {}", num_chunks_read);
+    println!("  Num chunks: {}", reader.chunk_count());
 
-    // Parse TOC
-    let chunk_index = gix_chunk::file::Index::from_bytes(file_data, HEADER_SIZE, num_chunks_read)
-        .expect("failed to parse chunk index");
-
-    // Read + decompress primary chunk
-    let primary_bytes_compressed = chunk_index
-        .data_by_id(file_data, CHUNK_PRIMARY)
-        .expect("primary chunk not found");
-    let primary_bytes_decompressed =
-        zstd::decode_all(primary_bytes_compressed).expect("zstd decompress primary");
     let primary_read: fst_index::FstIndex<PrimaryValue> =
-        bincode::deserialize(&primary_bytes_decompressed).expect("failed to deserialize primary FST");
+        reader.primary().expect("read primary");
 
     println!(
-        "  Primary FST: {} keys ({} compressed → {} decompressed)",
+        "  Primary FST: {} keys",
         primary_read.len(),
-        primary_bytes_compressed.len(),
-        primary_bytes_decompressed.len(),
     );
 
     // Demonstrate targeted access: look up a high-card field
-    if let Some((idx, field, _, _)) = hc_chunks.first() {
+    if let Some((idx, field, _)) = hc_chunks.first() {
         // Step A: consult primary FST for field metadata
         if let Some(pv) = primary_read.get(field.as_bytes()) {
             println!("  Primary['{}'] = {:?}", field, pv);
         }
 
         // Step B: load + decompress just that field's HC chunk
-        let hc_compressed = chunk_index
-            .data_by_id(file_data, hc_chunk_id(*idx))
-            .expect("HC chunk not found");
-        let hc_decompressed =
-            zstd::decode_all(hc_compressed).expect("zstd decompress HC");
         let hc_fst: fst_index::FstIndex<u64> =
-            bincode::deserialize(&hc_decompressed).expect("failed to deserialize HC FST");
+            reader.chunk(*idx).expect("read HC chunk");
         println!(
-            "  HC[{}] '{}': {} keys, {} compressed → {} decompressed",
+            "  HC[{}] '{}': {} keys",
             idx,
             field,
             hc_fst.len(),
-            hc_compressed.len(),
-            hc_decompressed.len(),
         );
 
         // Step C: sample lookup in HC FST
@@ -514,24 +429,19 @@ fn main() {
     // ── Step 9: Size comparison ─────────────────────────────────────────
     println!("=== Size Comparison ===");
     println!(
-        "  Primary chunk (always loaded): {} bytes ({:.1} KiB) compressed",
-        primary_compressed.len(),
-        primary_compressed.len() as f64 / 1024.0
+        "  Primary chunk (always loaded): {} bytes ({:.1} KiB) packed",
+        primary_packed.len(),
+        primary_packed.len() as f64 / 1024.0
     );
     println!(
-        "  HC chunks (loaded on demand):  {} bytes ({:.1} KiB) compressed",
-        hc_total_compressed,
-        hc_total_compressed as f64 / 1024.0
+        "  HC chunks (loaded on demand):  {} bytes ({:.1} KiB) packed",
+        hc_total_packed,
+        hc_total_packed as f64 / 1024.0
     );
     println!(
         "  Total split file:              {} bytes ({:.1} KiB)",
         file_size,
         file_size as f64 / 1024.0
-    );
-    println!(
-        "  Raw (uncompressed) total:      {} bytes ({:.1} KiB)",
-        primary_serialized.len() + hc_total_raw,
-        (primary_serialized.len() + hc_total_raw) as f64 / 1024.0,
     );
     println!();
     println!(
@@ -539,7 +449,7 @@ fn main() {
     );
     println!(
         "  ({:.1} KiB) + one HC chunk need to be loaded, vs the full {:.1} KiB.",
-        primary_compressed.len() as f64 / 1024.0,
+        primary_packed.len() as f64 / 1024.0,
         file_size as f64 / 1024.0
     );
 
