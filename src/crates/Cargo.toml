@@ -66,7 +66,7 @@ md5 = "0.7"
 arrayvec = "0.7"
 cardinality-estimator = "1.0"
 
-fst = { path = "/home/vk/repos/crates/fst" }
+fst = { git = "https://github.com/vkalintiris/fst.git", branch="bumpalo" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }
 serde = { version = "1.0" }
 rustc-hash = "2.1"
@@ -117,11 +117,11 @@ tokio-util = { version = "0.7", features = ["codec"] }
 foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
 parking_lot = "0.12"
-allocative = { version = "0.3.4" }
-bumpalo = { path = "/home/vk/repos/crates/bumpalo", features = ["collections"] }
+allocative = "0.3.4"
+bumpalo = { version = "3", features = ["collections"] }
 tikv-jemallocator = "0.6"
 
-hdrhistogram = { version = "7.5" }
+hdrhistogram = "7.5"
 rayon = "1.11.0"
 itoa = "1.0"
 
@@ -180,8 +180,8 @@ tempfile = { version = "3" }
 
 proptest = "1.9"
 zstd = "0.13"
-fsst-rs = { path = "/home/vk/repos/crates/fsst" }
-gix-chunk = { path = "/home/vk/repos/crates/gitoxide/gix-chunk" }
+fsst-rs = "0.5"
+gix-chunk = "0.7"
 futures-util = { version = "0.3", features = ["sink"] }
 flate2 = "1"
 reqwest = { version = "0.12", features = ["stream"] }

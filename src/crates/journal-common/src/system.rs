@@ -8,6 +8,7 @@ use std::io;
 /// Reads a file from the host filesystem, trying both the normal path and /host/ prefix.
 ///
 /// This is useful when running in containers where the host filesystem may be mounted at /host.
+#[cfg(target_os = "linux")]
 fn read_host_file(filename: &str) -> io::Result<String> {
     match std::fs::read_to_string(filename) {
         Ok(contents) => Ok(contents),
