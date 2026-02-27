@@ -6,13 +6,17 @@ pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::{Result, WriterError};
 use journal_common::{RealtimeClock, load_boot_id, load_hostname, load_machine_id, monotonic_now};
+use cardinality_estimator::CardinalityEstimator;
+use journal_core::collections::HashMap;
 use journal_core::field_map::{
-    FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
+    CARDINALITY_MARKER, FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
 };
 use journal_core::file::mmap::MmapMut;
 use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter};
 use journal_registry::repository;
 use std::path::{Path, PathBuf};
+
+type FieldCardinality = CardinalityEstimator<[u8]>;
 
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, span, warn};
@@ -174,6 +178,7 @@ pub struct Log {
     seqnum_id: uuid::Uuid,
     current_seqnum: u64,
     remapping_registry: FieldMap,
+    field_cardinality: HashMap<Vec<u8>, FieldCardinality>,
     clock: RealtimeClock,
     boot_id_field: Vec<u8>,
     machine_id_field: Vec<u8>,
@@ -227,6 +232,7 @@ impl Log {
             seqnum_id,
             current_seqnum,
             remapping_registry: FieldMap::new(),
+            field_cardinality: HashMap::default(),
             clock,
             boot_id_field,
             machine_id_field,
@@ -252,6 +258,7 @@ impl Log {
         if self.should_rotate() {
             self.rotate()?;
             self.remapping_registry.clear();
+            self.field_cardinality.clear();
         }
 
         // Collect new incompatible field names that need remapping
@@ -309,8 +316,16 @@ impl Log {
         // Items — zero-copy for passthrough, bump-allocated for remapped
         for item in items {
             if let Some(field_name) = extract_field_name(item) {
+                let eq_pos = item.iter().position(|&b| b == b'=').unwrap();
+                let value_bytes = &item[eq_pos + 1..];
+
                 if let Some(remapped_name) = self.remapping_registry.get_systemd_name(field_name) {
-                    let eq_pos = item.iter().position(|&b| b == b'=').unwrap();
+                    // Update cardinality estimator with the as-written (remapped) field name
+                    self.field_cardinality
+                        .entry(remapped_name.as_bytes().to_vec())
+                        .or_default()
+                        .insert(value_bytes);
+
                     let value = &item[eq_pos..]; // includes '='
                     let mut new_item = bumpalo::collections::Vec::with_capacity_in(
                         remapped_name.len() + value.len(),
@@ -320,6 +335,12 @@ impl Log {
                     new_item.extend_from_slice(value);
                     items_refs.push(new_item.into_bump_slice());
                 } else {
+                    // Update cardinality estimator with the original field name
+                    self.field_cardinality
+                        .entry(field_name.to_vec())
+                        .or_default()
+                        .insert(value_bytes);
+
                     items_refs.push(item);
                 }
             } else {
@@ -380,6 +401,57 @@ impl Log {
         Ok(())
     }
 
+    /// Writes a cardinality summary entry containing per-field cardinality estimates.
+    ///
+    /// Format:
+    /// _BOOT_ID=<boot_id>
+    /// _MACHINE_ID=<machine_id>
+    /// _HOSTNAME=<hostname>
+    /// ND_CARDINALITY=1
+    /// ND_CARD_<FIELD1>=<estimate1>
+    /// ND_CARD_<FIELD2>=<estimate2>
+    /// ...
+    fn write_cardinality_entry(&mut self) -> Result<()> {
+        if self.field_cardinality.is_empty() {
+            return Ok(());
+        }
+
+        let mut items: Vec<Vec<u8>> = Vec::with_capacity(self.field_cardinality.len() + 4);
+
+        // Inject system fields
+        items.push(self.boot_id_field.clone());
+        items.push(self.machine_id_field.clone());
+        items.push(self.hostname_field.clone());
+
+        // Add marker field
+        items.push(CARDINALITY_MARKER.to_vec());
+
+        // Add per-field cardinality estimates using the field name directly.
+        // The ND_CARDINALITY=1 marker identifies this entry, so all other
+        // non-system fields are cardinality estimates: FIELD_NAME=<estimate>.
+        for (field_name, estimator) in &self.field_cardinality {
+            let estimate = estimator.estimate();
+            let mut item = Vec::with_capacity(field_name.len() + 12);
+            item.extend_from_slice(field_name);
+            item.push(b'=');
+            item.extend_from_slice(estimate.to_string().as_bytes());
+            items.push(item);
+        }
+
+        // Build references
+        let items_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+
+        let (realtime, monotonic) = self.capture_dual_timestamp()?;
+
+        let active_file = self.active_file.as_mut().unwrap();
+        active_file.write_entry(&items_refs, realtime, monotonic)?;
+
+        self.rotation_state.update(&active_file.writer);
+        self.current_seqnum += 1;
+
+        Ok(())
+    }
+
     /// Syncs all written data to disk, ensuring durability.
     ///
     /// This should be called after writing a batch of log entries to ensure
@@ -398,6 +470,11 @@ impl Log {
     #[tracing::instrument(skip_all, fields(active_file))]
     fn rotate(&mut self) -> Result<()> {
         use journal_core::file::JournalState;
+
+        // Write cardinality summary before archiving
+        if self.active_file.is_some() {
+            self.write_cardinality_entry()?;
+        }
 
         // Update chain with current file size before rotating
         if let Some(active_file) = &self.active_file {
@@ -551,6 +628,9 @@ impl Log {
 impl Drop for Log {
     fn drop(&mut self) {
         use journal_core::file::JournalState;
+
+        // Write cardinality summary before archiving (best-effort)
+        let _ = self.write_cardinality_entry();
 
         if let Some(ref mut active_file) = self.active_file {
             // A single file is opened for writing exactly once. Once closed, we

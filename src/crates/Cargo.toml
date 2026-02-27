@@ -64,6 +64,7 @@ lz4_flex = { version = "0.12", default-features = false, features = ["std", "saf
 lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
 md5 = "0.7"
 arrayvec = "0.7"
+cardinality-estimator = "1.0"
 
 fst = { path = "/home/vk/repos/crates/fst" }
 roaring = { git = "https://github.com/netdata/roaring-rs.git", branch="allocative" }

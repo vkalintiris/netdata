@@ -3,6 +3,7 @@ use arrayvec::ArrayString;
 use crate::collections::{HashMap, HashSet};
 
 pub const REMAPPING_MARKER: &[u8] = b"ND_REMAPPING=1";
+pub const CARDINALITY_MARKER: &[u8] = b"ND_CARDINALITY=1";
 
 /// Validates if a field name is compatible with systemd journal requirements.
 pub fn is_systemd_compatible(field_name: &[u8]) -> bool {
