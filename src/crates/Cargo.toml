@@ -194,9 +194,9 @@ debug-assertions = true
 
 [profile.release]
 debug = true
-# opt-level = "z"
-lto = true
-codegen-units = 1
+opt-level = "z"
+# lto = true
+# codegen-units = 1
 
 [profile.release-min]
 inherits = "release"
