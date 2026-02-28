@@ -12,7 +12,7 @@ use crate::{
     Seconds,
 };
 use journal_core::collections::{HashMap, HashSet};
-use journal_core::file::{JournalFile, Mmap, offset_array::InlinedCursor};
+use journal_core::file::{JournalFile, Mmap, OpenJournalFile, offset_array::InlinedCursor};
 use journal_registry::File;
 use std::num::NonZeroU64;
 use tracing::{error, trace, warn};
@@ -148,7 +148,9 @@ impl FileIndexer {
         self.entry_offset_index = HashMap::default();
 
         let window_size = 32 * 1024 * 1024;
-        let journal_file = JournalFile::<Mmap>::open(file, window_size)?;
+        let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+            .load_hash_tables()
+            .open(file)?;
 
         // NOTE: Capture the maximum valid entry offset at the start of
         // indexing.

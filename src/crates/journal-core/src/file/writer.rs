@@ -4,11 +4,11 @@ use super::mmap::MemoryMapMut;
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
-    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
-    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
-    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
-    hash::jenkins_hash64, journal_hash_data,
+    CompactEntryItem, CreateJournalFile, DataHashTable, DataObject, DataObjectHeader,
+    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
+    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
+    HeaderIncompatibleFlags, JournalFile, JournalHeader, JournalState, ObjectHeader, ObjectType,
+    RegularEntryItem, hash::jenkins_hash64, journal_hash_data,
 };
 use rand::{Rng, seq::IndexedRandom};
 use std::num::{NonZeroU64, NonZeroUsize};

@@ -6,9 +6,9 @@
 //! Usage:
 //!   cargo run --release --example fst_key_overlap -- <journal-file-A> <journal-file-B>
 
-use journal_core::file::file::JournalFile;
-use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
+use journal_core::file::file::{JournalFile, OpenJournalFile};
+use journal_core::file::mmap::Mmap;
 use journal_registry::repository::File;
 use std::collections::BTreeSet;
 
@@ -20,10 +20,13 @@ fn collect_keys(path: &str) -> BTreeSet<String> {
     });
 
     let window_size = 32 * 1024 * 1024;
-    let journal_file = JournalFile::<Mmap>::open(&file, window_size).unwrap_or_else(|e| {
-        eprintln!("Failed to open journal file {}: {:#?}", path, e);
-        std::process::exit(1);
-    });
+    let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+        .load_hash_tables()
+        .open(&file)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to open journal file {}: {:#?}", path, e);
+            std::process::exit(1);
+        });
 
     let mut field_names: Vec<String> = Vec::new();
     for field_result in journal_file.fields() {

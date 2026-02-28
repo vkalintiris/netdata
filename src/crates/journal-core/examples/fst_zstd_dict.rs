@@ -6,9 +6,9 @@
 //! Usage:
 //!   cargo run --release --example fst_zstd_dict -- <journal-dir> [--files N] [--train N] [--max-cardinality N] [--dict-size N]
 
-use journal_core::file::file::JournalFile;
-use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
+use journal_core::file::file::{JournalFile, OpenJournalFile};
+use journal_core::file::mmap::Mmap;
 use journal_registry::repository::File;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -25,7 +25,10 @@ enum IndexValue {
 fn build_unified_fst(path: &str, max_cardinality: usize) -> Option<Vec<u8>> {
     let file = File::from_str(path)?;
     let window_size = 32 * 1024 * 1024;
-    let journal_file = JournalFile::<Mmap>::open(&file, window_size).ok()?;
+    let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+        .load_hash_tables()
+        .open(&file)
+        .ok()?;
 
     let header = journal_file.journal_header_ref();
     let tail_object_offset = header.tail_object_offset?;
@@ -139,8 +142,7 @@ fn build_unified_fst(path: &str, max_cardinality: usize) -> Option<Vec<u8>> {
         }
     }
 
-    let unified_fst: fst_index::FstIndex<IndexValue> =
-        fst_index::FstIndex::build(entries).ok()?;
+    let unified_fst: fst_index::FstIndex<IndexValue> = fst_index::FstIndex::build(entries).ok()?;
 
     bincode::serialize(&unified_fst).ok()
 }
@@ -205,10 +207,19 @@ fn main() {
     println!("=== Configuration ===");
     println!("  Directory:       {}", journal_dir);
     println!("  Total files:     {}", total);
-    println!("  Selected:        {} (indices {}..{})", num_files, start, start + num_files - 1);
+    println!(
+        "  Selected:        {} (indices {}..{})",
+        num_files,
+        start,
+        start + num_files - 1
+    );
     println!("  Train on:        first {} files", num_train);
     println!("  Max cardinality: {}", max_cardinality);
-    println!("  Dict max size:   {} bytes ({:.1} KiB)", dict_size, dict_size as f64 / 1024.0);
+    println!(
+        "  Dict max size:   {} bytes ({:.1} KiB)",
+        dict_size,
+        dict_size as f64 / 1024.0
+    );
     println!();
 
     // Step 1: Build serialized unified FSTs for all files.
@@ -259,8 +270,8 @@ fn main() {
         .collect();
 
     let t = Instant::now();
-    let dictionary = zstd::dict::from_samples(&train_chunks, dict_size)
-        .expect("dictionary training failed");
+    let dictionary =
+        zstd::dict::from_samples(&train_chunks, dict_size).expect("dictionary training failed");
     let train_elapsed = t.elapsed();
 
     println!(

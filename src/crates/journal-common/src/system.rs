@@ -81,8 +81,8 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
 /// On other platforms, this returns an error.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn load_hostname() -> io::Result<String> {
-    let hostname = nix::unistd::gethostname()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let hostname =
+        nix::unistd::gethostname().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     hostname
         .into_string()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "hostname is not valid UTF-8"))

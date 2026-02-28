@@ -11,7 +11,7 @@
 //! [magic "NDMETA01" 8B] [total_size: u64 le] [payload …]
 //! ```
 
-use super::mmap::{Mmap, MmapMut, MemoryMap};
+use super::mmap::{MemoryMap, Mmap, MmapMut};
 use super::object::JournalHeader;
 use crate::{JournalError, Result};
 use std::fs::{File, OpenOptions};
@@ -75,11 +75,7 @@ impl AfterArena {
 
     /// Read the metadata blob, or `None` if none is present.
     pub fn read(&self) -> Result<Option<Vec<u8>>> {
-        let file_len = self
-            .fd
-            .metadata()
-            .map_err(JournalError::Io)?
-            .len();
+        let file_len = self.fd.metadata().map_err(JournalError::Io)?.len();
 
         if file_len < self.end_of_arena + META_HEADER_SIZE as u64 {
             return Ok(None);
@@ -107,8 +103,8 @@ impl AfterArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{JournalFile, JournalFileOptions};
     use crate::file::mmap::MmapMut;
+    use crate::file::{CreateJournalFile, JournalFile};
     use journal_registry::repository;
 
     /// Helper: create a minimal journal file and return its path.
@@ -122,16 +118,18 @@ mod tests {
 
         let filename = format!(
             "system@{}-{:016x}-{:016x}.journal",
-            seqnum_id.simple(), 1u64, 1u64,
+            seqnum_id.simple(),
+            1u64,
+            1u64,
         );
         let path = machine_dir.join(filename);
         let repo_file = repository::File::from_path(&path).unwrap();
 
         let boot_id = uuid::Uuid::nil();
-        let opts = JournalFileOptions::new(machine_id, boot_id, seqnum_id)
-            .with_window_size(4096);
-
-        let _jf = JournalFile::<MmapMut>::create(&repo_file, opts).unwrap();
+        let _jf: JournalFile<MmapMut> = CreateJournalFile::new(machine_id, boot_id, seqnum_id)
+            .with_window_size(4096)
+            .create(&repo_file)
+            .unwrap();
         path
     }
 

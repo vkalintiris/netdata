@@ -124,7 +124,7 @@ pub(crate) fn parse(tokens: &[Token]) -> arrayvec::ArrayVec<Node, 64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tokenizer::{tokenize, Separator};
+    use crate::tokenizer::{Separator, tokenize};
 
     fn parse_str(s: &str) -> arrayvec::ArrayVec<Node, 64> {
         let tokens = tokenize(s.as_bytes()).unwrap();
@@ -138,17 +138,26 @@ mod tests {
 
     #[test]
     fn single_lowercase() {
-        assert_eq!(parse_str("hello").as_slice(), &[Node::Field(Field::Lowercase)]);
+        assert_eq!(
+            parse_str("hello").as_slice(),
+            &[Node::Field(Field::Lowercase)]
+        );
     }
 
     #[test]
     fn single_uppercase() {
-        assert_eq!(parse_str("HTTP").as_slice(), &[Node::Field(Field::Uppercase)]);
+        assert_eq!(
+            parse_str("HTTP").as_slice(),
+            &[Node::Field(Field::Uppercase)]
+        );
     }
 
     #[test]
     fn single_capitalized_becomes_upper_camel() {
-        assert_eq!(parse_str("Hello").as_slice(), &[Node::Field(Field::UpperCamel)]);
+        assert_eq!(
+            parse_str("Hello").as_slice(),
+            &[Node::Field(Field::UpperCamel)]
+        );
     }
 
     #[test]
@@ -167,14 +176,20 @@ mod tests {
     fn upper_camel_merges_capitalized_words() {
         // "HostName" → tokenizer gives [Cap "Host", Cap "Name"]
         // parser merges them into a single UpperCamel field
-        assert_eq!(parse_str("HostName").as_slice(), &[Node::Field(Field::UpperCamel)]);
+        assert_eq!(
+            parse_str("HostName").as_slice(),
+            &[Node::Field(Field::UpperCamel)]
+        );
     }
 
     #[test]
     fn lower_camel_from_lowercase_plus_capitalized() {
         // "fooBar" → tokenizer gives [Low "foo", Cap "Bar"]
         // parser: single lowercase + capitalized → LowerCamel
-        assert_eq!(parse_str("fooBar").as_slice(), &[Node::Field(Field::LowerCamel)]);
+        assert_eq!(
+            parse_str("fooBar").as_slice(),
+            &[Node::Field(Field::LowerCamel)]
+        );
     }
 
     #[test]

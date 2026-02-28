@@ -53,7 +53,9 @@ fn json_from_any_value(any_value: &AnyValue) -> JsonValue {
             let values: Vec<JsonValue> = array.values.iter().map(json_from_any_value).collect();
             JsonValue::Array(values)
         }
-        Some(Value::KvlistValue(kvl)) => JsonValue::Object(json_map_from_key_value_list(&kvl.values)),
+        Some(Value::KvlistValue(kvl)) => {
+            JsonValue::Object(json_map_from_key_value_list(&kvl.values))
+        }
         Some(Value::BytesValue(bytes)) => JsonValue::String(BASE64.encode(bytes)),
         None => JsonValue::Null,
     }

@@ -8,9 +8,9 @@
 //!   cargo run --release --example fst_fsst -- <journal-file> [--max-cardinality N]
 
 use fsst::Compressor as FsstCompressor;
-use journal_core::file::file::JournalFile;
-use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
+use journal_core::file::file::{JournalFile, OpenJournalFile};
+use journal_core::file::mmap::Mmap;
 use journal_registry::repository::File;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -60,13 +60,18 @@ fn main() {
     });
 
     let window_size = 32 * 1024 * 1024;
-    let journal_file = JournalFile::<Mmap>::open(&file, window_size).unwrap_or_else(|e| {
-        eprintln!("Failed to open journal file: {:#?}", e);
-        std::process::exit(1);
-    });
+    let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+        .load_hash_tables()
+        .open(&file)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to open journal file: {:#?}", e);
+            std::process::exit(1);
+        });
 
     let header = journal_file.journal_header_ref();
-    let tail_object_offset = header.tail_object_offset.expect("missing tail_object_offset");
+    let tail_object_offset = header
+        .tail_object_offset
+        .expect("missing tail_object_offset");
 
     println!("=== Journal File Info ===");
     println!("Path:       {}", journal_path);
@@ -275,8 +280,7 @@ fn main() {
 
     let t = Instant::now();
     let fsst_fst: fst_index::FstIndex<IndexValue> =
-        fst_index::FstIndex::build(fsst_entries)
-            .expect("failed to build FSST FST");
+        fst_index::FstIndex::build(fsst_entries).expect("failed to build FSST FST");
     let fsst_build_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     println!("  Keys:          {}", fsst_fst.len());
@@ -309,10 +313,7 @@ fn main() {
 
     // === Summary ===
     println!("=== Summary ===");
-    println!(
-        "  {:30} {:>12} {:>12}",
-        "", "Raw", "FSST"
-    );
+    println!("  {:30} {:>12} {:>12}", "", "Raw", "FSST");
     println!(
         "  {:30} {:>12} {:>12}",
         "Key bytes",

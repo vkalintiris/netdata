@@ -242,11 +242,7 @@ fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
         stats.alloc.entry_offsets = alloc_size(file_index.entry_offsets()) as u64;
         stats.alloc.file_fields = alloc_size(file_index.fields()) as u64;
         stats.alloc.indexed_fields = alloc_size(file_index.indexed_fields()) as u64;
-        stats.alloc.fst_bitmaps = fst_idx
-            .values()
-            .iter()
-            .map(|b| alloc_size(b) as u64)
-            .sum();
+        stats.alloc.fst_bitmaps = fst_idx.values().iter().map(|b| alloc_size(b) as u64).sum();
     }
 
     for bitmap in fst_idx.values() {

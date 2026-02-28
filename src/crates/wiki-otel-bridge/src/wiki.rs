@@ -63,9 +63,7 @@ pub async fn connect(
 ) -> anyhow::Result<()> {
     info!("Connecting to Wikimedia EventStreams: {}", url);
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()?;
+    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
     let mut es = EventSource::new(client.get(url))?;
 
     while let Some(event) = es.next().await {

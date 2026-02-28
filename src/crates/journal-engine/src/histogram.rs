@@ -345,8 +345,9 @@ impl HistogramEngine {
                         };
 
                         // Update counts
-                        if let Some(pair) =
-                            std::str::from_utf8(key).ok().and_then(FieldValuePair::parse)
+                        if let Some(pair) = std::str::from_utf8(key)
+                            .ok()
+                            .and_then(FieldValuePair::parse)
                         {
                             let counts = response.fv_counts.entry(pair).or_insert((0, 0));
                             counts.0 += unfiltered_count;

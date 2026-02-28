@@ -19,12 +19,12 @@
 //!   cargo run --release -p journal-core --example fst_split -- <journal-file> [--max-cardinality N]
 
 use arrayvec::ArrayString;
-use journal_core::file::file::JournalFile;
-use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
+use journal_core::file::file::{JournalFile, OpenJournalFile};
+use journal_core::file::mmap::Mmap;
 use journal_registry::repository::File;
-use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::time::Instant;
@@ -36,7 +36,11 @@ fn rss_mib() -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     for line in status.lines() {
         if line.starts_with("VmRSS:") {
-            let kb: f64 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let kb: f64 = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             return kb / 1024.0;
         }
     }
@@ -47,7 +51,11 @@ fn peak_rss_mib() -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     for line in status.lines() {
         if line.starts_with("VmHWM:") {
-            let kb: f64 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let kb: f64 = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             return kb / 1024.0;
         }
     }
@@ -70,8 +78,6 @@ unsafe extern "C" {
 }
 const M_MMAP_THRESHOLD: i32 = -3;
 
-
-
 /// Value type for the primary FST.
 ///
 /// Two kinds of keys coexist in the primary FST:
@@ -92,14 +98,13 @@ fn main() {
     // Lock glibc's mmap threshold at the default 128 KiB, preventing dynamic
     // adjustment that raises it over time.  Allocations >= this size use mmap
     // and are returned to the OS immediately on free.
-    unsafe { mallopt(M_MMAP_THRESHOLD, 128 * 1024); }
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+    }
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!(
-            "Usage: {} <journal-file> [--max-cardinality N]",
-            args[0]
-        );
+        eprintln!("Usage: {} <journal-file> [--max-cardinality N]", args[0]);
         std::process::exit(1);
     }
 
@@ -117,10 +122,13 @@ fn main() {
     });
 
     let window_size = 32 * 1024 * 1024;
-    let journal_file = JournalFile::<Mmap>::open(&file, window_size).unwrap_or_else(|e| {
-        eprintln!("Failed to open journal file: {:#?}", e);
-        std::process::exit(1);
-    });
+    let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+        .load_hash_tables()
+        .open(&file)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to open journal file: {:#?}", e);
+            std::process::exit(1);
+        });
 
     let header = journal_file.journal_header_ref();
     let tail_object_offset = header
@@ -312,14 +320,16 @@ fn main() {
     );
     println!("High-cardinality fields: {}", high_card_count);
     if skipped_too_long > 0 {
-        println!("Skipped (key > {} bytes): {}", MAX_KEY_LEN, skipped_too_long);
+        println!(
+            "Skipped (key > {} bytes): {}",
+            MAX_KEY_LEN, skipped_too_long
+        );
     }
     println!();
 
     let primary_fst: fst_index::FstIndex<PrimaryValue> =
         fst_index::FstIndex::build(primary_entries).expect("failed to build primary FST");
-    let primary_packed =
-        split_fst::pack(&primary_fst, ZSTD_LEVEL).expect("pack primary");
+    let primary_packed = split_fst::pack(&primary_fst, ZSTD_LEVEL).expect("pack primary");
 
     println!("=== Primary FST ===");
     println!("  Keys:     {}", primary_fst.len());
@@ -338,13 +348,14 @@ fn main() {
     // Build HC FSTs in parallel — each field's FST is independent
     let mut hc_chunks: Vec<(u16, String, Vec<u8>)> = hc_field_data
         .into_par_iter()
-        .map(|(chunk_idx, field_name, fst_entries): (u16, String, Vec<(Key, u64)>)| {
-            let hc_fst: fst_index::FstIndex<u64> =
-                fst_index::FstIndex::build(fst_entries).expect("failed to build HC FST");
-            let packed =
-                split_fst::pack(&hc_fst, ZSTD_LEVEL).expect("pack HC FST");
-            (chunk_idx, field_name, packed)
-        })
+        .map(
+            |(chunk_idx, field_name, fst_entries): (u16, String, Vec<(Key, u64)>)| {
+                let hc_fst: fst_index::FstIndex<u64> =
+                    fst_index::FstIndex::build(fst_entries).expect("failed to build HC FST");
+                let packed = split_fst::pack(&hc_fst, ZSTD_LEVEL).expect("pack HC FST");
+                (chunk_idx, field_name, packed)
+            },
+        )
         .collect();
 
     // Sort by chunk index (par_iter may reorder)
@@ -429,13 +440,9 @@ fn main() {
 
     println!("  Num chunks: {}", reader.chunk_count());
 
-    let primary_read: fst_index::FstIndex<PrimaryValue> =
-        reader.primary().expect("read primary");
+    let primary_read: fst_index::FstIndex<PrimaryValue> = reader.primary().expect("read primary");
 
-    println!(
-        "  Primary FST: {} keys",
-        primary_read.len(),
-    );
+    println!("  Primary FST: {} keys", primary_read.len(),);
 
     // Demonstrate targeted access: look up a high-card field
     if let Some((idx, field, _)) = hc_chunks.first() {
@@ -445,14 +452,8 @@ fn main() {
         }
 
         // Step B: load + decompress just that field's HC chunk
-        let hc_fst: fst_index::FstIndex<u64> =
-            reader.chunk(*idx).expect("read HC chunk");
-        println!(
-            "  HC[{}] '{}': {} keys",
-            idx,
-            field,
-            hc_fst.len(),
-        );
+        let hc_fst: fst_index::FstIndex<u64> = reader.chunk(*idx).expect("read HC chunk");
+        println!("  HC[{}] '{}': {} keys", idx, field, hc_fst.len(),);
 
         // Step C: sample lookup in HC FST
         let mut sample_shown = 0;
@@ -487,10 +488,7 @@ fn main() {
     }
 
     let read_elapsed = t_read.elapsed();
-    println!(
-        "  Read time:  {:.1}ms",
-        read_elapsed.as_secs_f64() * 1000.0
-    );
+    println!("  Read time:  {:.1}ms", read_elapsed.as_secs_f64() * 1000.0);
     println!();
 
     // ── Step 9: Size comparison ─────────────────────────────────────────
@@ -511,9 +509,7 @@ fn main() {
         file_size as f64 / 1024.0
     );
     println!();
-    println!(
-        "  For a targeted query on a single field, only the primary chunk"
-    );
+    println!("  For a targeted query on a single field, only the primary chunk");
     println!(
         "  ({:.1} KiB) + one HC chunk need to be loaded, vs the full {:.1} KiB.",
         primary_packed.len() as f64 / 1024.0,

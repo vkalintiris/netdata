@@ -24,10 +24,7 @@ impl Bitmap {
     }
 
     /// Create a bitmap from a sorted iterator of entry indices.
-    pub fn from_sorted_iter<I: IntoIterator<Item = u32>>(
-        iterator: I,
-        universe_size: u32,
-    ) -> Self {
+    pub fn from_sorted_iter<I: IntoIterator<Item = u32>>(iterator: I, universe_size: u32) -> Self {
         Bitmap(treight::Bitmap::from_sorted_iter(
             iterator.into_iter(),
             universe_size,

@@ -5,14 +5,14 @@ mod config;
 pub use config::{Config, RetentionPolicy, RotationPolicy};
 
 use crate::{Result, WriterError};
-use journal_common::{RealtimeClock, load_boot_id, load_hostname, load_machine_id, monotonic_now};
 use cardinality_estimator::CardinalityEstimator;
+use journal_common::{RealtimeClock, load_boot_id, load_hostname, load_machine_id, monotonic_now};
 use journal_core::collections::HashMap;
 use journal_core::field_map::{
     CARDINALITY_MARKER, FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
 };
 use journal_core::file::mmap::MmapMut;
-use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter};
+use journal_core::file::{CreateJournalFile, HashTableConfig, JournalFile, JournalWriter};
 use journal_registry::repository;
 use std::path::{Path, PathBuf};
 
@@ -114,12 +114,14 @@ impl ActiveFile {
 
         let repository_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
 
-        let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
+        let mut journal_file = CreateJournalFile::new(chain.machine_id, boot_id, seqnum_id)
             .with_window_size(8 * 1024 * 1024)
-            .with_optimized_buckets(None, max_file_size)
-            .with_keyed_hash(true);
-
-        let mut journal_file = JournalFile::create(&repository_file, options)?;
+            .with_hash_tables(HashTableConfig::Optimized {
+                previous_utilization: None,
+                max_file_size,
+            })
+            .with_keyed_hash(true)
+            .create(&repository_file)?;
         let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
 
         Ok(Self {
@@ -206,8 +208,7 @@ impl Log {
         let boot_id = load_boot_id()?;
         let machine_id = load_machine_id()
             .map_err(|e| WriterError::MachineId(format!("failed to load machine ID: {}", e)))?;
-        let hostname = load_hostname()
-            .map_err(|e| WriterError::Io(e))?;
+        let hostname = load_hostname().map_err(|e| WriterError::Io(e))?;
         let seqnum_id = uuid::Uuid::new_v4();
         let rotation_state = RotationState::new(&config.rotation_policy);
 
@@ -367,7 +368,10 @@ impl Log {
     /// ND_<md5_1>=<otel_key_1>
     /// ND_<md5_2>=<otel_key_2>
     /// ...
-    fn write_remapping_entry(&mut self, mappings: &[(Vec<u8>, arrayvec::ArrayString<64>)]) -> Result<()> {
+    fn write_remapping_entry(
+        &mut self,
+        mappings: &[(Vec<u8>, arrayvec::ArrayString<64>)],
+    ) -> Result<()> {
         let mut remapping_items: Vec<Vec<u8>> = Vec::with_capacity(mappings.len() + 4);
 
         // Inject system fields first (matching systemd journald behavior)

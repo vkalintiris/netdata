@@ -147,7 +147,10 @@ mod tests {
 
     #[test]
     fn remap_resource_attributes_prefix() {
-        assert_eq!(remap(b"resource.attributes.host.name").as_str(), "ND3AE_RA_HOST_NAME");
+        assert_eq!(
+            remap(b"resource.attributes.host.name").as_str(),
+            "ND3AE_RA_HOST_NAME"
+        );
     }
 
     #[test]
@@ -178,7 +181,9 @@ mod tests {
 
     #[test]
     fn remap_exceeding_64_bytes_falls_back_to_md5() {
-        let result = remap(b"very.long.deeply.nested.field.name.that.would.definitely.exceed.the.systemd.limit");
+        let result = remap(
+            b"very.long.deeply.nested.field.name.that.would.definitely.exceed.the.systemd.limit",
+        );
         assert!(result.starts_with("ND_"));
         assert!(result.len() <= 64);
     }
@@ -210,17 +215,26 @@ mod tests {
             (b"log.body.ClientHost", "NDK5AAO_LB_CLIENTHOST"),
             (b"log.body.ClientPort", "NDLSAAO_LB_CLIENTPORT"),
             (b"log.body.ClientUsername", "ND56AAO_LB_CLIENTUSERNAME"),
-            (b"log.body.DownstreamContentSize", "NDILAAO_LB_DOWNSTREAMCONTENTSIZE"),
+            (
+                b"log.body.DownstreamContentSize",
+                "NDILAAO_LB_DOWNSTREAMCONTENTSIZE",
+            ),
             (b"log.body.DownstreamStatus", "NDL5AAO_LB_DOWNSTREAMSTATUS"),
             (b"log.body.Duration", "NDSNAAO_LB_DURATION"),
             (b"log.body.GzipRatio", "NDPPAAO_LB_GZIPRATIO"),
             (b"log.body.HOSTNAME", "NDAAT_LB_HOSTNAME"),
-            (b"log.body.OriginContentSize", "ND1UAAO_LB_ORIGINCONTENTSIZE"),
+            (
+                b"log.body.OriginContentSize",
+                "ND1UAAO_LB_ORIGINCONTENTSIZE",
+            ),
             (b"log.body.OriginDuration", "NDGJAAO_LB_ORIGINDURATION"),
             (b"log.body.OriginStatus", "NDMOAAO_LB_ORIGINSTATUS"),
             (b"log.body.Overhead", "NDSMAAO_LB_OVERHEAD"),
             (b"log.body.RequestAddr", "NDYLAAO_LB_REQUESTADDR"),
-            (b"log.body.RequestContentSize", "NDI9AAO_LB_REQUESTCONTENTSIZE"),
+            (
+                b"log.body.RequestContentSize",
+                "NDI9AAO_LB_REQUESTCONTENTSIZE",
+            ),
             (b"log.body.RequestCount", "NDWNAAO_LB_REQUESTCOUNT"),
             (b"log.body.RequestHost", "NDFFAAO_LB_REQUESTHOST"),
             (b"log.body.RequestMethod", "NDQLAAO_LB_REQUESTMETHOD"),
@@ -246,8 +260,14 @@ mod tests {
             (b"log.body.actconn", "NDAAE_LB_ACTCONN"),
             (b"log.body.action", "NDAAE_LB_ACTION"),
             (b"log.body.agent", "NDAAE_LB_AGENT"),
-            (b"log.body.agents_missing_from_emqx", "NDAA3BE_LB_AGENTS_MISSING_FROM_EMQX"),
-            (b"log.body.agents_unreachable_postgres_disconnected", "NDAA3BE_LB_AGENTS_UNREACHABLE_POSTGRES_DISCONNECTED"),
+            (
+                b"log.body.agents_missing_from_emqx",
+                "NDAA3BE_LB_AGENTS_MISSING_FROM_EMQX",
+            ),
+            (
+                b"log.body.agents_unreachable_postgres_disconnected",
+                "NDAA3BE_LB_AGENTS_UNREACHABLE_POSTGRES_DISCONNECTED",
+            ),
             (b"log.body.apiVersion", "ND2UAAJ_LB_APIVERSION"),
             (b"log.body.arn", "NDAAE_LB_ARN"),
             (b"log.body.authority", "NDAAE_LB_AUTHORITY"),
@@ -260,11 +280,17 @@ mod tests {
             (b"log.body.cf_conn_ip", "NDAABBE_LB_CF_CONN_IP"),
             (b"log.body.client_ip", "NDAABE_LB_CLIENT_IP"),
             (b"log.body.client_port", "NDAABE_LB_CLIENT_PORT"),
-            (b"log.body.config_file_source", "NDAABBE_LB_CONFIG_FILE_SOURCE"),
+            (
+                b"log.body.config_file_source",
+                "NDAABBE_LB_CONFIG_FILE_SOURCE",
+            ),
             (b"log.body.count", "NDAAE_LB_COUNT"),
             (b"log.body.date_time", "NDAABE_LB_DATE_TIME"),
             (b"log.body.duration", "NDAAE_LB_DURATION"),
-            (b"log.body.emqx_client_id_count", "NDAA3BE_LB_EMQX_CLIENT_ID_COUNT"),
+            (
+                b"log.body.emqx_client_id_count",
+                "NDAA3BE_LB_EMQX_CLIENT_ID_COUNT",
+            ),
             (b"log.body.entryPointName", "NDQDAAJ_LB_ENTRYPOINTNAME"),
             (b"log.body.err", "NDAAE_LB_ERR"),
             (b"log.body.error", "NDAAE_LB_ERROR"),
@@ -276,14 +302,32 @@ mod tests {
             (b"log.body.fields.error", "ND3AE_LB_FIELDS_ERROR"),
             (b"log.body.fields.interval", "ND3AE_LB_FIELDS_INTERVAL"),
             (b"log.body.fields.metrics", "ND3AE_LB_FIELDS_METRICS"),
-            (b"log.body.fields.otelcol.component.id", "ND5AE_LB_FIELDS_OTELCOL_COMPONENT_ID"),
-            (b"log.body.fields.otelcol.component.kind", "ND5AE_LB_FIELDS_OTELCOL_COMPONENT_KIND"),
-            (b"log.body.fields.otelcol.signal", "ND4AE_LB_FIELDS_OTELCOL_SIGNAL"),
+            (
+                b"log.body.fields.otelcol.component.id",
+                "ND5AE_LB_FIELDS_OTELCOL_COMPONENT_ID",
+            ),
+            (
+                b"log.body.fields.otelcol.component.kind",
+                "ND5AE_LB_FIELDS_OTELCOL_COMPONENT_KIND",
+            ),
+            (
+                b"log.body.fields.otelcol.signal",
+                "ND4AE_LB_FIELDS_OTELCOL_SIGNAL",
+            ),
             (b"log.body.fields.path", "ND3AE_LB_FIELDS_PATH"),
             (b"log.body.fields.resource", "ND3AE_LB_FIELDS_RESOURCE"),
-            (b"log.body.fields.resource.service.instance.id", "ND6AE_LB_FIELDS_RESOURCE_SERVICE_INSTANCE_ID"),
-            (b"log.body.fields.resource.service.name", "ND5AE_LB_FIELDS_RESOURCE_SERVICE_NAME"),
-            (b"log.body.fields.resource.service.version", "ND5AE_LB_FIELDS_RESOURCE_SERVICE_VERSION"),
+            (
+                b"log.body.fields.resource.service.instance.id",
+                "ND6AE_LB_FIELDS_RESOURCE_SERVICE_INSTANCE_ID",
+            ),
+            (
+                b"log.body.fields.resource.service.name",
+                "ND5AE_LB_FIELDS_RESOURCE_SERVICE_NAME",
+            ),
+            (
+                b"log.body.fields.resource.service.version",
+                "ND5AE_LB_FIELDS_RESOURCE_SERVICE_VERSION",
+            ),
             (b"log.body.fields_raw", "NDAABE_LB_FIELDS_RAW"),
             (b"log.body.file", "NDAAE_LB_FILE"),
             (b"log.body.firstTimestamp", "ND3KAAJ_LB_FIRSTTIMESTAMP"),
@@ -295,13 +339,34 @@ mod tests {
             (b"log.body.http_uri", "NDAABE_LB_HTTP_URI"),
             (b"log.body.http_version", "NDAABE_LB_HTTP_VERSION"),
             (b"log.body.id", "NDAAE_LB_ID"),
-            (b"log.body.involvedObject.apiVersion", "NDJRAAFJ_LB_INVOLVEDOBJECT_APIVERSION"),
-            (b"log.body.involvedObject.fieldPath", "NDWCAAFJ_LB_INVOLVEDOBJECT_FIELDPATH"),
-            (b"log.body.involvedObject.kind", "NDBFAAFE_LB_INVOLVEDOBJECT_KIND"),
-            (b"log.body.involvedObject.name", "NDVXAAFE_LB_INVOLVEDOBJECT_NAME"),
-            (b"log.body.involvedObject.namespace", "ND9BAAFE_LB_INVOLVEDOBJECT_NAMESPACE"),
-            (b"log.body.involvedObject.resourceVersion", "NDCVAAFJ_LB_INVOLVEDOBJECT_RESOURCEVERSION"),
-            (b"log.body.involvedObject.uid", "NDPUAAFE_LB_INVOLVEDOBJECT_UID"),
+            (
+                b"log.body.involvedObject.apiVersion",
+                "NDJRAAFJ_LB_INVOLVEDOBJECT_APIVERSION",
+            ),
+            (
+                b"log.body.involvedObject.fieldPath",
+                "NDWCAAFJ_LB_INVOLVEDOBJECT_FIELDPATH",
+            ),
+            (
+                b"log.body.involvedObject.kind",
+                "NDBFAAFE_LB_INVOLVEDOBJECT_KIND",
+            ),
+            (
+                b"log.body.involvedObject.name",
+                "NDVXAAFE_LB_INVOLVEDOBJECT_NAME",
+            ),
+            (
+                b"log.body.involvedObject.namespace",
+                "ND9BAAFE_LB_INVOLVEDOBJECT_NAMESPACE",
+            ),
+            (
+                b"log.body.involvedObject.resourceVersion",
+                "NDCVAAFJ_LB_INVOLVEDOBJECT_RESOURCEVERSION",
+            ),
+            (
+                b"log.body.involvedObject.uid",
+                "NDPUAAFE_LB_INVOLVEDOBJECT_UID",
+            ),
             (b"log.body.job_type", "NDAABE_LB_JOB_TYPE"),
             (b"log.body.kind", "NDAAE_LB_KIND"),
             (b"log.body.lastTimestamp", "NDO1AAJ_LB_LASTTIMESTAMP"),
@@ -312,10 +377,19 @@ mod tests {
             (b"log.body.local_addr.Zone", "NDNGAABAO_LB_LOCAL_ADDR_ZONE"),
             (b"log.body.logger", "NDAAE_LB_LOGGER"),
             (b"log.body.message", "NDAAE_LB_MESSAGE"),
-            (b"log.body.metadata.creationTimestamp", "NDN83AJ_LB_METADATA_CREATIONTIMESTAMP"),
+            (
+                b"log.body.metadata.creationTimestamp",
+                "NDN83AJ_LB_METADATA_CREATIONTIMESTAMP",
+            ),
             (b"log.body.metadata.name", "ND3AE_LB_METADATA_NAME"),
-            (b"log.body.metadata.namespace", "ND3AE_LB_METADATA_NAMESPACE"),
-            (b"log.body.metadata.resourceVersion", "NDZJ3AJ_LB_METADATA_RESOURCEVERSION"),
+            (
+                b"log.body.metadata.namespace",
+                "ND3AE_LB_METADATA_NAMESPACE",
+            ),
+            (
+                b"log.body.metadata.resourceVersion",
+                "NDZJ3AJ_LB_METADATA_RESOURCEVERSION",
+            ),
             (b"log.body.metadata.uid", "ND3AE_LB_METADATA_UID"),
             (b"log.body.method", "NDAAE_LB_METHOD"),
             (b"log.body.msg", "NDAAE_LB_MSG"),
@@ -328,42 +402,114 @@ mod tests {
             (b"log.body.referer", "NDAAE_LB_REFERER"),
             (b"log.body.referrer", "NDAAE_LB_REFERRER"),
             (b"log.body.region", "NDAAE_LB_REGION"),
-            (b"log.body.remote_addr.ForceQuery", "NDYBAABAO_LB_REMOTE_ADDR_FORCEQUERY"),
-            (b"log.body.remote_addr.Fragment", "ND19AABAO_LB_REMOTE_ADDR_FRAGMENT"),
-            (b"log.body.remote_addr.Host", "ND7WAABAO_LB_REMOTE_ADDR_HOST"),
-            (b"log.body.remote_addr.OmitHost", "NDJ1AABAO_LB_REMOTE_ADDR_OMITHOST"),
-            (b"log.body.remote_addr.Opaque", "NDZMAABAO_LB_REMOTE_ADDR_OPAQUE"),
-            (b"log.body.remote_addr.Path", "NDL9AABAO_LB_REMOTE_ADDR_PATH"),
-            (b"log.body.remote_addr.RawFragment", "NDVKAABAO_LB_REMOTE_ADDR_RAWFRAGMENT"),
-            (b"log.body.remote_addr.RawPath", "NDSLAABAO_LB_REMOTE_ADDR_RAWPATH"),
-            (b"log.body.remote_addr.RawQuery", "NDI4AABAO_LB_REMOTE_ADDR_RAWQUERY"),
-            (b"log.body.remote_addr.Scheme", "ND6LAABAO_LB_REMOTE_ADDR_SCHEME"),
-            (b"log.body.remote_addr.User", "NDPJAABAO_LB_REMOTE_ADDR_USER"),
-            (b"log.body.reportingComponent", "ND16AAJ_LB_REPORTINGCOMPONENT"),
-            (b"log.body.reportingInstance", "ND59AAJ_LB_REPORTINGINSTANCE"),
+            (
+                b"log.body.remote_addr.ForceQuery",
+                "NDYBAABAO_LB_REMOTE_ADDR_FORCEQUERY",
+            ),
+            (
+                b"log.body.remote_addr.Fragment",
+                "ND19AABAO_LB_REMOTE_ADDR_FRAGMENT",
+            ),
+            (
+                b"log.body.remote_addr.Host",
+                "ND7WAABAO_LB_REMOTE_ADDR_HOST",
+            ),
+            (
+                b"log.body.remote_addr.OmitHost",
+                "NDJ1AABAO_LB_REMOTE_ADDR_OMITHOST",
+            ),
+            (
+                b"log.body.remote_addr.Opaque",
+                "NDZMAABAO_LB_REMOTE_ADDR_OPAQUE",
+            ),
+            (
+                b"log.body.remote_addr.Path",
+                "NDL9AABAO_LB_REMOTE_ADDR_PATH",
+            ),
+            (
+                b"log.body.remote_addr.RawFragment",
+                "NDVKAABAO_LB_REMOTE_ADDR_RAWFRAGMENT",
+            ),
+            (
+                b"log.body.remote_addr.RawPath",
+                "NDSLAABAO_LB_REMOTE_ADDR_RAWPATH",
+            ),
+            (
+                b"log.body.remote_addr.RawQuery",
+                "NDI4AABAO_LB_REMOTE_ADDR_RAWQUERY",
+            ),
+            (
+                b"log.body.remote_addr.Scheme",
+                "ND6LAABAO_LB_REMOTE_ADDR_SCHEME",
+            ),
+            (
+                b"log.body.remote_addr.User",
+                "NDPJAABAO_LB_REMOTE_ADDR_USER",
+            ),
+            (
+                b"log.body.reportingComponent",
+                "ND16AAJ_LB_REPORTINGCOMPONENT",
+            ),
+            (
+                b"log.body.reportingInstance",
+                "ND59AAJ_LB_REPORTINGINSTANCE",
+            ),
             (b"log.body.request-id", "NDAACE_LB_REQUEST_ID"),
             (b"log.body.request.host", "ND3AE_LB_REQUEST_HOST"),
             (b"log.body.request.method", "ND3AE_LB_REQUEST_METHOD"),
             (b"log.body.request.proto", "ND3AE_LB_REQUEST_PROTO"),
             (b"log.body.request.remote_ip", "ND3ABE_LB_REQUEST_REMOTE_IP"),
-            (b"log.body.request.remote_port", "ND3ABE_LB_REQUEST_REMOTE_PORT"),
+            (
+                b"log.body.request.remote_port",
+                "ND3ABE_LB_REQUEST_REMOTE_PORT",
+            ),
             (b"log.body.request.uri", "ND3AE_LB_REQUEST_URI"),
-            (b"log.body.request_User-Agent", "NDI9AABMO_LB_REQUEST_USER_AGENT"),
+            (
+                b"log.body.request_User-Agent",
+                "NDI9AABMO_LB_REQUEST_USER_AGENT",
+            ),
             (b"log.body.response-code", "NDAACE_LB_RESPONSE_CODE"),
-            (b"log.body.response-code-details", "NDAACCE_LB_RESPONSE_CODE_DETAILS"),
+            (
+                b"log.body.response-code-details",
+                "NDAACCE_LB_RESPONSE_CODE_DETAILS",
+            ),
             (b"log.body.retries", "NDAAE_LB_RETRIES"),
             (b"log.body.server_name", "NDAABE_LB_SERVER_NAME"),
             (b"log.body.service", "NDAAE_LB_SERVICE"),
-            (b"log.body.serviceURL.ForceQuery", "NDCRAADPO_LB_SERVICEURL_FORCEQUERY"),
-            (b"log.body.serviceURL.Fragment", "ND7HAADPO_LB_SERVICEURL_FRAGMENT"),
+            (
+                b"log.body.serviceURL.ForceQuery",
+                "NDCRAADPO_LB_SERVICEURL_FORCEQUERY",
+            ),
+            (
+                b"log.body.serviceURL.Fragment",
+                "ND7HAADPO_LB_SERVICEURL_FRAGMENT",
+            ),
             (b"log.body.serviceURL.Host", "ND32AADPO_LB_SERVICEURL_HOST"),
-            (b"log.body.serviceURL.OmitHost", "ND4RAADPO_LB_SERVICEURL_OMITHOST"),
-            (b"log.body.serviceURL.Opaque", "NDL3AADPO_LB_SERVICEURL_OPAQUE"),
+            (
+                b"log.body.serviceURL.OmitHost",
+                "ND4RAADPO_LB_SERVICEURL_OMITHOST",
+            ),
+            (
+                b"log.body.serviceURL.Opaque",
+                "NDL3AADPO_LB_SERVICEURL_OPAQUE",
+            ),
             (b"log.body.serviceURL.Path", "ND00AADPO_LB_SERVICEURL_PATH"),
-            (b"log.body.serviceURL.RawFragment", "NDWDAADPO_LB_SERVICEURL_RAWFRAGMENT"),
-            (b"log.body.serviceURL.RawPath", "ND34AADPO_LB_SERVICEURL_RAWPATH"),
-            (b"log.body.serviceURL.RawQuery", "NDOGAADPO_LB_SERVICEURL_RAWQUERY"),
-            (b"log.body.serviceURL.Scheme", "NDR5AADPO_LB_SERVICEURL_SCHEME"),
+            (
+                b"log.body.serviceURL.RawFragment",
+                "NDWDAADPO_LB_SERVICEURL_RAWFRAGMENT",
+            ),
+            (
+                b"log.body.serviceURL.RawPath",
+                "ND34AADPO_LB_SERVICEURL_RAWPATH",
+            ),
+            (
+                b"log.body.serviceURL.RawQuery",
+                "NDOGAADPO_LB_SERVICEURL_RAWQUERY",
+            ),
+            (
+                b"log.body.serviceURL.Scheme",
+                "NDR5AADPO_LB_SERVICEURL_SCHEME",
+            ),
             (b"log.body.serviceURL.User", "NDRYAADPO_LB_SERVICEURL_USER"),
             (b"log.body.session_id", "NDAABE_LB_SESSION_ID"),
             (b"log.body.severity", "NDAAE_LB_SEVERITY"),
@@ -385,35 +531,83 @@ mod tests {
             (b"log.body.ts", "NDAAE_LB_TS"),
             (b"log.body.type", "NDAAE_LB_TYPE"),
             (b"log.body.unique_id", "NDAABE_LB_UNIQUE_ID"),
-            (b"log.body.unreachable_agents_cleaned", "NDAABBE_LB_UNREACHABLE_AGENTS_CLEANED"),
+            (
+                b"log.body.unreachable_agents_cleaned",
+                "NDAABBE_LB_UNREACHABLE_AGENTS_CLEANED",
+            ),
             (b"log.body.upstream-cluster", "NDAACE_LB_UPSTREAM_CLUSTER"),
             (b"log.body.user-agent", "NDAACE_LB_USER_AGENT"),
             (b"log.body.user_id", "NDAABE_LB_USER_ID"),
             (b"log.body.version", "NDAAE_LB_VERSION"),
-            (b"log.dropped_attributes_count", "NDABBE_LOG_DROPPED_ATTRIBUTES_COUNT"),
+            (
+                b"log.dropped_attributes_count",
+                "NDABBE_LOG_DROPPED_ATTRIBUTES_COUNT",
+            ),
             (b"log.event_name", "NDABE_LOG_EVENT_NAME"),
             (b"log.flags", "NDAE_LOG_FLAGS"),
-            (b"log.observed_time_unix_nano", "NDA3BE_LOG_OBSERVED_TIME_UNIX_NANO"),
+            (
+                b"log.observed_time_unix_nano",
+                "NDA3BE_LOG_OBSERVED_TIME_UNIX_NANO",
+            ),
             (b"log.severity_number", "NDABE_LOG_SEVERITY_NUMBER"),
             (b"log.severity_text", "NDABE_LOG_SEVERITY_TEXT"),
             (b"log.time_unix_nano", "NDABBE_LOG_TIME_UNIX_NANO"),
-            (b"my.deeply.nested.key.checks.run.length.encoding.works.well", "ND9AE_MY_DEEPLY_NESTED_KEY_CHECKS_RUN_LENGTH_ENCODING_WORKS_WELL"),
+            (
+                b"my.deeply.nested.key.checks.run.length.encoding.works.well",
+                "ND9AE_MY_DEEPLY_NESTED_KEY_CHECKS_RUN_LENGTH_ENCODING_WORKS_WELL",
+            ),
             (b"resource.attributes.app", "NDAAE_RA_APP"),
             (b"resource.attributes.component", "NDAAE_RA_COMPONENT"),
             (b"resource.attributes.host.name", "ND3AE_RA_HOST_NAME"),
-            (b"resource.attributes.k8s.container.name", "NDGKAAFAE_RA_K8S_CONTAINER_NAME"),
-            (b"resource.attributes.k8s.container.restart_count", "NDMIAAFABE_RA_K8S_CONTAINER_RESTART_COUNT"),
-            (b"resource.attributes.k8s.cronjob.name", "ND6OAAFAE_RA_K8S_CRONJOB_NAME"),
-            (b"resource.attributes.k8s.daemonset.name", "NDRJAAFAE_RA_K8S_DAEMONSET_NAME"),
-            (b"resource.attributes.k8s.deployment.name", "NDK6AAFAE_RA_K8S_DEPLOYMENT_NAME"),
-            (b"resource.attributes.k8s.job.name", "NDNSAAFAE_RA_K8S_JOB_NAME"),
-            (b"resource.attributes.k8s.namespace.name", "ND3LAAFAE_RA_K8S_NAMESPACE_NAME"),
-            (b"resource.attributes.k8s.node.name", "NDNXAAFAE_RA_K8S_NODE_NAME"),
-            (b"resource.attributes.k8s.pod.name", "NDZ7AAFAE_RA_K8S_POD_NAME"),
-            (b"resource.attributes.k8s.pod.start_time", "NDYNAAFABE_RA_K8S_POD_START_TIME"),
-            (b"resource.attributes.k8s.pod.uid", "NDOCAAFAE_RA_K8S_POD_UID"),
+            (
+                b"resource.attributes.k8s.container.name",
+                "NDGKAAFAE_RA_K8S_CONTAINER_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.container.restart_count",
+                "NDMIAAFABE_RA_K8S_CONTAINER_RESTART_COUNT",
+            ),
+            (
+                b"resource.attributes.k8s.cronjob.name",
+                "ND6OAAFAE_RA_K8S_CRONJOB_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.daemonset.name",
+                "NDRJAAFAE_RA_K8S_DAEMONSET_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.deployment.name",
+                "NDK6AAFAE_RA_K8S_DEPLOYMENT_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.job.name",
+                "NDNSAAFAE_RA_K8S_JOB_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.namespace.name",
+                "ND3LAAFAE_RA_K8S_NAMESPACE_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.node.name",
+                "NDNXAAFAE_RA_K8S_NODE_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.pod.name",
+                "NDZ7AAFAE_RA_K8S_POD_NAME",
+            ),
+            (
+                b"resource.attributes.k8s.pod.start_time",
+                "NDYNAAFABE_RA_K8S_POD_START_TIME",
+            ),
+            (
+                b"resource.attributes.k8s.pod.uid",
+                "NDOCAAFAE_RA_K8S_POD_UID",
+            ),
             (b"resource.attributes.os.type", "ND3AE_RA_OS_TYPE"),
-            (b"resource.attributes.service.instance.environment.region.zone", "ND6AE_RA_SERVICE_INSTANCE_ENVIRONMENT_REGION_ZONE"),
+            (
+                b"resource.attributes.service.instance.environment.region.zone",
+                "ND6AE_RA_SERVICE_INSTANCE_ENVIRONMENT_REGION_ZONE",
+            ),
             (b"resource.schema_url", "NDABE_RESOURCE_SCHEMA_URL"),
         ];
 

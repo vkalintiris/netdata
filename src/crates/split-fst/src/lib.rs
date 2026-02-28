@@ -37,8 +37,8 @@
 //! ```
 
 use fst_index::FstIndex;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::io::Write;
 
 const MAGIC: &[u8; 4] = b"SFST";
@@ -162,7 +162,10 @@ impl Writer {
             chunk_writer.write_all(chunk)?;
         }
 
-        assert!(chunk_writer.next_chunk().is_none(), "unexpected extra chunk");
+        assert!(
+            chunk_writer.next_chunk().is_none(),
+            "unexpected extra chunk"
+        );
         chunk_writer.into_inner();
         w.flush()?;
         Ok(())
@@ -284,10 +287,8 @@ mod tests {
         ])
         .unwrap();
 
-        let chunk0: FstIndex<u64> =
-            FstIndex::build([("val1", 100u64), ("val2", 200)]).unwrap();
-        let chunk1: FstIndex<u64> =
-            FstIndex::build([("x", 10u64), ("y", 20), ("z", 30)]).unwrap();
+        let chunk0: FstIndex<u64> = FstIndex::build([("val1", 100u64), ("val2", 200)]).unwrap();
+        let chunk1: FstIndex<u64> = FstIndex::build([("x", 10u64), ("y", 20), ("z", 30)]).unwrap();
 
         let mut writer = Writer::new();
         writer.set_primary(pack(&primary, 1).unwrap());
@@ -328,6 +329,9 @@ mod tests {
     #[test]
     fn error_on_short_file() {
         let data = b"SFST";
-        assert!(matches!(Reader::open(data), Err(Error::FileTooShort(4, 12))));
+        assert!(matches!(
+            Reader::open(data),
+            Err(Error::FileTooShort(4, 12))
+        ));
     }
 }

@@ -12,9 +12,9 @@
 //! Usage:
 //!   cargo run --release --example fst_cardinality -- <journal-file> [--max-cardinality N]
 
-use journal_core::file::file::JournalFile;
-use journal_core::file::mmap::Mmap;
 use journal_core::file::HashableObject;
+use journal_core::file::file::{JournalFile, OpenJournalFile};
+use journal_core::file::mmap::Mmap;
 use journal_registry::repository::File;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -38,8 +38,7 @@ enum IndexValue {
 fn report_zstd(label: &str, data: &[u8]) {
     for level in [1, 9] {
         let t = Instant::now();
-        let compressed =
-            zstd::encode_all(data, level).expect("zstd compress failed");
+        let compressed = zstd::encode_all(data, level).expect("zstd compress failed");
         let elapsed = t.elapsed();
         let ratio = data.len() as f64 / compressed.len() as f64;
         println!(
@@ -73,13 +72,18 @@ fn main() {
     });
 
     let window_size = 32 * 1024 * 1024;
-    let journal_file = JournalFile::<Mmap>::open(&file, window_size).unwrap_or_else(|e| {
-        eprintln!("Failed to open journal file: {:#?}", e);
-        std::process::exit(1);
-    });
+    let journal_file: JournalFile<Mmap> = OpenJournalFile::new(window_size)
+        .load_hash_tables()
+        .open(&file)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to open journal file: {:#?}", e);
+            std::process::exit(1);
+        });
 
     let header = journal_file.journal_header_ref();
-    let tail_object_offset = header.tail_object_offset.expect("missing tail_object_offset");
+    let tail_object_offset = header
+        .tail_object_offset
+        .expect("missing tail_object_offset");
 
     println!("=== Journal File Info ===");
     println!("Path:       {}", journal_path);

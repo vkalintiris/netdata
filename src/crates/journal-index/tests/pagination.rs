@@ -4,7 +4,7 @@
 //! especially in the edge case where many entries share the same timestamp.
 
 use journal_common::Seconds;
-use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter};
+use journal_core::file::{CreateJournalFile, HashTableConfig, JournalWriter};
 use journal_core::repository::File;
 use journal_index::{
     Anchor, Direction, FieldName, FileIndexer, LogQueryParamsBuilder, Microseconds,
@@ -60,9 +60,12 @@ fn create_test_journal(
     let boot_id = Uuid::from_u128(0x11111111_1111_1111_1111_111111111111);
     let seqnum_id = Uuid::from_u128(0x22222222_2222_2222_2222_222222222222);
 
-    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id);
-
-    let mut journal_file = JournalFile::create(&file, options)?;
+    let mut journal_file = CreateJournalFile::new(machine_id, boot_id, seqnum_id)
+        .with_hash_tables(HashTableConfig::Optimized {
+            previous_utilization: None,
+            max_file_size: None,
+        })
+        .create(&file)?;
     let mut writer = JournalWriter::new(&mut journal_file, 1, boot_id)?;
 
     for entry in entries {

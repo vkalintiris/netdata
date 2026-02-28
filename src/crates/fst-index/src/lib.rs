@@ -54,8 +54,7 @@ mod serde_impl {
     impl<'de, T: Deserialize<'de>> Deserialize<'de> for FstIndex<T> {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             let helper = FstIndexHelper::<T>::deserialize(deserializer)?;
-            let map =
-                fst::Map::new(helper.fst_bytes).map_err(serde::de::Error::custom)?;
+            let map = fst::Map::new(helper.fst_bytes).map_err(serde::de::Error::custom)?;
             Ok(FstIndex {
                 map,
                 values: helper.values,
@@ -454,23 +453,14 @@ mod tests {
         });
         assert_eq!(
             collected,
-            vec![
-                (b"a".to_vec(), 1),
-                (b"b".to_vec(), 2),
-                (b"c".to_vec(), 3),
-            ]
+            vec![(b"a".to_vec(), 1), (b"b".to_vec(), 2), (b"c".to_vec(), 3),]
         );
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn serde_round_trip() {
-        let index = FstIndex::build([
-            ("alpha", 1u32),
-            ("beta", 2),
-            ("gamma", 3),
-        ])
-        .unwrap();
+        let index = FstIndex::build([("alpha", 1u32), ("beta", 2), ("gamma", 3)]).unwrap();
 
         let json = serde_json::to_string(&index).unwrap();
         let deserialized: FstIndex<u32> = serde_json::from_str(&json).unwrap();

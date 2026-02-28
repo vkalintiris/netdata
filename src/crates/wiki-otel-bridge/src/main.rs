@@ -17,7 +17,10 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 #[command(about = "Bridges Wikimedia EventStreams events to OTel logs via gRPC")]
 struct Args {
     /// Comma-separated list of stream names (e.g., recentchange,page-create)
-    #[arg(long, default_value = "recentchange,revision-create,mediawiki.revision-tags-change,mediawiki.revision-visibility-change,page-create,page-delete,page-move,page-undelete,page-links-change,page-properties-change")]
+    #[arg(
+        long,
+        default_value = "recentchange,revision-create,mediawiki.revision-tags-change,mediawiki.revision-visibility-change,page-create,page-delete,page-move,page-undelete,page-links-change,page-properties-change"
+    )]
     streams: String,
 
     /// Base URL for Wikimedia EventStreams
@@ -59,9 +62,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn the gRPC sender.
     let flush_interval = Duration::from_millis(args.flush_interval_ms);
-    let mut sender =
-        sender::Sender::new(&args.otel_endpoint, args.batch_size, flush_interval, record_rx)
-            .await?;
+    let mut sender = sender::Sender::new(
+        &args.otel_endpoint,
+        args.batch_size,
+        flush_interval,
+        record_rx,
+    )
+    .await?;
 
     let _sender_handle = tokio::spawn(async move {
         sender.run().await;

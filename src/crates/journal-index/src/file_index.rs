@@ -1,6 +1,6 @@
 use crate::{Bitmap, FieldName, Histogram, IndexError, Microseconds, Result, Seconds};
 use journal_core::collections::{HashMap, HashSet};
-use journal_core::file::{JournalFile, Mmap};
+use journal_core::file::{JournalFile, Mmap, OpenJournalFile};
 use journal_core::repository::File;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -590,7 +590,7 @@ impl FileIndex {
         }
 
         let window_size = 32 * 1024 * 1024;
-        let journal_file = JournalFile::open(file, window_size)?;
+        let journal_file = OpenJournalFile::new(window_size).open(file)?;
 
         // Collect the entry offsets in the bitmap
         // TODO: How should we handle zero offsets?
