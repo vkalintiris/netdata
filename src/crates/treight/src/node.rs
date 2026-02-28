@@ -71,6 +71,15 @@ pub(crate) struct NodeReader<'a> {
     pub(crate) pos: usize,
 }
 
+impl<'a> NodeReader<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
+        Self {
+            nodes: data,
+            pos: 0,
+        }
+    }
+}
+
 impl NodeReader<'_> {
     /// Read the next node and advance the cursor.
     #[inline]

@@ -245,7 +245,7 @@ fn collect_file_stats(path: &str, file_index: &FileIndex) -> FileStats {
     }
 
     for bitmap in fst_idx.values() {
-        if bitmap.0.is_inverted() {
+        if bitmap.is_inverted() {
             stats.inverted_count += 1;
         }
     }

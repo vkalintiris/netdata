@@ -6,9 +6,9 @@ mod raw;
 mod roaring;
 
 #[cfg(test)]
-mod tests_raw;
-#[cfg(test)]
 mod tests_bitmap;
+#[cfg(test)]
+mod tests_raw;
 #[cfg(all(test, feature = "roaring"))]
 mod tests_roaring;
 
@@ -46,8 +46,8 @@ pub fn ceil_log8(universe_size: u32) -> u32 {
 /// ```
 ///
 /// The values **must** be yielded in ascending order (as roaring iterators do).
-/// The result equals the `data().len()` of the `RawBitmap` that would be
-/// built from these values.
+/// The result equals the length of the data that `RawBitmap::from_sorted_iter`
+/// would append for these values.
 pub fn estimate_data_size(universe_size: u32, sorted_values: impl Iterator<Item = u32>) -> usize {
     let levels = ceil_log8(universe_size);
     if levels == 0 {

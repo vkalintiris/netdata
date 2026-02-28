@@ -167,12 +167,7 @@ pub(crate) fn copy_subtree(reader: &mut NodeReader, level: u32, out: &mut Vec<u8
 /// Walks both trees in lockstep. Children present in both are recursed into
 /// (OR-ing leaf bytes). Children unique to one side are bulk-copied. The result
 /// is always non-empty when at least one input subtree is non-empty.
-pub(crate) fn union_subtree(
-    a: &mut NodeReader,
-    b: &mut NodeReader,
-    level: u32,
-    out: &mut Vec<u8>,
-) {
+pub(crate) fn union_subtree(a: &mut NodeReader, b: &mut NodeReader, level: u32, out: &mut Vec<u8>) {
     let node_a = a.next();
     let node_b = b.next();
     let child_level = level - 1;

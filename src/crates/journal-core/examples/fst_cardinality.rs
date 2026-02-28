@@ -29,7 +29,10 @@ use std::time::Instant;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum IndexValue {
     /// Low-cardinality field=value: bitmap of entry indices.
-    Bitmap(treight::Bitmap),
+    Bitmap {
+        desc: treight::Bitmap,
+        data: Vec<u8>,
+    },
     /// High-cardinality field=value: (entry_count, field_cardinality).
     Counts(u64, u64),
 }
@@ -339,12 +342,20 @@ fn main() {
                 total_bitmap_data_bytes +=
                     treight::estimate_data_size(universe_size, scratch_indices.iter().copied());
 
-                let bitmap = treight::Bitmap::from_sorted_iter(
+                let mut bm_data = Vec::new();
+                let desc = treight::Bitmap::from_sorted_iter(
                     scratch_indices.iter().copied(),
                     universe_size,
+                    &mut bm_data,
                 );
 
-                entries.push((key, IndexValue::Bitmap(bitmap)));
+                entries.push((
+                    key,
+                    IndexValue::Bitmap {
+                        desc,
+                        data: bm_data,
+                    },
+                ));
                 bitmap_key_count += 1;
             } else {
                 let entry_count = scratch_offsets

@@ -1,6 +1,6 @@
 use crate::*;
-use proptest::prelude::*;
 use ::roaring::RoaringBitmap;
+use proptest::prelude::*;
 
 /// Maximum universe size for property tests. Kept small enough that
 /// exhaustive membership checks (0..universe) are fast.
@@ -19,18 +19,21 @@ fn arb_bitmap() -> impl Strategy<Value = (u32, Vec<u32>)> {
     })
 }
 
-/// Build both a RawBitmap and a RoaringBitmap from the same values.
-fn make_pair(universe: u32, vals: &[u32]) -> (RawBitmap, RoaringBitmap) {
-    let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
+/// Build both a (RawBitmap, data) and a RoaringBitmap from the same values.
+fn make_pair(universe: u32, vals: &[u32]) -> (RawBitmap, Vec<u8>, RoaringBitmap) {
+    let mut data = Vec::new();
+    let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
     let roaring = RoaringBitmap::from_sorted_iter(vals.iter().copied()).unwrap();
-    (raw, roaring)
+    (raw, data, roaring)
 }
 
-fn make_bitmap(universe_size: u32, values: &[u32]) -> RawBitmap {
+fn make_bitmap(universe_size: u32, values: &[u32]) -> (RawBitmap, Vec<u8>) {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    RawBitmap::from_sorted_iter(sorted.into_iter(), universe_size)
+    let mut data = Vec::new();
+    let bm = RawBitmap::from_sorted_iter(sorted.into_iter(), universe_size, &mut data);
+    (bm, data)
 }
 
 // ===== Construction & queries =====
@@ -38,10 +41,10 @@ fn make_bitmap(universe_size: u32, values: &[u32]) -> RawBitmap {
 proptest! {
     #[test]
     fn contains_matches_roaring((universe, vals) in arb_bitmap()) {
-        let (raw, roaring) = make_pair(universe, &vals);
+        let (raw, data, roaring) = make_pair(universe, &vals);
         for v in 0..universe {
             prop_assert_eq!(
-                raw.contains(v),
+                raw.contains(&data, v),
                 roaring.contains(v),
                 "contains({}) mismatch, universe={}", v, universe
             );
@@ -50,30 +53,31 @@ proptest! {
 
     #[test]
     fn iter_matches_roaring((universe, vals) in arb_bitmap()) {
-        let (raw, roaring) = make_pair(universe, &vals);
-        let raw_vals: Vec<u32> = raw.iter().collect();
+        let (raw, data, roaring) = make_pair(universe, &vals);
+        let raw_vals: Vec<u32> = raw.iter(&data).collect();
         let roaring_vals: Vec<u32> = roaring.iter().collect();
         prop_assert_eq!(raw_vals, roaring_vals);
     }
 
     #[test]
     fn len_matches_roaring((universe, vals) in arb_bitmap()) {
-        let (raw, roaring) = make_pair(universe, &vals);
-        prop_assert_eq!(raw.len(), roaring.len());
+        let (raw, data, roaring) = make_pair(universe, &vals);
+        prop_assert_eq!(raw.len(&data), roaring.len());
     }
 
     #[test]
     fn min_max_match_roaring((universe, vals) in arb_bitmap()) {
-        let (raw, roaring) = make_pair(universe, &vals);
-        prop_assert_eq!(raw.min(), roaring.min());
-        prop_assert_eq!(raw.max(), roaring.max());
+        let (raw, data, roaring) = make_pair(universe, &vals);
+        prop_assert_eq!(raw.min(&data), roaring.min());
+        prop_assert_eq!(raw.max(&data), roaring.max());
     }
 
     #[test]
     fn estimate_data_size_is_exact((universe, vals) in arb_bitmap()) {
         let est = estimate_data_size(universe, vals.iter().copied());
-        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
-        prop_assert_eq!(est, raw.data().len());
+        let mut data = Vec::new();
+        let _raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
+        prop_assert_eq!(est, data.len());
     }
 }
 
@@ -85,14 +89,14 @@ proptest! {
         (universe, vals) in arb_bitmap(),
         extra in proptest::collection::vec(0u32..MAX_UNIVERSE, 0..32),
     ) {
-        let (mut raw, mut roaring) = make_pair(universe, &vals);
+        let (raw, mut data, mut roaring) = make_pair(universe, &vals);
         for v in extra {
             let v = v % universe;
-            raw.insert(v);
+            raw.insert(&mut data, v);
             roaring.insert(v);
         }
 
-        let raw_vals: Vec<u32> = raw.iter().collect();
+        let raw_vals: Vec<u32> = raw.iter(&data).collect();
         let roaring_vals: Vec<u32> = roaring.iter().collect();
         prop_assert_eq!(raw_vals, roaring_vals);
     }
@@ -102,14 +106,14 @@ proptest! {
         (universe, vals) in arb_bitmap(),
         to_remove in proptest::collection::vec(0u32..MAX_UNIVERSE, 0..32),
     ) {
-        let (mut raw, mut roaring) = make_pair(universe, &vals);
+        let (raw, mut data, mut roaring) = make_pair(universe, &vals);
         for v in to_remove {
             let v = v % universe;
-            raw.remove(v);
+            raw.remove(&mut data, v);
             roaring.remove(v);
         }
 
-        let raw_vals: Vec<u32> = raw.iter().collect();
+        let raw_vals: Vec<u32> = raw.iter(&data).collect();
         let roaring_vals: Vec<u32> = roaring.iter().collect();
         prop_assert_eq!(raw_vals, roaring_vals);
     }
@@ -130,13 +134,14 @@ proptest! {
             v
         };
 
-        let (raw_a, roaring_a) = make_pair(universe, &a_vals);
-        let (raw_b, roaring_b) = make_pair(universe, &b_vals);
+        let (raw_a, da, roaring_a) = make_pair(universe, &a_vals);
+        let (raw_b, db, roaring_b) = make_pair(universe, &b_vals);
 
-        let raw_result = &raw_a | &raw_b;
+        let mut out = Vec::new();
+        let raw_result = raw_a.union(&da, &raw_b, &db, &mut out);
         let roaring_result = &roaring_a | &roaring_b;
 
-        let raw_out: Vec<u32> = raw_result.iter().collect();
+        let raw_out: Vec<u32> = raw_result.iter(&out).collect();
         let roaring_out: Vec<u32> = roaring_result.iter().collect();
         prop_assert_eq!(raw_out, roaring_out);
     }
@@ -153,13 +158,14 @@ proptest! {
             v
         };
 
-        let (raw_a, roaring_a) = make_pair(universe, &a_vals);
-        let (raw_b, roaring_b) = make_pair(universe, &b_vals);
+        let (raw_a, da, roaring_a) = make_pair(universe, &a_vals);
+        let (raw_b, db, roaring_b) = make_pair(universe, &b_vals);
 
-        let raw_result = &raw_a & &raw_b;
+        let mut out = Vec::new();
+        let raw_result = raw_a.intersect(&da, &raw_b, &db, &mut out);
         let roaring_result = &roaring_a & &roaring_b;
 
-        let raw_out: Vec<u32> = raw_result.iter().collect();
+        let raw_out: Vec<u32> = raw_result.iter(&out).collect();
         let roaring_out: Vec<u32> = roaring_result.iter().collect();
         prop_assert_eq!(raw_out, roaring_out);
     }
@@ -176,13 +182,14 @@ proptest! {
             v
         };
 
-        let (raw_a, roaring_a) = make_pair(universe, &a_vals);
-        let (raw_b, roaring_b) = make_pair(universe, &b_vals);
+        let (raw_a, da, roaring_a) = make_pair(universe, &a_vals);
+        let (raw_b, db, roaring_b) = make_pair(universe, &b_vals);
 
-        let raw_result = &raw_a - &raw_b;
+        let mut out = Vec::new();
+        let raw_result = raw_a.difference(&da, &raw_b, &db, &mut out);
         let roaring_result = &roaring_a - &roaring_b;
 
-        let raw_out: Vec<u32> = raw_result.iter().collect();
+        let raw_out: Vec<u32> = raw_result.iter(&out).collect();
         let roaring_out: Vec<u32> = roaring_result.iter().collect();
         prop_assert_eq!(raw_out, roaring_out);
     }
@@ -199,13 +206,14 @@ proptest! {
             v
         };
 
-        let (raw_a, roaring_a) = make_pair(universe, &a_vals);
-        let (raw_b, roaring_b) = make_pair(universe, &b_vals);
+        let (raw_a, da, roaring_a) = make_pair(universe, &a_vals);
+        let (raw_b, db, roaring_b) = make_pair(universe, &b_vals);
 
-        let raw_result = &raw_a ^ &raw_b;
+        let mut out = Vec::new();
+        let raw_result = raw_a.symmetric_difference(&da, &raw_b, &db, &mut out);
         let roaring_result = &roaring_a ^ &roaring_b;
 
-        let raw_out: Vec<u32> = raw_result.iter().collect();
+        let raw_out: Vec<u32> = raw_result.iter(&out).collect();
         let roaring_out: Vec<u32> = roaring_result.iter().collect();
         prop_assert_eq!(raw_out, roaring_out);
     }
@@ -222,9 +230,13 @@ proptest! {
             v.dedup();
             v
         };
-        let (a, _) = make_pair(universe, &a_vals);
-        let (b, _) = make_pair(universe, &b_vals);
-        prop_assert_eq!(&a | &b, &b | &a);
+        let (a, da, _) = make_pair(universe, &a_vals);
+        let (b, db, _) = make_pair(universe, &b_vals);
+        let mut out1 = Vec::new();
+        let c1 = a.union(&da, &b, &db, &mut out1);
+        let mut out2 = Vec::new();
+        let c2 = b.union(&db, &a, &da, &mut out2);
+        prop_assert_eq!(c1.iter(&out1).collect::<Vec<_>>(), c2.iter(&out2).collect::<Vec<_>>());
     }
 
     #[test]
@@ -235,9 +247,13 @@ proptest! {
             v.dedup();
             v
         };
-        let (a, _) = make_pair(universe, &a_vals);
-        let (b, _) = make_pair(universe, &b_vals);
-        prop_assert_eq!(&a & &b, &b & &a);
+        let (a, da, _) = make_pair(universe, &a_vals);
+        let (b, db, _) = make_pair(universe, &b_vals);
+        let mut out1 = Vec::new();
+        let c1 = a.intersect(&da, &b, &db, &mut out1);
+        let mut out2 = Vec::new();
+        let c2 = b.intersect(&db, &a, &da, &mut out2);
+        prop_assert_eq!(c1.iter(&out1).collect::<Vec<_>>(), c2.iter(&out2).collect::<Vec<_>>());
     }
 
     #[test]
@@ -248,37 +264,49 @@ proptest! {
             v.dedup();
             v
         };
-        let (a, _) = make_pair(universe, &a_vals);
-        let (b, _) = make_pair(universe, &b_vals);
-        prop_assert_eq!(&a ^ &b, &b ^ &a);
+        let (a, da, _) = make_pair(universe, &a_vals);
+        let (b, db, _) = make_pair(universe, &b_vals);
+        let mut out1 = Vec::new();
+        let c1 = a.symmetric_difference(&da, &b, &db, &mut out1);
+        let mut out2 = Vec::new();
+        let c2 = b.symmetric_difference(&db, &a, &da, &mut out2);
+        prop_assert_eq!(c1.iter(&out1).collect::<Vec<_>>(), c2.iter(&out2).collect::<Vec<_>>());
     }
 
     #[test]
     fn union_with_empty_is_identity((universe, vals) in arb_bitmap()) {
-        let (a, _) = make_pair(universe, &vals);
+        let (a, da, _) = make_pair(universe, &vals);
         let empty = RawBitmap::empty(universe);
-        prop_assert_eq!(&a | &empty, a.clone());
-        prop_assert_eq!(&empty | &a, a);
+        let mut out1 = Vec::new();
+        let c1 = a.union(&da, &empty, &[], &mut out1);
+        prop_assert_eq!(c1.iter(&out1).collect::<Vec<_>>(), a.iter(&da).collect::<Vec<_>>());
+        let mut out2 = Vec::new();
+        let c2 = empty.union(&[], &a, &da, &mut out2);
+        prop_assert_eq!(c2.iter(&out2).collect::<Vec<_>>(), a.iter(&da).collect::<Vec<_>>());
     }
 
     #[test]
     fn intersection_with_empty_is_empty((universe, vals) in arb_bitmap()) {
-        let (a, _) = make_pair(universe, &vals);
+        let (a, da, _) = make_pair(universe, &vals);
         let empty = RawBitmap::empty(universe);
-        prop_assert!((&a & &empty).is_empty());
-        prop_assert!((&empty & &a).is_empty());
+        let mut out = Vec::new();
+        prop_assert!(a.intersect(&da, &empty, &[], &mut out).is_empty(&out));
+        out.clear();
+        prop_assert!(empty.intersect(&[], &a, &da, &mut out).is_empty(&out));
     }
 
     #[test]
     fn difference_with_self_is_empty((universe, vals) in arb_bitmap()) {
-        let (a, _) = make_pair(universe, &vals);
-        prop_assert!((&a - &a).is_empty());
+        let (a, da, _) = make_pair(universe, &vals);
+        let mut out = Vec::new();
+        prop_assert!(a.difference(&da, &a, &da, &mut out).is_empty(&out));
     }
 
     #[test]
     fn xor_with_self_is_empty((universe, vals) in arb_bitmap()) {
-        let (a, _) = make_pair(universe, &vals);
-        prop_assert!((&a ^ &a).is_empty());
+        let (a, da, _) = make_pair(universe, &vals);
+        let mut out = Vec::new();
+        prop_assert!(a.symmetric_difference(&da, &a, &da, &mut out).is_empty(&out));
     }
 
     #[test]
@@ -292,17 +320,18 @@ proptest! {
             v.dedup();
             v
         };
-        let (a, _) = make_pair(universe, &a_vals);
-        let (b, _) = make_pair(universe, &b_vals);
+        let (a, da, _) = make_pair(universe, &a_vals);
+        let (b, db, _) = make_pair(universe, &b_vals);
 
-        let inter = &a & &b;
-        let union = &a | &b;
+        let mut inter_out = Vec::new();
+        let inter = a.intersect(&da, &b, &db, &mut inter_out);
+        let mut union_out = Vec::new();
+        let union = a.union(&da, &b, &db, &mut union_out);
 
-        // Every element in the intersection must be in the union.
-        for v in inter.iter() {
-            prop_assert!(union.contains(v), "intersection element {} not in union", v);
+        for v in inter.iter(&inter_out) {
+            prop_assert!(union.contains(&union_out, v), "intersection element {} not in union", v);
         }
-        prop_assert!(inter.len() <= union.len());
+        prop_assert!(inter.len(&inter_out) <= union.len(&union_out));
     }
 }
 
@@ -315,13 +344,14 @@ fn arb_bitmap_wrapper() -> impl Strategy<Value = (u32, Vec<u32>, bool)> {
     })
 }
 
-fn make_bitmap_wrapper(universe: u32, vals: &[u32], inverted: bool) -> Bitmap {
-    if inverted {
-        // vals are the complement (unset values)
-        Bitmap::from_sorted_iter_complemented(vals.iter().copied(), universe)
+fn make_bitmap_wrapper(universe: u32, vals: &[u32], inverted: bool) -> (Bitmap, Vec<u8>) {
+    let mut data = Vec::new();
+    let bm = if inverted {
+        Bitmap::from_sorted_iter_complemented(vals.iter().copied(), universe, &mut data)
     } else {
-        Bitmap::from_sorted_iter(vals.iter().copied(), universe)
-    }
+        Bitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data)
+    };
+    (bm, data)
 }
 
 proptest! {
@@ -329,16 +359,15 @@ proptest! {
     fn bitmap_contains_matches_roaring(
         (universe, vals, inverted) in arb_bitmap_wrapper(),
     ) {
-        let bm = make_bitmap_wrapper(universe, &vals, inverted);
+        let (bm, data) = make_bitmap_wrapper(universe, &vals, inverted);
 
-        // Build the expected set using roaring.
         let stored = RoaringBitmap::from_sorted_iter(vals.iter().copied()).unwrap();
 
         for v in 0..universe {
             let in_stored = stored.contains(v);
             let expected = if inverted { !in_stored } else { in_stored };
             prop_assert_eq!(
-                bm.contains(v), expected,
+                bm.contains(&data, v), expected,
                 "Bitmap.contains({}) wrong, inverted={}", v, inverted
             );
         }
@@ -348,14 +377,14 @@ proptest! {
     fn bitmap_len_matches_roaring(
         (universe, vals, inverted) in arb_bitmap_wrapper(),
     ) {
-        let bm = make_bitmap_wrapper(universe, &vals, inverted);
+        let (bm, data) = make_bitmap_wrapper(universe, &vals, inverted);
         let stored = RoaringBitmap::from_sorted_iter(vals.iter().copied()).unwrap();
         let expected = if inverted {
             universe as u64 - stored.len()
         } else {
             stored.len()
         };
-        prop_assert_eq!(bm.len(), expected);
+        prop_assert_eq!(bm.len(&data), expected);
     }
 
     #[test]
@@ -372,11 +401,11 @@ proptest! {
             v
         };
 
-        let bm_a = make_bitmap_wrapper(universe, &a_vals, a_inv);
-        let bm_b = make_bitmap_wrapper(universe, &b_vals, b_inv);
-        let result = &bm_a & &bm_b;
+        let (bm_a, da) = make_bitmap_wrapper(universe, &a_vals, a_inv);
+        let (bm_b, db) = make_bitmap_wrapper(universe, &b_vals, b_inv);
+        let mut out = Vec::new();
+        let result = bm_a.and(&da, &bm_b, &db, &mut out);
 
-        // Oracle: compute expected membership directly.
         let stored_a = RoaringBitmap::from_sorted_iter(a_vals.iter().copied()).unwrap();
         let stored_b = RoaringBitmap::from_sorted_iter(b_vals.iter().copied()).unwrap();
 
@@ -385,7 +414,7 @@ proptest! {
             let b_has = if b_inv { !stored_b.contains(v) } else { stored_b.contains(v) };
             let expected = a_has && b_has;
             prop_assert_eq!(
-                result.contains(v), expected,
+                result.contains(&out, v), expected,
                 "AND({}): a_inv={} b_inv={}", v, a_inv, b_inv
             );
         }
@@ -405,9 +434,10 @@ proptest! {
             v
         };
 
-        let bm_a = make_bitmap_wrapper(universe, &a_vals, a_inv);
-        let bm_b = make_bitmap_wrapper(universe, &b_vals, b_inv);
-        let result = &bm_a | &bm_b;
+        let (bm_a, da) = make_bitmap_wrapper(universe, &a_vals, a_inv);
+        let (bm_b, db) = make_bitmap_wrapper(universe, &b_vals, b_inv);
+        let mut out = Vec::new();
+        let result = bm_a.or(&da, &bm_b, &db, &mut out);
 
         let stored_a = RoaringBitmap::from_sorted_iter(a_vals.iter().copied()).unwrap();
         let stored_b = RoaringBitmap::from_sorted_iter(b_vals.iter().copied()).unwrap();
@@ -417,7 +447,7 @@ proptest! {
             let b_has = if b_inv { !stored_b.contains(v) } else { stored_b.contains(v) };
             let expected = a_has || b_has;
             prop_assert_eq!(
-                result.contains(v), expected,
+                result.contains(&out, v), expected,
                 "OR({}): a_inv={} b_inv={}", v, a_inv, b_inv
             );
         }
@@ -429,19 +459,22 @@ proptest! {
 proptest! {
     #[test]
     fn serialize_roundtrip((universe, vals) in arb_bitmap()) {
-        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
+        let mut data = Vec::new();
+        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
         let mut buf = Vec::new();
-        raw.serialize_into(&mut buf).unwrap();
-        let raw2 = RawBitmap::deserialize_from(&buf[..]).unwrap();
-        prop_assert_eq!(raw, raw2);
+        raw.serialize_into(&data, &mut buf).unwrap();
+        let (raw2, data2) = RawBitmap::deserialize_from(&buf[..]).unwrap();
+        prop_assert_eq!(raw.iter(&data).collect::<Vec<_>>(), raw2.iter(&data2).collect::<Vec<_>>());
     }
 
     #[test]
     fn roaring_roundtrip((universe, vals) in arb_bitmap()) {
-        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
-        let rb = RoaringBitmap::from(&raw);
-        let raw2 = RawBitmap::from_roaring(&rb, universe);
-        prop_assert_eq!(raw, raw2);
+        let mut data = Vec::new();
+        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
+        let rb = raw.to_roaring(&data);
+        let mut data2 = Vec::new();
+        let raw2 = RawBitmap::from_roaring(&rb, universe, &mut data2);
+        prop_assert_eq!(raw.iter(&data).collect::<Vec<_>>(), raw2.iter(&data2).collect::<Vec<_>>());
     }
 
     #[test]
@@ -454,17 +487,18 @@ proptest! {
         let hi = (range_start.max(range_end) % universe).saturating_add(1);
         let range = lo..hi;
 
-        let (raw, roaring) = make_pair(universe, &vals);
+        let (raw, data, roaring) = make_pair(universe, &vals);
         prop_assert_eq!(
-            raw.range_cardinality(range.clone()),
+            raw.range_cardinality(&data, range.clone()),
             roaring.range_cardinality(range)
         );
     }
 
     #[test]
     fn range_cardinality_full_equals_len((universe, vals) in arb_bitmap()) {
-        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
-        prop_assert_eq!(raw.range_cardinality(..), raw.len());
+        let mut data = Vec::new();
+        let raw = RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
+        prop_assert_eq!(raw.range_cardinality(&data, ..), raw.len(&data));
     }
 
     #[test]
@@ -476,11 +510,11 @@ proptest! {
         let lo = range_start.min(range_end) % universe;
         let hi = (range_start.max(range_end) % universe).saturating_add(1);
 
-        let (mut raw, mut roaring) = make_pair(universe, &vals);
-        raw.remove_range(lo..hi);
+        let (raw, mut data, mut roaring) = make_pair(universe, &vals);
+        raw.remove_range(&mut data, lo..hi);
         roaring.remove_range(lo..hi);
 
-        let raw_vals: Vec<u32> = raw.iter().collect();
+        let raw_vals: Vec<u32> = raw.iter(&data).collect();
         let roaring_vals: Vec<u32> = roaring.iter().collect();
         prop_assert_eq!(raw_vals, roaring_vals);
     }
@@ -495,45 +529,30 @@ fn test_rawbitmap_from_roaring() {
     rb.insert(42);
     rb.insert(511);
 
-    let bm = RawBitmap::from_roaring(&rb, 512);
+    let mut data = Vec::new();
+    let bm = RawBitmap::from_roaring(&rb, 512, &mut data);
     assert_eq!(bm.universe_size(), 512);
-    assert!(bm.contains(0));
-    assert!(bm.contains(42));
-    assert!(bm.contains(511));
-    assert!(!bm.contains(1));
-    assert_eq!(bm.len(), 3);
-}
-
-#[test]
-fn test_rawbitmap_from_roaring_ref() {
-    let mut rb = RoaringBitmap::new();
-    rb.insert(10);
-    rb.insert(100);
-
-    let bm = RawBitmap::from(&rb);
-    // universe_size = max + 1 = 101
-    assert_eq!(bm.universe_size(), 101);
-    assert!(bm.contains(10));
-    assert!(bm.contains(100));
-    assert_eq!(bm.len(), 2);
+    assert!(bm.contains(&data, 0));
+    assert!(bm.contains(&data, 42));
+    assert!(bm.contains(&data, 511));
+    assert!(!bm.contains(&data, 1));
+    assert_eq!(bm.len(&data), 3);
 }
 
 #[test]
 fn test_rawbitmap_from_roaring_empty() {
     let rb = RoaringBitmap::new();
-    let bm = RawBitmap::from(&rb);
-    assert!(bm.is_empty());
-    assert_eq!(bm.universe_size(), 0);
 
-    let bm = RawBitmap::from_roaring(&rb, 64);
-    assert!(bm.is_empty());
+    let mut data = Vec::new();
+    let bm = RawBitmap::from_roaring(&rb, 64, &mut data);
+    assert!(bm.is_empty(&data));
     assert_eq!(bm.universe_size(), 64);
 }
 
 #[test]
 fn test_roaring_from_rawbitmap() {
-    let bm = make_bitmap(512, &[0, 42, 255, 511]);
-    let rb = RoaringBitmap::from(&bm);
+    let (bm, data) = make_bitmap(512, &[0, 42, 255, 511]);
+    let rb = bm.to_roaring(&data);
     assert_eq!(rb.len(), 4);
     assert!(rb.contains(0));
     assert!(rb.contains(42));
@@ -544,7 +563,7 @@ fn test_roaring_from_rawbitmap() {
 #[test]
 fn test_roaring_from_rawbitmap_empty() {
     let bm = RawBitmap::empty(64);
-    let rb = RoaringBitmap::from(&bm);
+    let rb = bm.to_roaring(&[]);
     assert!(rb.is_empty());
 }
 
@@ -556,7 +575,8 @@ fn test_roaring_roundtrip() {
         rb.insert(v);
     }
 
-    let bm = RawBitmap::from_roaring(&rb, 512);
-    let rb2 = RoaringBitmap::from(&bm);
+    let mut data = Vec::new();
+    let bm = RawBitmap::from_roaring(&rb, 512, &mut data);
+    let rb2 = bm.to_roaring(&data);
     assert_eq!(rb, rb2);
 }

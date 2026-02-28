@@ -6,10 +6,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// Wraps [`treight::Bitmap`] (8-way bit-tree with optional complement representation)
 /// and supports bitwise AND/OR operations for combining filters.
+///
+/// This is the owned wrapper: it pairs the lightweight `treight::Bitmap` descriptor
+/// with the heap-allocated tree data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
-#[serde(transparent)]
-pub struct Bitmap(pub treight::Bitmap);
+pub struct Bitmap {
+    desc: treight::Bitmap,
+    data: Vec<u8>,
+}
 
 impl Default for Bitmap {
     fn default() -> Self {
@@ -20,15 +25,18 @@ impl Default for Bitmap {
 impl Bitmap {
     /// Create an empty bitmap (universe_size = 0).
     pub fn new() -> Self {
-        Self(treight::Bitmap::empty(0))
+        Self {
+            desc: treight::Bitmap::empty(0),
+            data: Vec::new(),
+        }
     }
 
     /// Create a bitmap from a sorted iterator of entry indices.
     pub fn from_sorted_iter<I: IntoIterator<Item = u32>>(iterator: I, universe_size: u32) -> Self {
-        Bitmap(treight::Bitmap::from_sorted_iter(
-            iterator.into_iter(),
-            universe_size,
-        ))
+        let mut data = Vec::new();
+        let desc =
+            treight::Bitmap::from_sorted_iter(iterator.into_iter(), universe_size, &mut data);
+        Self { desc, data }
     }
 
     /// Create a bitmap from a sorted iterator of the **complement** values
@@ -37,15 +45,21 @@ impl Bitmap {
         complement_iter: I,
         universe_size: u32,
     ) -> Self {
-        Bitmap(treight::Bitmap::from_sorted_iter_complemented(
+        let mut data = Vec::new();
+        let desc = treight::Bitmap::from_sorted_iter_complemented(
             complement_iter.into_iter(),
             universe_size,
-        ))
+            &mut data,
+        );
+        Self { desc, data }
     }
 
     /// Create a bitmap containing all integers in `0..universe_size`.
     pub fn full(universe_size: u32) -> Self {
-        Bitmap(treight::Bitmap::full(universe_size))
+        Self {
+            desc: treight::Bitmap::full(universe_size),
+            data: Vec::new(),
+        }
     }
 
     /// No-op (treight has no `optimize()`).
@@ -53,51 +67,62 @@ impl Bitmap {
 
     /// Count set bits (population count).
     pub fn len(&self) -> u64 {
-        self.0.len()
+        self.desc.len(&self.data)
     }
 
     /// Returns `true` if no bits are set.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.desc.is_empty(&self.data)
     }
 
     /// Test whether `value` is in the bitmap.
     pub fn contains(&self, value: u32) -> bool {
-        self.0.contains(value)
+        self.desc.contains(&self.data, value)
     }
 
     /// Iterate over set bits in ascending order.
     pub fn iter(&self) -> treight::BitmapIter<'_> {
-        self.0.iter()
+        self.desc.iter(&self.data)
     }
 
     /// Count the number of set bits within a range.
     pub fn range_cardinality<R: std::ops::RangeBounds<u32>>(&self, range: R) -> u64 {
-        self.0.range_cardinality(range)
+        self.desc.range_cardinality(&self.data, range)
+    }
+
+    /// Returns `true` if the bitmap uses complement (inverted) representation.
+    pub fn is_inverted(&self) -> bool {
+        self.desc.is_inverted()
     }
 }
 
 impl std::ops::BitAndAssign<&Bitmap> for Bitmap {
     fn bitand_assign(&mut self, rhs: &Bitmap) {
-        self.0 &= &rhs.0;
+        let mut out = Vec::new();
+        let desc = self.desc.and(&self.data, &rhs.desc, &rhs.data, &mut out);
+        self.desc = desc;
+        self.data = out;
     }
 }
 
 impl std::ops::BitAndAssign<Bitmap> for Bitmap {
     fn bitand_assign(&mut self, rhs: Bitmap) {
-        self.0 &= &rhs.0;
+        *self &= &rhs;
     }
 }
 
 impl std::ops::BitOrAssign<&Bitmap> for Bitmap {
     fn bitor_assign(&mut self, rhs: &Bitmap) {
-        self.0 |= &rhs.0;
+        let mut out = Vec::new();
+        let desc = self.desc.or(&self.data, &rhs.desc, &rhs.data, &mut out);
+        self.desc = desc;
+        self.data = out;
     }
 }
 
 impl std::ops::BitOrAssign<Bitmap> for Bitmap {
     fn bitor_assign(&mut self, rhs: Bitmap) {
-        self.0 |= &rhs.0;
+        *self |= &rhs;
     }
 }
 
@@ -105,7 +130,9 @@ impl std::ops::BitAnd for &Bitmap {
     type Output = Bitmap;
 
     fn bitand(self, rhs: &Bitmap) -> Bitmap {
-        Bitmap(&self.0 & &rhs.0)
+        let mut out = Vec::new();
+        let desc = self.desc.and(&self.data, &rhs.desc, &rhs.data, &mut out);
+        Bitmap { desc, data: out }
     }
 }
 
@@ -113,7 +140,7 @@ impl std::ops::BitAnd<Bitmap> for &Bitmap {
     type Output = Bitmap;
 
     fn bitand(self, rhs: Bitmap) -> Bitmap {
-        Bitmap(&self.0 & &rhs.0)
+        self & &rhs
     }
 }
 
@@ -121,7 +148,7 @@ impl std::ops::BitAnd<&Bitmap> for Bitmap {
     type Output = Bitmap;
 
     fn bitand(self, rhs: &Bitmap) -> Bitmap {
-        Bitmap(&self.0 & &rhs.0)
+        &self & rhs
     }
 }
 
@@ -129,7 +156,7 @@ impl std::ops::BitAnd for Bitmap {
     type Output = Bitmap;
 
     fn bitand(self, rhs: Bitmap) -> Bitmap {
-        Bitmap(&self.0 & &rhs.0)
+        &self & &rhs
     }
 }
 

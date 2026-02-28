@@ -5,8 +5,6 @@ use libfuzzer_sys::fuzz_target;
 use std::mem;
 
 // Interesting universe sizes that exercise different tree depths (1-8 levels).
-// Each power-of-8 boundary is the max for that level count; boundary + 1 is the
-// min for the next level count.
 const UNIVERSES: [u32; 16] = [
     1,           // 1 level
     8,           // 1 level (max)
@@ -26,7 +24,6 @@ const UNIVERSES: [u32; 16] = [
     16_777_216,  // 8 levels (max)
 ];
 
-/// A value that will be reduced mod universe_size before use.
 #[derive(Debug, Copy, Clone)]
 struct Num(u32);
 
@@ -38,26 +35,19 @@ impl<'a> Arbitrary<'a> for Num {
 
 #[derive(Arbitrary, Debug)]
 enum Operation {
-    // Mutations
     Insert(Num),
     Remove(Num),
     Clear,
-
-    // Reads (checked against roaring)
     Contains(Num),
     CheckLen,
     CheckMinMax,
     CheckIter,
     RangeCardinality(Num, Num),
     RemoveRange(Num, Num),
-
-    // Binary operations (lhs op= rhs)
     And,
     Or,
     Sub,
     Xor,
-
-    // Structural
     SwapSides,
     SerializeRoundtrip,
 }
@@ -71,76 +61,75 @@ struct FuzzInput {
 }
 
 /// Assert that a treight RawBitmap and a RoaringBitmap contain the same elements.
-fn check_equal(t: &treight::RawBitmap, r: &roaring::RoaringBitmap) {
-    assert_eq!(t.len(), r.len(), "len mismatch: treight={} roaring={}", t.len(), r.len());
-    assert_eq!(t.min(), r.min(), "min mismatch");
-    assert_eq!(t.max(), r.max(), "max mismatch");
-    assert_eq!(t.is_empty(), r.is_empty(), "is_empty mismatch");
+fn check_equal(t: &treight::RawBitmap, td: &[u8], r: &roaring::RoaringBitmap) {
+    assert_eq!(t.len(td), r.len(), "len mismatch: treight={} roaring={}", t.len(td), r.len());
+    assert_eq!(t.min(td), r.min(), "min mismatch");
+    assert_eq!(t.max(td), r.max(), "max mismatch");
+    assert_eq!(t.is_empty(td), r.is_empty(), "is_empty mismatch");
 
-    let t_vals: Vec<u32> = t.iter().collect();
+    let t_vals: Vec<u32> = t.iter(td).collect();
     let r_vals: Vec<u32> = r.iter().collect();
     assert_eq!(t_vals, r_vals, "iter mismatch");
 }
 
-/// Build a (treight, roaring) pair from sorted-deduped values.
-fn make_pair(vals: &[u32], universe: u32) -> (treight::RawBitmap, roaring::RoaringBitmap) {
-    let t = treight::RawBitmap::from_sorted_iter(vals.iter().copied(), universe);
+/// Build a (treight, data, roaring) triple from sorted-deduped values.
+fn make_pair(vals: &[u32], universe: u32) -> (treight::RawBitmap, Vec<u8>, roaring::RoaringBitmap) {
+    let mut data = Vec::new();
+    let t = treight::RawBitmap::from_sorted_iter(vals.iter().copied(), universe, &mut data);
     let r = roaring::RoaringBitmap::from_sorted_iter(vals.iter().copied()).unwrap();
-    (t, r)
+    (t, data, r)
 }
 
 fuzz_target!(|input: FuzzInput| {
     let universe = UNIVERSES[input.universe_idx as usize % UNIVERSES.len()];
 
-    // Build initial LHS.
     let mut lhs_vals: Vec<u32> = input.initial_lhs.iter().map(|n| n.0 % universe).collect();
     lhs_vals.sort_unstable();
     lhs_vals.dedup();
-    let (mut lhs_t, mut lhs_r) = make_pair(&lhs_vals, universe);
+    let (mut lhs_t, mut lhs_d, mut lhs_r) = make_pair(&lhs_vals, universe);
 
-    // Build initial RHS.
     let mut rhs_vals: Vec<u32> = input.initial_rhs.iter().map(|n| n.0 % universe).collect();
     rhs_vals.sort_unstable();
     rhs_vals.dedup();
-    let (mut rhs_t, mut rhs_r) = make_pair(&rhs_vals, universe);
+    let (mut rhs_t, mut rhs_d, mut rhs_r) = make_pair(&rhs_vals, universe);
 
-    check_equal(&lhs_t, &lhs_r);
-    check_equal(&rhs_t, &rhs_r);
+    check_equal(&lhs_t, &lhs_d, &lhs_r);
+    check_equal(&rhs_t, &rhs_d, &rhs_r);
 
     for op in &input.ops {
         match *op {
             Operation::Insert(Num(n)) => {
                 let v = n % universe;
-                lhs_t.insert(v);
+                lhs_t.insert(&mut lhs_d, v);
                 lhs_r.insert(v);
             }
             Operation::Remove(Num(n)) => {
                 let v = n % universe;
-                lhs_t.remove(v);
+                lhs_t.remove(&mut lhs_d, v);
                 lhs_r.remove(v);
             }
             Operation::Clear => {
-                lhs_t.clear();
+                lhs_d.clear();
                 lhs_r.clear();
             }
             Operation::Contains(Num(n)) => {
                 let v = n % universe;
                 assert_eq!(
-                    lhs_t.contains(v),
+                    lhs_t.contains(&lhs_d, v),
                     lhs_r.contains(v),
                     "contains({}) mismatch",
                     v
                 );
             }
             Operation::CheckLen => {
-                assert_eq!(lhs_t.len(), lhs_r.len(), "len mismatch");
+                assert_eq!(lhs_t.len(&lhs_d), lhs_r.len(), "len mismatch");
             }
             Operation::CheckMinMax => {
-                assert_eq!(lhs_t.min(), lhs_r.min(), "min mismatch");
-                assert_eq!(lhs_t.max(), lhs_r.max(), "max mismatch");
+                assert_eq!(lhs_t.min(&lhs_d), lhs_r.min(), "min mismatch");
+                assert_eq!(lhs_t.max(&lhs_d), lhs_r.max(), "max mismatch");
             }
             Operation::CheckIter => {
-                let t_vals: Vec<u32> = lhs_t.iter().collect();
+                let t_vals: Vec<u32> = lhs_t.iter(&lhs_d).collect();
                 let r_vals: Vec<u32> = lhs_r.iter().collect();
                 assert_eq!(t_vals, r_vals, "iter mismatch");
             }
@@ -148,7 +137,7 @@ fuzz_target!(|input: FuzzInput| {
                 let lo = a.min(b) % universe;
                 let hi = (a.max(b) % universe).saturating_add(1);
                 assert_eq!(
-                    lhs_t.range_cardinality(lo..hi),
+                    lhs_t.range_cardinality(&lhs_d, lo..hi),
                     lhs_r.range_cardinality(lo..hi),
                     "range_cardinality({}..{}) mismatch",
                     lo,
@@ -158,48 +147,59 @@ fuzz_target!(|input: FuzzInput| {
             Operation::RemoveRange(Num(a), Num(b)) => {
                 let lo = a.min(b) % universe;
                 let hi = (a.max(b) % universe).saturating_add(1);
-                lhs_t.remove_range(lo..hi);
+                lhs_t.remove_range(&mut lhs_d, lo..hi);
                 lhs_r.remove_range(lo..hi);
             }
             Operation::And => {
-                lhs_t = &lhs_t & &rhs_t;
+                let mut out = Vec::new();
+                lhs_t = lhs_t.intersect(&lhs_d, &rhs_t, &rhs_d, &mut out);
+                lhs_d = out;
                 lhs_r &= &rhs_r;
             }
             Operation::Or => {
-                lhs_t = &lhs_t | &rhs_t;
+                let mut out = Vec::new();
+                lhs_t = lhs_t.union(&lhs_d, &rhs_t, &rhs_d, &mut out);
+                lhs_d = out;
                 lhs_r |= &rhs_r;
             }
             Operation::Sub => {
-                lhs_t = &lhs_t - &rhs_t;
+                let mut out = Vec::new();
+                lhs_t = lhs_t.difference(&lhs_d, &rhs_t, &rhs_d, &mut out);
+                lhs_d = out;
                 lhs_r -= &rhs_r;
             }
             Operation::Xor => {
-                lhs_t = &lhs_t ^ &rhs_t;
+                let mut out = Vec::new();
+                lhs_t = lhs_t.symmetric_difference(&lhs_d, &rhs_t, &rhs_d, &mut out);
+                lhs_d = out;
                 lhs_r ^= &rhs_r;
             }
             Operation::SwapSides => {
                 mem::swap(&mut lhs_t, &mut rhs_t);
+                mem::swap(&mut lhs_d, &mut rhs_d);
                 mem::swap(&mut lhs_r, &mut rhs_r);
             }
             Operation::SerializeRoundtrip => {
                 let mut buf = Vec::new();
-                lhs_t.serialize_into(&mut buf).unwrap();
-                let restored = treight::RawBitmap::deserialize_from(&buf[..]).unwrap();
-                assert_eq!(lhs_t, restored, "serialize roundtrip mismatch");
+                lhs_t.serialize_into(&lhs_d, &mut buf).unwrap();
+                let (restored, restored_data) = treight::RawBitmap::deserialize_from(&buf[..]).unwrap();
+                assert_eq!(
+                    lhs_t.iter(&lhs_d).collect::<Vec<_>>(),
+                    restored.iter(&restored_data).collect::<Vec<_>>(),
+                    "serialize roundtrip mismatch"
+                );
             }
         }
     }
 
-    // Final full comparison.
-    check_equal(&lhs_t, &lhs_r);
-    check_equal(&rhs_t, &rhs_r);
+    check_equal(&lhs_t, &lhs_d, &lhs_r);
+    check_equal(&rhs_t, &rhs_d, &rhs_r);
 
-    // Also verify estimate_data_size matches actual for the final bitmaps.
-    let lhs_final_vals: Vec<u32> = lhs_t.iter().collect();
+    let lhs_final_vals: Vec<u32> = lhs_t.iter(&lhs_d).collect();
     let est = treight::estimate_data_size(universe, lhs_final_vals.iter().copied());
     assert_eq!(
         est,
-        lhs_t.data().len(),
+        lhs_d.len(),
         "estimate_data_size mismatch for final LHS"
     );
 });

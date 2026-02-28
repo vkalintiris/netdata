@@ -91,7 +91,10 @@ enum PrimaryValue {
         chunk_index: Option<u16>,
     },
     /// Low-cardinality FIELD=value: bitmap of entry indices.
-    Bitmap(treight::Bitmap),
+    Bitmap {
+        desc: treight::Bitmap,
+        data: Vec<u8>,
+    },
 }
 
 fn main() {
@@ -282,12 +285,20 @@ fn main() {
                 }
                 scratch_indices.sort_unstable();
 
-                let bitmap = treight::Bitmap::from_sorted_iter(
+                let mut bm_data = Vec::new();
+                let desc = treight::Bitmap::from_sorted_iter(
                     scratch_indices.iter().copied(),
                     universe_size,
+                    &mut bm_data,
                 );
 
-                primary_entries.push((key, PrimaryValue::Bitmap(bitmap)));
+                primary_entries.push((
+                    key,
+                    PrimaryValue::Bitmap {
+                        desc,
+                        data: bm_data,
+                    },
+                ));
             }
         } else {
             // High-cardinality: bare FIELD key + per-field HC FST using n_entries directly
@@ -474,8 +485,8 @@ fn main() {
             if sample_shown < 3 {
                 if let Ok(k) = std::str::from_utf8(key) {
                     match val {
-                        PrimaryValue::Bitmap(bm) => {
-                            println!("  Primary['{}'] = bitmap({} entries)", k, bm.len());
+                        PrimaryValue::Bitmap { desc, data } => {
+                            println!("  Primary['{}'] = bitmap({} entries)", k, desc.len(data));
                         }
                         other => {
                             println!("  Primary['{}'] = {:?}", k, other);

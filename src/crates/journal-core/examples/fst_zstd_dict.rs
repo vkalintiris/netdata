@@ -17,7 +17,10 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum IndexValue {
-    Bitmap(treight::Bitmap),
+    Bitmap {
+        desc: treight::Bitmap,
+        data: Vec<u8>,
+    },
     Counts(u64, u64),
 }
 
@@ -125,12 +128,20 @@ fn build_unified_fst(path: &str, max_cardinality: usize) -> Option<Vec<u8>> {
                 }
                 scratch_indices.sort_unstable();
 
-                let bitmap = treight::Bitmap::from_sorted_iter(
+                let mut bm_data = Vec::new();
+                let desc = treight::Bitmap::from_sorted_iter(
                     scratch_indices.iter().copied(),
                     universe_size,
+                    &mut bm_data,
                 );
 
-                entries.push((key, IndexValue::Bitmap(bitmap)));
+                entries.push((
+                    key,
+                    IndexValue::Bitmap {
+                        desc,
+                        data: bm_data,
+                    },
+                ));
             } else {
                 let entry_count = scratch_offsets
                     .iter()

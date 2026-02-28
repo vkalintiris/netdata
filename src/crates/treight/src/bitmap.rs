@@ -1,5 +1,3 @@
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
-
 use crate::raw::{Iter, RawBitmap};
 
 /// A bitmap that may store its complement for better compression.
@@ -9,11 +7,9 @@ use crate::raw::{Iter, RawBitmap};
 /// and the meaning is inverted. This keeps the underlying `RawBitmap` small
 /// at both extremes of the density spectrum.
 ///
-/// AND and OR operations between bitmaps with mixed representations are
-/// handled transparently using De Morgan's laws, dispatching to the
-/// appropriate `RawBitmap` operation (AND, OR, or SUB).
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+/// This is a lightweight `Copy` descriptor. The actual tree data lives in
+/// an external `&[u8]` / `&mut Vec<u8>` passed to each method.
+#[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bitmap {
     inner: RawBitmap,
@@ -37,26 +33,27 @@ impl Bitmap {
         }
     }
 
-    /// Build from a sorted iterator of **set** values.
-    ///
-    /// The resulting bitmap stores these values directly (normal representation).
-    pub fn from_sorted_iter(iter: impl Iterator<Item = u32>, universe_size: u32) -> Self {
+    /// Build from a sorted iterator of **set** values, appending tree bytes to `out`.
+    pub fn from_sorted_iter(
+        iter: impl Iterator<Item = u32>,
+        universe_size: u32,
+        out: &mut Vec<u8>,
+    ) -> Self {
         Self {
-            inner: RawBitmap::from_sorted_iter(iter, universe_size),
+            inner: RawBitmap::from_sorted_iter(iter, universe_size, out),
             inverted: false,
         }
     }
 
-    /// Build from a sorted iterator of **unset** values (the complement).
-    ///
-    /// The resulting bitmap logically contains every value in `0..universe_size`
-    /// that is NOT yielded by `complement_iter`.
+    /// Build from a sorted iterator of **unset** values (the complement),
+    /// appending tree bytes to `out`.
     pub fn from_sorted_iter_complemented(
         complement_iter: impl Iterator<Item = u32>,
         universe_size: u32,
+        out: &mut Vec<u8>,
     ) -> Self {
         Self {
-            inner: RawBitmap::from_sorted_iter(complement_iter, universe_size),
+            inner: RawBitmap::from_sorted_iter(complement_iter, universe_size, out),
             inverted: true,
         }
     }
@@ -67,31 +64,28 @@ impl Bitmap {
     }
 
     /// Test whether `value` is in the bitmap.
-    ///
-    /// Values outside `0..universe_size` always return `false`, regardless
-    /// of whether the bitmap is inverted.
-    pub fn contains(&self, value: u32) -> bool {
+    pub fn contains(&self, data: &[u8], value: u32) -> bool {
         if value >= self.inner.universe_size() {
             return false;
         }
-        self.inner.contains(value) ^ self.inverted
+        self.inner.contains(data, value) ^ self.inverted
     }
 
     /// Count the number of set bits.
-    pub fn len(&self) -> u64 {
+    pub fn len(&self, data: &[u8]) -> u64 {
         if self.inverted {
-            self.inner.universe_size() as u64 - self.inner.len()
+            self.inner.universe_size() as u64 - self.inner.len(data)
         } else {
-            self.inner.len()
+            self.inner.len(data)
         }
     }
 
     /// Returns `true` if no bits are set.
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(&self, data: &[u8]) -> bool {
         if self.inverted {
-            self.inner.len() == self.inner.universe_size() as u64
+            self.inner.len(data) == self.inner.universe_size() as u64
         } else {
-            self.inner.is_empty()
+            self.inner.is_empty(data)
         }
     }
 
@@ -100,20 +94,18 @@ impl Bitmap {
         self.inverted
     }
 
-    /// Access the underlying raw bitmap.
-    pub fn raw(&self) -> &RawBitmap {
-        &self.inner
+    /// Access the underlying raw bitmap descriptor.
+    pub fn inner(&self) -> RawBitmap {
+        self.inner
     }
 
-    /// The number of heap-allocated bytes used by this bitmap.
-    pub fn heap_bytes(&self) -> usize {
-        self.inner.heap_bytes()
-    }
-
-    /// Build a bitmap with all values in the given range set.
-    ///
-    /// Values outside `0..universe_size` are clamped/ignored.
-    pub fn from_range(range: impl std::ops::RangeBounds<u32>, universe_size: u32) -> Self {
+    /// Build a bitmap with all values in the given range set,
+    /// appending tree bytes to `out`.
+    pub fn from_range(
+        range: impl std::ops::RangeBounds<u32>,
+        universe_size: u32,
+        out: &mut Vec<u8>,
+    ) -> Self {
         use std::ops::Bound;
 
         let start = match range.start_bound() {
@@ -135,37 +127,30 @@ impl Bitmap {
         let half_universe = universe_size as u64 / 2;
 
         if range_len > half_universe {
-            // Dense: store the complement (values outside the range).
             let complement = (0..start).chain(end..universe_size);
-            Self::from_sorted_iter_complemented(complement, universe_size)
+            Self::from_sorted_iter_complemented(complement, universe_size, out)
         } else {
-            Self::from_sorted_iter(start..end, universe_size)
+            Self::from_sorted_iter(start..end, universe_size, out)
         }
     }
 
     /// Iterate over set bits in ascending order.
-    ///
-    /// For normal bitmaps, delegates to the underlying `RawBitmap` iterator.
-    /// For inverted bitmaps, yields all values in `0..universe_size` that are
-    /// NOT in the underlying raw bitmap.
-    pub fn iter(&self) -> BitmapIter<'_> {
+    pub fn iter<'a>(&self, data: &'a [u8]) -> BitmapIter<'a> {
         if self.inverted {
             BitmapIter::Complement(ComplementIter {
-                raw_iter: self.inner.iter(),
+                raw_iter: self.inner.iter(data),
                 next_raw: None,
                 current: 0,
                 universe_size: self.inner.universe_size(),
                 started: false,
             })
         } else {
-            BitmapIter::Normal(self.inner.iter())
+            BitmapIter::Normal(self.inner.iter(data))
         }
     }
 
     /// Count the number of set bits within a range.
-    ///
-    /// For inverted bitmaps, computes `range_len - raw.range_cardinality(range)`.
-    pub fn range_cardinality(&self, range: impl std::ops::RangeBounds<u32>) -> u64 {
+    pub fn range_cardinality(&self, data: &[u8], range: impl std::ops::RangeBounds<u32>) -> u64 {
         use std::ops::Bound;
 
         if self.inverted {
@@ -186,17 +171,101 @@ impl Bitmap {
             }
 
             let range_len = (end - start) as u64;
-            let raw_count = self.inner.range_cardinality(start..end);
+            let raw_count = self.inner.range_cardinality(data, start..end);
             range_len - raw_count
         } else {
-            self.inner.range_cardinality(range)
+            self.inner.range_cardinality(data, range)
         }
+    }
+
+    /// Intersection using De Morgan's dispatch.
+    ///
+    /// - N & N -> A intersect B (normal)
+    /// - N & I -> A difference B (normal)
+    /// - I & N -> B difference A (normal)
+    /// - I & I -> A union B (inverted)
+    pub fn and(&self, a: &[u8], other: &Bitmap, b: &[u8], out: &mut Vec<u8>) -> Bitmap {
+        // Short-circuit: empty AND anything = empty.
+        if self.is_empty(a) {
+            return *self;
+        }
+        if other.is_empty(b) {
+            return *other;
+        }
+
+        // Short-circuit: full AND anything = anything.
+        if self.inverted && self.inner.is_empty(a) {
+            out.extend_from_slice(b);
+            return *other;
+        }
+        if other.inverted && other.inner.is_empty(b) {
+            out.extend_from_slice(a);
+            return *self;
+        }
+
+        debug_assert_eq!(
+            self.inner.universe_size(),
+            other.inner.universe_size(),
+            "universe_size mismatch: {} vs {}",
+            self.inner.universe_size(),
+            other.inner.universe_size()
+        );
+
+        let (inner, inverted) = match (self.inverted, other.inverted) {
+            (false, false) => (self.inner.intersect(a, &other.inner, b, out), false),
+            (false, true) => (self.inner.difference(a, &other.inner, b, out), false),
+            (true, false) => (other.inner.difference(b, &self.inner, a, out), false),
+            (true, true) => (self.inner.union(a, &other.inner, b, out), true),
+        };
+
+        Bitmap { inner, inverted }
+    }
+
+    /// Union using De Morgan's dispatch.
+    ///
+    /// - N | N -> A union B (normal)
+    /// - N | I -> B difference A (inverted)
+    /// - I | N -> A difference B (inverted)
+    /// - I | I -> A intersect B (inverted)
+    pub fn or(&self, a: &[u8], other: &Bitmap, b: &[u8], out: &mut Vec<u8>) -> Bitmap {
+        // Short-circuit: empty OR anything = anything.
+        if self.is_empty(a) {
+            out.extend_from_slice(b);
+            return *other;
+        }
+        if other.is_empty(b) {
+            out.extend_from_slice(a);
+            return *self;
+        }
+
+        // Short-circuit: full OR anything = full.
+        if self.inverted && self.inner.is_empty(a) {
+            return *self;
+        }
+        if other.inverted && other.inner.is_empty(b) {
+            return *other;
+        }
+
+        debug_assert_eq!(
+            self.inner.universe_size(),
+            other.inner.universe_size(),
+            "universe_size mismatch: {} vs {}",
+            self.inner.universe_size(),
+            other.inner.universe_size()
+        );
+
+        let (inner, inverted) = match (self.inverted, other.inverted) {
+            (false, false) => (self.inner.union(a, &other.inner, b, out), false),
+            (false, true) => (other.inner.difference(b, &self.inner, a, out), true),
+            (true, false) => (self.inner.difference(a, &other.inner, b, out), true),
+            (true, true) => (self.inner.intersect(a, &other.inner, b, out), true),
+        };
+
+        Bitmap { inner, inverted }
     }
 }
 
 /// Iterator over set bits of a [`Bitmap`].
-///
-/// Handles both normal and inverted (complement) representations.
 pub enum BitmapIter<'a> {
     /// Normal: yields values present in the raw bitmap.
     Normal(Iter<'a>),
@@ -243,130 +312,11 @@ impl Iterator for ComplementIter<'_> {
 
             match self.next_raw {
                 Some(raw_val) if raw_val == val => {
-                    // This value is in the raw bitmap (i.e., unset in the logical bitmap).
-                    // Skip it and advance the raw iterator.
                     self.next_raw = self.raw_iter.next();
                     continue;
                 }
                 _ => return Some(val),
             }
         }
-    }
-}
-
-impl<'a> IntoIterator for &'a Bitmap {
-    type Item = u32;
-    type IntoIter = BitmapIter<'a>;
-
-    fn into_iter(self) -> BitmapIter<'a> {
-        self.iter()
-    }
-}
-
-impl BitAnd for &Bitmap {
-    type Output = Bitmap;
-
-    /// Intersection using De Morgan's dispatch:
-    ///
-    /// - N ∩ N → A & B (normal)
-    /// - N ∩ I → A - B (normal)
-    /// - I ∩ N → B - A (normal)
-    /// - I ∩ I → A | B (inverted)
-    ///
-    /// Short-circuits when either operand is logically empty (annihilator)
-    /// or logically full (identity).
-    fn bitand(self, rhs: Self) -> Bitmap {
-        // Short-circuit: empty AND anything = empty.
-        if self.is_empty() {
-            return self.clone();
-        }
-        if rhs.is_empty() {
-            return rhs.clone();
-        }
-
-        // Short-circuit: full AND anything = anything.
-        if self.inverted && self.inner.is_empty() {
-            return rhs.clone();
-        }
-        if rhs.inverted && rhs.inner.is_empty() {
-            return self.clone();
-        }
-
-        debug_assert_eq!(
-            self.inner.universe_size(),
-            rhs.inner.universe_size(),
-            "universe_size mismatch: {} vs {}",
-            self.inner.universe_size(),
-            rhs.inner.universe_size()
-        );
-
-        let (inner, inverted) = match (self.inverted, rhs.inverted) {
-            (false, false) => (&self.inner & &rhs.inner, false),
-            (false, true) => (&self.inner - &rhs.inner, false),
-            (true, false) => (&rhs.inner - &self.inner, false),
-            (true, true) => (&self.inner | &rhs.inner, true),
-        };
-
-        Bitmap { inner, inverted }
-    }
-}
-
-impl BitOr for &Bitmap {
-    type Output = Bitmap;
-
-    /// Union using De Morgan's dispatch:
-    ///
-    /// - N ∪ N → A | B (normal)
-    /// - N ∪ I → B - A (inverted)
-    /// - I ∪ N → A - B (inverted)
-    /// - I ∪ I → A & B (inverted)
-    ///
-    /// Short-circuits when either operand is logically empty (identity)
-    /// or logically full (annihilator).
-    fn bitor(self, rhs: Self) -> Bitmap {
-        // Short-circuit: empty OR anything = anything.
-        if self.is_empty() {
-            return rhs.clone();
-        }
-        if rhs.is_empty() {
-            return self.clone();
-        }
-
-        // Short-circuit: full OR anything = full.
-        if self.inverted && self.inner.is_empty() {
-            return self.clone();
-        }
-        if rhs.inverted && rhs.inner.is_empty() {
-            return rhs.clone();
-        }
-
-        debug_assert_eq!(
-            self.inner.universe_size(),
-            rhs.inner.universe_size(),
-            "universe_size mismatch: {} vs {}",
-            self.inner.universe_size(),
-            rhs.inner.universe_size()
-        );
-
-        let (inner, inverted) = match (self.inverted, rhs.inverted) {
-            (false, false) => (&self.inner | &rhs.inner, false),
-            (false, true) => (&rhs.inner - &self.inner, true),
-            (true, false) => (&self.inner - &rhs.inner, true),
-            (true, true) => (&self.inner & &rhs.inner, true),
-        };
-
-        Bitmap { inner, inverted }
-    }
-}
-
-impl BitAndAssign<&Bitmap> for Bitmap {
-    fn bitand_assign(&mut self, rhs: &Bitmap) {
-        *self = &*self & rhs;
-    }
-}
-
-impl BitOrAssign<&Bitmap> for Bitmap {
-    fn bitor_assign(&mut self, rhs: &Bitmap) {
-        *self = &*self | rhs;
     }
 }
