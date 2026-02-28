@@ -24,8 +24,10 @@ regex = { workspace = true }
 treight = { path = "../treight", features = ["serde"] }
 serde = { workspace =  true, features = ["derive"] }
 static_assertions = { workspace = true }
+bincode = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+zstd = { workspace = true }
 
 journal-core = { path = "../journal-core" }
 journal-common = { workspace = true }

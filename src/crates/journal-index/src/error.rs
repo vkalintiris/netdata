@@ -43,6 +43,10 @@ pub enum IndexError {
     #[error("FST build error: {0}")]
     FstBuildError(String),
 
+    /// Serialization or deserialization error
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
     /// Underlying journal file error
     #[error("journal error: {0}")]
     Journal(#[from] journal_core::error::JournalError),
