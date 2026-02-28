@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use bytesize::ByteSize;
 use rt::NetdataEnv;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -32,19 +31,8 @@ impl Default for JournalConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfig {
-    /// Directory to store the hybrid cache (memory + disk)
-    pub directory: String,
-
     /// Memory cache capacity (number of entries to cache in memory)
     pub memory_capacity: usize,
-
-    /// Disk cache size (total size of disk-backed cache)
-    #[serde(with = "bytesize_serde")]
-    pub disk_capacity: ByteSize,
-
-    /// Cache block size (size of cache blocks)
-    #[serde(with = "bytesize_serde")]
-    pub block_size: ByteSize,
 
     /// Number of background workers for indexing journal files
     #[serde(default = "default_workers")]
@@ -57,10 +45,7 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            directory: String::from("/var/cache/netdata/log-viewer"),
             memory_capacity: 1000,
-            disk_capacity: ByteSize::mb(32),
-            block_size: ByteSize::mb(4),
             workers: default_workers(),
             queue_capacity: 100,
         }
@@ -212,14 +197,6 @@ impl PluginConfig {
 
         if config.cache.memory_capacity == 0 {
             anyhow::bail!("cache.memory_capacity must be greater than 0");
-        }
-
-        if config.cache.disk_capacity.as_u64() == 0 {
-            anyhow::bail!("cache.disk_capacity must be greater than 0");
-        }
-
-        if config.cache.block_size.as_u64() == 0 {
-            anyhow::bail!("cache.block_size must be greater than 0");
         }
 
         if config.cache.workers == 0 {

@@ -371,25 +371,18 @@ impl CatalogFunction {
     ///
     /// # Arguments
     /// * `monitor` - File system monitor for watching journal directories
-    /// * `cache_dir` - Directory path for disk cache storage
     /// * `memory_capacity` - Number of file indexes to keep in memory
-    /// * `disk_capacity` - Disk cache size in bytes
     /// * `indexing_limits` - Configuration limits for indexing (cardinality, payload size)
     pub async fn new(
         monitor: Monitor,
-        cache_dir: impl Into<std::path::PathBuf>,
         memory_capacity: usize,
-        disk_capacity: usize,
         indexing_limits: IndexingLimits,
     ) -> CatalogResult<Self> {
         let registry = Registry::new(monitor);
 
-        // Create file index cache with disk-backed storage
+        // Create file index cache (in-memory LRU)
         let cache = FileIndexCacheBuilder::new()
-            .with_cache_path(cache_dir)
             .with_memory_capacity(memory_capacity)
-            .with_disk_capacity(disk_capacity)
-            .with_block_size(4 * 1024 * 1024)
             .build()
             .await?;
 

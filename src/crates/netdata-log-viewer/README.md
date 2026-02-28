@@ -135,14 +135,12 @@ netdata-log-viewer/
 
 ## Configuration
 
-The plugin is configured at compile time with sensible defaults:
+The plugin is configured via `otel-signal-viewer.yaml`. Defaults:
 
-- **Journal path**: `/var/log/journal`
-- **Cache directory**: `/mnt/ramfs/foyer-storage`
-- **Memory cache**: 10,000 entries
-- **Disk cache**: 64 MiB
+- **Journal path**: `/var/log/netdata/otel/v1`
+- **Memory cache**: 1,000 entries
 
-To customize, edit `create_shared_state()` in `otel-signal-viewer-plugin/src/main.rs`.
+See [`otel-signal-viewer-plugin/README.md`](otel-signal-viewer-plugin/README.md) for all options.
 
 ## Observability
 

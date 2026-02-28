@@ -418,13 +418,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("limited to {} file(s)", files.len());
     }
 
-    // Create file index cache with a fresh temp directory to avoid cross-backend contamination
-    let cache_dir = tempfile::tempdir()?;
+    // Create file index cache (in-memory LRU)
     let cache = FileIndexCacheBuilder::new()
-        .with_cache_path(cache_dir.path().to_str().unwrap())
-        .with_memory_capacity(1)
-        .with_disk_capacity(8 * 1024 * 1024)
-        .with_block_size(4 * 1024 * 1024)
+        .with_memory_capacity(128)
         .build()
         .await?;
 
@@ -518,9 +514,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         print_stats(&run_stats);
     }
-
-    // Close the cache to flush and shut down I/O tasks gracefully
-    cache.close().await?;
 
     Ok(())
 }

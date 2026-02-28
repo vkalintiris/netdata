@@ -114,7 +114,6 @@ phf = { version = "0.12", default-features = false }
 phf_codegen = "0.12"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
-foyer = { version = "0.20.0", features = ["serde"] }
 lru = "0.16"
 parking_lot = "0.12"
 allocative = "0.3.4"

@@ -9,19 +9,9 @@ journal:
     - "@localstatedir_POST@/log/netdata/otel/v1"
 
 cache:
-  # Directory to store the hybrid cache (memory + disk backed by Foyer)
-  directory: "@cachedir_POST@/otel-signal-viewer"
-
   # Memory cache capacity (number of indexed journal files to keep in memory)
   # Higher values improve query performance but use more RAM
   memory_capacity: 1000
-
-  # Disk cache size (maximum size of the disk-backed cache)
-  # Higher values improve performance for large journal files
-  disk_capacity: "32MB"
-
-  # Cache block size (size of individual cache blocks in Foyer)
-  block_size: "4MB"
 
   # Number of background workers for indexing journal files
   # Default: number of CPU cores (auto-detected)

@@ -1,10 +1,12 @@
 //! Cache types for journal file indexes
 
 use crate::facets::Facets;
-use foyer::HybridCache;
 use journal_index::{FieldName, FileIndex};
 use journal_registry::File;
+use lru::LruCache;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 /// Cache version number. Increment this when the FileIndex or FileIndexKey
 /// schema changes to automatically invalidate old cache entries.
@@ -34,5 +36,27 @@ impl FileIndexKey {
     }
 }
 
-/// Type alias for file index cache using Foyer's HybridCache.
-pub type FileIndexCache = HybridCache<FileIndexKey, FileIndex>;
+/// In-memory LRU cache for file indexes.
+pub struct FileIndexCache {
+    memory: Mutex<LruCache<FileIndexKey, FileIndex>>,
+}
+
+impl FileIndexCache {
+    /// Create a new cache with the given capacity (number of entries).
+    pub fn new(memory_capacity: usize) -> Self {
+        let cap = NonZeroUsize::new(memory_capacity).unwrap_or(NonZeroUsize::new(1).unwrap());
+        Self {
+            memory: Mutex::new(LruCache::new(cap)),
+        }
+    }
+
+    /// Look up a key in the cache, returning a clone of the value if present.
+    pub fn get(&self, key: &FileIndexKey) -> Option<FileIndex> {
+        self.memory.lock().get(key).cloned()
+    }
+
+    /// Insert a key-value pair into the cache.
+    pub fn insert(&self, key: FileIndexKey, index: FileIndex) {
+        self.memory.lock().put(key, index);
+    }
+}

@@ -36,24 +36,18 @@ journal:
 
 ### Cache
 
-The `cache` section configures the hybrid memory and disk cache used for
-indexed journal data.
+The `cache` section configures the in-memory LRU cache used for indexed journal
+data.
 
 | Option             | Default                           | Description                                          |
 |--------------------|-----------------------------------|------------------------------------------------------|
-| `directory`        | `/var/cache/netdata/otel-signal-viewer` | Directory to store the disk-backed cache       |
 | `memory_capacity`  | `1000`                            | Number of indexed journal files to keep in memory    |
-| `disk_capacity`    | `32MB`                            | Maximum size of the disk-backed cache                |
-| `block_size`       | `4MB`                             | Size of individual cache blocks                      |
 | `workers`          | number of CPU cores               | Number of background workers for indexing             |
 | `queue_capacity`   | `100`                             | Queue capacity for pending indexing requests          |
 
 ```yaml
 cache:
-  directory: "/var/cache/netdata/otel-signal-viewer"
   memory_capacity: 1000
-  disk_capacity: "32MB"
-  block_size: "4MB"
   # workers: <number-of-CPU-cores>
   queue_capacity: 100
 ```
