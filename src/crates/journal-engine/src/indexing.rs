@@ -43,9 +43,9 @@ impl FileIndexCacheBuilder {
     }
 
     /// Builds the FileIndexCache with the configured settings.
-    pub async fn build(self) -> Result<FileIndexCache> {
+    pub fn build(self) -> FileIndexCache {
         let memory_capacity = self.memory_capacity.unwrap_or(128);
-        Ok(FileIndexCache::new(memory_capacity))
+        FileIndexCache::new(memory_capacity)
     }
 }
 

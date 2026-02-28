@@ -11,8 +11,6 @@ workspace = true
 allocative = ["dep:allocative", "journal-index/allocative"]
 
 [dependencies]
-async-stream = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 static_assertions = { workspace = true }

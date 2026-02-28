@@ -421,8 +421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create file index cache (in-memory LRU)
     let cache = FileIndexCacheBuilder::new()
         .with_memory_capacity(128)
-        .build()
-        .await?;
+        .build();
 
     info!("created file index cache");
 

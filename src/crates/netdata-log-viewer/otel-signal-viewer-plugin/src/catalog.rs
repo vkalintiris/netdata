@@ -383,8 +383,7 @@ impl CatalogFunction {
         // Create file index cache (in-memory LRU)
         let cache = FileIndexCacheBuilder::new()
             .with_memory_capacity(memory_capacity)
-            .build()
-            .await?;
+            .build();
 
         // Create histogram engine
         let histogram_engine = HistogramEngine::new();
