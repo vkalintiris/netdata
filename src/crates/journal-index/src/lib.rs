@@ -29,7 +29,7 @@ pub mod bitmap;
 pub use bitmap::Bitmap;
 
 pub mod filter;
-pub use filter::Filter;
+pub use filter::{Filter, FstLookup};
 
 pub mod field_types;
 pub use field_types::{FieldName, FieldValuePair};

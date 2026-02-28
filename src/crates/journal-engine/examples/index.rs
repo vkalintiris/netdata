@@ -39,8 +39,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use clap::Parser;
 use journal_engine::{
-    Facets, FileIndexCacheBuilder, FileIndexKey, IndexingLimits, QueryTimeRange,
-    batch_compute_file_indexes,
+    FileIndexCacheBuilder, FileIndexKey, IndexingLimits, QueryTimeRange, batch_compute_file_indexes,
 };
 use journal_index::{FieldName, FileIndex};
 use journal_registry::{Monitor, Registry};
@@ -437,18 +436,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DEFAULT_FACETS.iter().map(|s| s.to_string()).collect()
     };
     info!("indexing {} facets", facet_names.len());
-    let facets = Facets::new(&facet_names);
     let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
 
     let keys: Vec<FileIndexKey> = files
         .iter()
-        .map(|file_info| {
-            FileIndexKey::new(
-                &file_info.file,
-                &facets,
-                Some(source_timestamp_field.clone()),
-            )
-        })
+        .map(|file_info| FileIndexKey::new(&file_info.file, Some(source_timestamp_field.clone())))
         .collect();
 
     // Create a time range for indexing (1 year)
@@ -471,16 +463,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run batch indexing
     let start = std::time::Instant::now();
-    let responses = batch_compute_file_indexes(
-        &cache,
-        &registry,
-        keys,
-        &time_range,
-        cancellation,
-        indexing_limits,
-        None,
-    )
-    .await?;
+    let responses =
+        batch_compute_file_indexes(&cache, &registry, keys, cancellation, indexing_limits, None)
+            .await?;
 
     let index_duration = start.elapsed();
 

@@ -128,17 +128,17 @@ impl FileIndexer {
 impl FileIndexer {
     /// Create a searchable index from a journal file.
     ///
+    /// The index always uses 1-second histogram granularity and indexes all
+    /// discovered fields. This makes the index query-independent and suitable
+    /// for disk persistence.
+    ///
     /// # Arguments
     /// * `file` - The journal file to index
     /// * `source_timestamp_field` - Optional field to use for timestamps
-    /// * `field_names` - Fields to create bitmap indexes for
-    /// * `bucket_duration` - Duration of histogram buckets
     pub fn index(
         &mut self,
         file: &File,
         source_timestamp_field: Option<&FieldName>,
-        field_names: &[FieldName],
-        bucket_duration: Seconds,
     ) -> Result<FileIndex> {
         self.source_timestamp_cursor_pairs = Vec::new();
         self.source_timestamp_entry_offset_pairs = Vec::new();
@@ -189,13 +189,9 @@ impl FileIndexer {
 
         let field_map = journal_file.load_fields()?;
 
-        // Build the file histogram
-        let histogram = self.build_histogram(
-            &journal_file,
-            source_timestamp_field,
-            bucket_duration,
-            tail_object_offset,
-        )?;
+        // Build the file histogram with 1-second granularity
+        let histogram =
+            self.build_histogram(&journal_file, source_timestamp_field, tail_object_offset)?;
 
         // Use the (timestamp, entry-offset) pairs to construct a vector that
         // will contain entry offsets sorted by time
@@ -210,16 +206,12 @@ impl FileIndexer {
         let entries = self.build_entries_index(
             &journal_file,
             &field_map,
-            field_names,
             tail_object_offset,
             universe_size,
             was_online,
         )?;
         let fst_index = fst_index::FstIndex::build(entries)
             .map_err(|e| IndexError::FstBuildError(e.to_string()))?;
-
-        // Convert field_names to HashSet<FieldName> for indexed_fields
-        let indexed_fields: HashSet<FieldName> = field_names.iter().cloned().collect();
 
         let mut file_fields = HashSet::default();
         for field in field_map.keys() {
@@ -233,7 +225,6 @@ impl FileIndexer {
             histogram,
             entry_offsets,
             file_fields,
-            indexed_fields,
             fst_index,
         ))
     }
@@ -242,19 +233,16 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         field_map: &HashMap<Box<str>, Box<str>>,
-        field_names: &[FieldName],
         tail_object_offset: NonZeroU64,
         universe_size: u32,
         was_online: bool,
     ) -> Result<Vec<(FieldValuePair, Bitmap)>> {
         let mut entries_index = Vec::new();
-        let mut truncated_fields: Vec<&FieldName> = Vec::new();
-        let mut fields_with_large_payloads: Vec<&FieldName> = Vec::new();
+        let mut truncated_fields: Vec<FieldName> = Vec::new();
+        let mut fields_with_large_payloads: Vec<FieldName> = Vec::new();
 
-        for field_name in field_names {
-            let Some(systemd_field) = field_map.get(field_name.as_str()) else {
-                continue;
-            };
+        for (otel_name, systemd_field) in field_map {
+            let field_name = FieldName::new_unchecked(otel_name);
 
             // Get the data object iterator for this field
             let field_data_iterator =
@@ -376,22 +364,24 @@ impl FileIndexer {
 
             // Track fields that were truncated or had large payloads skipped
             if was_truncated {
+                if ignored_large_payloads > 0 {
+                    fields_with_large_payloads.push(field_name.clone());
+                }
                 truncated_fields.push(field_name);
-            }
-            if ignored_large_payloads > 0 {
+            } else if ignored_large_payloads > 0 {
                 fields_with_large_payloads.push(field_name);
             }
         }
 
         // Log summary of indexing issues.
         if !truncated_fields.is_empty() {
-            let field_names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
+            let names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
             let msg = format!(
                 "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
                 journal_file.file().path(),
                 truncated_fields.len(),
                 self.limits.max_unique_values_per_field,
-                field_names
+                names
             );
             if was_online {
                 trace!("{msg}");
@@ -400,7 +390,7 @@ impl FileIndexer {
             }
         }
         if !fields_with_large_payloads.is_empty() {
-            let field_names: Vec<&str> = fields_with_large_payloads
+            let names: Vec<&str> = fields_with_large_payloads
                 .iter()
                 .map(|f| f.as_str())
                 .collect();
@@ -408,7 +398,7 @@ impl FileIndexer {
                 "File '{}': {} field(s) had values skipped due to large payloads: {:?}",
                 journal_file.file().path(),
                 fields_with_large_payloads.len(),
-                field_names
+                names
             );
             if was_online {
                 trace!("{msg}");
@@ -519,9 +509,9 @@ impl FileIndexer {
         &mut self,
         journal_file: &JournalFile<Mmap>,
         source_timestamp_field_name: Option<&FieldName>,
-        bucket_duration: Seconds,
         tail_object_offset: NonZeroU64,
     ) -> Result<Histogram> {
+        let bucket_duration = Seconds(1);
         // Collect information from the source timestamp field
         if let Some(source_field_name) = source_timestamp_field_name {
             self.collect_source_field_info(journal_file, source_field_name.as_bytes())?;

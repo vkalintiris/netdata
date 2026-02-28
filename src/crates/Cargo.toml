@@ -6,6 +6,7 @@ members = [
     "journal-common",
     "journal-core",
     "journal-index",
+    "journal-file-index",
     "fst-index",
     "treight",
     "split-fst",
@@ -145,6 +146,7 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 journal-common = { path = "journal-common" }
 journal-core = { path = "journal-core" }
 journal-index = { path = "journal-index", default-features = false }
+journal-file-index = { path = "journal-file-index" }
 journal-log-writer = { path = "journal-log-writer" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }

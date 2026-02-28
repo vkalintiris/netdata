@@ -68,12 +68,8 @@ async fn run_plugin() -> std::result::Result<(), Box<dyn std::error::Error>> {
         max_unique_values_per_field: config.indexing.max_unique_values_per_field,
         max_field_payload_size: config.indexing.max_field_payload_size,
     };
-    let catalog_function = CatalogFunction::new(
-        monitor,
-        config.cache.memory_capacity,
-        indexing_limits,
-    )
-    .await?;
+    let catalog_function =
+        CatalogFunction::new(monitor, config.cache.memory_capacity, indexing_limits).await?;
 
     // Watch configured journal directories
     for path in &config.journal.paths {

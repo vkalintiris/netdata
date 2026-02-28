@@ -7,7 +7,6 @@
 use crate::{
     cache::{FileIndexCache, FileIndexKey},
     error::{EngineError, Result},
-    query_time_range::QueryTimeRange,
 };
 use journal_index::{FileIndex, FileIndexer, IndexingLimits};
 use journal_registry::Registry;
@@ -71,8 +70,7 @@ impl Default for FileIndexCacheBuilder {
 /// # Arguments
 /// * `cache` - The file index cache
 /// * `registry` - Registry to update with file metadata
-/// * `keys` - Vector of (file, facets, source_timestamp_field) to fetch/compute indexes for
-/// * `time_range` - Query time range for bucket duration calculation
+/// * `keys` - Vector of (file, source_timestamp_field) to fetch/compute indexes for
 /// * `cancellation` - Token to signal cancellation from the caller
 /// * `indexing_limits` - Configuration limits for indexing (cardinality, payload size)
 /// * `progress_counter` - Optional atomic counter incremented after each file is indexed
@@ -84,20 +82,16 @@ pub async fn batch_compute_file_indexes(
     cache: &FileIndexCache,
     registry: &Registry,
     keys: Vec<FileIndexKey>,
-    time_range: &QueryTimeRange,
     cancellation: CancellationToken,
     indexing_limits: IndexingLimits,
     progress_counter: Option<Arc<AtomicUsize>>,
 ) -> Result<Vec<(FileIndexKey, FileIndex)>> {
-    let bucket_duration = time_range.bucket_duration_seconds();
-
     // Phase 1: Batch check cache for all keys upfront (synchronous LRU lookup)
     let mut responses = Vec::with_capacity(keys.len());
     let mut keys_to_compute = Vec::new();
     let mut cache_hits = 0;
     let mut cache_misses = 0;
     let mut stale_entries = 0;
-    let mut incompatible_bucket = 0;
 
     for key in keys {
         if cancellation.is_cancelled() {
@@ -106,20 +100,11 @@ pub async fn batch_compute_file_indexes(
 
         match cache.get(&key) {
             Some(file_index) => {
-                let fresh = file_index.is_fresh();
-                let bucket_ok = file_index.bucket_duration() <= bucket_duration
-                    && bucket_duration.is_multiple_of(file_index.bucket_duration());
-
-                if fresh && bucket_ok {
+                if file_index.is_fresh() {
                     cache_hits += 1;
                     responses.push((key, file_index));
                 } else {
-                    if !fresh {
-                        stale_entries += 1;
-                    }
-                    if !bucket_ok {
-                        incompatible_bucket += 1;
-                    }
+                    stale_entries += 1;
                     keys_to_compute.push(key);
                 }
             }
@@ -135,8 +120,8 @@ pub async fn batch_compute_file_indexes(
     }
 
     trace!(
-        "phase 2 summary: hits={}, misses={}, stale={}, incompatible_bucket={}",
-        cache_hits, cache_misses, stale_entries, incompatible_bucket
+        "phase 2 summary: hits={}, misses={}, stale={}",
+        cache_hits, cache_misses, stale_entries
     );
 
     // Phase 3: Spawn single blocking task with rayon for parallel computation
@@ -163,12 +148,7 @@ pub async fn batch_compute_file_indexes(
 
                 let mut file_indexer = FileIndexer::new(indexing_limits);
                 let result = file_indexer
-                    .index(
-                        &key.file,
-                        key.source_timestamp_field.as_ref(),
-                        key.facets.as_slice(),
-                        bucket_duration,
-                    )
+                    .index(&key.file, key.source_timestamp_field.as_ref())
                     .map_err(|e| e.into());
 
                 if result.is_ok() {

@@ -13,8 +13,8 @@ use tracing::{error, instrument, trace, warn};
 
 // Import types from journal-function crate
 use journal_function::{
-    Facets, FileIndexCache, FileIndexCacheBuilder, FileIndexKey, HistogramEngine, IndexingLimits,
-    Monitor, Registry, Result as CatalogResult, netdata,
+    FileIndexCache, FileIndexCacheBuilder, FileIndexKey, HistogramEngine, IndexingLimits, Monitor,
+    Registry, Result as CatalogResult, netdata,
 };
 
 /*
@@ -30,6 +30,65 @@ pub type CatalogResponse = netdata::JournalResponse;
 
 use journal_index::Filter;
 use journal_index::{FieldName, FieldValuePair, Microseconds, Seconds};
+
+/// Default facet fields when the request does not specify any.
+const DEFAULT_FACETS: &[&str] = &[
+    "_HOSTNAME",
+    "PRIORITY",
+    "SYSLOG_FACILITY",
+    "ERRNO",
+    "SYSLOG_IDENTIFIER",
+    "USER_UNIT",
+    "MESSAGE_ID",
+    "_BOOT_ID",
+    "_SYSTEMD_OWNER_UID",
+    "_UID",
+    "OBJECT_SYSTEMD_OWNER_UID",
+    "OBJECT_UID",
+    "_GID",
+    "OBJECT_GID",
+    "_CAP_EFFECTIVE",
+    "_AUDIT_LOGINUID",
+    "OBJECT_AUDIT_LOGINUID",
+    "CODE_FUNC",
+    "ND_LOG_SOURCE",
+    "CODE_FILE",
+    "ND_ALERT_NAME",
+    "ND_ALERT_CLASS",
+    "_SELINUX_CONTEXT",
+    "_MACHINE_ID",
+    "ND_ALERT_TYPE",
+    "_SYSTEMD_SLICE",
+    "_EXE",
+    "_NAMESPACE",
+    "_TRANSPORT",
+    "_RUNTIME_SCOPE",
+    "_STREAM_ID",
+    "ND_NIDL_CONTEXT",
+    "ND_ALERT_STATUS",
+    "ND_NIDL_NODE",
+    "ND_ALERT_COMPONENT",
+    "_COMM",
+    "_SYSTEMD_USER_UNIT",
+    "_SYSTEMD_USER_SLICE",
+    "__logs_sources",
+    "log.severity_number",
+];
+
+/// Resolve facet field names from the request, falling back to defaults.
+fn resolve_facets(request_facets: &[String]) -> Vec<FieldName> {
+    if request_facets.is_empty() {
+        DEFAULT_FACETS
+            .iter()
+            .filter_map(|s| FieldName::new(s))
+            .collect()
+    } else {
+        request_facets
+            .iter()
+            .filter_map(|s| FieldName::new(s))
+            .collect()
+    }
+}
 
 /// Builds a Filter from the selections HashMap
 #[instrument(skip(selections))]
@@ -487,20 +546,11 @@ impl FunctionHandler for CatalogFunction {
         let filter_expr = build_filter_from_selections(&request.selections);
         trace!("[{}] filter expression: {}", txn.id(), filter_expr);
 
-        // Build facets for file indexes
-        let facets = Facets::new(&request.facets);
-        trace!(
-            "[{}] using {} facets with precomputed hash {}",
-            txn.id(),
-            facets.len(),
-            facets.precomputed_hash()
-        );
-
         // Build file index keys
         let source_timestamp_field = FieldName::new_unchecked("_SOURCE_REALTIME_TIMESTAMP");
         let keys: Vec<FileIndexKey> = files
             .iter()
-            .map(|f| FileIndexKey::new(&f.file, &facets, Some(source_timestamp_field.clone())))
+            .map(|f| FileIndexKey::new(&f.file, Some(source_timestamp_field.clone())))
             .collect();
 
         // Progress is reported in two phases: indexing and querying.
@@ -516,7 +566,6 @@ impl FunctionHandler for CatalogFunction {
             &self.inner.cache,
             &self.inner.registry,
             keys,
-            &time_range,
             ctx.cancellation.clone(),
             self.inner.indexing_limits,
             Some(ctx.progress.done_counter()),
@@ -554,12 +603,15 @@ impl FunctionHandler for CatalogFunction {
             }
         }
 
+        // Resolve which facet fields to include in the histogram response
+        let facets = resolve_facets(&request.facets);
+
         // Compute histogram from pre-indexed files
         let op_start = std::time::Instant::now();
         let histogram = self
             .inner
             .histogram_engine
-            .compute_from_indexes(&indexed_files, &time_range, &request.facets, &filter_expr)
+            .compute_from_indexes(&indexed_files, &time_range, &facets, &filter_expr)
             .map_err(|e| {
                 let msg = format!("[{}] failed to compute histogram: {}", txn.id(), e);
                 netdata_plugin_error::NetdataPluginError::Other { message: msg }

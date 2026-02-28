@@ -1494,6 +1494,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "journal-file-index"
+version = "0.1.3"
+dependencies = [
+ "bincode",
+ "clap",
+ "fst-index",
+ "journal-common",
+ "journal-core",
+ "journal-index",
+ "journal-registry",
+ "serde",
+ "split-fst",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tikv-jemallocator",
+ "tracing",
+ "tracing-subscriber",
+ "treight",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "journal-function"
 version = "0.1.3"
 dependencies = [

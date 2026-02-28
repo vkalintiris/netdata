@@ -3,7 +3,6 @@
 //! These tests verify that pagination works correctly when querying log entries,
 //! especially in the edge case where many entries share the same timestamp.
 
-use journal_common::Seconds;
 use journal_core::file::{CreateJournalFile, HashTableConfig, JournalWriter};
 use journal_core::repository::File;
 use journal_index::{
@@ -110,16 +109,8 @@ fn test_pagination_forward_with_same_timestamps() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let entry_id_field = FieldName::new("ENTRY_ID").unwrap();
     let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            Some(&source_timestamp_field),
-            &[entry_id_field],
-            Seconds(3600),
-        )
-        .unwrap();
+    let file_index = indexer.index(&file, Some(&source_timestamp_field)).unwrap();
 
     let mut all_offsets = Vec::new();
     let mut all_positions = HashSet::new();
@@ -239,16 +230,8 @@ fn test_pagination_backward_with_same_timestamps() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let entry_id_field = FieldName::new("ENTRY_ID").unwrap();
     let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            Some(&source_timestamp_field),
-            &[entry_id_field],
-            Seconds(3600),
-        )
-        .unwrap();
+    let file_index = indexer.index(&file, Some(&source_timestamp_field)).unwrap();
 
     let mut all_offsets = Vec::new();
     let mut all_positions = HashSet::new();
@@ -381,16 +364,8 @@ fn test_pagination_forward_with_mixed_timestamps() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let entry_id_field = FieldName::new("ENTRY_ID").unwrap();
     let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            Some(&source_timestamp_field),
-            &[entry_id_field],
-            Seconds(3600),
-        )
-        .unwrap();
+    let file_index = indexer.index(&file, Some(&source_timestamp_field)).unwrap();
 
     let mut all_offsets = Vec::new();
     let mut all_positions = HashSet::new();
@@ -446,7 +421,7 @@ fn test_pagination_empty_journal() {
     let mut indexer = FileIndexer::default();
 
     // Indexing an empty journal should fail with EmptyHistogramInput
-    let result = indexer.index(&file, None, &[], Seconds(3600));
+    let result = indexer.index(&file, None);
     assert!(result.is_err(), "Empty journal should fail to index");
 }
 
@@ -458,7 +433,7 @@ fn test_pagination_single_entry() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query forward with large limit
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -518,7 +493,7 @@ fn test_pagination_two_entries() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Forward: Get both entries at once with limit 10
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -607,7 +582,7 @@ fn test_pagination_limit_zero() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query with limit 0 should return empty results
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -641,7 +616,7 @@ fn test_pagination_limit_exact_match() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query with limit exactly equal to total entries
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -678,7 +653,7 @@ fn test_pagination_limit_exceeds_total() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query with limit much larger than total entries
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -725,7 +700,7 @@ fn test_pagination_resume_out_of_bounds() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Forward: Resume from position equal to total entries (at boundary)
     let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
@@ -842,7 +817,7 @@ fn test_pagination_anchor_before_all_entries() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Anchor at 09:00 (before all entries), going forward
     let anchor_timestamp = Microseconds(base_timestamp.0 + 9 * 3600_000_000);
@@ -890,7 +865,7 @@ fn test_pagination_anchor_after_all_entries() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Anchor at 13:00 (after all entries), going forward
     let anchor_timestamp = Microseconds(base_timestamp.0 + 13 * 3600_000_000);
@@ -942,7 +917,7 @@ fn test_pagination_anchor_in_middle_with_pagination() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Anchor at 12:00 (middle), going forward with limit 2
     let anchor_timestamp = Microseconds(base_timestamp.0 + 12 * 3600_000_000);
@@ -1019,7 +994,7 @@ fn test_pagination_with_time_boundaries() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query with after and before boundaries: entries from hour 5 to hour 15 (exclusive)
     // That's entries 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 (10 entries total)
@@ -1122,7 +1097,7 @@ fn test_pagination_backward_with_time_boundaries() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Query backward with boundaries: entries from hour 5 to hour 15 (exclusive)
     // That's entries 5-14 (10 entries total), going backward from 14 to 5

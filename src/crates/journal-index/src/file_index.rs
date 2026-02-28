@@ -1,3 +1,4 @@
+use crate::filter::FstLookup;
 use crate::{Bitmap, FieldName, Histogram, IndexError, Microseconds, Result, Seconds};
 use journal_core::collections::{HashMap, HashSet};
 use journal_core::file::{JournalFile, Mmap, OpenJournalFile};
@@ -41,8 +42,6 @@ pub struct FileIndex {
     entry_offsets: Vec<u32>,
     // Set of fields in the file
     file_fields: HashSet<FieldName>,
-    // Set of fields that were requested to be indexed
-    indexed_fields: HashSet<FieldName>,
     // FST index mapping FieldValuePair byte strings to Bitmaps
     #[cfg_attr(feature = "allocative", allocative(skip))]
     fst_index: FstIndex,
@@ -50,7 +49,6 @@ pub struct FileIndex {
 
 impl FileIndex {
     /// Create a new file index.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         file: File,
         indexed_at: Seconds,
@@ -58,7 +56,6 @@ impl FileIndex {
         histogram: Histogram,
         entry_offsets: Vec<u32>,
         fields: HashSet<FieldName>,
-        indexed_fields: HashSet<FieldName>,
         fst_index: FstIndex,
     ) -> Self {
         Self {
@@ -68,7 +65,6 @@ impl FileIndex {
             histogram,
             entry_offsets,
             file_fields: fields,
-            indexed_fields,
             fst_index,
         }
     }
@@ -144,11 +140,6 @@ impl FileIndex {
         &self.file_fields
     }
 
-    /// Get all indexed field names.
-    pub fn indexed_fields(&self) -> &HashSet<FieldName> {
-        &self.indexed_fields
-    }
-
     /// Get the FST index mapping field=value pairs to bitmaps.
     pub fn fst_index(&self) -> &FstIndex {
         &self.fst_index
@@ -156,8 +147,7 @@ impl FileIndex {
 
     /// Serialize to bincode + zstd compressed bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let raw =
-            bincode::serialize(self).map_err(|e| IndexError::Serialization(e.to_string()))?;
+        let raw = bincode::serialize(self).map_err(|e| IndexError::Serialization(e.to_string()))?;
         zstd::encode_all(&raw[..], 3).map_err(|e| IndexError::Serialization(e.to_string()))
     }
 
@@ -169,8 +159,11 @@ impl FileIndex {
     }
 
     /// Check if a field is indexed.
+    ///
+    /// Since we now index all discovered fields, this is equivalent to
+    /// checking whether the field exists in the file.
     pub fn is_indexed(&self, field: &FieldName) -> bool {
-        self.indexed_fields.contains(field)
+        self.file_fields.contains(field)
     }
 
     /// Count entries (from a bitmap) that fall within a time range.
@@ -182,6 +175,16 @@ impl FileIndex {
     ) -> Option<usize> {
         self.histogram
             .count_entries_in_time_range(bitmap, start_time, end_time)
+    }
+}
+
+impl FstLookup for FileIndex {
+    fn fst_get(&self, key: &[u8]) -> Option<&Bitmap> {
+        self.fst_index.get(key)
+    }
+
+    fn fst_prefix_values(&self, prefix: &[u8]) -> Vec<&Bitmap> {
+        self.fst_index.prefix_values(prefix)
     }
 }
 
@@ -845,7 +848,7 @@ impl FileIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FieldName, FileIndexer};
+    use crate::FileIndexer;
     use journal_core::file::{CreateJournalFile, HashTableConfig, JournalWriter};
     use journal_core::repository::File;
     use tempfile::TempDir;
@@ -882,11 +885,8 @@ mod tests {
             w.add_entry(&mut jf, &fields, ts, ts).unwrap();
         }
 
-        let priority = FieldName::new("PRIORITY").unwrap();
         let mut indexer = FileIndexer::default();
-        let idx = indexer
-            .index(&file, None, &[priority], Seconds(3600))
-            .unwrap();
+        let idx = indexer.index(&file, None).unwrap();
 
         (temp_dir, idx)
     }
@@ -905,10 +905,12 @@ mod tests {
         assert_eq!(original.num_buckets(), restored.num_buckets());
         assert_eq!(original.start_time(), restored.start_time());
         assert_eq!(original.end_time(), restored.end_time());
-        assert_eq!(original.entry_offsets().len(), restored.entry_offsets().len());
+        assert_eq!(
+            original.entry_offsets().len(),
+            restored.entry_offsets().len()
+        );
         assert_eq!(original.entry_offsets(), restored.entry_offsets());
         assert_eq!(original.fields(), restored.fields());
-        assert_eq!(original.indexed_fields(), restored.indexed_fields());
         assert_eq!(original.fst_index().len(), restored.fst_index().len());
     }
 

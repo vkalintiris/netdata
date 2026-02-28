@@ -3,7 +3,6 @@
 //! These tests create actual journal files, index them, and verify that
 //! filter evaluation produces correct results.
 
-use journal_common::Seconds;
 use journal_core::file::{CreateJournalFile, HashTableConfig, JournalWriter};
 use journal_core::repository::File;
 use journal_index::{FieldName, FieldValuePair, FileIndexer, Filter, Microseconds};
@@ -117,10 +116,7 @@ fn test_filter_field_value_pair_single_match() {
 
     let mut indexer = FileIndexer::default();
 
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Create and evaluate filter for PRIORITY=3
     let pair = FieldValuePair::parse("PRIORITY=3").unwrap();
@@ -147,11 +143,8 @@ fn test_filter_field_name_matches_all_values() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
     let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field.clone()], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Create filter that matches any PRIORITY field
     let filter = Filter::match_field_name(priority_field);
@@ -185,16 +178,7 @@ fn test_filter_and_combination() {
 
     let mut indexer = FileIndexer::default();
 
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let hostname_field = FieldName::new("_HOSTNAME").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            None,
-            &[priority_field, hostname_field],
-            Seconds(3600),
-        )
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Filter: PRIORITY=3 AND _HOSTNAME=server1
     let filter = Filter::and(vec![
@@ -224,11 +208,7 @@ fn test_filter_or_combination() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Filter: PRIORITY=3 OR PRIORITY=6
     let filter = Filter::or(vec![
@@ -254,11 +234,7 @@ fn test_filter_none() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Create a None filter
     let filter = Filter::none();
@@ -277,11 +253,7 @@ fn test_filter_nonexistent_field() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Filter for a field that wasn't indexed
     let filter =
@@ -316,13 +288,7 @@ fn test_filter_complex_nested() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let fields = vec![
-        FieldName::new("PRIORITY").unwrap(),
-        FieldName::new("_HOSTNAME").unwrap(),
-        FieldName::new("SYSLOG_IDENTIFIER").unwrap(),
-    ];
-    let file_index = indexer.index(&file, None, &fields, Seconds(3600)).unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Complex filter: (PRIORITY=3 AND _HOSTNAME=server1) OR SYSLOG_IDENTIFIER=kernel
     let filter = Filter::or(vec![
@@ -354,11 +320,7 @@ fn test_filter_empty_and() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Empty AND should produce a None filter
     let filter = Filter::and(vec![]);
@@ -376,11 +338,7 @@ fn test_filter_empty_or() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Empty OR should produce a None filter
     let filter = Filter::or(vec![]);
@@ -411,23 +369,15 @@ fn test_file_index_metadata() {
 
     let priority_field = FieldName::new("PRIORITY").unwrap();
     let hostname_field = FieldName::new("_HOSTNAME").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            None,
-            &[priority_field.clone(), hostname_field.clone()],
-            Seconds(3600),
-        )
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Verify file reference
     assert_eq!(file_index.file(), &file);
 
-    // Verify time range (stored in seconds, with 1-hour bucket duration)
-    // Start time should be rounded down to the nearest bucket
+    // Verify time range (stored in seconds, with 1-second bucket duration)
     assert_eq!(file_index.start_time().0, 1704067200); // Exact start
-    // End time is start of last bucket + bucket_duration
-    assert_eq!(file_index.end_time().0, 1704074400 + 3600); // 2 hours + bucket size
+    // End time is start of last bucket + bucket_duration (1s)
+    assert_eq!(file_index.end_time().0, 1704074400 + 1); // 2 hours + 1s bucket
 
     // Verify file fields (all fields present in the journal)
     let file_fields = file_index.fields();
@@ -436,10 +386,10 @@ fn test_file_index_metadata() {
     assert!(file_fields.contains(&FieldName::new("MESSAGE").unwrap()));
     assert!(file_fields.contains(&FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap()));
 
-    // Verify indexed fields (only fields we asked to index)
+    // All discovered fields are now indexed
     assert!(file_index.is_indexed(&priority_field));
     assert!(file_index.is_indexed(&hostname_field));
-    assert!(!file_index.is_indexed(&FieldName::new("MESSAGE").unwrap()));
+    assert!(file_index.is_indexed(&FieldName::new("MESSAGE").unwrap()));
 
     // Verify entry count
     assert_eq!(file_index.total_entries(), 3);
@@ -449,9 +399,6 @@ fn test_file_index_metadata() {
     assert!(fst.contains_key(b"PRIORITY=3"));
     assert!(fst.contains_key(b"PRIORITY=6"));
     assert!(fst.contains_key(b"_HOSTNAME=server1"));
-
-    // MESSAGE field values should not be indexed
-    assert!(!fst.contains_key(b"MESSAGE=test message"));
 }
 
 #[test]
@@ -466,14 +413,10 @@ fn test_source_timestamp_ordering() {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
 
     let mut indexer = FileIndexer::default();
-
-    let priority_field = FieldName::new("PRIORITY").unwrap();
     let source_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
 
     // Index WITH source timestamp field - entries should be ordered by source time
-    let file_index = indexer
-        .index(&file, Some(&source_field), &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, Some(&source_field)).unwrap();
 
     // After indexing with source timestamp, entries should be reordered:
     // Index 0: +1 hour (original entry 1) - PRIORITY=6
@@ -482,7 +425,7 @@ fn test_source_timestamp_ordering() {
 
     // Verify time range reflects source timestamp order (in seconds)
     let expected_start = (add_time(JAN_1_2024_MIDNIGHT, hours(1)).0 / 1_000_000) as u32; // +1 hour in seconds
-    let expected_end = ((add_time(JAN_1_2024_MIDNIGHT, hours(3)).0 / 1_000_000) + 3600) as u32; // +3 hours + bucket duration
+    let expected_end = ((add_time(JAN_1_2024_MIDNIGHT, hours(3)).0 / 1_000_000) + 1) as u32; // +3 hours + 1s bucket
     assert_eq!(file_index.start_time().0, expected_start);
     assert_eq!(file_index.end_time().0, expected_end);
 
@@ -519,12 +462,8 @@ fn test_indexing_without_source_timestamp() {
 
     let mut indexer = FileIndexer::default();
 
-    let priority_field = FieldName::new("PRIORITY").unwrap();
-
     // Index WITHOUT source timestamp field (None)
-    let file_index = indexer
-        .index(&file, None, &[priority_field], Seconds(3600))
-        .unwrap();
+    let file_index = indexer.index(&file, None).unwrap();
 
     // Verify entries maintain their natural order
     let fst = file_index.fst_index();

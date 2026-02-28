@@ -44,6 +44,7 @@ use std::io::Write;
 const MAGIC: &[u8; 4] = b"SFST";
 const VERSION: u32 = 1;
 const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
+const CHUNK_META: gix_chunk::Id = *b"META";
 const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
 
 fn hc_chunk_id(index: u16) -> gix_chunk::Id {
@@ -104,6 +105,7 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<FstIndex<T>, Error> {
 /// is a standalone function, callers can run it in parallel with rayon before
 /// collecting results into the writer.
 pub struct Writer {
+    metadata: Option<Vec<u8>>,
     primary: Option<Vec<u8>>,
     chunks: Vec<Vec<u8>>,
 }
@@ -111,9 +113,15 @@ pub struct Writer {
 impl Writer {
     pub fn new() -> Self {
         Self {
+            metadata: None,
             primary: None,
             chunks: Vec::new(),
         }
+    }
+
+    /// Set the metadata chunk (pre-compressed bytes, e.g. bincode + zstd).
+    pub fn set_metadata(&mut self, packed: Vec<u8>) {
+        self.metadata = Some(packed);
     }
 
     /// Set the primary chunk (packed bytes).
@@ -131,7 +139,8 @@ impl Writer {
     /// Serialize the entire split-FST file to `w`.
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
-        let num_chunks = 1 + self.chunks.len(); // primary + secondaries
+        let has_meta = self.metadata.is_some();
+        let num_chunks = if has_meta { 1 } else { 0 } + 1 + self.chunks.len(); // meta? + primary + secondaries
 
         // Header
         w.write_all(MAGIC)?;
@@ -140,6 +149,9 @@ impl Writer {
 
         // Plan chunks
         let mut index = gix_chunk::file::Index::for_writing();
+        if let Some(meta) = &self.metadata {
+            index.plan_chunk(CHUNK_META, meta.len() as u64);
+        }
         index.plan_chunk(CHUNK_PRIMARY, primary.len() as u64);
         for (i, chunk) in self.chunks.iter().enumerate() {
             index.plan_chunk(hc_chunk_id(i as u16), chunk.len() as u64);
@@ -149,6 +161,13 @@ impl Writer {
         let mut chunk_writer = index
             .into_write(&mut *w, HEADER_SIZE)
             .map_err(|e| Error::Toc(format!("{e}")))?;
+
+        // Metadata (optional)
+        if let Some(meta) = &self.metadata {
+            let id = chunk_writer.next_chunk().expect("expected META chunk");
+            assert_eq!(id, CHUNK_META);
+            chunk_writer.write_all(meta)?;
+        }
 
         // Primary
         let id = chunk_writer.next_chunk().expect("expected primary chunk");
@@ -176,6 +195,18 @@ impl Default for Writer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Serialize a value with bincode, then compress with zstd.
+pub fn pack_metadata<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> {
+    let serialized = bincode::serialize(value)?;
+    zstd::encode_all(&serialized[..], zstd_level).map_err(|e| Error::Zstd(e.to_string()))
+}
+
+/// Decompress zstd, then deserialize with bincode.
+pub fn unpack_metadata<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
+    let decompressed = zstd::decode_all(data).map_err(|e| Error::Zstd(e.to_string()))?;
+    Ok(bincode::deserialize(&decompressed)?)
 }
 
 // ── Reader ───────────────────────────────────────────────────────
@@ -210,17 +241,33 @@ impl<'a> Reader<'a> {
         let toc = gix_chunk::file::Index::from_bytes(data, HEADER_SIZE, num_chunks)
             .map_err(|e| Error::Toc(format!("{e}")))?;
 
-        let num_secondary = if num_chunks > 0 {
-            (num_chunks - 1) as u16
-        } else {
-            0
-        };
+        // Determine how many non-secondary chunks exist (META + PRIM)
+        let has_meta = toc.data_by_id(data, CHUNK_META).is_ok();
+        let non_secondary = if has_meta { 2 } else { 1 }; // META + PRIM or just PRIM
+        let num_secondary = num_chunks.saturating_sub(non_secondary) as u16;
 
         Ok(Self {
             data,
             toc,
             num_secondary,
         })
+    }
+
+    /// Decompress and deserialize the metadata chunk.
+    pub fn metadata<T: DeserializeOwned>(&self) -> Result<T, Error> {
+        unpack_metadata(self.metadata_raw()?)
+    }
+
+    /// Raw compressed bytes of the metadata chunk.
+    pub fn metadata_raw(&self) -> Result<&'a [u8], Error> {
+        self.toc
+            .data_by_id(self.data, CHUNK_META)
+            .map_err(|e| Error::Toc(format!("{e}")))
+    }
+
+    /// Whether a metadata chunk is present.
+    pub fn has_metadata(&self) -> bool {
+        self.toc.data_by_id(self.data, CHUNK_META).is_ok()
     }
 
     /// Decompress and deserialize the primary chunk.
@@ -311,6 +358,79 @@ mod tests {
 
         let c1: FstIndex<u64> = reader.chunk(1).unwrap();
         assert_eq!(c1.get(b"z"), Some(&30));
+    }
+
+    #[test]
+    fn round_trip_with_metadata() {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct TestMeta {
+            name: String,
+            count: u32,
+        }
+
+        let meta = TestMeta {
+            name: "test-file".to_string(),
+            count: 42,
+        };
+        let meta_packed = pack_metadata(&meta, 1).unwrap();
+
+        let fst: FstIndex<u64> = FstIndex::build([("a", 1u64), ("b", 2)]).unwrap();
+        let fst_packed = pack(&fst, 1).unwrap();
+
+        let mut writer = Writer::new();
+        writer.set_metadata(meta_packed);
+        writer.set_primary(fst_packed);
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.has_metadata());
+        assert_eq!(reader.chunk_count(), 0);
+
+        let meta_read: TestMeta = reader.metadata().unwrap();
+        assert_eq!(meta_read, meta);
+
+        let fst_read: FstIndex<u64> = reader.primary().unwrap();
+        assert_eq!(fst_read.get(b"a"), Some(&1));
+        assert_eq!(fst_read.get(b"b"), Some(&2));
+    }
+
+    #[test]
+    fn round_trip_metadata_with_chunks() {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct TestMeta {
+            fields: Vec<String>,
+        }
+
+        let meta = TestMeta {
+            fields: vec!["MESSAGE".to_string(), "PRIORITY".to_string()],
+        };
+
+        let primary: FstIndex<u64> = FstIndex::build([("low=a", 1u64), ("low=b", 2)]).unwrap();
+        let hc0: FstIndex<u64> = FstIndex::build([("val1", 10u64), ("val2", 20)]).unwrap();
+
+        let mut writer = Writer::new();
+        writer.set_metadata(pack_metadata(&meta, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
+        let idx = writer.add_chunk(pack(&hc0, 1).unwrap());
+        assert_eq!(idx, 0);
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.has_metadata());
+        assert_eq!(reader.chunk_count(), 1);
+
+        let meta_read: TestMeta = reader.metadata().unwrap();
+        assert_eq!(meta_read, meta);
+
+        let p: FstIndex<u64> = reader.primary().unwrap();
+        assert_eq!(p.get(b"low=a"), Some(&1));
+
+        let c0: FstIndex<u64> = reader.chunk(0).unwrap();
+        assert_eq!(c0.get(b"val1"), Some(&10));
     }
 
     #[test]
