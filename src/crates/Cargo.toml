@@ -7,6 +7,7 @@ members = [
     "journal-core",
     "journal-index",
     "journal-file-index",
+    "journal-chunk",
     "fst-index",
     "treight",
     "split-fst",
@@ -147,6 +148,7 @@ journal-common = { path = "journal-common" }
 journal-core = { path = "journal-core" }
 journal-index = { path = "journal-index", default-features = false }
 journal-file-index = { path = "journal-file-index" }
+journal-chunk = { path = "journal-chunk" }
 journal-log-writer = { path = "journal-log-writer" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
