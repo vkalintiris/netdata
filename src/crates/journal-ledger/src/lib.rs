@@ -38,16 +38,12 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         }
     };
 
-    // Signal ready — no function declarations yet
+    // Signal ready — no function declarations yet.
     conn.send(LedgerResponse::Ready {
         declarations: vec![],
     })
     .await?;
     tracing::info!("signaled ready to supervisor");
-
-    // TODO(debug): remove — artificial delay to reproduce the race between
-    // ledger binding the writer socket and the ingestor connecting to it.
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
     let mut ledger = JournalLedger::new(
         &config.writer_socket_path,
@@ -207,7 +203,9 @@ impl JournalLedger {
             }
         }
 
-        // Phase 3: All pending work is done — accept the ingestor connection.
+        tracing::info!("recovery complete");
+
+        // Accept the ingestor's connection on the writer socket.
         let mut listener = WalListener::new(writer_socket_path)?;
         let writer = listener.accept().await?;
         tracing::info!("ingestor connected to writer socket");
