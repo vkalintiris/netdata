@@ -73,7 +73,10 @@ impl Supervisor {
 
         match self.ingestor.recv().await.context("ingestor handshake")? {
             IngestorResponse::Ready { declarations } => {
-                tracing::info!("ingestor reported ready with {} function declarations", declarations.len());
+                tracing::info!(
+                    "ingestor reported ready with {} function declarations",
+                    declarations.len()
+                );
                 for decl in declarations {
                     tracing::info!("registered ingestor function: {}", decl.name);
                     self.routing.insert(decl.name.clone(), Worker::Ingestor);
@@ -99,7 +102,10 @@ impl Supervisor {
 
         match self.ledger.recv().await.context("ledger handshake")? {
             LedgerResponse::Ready { declarations } => {
-                tracing::info!("ledger reported ready with {} function declarations", declarations.len());
+                tracing::info!(
+                    "ledger reported ready with {} function declarations",
+                    declarations.len()
+                );
                 for decl in declarations {
                     tracing::info!("registered ledger function: {}", decl.name);
                     self.routing.insert(decl.name.clone(), Worker::Ledger);
