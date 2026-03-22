@@ -109,7 +109,7 @@ async fn in_process_type_mismatch() {
         .unwrap();
 
     let result = Connection::<String, String>::connect(Endpoint::in_process(name))
-        .max_retries(1)
+        .max_retries(Some(1))
         .open()
         .await;
 
@@ -123,7 +123,7 @@ async fn in_process_connect_before_bind() {
     let connect = tokio::spawn(async move {
         Connection::<u32, u32>::connect(Endpoint::in_process(name))
             .retry_interval(Duration::from_millis(10))
-            .max_retries(50)
+            .max_retries(Some(50))
             .open()
             .await
     });
@@ -203,7 +203,7 @@ async fn ipc_send_recv() {
 
     let mut client = Connection::<Msg, Msg>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -242,7 +242,7 @@ async fn ipc_multiple_messages() {
 
     let mut client = Connection::<u64, u64>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -284,7 +284,7 @@ async fn ipc_multi_client() {
     for _ in 0..3 {
         let client = Connection::<u64, u64>::connect(Endpoint::ipc(&path))
             .retry_interval(Duration::from_millis(10))
-            .max_retries(10)
+            .max_retries(Some(10))
             .open()
             .await
             .unwrap();
@@ -324,7 +324,7 @@ async fn ipc_message_too_large() {
     let mut client = Connection::<Vec<u8>, Vec<u8>>::connect(Endpoint::ipc(&path))
         .max_message_size(1024)
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -345,7 +345,7 @@ async fn ipc_connect_before_bind() {
     let connect = tokio::spawn(async move {
         Connection::<u32, u32>::connect(Endpoint::ipc(&p))
             .retry_interval(Duration::from_millis(10))
-            .max_retries(50)
+            .max_retries(Some(50))
             .open()
             .await
     });
@@ -389,7 +389,7 @@ async fn ipc_compressed_send_recv() {
     let mut client = Connection::<Msg, Msg>::connect(Endpoint::ipc(&path))
         .compress(true)
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -428,7 +428,7 @@ async fn ipc_compressed_large_payload() {
     let mut client = Connection::<Vec<u8>, Vec<u8>>::connect(Endpoint::ipc(&path))
         .compress(true)
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -464,7 +464,7 @@ async fn ipc_connection_closed_on_drop() {
 
     let mut client = Connection::<u64, u64>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -509,7 +509,7 @@ async fn connect_fails_after_max_retries() {
     let result =
         Connection::<u32, u32>::connect(Endpoint::ipc("/tmp/ferryboat-test-nonexistent.sock"))
             .retry_interval(Duration::from_millis(1))
-            .max_retries(3)
+            .max_retries(Some(3))
             .open()
             .await;
 
@@ -520,7 +520,7 @@ async fn connect_fails_after_max_retries() {
 async fn in_process_connect_fails_after_max_retries() {
     let result = Connection::<u32, u32>::connect(Endpoint::in_process("nonexistent-channel"))
         .retry_interval(Duration::from_millis(1))
-        .max_retries(3)
+        .max_retries(Some(3))
         .open()
         .await;
 
@@ -576,7 +576,7 @@ async fn rpc_ipc_basic() {
 
     let client = RpcClient::<String, String>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
@@ -683,14 +683,14 @@ async fn rpc_multi_client() {
 
     let c1 = RpcClient::<u64, u64>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();
 
     let c2 = RpcClient::<u64, u64>::connect(Endpoint::ipc(&path))
         .retry_interval(Duration::from_millis(10))
-        .max_retries(10)
+        .max_retries(Some(10))
         .open()
         .await
         .unwrap();

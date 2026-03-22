@@ -41,27 +41,29 @@ impl WalPublisher {
 }
 
 async fn publisher_task(mut rx: mpsc::UnboundedReceiver<WalMessage>, socket_path: String) {
-    loop {
-        let endpoint = Endpoint::ipc(&socket_path);
+    let endpoint = Endpoint::ipc(&socket_path);
 
-        let mut conn = match Connection::<WalMessage, ()>::connect(endpoint).open().await {
-            Ok(c) => {
-                tracing::info!("connected to ledger at {socket_path}");
-                c
-            }
-            Err(e) => {
-                tracing::warn!("failed to connect to ledger at {socket_path}: {e}, retrying in 1s");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                continue;
-            }
-        };
+    let mut conn = match Connection::<WalMessage, ()>::connect(endpoint)
+        .max_retries(None)
+        .retry_interval(std::time::Duration::from_secs(1))
+        .open()
+        .await
+    {
+        Ok(c) => {
+            tracing::info!("connected to ledger at {socket_path}");
+            c
+        }
+        Err(e) => {
+            // max_retries(None) retries forever, so this is unreachable in practice.
+            tracing::error!("failed to connect to ledger at {socket_path}: {e}");
+            return;
+        }
+    };
 
-        // Forward messages until the connection breaks or the channel closes.
-        while let Some(msg) = rx.recv().await {
-            if conn.send(msg).await.is_err() {
-                tracing::warn!("ledger IPC connection lost, reconnecting");
-                break;
-            }
+    while let Some(msg) = rx.recv().await {
+        if conn.send(msg).await.is_err() {
+            tracing::error!("ledger IPC connection lost");
+            break;
         }
     }
 }

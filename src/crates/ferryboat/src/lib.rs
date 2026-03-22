@@ -315,7 +315,7 @@ where
         ConnectionBuilder {
             endpoint,
             retry_interval: Duration::from_millis(100),
-            max_retries: 50,
+            max_retries: Some(50),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
             compress: false,
             _phantom: PhantomData,
@@ -375,7 +375,7 @@ where
 pub struct ConnectionBuilder<S, R> {
     endpoint: Endpoint,
     retry_interval: Duration,
-    max_retries: usize,
+    max_retries: Option<usize>,
     max_message_size: usize,
     compress: bool,
     _phantom: PhantomData<(S, R)>,
@@ -393,7 +393,8 @@ where
     }
 
     /// Maximum connection attempts before giving up (default: 50).
-    pub fn max_retries(mut self, max: usize) -> Self {
+    /// Use `None` to retry indefinitely.
+    pub fn max_retries(mut self, max: Option<usize>) -> Self {
         self.max_retries = max;
         self
     }
@@ -431,7 +432,8 @@ where
     }
 
     async fn connect_in_process(&self, name: &str) -> Result<(mpsc::Sender<S>, mpsc::Receiver<R>)> {
-        for i in 0..self.max_retries {
+        let mut attempt = 0usize;
+        loop {
             let result = {
                 let map = registry().lock().expect("channel registry lock poisoned");
                 match map.get(name) {
@@ -461,27 +463,32 @@ where
                 return Ok((c2s_tx, s2c_rx));
             }
 
-            if i < self.max_retries - 1 {
-                tokio::time::sleep(self.retry_interval).await;
+            attempt += 1;
+            if let Some(max) = self.max_retries {
+                if attempt >= max {
+                    return Err(Error::ConnectionClosed);
+                }
             }
+            tokio::time::sleep(self.retry_interval).await;
         }
-        Err(Error::ConnectionClosed)
     }
 
     async fn connect_ipc_with_retry(&self, path: &PathBuf) -> Result<ConnectionStream> {
-        let mut last_err = None;
-        for i in 0..self.max_retries {
+        let mut attempt = 0usize;
+        loop {
             match transport::connect(path).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
-                    last_err = Some(e);
-                    if i < self.max_retries - 1 {
-                        tokio::time::sleep(self.retry_interval).await;
+                    attempt += 1;
+                    if let Some(max) = self.max_retries {
+                        if attempt >= max {
+                            return Err(Error::Io(e));
+                        }
                     }
+                    tokio::time::sleep(self.retry_interval).await;
                 }
             }
         }
-        Err(Error::Io(last_err.expect("max_retries must be > 0")))
     }
 }
 

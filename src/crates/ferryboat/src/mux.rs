@@ -224,7 +224,8 @@ where
     }
 
     /// Maximum connection attempts before giving up (default: 50).
-    pub fn max_retries(mut self, max: usize) -> Self {
+    /// Use `None` to retry indefinitely.
+    pub fn max_retries(mut self, max: Option<usize>) -> Self {
         self.inner = self.inner.max_retries(max);
         self
     }
