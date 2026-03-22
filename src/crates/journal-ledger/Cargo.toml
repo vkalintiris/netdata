@@ -19,6 +19,7 @@ log-index = { workspace = true }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 wal = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

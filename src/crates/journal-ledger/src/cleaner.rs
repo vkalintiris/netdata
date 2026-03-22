@@ -7,18 +7,22 @@ use std::path::Path;
 
 use ferryboat::{Connection, Endpoint, Listener};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::ipc::{CLEANER_ENDPOINT, CleanerRequest, CleanerResponse};
 
 /// Spawns the cleaner as a tokio task.
 ///
 /// Returns a [`Connection`] the ledger can use to send requests and
-/// receive responses.
-pub async fn spawn() -> Result<Connection<CleanerRequest, CleanerResponse>, ferryboat::Error> {
+/// receive responses. The task exits cleanly when `cancel` is cancelled.
+pub async fn spawn(
+    cancel: CancellationToken,
+) -> Result<Connection<CleanerRequest, CleanerResponse>, ferryboat::Error> {
     let listener =
         Listener::<CleanerResponse, CleanerRequest>::bind(Endpoint::in_process(CLEANER_ENDPOINT))
             .open()?;
 
-    tokio::spawn(cleaner_task(listener));
+    tokio::spawn(cleaner_task(listener, cancel));
 
     let conn = Connection::<CleanerRequest, CleanerResponse>::connect(Endpoint::in_process(
         CLEANER_ENDPOINT,
@@ -40,7 +44,7 @@ fn remove_file(path: &Path) -> Result<(), String> {
     }
 }
 
-async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>) {
+async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>, cancel: CancellationToken) {
     let mut conn = match listener.accept().await {
         Ok(c) => c,
         Err(e) => {
@@ -52,16 +56,18 @@ async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>) {
     tracing::info!("cleaner task connected to ledger event loop");
 
     loop {
-        let req = match conn.recv().await {
-            Ok(r) => r,
-            Err(_) => {
-                tracing::warn!("ledger disconnected");
-                break;
-            }
+        let req = tokio::select! {
+            _ = cancel.cancelled() => break,
+            r = conn.recv() => match r {
+                Ok(req) => req,
+                Err(e) => {
+                    tracing::error!("cleaner recv failed: {e}");
+                    break;
+                }
+            },
         };
 
         if conn.send(CleanerResponse::Accepted).await.is_err() {
-            tracing::warn!("ledger disconnected");
             break;
         }
 
@@ -73,7 +79,6 @@ async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>) {
         };
 
         if conn.send(resp).await.is_err() {
-            tracing::warn!("ledger disconnected");
             break;
         }
     }

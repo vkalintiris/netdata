@@ -225,6 +225,10 @@ async fn run_ingestor(
                                 }
                             }
                             Ok(IngestorRequest::Cancel { .. }) => {}
+                            Ok(IngestorRequest::Shutdown) => {
+                                tracing::info!("received Shutdown from supervisor");
+                                break;
+                            }
                             Ok(IngestorRequest::Configure(_)) => {
                                 tracing::warn!("unexpected late Configure message");
                             }

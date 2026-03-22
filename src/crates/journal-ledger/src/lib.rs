@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use bridge::config::RetentionConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::{Connection, Endpoint};
+use tokio_util::sync::CancellationToken;
 
 use ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, WalListener, WalReceiver,
@@ -76,6 +77,10 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
                         }
                     }
                     Ok(LedgerRequest::Cancel { .. }) => {}
+                    Ok(LedgerRequest::Shutdown) => {
+                        tracing::info!("received Shutdown from supervisor");
+                        break;
+                    }
                     Ok(LedgerRequest::Configure(_)) => {
                         tracing::warn!("unexpected late Configure message");
                     }
@@ -88,6 +93,8 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         } => {}
     }
 
+    ledger.cancel.cancel();
+
     Ok(())
 }
 
@@ -98,6 +105,7 @@ pub struct JournalLedger {
     registry: Registry,
     retention: RetentionConfig,
     expected_seq: u64,
+    cancel: CancellationToken,
 }
 
 impl JournalLedger {
@@ -113,8 +121,10 @@ impl JournalLedger {
         // Phase 1: Recover registries from existing files on disk.
         let mut registry = Registry::recover(wal_dir, index_dir);
 
+        let cancel = CancellationToken::new();
+
         // Phase 2a: Index all unindexed WAL files.
-        let mut indexer = indexer::spawn().await?;
+        let mut indexer = indexer::spawn(cancel.child_token()).await?;
         tracing::info!("indexer spawned");
 
         let unindexed = registry.unindexed_sequences();
@@ -163,7 +173,7 @@ impl JournalLedger {
         }
 
         // Phase 2b: Enforce retention on index files.
-        let mut cleaner = cleaner::spawn().await?;
+        let mut cleaner = cleaner::spawn(cancel.child_token()).await?;
         tracing::info!("cleaner spawned");
         let to_evict = registry.index.evaluate_retention(
             retention.max_files,
@@ -217,6 +227,7 @@ impl JournalLedger {
             registry,
             retention,
             expected_seq: 1,
+            cancel,
         })
     }
 

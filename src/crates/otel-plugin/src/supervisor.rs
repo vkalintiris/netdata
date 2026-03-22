@@ -29,11 +29,17 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
+        // Workers are expected to exit after receiving Shutdown over IPC.
+        // start_kill (SIGKILL) is a last resort if IPC shutdown wasn't possible.
         let pid = self.child.id();
-        if let Err(e) = self.child.start_kill() {
-            tracing::warn!("failed to kill worker name={} pid={pid:?}: {e}", self.name);
-        } else {
-            tracing::info!("killed worker name={} pid={pid:?}", self.name);
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                tracing::info!("worker {} (pid={pid:?}) already exited", self.name);
+            }
+            _ => {
+                tracing::warn!("worker {} (pid={pid:?}) still running, sending SIGKILL", self.name);
+                let _ = self.child.start_kill();
+            }
         }
     }
 }
@@ -157,6 +163,33 @@ impl Supervisor {
         }
     }
 
+    /// Send Shutdown to both workers and wait for them to exit.
+    async fn shutdown_workers(&mut self) {
+        if let Err(e) = self.ingestor.send(IngestorRequest::Shutdown).await {
+            tracing::warn!("failed to send Shutdown to ingestor: {e}");
+        }
+        if let Err(e) = self.ledger.send(LedgerRequest::Shutdown).await {
+            tracing::warn!("failed to send Shutdown to ledger: {e}");
+        }
+
+        // The agent waits 3 seconds after sending QUIT before sending SIGTERM.
+        // Use 2 seconds here to leave headroom for the supervisor's own cleanup.
+        let timeout = std::time::Duration::from_secs(2);
+        let _ = tokio::time::timeout(timeout, async {
+            let (r1, r2) = tokio::join!(
+                self.ingestor_child.child.wait(),
+                self.ledger_child.child.wait(),
+            );
+            if let Ok(status) = r1 {
+                tracing::info!("ingestor exited: {status}");
+            }
+            if let Ok(status) = r2 {
+                tracing::info!("ledger exited: {status}");
+            }
+        })
+        .await;
+    }
+
     /// Route a cancel to the appropriate worker.
     async fn handle_cancel(&mut self, transaction: String) {
         // We don't track which worker owns a transaction, so send to both.
@@ -241,9 +274,11 @@ impl Supervisor {
         }
     }
 
-    /// Handle a parsed message from stdin.
-    async fn handle_agent_message(&mut self, msg: Message) {
+    /// Handle a parsed message from stdin. Returns a shutdown reason if the
+    /// plugin should exit, or `None` to continue the event loop.
+    async fn handle_agent_message(&mut self, msg: Message) -> Option<&'static str> {
         match msg {
+            Message::Quit => return Some("received QUIT from agent"),
             Message::FunctionCall(call) => {
                 self.handle_function_call(*call).await;
             }
@@ -254,28 +289,43 @@ impl Supervisor {
                 tracing::trace!("unhandled agent message: {other:?}");
             }
         }
+        None
     }
 
     /// Main event loop: read from stdin + ingestor + ledger.
     ///
-    /// If any worker disconnects, the supervisor exits with an error. We
-    /// intentionally do not restart workers — the Netdata agent is responsible
-    /// for restarting the entire plugin. This avoids the complexity of managing
-    /// stale state, partial restarts, and re-indexing races.
-    async fn run(&mut self) -> anyhow::Result<()> {
+    /// Returns a human-readable reason when shutting down gracefully, or an
+    /// error if a worker disconnects unexpectedly.
+    ///
+    /// We intentionally do not restart workers — the Netdata agent is
+    /// responsible for restarting the entire plugin.
+    async fn run(&mut self) -> anyhow::Result<&'static str> {
         let mut keepalive = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .context("failed to register SIGINT handler")?;
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("failed to register SIGTERM handler")?;
 
         loop {
             tokio::select! {
+                _ = sigint.recv() => {
+                    return Ok("received SIGINT");
+                }
+                _ = sigterm.recv() => {
+                    return Ok("received SIGTERM");
+                }
                 msg = self.reader.recv() => {
                     match msg {
-                        Some(Ok(msg)) => self.handle_agent_message(msg).await,
+                        Some(Ok(msg)) => {
+                            if let Some(reason) = self.handle_agent_message(msg).await {
+                                return Ok(reason);
+                            }
+                        }
                         Some(Err(e)) => {
                             tracing::error!("stdin parse error: {e}");
                         }
                         None => {
-                            tracing::info!("stdin closed, shutting down");
-                            return Ok(());
+                            return Ok("stdin closed");
                         }
                     }
                 }
@@ -421,5 +471,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!("all workers ready, entering main loop");
 
-    supervisor.run().await
+    let reason = supervisor.run().await?;
+    tracing::info!("{reason}, shutting down");
+    supervisor.shutdown_workers().await;
+
+    Ok(())
 }

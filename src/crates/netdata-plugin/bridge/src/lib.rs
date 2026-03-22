@@ -36,6 +36,8 @@ pub enum IngestorRequest {
     },
     /// Cancel a running function.
     Cancel { transaction: String },
+    /// Shut down gracefully.
+    Shutdown,
 }
 
 /// Messages sent from the ingestor worker back to the supervisor.
@@ -74,6 +76,8 @@ pub enum LedgerRequest {
     },
     /// Cancel a running function.
     Cancel { transaction: String },
+    /// Shut down gracefully.
+    Shutdown,
 }
 
 /// Messages sent from the ledger worker back to the supervisor.

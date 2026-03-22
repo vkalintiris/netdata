@@ -41,6 +41,12 @@ struct Cli {
 }
 
 async fn run_worker(kind: WorkerKind) -> anyhow::Result<()> {
+    // Workers are shut down via IPC (Shutdown message) from the supervisor.
+    // Register signal handlers that do nothing, preventing the default
+    // process termination when the process group receives SIGINT/SIGTERM.
+    let _sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+    let _sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+
     match kind {
         WorkerKind::Ingestor { socket } => otel_ingestor::run_worker(&socket)
             .await

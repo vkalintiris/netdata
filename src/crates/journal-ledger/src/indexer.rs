@@ -10,6 +10,7 @@ use std::sync::Arc;
 use ferryboat::{Connection, Endpoint, Listener};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::ipc::{INDEXER_ENDPOINT, IndexerRequest, IndexerResponse};
 
@@ -31,13 +32,15 @@ impl Sender {
 /// Spawns the indexer as a tokio task.
 ///
 /// Returns a [`Connection`] the ledger can use to send requests and
-/// receive responses.
-pub async fn spawn() -> Result<Connection<IndexerRequest, IndexerResponse>, ferryboat::Error> {
+/// receive responses. The task exits cleanly when `cancel` is cancelled.
+pub async fn spawn(
+    cancel: CancellationToken,
+) -> Result<Connection<IndexerRequest, IndexerResponse>, ferryboat::Error> {
     let listener =
         Listener::<IndexerResponse, IndexerRequest>::bind(Endpoint::in_process(INDEXER_ENDPOINT))
             .open()?;
 
-    tokio::spawn(indexer_task(listener));
+    tokio::spawn(indexer_task(listener, cancel));
 
     let conn = Connection::<IndexerRequest, IndexerResponse>::connect(Endpoint::in_process(
         INDEXER_ENDPOINT,
@@ -106,7 +109,7 @@ impl Indexer {
     }
 }
 
-async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>) {
+async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>, cancel: CancellationToken) {
     let conn = match listener.accept().await {
         Ok(c) => c,
         Err(e) => {
@@ -121,21 +124,24 @@ async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>) {
     let mut indexer = Indexer::new(sender.clone());
 
     loop {
-        match sender.recv().await {
-            Ok(req) => {
-                if sender.send(IndexerResponse::Accepted).await.is_err() {
-                    tracing::warn!("ledger disconnected");
+        let req = tokio::select! {
+            _ = cancel.cancelled() => break,
+            r = sender.recv() => match r {
+                Ok(req) => req,
+                Err(e) => {
+                    tracing::error!("indexer recv failed: {e}");
                     break;
                 }
-                match req {
-                    IndexerRequest::FinalizeIndex { path } => {
-                        indexer.finalize(path);
-                    }
-                }
-            }
-            Err(_) => {
-                tracing::warn!("ledger disconnected");
-                break;
+            },
+        };
+
+        if sender.send(IndexerResponse::Accepted).await.is_err() {
+            break;
+        }
+
+        match req {
+            IndexerRequest::FinalizeIndex { path } => {
+                indexer.finalize(path);
             }
         }
     }
