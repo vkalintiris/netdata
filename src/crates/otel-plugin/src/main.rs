@@ -53,9 +53,16 @@ async fn run_worker(kind: WorkerKind) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() {
-    rt::init_tracing();
-
     let cli = Cli::parse();
+
+    let syslog_id = match &cli.command {
+        Some(CliCommand::Worker { kind }) => match kind {
+            WorkerKind::Ingestor { .. } => "otel-plugin/ingestor",
+            WorkerKind::Ledger { .. } => "otel-plugin/ledger",
+        },
+        None => "otel-plugin",
+    };
+    rt::init_tracing_with_identifier(syslog_id);
 
     let result = match cli.command {
         Some(CliCommand::Worker { kind }) => run_worker(kind).await,

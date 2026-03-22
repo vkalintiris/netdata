@@ -49,7 +49,7 @@ async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>) {
         }
     };
 
-    tracing::info!("connected to ledger");
+    tracing::info!("cleaner task connected to ledger event loop");
 
     loop {
         let req = match conn.recv().await {

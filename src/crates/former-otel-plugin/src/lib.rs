@@ -43,7 +43,7 @@ pub fn run(args: Vec<String>) -> i32 {
 }
 
 async fn async_run(_args: Vec<String>) -> i32 {
-    rt::init_tracing();
+    rt::init_tracing_with_identifier("otel-plugin");
 
     match run_internal().await {
         Ok(()) => 0,

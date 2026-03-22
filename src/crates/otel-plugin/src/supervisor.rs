@@ -73,9 +73,9 @@ impl Supervisor {
 
         match self.ingestor.recv().await.context("ingestor handshake")? {
             IngestorResponse::Ready { declarations } => {
-                tracing::info!("ingestor ready, {} declarations", declarations.len());
+                tracing::info!("ingestor reported ready with {} function declarations", declarations.len());
                 for decl in declarations {
-                    tracing::info!("registered function (ingestor): {}", decl.name);
+                    tracing::info!("registered ingestor function: {}", decl.name);
                     self.routing.insert(decl.name.clone(), Worker::Ingestor);
                     self.writer
                         .send(Message::FunctionDeclaration(Box::new(decl)))
@@ -99,9 +99,9 @@ impl Supervisor {
 
         match self.ledger.recv().await.context("ledger handshake")? {
             LedgerResponse::Ready { declarations } => {
-                tracing::info!("ledger ready, {} declarations", declarations.len());
+                tracing::info!("ledger reported ready with {} function declarations", declarations.len());
                 for decl in declarations {
-                    tracing::info!("registered function (ledger): {}", decl.name);
+                    tracing::info!("registered ledger function: {}", decl.name);
                     self.routing.insert(decl.name.clone(), Worker::Ledger);
                     self.writer
                         .send(Message::FunctionDeclaration(Box::new(decl)))
@@ -360,7 +360,7 @@ where
         .map_err(|_| anyhow::anyhow!("{name} failed to connect within {WORKER_CONNECT_TIMEOUT:?}"))
         .and_then(|r| r.map_err(Into::into))
         .with_context(|| format!("{name} worker connection failed"))?;
-    tracing::info!("{name} connected");
+    tracing::info!("{name} worker connected to supervisor");
 
     Ok((conn, guard))
 }
@@ -407,13 +407,13 @@ pub async fn run() -> anyhow::Result<()> {
         .configure_ledger(plugin_config.clone())
         .await
         .context("ledger configuration failed")?;
-    tracing::info!("ledger ready");
 
     supervisor
         .configure_ingestor(plugin_config)
         .await
         .context("ingestor configuration failed")?;
-    tracing::info!("ingestor ready, entering main loop");
+
+    tracing::info!("all workers ready, entering main loop");
 
     supervisor.run().await
 }

@@ -44,7 +44,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
     // Wait for Configure message from supervisor
     let config = match conn.recv().await? {
         IngestorRequest::Configure(config) => {
-            tracing::info!(?config, "received configuration");
+            tracing::info!("received plugin configuration from supervisor");
             config
         }
         other => {
@@ -57,7 +57,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         declarations: vec![],
     })
     .await?;
-    tracing::info!("ready");
+    tracing::info!("signaled ready to supervisor");
 
     run_ingestor(config, conn).await
 }

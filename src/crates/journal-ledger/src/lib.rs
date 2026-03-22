@@ -30,7 +30,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
     // Wait for Configure message from supervisor
     let config = match conn.recv().await? {
         LedgerRequest::Configure(config) => {
-            tracing::info!("received configuration: {config:?}");
+            tracing::info!("received plugin configuration from supervisor");
             config
         }
         other => {
@@ -43,7 +43,11 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         declarations: vec![],
     })
     .await?;
-    tracing::info!("ready");
+    tracing::info!("signaled ready to supervisor");
+
+    // TODO(debug): remove — artificial delay to reproduce the race between
+    // ledger binding the writer socket and the ingestor connecting to it.
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
     let mut ledger = JournalLedger::new(
         &config.writer_socket_path,
@@ -206,7 +210,7 @@ impl JournalLedger {
         // Phase 3: All pending work is done — accept the ingestor connection.
         let mut listener = WalListener::new(writer_socket_path)?;
         let writer = listener.accept().await?;
-        tracing::info!("publisher connected");
+        tracing::info!("ingestor connected to writer socket");
 
         Ok(Self {
             writer,

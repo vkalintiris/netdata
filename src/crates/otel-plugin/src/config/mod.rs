@@ -20,12 +20,12 @@ use endpoint::EndpointOverride;
 use logs::LogsOverride;
 use metrics::MetricsOverride;
 
-const CONFIG_FILENAME: &str = "otel.yaml";
-
 /// Load and resolve the plugin configuration.
 ///
 /// stock config file → user overrides → env var overrides
 pub fn load_config() -> Result<PluginConfig> {
+    const CONFIG_FILENAME: &str = "otel.yaml";
+
     let stock_config_dir =
         std::env::var("NETDATA_STOCK_CONFIG_DIR").context("NETDATA_STOCK_CONFIG_DIR not set")?;
     let user_config_dir = std::env::var("NETDATA_USER_CONFIG_DIR").ok();

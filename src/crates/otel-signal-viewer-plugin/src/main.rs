@@ -23,7 +23,7 @@ async fn main() {
 
     println!("TRUST_DURATIONS 1");
 
-    rt::init_tracing();
+    rt::init_tracing_with_identifier("otel-signal-viewer-plugin");
 
     let result = run_plugin().await;
 

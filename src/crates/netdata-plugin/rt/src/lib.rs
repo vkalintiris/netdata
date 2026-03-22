@@ -124,7 +124,7 @@ pub use netdata_env::{LogFormat, LogLevel, LogMethod, NetdataEnv, SyslogFacility
 
 // Tracing initialization
 mod tracing_setup;
-pub use tracing_setup::init_tracing;
+pub use tracing_setup::init_tracing_with_identifier;
 
 /// Atomic progress state shared between handlers and the runtime ticker.
 ///

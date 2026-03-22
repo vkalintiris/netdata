@@ -115,7 +115,7 @@ async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>) {
         }
     };
 
-    tracing::info!("connected to ledger");
+    tracing::info!("indexer task connected to ledger event loop");
 
     let sender = Sender(Arc::new(Mutex::new(conn)));
     let mut indexer = Indexer::new(sender.clone());
