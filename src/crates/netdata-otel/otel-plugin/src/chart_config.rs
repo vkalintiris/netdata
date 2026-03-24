@@ -225,17 +225,25 @@ impl ChartConfigManager {
     }
 
     fn load_stock_config(&mut self) {
-        const DEFAULT_CONFIGS_YAML: &str =
-            include_str!("../configs/otel.d/v1/metrics/hostmetrics-receiver.yaml");
+        const STOCK_CONFIGS: &[&str] = &[
+            include_str!("../configs/otel.d/v1/metrics/hostmetrics-receiver.yaml"),
+            include_str!("../configs/otel.d/v1/metrics/claude-code.yaml"),
+        ];
 
-        match serde_yaml::from_str::<MetricConfigs>(DEFAULT_CONFIGS_YAML) {
-            Ok(configs) => {
-                self.stock = Arc::new(configs.metrics);
-            }
-            Err(e) => {
-                tracing::warn!("failed to parse default configs YAML: {}", e);
+        let mut merged = ConfigMap::new();
+        for yaml in STOCK_CONFIGS {
+            match serde_yaml::from_str::<MetricConfigs>(yaml) {
+                Ok(configs) => {
+                    for (name, cfgs) in configs.metrics {
+                        merged.entry(name).or_default().extend(cfgs);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to parse stock configs YAML: {}", e);
+                }
             }
         }
+        self.stock = Arc::new(merged);
     }
 
     pub fn load_user_configs<P: AsRef<std::path::Path>>(&mut self, config_dir: P) -> Result<()> {

@@ -1,0 +1,37 @@
+metrics:
+  "claude_code.session.count":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+
+  "claude_code.lines_of_code.count":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+      dimension_attribute_key: type
+
+  "claude_code.pull_request.count":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+
+  "claude_code.commit.count":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+
+  "claude_code.cost.usage":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+      dimension_attribute_key: model
+
+  "claude_code.token.usage":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+      dimension_attribute_key: type
+
+  "claude_code.code_edit_tool.decision":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+      dimension_attribute_key: decision
+
+  "claude_code.active_time.total":
+    - instrumentation_scope:
+        name: com\.anthropic\.claude_code
+      dimension_attribute_key: type

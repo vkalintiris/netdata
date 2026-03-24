@@ -3334,6 +3334,7 @@ if(ENABLE_PLUGIN_OTEL)
                       COMPONENT plugin-otel)
 
     install(FILES src/crates/netdata-otel/otel-plugin/configs/otel.d/v1/metrics/hostmetrics-receiver.yaml
+                  src/crates/netdata-otel/otel-plugin/configs/otel.d/v1/metrics/claude-code.yaml
             COMPONENT plugin-otel
             DESTINATION usr/lib/netdata/conf.d/otel.d/v1/metrics)
 
