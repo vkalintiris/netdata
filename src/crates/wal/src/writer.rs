@@ -1,28 +1,32 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::Result;
 use crate::clock::MonotonicClock;
 use crate::config::Config;
 use crate::format::{
     COMPRESSION_NONE, FLAG_CRC_ENABLED, FORMAT_VERSION, FRAME_ALIGNMENT, FRAME_HEADER_SIZE,
-    FileHeader, HEADER_SIZE, WalEvent, parse_sequence,
+    FileHeader, HEADER_SIZE, WalEvent,
 };
+use crate::types::{ByteSize, FileId, TimestampNs};
+use crate::waldir::WalDir;
 
 struct ActiveFile {
+    id: FileId,
+    #[allow(dead_code)]
     path: PathBuf,
     writer: BufWriter<File>,
     frame_count: u64,
     log_entry_count: u64,
-    bytes_written: u64,
-    min_timestamp_ns: u64,
-    max_timestamp_ns: u64,
-    first_frame_at_ns: Option<u64>,
+    bytes_written: ByteSize,
+    min_timestamp_ns: TimestampNs,
+    max_timestamp_ns: TimestampNs,
+    first_frame_at_ns: Option<TimestampNs>,
 }
 
 pub struct WalWriter {
-    dir: PathBuf,
+    dir: WalDir,
     config: Config,
     clock: MonotonicClock,
     active: Option<ActiveFile>,
@@ -31,12 +35,12 @@ pub struct WalWriter {
 }
 
 impl WalWriter {
-    pub fn new(dir: &Path, config: Config) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        let file_seq = scan_max_sequence(dir);
+    pub fn new(dir: WalDir, config: Config) -> Result<Self> {
+        std::fs::create_dir_all(dir.path())?;
+        let file_seq = dir.scan_max_sequence()?;
 
         Ok(Self {
-            dir: dir.to_path_buf(),
+            dir,
             config,
             clock: MonotonicClock::new(),
             active: None,
@@ -53,7 +57,7 @@ impl WalWriter {
 
         self.ensure_file()?;
 
-        let ts = self.clock.now_ns();
+        let ts = TimestampNs(self.clock.now_ns());
 
         let compressed = if self.config.compression_lz4() {
             lz4_flex::block::compress(data)
@@ -70,7 +74,7 @@ impl WalWriter {
             hasher.update(&payload_len.to_le_bytes());
             hasher.update(&uncompressed_len.to_le_bytes());
             hasher.update(&entry_count.to_le_bytes());
-            hasher.update(&ts.to_le_bytes());
+            hasher.update(&ts.0.to_le_bytes());
             hasher.update(&compressed);
             hasher.finalize()
         } else {
@@ -78,11 +82,11 @@ impl WalWriter {
         };
 
         let active = self.active.as_mut().unwrap();
-        let frame_offset = active.bytes_written;
+        let frame_offset = active.bytes_written.0;
         active.writer.write_all(&payload_len.to_le_bytes())?;
         active.writer.write_all(&uncompressed_len.to_le_bytes())?;
         active.writer.write_all(&entry_count.to_le_bytes())?;
-        active.writer.write_all(&ts.to_le_bytes())?;
+        active.writer.write_all(&ts.0.to_le_bytes())?;
         active.writer.write_all(&crc.to_le_bytes())?;
         active.writer.write_all(&compressed)?;
 
@@ -96,11 +100,11 @@ impl WalWriter {
 
         active.frame_count += 1;
         active.log_entry_count += log_entry_count as u64;
-        active.bytes_written += (frame_bytes + padding) as u64;
+        active.bytes_written = ByteSize(active.bytes_written.0 + (frame_bytes + padding) as u64);
         if active.first_frame_at_ns.is_none() {
             active.first_frame_at_ns = Some(ts);
         }
-        if active.min_timestamp_ns == 0 || ts < active.min_timestamp_ns {
+        if active.min_timestamp_ns == TimestampNs::ZERO || ts < active.min_timestamp_ns {
             active.min_timestamp_ns = ts;
         }
         if ts > active.max_timestamp_ns {
@@ -116,7 +120,7 @@ impl WalWriter {
             active.writer.get_ref().sync_all()?;
 
             self.pending_events.push(WalEvent::FileSynced {
-                path: active.path.clone(),
+                id: active.id,
                 valid_up_to: active.bytes_written,
                 frame_count: active.frame_count,
                 entry_count: active.log_entry_count,
@@ -141,8 +145,8 @@ impl WalWriter {
         }
 
         self.file_seq += 1;
-        let filename = format!("wal-{:010}.bin", self.file_seq);
-        let path = self.dir.join(&filename);
+        let id = FileId::new(self.dir.machine_id(), self.dir.boot_id(), self.file_seq);
+        let path = self.dir.wal_path(id);
 
         let file = OpenOptions::new()
             .create_new(true)
@@ -158,29 +162,29 @@ impl WalWriter {
             flags |= COMPRESSION_NONE;
         }
 
+        let created_at_ns = TimestampNs(self.clock.now_ns());
         let header = FileHeader {
             version: FORMAT_VERSION,
             flags,
-            created_at: self.clock.now_ns(),
+            created_at: created_at_ns.0,
         };
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
 
-        fsync_dir(&self.dir)?;
+        fsync_dir(self.dir.path())?;
 
-        self.pending_events.push(WalEvent::FileCreated {
-            path: path.clone(),
-            created_at_ns: header.created_at,
-        });
+        self.pending_events
+            .push(WalEvent::FileCreated { id, created_at_ns });
 
         self.active = Some(ActiveFile {
+            id,
             path,
             writer,
             frame_count: 0,
             log_entry_count: 0,
-            bytes_written: HEADER_SIZE as u64,
-            min_timestamp_ns: 0,
-            max_timestamp_ns: 0,
+            bytes_written: ByteSize(HEADER_SIZE as u64),
+            min_timestamp_ns: TimestampNs::ZERO,
+            max_timestamp_ns: TimestampNs::ZERO,
             first_frame_at_ns: None,
         });
 
@@ -201,7 +205,7 @@ impl WalWriter {
             (self.config.rotation.max_duration, active.first_frame_at_ns)
         {
             let now = self.clock.last_ns;
-            let elapsed_ns = now.saturating_sub(first_frame_at);
+            let elapsed_ns = now.saturating_sub(first_frame_at.0);
             if elapsed_ns >= max_dur.as_nanos() as u64 {
                 return true;
             }
@@ -212,7 +216,7 @@ impl WalWriter {
     fn complete_active_file(&mut self) {
         if let Some(active) = self.active.take() {
             self.pending_events.push(WalEvent::FileCompleted {
-                path: active.path,
+                id: active.id,
                 frame_count: active.frame_count,
                 min_timestamp_ns: active.min_timestamp_ns,
                 max_timestamp_ns: active.max_timestamp_ns,
@@ -236,21 +240,7 @@ impl Config {
     }
 }
 
-fn scan_max_sequence(dir: &Path) -> u64 {
-    let mut max_seq: u64 = 0;
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return 0,
-    };
-    for entry in entries.flatten() {
-        if let Some(seq) = parse_sequence(&entry.path()) {
-            max_seq = max_seq.max(seq);
-        }
-    }
-    max_seq
-}
-
-fn fsync_dir(dir: &Path) -> Result<()> {
+fn fsync_dir(dir: &std::path::Path) -> Result<()> {
     let dir_file = File::open(dir)?;
     dir_file.sync_all()?;
     Ok(())

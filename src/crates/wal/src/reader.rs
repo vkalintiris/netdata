@@ -3,6 +3,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 use crate::format::{COMPRESSION_LZ4, FRAME_ALIGNMENT, FRAME_HEADER_SIZE, FileHeader, HEADER_SIZE};
+use crate::types::TimestampNs;
 use crate::{Error, Result};
 
 /// Reject frames claiming to be larger than 64 MiB.
@@ -11,7 +12,7 @@ const MAX_FRAME_PAYLOAD: usize = 64 * 1024 * 1024;
 /// A single frame read from the WAL file.
 pub struct WalFrame<'a> {
     /// Ingestion timestamp in nanoseconds since the Unix epoch.
-    pub timestamp_ns: u64,
+    pub timestamp_ns: TimestampNs,
     /// Number of log entries in this frame.
     pub entry_count: u32,
     /// Decompressed payload data.
@@ -132,7 +133,7 @@ impl WalReader {
         }
 
         Ok(Some(WalFrame {
-            timestamp_ns,
+            timestamp_ns: TimestampNs(timestamp_ns),
             entry_count,
             data: &self.data_buf,
         }))

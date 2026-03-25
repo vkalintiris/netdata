@@ -63,6 +63,7 @@ impl Indexer {
     fn finalize(&mut self, path: PathBuf) {
         tracing::info!("FinalizeIndex started path={}", path.display());
 
+        let seq = extract_sequence(&path);
         let sender = self.sender.clone();
         tokio::task::spawn_blocking(move || {
             let start = Instant::now();
@@ -89,7 +90,7 @@ impl Indexer {
                         index_path.display(),
                         start.elapsed().as_millis(),
                     );
-                    IndexerResponse::IndexFinalized { path }
+                    IndexerResponse::IndexFinalized { seq, path }
                 }
                 Err(e) => {
                     tracing::error!("FinalizeIndex failed path={}: {e}", path.display(),);
@@ -107,6 +108,10 @@ impl Indexer {
             });
         });
     }
+}
+
+fn extract_sequence(path: &std::path::Path) -> u64 {
+    wal::FileId::parse(path).map(|id| id.seq).unwrap_or(0)
 }
 
 async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>, cancel: CancellationToken) {

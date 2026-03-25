@@ -10,6 +10,7 @@ use bridge::config::RetentionConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::{Connection, Endpoint};
 use tokio_util::sync::CancellationToken;
+use wal::ByteSize;
 
 use ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, WalListener, WalReceiver,
@@ -127,11 +128,11 @@ impl JournalLedger {
         let mut indexer = indexer::spawn(cancel.child_token()).await?;
         tracing::info!("indexer spawned");
 
-        let unindexed = registry.unindexed_sequences();
+        let unindexed = registry.unindexed_ids();
         if !unindexed.is_empty() {
             tracing::info!("indexing {} unindexed WAL files", unindexed.len());
-            for &seq in &unindexed {
-                let path = registry.wal.path(seq);
+            for &id in &unindexed {
+                let path = registry.wal.path(id);
                 let req = IndexerRequest::FinalizeIndex { path };
                 indexer.send(req).await?;
             }
@@ -141,20 +142,18 @@ impl JournalLedger {
                 let resp = indexer.recv().await?;
                 match resp {
                     IndexerResponse::Accepted => {}
-                    IndexerResponse::IndexFinalized { ref path } => {
-                        if let Some(seq) = wal::format::parse_sequence(path) {
-                            // The indexer already deleted the .bin.
-                            let created_at_ns = registry
-                                .wal
-                                .remove(seq)
-                                .map(|w| w.created_at_ns)
-                                .unwrap_or(0);
-                            let index_path = registry.index.path(seq);
-                            let index_size =
-                                std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
-                            registry.index.track(seq, created_at_ns, index_size);
-                            tracing::info!("recovery: index finalized seq={seq}");
-                        }
+                    IndexerResponse::IndexFinalized { seq, .. } => {
+                        // The indexer already deleted the .bin.
+                        let created_at_ns = registry
+                            .wal
+                            .remove(seq)
+                            .map(|w| w.created_at_ns)
+                            .unwrap_or_default();
+                        let index_path = registry.index.path(seq);
+                        let index_size =
+                            ByteSize(std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0));
+                        registry.index.track(seq, created_at_ns, index_size);
+                        tracing::info!("recovery: index finalized seq={seq}");
                         remaining -= 1;
                     }
                     IndexerResponse::IndexFailed {
@@ -278,41 +277,36 @@ impl JournalLedger {
 
         match msg.event {
             wal::format::WalEvent::FileCreated {
-                ref path,
+                id,
                 created_at_ns,
             } => {
-                if let Some(seq) = wal::format::parse_sequence(path) {
-                    self.registry.wal.track_active(seq, created_at_ns);
-                }
-                tracing::info!("FileCreated seq={seq} path={}", path.display());
+                self.registry.wal.track_active(id, created_at_ns);
+                tracing::info!("FileCreated seq={seq} id={id}");
             }
             wal::format::WalEvent::FileSynced {
-                ref path,
+                id,
                 frame_count,
                 entry_count,
                 ..
             } => {
                 tracing::info!(
-                    "DataSynced seq={seq} path={} frames={frame_count} entries={entry_count}",
-                    path.display(),
+                    "DataSynced seq={seq} id={id} frames={frame_count} entries={entry_count}",
                 );
             }
             wal::format::WalEvent::FileCompleted {
-                ref path,
+                id,
                 frame_count,
                 size,
                 ..
             } => {
-                if let Some(file_seq) = wal::format::parse_sequence(path) {
-                    self.registry.wal.mark_archived(file_seq, size);
-                }
+                self.registry.wal.mark_archived(id, size);
                 tracing::info!(
-                    "FileCompleted seq={seq} path={} frames={frame_count} size={size}",
-                    path.display(),
+                    "FileCompleted seq={seq} id={id} frames={frame_count} size={size}",
                 );
 
                 // Trigger indexing for the completed file.
-                let req = IndexerRequest::FinalizeIndex { path: path.clone() };
+                let path = self.registry.wal.path(id);
+                let req = IndexerRequest::FinalizeIndex { path };
                 if let Err(e) = self.indexer.send(req).await {
                     tracing::error!("failed to send to indexer: {e}");
                 }
@@ -323,10 +317,7 @@ impl JournalLedger {
     async fn handle_indexer_resp(&mut self, resp: IndexerResponse) {
         match resp {
             IndexerResponse::Accepted => {}
-            IndexerResponse::IndexFinalized { ref path } => {
-                let Some(seq) = wal::format::parse_sequence(path) else {
-                    return;
-                };
+            IndexerResponse::IndexFinalized { seq, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
                 // The indexer already deleted the .bin — remove it from the registry.
@@ -335,9 +326,9 @@ impl JournalLedger {
                     .wal
                     .remove(seq)
                     .map(|w| w.created_at_ns)
-                    .unwrap_or(0);
+                    .unwrap_or_default();
                 let index_path = self.registry.index.path(seq);
-                let index_size = std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+                let index_size = ByteSize(std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0));
                 self.registry.index.track(seq, created_at_ns, index_size);
 
                 self.evaluate_retention().await;

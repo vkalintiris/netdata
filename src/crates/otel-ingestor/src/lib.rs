@@ -12,18 +12,18 @@ use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsSe
 use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use tokio::sync::RwLock;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use wal::{Config as WalConfig, RotationConfig, WalWriter};
+use wal::{ByteSize, Config as WalConfig, RotationConfig, WalDir, WalWriter};
 
 mod aggregation;
 mod arrow_bridge;
 mod chart;
 mod chart_config;
 mod iter;
+mod ledger_sender;
 mod logs_service;
 mod metrics_service;
 mod otel;
 mod output;
-mod ledger_sender;
 
 use chart_config::ChartConfigManager;
 use logs_service::NetdataLogsService;
@@ -251,12 +251,17 @@ fn create_logs_service(
     logs_config: &LogsConfig,
     writer_socket_path: &str,
 ) -> Result<NetdataLogsService> {
-    let wal_dir = std::path::Path::new(&logs_config.wal.dir);
+    let wal_path = std::path::Path::new(&logs_config.wal.dir);
+
+    let machine_id = journal_common::load_machine_id().context("failed to load machine ID")?;
+    let boot_id = journal_common::load_boot_id().context("failed to load boot ID")?;
+
+    let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
 
     let writer_config = WalConfig {
         rotation: RotationConfig {
             max_log_entries: logs_config.wal.max_log_entries,
-            max_file_size: logs_config.wal.max_file_size.as_u64(),
+            max_file_size: ByteSize(logs_config.wal.max_file_size.as_u64()),
             max_duration: Some(logs_config.wal.max_file_duration),
         },
         crc_enabled: logs_config.wal.crc_enabled,
@@ -264,7 +269,7 @@ fn create_logs_service(
     };
 
     let wal_writer = WalWriter::new(wal_dir, writer_config)
-        .with_context(|| format!("creating WAL writer in {}", logs_config.wal.dir))?;
+        .with_context(|| format!("creating WAL writer in {:?}", wal_path))?;
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 

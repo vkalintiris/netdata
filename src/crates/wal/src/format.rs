@@ -1,6 +1,6 @@
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
+
+use crate::types::{ByteSize, FileId, TimestampNs};
 
 // -- Constants ----------------------------------------------------------
 
@@ -88,21 +88,21 @@ impl FileHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WalEvent {
     FileCreated {
-        path: std::path::PathBuf,
-        created_at_ns: u64,
+        id: FileId,
+        created_at_ns: TimestampNs,
     },
     FileSynced {
-        path: std::path::PathBuf,
-        valid_up_to: u64,
+        id: FileId,
+        valid_up_to: ByteSize,
         frame_count: u64,
         entry_count: u64,
     },
     FileCompleted {
-        path: std::path::PathBuf,
+        id: FileId,
         frame_count: u64,
-        min_timestamp_ns: u64,
-        max_timestamp_ns: u64,
-        size: u64,
+        min_timestamp_ns: TimestampNs,
+        max_timestamp_ns: TimestampNs,
+        size: ByteSize,
     },
 }
 
@@ -111,15 +111,4 @@ pub enum WalEvent {
 pub struct WalMessage {
     pub seq: u64,
     pub event: WalEvent,
-}
-
-// -- Naming -------------------------------------------------------------
-
-/// Parse the sequence number from a WAL filename.
-///
-/// Expects the pattern `wal-{seq:010}.bin`.
-pub fn parse_sequence(path: &Path) -> Option<u64> {
-    let stem = path.file_name()?.to_str()?;
-    let seq_str = stem.strip_prefix("wal-")?.strip_suffix(".bin")?;
-    seq_str.parse().ok()
 }

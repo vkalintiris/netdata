@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use wal::{ByteSize, FileId, TimestampNs};
+
 // ---------------------------------------------------------------------------
 // WAL files (.bin)
 // ---------------------------------------------------------------------------
@@ -16,10 +18,10 @@ pub enum WalFileStatus {
 
 #[derive(Debug, Clone)]
 pub struct WalFile {
-    pub sequence: u64,
-    pub created_at_ns: u64,
+    pub id: FileId,
+    pub created_at_ns: TimestampNs,
     pub status: WalFileStatus,
-    pub size: u64,
+    pub size: ByteSize,
 }
 
 pub struct WalRegistry {
@@ -35,9 +37,9 @@ impl WalRegistry {
         }
     }
 
-    /// Derive the on-disk path for a WAL file from its sequence number.
-    pub fn path(&self, sequence: u64) -> PathBuf {
-        self.dir.join(format!("wal-{sequence:010}.bin"))
+    /// Derive the on-disk path for a WAL file from its FileId.
+    pub fn path(&self, id: FileId) -> PathBuf {
+        self.dir.join(id.to_filename("bin"))
     }
 
     /// Scan the directory for `.bin` files and reconstruct state.
@@ -52,21 +54,21 @@ impl WalRegistry {
         for dir_entry in entries.flatten() {
             let path = dir_entry.path();
 
-            let Some(seq) = wal::format::parse_sequence(&path) else {
+            let Some(id) = FileId::parse(&path) else {
                 continue;
             };
 
             let created_at_ns = match read_wal_header(&path) {
-                Ok(h) => h.created_at,
+                Ok(h) => TimestampNs(h.created_at),
                 Err(_) => continue,
             };
 
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let size = ByteSize(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
 
             registry.files.insert(
-                seq,
+                id.seq,
                 WalFile {
-                    sequence: seq,
+                    id,
                     created_at_ns,
                     status: WalFileStatus::Archived,
                     size,
@@ -77,39 +79,39 @@ impl WalRegistry {
         registry
     }
 
-    pub fn track_active(&mut self, sequence: u64, created_at_ns: u64) {
+    pub fn track_active(&mut self, id: FileId, created_at_ns: TimestampNs) {
         self.files.insert(
-            sequence,
+            id.seq,
             WalFile {
-                sequence,
+                id,
                 created_at_ns,
                 status: WalFileStatus::Active,
-                size: 0,
+                size: ByteSize::ZERO,
             },
         );
     }
 
-    pub fn mark_archived(&mut self, sequence: u64, size: u64) {
-        if let Some(entry) = self.files.get_mut(&sequence) {
+    pub fn mark_archived(&mut self, id: FileId, size: ByteSize) {
+        if let Some(entry) = self.files.get_mut(&id.seq) {
             entry.status = WalFileStatus::Archived;
             entry.size = size;
         }
     }
 
-    pub fn remove(&mut self, sequence: u64) -> Option<WalFile> {
-        self.files.remove(&sequence)
+    pub fn remove(&mut self, seq: u64) -> Option<WalFile> {
+        self.files.remove(&seq)
     }
 
-    pub fn get(&self, sequence: u64) -> Option<&WalFile> {
-        self.files.get(&sequence)
+    pub fn get(&self, seq: u64) -> Option<&WalFile> {
+        self.files.get(&seq)
     }
 
-    /// Returns sequences of all archived WAL files.
-    pub fn archived_sequences(&self) -> Vec<u64> {
+    /// Returns FileIds of all archived WAL files.
+    pub fn archived_ids(&self) -> Vec<FileId> {
         self.files
             .values()
             .filter(|f| f.status == WalFileStatus::Archived)
-            .map(|f| f.sequence)
+            .map(|f| f.id)
             .collect()
     }
 
@@ -137,8 +139,8 @@ fn read_wal_header(path: &Path) -> Result<wal::format::FileHeader, wal::Error> {
 #[derive(Debug, Clone)]
 pub struct IndexFile {
     pub sequence: u64,
-    pub created_at_ns: u64,
-    pub size: u64,
+    pub created_at_ns: TimestampNs,
+    pub size: ByteSize,
     pending_deletion: bool,
 }
 
@@ -172,7 +174,11 @@ impl IndexRegistry {
         for dir_entry in entries.flatten() {
             let path = dir_entry.path();
 
-            let Some(seq) = parse_index_sequence(&path) else {
+            if path.extension().and_then(|e| e.to_str()) != Some("sfst") {
+                continue;
+            }
+
+            let Some(id) = FileId::parse(&path) else {
                 continue;
             };
 
@@ -181,22 +187,23 @@ impl IndexRegistry {
                 Err(_) => continue,
             };
 
-            let size = meta.len();
+            let size = ByteSize(meta.len());
 
             // Use the file's modification time as an approximation for
             // creation time. The actual WAL `created_at_ns` is not available
             // when the .bin has already been deleted.
-            let created_at_ns = meta
-                .modified()
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
+            let created_at_ns = TimestampNs(
+                meta.modified()
+                    .unwrap_or(SystemTime::UNIX_EPOCH)
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            );
 
             registry.files.insert(
-                seq,
+                id.seq,
                 IndexFile {
-                    sequence: seq,
+                    sequence: id.seq,
                     created_at_ns,
                     size,
                     pending_deletion: false,
@@ -207,7 +214,7 @@ impl IndexRegistry {
         registry
     }
 
-    pub fn track(&mut self, sequence: u64, created_at_ns: u64, size: u64) {
+    pub fn track(&mut self, sequence: u64, created_at_ns: TimestampNs, size: ByteSize) {
         self.files.insert(
             sequence,
             IndexFile {
@@ -266,7 +273,7 @@ impl IndexRegistry {
             .collect();
 
         let total_files = eligible.len();
-        let total_size: u64 = eligible.iter().map(|f| f.size).sum();
+        let total_size: u64 = eligible.iter().map(|f| f.size.as_u64()).sum();
 
         let mut to_evict = Vec::new();
         let mut remaining_files = total_files;
@@ -281,25 +288,19 @@ impl IndexRegistry {
             if remaining_size > max_total_size {
                 should_evict = true;
             }
-            if now_ns.saturating_sub(entry.created_at_ns) > max_age_ns {
+            if now_ns.saturating_sub(entry.created_at_ns.as_u64()) > max_age_ns {
                 should_evict = true;
             }
 
             if should_evict {
                 to_evict.push(entry.sequence);
                 remaining_files -= 1;
-                remaining_size -= entry.size;
+                remaining_size -= entry.size.as_u64();
             }
         }
 
         to_evict
     }
-}
-
-fn parse_index_sequence(path: &Path) -> Option<u64> {
-    let name = path.file_name()?.to_str()?;
-    let seq_str = name.strip_prefix("wal-")?.strip_suffix(".sfst")?;
-    seq_str.parse().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -336,12 +337,12 @@ impl Registry {
         Self { wal, index }
     }
 
-    /// Returns sequences of archived WAL files that have no corresponding index.
-    pub fn unindexed_sequences(&self) -> Vec<u64> {
+    /// Returns FileIds of archived WAL files that have no corresponding index.
+    pub fn unindexed_ids(&self) -> Vec<FileId> {
         self.wal
-            .archived_sequences()
+            .archived_ids()
             .into_iter()
-            .filter(|seq| self.index.get(*seq).is_none())
+            .filter(|id| self.index.get(id.seq).is_none())
             .collect()
     }
 }

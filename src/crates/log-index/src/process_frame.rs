@@ -30,7 +30,7 @@ pub(crate) fn process_frame(
         return Ok(0);
     };
     let global_log_offset = wal_index.num_logs();
-    let ingestion_ns = wal_frame.timestamp_ns;
+    let ingestion_ns = wal_frame.timestamp_ns.0;
 
     collect_timestamps(logs_batch, ingestion_ns, &mut wal_index.timestamps);
 

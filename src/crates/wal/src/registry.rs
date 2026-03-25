@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
 
-use crate::format::{HEADER_SIZE, WalEvent, parse_sequence};
+use crate::format::{HEADER_SIZE, WalEvent};
+use crate::types::{ByteSize, FileId, TimestampNs};
+use crate::waldir::WalDir;
 use crate::{Error, Result};
 
 /// Lifecycle status of a WAL file.
@@ -15,51 +16,36 @@ pub enum WalFileStatus {
 }
 
 /// A WAL file tracked by the registry.
-///
-/// The registry tracks existence and lifecycle status. Auxiliary metadata
-/// (entry count, size, time range) is carried by `WalEvent::FileCompleted`
-/// and consumed directly by the ledger — not stored here.
 #[derive(Debug, Clone)]
 pub struct WalFileEntry {
-    pub path: PathBuf,
-    pub sequence: u64,
+    pub id: FileId,
     pub status: WalFileStatus,
-    pub created_at_ns: u64,
-    /// Whether a split-FST index has been successfully built for this file.
-    pub indexed: bool,
-    /// Size of the WAL file in bytes.
-    pub size: u64,
+    pub created_at_ns: TimestampNs,
+    pub size: ByteSize,
 }
 
 /// An ordered collection of WAL files.
 ///
 /// Files are keyed by sequence number, which provides chronological ordering.
-/// The registry tracks existence and lifecycle status — it is the single
-/// source of truth for what WAL files exist on the system.
+/// Path derivation is delegated to the owned [`WalDir`].
 pub struct WalRegistry {
-    dir: PathBuf,
+    dir: WalDir,
     files: BTreeMap<u64, WalFileEntry>,
 }
 
 impl WalRegistry {
-    /// Creates an empty registry for the given directory.
-    pub fn new(dir: &Path) -> Self {
+    pub fn new(dir: WalDir) -> Self {
         Self {
-            dir: dir.to_path_buf(),
+            dir,
             files: BTreeMap::new(),
         }
     }
 
     /// Recovers registry state by scanning the directory and reading file headers.
-    ///
-    /// Files that cannot be parsed (bad header, not a WAL file) are silently skipped.
-    /// All discovered files are marked as `Archived` since the ingester is not
-    /// running (or has restarted) — if the ingester has an active file, it will
-    /// send a `FileCreated` event that overrides the status.
-    pub fn recover(dir: &Path) -> Result<Self> {
+    pub fn recover(dir: WalDir) -> Result<Self> {
         let mut registry = Self::new(dir);
 
-        let entries = match fs::read_dir(dir) {
+        let entries = match fs::read_dir(registry.dir.path()) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(registry),
             Err(e) => return Err(e.into()),
@@ -68,42 +54,27 @@ impl WalRegistry {
         for dir_entry in entries.flatten() {
             let path = dir_entry.path();
 
-            // Clean up stale temp files from interrupted index writes.
-            if path.extension().is_some_and(|ext| ext == "tmp") {
-                if let Err(e) = fs::remove_file(&path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(path = %path.display(), %e, "failed to remove stale tmp file");
-                    }
-                } else {
-                    tracing::info!(path = %path.display(), "removed stale tmp file");
-                }
-                continue;
-            }
-
-            let Some(seq) = parse_sequence(&path) else {
+            let Some(id) = FileId::parse(&path) else {
+                tracing::warn!("skipping file with unparseable name: {}", path.display());
                 continue;
             };
 
             let header = match read_header(&path) {
                 Ok(h) => h,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::error!("failed to read WAL header {}: {e}", path.display());
+                    continue;
+                }
             };
 
-            let sfst_path = path.with_extension("sfst");
-            let indexed = sfst_path.exists();
-            let size = if indexed {
-                fs::metadata(&sfst_path).map(|m| m.len()).unwrap_or(0)
-            } else {
-                fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-            };
+            let size = ByteSize(fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
+
             registry.files.insert(
-                seq,
+                id.seq,
                 WalFileEntry {
-                    path,
-                    sequence: seq,
+                    id,
                     status: WalFileStatus::Archived,
-                    created_at_ns: header.created_at,
-                    indexed,
+                    created_at_ns: TimestampNs(header.created_at),
                     size,
                 },
             );
@@ -112,93 +83,69 @@ impl WalRegistry {
         Ok(registry)
     }
 
-    /// Registers a new active file. Called when the ingester creates a WAL file.
-    pub fn track_active(&mut self, path: PathBuf, sequence: u64, created_at_ns: u64) -> Result<()> {
-        if self.files.contains_key(&sequence) {
-            return Err(Error::DuplicateSequence(sequence));
+    pub fn dir(&self) -> &WalDir {
+        &self.dir
+    }
+
+    /// Registers a new active file.
+    fn track_active(&mut self, id: FileId, created_at_ns: TimestampNs) -> Result<()> {
+        if self.files.contains_key(&id.seq) {
+            return Err(Error::DuplicateSequence(id.seq));
         }
         self.files.insert(
-            sequence,
+            id.seq,
             WalFileEntry {
-                path,
-                sequence,
+                id,
                 status: WalFileStatus::Active,
                 created_at_ns,
-                indexed: false,
-                size: 0,
+                size: ByteSize::ZERO,
             },
         );
         Ok(())
     }
 
-    /// Marks a file as archived. Called when the ingester completes a WAL file.
-    pub fn mark_archived(&mut self, sequence: u64) -> Result<()> {
+    /// Marks a file as archived.
+    fn mark_archived(&mut self, id: FileId, size: ByteSize) -> Result<()> {
         let entry = self
             .files
-            .get_mut(&sequence)
-            .ok_or(Error::UnknownSequence(sequence))?;
+            .get_mut(&id.seq)
+            .ok_or(Error::UnknownSequence(id.seq))?;
         entry.status = WalFileStatus::Archived;
-        Ok(())
-    }
-
-    /// Marks a file as indexed. Called when the indexer successfully builds
-    /// a split-FST index for this file.
-    ///
-    /// Updates the tracked size to the `.sfst` file size, since the WAL
-    /// `.bin` is deleted after indexing and retention accounts for index
-    /// files only.
-    pub fn mark_indexed(&mut self, sequence: u64) -> Result<()> {
-        let entry = self
-            .files
-            .get_mut(&sequence)
-            .ok_or(Error::UnknownSequence(sequence))?;
-        entry.indexed = true;
-        let sfst_path = entry.path.with_extension("sfst");
-        if let Ok(meta) = fs::metadata(&sfst_path) {
-            entry.size = meta.len();
-        }
+        entry.size = size;
         Ok(())
     }
 
     /// Applies a `WalEvent` from the ingester.
     pub fn apply_event(&mut self, event: &WalEvent) -> Result<()> {
         match event {
-            WalEvent::FileCreated {
-                path,
-                created_at_ns,
-            } => {
-                let Some(seq) = parse_sequence(path) else {
-                    return Ok(());
-                };
-                self.track_active(path.clone(), seq, *created_at_ns)
-            }
+            WalEvent::FileCreated { id, created_at_ns } => self.track_active(*id, *created_at_ns),
             WalEvent::FileSynced { .. } => Ok(()),
-            WalEvent::FileCompleted { path, size, .. } => {
-                let Some(seq) = parse_sequence(path) else {
-                    return Ok(());
-                };
-                self.mark_archived(seq)?;
-                if let Some(entry) = self.files.get_mut(&seq) {
-                    entry.size = *size;
-                }
-                Ok(())
-            }
+            WalEvent::FileCompleted { id, size, .. } => self.mark_archived(*id, *size),
         }
     }
 
-    /// Removes a file from the registry. Called by the ledger after deleting a file.
-    pub fn remove(&mut self, sequence: u64) -> Option<WalFileEntry> {
-        self.files.remove(&sequence)
+    /// Removes a file from the registry.
+    pub fn remove(&mut self, id: FileId) -> Option<WalFileEntry> {
+        self.files.remove(&id.seq)
     }
 
-    /// Returns all archived files, ordered by sequence number (chronological).
+    /// Returns a file by its id.
+    pub fn get(&self, id: FileId) -> Option<&WalFileEntry> {
+        self.files.get(&id.seq)
+    }
+
+    /// Returns all archived files, ordered by sequence number.
     pub fn archived_files(&self) -> impl Iterator<Item = &WalFileEntry> {
         self.files
             .values()
             .filter(|f| f.status == WalFileStatus::Archived)
     }
 
-    /// Returns the total number of tracked files.
+    /// Returns all files in sequence order.
+    pub fn iter(&self) -> impl Iterator<Item = &WalFileEntry> {
+        self.files.values()
+    }
+
     pub fn len(&self) -> usize {
         self.files.len()
     }
@@ -207,72 +154,44 @@ impl WalRegistry {
         self.files.is_empty()
     }
 
-    /// Returns the directory this registry manages.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// Returns all files in sequence order.
-    pub fn iter(&self) -> impl Iterator<Item = &WalFileEntry> {
-        self.files.values()
-    }
-
-    /// Returns a file by its sequence number.
-    pub fn get(&self, sequence: u64) -> Option<&WalFileEntry> {
-        self.files.get(&sequence)
-    }
-
-    /// Evaluates a retention policy and returns the paths of files that should
-    /// be deleted.
-    ///
-    /// Only archived+indexed files are eligible for deletion. Files are
-    /// considered oldest-first (by sequence number). A file is marked for
-    /// deletion if any of these conditions is true:
-    ///
-    /// - The number of indexed files exceeds `max_files`
-    /// - The total size of indexed files exceeds `max_total_size`
-    /// - The file's age exceeds `max_age`
-    ///
-    /// The `now_ns` parameter is the current wall-clock time in nanoseconds
-    /// (same epoch as `created_at_ns`).
+    /// Evaluates a retention policy and returns the FileIds of files to delete.
     pub fn evaluate_retention(
         &self,
         max_files: usize,
-        max_total_size: u64,
-        max_age_ns: u64,
-        now_ns: u64,
-    ) -> Vec<PathBuf> {
+        max_total_size: ByteSize,
+        max_age_ns: TimestampNs,
+        now_ns: TimestampNs,
+    ) -> Vec<FileId> {
         let eligible: Vec<&WalFileEntry> = self
             .files
             .values()
-            .filter(|f| f.status == WalFileStatus::Archived && f.indexed)
+            .filter(|f| f.status == WalFileStatus::Archived)
             .collect();
 
         let total_files = eligible.len();
-        let total_size: u64 = eligible.iter().map(|f| f.size).sum();
+        let total_size: u64 = eligible.iter().map(|f| f.size.as_u64()).sum();
 
         let mut to_delete = Vec::new();
         let mut remaining_files = total_files;
         let mut remaining_size = total_size;
 
-        // Iterate oldest first (BTreeMap is sorted by sequence).
         for entry in &eligible {
             let mut should_delete = false;
 
             if remaining_files > max_files {
                 should_delete = true;
             }
-            if remaining_size > max_total_size {
+            if remaining_size > max_total_size.as_u64() {
                 should_delete = true;
             }
-            if now_ns.saturating_sub(entry.created_at_ns) > max_age_ns {
+            if now_ns.saturating_sub(entry.created_at_ns) > max_age_ns.as_u64() {
                 should_delete = true;
             }
 
             if should_delete {
-                to_delete.push(entry.path.clone());
+                to_delete.push(entry.id);
                 remaining_files -= 1;
-                remaining_size -= entry.size;
+                remaining_size -= entry.size.as_u64();
             }
         }
 
@@ -281,7 +200,7 @@ impl WalRegistry {
 }
 
 /// Read and parse the WAL file header.
-fn read_header(path: &Path) -> Result<crate::format::FileHeader> {
+fn read_header(path: &std::path::Path) -> Result<crate::format::FileHeader> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
     let mut buf = [0u8; HEADER_SIZE];
@@ -295,19 +214,33 @@ mod tests {
     use crate::format::WalEvent;
     use crate::{Config, RotationConfig, WalWriter};
 
+    fn test_wal_dir(dir: &std::path::Path) -> WalDir {
+        WalDir::new(
+            dir,
+            uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap(),
+            uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap(),
+        )
+    }
+
+    fn test_file_id(dir: &std::path::Path, seq: u64) -> FileId {
+        let d = test_wal_dir(dir);
+        FileId::new(d.machine_id(), d.boot_id(), seq)
+    }
+
     /// Helper: create a WalWriter, write entries, shutdown, and return all events.
-    fn write_wal_files(dir: &Path, entry_counts: &[usize]) -> Vec<WalEvent> {
+    fn write_wal_files(dir: &std::path::Path, entry_counts: &[usize]) -> Vec<WalEvent> {
         let entries_per_file: usize = *entry_counts.iter().max().unwrap_or(&10);
         let config = Config {
             rotation: RotationConfig {
                 max_log_entries: entries_per_file,
-                max_file_size: u64::MAX,
+                max_file_size: ByteSize(u64::MAX),
                 max_duration: None,
             },
             crc_enabled: false,
             compression_enabled: true,
         };
-        let mut writer = WalWriter::new(dir, config).unwrap();
+        let wal_dir = test_wal_dir(dir);
+        let mut writer = WalWriter::new(wal_dir, config).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
@@ -324,7 +257,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10, 10]);
 
-        let mut registry = WalRegistry::new(dir.path());
+        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
         for event in &events {
             registry.apply_event(event).unwrap();
         }
@@ -332,8 +265,7 @@ mod tests {
         assert_eq!(registry.len(), 3);
         assert!(registry.iter().all(|f| f.status == WalFileStatus::Archived));
 
-        // Files are in sequence order.
-        let seqs: Vec<u64> = registry.iter().map(|f| f.sequence).collect();
+        let seqs: Vec<u64> = registry.iter().map(|f| f.id.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3]);
     }
 
@@ -342,11 +274,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _ = write_wal_files(dir.path(), &[10, 10]);
 
-        let registry = WalRegistry::recover(dir.path()).unwrap();
+        let registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
         assert_eq!(registry.len(), 2);
         assert!(registry.iter().all(|f| f.status == WalFileStatus::Archived));
 
-        let seqs: Vec<u64> = registry.iter().map(|f| f.sequence).collect();
+        let seqs: Vec<u64> = registry.iter().map(|f| f.id.seq).collect();
         assert_eq!(seqs, vec![1, 2]);
     }
 
@@ -355,45 +287,65 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry = WalRegistry::new(dir.path());
+        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
         for event in &events {
             registry.apply_event(event).unwrap();
         }
         assert_eq!(registry.len(), 2);
 
-        let removed = registry.remove(1).unwrap();
-        assert_eq!(removed.sequence, 1);
+        let id = test_file_id(dir.path(), 1);
+        let removed = registry.remove(id).unwrap();
+        assert_eq!(removed.id.seq, 1);
         assert_eq!(registry.len(), 1);
-        assert!(registry.get(1).is_none());
+        assert!(registry.get(id).is_none());
     }
 
     #[test]
     fn active_then_archived() {
         let dir = tempfile::tempdir().unwrap();
+        let id = test_file_id(dir.path(), 1);
 
-        let mut registry = WalRegistry::new(dir.path());
-        let path = dir.path().join("wal-0000000001.bin");
+        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
 
         registry
-            .track_active(path.clone(), 1, 1_000_000_000)
+            .apply_event(&WalEvent::FileCreated {
+                id,
+                created_at_ns: TimestampNs(1_000_000_000),
+            })
             .unwrap();
-        assert!(registry.get(1).unwrap().status == WalFileStatus::Active);
+        assert!(registry.get(id).unwrap().status == WalFileStatus::Active);
 
-        registry.mark_archived(1).unwrap();
-        assert!(registry.get(1).unwrap().status == WalFileStatus::Archived);
+        registry
+            .apply_event(&WalEvent::FileCompleted {
+                id,
+                frame_count: 1,
+                min_timestamp_ns: TimestampNs(1_000_000_000),
+                max_timestamp_ns: TimestampNs(1_000_000_000),
+                size: ByteSize(4096),
+            })
+            .unwrap();
+        assert!(registry.get(id).unwrap().status == WalFileStatus::Archived);
     }
 
     #[test]
     fn duplicate_sequence_rejected() {
         let dir = tempfile::tempdir().unwrap();
+        let id = test_file_id(dir.path(), 1);
 
-        let mut registry = WalRegistry::new(dir.path());
-        let path = dir.path().join("wal-0000000001.bin");
+        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
 
         registry
-            .track_active(path.clone(), 1, 1_000_000_000)
+            .apply_event(&WalEvent::FileCreated {
+                id,
+                created_at_ns: TimestampNs(1_000_000_000),
+            })
             .unwrap();
-        let err = registry.track_active(path, 1, 2_000_000_000).unwrap_err();
+        let err = registry
+            .apply_event(&WalEvent::FileCreated {
+                id,
+                created_at_ns: TimestampNs(2_000_000_000),
+            })
+            .unwrap_err();
         assert!(matches!(err, Error::DuplicateSequence(1)));
     }
 }

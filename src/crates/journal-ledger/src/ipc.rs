@@ -48,7 +48,7 @@ pub enum IndexerResponse {
     /// The request was accepted and will be processed.
     Accepted,
     /// The index for a file has been finalized successfully.
-    IndexFinalized { path: PathBuf },
+    IndexFinalized { seq: u64, path: PathBuf },
     /// Indexing failed for a file.
     IndexFailed { path: PathBuf, error: String },
 }
