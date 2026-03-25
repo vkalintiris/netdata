@@ -23,7 +23,7 @@ mod logs_service;
 mod metrics_service;
 mod otel;
 mod output;
-mod wal_publisher;
+mod ledger_sender;
 
 use chart_config::ChartConfigManager;
 use logs_service::NetdataLogsService;
@@ -266,12 +266,12 @@ fn create_logs_service(
     let wal_writer = WalWriter::new(wal_dir, writer_config)
         .with_context(|| format!("creating WAL writer in {}", logs_config.wal.dir))?;
 
-    let publisher = wal_publisher::WalPublisher::new(writer_socket_path);
+    let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
         wal_dir = %logs_config.wal.dir,
         "logs ingestion enabled (WAL)"
     );
 
-    Ok(NetdataLogsService::new(wal_writer, publisher))
+    Ok(NetdataLogsService::new(wal_writer, sender))
 }

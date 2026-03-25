@@ -6,18 +6,18 @@ use opentelemetry_proto::tonic::collector::logs::v1::{
 use tonic::{Request, Response, Status};
 use wal::WalWriter;
 
-use crate::wal_publisher::WalPublisher;
+use crate::ledger_sender::LedgerSender;
 
 pub struct NetdataLogsService {
     wal: Mutex<WalWriter>,
-    publisher: WalPublisher,
+    sender: LedgerSender,
 }
 
 impl NetdataLogsService {
-    pub fn new(wal: WalWriter, publisher: WalPublisher) -> Self {
+    pub fn new(wal: WalWriter, sender: LedgerSender) -> Self {
         Self {
             wal: Mutex::new(wal),
-            publisher,
+            sender,
         }
     }
 }
@@ -48,9 +48,7 @@ impl LogsService for NetdataLogsService {
         })?;
 
         let events = wal.take_events();
-        if !events.is_empty() {
-            self.publisher.publish_events(&events);
-        }
+        self.sender.send_events(&events);
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,

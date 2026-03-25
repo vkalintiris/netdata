@@ -91,7 +91,7 @@ pub enum WalEvent {
         path: std::path::PathBuf,
         created_at_ns: u64,
     },
-    DataSynced {
+    FileSynced {
         path: std::path::PathBuf,
         valid_up_to: u64,
         frame_count: u64,

@@ -115,7 +115,7 @@ impl WalWriter {
             active.writer.flush()?;
             active.writer.get_ref().sync_all()?;
 
-            self.pending_events.push(WalEvent::DataSynced {
+            self.pending_events.push(WalEvent::FileSynced {
                 path: active.path.clone(),
                 valid_up_to: active.bytes_written,
                 frame_count: active.frame_count,

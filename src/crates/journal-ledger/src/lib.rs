@@ -286,7 +286,7 @@ impl JournalLedger {
                 }
                 tracing::info!("FileCreated seq={seq} path={}", path.display());
             }
-            wal::format::WalEvent::DataSynced {
+            wal::format::WalEvent::FileSynced {
                 ref path,
                 frame_count,
                 entry_count,

@@ -4,28 +4,28 @@ use ferryboat::{Connection, Endpoint};
 use tokio::sync::mpsc;
 use wal::format::{WalEvent, WalMessage};
 
-/// Publishes WAL events to the ledger over a direct ferryboat IPC socket.
+/// Sends WAL events to the ledger over a direct ferryboat IPC socket.
 ///
 /// Messages are fire-and-forget: silently dropped if the connection is lost.
-pub struct WalPublisher {
+pub struct LedgerSender {
     tx: mpsc::UnboundedSender<WalMessage>,
     seq: AtomicU64,
 }
 
-impl WalPublisher {
-    /// Creates a new publisher that connects to the ledger on the given socket path.
+impl LedgerSender {
+    /// Creates a new sender that connects to the ledger on the given socket path.
     pub fn new(socket_path: &str) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(publisher_task(rx, socket_path.to_string()));
+        tokio::spawn(sender_task(rx, socket_path.to_string()));
         Self {
             tx,
             seq: AtomicU64::new(1),
         }
     }
 
-    /// Publishes all events from a [`WalEvent`] slice (as returned by
+    /// Sends all events from a [`WalEvent`] slice (as returned by
     /// [`WalWriter::take_events`]).
-    pub fn publish_events(&self, events: &[WalEvent]) {
+    pub fn send_events(&self, events: &[WalEvent]) {
         for event in events {
             let msg = WalMessage {
                 seq: self.next_seq(),
@@ -40,7 +40,7 @@ impl WalPublisher {
     }
 }
 
-async fn publisher_task(mut rx: mpsc::UnboundedReceiver<WalMessage>, socket_path: String) {
+async fn sender_task(mut rx: mpsc::UnboundedReceiver<WalMessage>, socket_path: String) {
     let endpoint = Endpoint::ipc(&socket_path);
 
     let mut conn = match Connection::<WalMessage, ()>::connect(endpoint)

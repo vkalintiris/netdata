@@ -172,7 +172,7 @@ impl WalRegistry {
                 };
                 self.track_active(path.clone(), seq, *created_at_ns)
             }
-            WalEvent::DataSynced { .. } => Ok(()),
+            WalEvent::FileSynced { .. } => Ok(()),
             WalEvent::FileCompleted { path, size, .. } => {
                 let Some(seq) = parse_sequence(path) else {
                     return Ok(());
