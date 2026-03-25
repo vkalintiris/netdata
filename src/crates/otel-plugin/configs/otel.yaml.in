@@ -39,7 +39,7 @@ metrics:
 logs:
   wal:
     # Directory for WAL file storage.
-    dir: @logdir_POST@/otel/v1
+    dir: @logdir_POST@/otel/v1/wal
 
     # Maximum size per WAL file (e.g., "100MB", "1.5GB").
     max_file_size: "100MB"
@@ -56,12 +56,16 @@ logs:
     # Whether to LZ4-compress frame payloads.
     compression_enabled: true
 
+  index:
+    # Directory for index file storage.
+    dir: @logdir_POST@/otel/v1/index
+
   retention:
-    # Maximum number of WAL files to retain.
+    # Maximum number of index files to retain.
     max_files: 10
 
-    # Maximum total size of all WAL files (e.g., "1GB", "500MB").
+    # Maximum total size of all index files (e.g., "1GB", "500MB").
     max_total_size: "1GB"
 
-    # Maximum age of WAL files (e.g., "7 days", "1 week", "168h").
+    # Maximum age of index files (e.g., "7 days", "1 week", "168h").
     max_age: "7 days"

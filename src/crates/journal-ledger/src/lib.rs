@@ -50,6 +50,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
     let mut ledger = JournalLedger::new(
         &config.writer_socket_path,
         &config.logs.wal.dir,
+        &config.logs.index.dir,
         config.logs.retention.clone(),
     )
     .await
@@ -113,11 +114,11 @@ impl JournalLedger {
     pub async fn new(
         writer_socket_path: &str,
         wal_dir: &str,
+        index_dir: &str,
         retention: RetentionConfig,
     ) -> Result<Self, ferryboat::Error> {
         let wal_path = std::path::Path::new(wal_dir);
-        // Today both directories are the same; this will change.
-        let index_dir = wal_path;
+        let index_path = std::path::Path::new(index_dir);
 
         let machine_id = journal_common::load_machine_id()
             .expect("failed to load machine ID");
@@ -126,7 +127,7 @@ impl JournalLedger {
         let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
 
         // Phase 1: Recover registries from existing files on disk.
-        let mut registry = Registry::recover(wal_dir, index_dir);
+        let mut registry = Registry::recover(wal_dir, index_path);
 
         let cancel = CancellationToken::new();
 

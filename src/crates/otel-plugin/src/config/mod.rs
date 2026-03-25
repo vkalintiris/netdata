@@ -174,12 +174,14 @@ metrics:
   max_new_charts_per_request: 100
 logs:
   wal:
-    dir: /var/log/netdata/otel/v1
+    dir: /var/log/netdata/otel/v1/wal
     max_file_size: "100MB"
     max_log_entries: 50000
     max_file_duration: "2 hours"
     crc_enabled: true
     compression_enabled: true
+  index:
+    dir: /var/log/netdata/otel/v1/index
   retention:
     max_files: 10
     max_total_size: "1GB"
@@ -208,7 +210,7 @@ logs:
     #[test]
     fn stock_yaml_logs_parsed() {
         let config = stock_config();
-        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1");
+        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
         assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(100));
         assert_eq!(config.logs.wal.max_log_entries, 50000);
         assert_eq!(
@@ -281,7 +283,7 @@ logs:
             serde_yaml::from_str("logs:\n  wal:\n    max_log_entries: 100000").unwrap();
         apply_overrides(&mut config, &o);
         assert_eq!(config.logs.wal.max_log_entries, 100000);
-        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1");
+        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
         assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(100));
     }
 

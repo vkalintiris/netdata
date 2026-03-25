@@ -5,7 +5,7 @@ use bytesize::ByteSize;
 
 use super::ConfigOverride;
 use super::endpoint::EndpointOverride;
-use super::logs::{LogsOverride, RetentionOverride, WalOverride};
+use super::logs::{IndexOverride, LogsOverride, RetentionOverride, WalOverride};
 use super::metrics::MetricsOverride;
 
 fn read_env(name: &str) -> Result<Option<String>> {
@@ -126,6 +126,9 @@ impl LogsOverride {
             crc_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_CRC_ENABLED")?,
             compression_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_COMPRESSION_ENABLED")?,
         };
+        let index = IndexOverride {
+            dir: parse_env_var("NETDATA_OTEL_LOGS_INDEX_DIR")?,
+        };
         let retention = RetentionOverride {
             max_files: parse_env_var("NETDATA_OTEL_LOGS_RETENTION_MAX_FILES")?,
             max_total_size: parse_env_bytesize("NETDATA_OTEL_LOGS_RETENTION_MAX_TOTAL_SIZE")?,
@@ -133,6 +136,7 @@ impl LogsOverride {
         };
         Ok(Self {
             wal: if wal.has_any() { Some(wal) } else { None },
+            index: if index.has_any() { Some(index) } else { None },
             retention: if retention.has_any() {
                 Some(retention)
             } else {

@@ -64,8 +64,17 @@ pub struct MetricsConfig {
 pub struct LogsConfig {
     /// WAL file configuration (rotation, storage).
     pub wal: WalConfig,
-    /// Retention policy for WAL files.
+    /// Index file configuration.
+    pub index: IndexConfig,
+    /// Retention policy for log index files.
     pub retention: RetentionConfig,
+}
+
+/// Index file configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexConfig {
+    /// Directory for index file storage.
+    pub dir: String,
 }
 
 /// WAL file configuration.

@@ -9,7 +9,15 @@ pub(super) struct LogsOverride {
     #[serde(default)]
     pub(super) wal: Option<WalOverride>,
     #[serde(default)]
+    pub(super) index: Option<IndexOverride>,
+    #[serde(default)]
     pub(super) retention: Option<RetentionOverride>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct IndexOverride {
+    #[serde(default)]
+    pub(super) dir: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -41,7 +49,14 @@ pub(super) struct RetentionOverride {
 impl LogsOverride {
     pub(super) fn has_any(&self) -> bool {
         self.wal.as_ref().is_some_and(|w| w.has_any())
+            || self.index.as_ref().is_some_and(|i| i.has_any())
             || self.retention.as_ref().is_some_and(|r| r.has_any())
+    }
+}
+
+impl IndexOverride {
+    pub(super) fn has_any(&self) -> bool {
+        self.dir.is_some()
     }
 }
 
@@ -81,6 +96,11 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         }
         if let Some(v) = w.compression_enabled {
             config.wal.compression_enabled = v;
+        }
+    }
+    if let Some(i) = &o.index {
+        if let Some(v) = &i.dir {
+            config.index.dir = v.clone();
         }
     }
     if let Some(r) = &o.retention {
