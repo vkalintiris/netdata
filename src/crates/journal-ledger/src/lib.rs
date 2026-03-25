@@ -10,7 +10,7 @@ use bridge::config::RetentionConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::{Connection, Endpoint};
 use tokio_util::sync::CancellationToken;
-use wal::ByteSize;
+use wal::{ByteSize, WalDir};
 
 use ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, WalListener, WalReceiver,
@@ -115,9 +115,15 @@ impl JournalLedger {
         wal_dir: &str,
         retention: RetentionConfig,
     ) -> Result<Self, ferryboat::Error> {
-        let wal_dir = std::path::Path::new(wal_dir);
+        let wal_path = std::path::Path::new(wal_dir);
         // Today both directories are the same; this will change.
-        let index_dir = wal_dir;
+        let index_dir = wal_path;
+
+        let machine_id = journal_common::load_machine_id()
+            .expect("failed to load machine ID");
+        let boot_id = journal_common::load_boot_id()
+            .expect("failed to load boot ID");
+        let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
 
         // Phase 1: Recover registries from existing files on disk.
         let mut registry = Registry::recover(wal_dir, index_dir);
@@ -132,7 +138,7 @@ impl JournalLedger {
         if !unindexed.is_empty() {
             tracing::info!("indexing {} unindexed WAL files", unindexed.len());
             for &id in &unindexed {
-                let path = registry.wal.path(id);
+                let path = registry.wal.dir().wal_path(id);
                 let req = IndexerRequest::FinalizeIndex { path };
                 indexer.send(req).await?;
             }
@@ -146,7 +152,7 @@ impl JournalLedger {
                         // The indexer already deleted the .bin.
                         let created_at_ns = registry
                             .wal
-                            .remove(seq)
+                            .remove_by_seq(seq)
                             .map(|w| w.created_at_ns)
                             .unwrap_or_default();
                         let index_path = registry.index.path(seq);
@@ -275,12 +281,9 @@ impl JournalLedger {
         }
         self.expected_seq = seq + 1;
 
-        match msg.event {
-            wal::format::WalEvent::FileCreated {
-                id,
-                created_at_ns,
-            } => {
-                self.registry.wal.track_active(id, created_at_ns);
+        // Log before applying — extract fields for logging.
+        match &msg.event {
+            wal::format::WalEvent::FileCreated { id, .. } => {
                 tracing::info!("FileCreated seq={seq} id={id}");
             }
             wal::format::WalEvent::FileSynced {
@@ -299,17 +302,24 @@ impl JournalLedger {
                 size,
                 ..
             } => {
-                self.registry.wal.mark_archived(id, size);
                 tracing::info!(
                     "FileCompleted seq={seq} id={id} frames={frame_count} size={size}",
                 );
+            }
+        }
 
-                // Trigger indexing for the completed file.
-                let path = self.registry.wal.path(id);
-                let req = IndexerRequest::FinalizeIndex { path };
-                if let Err(e) = self.indexer.send(req).await {
-                    tracing::error!("failed to send to indexer: {e}");
-                }
+        // Apply the event to the registry.
+        if let Err(e) = self.registry.wal.apply_event(&msg.event) {
+            tracing::error!("failed to apply WAL event: {e}");
+            return;
+        }
+
+        // Trigger indexing on file completion.
+        if let wal::format::WalEvent::FileCompleted { id, .. } = &msg.event {
+            let path = self.registry.wal.dir().wal_path(*id);
+            let req = IndexerRequest::FinalizeIndex { path };
+            if let Err(e) = self.indexer.send(req).await {
+                tracing::error!("failed to send to indexer: {e}");
             }
         }
     }
@@ -324,7 +334,7 @@ impl JournalLedger {
                 let created_at_ns = self
                     .registry
                     .wal
-                    .remove(seq)
+                    .remove_by_seq(seq)
                     .map(|w| w.created_at_ns)
                     .unwrap_or_default();
                 let index_path = self.registry.index.path(seq);

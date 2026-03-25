@@ -34,16 +34,12 @@ pub struct WalRegistry {
 }
 
 impl WalRegistry {
-    pub fn new(dir: WalDir) -> Self {
-        Self {
-            dir,
-            files: BTreeMap::new(),
-        }
-    }
-
     /// Recovers registry state by scanning the directory and reading file headers.
     pub fn recover(dir: WalDir) -> Result<Self> {
-        let mut registry = Self::new(dir);
+        let mut registry = Self {
+            dir,
+            files: BTreeMap::new(),
+        };
 
         let entries = match fs::read_dir(registry.dir.path()) {
             Ok(entries) => entries,
@@ -87,51 +83,40 @@ impl WalRegistry {
         &self.dir
     }
 
-    /// Registers a new active file.
-    fn track_active(&mut self, id: FileId, created_at_ns: TimestampNs) -> Result<()> {
-        if self.files.contains_key(&id.seq) {
-            return Err(Error::DuplicateSequence(id.seq));
-        }
-        self.files.insert(
-            id.seq,
-            WalFileEntry {
-                id,
-                status: WalFileStatus::Active,
-                created_at_ns,
-                size: ByteSize::ZERO,
-            },
-        );
-        Ok(())
-    }
-
-    /// Marks a file as archived.
-    fn mark_archived(&mut self, id: FileId, size: ByteSize) -> Result<()> {
-        let entry = self
-            .files
-            .get_mut(&id.seq)
-            .ok_or(Error::UnknownSequence(id.seq))?;
-        entry.status = WalFileStatus::Archived;
-        entry.size = size;
-        Ok(())
-    }
-
     /// Applies a `WalEvent` from the ingester.
     pub fn apply_event(&mut self, event: &WalEvent) -> Result<()> {
         match event {
-            WalEvent::FileCreated { id, created_at_ns } => self.track_active(*id, *created_at_ns),
+            WalEvent::FileCreated { id, created_at_ns } => {
+                if self.files.contains_key(&id.seq) {
+                    return Err(Error::DuplicateSequence(id.seq));
+                }
+                self.files.insert(
+                    id.seq,
+                    WalFileEntry {
+                        id: *id,
+                        status: WalFileStatus::Active,
+                        created_at_ns: *created_at_ns,
+                        size: ByteSize::ZERO,
+                    },
+                );
+                Ok(())
+            }
             WalEvent::FileSynced { .. } => Ok(()),
-            WalEvent::FileCompleted { id, size, .. } => self.mark_archived(*id, *size),
+            WalEvent::FileCompleted { id, size, .. } => {
+                let entry = self
+                    .files
+                    .get_mut(&id.seq)
+                    .ok_or(Error::UnknownSequence(id.seq))?;
+                entry.status = WalFileStatus::Archived;
+                entry.size = *size;
+                Ok(())
+            }
         }
     }
 
-    /// Removes a file from the registry.
-    pub fn remove(&mut self, id: FileId) -> Option<WalFileEntry> {
-        self.files.remove(&id.seq)
-    }
-
-    /// Returns a file by its id.
-    pub fn get(&self, id: FileId) -> Option<&WalFileEntry> {
-        self.files.get(&id.seq)
+    /// Removes a file by sequence number.
+    pub fn remove_by_seq(&mut self, seq: u64) -> Option<WalFileEntry> {
+        self.files.remove(&seq)
     }
 
     /// Returns all archived files, ordered by sequence number.
@@ -141,61 +126,12 @@ impl WalRegistry {
             .filter(|f| f.status == WalFileStatus::Archived)
     }
 
-    /// Returns all files in sequence order.
-    pub fn iter(&self) -> impl Iterator<Item = &WalFileEntry> {
-        self.files.values()
-    }
-
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
-    }
-
-    /// Evaluates a retention policy and returns the FileIds of files to delete.
-    pub fn evaluate_retention(
-        &self,
-        max_files: usize,
-        max_total_size: ByteSize,
-        max_age_ns: TimestampNs,
-        now_ns: TimestampNs,
-    ) -> Vec<FileId> {
-        let eligible: Vec<&WalFileEntry> = self
-            .files
-            .values()
-            .filter(|f| f.status == WalFileStatus::Archived)
-            .collect();
-
-        let total_files = eligible.len();
-        let total_size: u64 = eligible.iter().map(|f| f.size.as_u64()).sum();
-
-        let mut to_delete = Vec::new();
-        let mut remaining_files = total_files;
-        let mut remaining_size = total_size;
-
-        for entry in &eligible {
-            let mut should_delete = false;
-
-            if remaining_files > max_files {
-                should_delete = true;
-            }
-            if remaining_size > max_total_size.as_u64() {
-                should_delete = true;
-            }
-            if now_ns.saturating_sub(entry.created_at_ns) > max_age_ns.as_u64() {
-                should_delete = true;
-            }
-
-            if should_delete {
-                to_delete.push(entry.id);
-                remaining_files -= 1;
-                remaining_size -= entry.size.as_u64();
-            }
-        }
-
-        to_delete
     }
 }
 
@@ -257,15 +193,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10, 10]);
 
-        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
+        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        // recover finds all files as Archived; clear them to test apply_event from scratch
+        for seq in [1u64, 2, 3] {
+            registry.remove_by_seq(seq);
+        }
+
         for event in &events {
             registry.apply_event(event).unwrap();
         }
 
         assert_eq!(registry.len(), 3);
-        assert!(registry.iter().all(|f| f.status == WalFileStatus::Archived));
+        assert!(registry.archived_files().count() == 3);
 
-        let seqs: Vec<u64> = registry.iter().map(|f| f.id.seq).collect();
+        let seqs: Vec<u64> = registry.archived_files().map(|f| f.id.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3]);
     }
 
@@ -276,28 +217,23 @@ mod tests {
 
         let registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
         assert_eq!(registry.len(), 2);
-        assert!(registry.iter().all(|f| f.status == WalFileStatus::Archived));
+        assert_eq!(registry.archived_files().count(), 2);
 
-        let seqs: Vec<u64> = registry.iter().map(|f| f.id.seq).collect();
+        let seqs: Vec<u64> = registry.archived_files().map(|f| f.id.seq).collect();
         assert_eq!(seqs, vec![1, 2]);
     }
 
     #[test]
-    fn remove_file() {
+    fn remove_by_seq() {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
-        for event in &events {
-            registry.apply_event(event).unwrap();
-        }
+        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
         assert_eq!(registry.len(), 2);
 
-        let id = test_file_id(dir.path(), 1);
-        let removed = registry.remove(id).unwrap();
+        let removed = registry.remove_by_seq(1).unwrap();
         assert_eq!(removed.id.seq, 1);
         assert_eq!(registry.len(), 1);
-        assert!(registry.get(id).is_none());
     }
 
     #[test]
@@ -305,7 +241,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(dir.path(), 1);
 
-        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
+        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {
@@ -313,7 +249,10 @@ mod tests {
                 created_at_ns: TimestampNs(1_000_000_000),
             })
             .unwrap();
-        assert!(registry.get(id).unwrap().status == WalFileStatus::Active);
+
+        // Active files are not in archived_files
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.archived_files().count(), 0);
 
         registry
             .apply_event(&WalEvent::FileCompleted {
@@ -324,7 +263,8 @@ mod tests {
                 size: ByteSize(4096),
             })
             .unwrap();
-        assert!(registry.get(id).unwrap().status == WalFileStatus::Archived);
+
+        assert_eq!(registry.archived_files().count(), 1);
     }
 
     #[test]
@@ -332,7 +272,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(dir.path(), 1);
 
-        let mut registry = WalRegistry::new(test_wal_dir(dir.path()));
+        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {

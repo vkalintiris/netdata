@@ -2163,6 +2163,7 @@ dependencies = [
  "anyhow",
  "bridge",
  "ferryboat",
+ "journal-common",
  "log-index",
  "netdata-plugin-types",
  "serde",

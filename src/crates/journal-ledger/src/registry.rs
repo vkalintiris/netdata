@@ -2,135 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use wal::{ByteSize, FileId, TimestampNs};
-
-// ---------------------------------------------------------------------------
-// WAL files (.bin)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WalFileStatus {
-    /// The ingestor is actively writing to this file.
-    Active,
-    /// The ingestor has finished writing; the file is immutable.
-    Archived,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalFile {
-    pub id: FileId,
-    pub created_at_ns: TimestampNs,
-    pub status: WalFileStatus,
-    pub size: ByteSize,
-}
-
-pub struct WalRegistry {
-    dir: PathBuf,
-    files: BTreeMap<u64, WalFile>,
-}
-
-impl WalRegistry {
-    pub fn new(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            files: BTreeMap::new(),
-        }
-    }
-
-    /// Derive the on-disk path for a WAL file from its FileId.
-    pub fn path(&self, id: FileId) -> PathBuf {
-        self.dir.join(id.to_filename("bin"))
-    }
-
-    /// Scan the directory for `.bin` files and reconstruct state.
-    pub fn recover(dir: &Path) -> Self {
-        let mut registry = Self::new(dir.to_path_buf());
-
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return registry,
-        };
-
-        for dir_entry in entries.flatten() {
-            let path = dir_entry.path();
-
-            let Some(id) = FileId::parse(&path) else {
-                continue;
-            };
-
-            let created_at_ns = match read_wal_header(&path) {
-                Ok(h) => TimestampNs(h.created_at),
-                Err(_) => continue,
-            };
-
-            let size = ByteSize(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
-
-            registry.files.insert(
-                id.seq,
-                WalFile {
-                    id,
-                    created_at_ns,
-                    status: WalFileStatus::Archived,
-                    size,
-                },
-            );
-        }
-
-        registry
-    }
-
-    pub fn track_active(&mut self, id: FileId, created_at_ns: TimestampNs) {
-        self.files.insert(
-            id.seq,
-            WalFile {
-                id,
-                created_at_ns,
-                status: WalFileStatus::Active,
-                size: ByteSize::ZERO,
-            },
-        );
-    }
-
-    pub fn mark_archived(&mut self, id: FileId, size: ByteSize) {
-        if let Some(entry) = self.files.get_mut(&id.seq) {
-            entry.status = WalFileStatus::Archived;
-            entry.size = size;
-        }
-    }
-
-    pub fn remove(&mut self, seq: u64) -> Option<WalFile> {
-        self.files.remove(&seq)
-    }
-
-    pub fn get(&self, seq: u64) -> Option<&WalFile> {
-        self.files.get(&seq)
-    }
-
-    /// Returns FileIds of all archived WAL files.
-    pub fn archived_ids(&self) -> Vec<FileId> {
-        self.files
-            .values()
-            .filter(|f| f.status == WalFileStatus::Archived)
-            .map(|f| f.id)
-            .collect()
-    }
-
-    pub fn len(&self) -> usize {
-        self.files.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
-    }
-}
-
-fn read_wal_header(path: &Path) -> Result<wal::format::FileHeader, wal::Error> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut buf = [0u8; wal::format::HEADER_SIZE];
-    file.read_exact(&mut buf)?;
-    wal::format::FileHeader::from_bytes(&buf)
-}
+use wal::{ByteSize, FileId, TimestampNs, WalDir, WalRegistry};
 
 // ---------------------------------------------------------------------------
 // Index files (.sfst)
@@ -317,13 +189,13 @@ impl Registry {
     ///
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
-    pub fn recover(wal_dir: &Path, index_dir: &Path) -> Self {
-        cleanup_temp_files(wal_dir);
-        if index_dir != wal_dir {
-            cleanup_temp_files(index_dir);
-        }
+    pub fn recover(wal_dir: WalDir, index_dir: &Path) -> Self {
+        cleanup_temp_files(index_dir);
 
-        let wal = WalRegistry::recover(wal_dir);
+        let wal = WalRegistry::recover(wal_dir).unwrap_or_else(|e| {
+            tracing::error!("failed to recover WAL registry: {e}");
+            panic!("WAL registry recovery failed");
+        });
         let index = IndexRegistry::recover(index_dir);
 
         if !wal.is_empty() || !index.is_empty() {
@@ -340,9 +212,9 @@ impl Registry {
     /// Returns FileIds of archived WAL files that have no corresponding index.
     pub fn unindexed_ids(&self) -> Vec<FileId> {
         self.wal
-            .archived_ids()
-            .into_iter()
-            .filter(|id| self.index.get(id.seq).is_none())
+            .archived_files()
+            .filter(|entry| self.index.get(entry.id.seq).is_none())
+            .map(|entry| entry.id)
             .collect()
     }
 }
