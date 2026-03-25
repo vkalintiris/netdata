@@ -50,13 +50,16 @@ impl WalReader {
     /// Advise the kernel to drop the file's pages from the page cache.
     /// Call this after you're done reading the file.
     pub fn drop_cache(&self) {
-        use nix::fcntl::{PosixFadviseAdvice, posix_fadvise};
-        let _ = posix_fadvise(
-            self.reader.get_ref(),
-            0,
-            0,
-            PosixFadviseAdvice::POSIX_FADV_DONTNEED,
-        );
+        #[cfg(target_os = "linux")]
+        {
+            use nix::fcntl::{PosixFadviseAdvice, posix_fadvise};
+            let _ = posix_fadvise(
+                self.reader.get_ref(),
+                0,
+                0,
+                PosixFadviseAdvice::POSIX_FADV_DONTNEED,
+            );
+        }
     }
 
     pub fn next_frame(&mut self) -> Result<Option<WalFrame<'_>>> {

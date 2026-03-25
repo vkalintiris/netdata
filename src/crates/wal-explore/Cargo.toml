@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 wal = { workspace = true }
 
 # OTAP / Arrow
-otap-df-pdata = { path = "/home/vk/repos/crates/otel-arrow/rust/otap-dataflow/crates/pdata" }
+otap-df-pdata = { git = "https://github.com/open-telemetry/otel-arrow.git", tag = "v0.46.0" }
 arrow = { version = "57" }
 
 [dev-dependencies]
