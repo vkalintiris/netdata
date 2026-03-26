@@ -39,7 +39,12 @@ pub enum CleanerResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IndexerRequest {
     /// The file has been archived — finalize its index.
-    FinalizeIndex { path: PathBuf },
+    FinalizeIndex {
+        /// Path to the WAL .bin file.
+        wal_path: PathBuf,
+        /// Path where the .sfst index should be written.
+        index_path: PathBuf,
+    },
 }
 
 /// Responses sent from the indexer back to the ledger.

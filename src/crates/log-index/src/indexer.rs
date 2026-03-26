@@ -5,7 +5,7 @@
 //! - **Phase 2**: [`crate::build_and_write`] transforms the in-memory data
 //!   into the on-disk split-FST format.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bumpalo::Bump;
 
@@ -16,9 +16,9 @@ const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 
 /// Build a split-FST index from a WAL file using default settings.
 ///
-/// Writes the output to `{wal_path}.sfst` and returns the output path.
-pub fn index_wal_file(wal_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    index_wal_file_with_options(wal_path, DEFAULT_CARDINALITY_THRESHOLD)
+/// Reads the WAL file at `wal_path` and writes the index to `out_path`.
+pub fn index_wal_file(wal_path: &Path, out_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    index_wal_file_with_options(wal_path, out_path, DEFAULT_CARDINALITY_THRESHOLD)
 }
 
 /// Build a split-FST index from a WAL file with explicit cardinality threshold.
@@ -27,8 +27,9 @@ pub fn index_wal_file(wal_path: &Path) -> Result<PathBuf, Box<dyn std::error::Er
 /// primary FST; fields above go into per-field secondary chunks.
 pub fn index_wal_file_with_options(
     wal_path: &Path,
+    out_path: &Path,
     cardinality_threshold: u32,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = wal::WalReader::open(wal_path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
@@ -45,8 +46,7 @@ pub fn index_wal_file_with_options(
         wal_index.num_logs(),
     );
 
-    let out_path = wal_path.with_extension("sfst");
-    crate::build_and_write(&wal_index, &out_path)?;
+    crate::build_and_write(&wal_index, out_path)?;
 
-    Ok(out_path)
+    Ok(())
 }

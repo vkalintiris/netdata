@@ -4,13 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use wal::{ByteSize, FileId, TimestampNs, WalDir, WalRegistry};
 
+const INDEX_EXT: &str = "sfst";
+
 // ---------------------------------------------------------------------------
 // Index files (.sfst)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct IndexFile {
-    pub sequence: u64,
+    pub id: FileId,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
     pending_deletion: bool,
@@ -29,9 +31,13 @@ impl IndexRegistry {
         }
     }
 
-    /// Derive the on-disk path for an index file from its sequence number.
-    pub fn path(&self, sequence: u64) -> PathBuf {
-        self.dir.join(format!("wal-{sequence:010}.sfst"))
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Derive the on-disk path for an index file from its FileId.
+    pub fn path(&self, id: FileId) -> PathBuf {
+        self.dir.join(id.to_filename(INDEX_EXT))
     }
 
     /// Scan the directory for `.sfst` files and reconstruct state.
@@ -46,17 +52,21 @@ impl IndexRegistry {
         for dir_entry in entries.flatten() {
             let path = dir_entry.path();
 
-            if path.extension().and_then(|e| e.to_str()) != Some("sfst") {
+            if path.extension().and_then(|e| e.to_str()) != Some(INDEX_EXT) {
                 continue;
             }
 
             let Some(id) = FileId::parse(&path) else {
+                tracing::warn!("skipping index file with unparseable name: {}", path.display());
                 continue;
             };
 
             let meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::error!("failed to stat index file {}: {e}", path.display());
+                    continue;
+                }
             };
 
             let size = ByteSize(meta.len());
@@ -75,7 +85,7 @@ impl IndexRegistry {
             registry.files.insert(
                 id.seq,
                 IndexFile {
-                    sequence: id.seq,
+                    id,
                     created_at_ns,
                     size,
                     pending_deletion: false,
@@ -86,11 +96,11 @@ impl IndexRegistry {
         registry
     }
 
-    pub fn track(&mut self, sequence: u64, created_at_ns: TimestampNs, size: ByteSize) {
+    pub fn track(&mut self, id: FileId, created_at_ns: TimestampNs, size: ByteSize) {
         self.files.insert(
-            sequence,
+            id.seq,
             IndexFile {
-                sequence,
+                id,
                 created_at_ns,
                 size,
                 pending_deletion: false,
@@ -98,24 +108,24 @@ impl IndexRegistry {
         );
     }
 
-    pub fn remove(&mut self, sequence: u64) -> Option<IndexFile> {
-        self.files.remove(&sequence)
+    pub fn remove(&mut self, seq: u64) -> Option<IndexFile> {
+        self.files.remove(&seq)
     }
 
-    pub fn mark_pending_deletion(&mut self, sequence: u64) {
-        if let Some(entry) = self.files.get_mut(&sequence) {
+    pub fn mark_pending_deletion(&mut self, seq: u64) {
+        if let Some(entry) = self.files.get_mut(&seq) {
             entry.pending_deletion = true;
         }
     }
 
-    pub fn clear_pending_deletion(&mut self, sequence: u64) {
-        if let Some(entry) = self.files.get_mut(&sequence) {
+    pub fn clear_pending_deletion(&mut self, seq: u64) {
+        if let Some(entry) = self.files.get_mut(&seq) {
             entry.pending_deletion = false;
         }
     }
 
-    pub fn get(&self, sequence: u64) -> Option<&IndexFile> {
-        self.files.get(&sequence)
+    pub fn get(&self, seq: u64) -> Option<&IndexFile> {
+        self.files.get(&seq)
     }
 
     pub fn len(&self) -> usize {
@@ -165,7 +175,7 @@ impl IndexRegistry {
             }
 
             if should_evict {
-                to_evict.push(entry.sequence);
+                to_evict.push(entry.id.seq);
                 remaining_files -= 1;
                 remaining_size -= entry.size.as_u64();
             }

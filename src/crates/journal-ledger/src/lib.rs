@@ -139,8 +139,12 @@ impl JournalLedger {
         if !unindexed.is_empty() {
             tracing::info!("indexing {} unindexed WAL files", unindexed.len());
             for &id in &unindexed {
-                let path = registry.wal.dir().wal_path(id);
-                let req = IndexerRequest::FinalizeIndex { path };
+                let wal_file_path = registry.wal.dir().wal_path(id);
+                let index_file_path = registry.index.path(id);
+                let req = IndexerRequest::FinalizeIndex {
+                    wal_path: wal_file_path,
+                    index_path: index_file_path,
+                };
                 indexer.send(req).await?;
             }
 
@@ -151,15 +155,18 @@ impl JournalLedger {
                     IndexerResponse::Accepted => {}
                     IndexerResponse::IndexFinalized { seq, .. } => {
                         // The indexer already deleted the .bin.
-                        let created_at_ns = registry
-                            .wal
-                            .remove_by_seq(seq)
+                        let wal_entry = registry.wal.remove_by_seq(seq);
+                        let created_at_ns = wal_entry
+                            .as_ref()
                             .map(|w| w.created_at_ns)
                             .unwrap_or_default();
-                        let index_path = registry.index.path(seq);
+                        let id = wal_entry
+                            .map(|w| w.id)
+                            .unwrap_or_else(|| wal::FileId::new(machine_id, boot_id, seq));
+                        let index_file_path = registry.index.path(id);
                         let index_size =
-                            ByteSize(std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0));
-                        registry.index.track(seq, created_at_ns, index_size);
+                            ByteSize(std::fs::metadata(&index_file_path).map(|m| m.len()).unwrap_or(0));
+                        registry.index.track(id, created_at_ns, index_size);
                         tracing::info!("recovery: index finalized seq={seq}");
                         remaining -= 1;
                     }
@@ -190,13 +197,15 @@ impl JournalLedger {
         if !to_evict.is_empty() {
             tracing::info!("retention: evicting {} old index files", to_evict.len());
             for &seq in &to_evict {
-                let path = registry.index.path(seq);
-                cleaner
-                    .send(CleanerRequest::DeleteIndexFile {
-                        sequence: seq,
-                        path,
-                    })
-                    .await?;
+                if let Some(entry) = registry.index.get(seq) {
+                    let path = registry.index.path(entry.id);
+                    cleaner
+                        .send(CleanerRequest::DeleteIndexFile {
+                            sequence: seq,
+                            path,
+                        })
+                        .await?;
+                }
             }
 
             let mut remaining = to_evict.len();
@@ -317,8 +326,12 @@ impl JournalLedger {
 
         // Trigger indexing on file completion.
         if let wal::format::WalEvent::FileCompleted { id, .. } = &msg.event {
-            let path = self.registry.wal.dir().wal_path(*id);
-            let req = IndexerRequest::FinalizeIndex { path };
+            let wal_file_path = self.registry.wal.dir().wal_path(*id);
+            let index_file_path = self.registry.index.path(*id);
+            let req = IndexerRequest::FinalizeIndex {
+                wal_path: wal_file_path,
+                index_path: index_file_path,
+            };
             if let Err(e) = self.indexer.send(req).await {
                 tracing::error!("failed to send to indexer: {e}");
             }
@@ -332,15 +345,24 @@ impl JournalLedger {
                 tracing::info!("index finalized seq={seq}");
 
                 // The indexer already deleted the .bin — remove it from the registry.
-                let created_at_ns = self
-                    .registry
-                    .wal
-                    .remove_by_seq(seq)
+                let wal_entry = self.registry.wal.remove_by_seq(seq);
+                let created_at_ns = wal_entry
+                    .as_ref()
                     .map(|w| w.created_at_ns)
                     .unwrap_or_default();
-                let index_path = self.registry.index.path(seq);
-                let index_size = ByteSize(std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0));
-                self.registry.index.track(seq, created_at_ns, index_size);
+                if let Some(wal_entry) = wal_entry {
+                    let index_file_path = self.registry.index.path(wal_entry.id);
+                    let index_size = ByteSize(
+                        std::fs::metadata(&index_file_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0),
+                    );
+                    self.registry
+                        .index
+                        .track(wal_entry.id, created_at_ns, index_size);
+                } else {
+                    tracing::warn!("index finalized for unknown WAL seq={seq}");
+                }
 
                 self.evaluate_retention().await;
             }
@@ -374,15 +396,17 @@ impl JournalLedger {
 
         for seq in to_evict {
             self.registry.index.mark_pending_deletion(seq);
-            let path = self.registry.index.path(seq);
-            tracing::info!("retention: evicting seq={seq} path={}", path.display());
-            let req = CleanerRequest::DeleteIndexFile {
-                sequence: seq,
-                path,
-            };
-            if let Err(e) = self.cleaner.send(req).await {
-                tracing::error!("failed to send index eviction to cleaner seq={seq}: {e}");
-                self.registry.index.clear_pending_deletion(seq);
+            if let Some(entry) = self.registry.index.get(seq) {
+                let path = self.registry.index.path(entry.id);
+                tracing::info!("retention: evicting seq={seq} path={}", path.display());
+                let req = CleanerRequest::DeleteIndexFile {
+                    sequence: seq,
+                    path,
+                };
+                if let Err(e) = self.cleaner.send(req).await {
+                    tracing::error!("failed to send index eviction to cleaner seq={seq}: {e}");
+                    self.registry.index.clear_pending_deletion(seq);
+                }
             }
         }
     }

@@ -60,42 +60,42 @@ impl Indexer {
         Self { sender }
     }
 
-    fn finalize(&mut self, path: PathBuf) {
-        tracing::info!("FinalizeIndex started path={}", path.display());
+    fn finalize(&mut self, wal_path: PathBuf, index_path: PathBuf) {
+        tracing::info!("FinalizeIndex started wal={} index={}", wal_path.display(), index_path.display());
 
-        let seq = extract_sequence(&path);
+        let seq = extract_sequence(&wal_path);
         let sender = self.sender.clone();
         tokio::task::spawn_blocking(move || {
             let start = Instant::now();
 
-            let resp = match log_index::index_wal_file(&path) {
-                Ok(index_path) => {
+            let resp = match log_index::index_wal_file(&wal_path, &index_path) {
+                Ok(()) => {
                     // Delete the now-redundant WAL file.
-                    match std::fs::remove_file(&path) {
+                    match std::fs::remove_file(&wal_path) {
                         Ok(()) => {
-                            tracing::info!("WAL file deleted path={}", path.display());
+                            tracing::info!("WAL file deleted path={}", wal_path.display());
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Err(e) => {
                             tracing::warn!(
                                 "failed to delete WAL file path={}: {e}",
-                                path.display()
+                                wal_path.display()
                             );
                         }
                     }
 
                     tracing::info!(
                         "FinalizeIndex complete wal={} index={} elapsed_ms={}",
-                        path.display(),
+                        wal_path.display(),
                         index_path.display(),
                         start.elapsed().as_millis(),
                     );
-                    IndexerResponse::IndexFinalized { seq, path }
+                    IndexerResponse::IndexFinalized { seq, path: index_path }
                 }
                 Err(e) => {
-                    tracing::error!("FinalizeIndex failed path={}: {e}", path.display(),);
+                    tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());
                     IndexerResponse::IndexFailed {
-                        path,
+                        path: wal_path,
                         error: e.to_string(),
                     }
                 }
@@ -145,8 +145,8 @@ async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>, c
         }
 
         match req {
-            IndexerRequest::FinalizeIndex { path } => {
-                indexer.finalize(path);
+            IndexerRequest::FinalizeIndex { wal_path, index_path } => {
+                indexer.finalize(wal_path, index_path);
             }
         }
     }
