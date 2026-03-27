@@ -28,7 +28,6 @@ members = [
 
     # Netdata log viewer workspace members
     "journal-function",
-    "otel-signal-viewer-plugin",
 
     # Netdata OTEL workspace members
     "otel-plugin",
