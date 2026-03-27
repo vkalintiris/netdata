@@ -53,20 +53,6 @@ fn finalize(
 
         let resp = match log_index::index_wal_file(&wal_path, &index_path) {
             Ok(()) => {
-                // Delete the now-redundant WAL file.
-                match std::fs::remove_file(&wal_path) {
-                    Ok(()) => {
-                        tracing::info!("WAL file deleted path={}", wal_path.display());
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to delete WAL file path={}: {e}",
-                            wal_path.display()
-                        );
-                    }
-                }
-
                 tracing::info!(
                     "FinalizeIndex complete wal={} index={} elapsed_ms={}",
                     wal_path.display(),
@@ -96,14 +82,15 @@ async fn indexer_task(
     cancel: CancellationToken,
 ) {
     let mut conn = match listener.accept().await {
-        Ok(c) => c,
+        Ok(c) => {
+            tracing::info!("indexer task connected to ledger event loop");
+            c
+        }
         Err(e) => {
             tracing::error!("failed to accept connection: {e}");
             return;
         }
     };
-
-    tracing::info!("indexer task connected to ledger event loop");
 
     // Blocking tasks send completed responses here; we forward them to the ledger.
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<IndexerResponse>();

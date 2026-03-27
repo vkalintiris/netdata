@@ -4,7 +4,7 @@ use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use tokio_util::sync::CancellationToken;
-use wal::{ByteSize, WalDir};
+use wal::{ByteSize, FileId, WalDir};
 
 use crate::event::LedgerEvent;
 use crate::ipc::{CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse};
@@ -28,117 +28,29 @@ impl Ledger {
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> Result<Self, ferryboat::Error> {
-        let wal_path = std::path::Path::new(&logs_config.wal.dir);
-        let index_path = std::path::Path::new(&logs_config.index.dir);
-        let retention = &logs_config.retention;
-
         let machine_id = journal_common::load_machine_id().expect("failed to load machine ID");
         let boot_id = journal_common::load_boot_id().expect("failed to load boot ID");
-        let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
 
-        // Phase 1: Recover registries from existing files on disk.
-        let mut registry = Registry::recover(wal_dir, index_path);
+        let wal_dir = WalDir::new(
+            std::path::Path::new(&logs_config.wal.dir),
+            machine_id,
+            boot_id,
+        );
+        let index_dir = std::path::Path::new(&logs_config.index.dir);
 
+        let mut registry = Registry::recover(wal_dir, index_dir);
         let cancel = CancellationToken::new();
 
-        // Phase 2a: Index all unindexed WAL files.
         let mut indexer = indexer::spawn(cancel.child_token()).await?;
         tracing::info!("indexer spawned");
+        recover_unindexed(&mut registry, &mut indexer).await?;
 
-        let unindexed = registry.unindexed_ids();
-        if !unindexed.is_empty() {
-            tracing::info!("indexing {} unindexed WAL files", unindexed.len());
-            for &id in &unindexed {
-                let wal_file_path = registry.wal.dir().wal_path(id);
-                let index_file_path = registry.index.path(id);
-                let req = IndexerRequest::FinalizeIndex {
-                    wal_path: wal_file_path,
-                    index_path: index_file_path,
-                };
-                indexer.send(req).await?;
-            }
-
-            let mut remaining = unindexed.len();
-            while remaining > 0 {
-                let resp = indexer.recv().await?;
-                match resp {
-                    IndexerResponse::Accepted => {}
-                    IndexerResponse::IndexFinalized { seq, .. } => {
-                        // The indexer already deleted the .wal.
-                        let wal_entry = registry.wal.remove_by_seq(seq);
-                        let created_at_ns = wal_entry
-                            .as_ref()
-                            .map(|w| w.created_at_ns)
-                            .unwrap_or_default();
-                        let id = wal_entry
-                            .map(|w| w.id)
-                            .unwrap_or_else(|| wal::FileId::new(machine_id, boot_id, seq));
-                        let index_file_path = registry.index.path(id);
-                        let index_size = ByteSize(
-                            std::fs::metadata(&index_file_path)
-                                .map(|m| m.len())
-                                .unwrap_or(0),
-                        );
-                        registry.index.track(id, created_at_ns, index_size);
-                        tracing::info!("recovery: index finalized seq={seq}");
-                        remaining -= 1;
-                    }
-                    IndexerResponse::IndexFailed {
-                        ref path,
-                        ref error,
-                    } => {
-                        tracing::error!(
-                            "recovery: indexing failed path={} error={error}",
-                            path.display()
-                        );
-                        remaining -= 1;
-                    }
-                }
-            }
-            tracing::info!("recovery indexing complete");
-        }
-
-        // Phase 2b: Enforce retention on index files.
         let mut cleaner = cleaner::spawn(cancel.child_token()).await?;
         tracing::info!("cleaner spawned");
-        let to_evict = registry.index.evaluate_retention(retention, now_ns());
-        if !to_evict.is_empty() {
-            tracing::info!("retention: evicting {} old index files", to_evict.len());
-            for &seq in &to_evict {
-                if let Some(entry) = registry.index.get(seq) {
-                    let path = registry.index.path(entry.id);
-                    cleaner
-                        .send(CleanerRequest::DeleteIndexFile {
-                            sequence: seq,
-                            path,
-                        })
-                        .await?;
-                }
-            }
-
-            let mut remaining = to_evict.len();
-            while remaining > 0 {
-                let resp = cleaner.recv().await?;
-                match resp {
-                    CleanerResponse::Accepted => {}
-                    CleanerResponse::IndexFileDeleted { sequence } => {
-                        registry.index.remove(sequence);
-                        tracing::info!("recovery: index file evicted seq={sequence}");
-                        remaining -= 1;
-                    }
-                    CleanerResponse::IndexFileFailed { sequence, error } => {
-                        tracing::error!(
-                            "recovery: index eviction failed seq={sequence} error={error}"
-                        );
-                        remaining -= 1;
-                    }
-                }
-            }
-        }
+        recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
 
         tracing::info!("recovery complete");
 
-        // Accept the ingestor's connection.
         let ingestor = ipc::accept_writer(writer_socket_path).await?;
         tracing::info!("ingestor connected");
 
@@ -249,13 +161,12 @@ impl Ledger {
         }
 
         // Trigger indexing on file completion.
-        if let wal::format::WalEvent::FileCompleted { id, .. } = &msg.event {
-            let wal_file_path = self.registry.wal.dir().wal_path(*id);
-            let index_file_path = self.registry.index.path(*id);
+        if let wal::format::WalEvent::FileCompleted { id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
-                wal_path: wal_file_path,
-                index_path: index_file_path,
+                wal_path: self.registry.wal.dir().wal_path(id),
+                index_path: self.registry.index.path(id),
             };
+
             if let Err(e) = self.indexer.send(req).await {
                 tracing::error!("failed to send to indexer: {e}");
             }
@@ -268,13 +179,16 @@ impl Ledger {
             IndexerResponse::IndexFinalized { seq, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
-                // The indexer already deleted the .wal — remove it from the registry.
                 let wal_entry = self.registry.wal.remove_by_seq(seq);
                 let created_at_ns = wal_entry
                     .as_ref()
                     .map(|w| w.created_at_ns)
                     .unwrap_or_default();
                 if let Some(wal_entry) = wal_entry {
+                    // Delete the now-redundant WAL file.
+                    let wal_path = self.registry.wal.dir().wal_path(wal_entry.id);
+                    remove_file(&wal_path);
+
                     let index_file_path = self.registry.index.path(wal_entry.id);
                     let index_size = ByteSize(
                         std::fs::metadata(&index_file_path)
@@ -331,6 +245,126 @@ impl Ledger {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recovery helpers
+// ---------------------------------------------------------------------------
+
+/// Index any WAL files that were archived but not yet indexed.
+async fn recover_unindexed(
+    registry: &mut Registry,
+    indexer: &mut Connection<IndexerRequest, IndexerResponse>,
+) -> Result<(), ferryboat::Error> {
+    let unindexed = registry.unindexed_ids();
+    if unindexed.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("indexing {} unindexed WAL files", unindexed.len());
+    for &id in &unindexed {
+        let req = IndexerRequest::FinalizeIndex {
+            wal_path: registry.wal.dir().wal_path(id),
+            index_path: registry.index.path(id),
+        };
+        indexer.send(req).await?;
+    }
+
+    let mut remaining = unindexed.len();
+    while remaining > 0 {
+        let resp = indexer.recv().await?;
+        match resp {
+            IndexerResponse::Accepted => {}
+            IndexerResponse::IndexFinalized { seq, .. } => {
+                let wal_entry = registry.wal.remove_by_seq(seq);
+                let created_at_ns = wal_entry
+                    .as_ref()
+                    .map(|w| w.created_at_ns)
+                    .unwrap_or_default();
+                let id = wal_entry.map(|w| w.id).unwrap_or_else(|| {
+                    let dir = registry.wal.dir();
+                    FileId::new(dir.machine_id(), dir.boot_id(), seq)
+                });
+
+                // Delete the now-redundant WAL file.
+                let wal_path = registry.wal.dir().wal_path(id);
+                remove_file(&wal_path);
+
+                let index_file_path = registry.index.path(id);
+                let index_size = ByteSize(
+                    std::fs::metadata(&index_file_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0),
+                );
+                registry.index.track(id, created_at_ns, index_size);
+                tracing::info!("recovery: index finalized seq={seq}");
+                remaining -= 1;
+            }
+            IndexerResponse::IndexFailed {
+                ref path,
+                ref error,
+            } => {
+                tracing::error!(
+                    "recovery: indexing failed path={} error={error}",
+                    path.display()
+                );
+                remaining -= 1;
+            }
+        }
+    }
+    tracing::info!("recovery indexing complete");
+    Ok(())
+}
+
+/// Evict index files that exceed the retention policy.
+async fn recover_retention(
+    registry: &mut Registry,
+    cleaner: &mut Connection<CleanerRequest, CleanerResponse>,
+    retention: &bridge::config::RetentionConfig,
+) -> Result<(), ferryboat::Error> {
+    let to_evict = registry.index.evaluate_retention(retention, now_ns());
+    if to_evict.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("retention: evicting {} old index files", to_evict.len());
+    for &seq in &to_evict {
+        if let Some(entry) = registry.index.get(seq) {
+            let path = registry.index.path(entry.id);
+            cleaner
+                .send(CleanerRequest::DeleteIndexFile {
+                    sequence: seq,
+                    path,
+                })
+                .await?;
+        }
+    }
+
+    let mut remaining = to_evict.len();
+    while remaining > 0 {
+        let resp = cleaner.recv().await?;
+        match resp {
+            CleanerResponse::Accepted => {}
+            CleanerResponse::IndexFileDeleted { sequence } => {
+                registry.index.remove(sequence);
+                tracing::info!("recovery: index file evicted seq={sequence}");
+                remaining -= 1;
+            }
+            CleanerResponse::IndexFileFailed { sequence, error } => {
+                tracing::error!("recovery: index eviction failed seq={sequence} error={error}");
+                remaining -= 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_file(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => tracing::info!("deleted {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("failed to delete {}: {e}", path.display()),
     }
 }
 
