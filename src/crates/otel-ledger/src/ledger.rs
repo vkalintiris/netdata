@@ -94,14 +94,17 @@ impl Ledger {
         req: LedgerRequest,
     ) -> Result<bool, ferryboat::Error> {
         match req {
-            LedgerRequest::Call { transaction, .. } => {
-                // No function handlers yet — return 404
+            LedgerRequest::Call {
+                transaction,
+                name,
+                args,
+                ..
+            } => {
+                tracing::info!("function call: name={name} args={args:?}");
+                let result = self.handle_function_call(&name, &args);
                 let resp = LedgerResponse::Result(netdata_plugin_types::FunctionResult {
                     transaction,
-                    status: 404,
-                    format: "text/plain".to_string(),
-                    expires: 0,
-                    payload: b"no functions registered".to_vec(),
+                    ..result
                 });
                 self.supervisor.send(resp).await?;
                 Ok(false)
@@ -115,6 +118,36 @@ impl Ledger {
                 tracing::warn!("unexpected late Configure message");
                 Ok(false)
             }
+        }
+    }
+
+    fn handle_function_call(
+        &self,
+        name: &str,
+        args: &[String],
+    ) -> netdata_plugin_types::FunctionResult {
+        match name {
+            "otel-logs" => {
+                let payload = format!(
+                    "otel-logs called with args: {args:?}\nwal_files={} index_files={}",
+                    self.registry.wal.len(),
+                    self.registry.index.len(),
+                );
+                netdata_plugin_types::FunctionResult {
+                    transaction: String::new(),
+                    status: 200,
+                    format: "text/plain".to_string(),
+                    expires: 0,
+                    payload: payload.into_bytes(),
+                }
+            }
+            _ => netdata_plugin_types::FunctionResult {
+                transaction: String::new(),
+                status: 404,
+                format: "text/plain".to_string(),
+                expires: 0,
+                payload: format!("unknown function: {name}").into_bytes(),
+            },
         }
     }
 

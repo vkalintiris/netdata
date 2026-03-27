@@ -34,11 +34,13 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         }
     };
 
-    // Signal ready — no function declarations yet.
+    let declarations = vec![netdata_plugin_types::FunctionDeclaration::new(
+        "otel-logs",
+        "Query OpenTelemetry logs",
+    )];
+
     supervisor
-        .send(LedgerResponse::Ready {
-            declarations: vec![],
-        })
+        .send(LedgerResponse::Ready { declarations })
         .await?;
     tracing::info!("signaled ready to supervisor");
 
