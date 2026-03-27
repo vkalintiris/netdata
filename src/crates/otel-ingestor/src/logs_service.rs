@@ -48,7 +48,7 @@ impl LogsService for NetdataLogsService {
         })?;
 
         let events = wal.take_events();
-        self.sender.send_events(&events);
+        self.sender.send_events(events);
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
