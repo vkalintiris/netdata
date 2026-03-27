@@ -5,29 +5,13 @@
 //! back to the ledger when complete.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use ferryboat::{Connection, Endpoint, Listener};
-use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::ipc::{INDEXER_ENDPOINT, IndexerRequest, IndexerResponse};
-
-#[derive(Clone)]
-struct Sender(Arc<Mutex<Connection<IndexerResponse, IndexerRequest>>>);
-
-impl Sender {
-    async fn send(&self, resp: IndexerResponse) -> Result<(), ferryboat::Error> {
-        let mut conn = self.0.lock().await;
-        conn.send(resp).await
-    }
-
-    async fn recv(&self) -> Result<IndexerRequest, ferryboat::Error> {
-        let mut conn = self.0.lock().await;
-        conn.recv().await
-    }
-}
 
 /// Spawns the indexer as a tokio task.
 ///
@@ -51,71 +35,69 @@ pub async fn spawn(
     Ok(conn)
 }
 
-struct Indexer {
-    sender: Sender,
-}
+fn finalize(
+    wal_path: PathBuf,
+    index_path: PathBuf,
+    done_tx: mpsc::UnboundedSender<IndexerResponse>,
+) {
+    tracing::info!(
+        "FinalizeIndex started wal={} index={}",
+        wal_path.display(),
+        index_path.display()
+    );
 
-impl Indexer {
-    fn new(sender: Sender) -> Self {
-        Self { sender }
-    }
+    let seq = wal::FileId::parse(&wal_path)
+        .map(|id| id.seq)
+        .unwrap_or(0);
 
-    fn finalize(&mut self, wal_path: PathBuf, index_path: PathBuf) {
-        tracing::info!("FinalizeIndex started wal={} index={}", wal_path.display(), index_path.display());
+    tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
 
-        let seq = extract_sequence(&wal_path);
-        let sender = self.sender.clone();
-        tokio::task::spawn_blocking(move || {
-            let start = Instant::now();
-
-            let resp = match log_index::index_wal_file(&wal_path, &index_path) {
-                Ok(()) => {
-                    // Delete the now-redundant WAL file.
-                    match std::fs::remove_file(&wal_path) {
-                        Ok(()) => {
-                            tracing::info!("WAL file deleted path={}", wal_path.display());
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to delete WAL file path={}: {e}",
-                                wal_path.display()
-                            );
-                        }
+        let resp = match log_index::index_wal_file(&wal_path, &index_path) {
+            Ok(()) => {
+                // Delete the now-redundant WAL file.
+                match std::fs::remove_file(&wal_path) {
+                    Ok(()) => {
+                        tracing::info!("WAL file deleted path={}", wal_path.display());
                     }
-
-                    tracing::info!(
-                        "FinalizeIndex complete wal={} index={} elapsed_ms={}",
-                        wal_path.display(),
-                        index_path.display(),
-                        start.elapsed().as_millis(),
-                    );
-                    IndexerResponse::IndexFinalized { seq, path: index_path }
-                }
-                Err(e) => {
-                    tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());
-                    IndexerResponse::IndexFailed {
-                        path: wal_path,
-                        error: e.to_string(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to delete WAL file path={}: {e}",
+                            wal_path.display()
+                        );
                     }
                 }
-            };
 
-            tokio::runtime::Handle::current().block_on(async {
-                if let Err(e) = sender.send(resp).await {
-                    tracing::warn!("failed to send indexer response: {e}");
+                tracing::info!(
+                    "FinalizeIndex complete wal={} index={} elapsed_ms={}",
+                    wal_path.display(),
+                    index_path.display(),
+                    start.elapsed().as_millis(),
+                );
+                IndexerResponse::IndexFinalized {
+                    seq,
+                    path: index_path,
                 }
-            });
-        });
-    }
+            }
+            Err(e) => {
+                tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());
+                IndexerResponse::IndexFailed {
+                    path: wal_path,
+                    error: e.to_string(),
+                }
+            }
+        };
+
+        let _ = done_tx.send(resp);
+    });
 }
 
-fn extract_sequence(path: &std::path::Path) -> u64 {
-    wal::FileId::parse(path).map(|id| id.seq).unwrap_or(0)
-}
-
-async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>, cancel: CancellationToken) {
-    let conn = match listener.accept().await {
+async fn indexer_task(
+    mut listener: Listener<IndexerResponse, IndexerRequest>,
+    cancel: CancellationToken,
+) {
+    let mut conn = match listener.accept().await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("failed to accept connection: {e}");
@@ -125,28 +107,35 @@ async fn indexer_task(mut listener: Listener<IndexerResponse, IndexerRequest>, c
 
     tracing::info!("indexer task connected to ledger event loop");
 
-    let sender = Sender(Arc::new(Mutex::new(conn)));
-    let mut indexer = Indexer::new(sender.clone());
+    // Blocking tasks send completed responses here; we forward them to the ledger.
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<IndexerResponse>();
 
     loop {
-        let req = tokio::select! {
+        tokio::select! {
             _ = cancel.cancelled() => break,
-            r = sender.recv() => match r {
-                Ok(req) => req,
-                Err(e) => {
-                    tracing::error!("indexer recv failed: {e}");
+            r = conn.recv() => {
+                let req = match r {
+                    Ok(req) => req,
+                    Err(e) => {
+                        tracing::error!("indexer recv failed: {e}");
+                        break;
+                    }
+                };
+
+                if conn.send(IndexerResponse::Accepted).await.is_err() {
                     break;
                 }
-            },
-        };
 
-        if sender.send(IndexerResponse::Accepted).await.is_err() {
-            break;
-        }
-
-        match req {
-            IndexerRequest::FinalizeIndex { wal_path, index_path } => {
-                indexer.finalize(wal_path, index_path);
+                match req {
+                    IndexerRequest::FinalizeIndex { wal_path, index_path } => {
+                        finalize(wal_path, index_path, done_tx.clone());
+                    }
+                }
+            }
+            Some(resp) = done_rx.recv() => {
+                if conn.send(resp).await.is_err() {
+                    break;
+                }
             }
         }
     }

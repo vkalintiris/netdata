@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::types::FileId;
 
-const WAL_EXT: &str = "bin";
+const WAL_EXT: &str = "wal";
 
 /// A WAL directory handle.
 ///

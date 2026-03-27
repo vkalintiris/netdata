@@ -58,32 +58,12 @@ pub enum IndexerResponse {
     IndexFailed { path: PathBuf, error: String },
 }
 
-/// Listens for WAL events on a given socket path.
-pub struct WalListener {
-    listener: Listener<(), wal::format::WalMessage>,
-}
-
-impl WalListener {
-    pub fn new(socket_path: &str) -> Result<Self, ferryboat::Error> {
-        let _ = std::fs::remove_file(socket_path);
-        let endpoint = Endpoint::ipc(socket_path);
-        let listener = Listener::<(), wal::format::WalMessage>::bind(endpoint).open()?;
-        Ok(Self { listener })
-    }
-
-    pub async fn accept(&mut self) -> Result<WalReceiver, ferryboat::Error> {
-        let conn = self.listener.accept().await?;
-        Ok(WalReceiver { conn })
-    }
-}
-
-/// A connection from the ingestor, used to receive WAL events.
-pub struct WalReceiver {
-    conn: Connection<(), wal::format::WalMessage>,
-}
-
-impl WalReceiver {
-    pub async fn receive(&mut self) -> Result<wal::format::WalMessage, ferryboat::Error> {
-        self.conn.recv().await
-    }
+/// Accept a WAL event connection from the ingestor on the given socket path.
+pub async fn accept_writer(
+    socket_path: &str,
+) -> Result<Connection<(), wal::format::WalMessage>, ferryboat::Error> {
+    let _ = std::fs::remove_file(socket_path);
+    let endpoint = Endpoint::ipc(socket_path);
+    let mut listener = Listener::<(), wal::format::WalMessage>::bind(endpoint).open()?;
+    listener.accept().await
 }

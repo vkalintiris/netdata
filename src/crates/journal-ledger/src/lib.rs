@@ -1,4 +1,5 @@
 pub mod cleaner;
+pub mod event;
 pub mod indexer;
 pub mod ipc;
 pub mod registry;
@@ -12,9 +13,8 @@ use ferryboat::{Connection, Endpoint};
 use tokio_util::sync::CancellationToken;
 use wal::{ByteSize, WalDir};
 
-use ipc::{
-    CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, WalListener, WalReceiver,
-};
+use event::LedgerEvent;
+use ipc::{CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse};
 use registry::Registry;
 
 /// Ledger worker entry point.
@@ -24,13 +24,13 @@ use registry::Registry;
 pub async fn run_worker(socket_path: &str) -> Result<()> {
     tracing::info!("connecting to supervisor socket={socket_path}");
 
-    let mut conn: Connection<LedgerResponse, LedgerRequest> =
+    let mut supervisor: Connection<LedgerResponse, LedgerRequest> =
         Connection::connect(Endpoint::ipc(socket_path))
             .open()
             .await?;
 
     // Wait for Configure message from supervisor
-    let config = match conn.recv().await? {
+    let config = match supervisor.recv().await? {
         LedgerRequest::Configure(config) => {
             tracing::info!("received plugin configuration from supervisor");
             config
@@ -41,13 +41,15 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
     };
 
     // Signal ready — no function declarations yet.
-    conn.send(LedgerResponse::Ready {
-        declarations: vec![],
-    })
-    .await?;
+    supervisor
+        .send(LedgerResponse::Ready {
+            declarations: vec![],
+        })
+        .await?;
     tracing::info!("signaled ready to supervisor");
 
     let mut ledger = JournalLedger::new(
+        supervisor,
         &config.writer_socket_path,
         &config.logs.wal.dir,
         &config.logs.index.dir,
@@ -56,44 +58,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
     .await
     .context("failed to initialize ledger")?;
 
-    // Run the ledger event loop alongside supervisor IPC handling
-    tokio::select! {
-        result = ledger.run() => {
-            result.context("ledger event loop error")?;
-        }
-        _req = async {
-            loop {
-                match conn.recv().await {
-                    Ok(LedgerRequest::Call { transaction, .. }) => {
-                        // No function handlers yet — return 404
-                        let resp = LedgerResponse::Result(netdata_plugin_types::FunctionResult {
-                            transaction,
-                            status: 404,
-                            format: "text/plain".to_string(),
-                            expires: 0,
-                            payload: b"no functions registered".to_vec(),
-                        });
-                        if let Err(e) = conn.send(resp).await {
-                            tracing::error!("failed to send result to supervisor: {e}");
-                            break;
-                        }
-                    }
-                    Ok(LedgerRequest::Cancel { .. }) => {}
-                    Ok(LedgerRequest::Shutdown) => {
-                        tracing::info!("received Shutdown from supervisor");
-                        break;
-                    }
-                    Ok(LedgerRequest::Configure(_)) => {
-                        tracing::warn!("unexpected late Configure message");
-                    }
-                    Err(e) => {
-                        tracing::error!("supervisor connection lost: {e}");
-                        break;
-                    }
-                }
-            }
-        } => {}
-    }
+    ledger.run().await.context("ledger event loop error")?;
 
     ledger.cancel.cancel();
 
@@ -101,7 +66,8 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
 }
 
 pub struct JournalLedger {
-    writer: WalReceiver,
+    supervisor: Connection<LedgerResponse, LedgerRequest>,
+    writer: Connection<(), wal::format::WalMessage>,
     indexer: Connection<IndexerRequest, IndexerResponse>,
     cleaner: Connection<CleanerRequest, CleanerResponse>,
     registry: Registry,
@@ -112,6 +78,7 @@ pub struct JournalLedger {
 
 impl JournalLedger {
     pub async fn new(
+        supervisor: Connection<LedgerResponse, LedgerRequest>,
         writer_socket_path: &str,
         wal_dir: &str,
         index_dir: &str,
@@ -120,10 +87,9 @@ impl JournalLedger {
         let wal_path = std::path::Path::new(wal_dir);
         let index_path = std::path::Path::new(index_dir);
 
-        let machine_id = journal_common::load_machine_id()
-            .expect("failed to load machine ID");
-        let boot_id = journal_common::load_boot_id()
-            .expect("failed to load boot ID");
+        let machine_id =
+            journal_common::load_machine_id().expect("failed to load machine ID");
+        let boot_id = journal_common::load_boot_id().expect("failed to load boot ID");
         let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
 
         // Phase 1: Recover registries from existing files on disk.
@@ -164,8 +130,11 @@ impl JournalLedger {
                             .map(|w| w.id)
                             .unwrap_or_else(|| wal::FileId::new(machine_id, boot_id, seq));
                         let index_file_path = registry.index.path(id);
-                        let index_size =
-                            ByteSize(std::fs::metadata(&index_file_path).map(|m| m.len()).unwrap_or(0));
+                        let index_size = ByteSize(
+                            std::fs::metadata(&index_file_path)
+                                .map(|m| m.len())
+                                .unwrap_or(0),
+                        );
                         registry.index.track(id, created_at_ns, index_size);
                         tracing::info!("recovery: index finalized seq={seq}");
                         remaining -= 1;
@@ -231,11 +200,11 @@ impl JournalLedger {
         tracing::info!("recovery complete");
 
         // Accept the ingestor's connection on the writer socket.
-        let mut listener = WalListener::new(writer_socket_path)?;
-        let writer = listener.accept().await?;
+        let writer = ipc::accept_writer(writer_socket_path).await?;
         tracing::info!("ingestor connected to writer socket");
 
         Ok(Self {
+            supervisor,
             writer,
             indexer,
             cleaner,
@@ -248,34 +217,52 @@ impl JournalLedger {
 
     pub async fn run(&mut self) -> Result<(), ferryboat::Error> {
         loop {
-            tokio::select! {
-                msg = self.writer.receive() => {
-                    match msg {
-                        Ok(msg) => self.handle_writer_msg(msg).await,
-                        Err(e) => {
-                            tracing::error!("publisher disconnected: {e}");
-                            return Err(e);
-                        }
+            let event = tokio::select! {
+                msg = self.writer.recv() => LedgerEvent::WalMsg(msg?),
+                resp = self.indexer.recv() => LedgerEvent::IndexerResp(resp?),
+                resp = self.cleaner.recv() => LedgerEvent::CleanerResp(resp?),
+                req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
+            };
+
+            match event {
+                LedgerEvent::WalMsg(msg) => self.handle_writer_msg(msg).await,
+                LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
+                LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp).await,
+                LedgerEvent::SupervisorReq(req) => {
+                    if self.handle_supervisor_req(req).await? {
+                        return Ok(());
                     }
                 }
-                resp = self.indexer.recv() => {
-                    match resp {
-                        Ok(resp) => self.handle_indexer_resp(resp).await,
-                        Err(e) => {
-                            tracing::error!("indexer connection lost: {e}");
-                            return Err(e);
-                        }
-                    }
-                }
-                resp = self.cleaner.recv() => {
-                    match resp {
-                        Ok(resp) => self.handle_cleaner_resp(resp).await,
-                        Err(e) => {
-                            tracing::error!("cleaner connection lost: {e}");
-                            return Err(e);
-                        }
-                    }
-                }
+            }
+        }
+    }
+
+    /// Handle a supervisor request. Returns `true` if the loop should exit.
+    async fn handle_supervisor_req(
+        &mut self,
+        req: LedgerRequest,
+    ) -> Result<bool, ferryboat::Error> {
+        match req {
+            LedgerRequest::Call { transaction, .. } => {
+                // No function handlers yet — return 404
+                let resp = LedgerResponse::Result(netdata_plugin_types::FunctionResult {
+                    transaction,
+                    status: 404,
+                    format: "text/plain".to_string(),
+                    expires: 0,
+                    payload: b"no functions registered".to_vec(),
+                });
+                self.supervisor.send(resp).await?;
+                Ok(false)
+            }
+            LedgerRequest::Cancel { .. } => Ok(false),
+            LedgerRequest::Shutdown => {
+                tracing::info!("received Shutdown from supervisor");
+                Ok(true)
+            }
+            LedgerRequest::Configure(_) => {
+                tracing::warn!("unexpected late Configure message");
+                Ok(false)
             }
         }
     }
