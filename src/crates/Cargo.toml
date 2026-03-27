@@ -175,6 +175,8 @@ ferryboat = { path = "ferryboat" }
 wal = { path = "wal" }
 log-index = { path = "log-index" }
 
+opendal = { version = "0.55", default-features = false, features = ["services-fs", "services-s3", "executors-tokio"] }
+
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2"

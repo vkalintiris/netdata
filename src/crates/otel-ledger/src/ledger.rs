@@ -7,15 +7,19 @@ use tokio_util::sync::CancellationToken;
 use wal::{ByteSize, FileId, WalDir};
 
 use crate::event::LedgerEvent;
-use crate::ipc::{CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse};
+use crate::ipc::{
+    CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
+    UploaderResponse,
+};
 use crate::registry::Registry;
-use crate::{cleaner, indexer, ipc};
+use crate::{cleaner, indexer, ipc, uploader};
 
 pub struct Ledger {
     supervisor: Connection<LedgerResponse, LedgerRequest>,
     ingestor: Connection<(), wal::format::WalMessage>,
     indexer: Connection<IndexerRequest, IndexerResponse>,
     cleaner: Connection<CleanerRequest, CleanerResponse>,
+    uploader: Connection<UploaderRequest, UploaderResponse>,
     registry: Registry,
     logs_config: LogsConfig,
     expected_seq: u64,
@@ -37,6 +41,7 @@ impl Ledger {
             boot_id,
         );
         let index_dir = std::path::Path::new(&logs_config.index.dir);
+        std::fs::create_dir_all(index_dir)?;
 
         let mut registry = Registry::recover(wal_dir, index_dir);
         let cancel = CancellationToken::new();
@@ -49,6 +54,11 @@ impl Ledger {
         tracing::info!("cleaner spawned");
         recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
 
+        let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let uploader = uploader::spawn(cancel.child_token(), operator).await?;
+        tracing::info!("uploader spawned");
+
         tracing::info!("recovery complete");
 
         let ingestor = ipc::accept_writer(writer_socket_path).await?;
@@ -59,6 +69,7 @@ impl Ledger {
             ingestor,
             indexer,
             cleaner,
+            uploader,
             registry,
             logs_config: logs_config.clone(),
             expected_seq: 1,
@@ -72,6 +83,7 @@ impl Ledger {
                 msg = self.ingestor.recv() => LedgerEvent::WalMsg(msg?),
                 resp = self.indexer.recv() => LedgerEvent::IndexerResp(resp?),
                 resp = self.cleaner.recv() => LedgerEvent::CleanerResp(resp?),
+                resp = self.uploader.recv() => LedgerEvent::UploaderResp(resp?),
                 req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
             };
 
@@ -79,6 +91,7 @@ impl Ledger {
                 LedgerEvent::WalMsg(msg) => self.handle_ingestor_msg(msg).await,
                 LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
                 LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp).await,
+                LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp),
                 LedgerEvent::SupervisorReq(req) => {
                     if self.handle_supervisor_req(req).await? {
                         return Ok(());
@@ -231,6 +244,9 @@ impl Ledger {
                     self.registry
                         .index
                         .track(wal_entry.id, created_at_ns, index_size);
+
+                    // Trigger upload if storage is enabled.
+                    self.request_upload(wal_entry.id).await;
                 } else {
                     tracing::warn!("index finalized for unknown WAL seq={seq}");
                 }
@@ -239,6 +255,19 @@ impl Ledger {
             }
             IndexerResponse::IndexFailed { path, error } => {
                 tracing::error!("indexing failed path={} error={error}", path.display());
+            }
+        }
+    }
+
+    fn handle_uploader_resp(&mut self, resp: UploaderResponse) {
+        match resp {
+            UploaderResponse::Accepted => {}
+            UploaderResponse::Uploaded { seq } => {
+                tracing::info!("upload complete seq={seq}");
+                self.registry.index.mark_uploaded(seq);
+            }
+            UploaderResponse::UploadFailed { seq, error } => {
+                tracing::error!("upload failed seq={seq}: {error}");
             }
         }
     }
@@ -254,6 +283,22 @@ impl Ledger {
                 tracing::error!("index file eviction failed seq={sequence} error={error}");
                 self.registry.index.clear_pending_deletion(sequence);
             }
+        }
+    }
+
+    async fn request_upload(&mut self, id: FileId) {
+        if !self.logs_config.storage.enabled {
+            return;
+        }
+        let local_path = self.registry.index.path(id);
+        let remote_key = id.to_filename("sfst");
+        let req = UploaderRequest::Upload {
+            seq: id.seq,
+            local_path,
+            remote_key,
+        };
+        if let Err(e) = self.uploader.send(req).await {
+            tracing::error!("failed to send upload request seq={}: {e}", id.seq);
         }
     }
 

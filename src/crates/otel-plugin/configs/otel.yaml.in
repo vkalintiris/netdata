@@ -60,6 +60,14 @@ logs:
     # Directory for index file storage.
     dir: @logdir_POST@/otel/v1/index
 
+  storage:
+    # Whether to upload index files to remote object storage.
+    enabled: false
+
+    # OpenDAL URI for the remote storage backend.
+    # Examples: "fs:///tmp/otel-remote", "s3://bucket/?region=us-east-1"
+    uri: "fs://@logdir_POST@/otel/v1/remote"
+
   retention:
     # Maximum number of index files to retain.
     max_files: 10

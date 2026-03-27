@@ -182,6 +182,9 @@ logs:
     compression_enabled: true
   index:
     dir: /var/log/netdata/otel/v1/index
+  storage:
+    enabled: false
+    uri: "fs:///var/log/netdata/otel/v1/remote"
   retention:
     max_files: 10
     max_total_size: "1GB"

@@ -66,8 +66,21 @@ pub struct LogsConfig {
     pub wal: WalConfig,
     /// Index file configuration.
     pub index: IndexConfig,
+    /// Remote object storage configuration.
+    pub storage: StorageConfig,
     /// Retention policy for log index files.
     pub retention: RetentionConfig,
+}
+
+/// Remote object storage configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Whether remote storage is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OpenDAL URI for the remote storage backend.
+    /// Examples: "fs:///tmp/otel-remote", "s3://bucket/?region=us-east-1"
+    pub uri: String,
 }
 
 /// Index file configuration.

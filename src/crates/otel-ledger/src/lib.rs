@@ -4,6 +4,7 @@ pub mod indexer;
 pub mod ipc;
 mod ledger;
 pub mod registry;
+pub mod uploader;
 
 pub use ledger::Ledger;
 

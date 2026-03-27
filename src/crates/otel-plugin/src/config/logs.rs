@@ -11,6 +11,8 @@ pub(super) struct LogsOverride {
     #[serde(default)]
     pub(super) index: Option<IndexOverride>,
     #[serde(default)]
+    pub(super) storage: Option<StorageOverride>,
+    #[serde(default)]
     pub(super) retention: Option<RetentionOverride>,
 }
 
@@ -37,6 +39,14 @@ pub(super) struct WalOverride {
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub(super) struct StorageOverride {
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
+    #[serde(default)]
+    pub(super) uri: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub(super) struct RetentionOverride {
     #[serde(default)]
     pub(super) max_files: Option<usize>,
@@ -50,7 +60,14 @@ impl LogsOverride {
     pub(super) fn has_any(&self) -> bool {
         self.wal.as_ref().is_some_and(|w| w.has_any())
             || self.index.as_ref().is_some_and(|i| i.has_any())
+            || self.storage.as_ref().is_some_and(|s| s.has_any())
             || self.retention.as_ref().is_some_and(|r| r.has_any())
+    }
+}
+
+impl StorageOverride {
+    pub(super) fn has_any(&self) -> bool {
+        self.enabled.is_some() || self.uri.is_some()
     }
 }
 
@@ -101,6 +118,14 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
     if let Some(i) = &o.index {
         if let Some(v) = &i.dir {
             config.index.dir = v.clone();
+        }
+    }
+    if let Some(s) = &o.storage {
+        if let Some(v) = s.enabled {
+            config.storage.enabled = v;
+        }
+        if let Some(v) = &s.uri {
+            config.storage.uri = v.clone();
         }
     }
     if let Some(r) = &o.retention {

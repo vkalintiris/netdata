@@ -17,6 +17,9 @@ pub const INDEXER_ENDPOINT: &str = "indexer";
 /// In-process endpoint name for the cleaner.
 pub const CLEANER_ENDPOINT: &str = "cleaner";
 
+/// In-process endpoint name for the uploader.
+pub const UPLOADER_ENDPOINT: &str = "uploader";
+
 /// Requests sent from the ledger to the cleaner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CleanerRequest {
@@ -56,6 +59,28 @@ pub enum IndexerResponse {
     IndexFinalized { seq: u64, path: PathBuf },
     /// Indexing failed for a file.
     IndexFailed { path: PathBuf, error: String },
+}
+
+/// Requests sent from the ledger to the uploader.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UploaderRequest {
+    /// Upload an index file to remote object storage.
+    Upload {
+        seq: u64,
+        local_path: PathBuf,
+        remote_key: String,
+    },
+}
+
+/// Responses sent from the uploader back to the ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UploaderResponse {
+    /// The request was accepted and will be processed.
+    Accepted,
+    /// The file has been uploaded successfully.
+    Uploaded { seq: u64 },
+    /// Failed to upload the file.
+    UploadFailed { seq: u64, error: String },
 }
 
 /// Accept a WAL event connection from the ingestor on the given socket path.

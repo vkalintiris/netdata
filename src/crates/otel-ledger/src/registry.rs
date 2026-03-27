@@ -15,6 +15,7 @@ pub struct IndexFile {
     pub id: FileId,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
+    pub uploaded: bool,
     pending_deletion: bool,
 }
 
@@ -91,6 +92,7 @@ impl IndexRegistry {
                     id,
                     created_at_ns,
                     size,
+                    uploaded: false,
                     pending_deletion: false,
                 },
             );
@@ -106,6 +108,7 @@ impl IndexRegistry {
                 id,
                 created_at_ns,
                 size,
+                uploaded: false,
                 pending_deletion: false,
             },
         );
@@ -113,6 +116,12 @@ impl IndexRegistry {
 
     pub fn remove(&mut self, seq: u64) -> Option<IndexFile> {
         self.files.remove(&seq)
+    }
+
+    pub fn mark_uploaded(&mut self, seq: u64) {
+        if let Some(entry) = self.files.get_mut(&seq) {
+            entry.uploaded = true;
+        }
     }
 
     pub fn mark_pending_deletion(&mut self, seq: u64) {
