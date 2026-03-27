@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use flatten_otel::json_from_export_logs_service_request;
 use journal_common::load_machine_id;
-use journal_ledger::ipc::WriterPublisher;
+use otel_ledger::ipc::WriterPublisher;
 use journal_log_writer::{Config, Log, RetentionPolicy, RotationPolicy};
 use journal_registry::Origin;
 use opentelemetry_proto::tonic::collector::logs::v1::{

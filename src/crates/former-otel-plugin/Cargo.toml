@@ -33,7 +33,7 @@ twox-hash = { workspace = true, features = ["xxhash64"] }
 
 journal-common = { workspace = true }
 journal-core = { workspace = true }
-journal-ledger = { workspace = true }
+otel-ledger = { workspace = true }
 journal-log-writer = { workspace = true }
 journal-registry = { workspace = true }
 flatten_otel = { workspace = true }

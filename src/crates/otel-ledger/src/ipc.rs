@@ -1,4 +1,4 @@
-//! IPC types for communication between components and the journal ledger.
+//! IPC types for communication between components and the ledger.
 //!
 //! The ledger is the central coordinator. Components (otel-plugin, indexer,
 //! compressor, etc.) connect to it via ferryboat over Unix domain sockets.

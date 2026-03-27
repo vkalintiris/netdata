@@ -32,7 +32,7 @@ members = [
 
     # Netdata OTEL workspace members
     "otel-plugin",
-    "journal-ledger",
+    "otel-ledger",
     "flatten-otel",
 
     # Stress test tools
@@ -168,7 +168,7 @@ flatten_otel = { path = "flatten-otel" }
 otel-flatten = { path = "otel-flatten" }
 
 # Ledger
-journal-ledger = { path = "journal-ledger" }
+otel-ledger = { path = "otel-ledger" }
 
 # IPC / RPC crates
 ferryboat = { path = "ferryboat" }

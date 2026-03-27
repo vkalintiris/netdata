@@ -22,7 +22,7 @@ humantime = { workspace = true }
 humantime-serde = { workspace = true }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
-journal-ledger = { workspace = true }
+otel-ledger = { workspace = true }
 otel-ingestor = { path = "../otel-ingestor" }
 rt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -20,7 +20,7 @@ use registry::Registry;
 /// Ledger worker entry point.
 ///
 /// Connects to the supervisor's IPC socket, performs the Configure → Ready
-/// handshake, then runs the journal ledger event loop.
+/// handshake, then runs the ledger event loop.
 pub async fn run_worker(socket_path: &str) -> Result<()> {
     tracing::info!("connecting to supervisor socket={socket_path}");
 

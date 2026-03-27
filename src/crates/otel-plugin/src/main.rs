@@ -51,7 +51,7 @@ async fn run_worker(kind: WorkerKind) -> anyhow::Result<()> {
         WorkerKind::Ingestor { socket } => otel_ingestor::run_worker(&socket)
             .await
             .context("ingestor worker failed"),
-        WorkerKind::Ledger { socket } => journal_ledger::run_worker(&socket)
+        WorkerKind::Ledger { socket } => otel_ledger::run_worker(&socket)
             .await
             .context("ledger worker failed"),
     }

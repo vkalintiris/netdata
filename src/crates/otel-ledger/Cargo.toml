@@ -1,5 +1,5 @@
 [package]
-name = "journal-ledger"
+name = "otel-ledger"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [lib]
-name = "journal_ledger"
+name = "otel_ledger"
 path = "src/lib.rs"
 
 [dependencies]
