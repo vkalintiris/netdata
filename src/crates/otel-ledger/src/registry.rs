@@ -57,7 +57,10 @@ impl IndexRegistry {
             }
 
             let Some(id) = FileId::parse(&path) else {
-                tracing::warn!("skipping index file with unparseable name: {}", path.display());
+                tracing::warn!(
+                    "skipping index file with unparseable name: {}",
+                    path.display()
+                );
                 continue;
             };
 
@@ -143,11 +146,13 @@ impl IndexRegistry {
     /// marked for eviction if any limit is exceeded.
     pub fn evaluate_retention(
         &self,
-        max_files: usize,
-        max_total_size: u64,
-        max_age_ns: u64,
+        retention: &bridge::config::RetentionConfig,
         now_ns: u64,
     ) -> Vec<u64> {
+        let max_files = retention.max_files;
+        let max_total_size = retention.max_total_size.as_u64();
+        let max_age_ns = retention.max_age.as_nanos() as u64;
+
         let eligible: Vec<&IndexFile> = self
             .files
             .values()

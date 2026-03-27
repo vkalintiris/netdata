@@ -44,16 +44,20 @@ fn remove_file(path: &Path) -> Result<(), String> {
     }
 }
 
-async fn cleaner_task(mut listener: Listener<CleanerResponse, CleanerRequest>, cancel: CancellationToken) {
+async fn cleaner_task(
+    mut listener: Listener<CleanerResponse, CleanerRequest>,
+    cancel: CancellationToken,
+) {
     let mut conn = match listener.accept().await {
-        Ok(c) => c,
+        Ok(conn) => {
+            tracing::info!("cleaner task connected to ledger event loop");
+            conn
+        }
         Err(e) => {
             tracing::error!("failed to accept connection: {e}");
             return;
         }
     };
-
-    tracing::info!("cleaner task connected to ledger event loop");
 
     loop {
         let req = tokio::select! {

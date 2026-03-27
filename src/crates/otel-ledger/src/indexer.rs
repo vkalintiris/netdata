@@ -46,9 +46,7 @@ fn finalize(
         index_path.display()
     );
 
-    let seq = wal::FileId::parse(&wal_path)
-        .map(|id| id.seq)
-        .unwrap_or(0);
+    let seq = wal::FileId::parse(&wal_path).map(|id| id.seq).unwrap_or(0);
 
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();

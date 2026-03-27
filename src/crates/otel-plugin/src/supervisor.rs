@@ -37,7 +37,10 @@ impl Drop for ChildGuard {
                 tracing::info!("worker {} (pid={pid:?}) already exited", self.name);
             }
             _ => {
-                tracing::warn!("worker {} (pid={pid:?}) still running, sending SIGKILL", self.name);
+                tracing::warn!(
+                    "worker {} (pid={pid:?}) still running, sending SIGKILL",
+                    self.name
+                );
                 let _ = self.child.start_kill();
             }
         }
