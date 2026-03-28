@@ -1,35 +1,48 @@
-//! Cleaner worker that deletes index files on retention eviction.
+//! Cleaner component that deletes index files on retention eviction.
 //!
 //! Deletions are performed synchronously — `remove_file` is a single syscall.
 
 use std::path::Path;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
+use crate::component::Component;
 use crate::ipc::{CleanerRequest, CleanerResponse};
-use crate::worker::Worker;
 
-pub struct CleanerWorker;
+pub struct Cleaner;
 
-impl Worker for CleanerWorker {
+impl Component for Cleaner {
     type Request = CleanerRequest;
     type Response = CleanerResponse;
     type Args = ();
 
-    fn new(_: ()) -> Self {
-        Self
-    }
-
-    fn handle(&self, req: Self::Request, tx: mpsc::UnboundedSender<Self::Response>) {
-        match req {
-            CleanerRequest::DeleteIndexFile { sequence, path } => {
-                let resp = match remove_file(&path) {
-                    Ok(()) => CleanerResponse::IndexFileDeleted { sequence },
-                    Err(error) => CleanerResponse::IndexFileFailed { sequence, error },
-                };
-                let _ = tx.send(resp);
+    async fn run(
+        _args: (),
+        mut rx: mpsc::UnboundedReceiver<CleanerRequest>,
+        tx: mpsc::UnboundedSender<CleanerResponse>,
+        cancel: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                req = rx.recv() => match req {
+                    Some(req) => {
+                        let _ = tx.send(process(req));
+                    }
+                    None => break,
+                },
             }
         }
+    }
+}
+
+fn process(req: CleanerRequest) -> CleanerResponse {
+    match req {
+        CleanerRequest::DeleteIndexFile { sequence, path } => match remove_file(&path) {
+            Ok(()) => CleanerResponse::IndexFileDeleted { sequence },
+            Err(error) => CleanerResponse::IndexFileFailed { sequence, error },
+        },
     }
 }
 

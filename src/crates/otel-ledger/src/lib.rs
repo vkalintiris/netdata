@@ -1,11 +1,11 @@
 pub mod cleaner;
+pub mod component;
 pub mod event;
 pub mod indexer;
 pub mod ipc;
 mod ledger;
 pub mod registry;
 pub mod uploader;
-pub mod worker;
 
 pub use ledger::Ledger;
 

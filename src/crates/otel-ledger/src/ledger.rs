@@ -6,23 +6,23 @@ use ferryboat::Connection;
 use tokio_util::sync::CancellationToken;
 use wal::{ByteSize, FileId, WalDir};
 
-use crate::cleaner::CleanerWorker;
+use crate::cleaner::Cleaner;
+use crate::component::{ComponentHandle, batch_recover};
 use crate::event::LedgerEvent;
-use crate::indexer::IndexerWorker;
+use crate::indexer::Indexer;
 use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
 };
 use crate::registry::Registry;
-use crate::uploader::UploaderWorker;
-use crate::worker::{WorkerHandle, batch_recover};
+use crate::uploader::Uploader;
 
 pub struct Ledger {
     supervisor: Connection<LedgerResponse, LedgerRequest>,
     ingestor: Connection<(), wal::format::WalMessage>,
-    indexer: WorkerHandle<IndexerRequest, IndexerResponse>,
-    cleaner: WorkerHandle<CleanerRequest, CleanerResponse>,
-    uploader: WorkerHandle<UploaderRequest, UploaderResponse>,
+    indexer: ComponentHandle<IndexerRequest, IndexerResponse>,
+    cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
+    uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
     registry: Registry,
     logs_config: LogsConfig,
     expected_seq: u64,
@@ -50,12 +50,12 @@ impl Ledger {
         let cancel = CancellationToken::new();
 
         let mut indexer =
-            WorkerHandle::spawn::<IndexerWorker>((), cancel.child_token());
+            ComponentHandle::spawn::<Indexer>((), cancel.child_token());
         tracing::info!("indexer spawned");
         recover_unindexed(&mut registry, &mut indexer).await?;
 
         let mut cleaner =
-            WorkerHandle::spawn::<CleanerWorker>((), cancel.child_token());
+            ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
         tracing::info!("cleaner spawned");
         recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
 
@@ -64,7 +64,7 @@ impl Ledger {
         registry.remote = crate::registry::RemoteRegistry::recover(&operator).await;
 
         let mut uploader =
-            WorkerHandle::spawn::<UploaderWorker>(operator, cancel.child_token());
+            ComponentHandle::spawn::<Uploader>(operator, cancel.child_token());
         tracing::info!("uploader spawned");
 
         if logs_config.storage.enabled {
@@ -353,7 +353,7 @@ impl Ledger {
 /// Index any WAL files that were archived but not yet indexed.
 async fn recover_unindexed(
     registry: &mut Registry,
-    indexer: &mut WorkerHandle<IndexerRequest, IndexerResponse>,
+    indexer: &mut ComponentHandle<IndexerRequest, IndexerResponse>,
 ) -> anyhow::Result<()> {
     let unindexed = registry.unindexed_ids();
     if unindexed.is_empty() {
@@ -414,7 +414,7 @@ async fn recover_unindexed(
 /// Evict index files that exceed the retention policy.
 async fn recover_retention(
     registry: &mut Registry,
-    cleaner: &mut WorkerHandle<CleanerRequest, CleanerResponse>,
+    cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
     retention: &bridge::config::RetentionConfig,
 ) -> anyhow::Result<()> {
     let to_evict = registry.index.evaluate_retention(retention, now_ns());
@@ -452,7 +452,7 @@ async fn recover_retention(
 /// Upload index files that haven't been uploaded to remote storage yet.
 async fn recover_unuploaded(
     registry: &mut Registry,
-    uploader: &mut WorkerHandle<UploaderRequest, UploaderResponse>,
+    uploader: &mut ComponentHandle<UploaderRequest, UploaderResponse>,
 ) -> anyhow::Result<()> {
     let unuploaded = registry.unuploaded_ids();
     if unuploaded.is_empty() {

@@ -1,6 +1,6 @@
-//! Message types for communication between the ledger and its workers.
+//! Message types for communication between the ledger and its components.
 //!
-//! Worker message types use plain tokio channels (no serialization needed).
+//! Component message types use plain tokio channels (no serialization needed).
 //! The ingestor connection uses ferryboat IPC since it runs in a separate process.
 
 use std::path::PathBuf;
