@@ -13,15 +13,21 @@ pub const WRITER_SOCKET_PATH: &str = "/tmp/netdata-ledger-writer.sock";
 /// Requests sent from the ledger to the cleaner.
 #[derive(Debug, Clone)]
 pub enum CleanerRequest {
-    /// Delete an index file (.sfst) when retention evicts it.
+    /// Delete a WAL file that has been successfully indexed.
+    DeleteWalFile { sequence: u64, path: PathBuf },
+    /// Delete an index file evicted by retention policy.
     DeleteIndexFile { sequence: u64, path: PathBuf },
 }
 
 /// Responses sent from the cleaner back to the ledger.
 #[derive(Debug, Clone)]
 pub enum CleanerResponse {
+    /// A WAL file has been deleted.
+    WalFileDeleted { sequence: u64 },
     /// An index file has been deleted.
     IndexFileDeleted { sequence: u64 },
+    /// Failed to delete a WAL file.
+    WalFileFailed { sequence: u64, error: String },
     /// Failed to delete an index file.
     IndexFileFailed { sequence: u64, error: String },
 }

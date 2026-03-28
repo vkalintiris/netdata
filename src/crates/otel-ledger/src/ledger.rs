@@ -49,22 +49,19 @@ impl Ledger {
         let mut registry = Registry::recover(wal_dir, index_dir);
         let cancel = CancellationToken::new();
 
-        let mut indexer =
-            ComponentHandle::spawn::<Indexer>((), cancel.child_token());
+        let mut indexer = ComponentHandle::spawn::<Indexer>((), cancel.child_token());
         tracing::info!("indexer spawned");
-        recover_unindexed(&mut registry, &mut indexer).await?;
-
-        let mut cleaner =
-            ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
+        let mut cleaner = ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
         tracing::info!("cleaner spawned");
+
+        recover_unindexed(&mut registry, &mut indexer, &mut cleaner).await?;
         recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
 
         let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         registry.remote = crate::registry::RemoteRegistry::recover(&operator).await;
 
-        let mut uploader =
-            ComponentHandle::spawn::<Uploader>(operator, cancel.child_token());
+        let mut uploader = ComponentHandle::spawn::<Uploader>(operator, cancel.child_token());
         tracing::info!("uploader spawned");
 
         if logs_config.storage.enabled {
@@ -253,7 +250,7 @@ impl Ledger {
                 if let Some(wal_entry) = wal_entry {
                     // Delete the now-redundant WAL file.
                     let wal_path = self.registry.wal.dir().wal_path(wal_entry.id);
-                    remove_file(&wal_path);
+                    self.request_wal_delete(wal_entry.id.seq, wal_path);
 
                     let index_file_path = self.registry.index.path(wal_entry.id);
                     let index_size = ByteSize(
@@ -295,14 +292,27 @@ impl Ledger {
 
     fn handle_cleaner_resp(&mut self, resp: CleanerResponse) {
         match resp {
+            CleanerResponse::WalFileDeleted { sequence } => {
+                tracing::info!("WAL file deleted seq={sequence}");
+            }
             CleanerResponse::IndexFileDeleted { sequence } => {
                 self.registry.index.remove(sequence);
                 tracing::info!("index file evicted seq={sequence}");
             }
+            CleanerResponse::WalFileFailed { sequence, error } => {
+                tracing::error!("WAL file deletion failed seq={sequence} error={error}");
+            }
             CleanerResponse::IndexFileFailed { sequence, error } => {
-                tracing::error!("index file eviction failed seq={sequence} error={error}");
+                tracing::error!("index file deletion failed seq={sequence} error={error}");
                 self.registry.index.clear_pending_deletion(sequence);
             }
+        }
+    }
+
+    fn request_wal_delete(&mut self, sequence: u64, path: std::path::PathBuf) {
+        let req = CleanerRequest::DeleteWalFile { sequence, path };
+        if let Err(e) = self.cleaner.send(req) {
+            tracing::error!("failed to send WAL delete request seq={sequence}: {e}");
         }
     }
 
@@ -338,7 +348,7 @@ impl Ledger {
                     path,
                 };
                 if let Err(e) = self.cleaner.send(req) {
-                    tracing::error!("failed to send index eviction to cleaner seq={seq}: {e}");
+                    tracing::error!("failed to send index eviction seq={seq}: {e}");
                     self.registry.index.clear_pending_deletion(seq);
                 }
             }
@@ -354,6 +364,7 @@ impl Ledger {
 async fn recover_unindexed(
     registry: &mut Registry,
     indexer: &mut ComponentHandle<IndexerRequest, IndexerResponse>,
+    cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
 ) -> anyhow::Result<()> {
     let unindexed = registry.unindexed_ids();
     if unindexed.is_empty() {
@@ -382,9 +393,15 @@ async fn recover_unindexed(
                 FileId::new(dir.machine_id(), dir.boot_id(), seq)
             });
 
-            // Delete the now-redundant WAL file.
+            // Delete the now-redundant WAL file via the cleaner.
             let wal_path = registry.wal.dir().wal_path(id);
-            remove_file(&wal_path);
+            let req = CleanerRequest::DeleteWalFile {
+                sequence: seq,
+                path: wal_path,
+            };
+            if let Err(e) = cleaner.send(req) {
+                tracing::error!("recovery: failed to send WAL delete seq={seq}: {e}");
+            }
 
             let index_file_path = registry.index.path(id);
             let index_size = ByteSize(
@@ -445,6 +462,9 @@ async fn recover_retention(
         CleanerResponse::IndexFileFailed { sequence, error } => {
             tracing::error!("recovery: index eviction failed seq={sequence} error={error}");
         }
+        resp => {
+            tracing::warn!("unexpected cleaner response during retention recovery: {resp:?}");
+        }
     })
     .await
 }
@@ -489,14 +509,6 @@ async fn recover_unuploaded(
 
     tracing::info!("recovery uploads complete");
     Ok(())
-}
-
-fn remove_file(path: &std::path::Path) {
-    match std::fs::remove_file(path) {
-        Ok(()) => tracing::info!("deleted {}", path.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!("failed to delete {}: {e}", path.display()),
-    }
 }
 
 fn now_ns() -> u64 {

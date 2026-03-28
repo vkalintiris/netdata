@@ -39,6 +39,10 @@ impl Component for Cleaner {
 
 fn process(req: CleanerRequest) -> CleanerResponse {
     match req {
+        CleanerRequest::DeleteWalFile { sequence, path } => match remove_file(&path) {
+            Ok(()) => CleanerResponse::WalFileDeleted { sequence },
+            Err(error) => CleanerResponse::WalFileFailed { sequence, error },
+        },
         CleanerRequest::DeleteIndexFile { sequence, path } => match remove_file(&path) {
             Ok(()) => CleanerResponse::IndexFileDeleted { sequence },
             Err(error) => CleanerResponse::IndexFileFailed { sequence, error },

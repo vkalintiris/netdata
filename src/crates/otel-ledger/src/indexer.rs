@@ -78,9 +78,7 @@ fn start_indexing(
         index_path,
     } = req;
 
-    let seq = wal::FileId::parse(&wal_path)
-        .map(|id| id.seq)
-        .unwrap_or(0);
+    let seq = wal::FileId::parse(&wal_path).map(|id| id.seq).unwrap_or(0);
 
     in_flight.insert(
         seq,
