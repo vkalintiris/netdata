@@ -15,7 +15,6 @@ pub struct IndexFile {
     pub id: FileId,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
-    pub uploaded: bool,
     pending_deletion: bool,
 }
 
@@ -77,7 +76,7 @@ impl IndexRegistry {
 
             // Use the file's modification time as an approximation for
             // creation time. The actual WAL `created_at_ns` is not available
-            // when the .bin has already been deleted.
+            // when the .wal has already been deleted.
             let created_at_ns = TimestampNs(
                 meta.modified()
                     .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -92,7 +91,6 @@ impl IndexRegistry {
                     id,
                     created_at_ns,
                     size,
-                    uploaded: false,
                     pending_deletion: false,
                 },
             );
@@ -108,7 +106,6 @@ impl IndexRegistry {
                 id,
                 created_at_ns,
                 size,
-                uploaded: false,
                 pending_deletion: false,
             },
         );
@@ -116,12 +113,6 @@ impl IndexRegistry {
 
     pub fn remove(&mut self, seq: u64) -> Option<IndexFile> {
         self.files.remove(&seq)
-    }
-
-    pub fn mark_uploaded(&mut self, seq: u64) {
-        if let Some(entry) = self.files.get_mut(&seq) {
-            entry.uploaded = true;
-        }
     }
 
     pub fn mark_pending_deletion(&mut self, seq: u64) {
@@ -200,16 +191,103 @@ impl IndexRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// Remote files (uploaded to object storage)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct RemoteFile {
+    pub id: FileId,
+    pub remote_key: String,
+    pub uploaded_at_ns: TimestampNs,
+}
+
+pub struct RemoteRegistry {
+    files: BTreeMap<u64, RemoteFile>,
+}
+
+impl RemoteRegistry {
+    pub fn new() -> Self {
+        Self {
+            files: BTreeMap::new(),
+        }
+    }
+
+    /// Recover remote state by listing files in object storage.
+    ///
+    /// Best-effort: if the remote is unavailable, we proceed with an empty
+    /// registry and re-upload as needed (uploads are idempotent).
+    pub async fn recover(operator: &opendal::Operator) -> Self {
+        let mut registry = Self::new();
+        match operator.list("").await {
+            Ok(entries) => {
+                for entry in entries {
+                    let path = entry.path();
+                    if let Some(id) = FileId::parse(std::path::Path::new(path)) {
+                        registry.track(id, path.to_string());
+                    }
+                }
+                if !registry.is_empty() {
+                    tracing::info!("recovered {} remote files", registry.len());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "failed to list remote storage, proceeding without remote state: {e}"
+                );
+            }
+        }
+        registry
+    }
+
+    pub fn track(&mut self, id: FileId, remote_key: String) {
+        self.files.insert(
+            id.seq,
+            RemoteFile {
+                id,
+                remote_key,
+                uploaded_at_ns: TimestampNs(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64,
+                ),
+            },
+        );
+    }
+
+    pub fn contains(&self, seq: u64) -> bool {
+        self.files.contains_key(&seq)
+    }
+
+    pub fn get(&self, seq: u64) -> Option<&RemoteFile> {
+        self.files.get(&seq)
+    }
+
+    pub fn remove(&mut self, seq: u64) -> Option<RemoteFile> {
+        self.files.remove(&seq)
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
 
 pub struct Registry {
     pub wal: WalRegistry,
     pub index: IndexRegistry,
+    pub remote: RemoteRegistry,
 }
 
 impl Registry {
-    /// Recover both registries from disk.
+    /// Recover registries from disk.
     ///
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
@@ -221,6 +299,7 @@ impl Registry {
             panic!("WAL registry recovery failed");
         });
         let index = IndexRegistry::recover(index_dir);
+        let remote = RemoteRegistry::new();
 
         if !wal.is_empty() || !index.is_empty() {
             tracing::info!(
@@ -230,7 +309,7 @@ impl Registry {
             );
         }
 
-        Self { wal, index }
+        Self { wal, index, remote }
     }
 
     /// Returns FileIds of archived WAL files that have no corresponding index.
@@ -238,6 +317,16 @@ impl Registry {
         self.wal
             .archived_files()
             .filter(|entry| self.index.get(entry.id.seq).is_none())
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    /// Returns FileIds of indexed files that have not been uploaded to remote storage.
+    pub fn unuploaded_ids(&self) -> Vec<FileId> {
+        self.index
+            .files
+            .values()
+            .filter(|entry| !self.remote.contains(entry.id.seq))
             .map(|entry| entry.id)
             .collect()
     }

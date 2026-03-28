@@ -56,8 +56,14 @@ impl Ledger {
 
         let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-        let uploader = uploader::spawn(cancel.child_token(), operator).await?;
+        registry.remote = crate::registry::RemoteRegistry::recover(&operator).await;
+
+        let mut uploader = uploader::spawn(cancel.child_token(), operator).await?;
         tracing::info!("uploader spawned");
+
+        if logs_config.storage.enabled {
+            recover_unuploaded(&mut registry, &mut uploader).await?;
+        }
 
         tracing::info!("recovery complete");
 
@@ -262,9 +268,11 @@ impl Ledger {
     fn handle_uploader_resp(&mut self, resp: UploaderResponse) {
         match resp {
             UploaderResponse::Accepted => {}
-            UploaderResponse::Uploaded { seq } => {
-                tracing::info!("upload complete seq={seq}");
-                self.registry.index.mark_uploaded(seq);
+            UploaderResponse::Uploaded { seq, remote_key } => {
+                tracing::info!("upload complete seq={seq} remote_key={remote_key}");
+                if let Some(entry) = self.registry.index.get(seq) {
+                    self.registry.remote.track(entry.id, remote_key);
+                }
             }
             UploaderResponse::UploadFailed { seq, error } => {
                 tracing::error!("upload failed seq={seq}: {error}");
@@ -435,6 +443,50 @@ async fn recover_retention(
             }
         }
     }
+    Ok(())
+}
+
+/// Upload index files that haven't been uploaded to remote storage yet.
+async fn recover_unuploaded(
+    registry: &mut Registry,
+    uploader: &mut Connection<UploaderRequest, UploaderResponse>,
+) -> Result<(), ferryboat::Error> {
+    let unuploaded = registry.unuploaded_ids();
+    if unuploaded.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("uploading {} un-uploaded index files", unuploaded.len());
+    for &id in &unuploaded {
+        let local_path = registry.index.path(id);
+        let remote_key = id.to_filename("sfst");
+        let req = UploaderRequest::Upload {
+            seq: id.seq,
+            local_path,
+            remote_key,
+        };
+        uploader.send(req).await?;
+    }
+
+    let mut remaining = unuploaded.len();
+    while remaining > 0 {
+        let resp = uploader.recv().await?;
+        match resp {
+            UploaderResponse::Accepted => {}
+            UploaderResponse::Uploaded { seq, remote_key } => {
+                if let Some(entry) = registry.index.get(seq) {
+                    registry.remote.track(entry.id, remote_key);
+                }
+                tracing::info!("recovery: upload complete seq={seq}");
+                remaining -= 1;
+            }
+            UploaderResponse::UploadFailed { seq, error } => {
+                tracing::error!("recovery: upload failed seq={seq}: {error}");
+                remaining -= 1;
+            }
+        }
+    }
+    tracing::info!("recovery uploads complete");
     Ok(())
 }
 

@@ -78,7 +78,7 @@ pub enum UploaderResponse {
     /// The request was accepted and will be processed.
     Accepted,
     /// The file has been uploaded successfully.
-    Uploaded { seq: u64 },
+    Uploaded { seq: u64, remote_key: String },
     /// Failed to upload the file.
     UploadFailed { seq: u64, error: String },
 }

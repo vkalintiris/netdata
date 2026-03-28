@@ -54,7 +54,7 @@ fn upload(
                         "upload complete seq={seq} remote_key={remote_key} elapsed_ms={}",
                         start.elapsed().as_millis(),
                     );
-                    UploaderResponse::Uploaded { seq }
+                    UploaderResponse::Uploaded { seq, remote_key }
                 }
                 Err(e) => {
                     tracing::error!("upload failed seq={seq}: {e}");
