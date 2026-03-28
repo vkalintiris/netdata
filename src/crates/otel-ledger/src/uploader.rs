@@ -1,126 +1,71 @@
-//! Uploader component that copies index files to remote object storage.
+//! Uploader worker that copies index files to remote object storage.
 //!
-//! Every request is acknowledged immediately. The actual upload runs in a
-//! spawned async task and sends an `Uploaded` or `UploadFailed` notification
-//! back to the ledger when complete.
+//! The actual upload runs in a spawned async task and sends a result
+//! back through the worker response channel when complete.
 
-use ferryboat::{Connection, Endpoint, Listener};
 use opendal::Operator;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 
-use crate::ipc::{UPLOADER_ENDPOINT, UploaderRequest, UploaderResponse};
+use crate::ipc::{UploaderRequest, UploaderResponse};
+use crate::worker::Worker;
 
-/// Spawns the uploader as a tokio task.
-///
-/// Returns a [`Connection`] the ledger can use to send requests and
-/// receive responses. The task exits cleanly when `cancel` is cancelled.
-pub async fn spawn(
-    cancel: CancellationToken,
+pub struct UploaderWorker {
     operator: Operator,
-) -> Result<Connection<UploaderRequest, UploaderResponse>, ferryboat::Error> {
-    let listener = Listener::<UploaderResponse, UploaderRequest>::bind(Endpoint::in_process(
-        UPLOADER_ENDPOINT,
-    ))
-    .open()?;
-
-    tokio::spawn(uploader_task(listener, cancel, operator));
-
-    let conn = Connection::<UploaderRequest, UploaderResponse>::connect(Endpoint::in_process(
-        UPLOADER_ENDPOINT,
-    ))
-    .open()
-    .await?;
-
-    Ok(conn)
 }
 
-fn upload(
-    operator: Operator,
-    seq: u64,
-    local_path: std::path::PathBuf,
-    remote_key: String,
-    done_tx: mpsc::UnboundedSender<UploaderResponse>,
-) {
-    tokio::spawn(async move {
-        let start = Instant::now();
-        tracing::info!("upload started seq={seq} remote_key={remote_key}");
+impl Worker for UploaderWorker {
+    type Request = UploaderRequest;
+    type Response = UploaderResponse;
+    type Args = Operator;
 
-        let resp = match tokio::fs::read(&local_path).await {
-            Ok(data) => match operator.write(&remote_key, data).await {
-                Ok(_) => {
-                    tracing::info!(
-                        "upload complete seq={seq} remote_key={remote_key} elapsed_ms={}",
-                        start.elapsed().as_millis(),
-                    );
-                    UploaderResponse::Uploaded { seq, remote_key }
-                }
-                Err(e) => {
-                    tracing::error!("upload failed seq={seq}: {e}");
-                    UploaderResponse::UploadFailed {
-                        seq,
-                        error: e.to_string(),
-                    }
-                }
-            },
-            Err(e) => {
-                tracing::error!("failed to read local file {}: {e}", local_path.display());
-                UploaderResponse::UploadFailed {
-                    seq,
-                    error: e.to_string(),
-                }
-            }
-        };
+    fn new(operator: Operator) -> Self {
+        Self { operator }
+    }
 
-        let _ = done_tx.send(resp);
-    });
-}
+    fn handle(&self, req: Self::Request, tx: mpsc::UnboundedSender<Self::Response>) {
+        match req {
+            UploaderRequest::Upload {
+                seq,
+                local_path,
+                remote_key,
+            } => {
+                let operator = self.operator.clone();
+                tokio::spawn(async move {
+                    let start = Instant::now();
+                    tracing::info!("upload started seq={seq} remote_key={remote_key}");
 
-async fn uploader_task(
-    mut listener: Listener<UploaderResponse, UploaderRequest>,
-    cancel: CancellationToken,
-    operator: Operator,
-) {
-    let mut conn = match listener.accept().await {
-        Ok(c) => {
-            tracing::info!("uploader task connected to ledger event loop");
-            c
-        }
-        Err(e) => {
-            tracing::error!("uploader: failed to accept connection: {e}");
-            return;
-        }
-    };
+                    let resp = match tokio::fs::read(&local_path).await {
+                        Ok(data) => match operator.write(&remote_key, data).await {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "upload complete seq={seq} remote_key={remote_key} elapsed_ms={}",
+                                    start.elapsed().as_millis(),
+                                );
+                                UploaderResponse::Uploaded { seq, remote_key }
+                            }
+                            Err(e) => {
+                                tracing::error!("upload failed seq={seq}: {e}");
+                                UploaderResponse::UploadFailed {
+                                    seq,
+                                    error: e.to_string(),
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!(
+                                "failed to read local file {}: {e}",
+                                local_path.display()
+                            );
+                            UploaderResponse::UploadFailed {
+                                seq,
+                                error: e.to_string(),
+                            }
+                        }
+                    };
 
-    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<UploaderResponse>();
-
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            r = conn.recv() => {
-                let req = match r {
-                    Ok(req) => req,
-                    Err(e) => {
-                        tracing::error!("uploader recv failed: {e}");
-                        break;
-                    }
-                };
-
-                if conn.send(UploaderResponse::Accepted).await.is_err() {
-                    break;
-                }
-
-                match req {
-                    UploaderRequest::Upload { seq, local_path, remote_key } => {
-                        upload(operator.clone(), seq, local_path, remote_key, done_tx.clone());
-                    }
-                }
-            }
-            Some(resp) = done_rx.recv() => {
-                if conn.send(resp).await.is_err() {
-                    break;
-                }
+                    let _ = tx.send(resp);
+                });
             }
         }
     }

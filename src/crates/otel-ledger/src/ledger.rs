@@ -6,20 +6,23 @@ use ferryboat::Connection;
 use tokio_util::sync::CancellationToken;
 use wal::{ByteSize, FileId, WalDir};
 
+use crate::cleaner::CleanerWorker;
 use crate::event::LedgerEvent;
+use crate::indexer::IndexerWorker;
 use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
 };
 use crate::registry::Registry;
-use crate::{cleaner, indexer, ipc, uploader};
+use crate::uploader::UploaderWorker;
+use crate::worker::{WorkerHandle, batch_recover};
 
 pub struct Ledger {
     supervisor: Connection<LedgerResponse, LedgerRequest>,
     ingestor: Connection<(), wal::format::WalMessage>,
-    indexer: Connection<IndexerRequest, IndexerResponse>,
-    cleaner: Connection<CleanerRequest, CleanerResponse>,
-    uploader: Connection<UploaderRequest, UploaderResponse>,
+    indexer: WorkerHandle<IndexerRequest, IndexerResponse>,
+    cleaner: WorkerHandle<CleanerRequest, CleanerResponse>,
+    uploader: WorkerHandle<UploaderRequest, UploaderResponse>,
     registry: Registry,
     logs_config: LogsConfig,
     expected_seq: u64,
@@ -31,7 +34,7 @@ impl Ledger {
         supervisor: Connection<LedgerResponse, LedgerRequest>,
         writer_socket_path: &str,
         logs_config: &LogsConfig,
-    ) -> Result<Self, ferryboat::Error> {
+    ) -> anyhow::Result<Self> {
         let machine_id = journal_common::load_machine_id().expect("failed to load machine ID");
         let boot_id = journal_common::load_boot_id().expect("failed to load boot ID");
 
@@ -46,11 +49,13 @@ impl Ledger {
         let mut registry = Registry::recover(wal_dir, index_dir);
         let cancel = CancellationToken::new();
 
-        let mut indexer = indexer::spawn(cancel.child_token()).await?;
+        let mut indexer =
+            WorkerHandle::spawn::<IndexerWorker>((), cancel.child_token());
         tracing::info!("indexer spawned");
         recover_unindexed(&mut registry, &mut indexer).await?;
 
-        let mut cleaner = cleaner::spawn(cancel.child_token()).await?;
+        let mut cleaner =
+            WorkerHandle::spawn::<CleanerWorker>((), cancel.child_token());
         tracing::info!("cleaner spawned");
         recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
 
@@ -58,7 +63,8 @@ impl Ledger {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         registry.remote = crate::registry::RemoteRegistry::recover(&operator).await;
 
-        let mut uploader = uploader::spawn(cancel.child_token(), operator).await?;
+        let mut uploader =
+            WorkerHandle::spawn::<UploaderWorker>(operator, cancel.child_token());
         tracing::info!("uploader spawned");
 
         if logs_config.storage.enabled {
@@ -67,7 +73,7 @@ impl Ledger {
 
         tracing::info!("recovery complete");
 
-        let ingestor = ipc::accept_writer(writer_socket_path).await?;
+        let ingestor = crate::ipc::accept_writer(writer_socket_path).await?;
         tracing::info!("ingestor connected");
 
         Ok(Self {
@@ -87,16 +93,25 @@ impl Ledger {
         loop {
             let event = tokio::select! {
                 msg = self.ingestor.recv() => LedgerEvent::WalMsg(msg?),
-                resp = self.indexer.recv() => LedgerEvent::IndexerResp(resp?),
-                resp = self.cleaner.recv() => LedgerEvent::CleanerResp(resp?),
-                resp = self.uploader.recv() => LedgerEvent::UploaderResp(resp?),
+                resp = self.indexer.recv() => match resp {
+                    Some(r) => LedgerEvent::IndexerResp(r),
+                    None => break Ok(()),
+                },
+                resp = self.cleaner.recv() => match resp {
+                    Some(r) => LedgerEvent::CleanerResp(r),
+                    None => break Ok(()),
+                },
+                resp = self.uploader.recv() => match resp {
+                    Some(r) => LedgerEvent::UploaderResp(r),
+                    None => break Ok(()),
+                },
                 req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
             };
 
             match event {
                 LedgerEvent::WalMsg(msg) => self.handle_ingestor_msg(msg).await,
                 LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
-                LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp).await,
+                LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp),
                 LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp),
                 LedgerEvent::SupervisorReq(req) => {
                     if self.handle_supervisor_req(req).await? {
@@ -219,7 +234,7 @@ impl Ledger {
                 index_path: self.registry.index.path(id),
             };
 
-            if let Err(e) = self.indexer.send(req).await {
+            if let Err(e) = self.indexer.send(req) {
                 tracing::error!("failed to send to indexer: {e}");
             }
         }
@@ -227,7 +242,6 @@ impl Ledger {
 
     async fn handle_indexer_resp(&mut self, resp: IndexerResponse) {
         match resp {
-            IndexerResponse::Accepted => {}
             IndexerResponse::IndexFinalized { seq, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
@@ -252,12 +266,12 @@ impl Ledger {
                         .track(wal_entry.id, created_at_ns, index_size);
 
                     // Trigger upload if storage is enabled.
-                    self.request_upload(wal_entry.id).await;
+                    self.request_upload(wal_entry.id);
                 } else {
                     tracing::warn!("index finalized for unknown WAL seq={seq}");
                 }
 
-                self.evaluate_retention().await;
+                self.evaluate_retention();
             }
             IndexerResponse::IndexFailed { path, error } => {
                 tracing::error!("indexing failed path={} error={error}", path.display());
@@ -267,7 +281,6 @@ impl Ledger {
 
     fn handle_uploader_resp(&mut self, resp: UploaderResponse) {
         match resp {
-            UploaderResponse::Accepted => {}
             UploaderResponse::Uploaded { seq, remote_key } => {
                 tracing::info!("upload complete seq={seq} remote_key={remote_key}");
                 if let Some(entry) = self.registry.index.get(seq) {
@@ -280,9 +293,8 @@ impl Ledger {
         }
     }
 
-    async fn handle_cleaner_resp(&mut self, resp: CleanerResponse) {
+    fn handle_cleaner_resp(&mut self, resp: CleanerResponse) {
         match resp {
-            CleanerResponse::Accepted => {}
             CleanerResponse::IndexFileDeleted { sequence } => {
                 self.registry.index.remove(sequence);
                 tracing::info!("index file evicted seq={sequence}");
@@ -294,7 +306,7 @@ impl Ledger {
         }
     }
 
-    async fn request_upload(&mut self, id: FileId) {
+    fn request_upload(&mut self, id: FileId) {
         if !self.logs_config.storage.enabled {
             return;
         }
@@ -305,12 +317,12 @@ impl Ledger {
             local_path,
             remote_key,
         };
-        if let Err(e) = self.uploader.send(req).await {
+        if let Err(e) = self.uploader.send(req) {
             tracing::error!("failed to send upload request seq={}: {e}", id.seq);
         }
     }
 
-    async fn evaluate_retention(&mut self) {
+    fn evaluate_retention(&mut self) {
         let to_evict = self
             .registry
             .index
@@ -325,7 +337,7 @@ impl Ledger {
                     sequence: seq,
                     path,
                 };
-                if let Err(e) = self.cleaner.send(req).await {
+                if let Err(e) = self.cleaner.send(req) {
                     tracing::error!("failed to send index eviction to cleaner seq={seq}: {e}");
                     self.registry.index.clear_pending_deletion(seq);
                 }
@@ -341,64 +353,60 @@ impl Ledger {
 /// Index any WAL files that were archived but not yet indexed.
 async fn recover_unindexed(
     registry: &mut Registry,
-    indexer: &mut Connection<IndexerRequest, IndexerResponse>,
-) -> Result<(), ferryboat::Error> {
+    indexer: &mut WorkerHandle<IndexerRequest, IndexerResponse>,
+) -> anyhow::Result<()> {
     let unindexed = registry.unindexed_ids();
     if unindexed.is_empty() {
         return Ok(());
     }
 
     tracing::info!("indexing {} unindexed WAL files", unindexed.len());
-    for &id in &unindexed {
-        let req = IndexerRequest::FinalizeIndex {
+
+    let requests: Vec<_> = unindexed
+        .iter()
+        .map(|&id| IndexerRequest::FinalizeIndex {
             wal_path: registry.wal.dir().wal_path(id),
             index_path: registry.index.path(id),
-        };
-        indexer.send(req).await?;
-    }
+        })
+        .collect();
 
-    let mut remaining = unindexed.len();
-    while remaining > 0 {
-        let resp = indexer.recv().await?;
-        match resp {
-            IndexerResponse::Accepted => {}
-            IndexerResponse::IndexFinalized { seq, .. } => {
-                let wal_entry = registry.wal.remove_by_seq(seq);
-                let created_at_ns = wal_entry
-                    .as_ref()
-                    .map(|w| w.created_at_ns)
-                    .unwrap_or_default();
-                let id = wal_entry.map(|w| w.id).unwrap_or_else(|| {
-                    let dir = registry.wal.dir();
-                    FileId::new(dir.machine_id(), dir.boot_id(), seq)
-                });
+    batch_recover(requests, indexer, |resp| match resp {
+        IndexerResponse::IndexFinalized { seq, .. } => {
+            let wal_entry = registry.wal.remove_by_seq(seq);
+            let created_at_ns = wal_entry
+                .as_ref()
+                .map(|w| w.created_at_ns)
+                .unwrap_or_default();
+            let id = wal_entry.map(|w| w.id).unwrap_or_else(|| {
+                let dir = registry.wal.dir();
+                FileId::new(dir.machine_id(), dir.boot_id(), seq)
+            });
 
-                // Delete the now-redundant WAL file.
-                let wal_path = registry.wal.dir().wal_path(id);
-                remove_file(&wal_path);
+            // Delete the now-redundant WAL file.
+            let wal_path = registry.wal.dir().wal_path(id);
+            remove_file(&wal_path);
 
-                let index_file_path = registry.index.path(id);
-                let index_size = ByteSize(
-                    std::fs::metadata(&index_file_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0),
-                );
-                registry.index.track(id, created_at_ns, index_size);
-                tracing::info!("recovery: index finalized seq={seq}");
-                remaining -= 1;
-            }
-            IndexerResponse::IndexFailed {
-                ref path,
-                ref error,
-            } => {
-                tracing::error!(
-                    "recovery: indexing failed path={} error={error}",
-                    path.display()
-                );
-                remaining -= 1;
-            }
+            let index_file_path = registry.index.path(id);
+            let index_size = ByteSize(
+                std::fs::metadata(&index_file_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+            );
+            registry.index.track(id, created_at_ns, index_size);
+            tracing::info!("recovery: index finalized seq={seq}");
         }
-    }
+        IndexerResponse::IndexFailed {
+            ref path,
+            ref error,
+        } => {
+            tracing::error!(
+                "recovery: indexing failed path={} error={error}",
+                path.display()
+            );
+        }
+    })
+    .await?;
+
     tracing::info!("recovery indexing complete");
     Ok(())
 }
@@ -406,86 +414,79 @@ async fn recover_unindexed(
 /// Evict index files that exceed the retention policy.
 async fn recover_retention(
     registry: &mut Registry,
-    cleaner: &mut Connection<CleanerRequest, CleanerResponse>,
+    cleaner: &mut WorkerHandle<CleanerRequest, CleanerResponse>,
     retention: &bridge::config::RetentionConfig,
-) -> Result<(), ferryboat::Error> {
+) -> anyhow::Result<()> {
     let to_evict = registry.index.evaluate_retention(retention, now_ns());
     if to_evict.is_empty() {
         return Ok(());
     }
 
     tracing::info!("retention: evicting {} old index files", to_evict.len());
-    for &seq in &to_evict {
-        if let Some(entry) = registry.index.get(seq) {
-            let path = registry.index.path(entry.id);
-            cleaner
-                .send(CleanerRequest::DeleteIndexFile {
+
+    let requests: Vec<_> = to_evict
+        .iter()
+        .filter_map(|&seq| {
+            registry.index.get(seq).map(|entry| {
+                let path = registry.index.path(entry.id);
+                CleanerRequest::DeleteIndexFile {
                     sequence: seq,
                     path,
-                })
-                .await?;
-        }
-    }
+                }
+            })
+        })
+        .collect();
 
-    let mut remaining = to_evict.len();
-    while remaining > 0 {
-        let resp = cleaner.recv().await?;
-        match resp {
-            CleanerResponse::Accepted => {}
-            CleanerResponse::IndexFileDeleted { sequence } => {
-                registry.index.remove(sequence);
-                tracing::info!("recovery: index file evicted seq={sequence}");
-                remaining -= 1;
-            }
-            CleanerResponse::IndexFileFailed { sequence, error } => {
-                tracing::error!("recovery: index eviction failed seq={sequence} error={error}");
-                remaining -= 1;
-            }
+    batch_recover(requests, cleaner, |resp| match resp {
+        CleanerResponse::IndexFileDeleted { sequence } => {
+            registry.index.remove(sequence);
+            tracing::info!("recovery: index file evicted seq={sequence}");
         }
-    }
-    Ok(())
+        CleanerResponse::IndexFileFailed { sequence, error } => {
+            tracing::error!("recovery: index eviction failed seq={sequence} error={error}");
+        }
+    })
+    .await
 }
 
 /// Upload index files that haven't been uploaded to remote storage yet.
 async fn recover_unuploaded(
     registry: &mut Registry,
-    uploader: &mut Connection<UploaderRequest, UploaderResponse>,
-) -> Result<(), ferryboat::Error> {
+    uploader: &mut WorkerHandle<UploaderRequest, UploaderResponse>,
+) -> anyhow::Result<()> {
     let unuploaded = registry.unuploaded_ids();
     if unuploaded.is_empty() {
         return Ok(());
     }
 
     tracing::info!("uploading {} un-uploaded index files", unuploaded.len());
-    for &id in &unuploaded {
-        let local_path = registry.index.path(id);
-        let remote_key = id.to_filename("sfst");
-        let req = UploaderRequest::Upload {
-            seq: id.seq,
-            local_path,
-            remote_key,
-        };
-        uploader.send(req).await?;
-    }
 
-    let mut remaining = unuploaded.len();
-    while remaining > 0 {
-        let resp = uploader.recv().await?;
-        match resp {
-            UploaderResponse::Accepted => {}
-            UploaderResponse::Uploaded { seq, remote_key } => {
-                if let Some(entry) = registry.index.get(seq) {
-                    registry.remote.track(entry.id, remote_key);
-                }
-                tracing::info!("recovery: upload complete seq={seq}");
-                remaining -= 1;
+    let requests: Vec<_> = unuploaded
+        .iter()
+        .map(|&id| {
+            let local_path = registry.index.path(id);
+            let remote_key = id.to_filename("sfst");
+            UploaderRequest::Upload {
+                seq: id.seq,
+                local_path,
+                remote_key,
             }
-            UploaderResponse::UploadFailed { seq, error } => {
-                tracing::error!("recovery: upload failed seq={seq}: {error}");
-                remaining -= 1;
+        })
+        .collect();
+
+    batch_recover(requests, uploader, |resp| match resp {
+        UploaderResponse::Uploaded { seq, remote_key } => {
+            if let Some(entry) = registry.index.get(seq) {
+                registry.remote.track(entry.id, remote_key);
             }
+            tracing::info!("recovery: upload complete seq={seq}");
         }
-    }
+        UploaderResponse::UploadFailed { seq, error } => {
+            tracing::error!("recovery: upload failed seq={seq}: {error}");
+        }
+    })
+    .await?;
+
     tracing::info!("recovery uploads complete");
     Ok(())
 }
