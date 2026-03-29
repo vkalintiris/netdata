@@ -214,29 +214,26 @@ impl RemoteRegistry {
 
     /// Recover remote state by listing files in object storage.
     ///
-    /// Best-effort: if the remote is unavailable, we proceed with an empty
-    /// registry and re-upload as needed (uploads are idempotent).
-    pub async fn recover(operator: &opendal::Operator) -> Self {
+    /// Returns `Ok` with the recovered registry, or `Err` if the remote
+    /// is unreachable. The caller should skip upload recovery on failure
+    /// — uploads will happen naturally during normal operation once the
+    /// remote becomes available.
+    pub async fn recover(operator: &opendal::Operator) -> Result<Self, opendal::Error> {
         let mut registry = Self::new();
-        match operator.list("").await {
-            Ok(entries) => {
-                for entry in entries {
-                    let path = entry.path();
-                    if let Some(id) = FileId::parse(std::path::Path::new(path)) {
-                        registry.track(id, path.to_string());
-                    }
-                }
-                if !registry.is_empty() {
-                    tracing::info!("recovered {} remote files", registry.len());
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "failed to list remote storage, proceeding without remote state: {e}"
-                );
+        let entries = operator.list("").await?;
+
+        for entry in entries {
+            let path = entry.path();
+            if let Some(id) = FileId::parse(std::path::Path::new(path)) {
+                registry.track(id, path.to_string());
             }
         }
-        registry
+
+        if !registry.is_empty() {
+            tracing::info!("recovered {} remote files", registry.len());
+        }
+
+        Ok(registry)
     }
 
     pub fn track(&mut self, id: FileId, remote_key: String) {

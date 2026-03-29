@@ -4,6 +4,7 @@ pub mod event;
 pub mod indexer;
 pub mod ipc;
 mod ledger;
+mod recovery;
 pub mod registry;
 pub mod uploader;
 
