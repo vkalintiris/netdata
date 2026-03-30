@@ -13,6 +13,10 @@
 #include "sentry-native/sentry-native.h"
 #endif
 
+#ifdef HAVE_BEARING
+void bearing_shutdown(void);
+#endif
+
 // External configuration structures that need cleanup
 extern struct config netdata_config;
 extern struct config cloud_config;
@@ -233,6 +237,10 @@ static void netdata_cleanup_and_exit(EXIT_REASON reason, bool abnormal, bool exi
     ml_stop_threads();
     ml_fini();
     watcher_step_complete(WATCHER_STEP_ID_DISABLE_ML_DETEC_AND_TRAIN_THREADS);
+
+#ifdef HAVE_BEARING
+    bearing_shutdown();
+#endif
 
     service_wait_exit(SERVICE_CONTEXT, 5 * USEC_PER_SEC);
     watcher_step_complete(WATCHER_STEP_ID_STOP_CONTEXT_THREAD);

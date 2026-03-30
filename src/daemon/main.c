@@ -215,6 +215,10 @@ int mrg_unittest(void);
 int pluginsd_parser_unittest(void);
 void replication_initialize(void);
 void bearer_tokens_init(void);
+#ifdef HAVE_BEARING
+void bearing_init(void);
+void bearing_shutdown(void);
+#endif
 int unittest_stream_compressions(void);
 int uuid_unittest(void);
 int progress_unittest(void);
@@ -966,6 +970,12 @@ int netdata_main(int argc, char **argv) {
     delta_startup_time("replication");
 
     replication_initialize();
+
+    // ----------------------------------------------------------------------------------------------------------------
+#ifdef HAVE_BEARING
+    delta_startup_time("bearing");
+    bearing_init();
+#endif
 
     // ----------------------------------------------------------------------------------------------------------------
     delta_startup_time("inflight functions");

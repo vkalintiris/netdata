@@ -193,8 +193,10 @@ mark_as_advanced(FORCE_LEGACY_LIBBPF)
 
 cmake_dependent_option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" False "ENABLE_PLUGIN_SYSTEMD_JOURNAL" False)
 
+option(ENABLE_BEARING "Enable the bearing in-process Rust component" False)
+
 # Setup Rust/Corrosion for plugins that need it
-if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL)
+if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_BEARING)
     include(FetchContent)
     FetchContent_Declare(
         Corrosion
@@ -218,6 +220,9 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL)
     set(_WORKSPACE_CRATES "")
     if(ENABLE_PLUGIN_OTEL)
         list(APPEND _WORKSPACE_CRATES otel-plugin)
+    endif()
+    if(ENABLE_BEARING)
+        list(APPEND _WORKSPACE_CRATES bearing bearing-child-sim)
     endif()
     if(_WORKSPACE_CRATES)
         corrosion_import_crate(MANIFEST_PATH src/crates/Cargo.toml
@@ -1347,6 +1352,7 @@ set(API_PLUGIN_FILES
         src/web/api/v2/api_v2_functions.c
         src/web/api/v2/api_v2_alerts.c
         src/web/api/v2/api_v2_alert_transitions.c
+        src/web/api/v2/api_v2_bearing.c
         src/web/api/v2/api_v2_bearer.c
         src/web/api/v2/api_v2_calls.h
         src/web/api/v2/api_v2_data.c
@@ -3119,6 +3125,7 @@ target_include_directories(netdata PRIVATE
         "${CMAKE_BINARY_DIR}/src/aclk/aclk-schemas"
         "$<$<BOOL:${ENABLE_EXPORTER_MONGODB}>:${MONGOC_INCLUDE_DIRS}>"
         "$<$<BOOL:${ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE}>:${SNAPPY_INCLUDE_DIRS}>"
+        "$<$<BOOL:${ENABLE_BEARING}>:${CMAKE_SOURCE_DIR}/src/crates/bearing>"
 )
 
 target_link_libraries(netdata PRIVATE
@@ -3133,7 +3140,12 @@ target_link_libraries(netdata PRIVATE
         "$<$<BOOL:${ENABLE_WEBRTC}>:LibDataChannel::LibDataChannelStatic>"
         "$<$<BOOL:${CURL_FOUND}>:PkgConfig::CURL>"
         "$<$<BOOL:${OS_WINDOWS}>:odbc32;setupapi>"
+        "$<$<BOOL:${ENABLE_BEARING}>:bearing>"
 )
+
+if(ENABLE_BEARING)
+    target_compile_definitions(netdata PRIVATE HAVE_BEARING)
+endif()
 
 netdata_add_protobuf(netdata)
 

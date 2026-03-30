@@ -1,0 +1,8 @@
+[package]
+name = "bearing-child-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }

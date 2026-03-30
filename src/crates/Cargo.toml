@@ -41,6 +41,10 @@ members = [
     "github-otel-bridge",
     "tlc-otel-bridge",
 
+    # In-process component (FFI to C)
+    "bearing",
+    "bearing-child-sim",
+
     # IPC / RPC
     "ferryboat",
 

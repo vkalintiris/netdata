@@ -5,6 +5,10 @@
 #include "web/mcp/adapters/mcp-http.h"
 #include "web/mcp/adapters/mcp-sse.h"
 
+#ifdef HAVE_BEARING
+int bearing_accept_connection(struct web_client *w);
+#endif
+
 // this is an async I/O implementation of the web server request parser
 // it is used by all netdata web servers
 
@@ -656,6 +660,10 @@ static inline char *web_client_valid_method(struct web_client *w, char *s) {
         }
 
         w->mode = HTTP_REQUEST_MODE_STREAM;
+    }
+    else if(!strncmp(s, "BEARING ", 8)) {
+        s = &s[8];
+        w->mode = HTTP_REQUEST_MODE_BEARING;
     }
     else {
         s = NULL;
@@ -1352,6 +1360,22 @@ void web_client_process_request_from_web_server(struct web_client *w) {
                         w, (char *)buffer_tostring(w->url_query_string_decoded));
                     return;
                 
+                case HTTP_REQUEST_MODE_BEARING:
+#ifdef HAVE_BEARING
+                    if(unlikely(!http_can_access_stream(w))) {
+                        web_client_permission_denied_acl(w);
+                        return;
+                    }
+
+                    w->response.code = bearing_accept_connection(w);
+                    return;
+#else
+                    buffer_flush(w->response.data);
+                    buffer_strcat(w->response.data, "bearing not enabled");
+                    w->response.code = HTTP_RESP_SERVICE_UNAVAILABLE;
+                    return;
+#endif
+
                 case HTTP_REQUEST_MODE_WEBSOCKET:
                     if(unlikely(!http_can_access_dashboard(w))) {
                         web_client_permission_denied_acl(w);

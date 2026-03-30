@@ -157,6 +157,16 @@ static struct web_api_command api_commands_v2[] = {
         .callback = api_v2_bearer_get_token,
         .allow_subpaths = 0
     },
+
+    // bearing - in-process Rust component
+    {
+        .api = "bearing",
+        .hash = 0,
+        .acl = HTTP_ACL_NOCHECK,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = api_v2_bearing,
+        .allow_subpaths = 1
+    },
 #endif
 
     {

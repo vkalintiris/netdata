@@ -10,6 +10,7 @@ ENUM_STR_MAP_DEFINE(HTTP_REQUEST_MODE) =
         { .name = "PUT", .id = HTTP_REQUEST_MODE_PUT },
         { .name = "DELETE", .id = HTTP_REQUEST_MODE_DELETE },
         { .name = "STREAM", .id = HTTP_REQUEST_MODE_STREAM },
+        { .name = "BEARING", .id = HTTP_REQUEST_MODE_BEARING },
 
         // terminator
         { .name = NULL, .id = 0 }
