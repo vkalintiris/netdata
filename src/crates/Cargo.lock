@@ -492,15 +492,35 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 name = "bearing"
 version = "0.1.3"
 dependencies = [
+ "bearing-proto",
  "cbindgen",
+ "http",
+ "hyper-util",
  "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
 ]
 
 [[package]]
 name = "bearing-child-sim"
 version = "0.1.3"
 dependencies = [
+ "bearing-proto",
+ "hyper-util",
  "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
+name = "bearing-proto"
+version = "0.1.3"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

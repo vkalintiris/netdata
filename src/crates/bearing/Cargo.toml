@@ -6,6 +6,12 @@ rust-version.workspace = true
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio-stream = "0.1"
+tonic = { workspace = true }
+bearing-proto = { path = "../bearing-proto" }
+hyper-util = "0.1"
+http = "1"
+tower = "0.5"
 
 [build-dependencies]
 cbindgen = "0.28.0"

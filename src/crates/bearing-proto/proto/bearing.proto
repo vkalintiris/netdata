@@ -1,0 +1,27 @@
+syntax = "proto3";
+package bearing.v1;
+
+service BearingQuery {
+  // Simple echo for testing connectivity.
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  // Query logs. Server-streaming so the child can send partial results.
+  rpc QueryLogs(QueryLogsRequest) returns (stream QueryLogsResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string name = 1;
+}
+
+message QueryLogsRequest {
+  uint64 id = 1;
+  string query = 2;
+}
+
+message QueryLogsResponse {
+  uint64 query_id = 1;
+  bool is_partial = 2;
+  string data = 3;
+}

@@ -44,6 +44,7 @@ members = [
     # In-process component (FFI to C)
     "bearing",
     "bearing-child-sim",
+    "bearing-proto",
 
     # IPC / RPC
     "ferryboat",

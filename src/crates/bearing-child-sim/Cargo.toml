@@ -6,3 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+tokio-stream = "0.1"
+tonic = { workspace = true }
+bearing-proto = { path = "../bearing-proto" }
+hyper-util = "0.1"

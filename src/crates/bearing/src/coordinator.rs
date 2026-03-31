@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use bearing_proto::bearing_query_client::BearingQueryClient;
+use bearing_proto::{PingRequest, QueryLogsRequest};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tonic::transport::{Channel, Endpoint, Uri};
+use tower::service_fn;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -20,53 +22,38 @@ pub struct QueryRequest {
     pub reply: oneshot::Sender<String>,
 }
 
-type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<String>>>>;
-type ChildMap = Arc<Mutex<HashMap<u64, Child>>>;
-
 struct Child {
     name: String,
-    writer: tokio::io::WriteHalf<TcpStream>,
+    client: BearingQueryClient<Channel>,
 }
 
-/// Runs the coordinator loop. Receives new connection fds from `fd_rx`
-/// and query requests from `request_rx`.
+type ChildMap = Arc<Mutex<HashMap<u64, Child>>>;
+
+/// Runs the coordinator loop.
 pub async fn run(
     mut fd_rx: mpsc::Receiver<RawFd>,
     mut request_rx: mpsc::Receiver<QueryRequest>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
-    eprintln!("bearing: coordinator started");
+    eprintln!("bearing: coordinator started (gRPC mode)");
 
     let children: ChildMap = Arc::new(Mutex::new(HashMap::new()));
-    let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         tokio::select! {
-            // A new child fd was handed to us from the C web server.
             Some(fd) = fd_rx.recv() => {
-                let stream = unsafe {
-                    let std_stream = std::net::TcpStream::from_raw_fd(fd);
-                    std_stream.set_nonblocking(true).ok();
-                    TcpStream::from_std(std_stream)
-                };
-                match stream {
-                    Ok(stream) => {
-                        let child_id = next_id();
-                        let children = children.clone();
-                        let pending = pending.clone();
-                        tokio::spawn(handle_child(child_id, stream, children, pending));
+                let child_id = next_id();
+                let children = children.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = register_child(child_id, fd, children).await {
+                        eprintln!("bearing: failed to register child {child_id}: {e}");
                     }
-                    Err(e) => {
-                        eprintln!("bearing: failed to wrap fd: {e}");
-                    }
-                }
+                });
             }
 
-            // Process a query from FFI.
             Some(req) = request_rx.recv() => {
                 let children = children.clone();
-                let pending = pending.clone();
-                tokio::spawn(handle_query(req, children, pending));
+                tokio::spawn(handle_query(req, children));
             }
 
             _ = &mut shutdown_rx => {
@@ -77,106 +64,91 @@ pub async fn run(
     }
 }
 
-async fn handle_child(
+/// Take a raw fd, send the welcome line, create a tonic gRPC client,
+/// ping the child to learn its name, and register it.
+async fn register_child(
     child_id: u64,
-    stream: TcpStream,
+    fd: RawFd,
     children: ChildMap,
-    pending: PendingMap,
-) {
-    let (read_half, write_half) = tokio::io::split(stream);
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    std_stream.set_nonblocking(true)?;
+    let stream = TcpStream::from_std(std_stream)?;
 
-    // Send welcome.
-    let mut writer = write_half;
-    if writer.write_all(b"BEARING OK\n").await.is_err() {
-        return;
-    }
+    // Create a tonic client channel from the taken-over socket.
+    // No welcome message — both sides go straight to HTTP/2.
+    // The closure must be FnMut, so we use Option::take to move
+    // the stream out on the first (and only) call.
+    let mut stream_opt = Some(stream);
+    let channel = Endpoint::try_from("http://[::]:50051")?
+        .connect_with_connector(service_fn(move |_: Uri| {
+            let stream = stream_opt.take().expect("connector called more than once");
+            let io = hyper_util::rt::TokioIo::new(stream);
+            async move { Ok::<_, std::io::Error>(io) }
+        }))
+        .await?;
 
-    // Read READY <name>.
-    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
-        return;
-    }
-    let child_name = line
-        .trim()
-        .strip_prefix("READY ")
-        .unwrap_or(&format!("child-{child_id}"))
-        .to_string();
+    let mut client = BearingQueryClient::new(channel);
 
-    eprintln!("bearing: child connected: {child_name}");
+    // Ping to learn the child's name.
+    let ping_resp = client.ping(PingRequest {}).await?;
+    let name = ping_resp.into_inner().name;
 
-    children.lock().await.insert(
-        child_id,
-        Child {
-            name: child_name,
-            writer,
-        },
-    );
+    eprintln!("bearing: child {child_id} registered: {name}");
 
-    // Read responses.
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("RESULT ") {
-            if let Some((id_str, data)) = rest.split_once(' ') {
-                if let Ok(qid) = id_str.parse::<u64>() {
-                    if let Some(tx) = pending.lock().await.remove(&qid) {
-                        let _ = tx.send(data.to_string());
-                    }
-                }
-            }
-        }
-    }
+    children.lock().await.insert(child_id, Child { name, client });
 
-    eprintln!("bearing: child {child_id} disconnected");
-    children.lock().await.remove(&child_id);
+    Ok(())
 }
 
-async fn handle_query(req: QueryRequest, children: ChildMap, pending: PendingMap) {
-    let mut ch = children.lock().await;
+async fn handle_query(req: QueryRequest, children: ChildMap) {
+    let ch = children.lock().await;
     let children_count = ch.len();
 
     if children_count == 0 {
-        let resp = r#"{"children":0,"results":[]}"#.to_string();
-        let _ = req.reply.send(resp);
+        let _ = req.reply.send(r#"{"children":0,"results":[]}"#.to_string());
         return;
     }
 
-    let mut waiters = Vec::new();
-    let mut names = Vec::new();
-    let mut disconnected = Vec::new();
-
-    for (&cid, child) in ch.iter_mut() {
-        let qid = next_id();
-        let msg = format!("QUERY {qid} {}\n", req.query);
-
-        match child.writer.write_all(msg.as_bytes()).await {
-            Ok(()) => {
-                let (tx, rx) = oneshot::channel();
-                pending.lock().await.insert(qid, tx);
-                waiters.push(rx);
-                names.push(child.name.clone());
-            }
-            Err(_) => {
-                disconnected.push(cid);
-            }
-        }
-    }
-
-    for cid in disconnected {
-        ch.remove(&cid);
+    // Snapshot: clone clients and names so we can drop the lock before awaiting.
+    let mut work: Vec<(String, BearingQueryClient<Channel>)> = Vec::new();
+    for child in ch.values() {
+        work.push((child.name.clone(), child.client.clone()));
     }
     drop(ch);
 
+    // Fan out query to all children.
     let mut results = Vec::new();
-    for (rx, name) in waiters.into_iter().zip(names) {
-        match tokio::time::timeout(Duration::from_secs(5), rx).await {
-            Ok(Ok(data)) => results.push(format!(r#"{{"child":"{name}","data":{data}}}"#)),
-            _ => results.push(format!(r#"{{"child":"{name}","data":null}}"#)),
+    for (name, mut client) in work {
+        let query_id = next_id();
+        let request = QueryLogsRequest {
+            id: query_id,
+            query: req.query.clone(),
+        };
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let response = client.query_logs(request).await?;
+            let mut stream = response.into_inner();
+            let mut data_parts = Vec::new();
+            while let Some(msg) = stream.message().await? {
+                data_parts.push(msg.data);
+            }
+            Ok::<_, tonic::Status>(data_parts)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(data_parts)) => {
+                let data = if data_parts.len() == 1 {
+                    data_parts.into_iter().next().unwrap()
+                } else {
+                    format!("[{}]", data_parts.join(","))
+                };
+                results.push(format!(r#"{{"child":"{name}","data":{data}}}"#));
+            }
+            _ => {
+                results.push(format!(r#"{{"child":"{name}","data":null}}"#));
+            }
         }
     }
 
