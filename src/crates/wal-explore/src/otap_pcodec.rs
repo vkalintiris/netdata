@@ -30,8 +30,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let zstd_size = compressed_raw.len();
 
         // Decode the original entries.
-        let decompressed =
-            zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
+        let decompressed = zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
         let (entries, _): (Vec<Vec<FileId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
@@ -61,8 +60,8 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let config = pco::ChunkConfig::default().with_compression_level(8);
         let lengths_pco = pco::standalone::simple_compress(&lengths, &config)
             .map_err(|e| format!("pco lengths: {e}"))?;
-        let ids_pco = pco::standalone::simple_compress(&ids, &config)
-            .map_err(|e| format!("pco ids: {e}"))?;
+        let ids_pco =
+            pco::standalone::simple_compress(&ids, &config).map_err(|e| format!("pco ids: {e}"))?;
         let pco_size = lengths_pco.len() + ids_pco.len();
 
         let namespace = if stream.namespace.is_empty() {
@@ -83,9 +82,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             0.0
         };
 
-        println!(
-            "STREAM[{si}] {namespace}/{name}",
-        );
+        println!("STREAM[{si}] {namespace}/{name}",);
         println!(
             "  logs: {num_logs}  ids: {}  ids/log: {:.1}",
             ids.len(),

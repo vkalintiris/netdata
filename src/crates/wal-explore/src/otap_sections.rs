@@ -26,14 +26,23 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         total_sections += raw.len();
         let mut sorted_fields = fields.clone();
         sorted_fields.sort_by(|a, b| a.cardinality.cmp(&b.cardinality));
-        let max_name = sorted_fields.iter().map(|f| f.name.len()).max().unwrap_or(0);
+        let max_name = sorted_fields
+            .iter()
+            .map(|f| f.name.len())
+            .max()
+            .unwrap_or(0);
         for f in &sorted_fields {
             let tier = match f.tier {
                 FieldTier::Low => "low",
                 FieldTier::Mid => "mid",
                 FieldTier::High => "high",
             };
-            println!("  {:<width$}  {:>6}  {tier}", f.name, f.cardinality, width = max_name);
+            println!(
+                "  {:<width$}  {:>6}  {tier}",
+                f.name,
+                f.cardinality,
+                width = max_name
+            );
         }
     }
 
@@ -46,10 +55,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Secondary chunks: field chunks (mid/high), then stream chunks
-    let num_field_chunks = fields
-        .iter()
-        .filter(|f| f.tier != FieldTier::Low)
-        .count();
+    let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
 
     let mut field_total = 0usize;
     let mut mid_total = 0usize;
@@ -107,11 +113,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     print_section("field chunks total", field_total, file_size);
     print_section("stream chunks total", stream_total, file_size);
     print_section("sections total", total_sections, file_size);
-    println!(
-        "{:<40} {:>10}",
-        "file size",
-        format_size(file_size),
-    );
+    println!("{:<40} {:>10}", "file size", format_size(file_size),);
     let overhead = file_size.saturating_sub(total_sections);
     print_section("overhead (header + TOC)", overhead, file_size);
 
@@ -124,12 +126,7 @@ fn print_section(name: &str, size: usize, total: usize) {
     } else {
         0.0
     };
-    println!(
-        "{:<40} {:>10}  ({:5.1}%)",
-        name,
-        format_size(size),
-        pct,
-    );
+    println!("{:<40} {:>10}  ({:5.1}%)", name, format_size(size), pct,);
 }
 
 fn format_size(bytes: usize) -> String {

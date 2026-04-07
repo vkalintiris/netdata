@@ -31,8 +31,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         let original_size = compressed_raw.len();
 
         // Decode the original entries.
-        let decompressed =
-            zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
+        let decompressed = zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
         let (entries, _): (Vec<Vec<FileId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
@@ -68,10 +67,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             entries.len(),
             num_batches,
         );
-        println!(
-            "  single blob: {:>10}",
-            format_size(original_size),
-        );
+        println!("  single blob: {:>10}", format_size(original_size),);
         println!(
             "  {} batches:  {:>10}  overhead: {:>10} (+{:.1}%)",
             num_batches,

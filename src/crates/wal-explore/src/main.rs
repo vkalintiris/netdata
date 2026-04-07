@@ -2,15 +2,15 @@ mod otap_batch_ref;
 mod otap_batch_split;
 mod otap_compact;
 mod otap_dump;
-mod otap_no_bitmaps;
-mod otap_pcodec;
-mod otap_strip_keys;
 mod otap_dump_index;
 mod otap_frame;
 mod otap_index;
+mod otap_no_bitmaps;
+mod otap_pcodec;
 mod otap_read;
 mod otap_schema;
 mod otap_sections;
+mod otap_strip_keys;
 mod process_frame;
 
 use std::path::PathBuf;

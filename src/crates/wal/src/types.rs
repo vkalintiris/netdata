@@ -290,7 +290,11 @@ mod tests {
     fn ns_hash_with_namespace_only() {
         let h = compute_ns_hash(Some("prod"), None);
         assert_ne!(h, 0);
-        assert_eq!(h, compute_ns_hash(Some("prod"), None), "must be deterministic");
+        assert_eq!(
+            h,
+            compute_ns_hash(Some("prod"), None),
+            "must be deterministic"
+        );
     }
 
     #[test]

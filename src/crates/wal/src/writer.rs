@@ -83,12 +83,7 @@ impl WalWriter {
     ///
     /// Used when multiple writers share a directory and need a globally
     /// unique, monotonically increasing sequence number.
-    pub fn with_shared_seq(
-        dir: WalDir,
-        config: Config,
-        seq: Arc<AtomicU64>,
-        ns_hash: u64,
-    ) -> Self {
+    pub fn with_shared_seq(dir: WalDir, config: Config, seq: Arc<AtomicU64>, ns_hash: u64) -> Self {
         Self {
             dir,
             config,

@@ -50,20 +50,20 @@ use std::hash::Hasher;
 
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use otap_df_pdata::encode::encode_logs_otap_batch;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
 use prost::Message;
 use twox_hash::XxHash64;
 
-/// Encode an `ExportLogsServiceRequest` (from opentelemetry-proto) into
-/// Arrow IPC bytes via pdata.
+/// Encode logs from a vector of `ResourceLogs` into Arrow IPC bytes via pdata.
 ///
 /// Returns `(ipc_bytes, log_record_count)`.
-pub fn encode_logs_arrow(req: &mut ExportLogsServiceRequest) -> Result<(Vec<u8>, usize), String> {
+pub fn encode(mut resource_logs: Vec<ResourceLogs>) -> Result<(Vec<u8>, usize), String> {
     // Step 0: Normalize, flatten, and hash all attributes.
     let mut log_count = 0usize;
-    for rl in &mut req.resource_logs {
+    for rl in &mut resource_logs {
         for sl in &mut rl.scope_logs {
             for lr in &mut sl.log_records {
                 log_count += 1;
@@ -87,6 +87,7 @@ pub fn encode_logs_arrow(req: &mut ExportLogsServiceRequest) -> Result<(Vec<u8>,
     // upstream project is aware of the duplication:
     //   - https://github.com/open-telemetry/otel-arrow/issues/1848
     //   - https://github.com/open-telemetry/otel-arrow/issues/1340
+    let req = ExportLogsServiceRequest { resource_logs };
     let mut proto_bytes = Vec::with_capacity(req.encoded_len());
     req.encode(&mut proto_bytes)
         .map_err(|e| format!("proto encode: {e}"))?;

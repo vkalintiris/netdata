@@ -94,9 +94,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!(
         "{:<50} {:>8} bitmaps ({} singletons)",
-        "TOTAL",
-        total_bitmaps,
-        total_singleton_bitmaps,
+        "TOTAL", total_bitmaps, total_singleton_bitmaps,
     );
     println!(
         "{:<50} {:>10} original (compressed)",
@@ -120,11 +118,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         format_size(saved),
         pct,
     );
-    println!(
-        "{:<50} {:>10} file size",
-        "",
-        format_size(file_size),
-    );
+    println!("{:<50} {:>10} file size", "", format_size(file_size),);
     let file_pct = if file_size > 0 {
         saved as f64 / file_size as f64 * 100.0
     } else {
@@ -145,8 +139,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 fn repack_fst_chunk(
     compressed: &[u8],
 ) -> Result<(usize, usize, usize, usize), Box<dyn std::error::Error>> {
-    let decompressed =
-        zstd::decode_all(compressed).map_err(|e| format!("zstd decompress: {e}"))?;
+    let decompressed = zstd::decode_all(compressed).map_err(|e| format!("zstd decompress: {e}"))?;
     let (fst, _): (fst_index::FstIndex<BitmapValue>, _) =
         bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
@@ -183,8 +176,7 @@ fn repack_fst_chunk(
 fn repack_high_chunk(
     compressed: &[u8],
 ) -> Result<(usize, usize, usize, usize), Box<dyn std::error::Error>> {
-    let decompressed =
-        zstd::decode_all(compressed).map_err(|e| format!("zstd decompress: {e}"))?;
+    let decompressed = zstd::decode_all(compressed).map_err(|e| format!("zstd decompress: {e}"))?;
     let (entries, _): (Vec<(String, BitmapValue)>, _) =
         bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
@@ -199,10 +191,8 @@ fn repack_high_chunk(
         })
         .collect();
 
-    let orig_raw =
-        bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
-    let compact_raw =
-        bincode::serde::encode_to_vec(&compact_entries, bincode::config::standard())?;
+    let orig_raw = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
+    let compact_raw = bincode::serde::encode_to_vec(&compact_entries, bincode::config::standard())?;
 
     let orig_compressed = zstd::encode_all(&orig_raw[..], 1)?;
     let compact_compressed = zstd::encode_all(&compact_raw[..], 1)?;

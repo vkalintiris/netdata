@@ -33,13 +33,9 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 let raw = sfst.chunk_raw(chunk_idx)?;
                 let original_size = raw.len();
 
-                let decompressed =
-                    zstd::decode_all(raw).map_err(|e| format!("zstd: {e}"))?;
+                let decompressed = zstd::decode_all(raw).map_err(|e| format!("zstd: {e}"))?;
                 let (entries, _): (Vec<(String, BitmapValue)>, _) =
-                    bincode::serde::decode_from_slice(
-                        &decompressed,
-                        bincode::config::standard(),
-                    )?;
+                    bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
                 // Strip field name prefix: "field.name=value" → "value"
                 let prefix = format!("{}=", field.name);
@@ -51,10 +47,8 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect();
 
-                let stripped_raw = bincode::serde::encode_to_vec(
-                    &stripped,
-                    bincode::config::standard(),
-                )?;
+                let stripped_raw =
+                    bincode::serde::encode_to_vec(&stripped, bincode::config::standard())?;
                 let stripped_compressed = zstd::encode_all(&stripped_raw[..], 1)?;
                 let stripped_size = stripped_compressed.len();
 

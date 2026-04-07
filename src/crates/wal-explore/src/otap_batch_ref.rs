@@ -57,13 +57,9 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 let raw = sfst.chunk_raw(chunk_idx)?;
                 let original_size = raw.len();
 
-                let decompressed =
-                    zstd::decode_all(raw).map_err(|e| format!("zstd: {e}"))?;
+                let decompressed = zstd::decode_all(raw).map_err(|e| format!("zstd: {e}"))?;
                 let (entries, _): (Vec<(String, BitmapValue)>, _) =
-                    bincode::serde::decode_from_slice(
-                        &decompressed,
-                        bincode::config::standard(),
-                    )?;
+                    bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
                 let prefix = format!("{}=", field.name);
                 let mut single_batch_count = 0usize;
@@ -78,7 +74,10 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                             let batch = (pos / BATCH_SIZE) as u8;
                             match first_batch {
                                 None => first_batch = Some(batch),
-                                Some(b) if b != batch => { multi = true; break; }
+                                Some(b) if b != batch => {
+                                    multi = true;
+                                    break;
+                                }
                                 _ => {}
                             }
                         }
@@ -92,10 +91,8 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect();
 
-                let new_raw = bincode::serde::encode_to_vec(
-                    &converted,
-                    bincode::config::standard(),
-                )?;
+                let new_raw =
+                    bincode::serde::encode_to_vec(&converted, bincode::config::standard())?;
                 let new_compressed = zstd::encode_all(&new_raw[..], 1)?;
                 let new_size = new_compressed.len();
 
