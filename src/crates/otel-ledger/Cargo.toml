@@ -15,6 +15,7 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 bridge = { path = "../netdata-plugin/bridge" }
 ferryboat = { workspace = true }
+file-registry = { workspace = true }
 journal-common = { workspace = true }
 log-index = { workspace = true }
 netdata-plugin-types = { path = "../netdata-plugin/types" }

@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use tonic::{Request, Response, Status};
 use wal::WalWriterMap;
 
+use crate::arrow_bridge;
 use crate::ledger_sender::LedgerSender;
 
 /// Extract `service.namespace` and `service.name` from a `ResourceLogs`
@@ -78,13 +79,13 @@ impl LogsService for NetdataLogsService {
         let mut wal = self.wal.lock().unwrap();
 
         for (ns_hash, resource_logs) in groups {
-            let (ipc_bytes, count) = crate::arrow_bridge::encode(resource_logs).map_err(|e| {
+            let (data, count) = arrow_bridge::encode(resource_logs).map_err(|e| {
                 tracing::error!(%e, "failed to encode Arrow");
                 Status::internal("Arrow encode error")
             })?;
 
             let writer = wal.get_or_create(ns_hash);
-            writer.write_frame(&ipc_bytes, count).map_err(|e| {
+            writer.write_frame(&data, count).map_err(|e| {
                 tracing::error!(%e, "failed to write WAL entry");
                 Status::internal("WAL write error")
             })?;

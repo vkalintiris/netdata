@@ -64,7 +64,7 @@ impl fmt::Display for ByteSize {
 
 /// Compute the namespace hash for a `(service.namespace, service.name)` pair.
 ///
-/// - Both absent → `0` (sentinel: "no service attribution").
+/// - Both absent -> `0` (sentinel: "no service attribution").
 /// - Otherwise, feed each present field into an xxhash64 (seed 0) hasher
 ///   as `"service.namespace="` + value and/or `"service.name="` + value.
 /// - If the resulting hash is `0`, remap to `u64::MAX` so that the sentinel
@@ -94,7 +94,7 @@ pub fn compute_ns_hash(namespace: Option<&str>, name: Option<&str>) -> u64 {
 // FileId
 // ---------------------------------------------------------------------------
 
-/// Uniquely identifies a WAL file across machines, boots, and sequences.
+/// Uniquely identifies a file across machines, boots, and sequences.
 ///
 /// The filename format is: `<machine_id>-<boot_id>-<seq:010>-<ns_hash:016x>.<ext>`
 /// where machine_id and boot_id are 32-character lowercase hex (no hyphens),

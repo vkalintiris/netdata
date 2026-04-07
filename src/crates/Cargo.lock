@@ -1209,6 +1209,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-registry"
+version = "0.1.3"
+dependencies = [
+ "serde",
+ "tempfile",
+ "tracing",
+ "twox-hash",
+ "uuid",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3060,6 +3071,7 @@ dependencies = [
  "arrow",
  "bridge",
  "ferryboat",
+ "file-registry",
  "flatten_otel",
  "journal-common",
  "netdata-plugin-types",
@@ -3086,6 +3098,7 @@ dependencies = [
  "anyhow",
  "bridge",
  "ferryboat",
+ "file-registry",
  "journal-common",
  "log-index",
  "netdata-plugin-types",
@@ -5116,13 +5129,13 @@ name = "wal"
 version = "0.1.3"
 dependencies = [
  "crc32fast",
+ "file-registry",
  "lz4_flex",
  "nix",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
- "twox-hash",
  "uuid",
 ]
 

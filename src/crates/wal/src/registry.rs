@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
+
+use file_registry::{FileDir, FileRegistry};
+use uuid::Uuid;
 
 use crate::format::{HEADER_SIZE, WalEvent};
-use crate::types::{ByteSize, FileId, TimestampNs};
-use crate::waldir::WalDir;
+use crate::{ByteSize, FileId, TimestampNs};
 use crate::{Error, Result};
+
+const WAL_EXT: &str = "wal";
 
 /// Lifecycle status of a WAL file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,43 +21,40 @@ pub enum WalFileStatus {
 
 /// A WAL file tracked by the registry.
 #[derive(Debug, Clone)]
-pub struct WalFileEntry {
+pub struct WalFile {
     pub id: FileId,
     pub status: WalFileStatus,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
 }
 
-/// An ordered collection of WAL files.
+/// An ordered collection of WAL files with machine/boot identity.
 ///
 /// Files are keyed by sequence number, which provides chronological ordering.
-/// Path derivation is delegated to the owned [`WalDir`].
+/// Used by both the writer (for file creation) and the ledger (for tracking).
 pub struct WalRegistry {
-    dir: WalDir,
-    files: BTreeMap<u64, WalFileEntry>,
+    machine_id: Uuid,
+    boot_id: Uuid,
+    files: FileRegistry<WalFile>,
 }
 
 impl WalRegistry {
+    pub fn new(path: &Path, machine_id: Uuid, boot_id: Uuid) -> Self {
+        Self {
+            machine_id,
+            boot_id,
+            files: FileRegistry::new(FileDir::new(path, WAL_EXT)),
+        }
+    }
+
     /// Recovers registry state by scanning the directory and reading file headers.
-    pub fn recover(dir: WalDir) -> Result<Self> {
-        let mut registry = Self {
-            dir,
-            files: BTreeMap::new(),
-        };
+    pub fn recover(path: &Path, machine_id: Uuid, boot_id: Uuid) -> Result<Self> {
+        let mut registry = Self::new(path, machine_id, boot_id);
 
-        let entries = match fs::read_dir(registry.dir.path()) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(registry),
-            Err(e) => return Err(e.into()),
-        };
+        let entries = registry.files.dir().scan()?;
 
-        for dir_entry in entries.flatten() {
-            let path = dir_entry.path();
-
-            let Some(id) = FileId::parse(&path) else {
-                tracing::warn!("skipping file with unparseable name: {}", path.display());
-                continue;
-            };
+        for (id, meta) in entries {
+            let path = registry.files.file_path(id);
 
             let header = match read_header(&path) {
                 Ok(h) => h,
@@ -63,11 +64,11 @@ impl WalRegistry {
                 }
             };
 
-            let size = ByteSize(fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
+            let size = ByteSize(meta.len());
 
             registry.files.insert(
                 id.seq,
-                WalFileEntry {
+                WalFile {
                     id,
                     status: WalFileStatus::Archived,
                     created_at_ns: TimestampNs(header.created_at),
@@ -79,20 +80,45 @@ impl WalRegistry {
         Ok(registry)
     }
 
-    pub fn dir(&self) -> &WalDir {
-        &self.dir
+    pub fn machine_id(&self) -> Uuid {
+        self.machine_id
+    }
+
+    pub fn boot_id(&self) -> Uuid {
+        self.boot_id
+    }
+
+    pub fn path(&self) -> &Path {
+        self.files.dir().path()
+    }
+
+    /// Create a [`FileId`] stamped with this registry's identity.
+    pub fn file_id(&self, seq: u64, ns_hash: u64) -> FileId {
+        FileId::new(self.machine_id, self.boot_id, seq, ns_hash)
+    }
+
+    /// Derive the on-disk path for a WAL file.
+    pub fn file_path(&self, id: FileId) -> PathBuf {
+        debug_assert_eq!(id.machine_id, self.machine_id, "FileId from wrong machine");
+        debug_assert_eq!(id.boot_id, self.boot_id, "FileId from wrong boot");
+        self.files.file_path(id)
+    }
+
+    /// Scan the directory for the highest existing sequence number.
+    pub fn scan_max_sequence(&self) -> Result<u64> {
+        Ok(self.files.dir().scan_max_sequence()?)
     }
 
     /// Applies a `WalEvent` from the ingester.
     pub fn apply_event(&mut self, event: &WalEvent) -> Result<()> {
         match event {
             WalEvent::FileCreated { id, created_at_ns } => {
-                if self.files.contains_key(&id.seq) {
+                if self.files.contains(id.seq) {
                     return Err(Error::DuplicateSequence(id.seq));
                 }
                 self.files.insert(
                     id.seq,
-                    WalFileEntry {
+                    WalFile {
                         id: *id,
                         status: WalFileStatus::Active,
                         created_at_ns: *created_at_ns,
@@ -105,7 +131,7 @@ impl WalRegistry {
             WalEvent::FileCompleted { id, size, .. } => {
                 let entry = self
                     .files
-                    .get_mut(&id.seq)
+                    .get_mut(id.seq)
                     .ok_or(Error::UnknownSequence(id.seq))?;
                 entry.status = WalFileStatus::Archived;
                 entry.size = *size;
@@ -115,12 +141,12 @@ impl WalRegistry {
     }
 
     /// Removes a file by sequence number.
-    pub fn remove_by_seq(&mut self, seq: u64) -> Option<WalFileEntry> {
-        self.files.remove(&seq)
+    pub fn remove_by_seq(&mut self, seq: u64) -> Option<WalFile> {
+        self.files.remove(seq)
     }
 
     /// Returns all archived files, ordered by sequence number.
-    pub fn archived_files(&self) -> impl Iterator<Item = &WalFileEntry> {
+    pub fn archived_files(&self) -> impl Iterator<Item = &WalFile> {
         self.files
             .values()
             .filter(|f| f.status == WalFileStatus::Archived)
@@ -146,21 +172,26 @@ fn read_header(path: &std::path::Path) -> Result<crate::format::FileHeader> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::format::WalEvent;
     use crate::{Config, RotationConfig, WalWriter};
 
-    fn test_wal_dir(dir: &std::path::Path) -> WalDir {
-        WalDir::new(
-            dir,
-            uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap(),
-            uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap(),
-        )
+    fn test_machine_id() -> Uuid {
+        Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
     }
 
-    fn test_file_id(dir: &std::path::Path, seq: u64) -> FileId {
-        let d = test_wal_dir(dir);
-        FileId::new(d.machine_id(), d.boot_id(), seq, 0)
+    fn test_boot_id() -> Uuid {
+        Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
+    }
+
+    fn test_registry(dir: &std::path::Path) -> WalRegistry {
+        WalRegistry::new(dir, test_machine_id(), test_boot_id())
+    }
+
+    fn test_file_id(seq: u64) -> FileId {
+        FileId::new(test_machine_id(), test_boot_id(), seq, 0)
     }
 
     /// Helper: create a WalWriter, write entries, shutdown, and return all events.
@@ -175,8 +206,8 @@ mod tests {
             crc_enabled: false,
             compression_enabled: true,
         };
-        let wal_dir = test_wal_dir(dir);
-        let mut writer = WalWriter::new(wal_dir, config, 0).unwrap();
+        let registry = Arc::new(test_registry(dir));
+        let mut writer = WalWriter::new(registry, config, 0).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
@@ -193,7 +224,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10, 10]);
 
-        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        let mut registry =
+            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
         // recover finds all files as Archived; clear them to test apply_event from scratch
         for seq in [1u64, 2, 3] {
             registry.remove_by_seq(seq);
@@ -215,7 +247,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _ = write_wal_files(dir.path(), &[10, 10]);
 
-        let registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        let registry = WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.archived_files().count(), 2);
 
@@ -226,9 +258,10 @@ mod tests {
     #[test]
     fn remove_by_seq() {
         let dir = tempfile::tempdir().unwrap();
-        let events = write_wal_files(dir.path(), &[10, 10]);
+        let _events = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        let mut registry =
+            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
         assert_eq!(registry.len(), 2);
 
         let removed = registry.remove_by_seq(1).unwrap();
@@ -239,9 +272,10 @@ mod tests {
     #[test]
     fn active_then_archived() {
         let dir = tempfile::tempdir().unwrap();
-        let id = test_file_id(dir.path(), 1);
+        let id = test_file_id(1);
 
-        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        let mut registry =
+            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {
@@ -270,9 +304,10 @@ mod tests {
     #[test]
     fn duplicate_sequence_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let id = test_file_id(dir.path(), 1);
+        let id = test_file_id(1);
 
-        let mut registry = WalRegistry::recover(test_wal_dir(dir.path())).unwrap();
+        let mut registry =
+            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {

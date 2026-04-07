@@ -8,11 +8,12 @@ use anyhow::{Context, Result};
 use bridge::config::{LogsConfig, PluginConfig};
 use bridge::{IngestorRequest, IngestorResponse};
 use ferryboat::{Connection, Endpoint};
+use file_registry::ByteSize;
 use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
 use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use tokio::sync::RwLock;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use wal::{ByteSize, Config as WalConfig, RotationConfig, WalDir, WalWriterMap};
+use wal::{Config as WalConfig, RotationConfig, WalRegistry, WalWriterMap};
 
 mod aggregation;
 mod arrow_bridge;
@@ -256,7 +257,7 @@ fn create_logs_service(
     let machine_id = journal_common::load_machine_id().context("failed to load machine ID")?;
     let boot_id = journal_common::load_boot_id().context("failed to load boot ID")?;
 
-    let wal_dir = WalDir::new(wal_path, machine_id, boot_id);
+    let wal_registry = WalRegistry::new(wal_path, machine_id, boot_id);
 
     let writer_config = WalConfig {
         rotation: RotationConfig {
@@ -268,7 +269,7 @@ fn create_logs_service(
         compression_enabled: logs_config.wal.compression_enabled,
     };
 
-    let writer_map = WalWriterMap::new(wal_dir, writer_config)
+    let writer_map = WalWriterMap::new(wal_registry, writer_config)
         .with_context(|| format!("creating WAL writer map in {:?}", wal_path))?;
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);

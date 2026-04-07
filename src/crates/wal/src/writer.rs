@@ -12,8 +12,8 @@ use crate::format::{
     COMPRESSION_NONE, FLAG_CRC_ENABLED, FORMAT_VERSION, FRAME_ALIGNMENT, FRAME_HEADER_SIZE,
     FileHeader, HEADER_SIZE, WalEvent,
 };
-use crate::types::{ByteSize, FileId, TimestampNs};
-use crate::waldir::WalDir;
+use crate::registry::WalRegistry;
+use crate::{ByteSize, FileId, TimestampNs};
 
 struct ActiveFile {
     id: FileId,
@@ -49,7 +49,7 @@ impl SeqSource {
 }
 
 pub struct WalWriter {
-    dir: WalDir,
+    registry: Arc<WalRegistry>,
     config: Config,
     clock: MonotonicClock,
     active: Option<ActiveFile>,
@@ -64,12 +64,12 @@ impl WalWriter {
     /// Scans the directory to find the highest existing sequence number.
     /// For multi-writer setups, prefer [`with_shared_seq`] to avoid
     /// redundant directory scans.
-    pub fn new(dir: WalDir, config: Config, ns_hash: u64) -> Result<Self> {
-        std::fs::create_dir_all(dir.path())?;
-        let file_seq = dir.scan_max_sequence()?;
+    pub fn new(registry: Arc<WalRegistry>, config: Config, ns_hash: u64) -> Result<Self> {
+        std::fs::create_dir_all(registry.path())?;
+        let file_seq = registry.scan_max_sequence()?;
 
         Ok(Self {
-            dir,
+            registry,
             config,
             clock: MonotonicClock::new(),
             active: None,
@@ -83,9 +83,14 @@ impl WalWriter {
     ///
     /// Used when multiple writers share a directory and need a globally
     /// unique, monotonically increasing sequence number.
-    pub fn with_shared_seq(dir: WalDir, config: Config, seq: Arc<AtomicU64>, ns_hash: u64) -> Self {
+    pub fn with_shared_seq(
+        registry: Arc<WalRegistry>,
+        config: Config,
+        seq: Arc<AtomicU64>,
+        ns_hash: u64,
+    ) -> Self {
         Self {
-            dir,
+            registry,
             config,
             clock: MonotonicClock::new(),
             active: None,
@@ -191,13 +196,8 @@ impl WalWriter {
         }
 
         let file_seq = self.seq_source.next();
-        let id = FileId::new(
-            self.dir.machine_id(),
-            self.dir.boot_id(),
-            file_seq,
-            self.ns_hash,
-        );
-        let path = self.dir.wal_path(id);
+        let id = self.registry.file_id(file_seq, self.ns_hash);
+        let path = self.registry.file_path(id);
 
         let file = OpenOptions::new()
             .create_new(true)
@@ -222,7 +222,7 @@ impl WalWriter {
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
 
-        fsync_dir(self.dir.path())?;
+        fsync_dir(self.registry.path())?;
 
         self.pending_events
             .push(WalEvent::FileCreated { id, created_at_ns });
@@ -299,7 +299,7 @@ impl Config {
 /// monotonic sequence counter so that file sequence numbers are globally
 /// unique within the WAL directory.
 pub struct WalWriterMap {
-    dir: WalDir,
+    registry: Arc<WalRegistry>,
     config: Config,
     seq: Arc<AtomicU64>,
     writers: HashMap<u64, WalWriter>,
@@ -309,11 +309,12 @@ impl WalWriterMap {
     /// Create a new writer map.
     ///
     /// Scans the WAL directory once to seed the shared sequence counter.
-    pub fn new(dir: WalDir, config: Config) -> Result<Self> {
-        std::fs::create_dir_all(dir.path())?;
-        let max_seq = dir.scan_max_sequence()?;
+    pub fn new(registry: WalRegistry, config: Config) -> Result<Self> {
+        std::fs::create_dir_all(registry.path())?;
+        let max_seq = registry.scan_max_sequence()?;
+        let registry = Arc::new(registry);
         Ok(Self {
-            dir,
+            registry,
             config,
             seq: Arc::new(AtomicU64::new(max_seq)),
             writers: HashMap::new(),
@@ -324,7 +325,7 @@ impl WalWriterMap {
     pub fn get_or_create(&mut self, ns_hash: u64) -> &mut WalWriter {
         self.writers.entry(ns_hash).or_insert_with(|| {
             WalWriter::with_shared_seq(
-                self.dir.clone(),
+                Arc::clone(&self.registry),
                 self.config.clone(),
                 Arc::clone(&self.seq),
                 ns_hash,
@@ -370,17 +371,17 @@ mod tests {
     use super::*;
     use crate::Config;
 
-    fn test_dir(tmp: &std::path::Path) -> WalDir {
+    fn test_registry(tmp: &std::path::Path) -> WalRegistry {
         let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
         let boot_id = uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap();
-        WalDir::new(tmp, machine_id, boot_id)
+        WalRegistry::new(tmp, machine_id, boot_id)
     }
 
     #[test]
     fn writer_map_creates_separate_writers_per_ns_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = test_dir(tmp.path());
-        let mut map = WalWriterMap::new(dir, Config::default()).unwrap();
+        let registry = test_registry(tmp.path());
+        let mut map = WalWriterMap::new(registry, Config::default()).unwrap();
 
         let data = b"test payload";
 
@@ -401,7 +402,7 @@ mod tests {
         // Verify filenames carry distinct ns_hash suffixes.
         let mut hashes: Vec<u64> = wal_files
             .iter()
-            .map(|e| crate::types::FileId::parse(&e.path()).unwrap().ns_hash)
+            .map(|e| crate::FileId::parse(&e.path()).unwrap().ns_hash)
             .collect();
         hashes.sort();
         assert_eq!(hashes, vec![1, 2]);
@@ -410,8 +411,8 @@ mod tests {
     #[test]
     fn writer_map_shared_seq_is_globally_unique() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = test_dir(tmp.path());
-        let mut map = WalWriterMap::new(dir, Config::default()).unwrap();
+        let registry = test_registry(tmp.path());
+        let mut map = WalWriterMap::new(registry, Config::default()).unwrap();
 
         let data = b"test payload";
         map.get_or_create(10).write_frame(data, 1).unwrap();
@@ -422,7 +423,7 @@ mod tests {
         let mut seqs: Vec<u64> = std::fs::read_dir(tmp.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .map(|e| crate::types::FileId::parse(&e.path()).unwrap().seq)
+            .map(|e| crate::FileId::parse(&e.path()).unwrap().seq)
             .collect();
         seqs.sort();
         // Sequences must be distinct (1, 2) — not both 1.

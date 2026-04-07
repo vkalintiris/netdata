@@ -48,6 +48,7 @@ members = [
     "otel-ingestor",
 
     # WAL
+    "file-registry",
     "wal",
     "wal-explore",
     "log-index",
@@ -172,6 +173,7 @@ otel-ledger = { path = "otel-ledger" }
 # IPC / RPC crates
 ferryboat = { path = "ferryboat" }
 
+file-registry = { path = "file-registry" }
 wal = { path = "wal" }
 log-index = { path = "log-index" }
 

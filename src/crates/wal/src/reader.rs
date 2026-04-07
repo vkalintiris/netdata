@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
+use crate::TimestampNs;
 use crate::format::{COMPRESSION_LZ4, FRAME_ALIGNMENT, FRAME_HEADER_SIZE, FileHeader, HEADER_SIZE};
-use crate::types::TimestampNs;
 use crate::{Error, Result};
 
 /// Reject frames claiming to be larger than 64 MiB.

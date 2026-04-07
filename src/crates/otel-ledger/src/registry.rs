@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use wal::{ByteSize, FileId, TimestampNs, WalDir, WalRegistry};
+use file_registry::{ByteSize, FileDir, FileId, FileRegistry, TimestampNs};
+use wal::WalRegistry;
 
 const INDEX_EXT: &str = "sfst";
 
@@ -19,59 +20,34 @@ pub struct IndexFile {
 }
 
 pub struct IndexRegistry {
-    dir: PathBuf,
-    files: BTreeMap<u64, IndexFile>,
+    inner: FileRegistry<IndexFile>,
 }
 
 impl IndexRegistry {
     pub fn new(dir: PathBuf) -> Self {
         Self {
-            dir,
-            files: BTreeMap::new(),
+            inner: FileRegistry::new(FileDir::new(&dir, INDEX_EXT)),
         }
     }
 
     pub fn dir(&self) -> &Path {
-        &self.dir
+        self.inner.dir().path()
     }
 
     /// Derive the on-disk path for an index file from its FileId.
-    pub fn path(&self, id: FileId) -> PathBuf {
-        self.dir.join(id.to_filename(INDEX_EXT))
+    pub fn file_path(&self, id: FileId) -> PathBuf {
+        self.inner.file_path(id)
     }
 
     /// Scan the directory for `.sfst` files and reconstruct state.
     pub fn recover(dir: &Path) -> Self {
-        let mut registry = Self::new(dir.to_path_buf());
-
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return registry,
+        let file_dir = FileDir::new(dir, INDEX_EXT);
+        let scan_results = file_dir.scan().unwrap_or_default();
+        let mut registry = Self {
+            inner: FileRegistry::new(file_dir),
         };
 
-        for dir_entry in entries.flatten() {
-            let path = dir_entry.path();
-
-            if path.extension().and_then(|e| e.to_str()) != Some(INDEX_EXT) {
-                continue;
-            }
-
-            let Some(id) = FileId::parse(&path) else {
-                tracing::warn!(
-                    "skipping index file with unparseable name: {}",
-                    path.display()
-                );
-                continue;
-            };
-
-            let meta = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::error!("failed to stat index file {}: {e}", path.display());
-                    continue;
-                }
-            };
-
+        for (id, meta) in scan_results {
             let size = ByteSize(meta.len());
 
             // Use the file's modification time as an approximation for
@@ -85,7 +61,7 @@ impl IndexRegistry {
                     .as_nanos() as u64,
             );
 
-            registry.files.insert(
+            registry.inner.insert(
                 id.seq,
                 IndexFile {
                     id,
@@ -100,7 +76,7 @@ impl IndexRegistry {
     }
 
     pub fn track(&mut self, id: FileId, created_at_ns: TimestampNs, size: ByteSize) {
-        self.files.insert(
+        self.inner.insert(
             id.seq,
             IndexFile {
                 id,
@@ -112,31 +88,31 @@ impl IndexRegistry {
     }
 
     pub fn remove(&mut self, seq: u64) -> Option<IndexFile> {
-        self.files.remove(&seq)
+        self.inner.remove(seq)
     }
 
     pub fn mark_pending_deletion(&mut self, seq: u64) {
-        if let Some(entry) = self.files.get_mut(&seq) {
+        if let Some(entry) = self.inner.get_mut(seq) {
             entry.pending_deletion = true;
         }
     }
 
     pub fn clear_pending_deletion(&mut self, seq: u64) {
-        if let Some(entry) = self.files.get_mut(&seq) {
+        if let Some(entry) = self.inner.get_mut(seq) {
             entry.pending_deletion = false;
         }
     }
 
     pub fn get(&self, seq: u64) -> Option<&IndexFile> {
-        self.files.get(&seq)
+        self.inner.get(seq)
     }
 
     pub fn len(&self) -> usize {
-        self.files.len()
+        self.inner.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
+        self.inner.is_empty()
     }
 
     /// Evaluate the retention policy and return sequences of files to evict.
@@ -154,7 +130,7 @@ impl IndexRegistry {
         let max_age_ns = retention.max_age.as_nanos() as u64;
 
         let eligible: Vec<&IndexFile> = self
-            .files
+            .inner
             .values()
             .filter(|f| !f.pending_deletion)
             .collect();
@@ -288,13 +264,14 @@ impl Registry {
     ///
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
-    pub fn recover(wal_dir: WalDir, index_dir: &Path) -> Self {
+    pub fn recover(wal: WalRegistry, index_dir: &Path) -> Self {
         cleanup_temp_files(index_dir);
 
-        let wal = WalRegistry::recover(wal_dir).unwrap_or_else(|e| {
-            tracing::error!("failed to recover WAL registry: {e}");
-            panic!("WAL registry recovery failed");
-        });
+        let wal =
+            WalRegistry::recover(wal.path(), wal.machine_id(), wal.boot_id()).unwrap_or_else(|e| {
+                tracing::error!("failed to recover WAL registry: {e}");
+                panic!("WAL registry recovery failed");
+            });
         let index = IndexRegistry::recover(index_dir);
         let remote = RemoteRegistry::new();
 
@@ -321,7 +298,7 @@ impl Registry {
     /// Returns FileIds of indexed files that have not been uploaded to remote storage.
     pub fn unuploaded_ids(&self) -> Vec<FileId> {
         self.index
-            .files
+            .inner
             .values()
             .filter(|entry| !self.remote.contains(entry.id.seq))
             .map(|entry| entry.id)

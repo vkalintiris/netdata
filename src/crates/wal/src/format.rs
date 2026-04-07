@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ByteSize, FileId, TimestampNs};
+use crate::{ByteSize, FileId, TimestampNs};
 
 // -- Constants ----------------------------------------------------------
 

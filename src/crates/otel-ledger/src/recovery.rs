@@ -4,7 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use wal::{ByteSize, FileId};
+use file_registry::ByteSize;
 
 use crate::component::{ComponentHandle, batch_recover};
 use crate::ipc::{
@@ -29,8 +29,8 @@ pub async fn recover_unindexed(
     let requests: Vec<_> = unindexed
         .iter()
         .map(|&id| IndexerRequest::FinalizeIndex {
-            wal_path: registry.wal.dir().wal_path(id),
-            index_path: registry.index.path(id),
+            wal_path: registry.wal.file_path(id),
+            index_path: registry.index.file_path(id),
         })
         .collect();
 
@@ -41,13 +41,12 @@ pub async fn recover_unindexed(
                 .as_ref()
                 .map(|w| w.created_at_ns)
                 .unwrap_or_default();
-            let id = wal_entry.map(|w| w.id).unwrap_or_else(|| {
-                let dir = registry.wal.dir();
-                FileId::new(dir.machine_id(), dir.boot_id(), seq, 0)
-            });
+            let id = wal_entry
+                .map(|w| w.id)
+                .unwrap_or_else(|| registry.wal.file_id(seq, 0));
 
             // Delete the now-redundant WAL file via the cleaner.
-            let wal_path = registry.wal.dir().wal_path(id);
+            let wal_path = registry.wal.file_path(id);
             let req = CleanerRequest::DeleteWalFile {
                 sequence: seq,
                 path: wal_path,
@@ -56,7 +55,7 @@ pub async fn recover_unindexed(
                 tracing::error!("recovery: failed to send WAL delete seq={seq}: {e}");
             }
 
-            let index_file_path = registry.index.path(id);
+            let index_file_path = registry.index.file_path(id);
             let index_size = ByteSize(
                 std::fs::metadata(&index_file_path)
                     .map(|m| m.len())
@@ -98,7 +97,7 @@ pub async fn recover_retention(
         .iter()
         .filter_map(|&seq| {
             registry.index.get(seq).map(|entry| {
-                let path = registry.index.path(entry.id);
+                let path = registry.index.file_path(entry.id);
                 CleanerRequest::DeleteIndexFile {
                     sequence: seq,
                     path,
@@ -137,7 +136,7 @@ pub async fn recover_unuploaded(
     let requests: Vec<_> = unuploaded
         .iter()
         .map(|&id| {
-            let local_path = registry.index.path(id);
+            let local_path = registry.index.file_path(id);
             let remote_key = id.to_filename("sfst");
             UploaderRequest::Upload {
                 seq: id.seq,

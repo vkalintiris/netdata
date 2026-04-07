@@ -1,8 +1,9 @@
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
+use file_registry::{ByteSize, FileId};
 use tokio_util::sync::CancellationToken;
-use wal::{ByteSize, FileId, WalDir};
+use wal::WalRegistry;
 
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
@@ -37,7 +38,7 @@ impl Ledger {
         let machine_id = journal_common::load_machine_id().expect("failed to load machine ID");
         let boot_id = journal_common::load_boot_id().expect("failed to load boot ID");
 
-        let wal_dir = WalDir::new(
+        let wal_registry = WalRegistry::new(
             std::path::Path::new(&logs_config.wal.dir),
             machine_id,
             boot_id,
@@ -45,7 +46,7 @@ impl Ledger {
         let index_dir = std::path::Path::new(&logs_config.index.dir);
         std::fs::create_dir_all(index_dir)?;
 
-        let mut registry = Registry::recover(wal_dir, index_dir);
+        let mut registry = Registry::recover(wal_registry, index_dir);
         let cancel = CancellationToken::new();
 
         let mut indexer = ComponentHandle::spawn::<Indexer>((), cancel.child_token());
@@ -236,8 +237,8 @@ impl Ledger {
         // Trigger indexing on file completion.
         if let wal::format::WalEvent::FileCompleted { id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
-                wal_path: self.registry.wal.dir().wal_path(id),
-                index_path: self.registry.index.path(id),
+                wal_path: self.registry.wal.file_path(id),
+                index_path: self.registry.index.file_path(id),
             };
 
             if let Err(e) = self.indexer.send(req) {
@@ -258,10 +259,10 @@ impl Ledger {
                     .unwrap_or_default();
                 if let Some(wal_entry) = wal_entry {
                     // Delete the now-redundant WAL file.
-                    let wal_path = self.registry.wal.dir().wal_path(wal_entry.id);
+                    let wal_path = self.registry.wal.file_path(wal_entry.id);
                     self.request_wal_delete(wal_entry.id.seq, wal_path);
 
-                    let index_file_path = self.registry.index.path(wal_entry.id);
+                    let index_file_path = self.registry.index.file_path(wal_entry.id);
                     let index_size = ByteSize(
                         std::fs::metadata(&index_file_path)
                             .map(|m| m.len())
@@ -329,7 +330,7 @@ impl Ledger {
         if !self.logs_config.storage.enabled {
             return;
         }
-        let local_path = self.registry.index.path(id);
+        let local_path = self.registry.index.file_path(id);
         let remote_key = id.to_filename("sfst");
         let req = UploaderRequest::Upload {
             seq: id.seq,
@@ -350,7 +351,7 @@ impl Ledger {
         for seq in to_evict {
             self.registry.index.mark_pending_deletion(seq);
             if let Some(entry) = self.registry.index.get(seq) {
-                let path = self.registry.index.path(entry.id);
+                let path = self.registry.index.file_path(entry.id);
                 tracing::info!("retention: evicting seq={seq} path={}", path.display());
                 let req = CleanerRequest::DeleteIndexFile {
                     sequence: seq,
