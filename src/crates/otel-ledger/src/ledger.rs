@@ -14,7 +14,7 @@ use crate::ipc::{
     UploaderResponse,
 };
 use crate::recovery::{now_ns, recover_retention, recover_unindexed, recover_unuploaded};
-use crate::registry::Registry;
+use crate::registry::{IndexRegistry, Registry};
 use crate::uploader::Uploader;
 
 pub struct Ledger {
@@ -35,18 +35,13 @@ impl Ledger {
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> anyhow::Result<Self> {
-        let machine_id = journal_common::load_machine_id().expect("failed to load machine ID");
-        let boot_id = journal_common::load_boot_id().expect("failed to load boot ID");
-
-        let wal_registry = WalRegistry::new(
-            std::path::Path::new(&logs_config.wal.dir),
-            machine_id,
-            boot_id,
-        );
+        let wal = WalRegistry::new(std::path::Path::new(&logs_config.wal.dir));
         let index_dir = std::path::Path::new(&logs_config.index.dir);
         std::fs::create_dir_all(index_dir)?;
+        let index = IndexRegistry::new(index_dir);
 
-        let mut registry = Registry::recover(wal_registry, index_dir);
+        let mut registry = Registry::new(wal, index);
+        registry.recover();
         let cancel = CancellationToken::new();
 
         let mut indexer = ComponentHandle::spawn::<Indexer>((), cancel.child_token());
@@ -252,17 +247,17 @@ impl Ledger {
             IndexerResponse::IndexFinalized { seq, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
-                let wal_entry = self.registry.wal.remove_by_seq(seq);
-                let created_at_ns = wal_entry
+                let wal_file = self.registry.wal.remove_by_seq(seq);
+                let created_at_ns = wal_file
                     .as_ref()
                     .map(|w| w.created_at_ns)
                     .unwrap_or_default();
-                if let Some(wal_entry) = wal_entry {
+                if let Some(wal_file) = wal_file {
                     // Delete the now-redundant WAL file.
-                    let wal_path = self.registry.wal.file_path(wal_entry.id);
-                    self.request_wal_delete(wal_entry.id.seq, wal_path);
+                    let wal_path = self.registry.wal.file_path(wal_file.id);
+                    self.request_wal_delete(wal_file.id.seq, wal_path);
 
-                    let index_file_path = self.registry.index.file_path(wal_entry.id);
+                    let index_file_path = self.registry.index.file_path(wal_file.id);
                     let index_size = ByteSize(
                         std::fs::metadata(&index_file_path)
                             .map(|m| m.len())
@@ -270,10 +265,10 @@ impl Ledger {
                     );
                     self.registry
                         .index
-                        .track(wal_entry.id, created_at_ns, index_size);
+                        .track(wal_file.id, created_at_ns, index_size);
 
                     // Trigger upload if storage is enabled.
-                    self.request_upload(wal_entry.id);
+                    self.request_upload(wal_file.id);
                 } else {
                     tracing::warn!("index finalized for unknown WAL seq={seq}");
                 }

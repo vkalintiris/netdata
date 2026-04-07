@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use file_registry::{FileDir, FileRegistry};
-use uuid::Uuid;
 
 use crate::format::{HEADER_SIZE, WalEvent};
 use crate::{ByteSize, FileId, TimestampNs};
@@ -28,33 +27,26 @@ pub struct WalFile {
     pub size: ByteSize,
 }
 
-/// An ordered collection of WAL files with machine/boot identity.
+/// An ordered collection of WAL files.
 ///
 /// Files are keyed by sequence number, which provides chronological ordering.
-/// Used by both the writer (for file creation) and the ledger (for tracking).
 pub struct WalRegistry {
-    machine_id: Uuid,
-    boot_id: Uuid,
     files: FileRegistry<WalFile>,
 }
 
 impl WalRegistry {
-    pub fn new(path: &Path, machine_id: Uuid, boot_id: Uuid) -> Self {
+    pub fn new(path: &Path) -> Self {
         Self {
-            machine_id,
-            boot_id,
             files: FileRegistry::new(FileDir::new(path, WAL_EXT)),
         }
     }
 
     /// Recovers registry state by scanning the directory and reading file headers.
-    pub fn recover(path: &Path, machine_id: Uuid, boot_id: Uuid) -> Result<Self> {
-        let mut registry = Self::new(path, machine_id, boot_id);
-
-        let entries = registry.files.dir().scan()?;
+    pub fn recover(&mut self) -> Result<()> {
+        let entries = self.files.dir().scan()?;
 
         for (id, meta) in entries {
-            let path = registry.files.file_path(id);
+            let path = self.files.file_path(id);
 
             let header = match read_header(&path) {
                 Ok(h) => h,
@@ -66,7 +58,7 @@ impl WalRegistry {
 
             let size = ByteSize(meta.len());
 
-            registry.files.insert(
+            self.files.insert(
                 id.seq,
                 WalFile {
                     id,
@@ -77,30 +69,15 @@ impl WalRegistry {
             );
         }
 
-        Ok(registry)
-    }
-
-    pub fn machine_id(&self) -> Uuid {
-        self.machine_id
-    }
-
-    pub fn boot_id(&self) -> Uuid {
-        self.boot_id
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
         self.files.dir().path()
     }
 
-    /// Create a [`FileId`] stamped with this registry's identity.
-    pub fn file_id(&self, seq: u64, ns_hash: u64) -> FileId {
-        FileId::new(self.machine_id, self.boot_id, seq, ns_hash)
-    }
-
     /// Derive the on-disk path for a WAL file.
     pub fn file_path(&self, id: FileId) -> PathBuf {
-        debug_assert_eq!(id.machine_id, self.machine_id, "FileId from wrong machine");
-        debug_assert_eq!(id.boot_id, self.boot_id, "FileId from wrong boot");
         self.files.file_path(id)
     }
 
@@ -178,16 +155,16 @@ mod tests {
     use crate::format::WalEvent;
     use crate::{Config, RotationConfig, WalWriter};
 
-    fn test_machine_id() -> Uuid {
-        Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
+    fn test_machine_id() -> uuid::Uuid {
+        uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
     }
 
-    fn test_boot_id() -> Uuid {
-        Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
+    fn test_boot_id() -> uuid::Uuid {
+        uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
     }
 
     fn test_registry(dir: &std::path::Path) -> WalRegistry {
-        WalRegistry::new(dir, test_machine_id(), test_boot_id())
+        WalRegistry::new(dir)
     }
 
     fn test_file_id(seq: u64) -> FileId {
@@ -206,8 +183,15 @@ mod tests {
             crc_enabled: false,
             compression_enabled: true,
         };
-        let registry = Arc::new(test_registry(dir));
-        let mut writer = WalWriter::new(registry, config, 0).unwrap();
+        let registry = test_registry(dir);
+        let mut writer = WalWriter::new(
+            Arc::new(registry),
+            config,
+            test_machine_id(),
+            test_boot_id(),
+            0,
+        )
+        .unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
@@ -224,8 +208,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10, 10]);
 
-        let mut registry =
-            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
+        let mut registry = test_registry(dir.path());
+        registry.recover().unwrap();
         // recover finds all files as Archived; clear them to test apply_event from scratch
         for seq in [1u64, 2, 3] {
             registry.remove_by_seq(seq);
@@ -247,7 +231,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _ = write_wal_files(dir.path(), &[10, 10]);
 
-        let registry = WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
+        let mut registry = test_registry(dir.path());
+        registry.recover().unwrap();
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.archived_files().count(), 2);
 
@@ -260,8 +245,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _events = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry =
-            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
+        let mut registry = test_registry(dir.path());
+        registry.recover().unwrap();
         assert_eq!(registry.len(), 2);
 
         let removed = registry.remove_by_seq(1).unwrap();
@@ -274,8 +259,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(1);
 
-        let mut registry =
-            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
+        let mut registry = test_registry(dir.path());
+        registry.recover().unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {
@@ -306,8 +291,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(1);
 
-        let mut registry =
-            WalRegistry::recover(dir.path(), test_machine_id(), test_boot_id()).unwrap();
+        let mut registry = test_registry(dir.path());
+        registry.recover().unwrap();
 
         registry
             .apply_event(&WalEvent::FileCreated {

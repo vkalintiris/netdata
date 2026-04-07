@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use uuid::Uuid;
+
 use crate::Result;
 use crate::clock::MonotonicClock;
 use crate::config::Config;
@@ -50,6 +52,8 @@ impl SeqSource {
 
 pub struct WalWriter {
     registry: Arc<WalRegistry>,
+    machine_id: Uuid,
+    boot_id: Uuid,
     config: Config,
     clock: MonotonicClock,
     active: Option<ActiveFile>,
@@ -64,12 +68,20 @@ impl WalWriter {
     /// Scans the directory to find the highest existing sequence number.
     /// For multi-writer setups, prefer [`with_shared_seq`] to avoid
     /// redundant directory scans.
-    pub fn new(registry: Arc<WalRegistry>, config: Config, ns_hash: u64) -> Result<Self> {
+    pub fn new(
+        registry: Arc<WalRegistry>,
+        config: Config,
+        machine_id: Uuid,
+        boot_id: Uuid,
+        ns_hash: u64,
+    ) -> Result<Self> {
         std::fs::create_dir_all(registry.path())?;
         let file_seq = registry.scan_max_sequence()?;
 
         Ok(Self {
             registry,
+            machine_id,
+            boot_id,
             config,
             clock: MonotonicClock::new(),
             active: None,
@@ -83,14 +95,18 @@ impl WalWriter {
     ///
     /// Used when multiple writers share a directory and need a globally
     /// unique, monotonically increasing sequence number.
-    pub fn with_shared_seq(
+    fn with_shared_seq(
         registry: Arc<WalRegistry>,
+        machine_id: Uuid,
+        boot_id: Uuid,
         config: Config,
         seq: Arc<AtomicU64>,
         ns_hash: u64,
     ) -> Self {
         Self {
             registry,
+            machine_id,
+            boot_id,
             config,
             clock: MonotonicClock::new(),
             active: None,
@@ -98,6 +114,11 @@ impl WalWriter {
             ns_hash,
             pending_events: Vec::new(),
         }
+    }
+
+    /// Create a [`FileId`] stamped with this writer's identity.
+    fn file_id(&self, seq: u64) -> FileId {
+        FileId::new(self.machine_id, self.boot_id, seq, self.ns_hash)
     }
 
     pub fn write_frame(&mut self, data: &[u8], log_entry_count: usize) -> Result<u64> {
@@ -196,7 +217,7 @@ impl WalWriter {
         }
 
         let file_seq = self.seq_source.next();
-        let id = self.registry.file_id(file_seq, self.ns_hash);
+        let id = self.file_id(file_seq);
         let path = self.registry.file_path(id);
 
         let file = OpenOptions::new()
@@ -300,6 +321,8 @@ impl Config {
 /// unique within the WAL directory.
 pub struct WalWriterMap {
     registry: Arc<WalRegistry>,
+    machine_id: Uuid,
+    boot_id: Uuid,
     config: Config,
     seq: Arc<AtomicU64>,
     writers: HashMap<u64, WalWriter>,
@@ -309,12 +332,19 @@ impl WalWriterMap {
     /// Create a new writer map.
     ///
     /// Scans the WAL directory once to seed the shared sequence counter.
-    pub fn new(registry: WalRegistry, config: Config) -> Result<Self> {
+    pub fn new(
+        registry: WalRegistry,
+        config: Config,
+        machine_id: Uuid,
+        boot_id: Uuid,
+    ) -> Result<Self> {
         std::fs::create_dir_all(registry.path())?;
         let max_seq = registry.scan_max_sequence()?;
         let registry = Arc::new(registry);
         Ok(Self {
             registry,
+            machine_id,
+            boot_id,
             config,
             seq: Arc::new(AtomicU64::new(max_seq)),
             writers: HashMap::new(),
@@ -326,6 +356,8 @@ impl WalWriterMap {
         self.writers.entry(ns_hash).or_insert_with(|| {
             WalWriter::with_shared_seq(
                 Arc::clone(&self.registry),
+                self.machine_id,
+                self.boot_id,
                 self.config.clone(),
                 Arc::clone(&self.seq),
                 ns_hash,
@@ -371,17 +403,29 @@ mod tests {
     use super::*;
     use crate::Config;
 
-    fn test_registry(tmp: &std::path::Path) -> WalRegistry {
-        let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
-        let boot_id = uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap();
-        WalRegistry::new(tmp, machine_id, boot_id)
+    fn test_machine_id() -> Uuid {
+        Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
+    }
+
+    fn test_boot_id() -> Uuid {
+        Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
+    }
+
+    fn test_writer_map(tmp: &std::path::Path) -> WalWriterMap {
+        let registry = WalRegistry::new(tmp);
+        WalWriterMap::new(
+            registry,
+            Config::default(),
+            test_machine_id(),
+            test_boot_id(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn writer_map_creates_separate_writers_per_ns_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let registry = test_registry(tmp.path());
-        let mut map = WalWriterMap::new(registry, Config::default()).unwrap();
+        let mut map = test_writer_map(tmp.path());
 
         let data = b"test payload";
 
@@ -411,8 +455,7 @@ mod tests {
     #[test]
     fn writer_map_shared_seq_is_globally_unique() {
         let tmp = tempfile::tempdir().unwrap();
-        let registry = test_registry(tmp.path());
-        let mut map = WalWriterMap::new(registry, Config::default()).unwrap();
+        let mut map = test_writer_map(tmp.path());
 
         let data = b"test payload";
         map.get_or_create(10).write_frame(data, 1).unwrap();

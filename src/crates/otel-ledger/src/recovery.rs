@@ -36,14 +36,20 @@ pub async fn recover_unindexed(
 
     batch_recover(requests, indexer, |resp| match resp {
         IndexerResponse::IndexFinalized { seq, .. } => {
-            let wal_entry = registry.wal.remove_by_seq(seq);
-            let created_at_ns = wal_entry
+            let wal_file = registry.wal.remove_by_seq(seq);
+            let created_at_ns = wal_file
                 .as_ref()
                 .map(|w| w.created_at_ns)
                 .unwrap_or_default();
-            let id = wal_entry
-                .map(|w| w.id)
-                .unwrap_or_else(|| registry.wal.file_id(seq, 0));
+            let id = match wal_file.map(|w| w.id) {
+                Some(id) => id,
+                None => {
+                    tracing::warn!(
+                        "recovery: index finalized for unknown WAL seq={seq}, skipping cleanup"
+                    );
+                    return;
+                }
+            };
 
             // Delete the now-redundant WAL file via the cleaner.
             let wal_path = registry.wal.file_path(id);

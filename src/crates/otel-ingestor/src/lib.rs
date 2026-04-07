@@ -257,7 +257,7 @@ fn create_logs_service(
     let machine_id = journal_common::load_machine_id().context("failed to load machine ID")?;
     let boot_id = journal_common::load_boot_id().context("failed to load boot ID")?;
 
-    let wal_registry = WalRegistry::new(wal_path, machine_id, boot_id);
+    let wal_registry = WalRegistry::new(wal_path);
 
     let writer_config = WalConfig {
         rotation: RotationConfig {
@@ -269,7 +269,7 @@ fn create_logs_service(
         compression_enabled: logs_config.wal.compression_enabled,
     };
 
-    let writer_map = WalWriterMap::new(wal_registry, writer_config)
+    let writer_map = WalWriterMap::new(wal_registry, writer_config, machine_id, boot_id)
         .with_context(|| format!("creating WAL writer map in {:?}", wal_path))?;
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);

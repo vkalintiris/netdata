@@ -24,9 +24,9 @@ pub struct IndexRegistry {
 }
 
 impl IndexRegistry {
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: &Path) -> Self {
         Self {
-            inner: FileRegistry::new(FileDir::new(&dir, INDEX_EXT)),
+            inner: FileRegistry::new(FileDir::new(dir, INDEX_EXT)),
         }
     }
 
@@ -40,12 +40,8 @@ impl IndexRegistry {
     }
 
     /// Scan the directory for `.sfst` files and reconstruct state.
-    pub fn recover(dir: &Path) -> Self {
-        let file_dir = FileDir::new(dir, INDEX_EXT);
-        let scan_results = file_dir.scan().unwrap_or_default();
-        let mut registry = Self {
-            inner: FileRegistry::new(file_dir),
-        };
+    pub fn recover(&mut self) {
+        let scan_results = self.inner.dir().scan().unwrap_or_default();
 
         for (id, meta) in scan_results {
             let size = ByteSize(meta.len());
@@ -61,7 +57,7 @@ impl IndexRegistry {
                     .as_nanos() as u64,
             );
 
-            registry.inner.insert(
+            self.inner.insert(
                 id.seq,
                 IndexFile {
                     id,
@@ -71,8 +67,6 @@ impl IndexRegistry {
                 },
             );
         }
-
-        registry
     }
 
     pub fn track(&mut self, id: FileId, created_at_ns: TimestampNs, size: ByteSize) {
@@ -260,30 +254,34 @@ pub struct Registry {
 }
 
 impl Registry {
+    pub fn new(wal: WalRegistry, index: IndexRegistry) -> Self {
+        Self {
+            wal,
+            index,
+            remote: RemoteRegistry::new(),
+        }
+    }
+
     /// Recover registries from disk.
     ///
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
-    pub fn recover(wal: WalRegistry, index_dir: &Path) -> Self {
-        cleanup_temp_files(index_dir);
+    pub fn recover(&mut self) {
+        cleanup_temp_files(self.index.dir());
 
-        let wal =
-            WalRegistry::recover(wal.path(), wal.machine_id(), wal.boot_id()).unwrap_or_else(|e| {
-                tracing::error!("failed to recover WAL registry: {e}");
-                panic!("WAL registry recovery failed");
-            });
-        let index = IndexRegistry::recover(index_dir);
-        let remote = RemoteRegistry::new();
+        self.wal.recover().unwrap_or_else(|e| {
+            tracing::error!("failed to recover WAL registry: {e}");
+            panic!("WAL registry recovery failed");
+        });
+        self.index.recover();
 
-        if !wal.is_empty() || !index.is_empty() {
+        if !self.wal.is_empty() || !self.index.is_empty() {
             tracing::info!(
                 "recovered files from disk: wal_files={} index_files={}",
-                wal.len(),
-                index.len(),
+                self.wal.len(),
+                self.index.len(),
             );
         }
-
-        Self { wal, index, remote }
     }
 
     /// Returns FileIds of archived WAL files that have no corresponding index.
