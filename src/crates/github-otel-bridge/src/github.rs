@@ -6,8 +6,6 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::mapping::{offset_within_hour_secs, parse_hour_boundary_secs};
-
 #[derive(Debug, Deserialize)]
 pub struct GitHubEvent {
     #[allow(dead_code)]
@@ -148,7 +146,7 @@ fn days_to_civil(days: i64) -> (i64, u64, u64) {
 /// Download, decompress, parse, and replay events from GH Archive.
 pub async fn replay_loop(
     start: Option<String>,
-    no_pace: bool,
+    rate: u64,
     tx: mpsc::Sender<(GitHubEvent, serde_json::Value)>,
 ) {
     let mut cursor = match start {
@@ -186,22 +184,20 @@ pub async fn replay_loop(
         let count = events.len();
         info!(hour = %label, count, "Parsed events, starting replay");
 
+        let interval = if rate > 0 {
+            Some(Duration::from_secs_f64(1.0 / rate as f64))
+        } else {
+            None
+        };
+
         let replay_start = Instant::now();
 
-        // Find the hour boundary from the first event for pacing offsets.
-        let hour_boundary_secs = events
-            .first()
-            .and_then(|(e, _)| parse_hour_boundary_secs(&e.created_at));
-
-        for (event, raw_json) in events {
-            if !no_pace {
-                if let Some(_boundary) = hour_boundary_secs {
-                    let offset = offset_within_hour_secs(&event.created_at);
-                    let target = replay_start + Duration::from_secs_f64(offset);
-                    let now = Instant::now();
-                    if target > now {
-                        tokio::time::sleep(target - now).await;
-                    }
+        for (i, (event, raw_json)) in events.into_iter().enumerate() {
+            if let Some(interval) = interval {
+                let target = replay_start + interval * i as u32;
+                let now = Instant::now();
+                if target > now {
+                    tokio::time::sleep(target - now).await;
                 }
             }
 

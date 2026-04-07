@@ -137,24 +137,6 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<u64> {
     if days < 0 { None } else { Some(days as u64) }
 }
 
-/// Extract the hour-boundary timestamp (in seconds) from an ISO-8601 string.
-/// Returns seconds since epoch, floored to the hour.
-pub fn parse_hour_boundary_secs(dt: &str) -> Option<u64> {
-    let nanos = parse_iso8601_inner(dt)?;
-    let secs = nanos / 1_000_000_000;
-    Some((secs / 3600) * 3600)
-}
-
-/// Compute the offset in seconds of this timestamp within its hour.
-pub fn offset_within_hour_secs(dt: &str) -> f64 {
-    let nanos = parse_iso8601_inner(dt).unwrap_or(0);
-    let secs = nanos / 1_000_000_000;
-    let hour_boundary = (secs / 3600) * 3600;
-    let remainder_secs = secs - hour_boundary;
-    let remainder_nanos = nanos - secs * 1_000_000_000;
-    remainder_secs as f64 + remainder_nanos as f64 / 1_000_000_000.0
-}
-
 /// Keys promoted from the raw JSON to log record attributes.
 const PROMOTED_ROOT_KEYS: &[&str] = &["id", "type", "public", "created_at"];
 

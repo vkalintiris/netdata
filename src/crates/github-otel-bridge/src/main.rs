@@ -17,9 +17,9 @@ struct Args {
     #[arg(long)]
     start: Option<String>,
 
-    /// Disable pacing — send events as fast as possible
-    #[arg(long)]
-    no_pace: bool,
+    /// Target events per second (0 = unlimited)
+    #[arg(long, default_value_t = 100)]
+    rate: u64,
 
     /// OTel gRPC endpoint
     #[arg(long, default_value = "http://127.0.0.1:4317")]
@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Run the download + replay loop (blocks forever).
-    github::replay_loop(args.start, args.no_pace, event_tx).await;
+    github::replay_loop(args.start, args.rate, event_tx).await;
 
     Ok(())
 }
