@@ -10,7 +10,7 @@ use crate::{Error, Result};
 const MAX_FRAME_PAYLOAD: usize = 64 * 1024 * 1024;
 
 /// A single frame read from the WAL file.
-pub struct WalFrame<'a> {
+pub struct Frame<'a> {
     /// Ingestion timestamp in nanoseconds since the Unix epoch.
     pub timestamp_ns: TimestampNs,
     /// Number of log entries in this frame.
@@ -20,14 +20,14 @@ pub struct WalFrame<'a> {
 }
 
 /// Reads WAL files produced by [`WalWriter`](crate::WalWriter).
-pub struct WalReader {
+pub struct Reader {
     reader: BufReader<File>,
     header: FileHeader,
     compressed_buf: Vec<u8>,
     data_buf: Vec<u8>,
 }
 
-impl WalReader {
+impl Reader {
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -63,7 +63,7 @@ impl WalReader {
         }
     }
 
-    pub fn next_frame(&mut self) -> Result<Option<WalFrame<'_>>> {
+    pub fn next_frame(&mut self) -> Result<Option<Frame<'_>>> {
         let mut frame_header = [0u8; FRAME_HEADER_SIZE];
         match self.reader.read_exact(&mut frame_header) {
             Ok(()) => {}
@@ -132,7 +132,7 @@ impl WalReader {
             self.data_buf.extend_from_slice(&self.compressed_buf);
         }
 
-        Ok(Some(WalFrame {
+        Ok(Some(Frame {
             timestamp_ns: TimestampNs(timestamp_ns),
             entry_count,
             data: &self.data_buf,

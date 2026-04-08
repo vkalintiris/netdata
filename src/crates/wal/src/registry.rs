@@ -11,7 +11,7 @@ const WAL_EXT: &str = "wal";
 
 /// Lifecycle status of a WAL file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WalFileStatus {
+pub enum FileStatus {
     /// The ingester is actively writing to this file.
     Active,
     /// The ingester has finished writing; the file is immutable.
@@ -20,9 +20,9 @@ pub enum WalFileStatus {
 
 /// A WAL file tracked by the registry.
 #[derive(Debug, Clone)]
-pub struct WalFile {
+pub struct File {
     pub id: FileId,
-    pub status: WalFileStatus,
+    pub status: FileStatus,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
 }
@@ -30,11 +30,11 @@ pub struct WalFile {
 /// An ordered collection of WAL files.
 ///
 /// Files are keyed by sequence number, which provides chronological ordering.
-pub struct WalRegistry {
-    files: FileRegistry<WalFile>,
+pub struct Registry {
+    files: FileRegistry<File>,
 }
 
-impl WalRegistry {
+impl Registry {
     pub fn new(path: &Path) -> Self {
         Self {
             files: FileRegistry::new(FileDir::new(path, WAL_EXT)),
@@ -60,9 +60,9 @@ impl WalRegistry {
 
             self.files.insert(
                 id.seq,
-                WalFile {
+                File {
                     id,
-                    status: WalFileStatus::Archived,
+                    status: FileStatus::Archived,
                     created_at_ns: TimestampNs(header.created_at),
                     size,
                 },
@@ -95,9 +95,9 @@ impl WalRegistry {
                 }
                 self.files.insert(
                     id.seq,
-                    WalFile {
+                    File {
                         id: *id,
-                        status: WalFileStatus::Active,
+                        status: FileStatus::Active,
                         created_at_ns: *created_at_ns,
                         size: ByteSize::ZERO,
                     },
@@ -110,7 +110,7 @@ impl WalRegistry {
                     .files
                     .get_mut(id.seq)
                     .ok_or(Error::UnknownSequence(id.seq))?;
-                entry.status = WalFileStatus::Archived;
+                entry.status = FileStatus::Archived;
                 entry.size = *size;
                 Ok(())
             }
@@ -118,15 +118,15 @@ impl WalRegistry {
     }
 
     /// Removes a file by sequence number.
-    pub fn remove_by_seq(&mut self, seq: u64) -> Option<WalFile> {
+    pub fn remove_by_seq(&mut self, seq: u64) -> Option<File> {
         self.files.remove(seq)
     }
 
     /// Returns all archived files, ordered by sequence number.
-    pub fn archived_files(&self) -> impl Iterator<Item = &WalFile> {
+    pub fn archived_files(&self) -> impl Iterator<Item = &File> {
         self.files
             .values()
-            .filter(|f| f.status == WalFileStatus::Archived)
+            .filter(|f| f.status == FileStatus::Archived)
     }
 
     pub fn len(&self) -> usize {
@@ -149,11 +149,9 @@ fn read_header(path: &std::path::Path) -> Result<crate::format::FileHeader> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::format::WalEvent;
-    use crate::{Config, RotationConfig, WalWriter};
+    use crate::{Config, Ingester, RotationConfig};
 
     fn test_machine_id() -> uuid::Uuid {
         uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
@@ -163,15 +161,11 @@ mod tests {
         uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
     }
 
-    fn test_registry(dir: &std::path::Path) -> WalRegistry {
-        WalRegistry::new(dir)
-    }
-
     fn test_file_id(seq: u64) -> FileId {
         FileId::new(test_machine_id(), test_boot_id(), seq, 0)
     }
 
-    /// Helper: create a WalWriter, write entries, shutdown, and return all events.
+    /// Helper: create an Ingester, write entries, shutdown, and return all events.
     fn write_wal_files(dir: &std::path::Path, entry_counts: &[usize]) -> Vec<WalEvent> {
         let entries_per_file: usize = *entry_counts.iter().max().unwrap_or(&10);
         let config = Config {
@@ -183,23 +177,18 @@ mod tests {
             crc_enabled: false,
             compression_enabled: true,
         };
-        let registry = test_registry(dir);
-        let mut writer = WalWriter::new(
-            Arc::new(registry),
-            config,
-            test_machine_id(),
-            test_boot_id(),
-            0,
-        )
-        .unwrap();
+        let mut ingester =
+            Ingester::new(dir, config, test_machine_id(), test_boot_id()).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
-                writer.write_frame(&(i as u32).to_le_bytes(), 1).unwrap();
+                ingester
+                    .write_frame(0, &(i as u32).to_le_bytes(), 1)
+                    .unwrap();
             }
-            all_events.extend(writer.take_events());
+            all_events.extend(ingester.take_all_events());
         }
-        all_events.extend(writer.shutdown().unwrap());
+        all_events.extend(ingester.shutdown_all().unwrap());
         all_events
     }
 
@@ -208,7 +197,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let events = write_wal_files(dir.path(), &[10, 10, 10]);
 
-        let mut registry = test_registry(dir.path());
+        let mut registry = Registry::new(dir.path());
         registry.recover().unwrap();
         // recover finds all files as Archived; clear them to test apply_event from scratch
         for seq in [1u64, 2, 3] {
@@ -231,7 +220,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _ = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry = test_registry(dir.path());
+        let mut registry = Registry::new(dir.path());
         registry.recover().unwrap();
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.archived_files().count(), 2);
@@ -245,7 +234,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _events = write_wal_files(dir.path(), &[10, 10]);
 
-        let mut registry = test_registry(dir.path());
+        let mut registry = Registry::new(dir.path());
         registry.recover().unwrap();
         assert_eq!(registry.len(), 2);
 
@@ -259,7 +248,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(1);
 
-        let mut registry = test_registry(dir.path());
+        let mut registry = Registry::new(dir.path());
         registry.recover().unwrap();
 
         registry
@@ -291,7 +280,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = test_file_id(1);
 
-        let mut registry = test_registry(dir.path());
+        let mut registry = Registry::new(dir.path());
         registry.recover().unwrap();
 
         registry

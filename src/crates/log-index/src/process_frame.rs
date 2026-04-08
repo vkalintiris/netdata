@@ -23,7 +23,7 @@ use crate::wal_index::WalIndex;
 /// Returns the number of log rows processed.
 pub(crate) fn process_frame(
     wal_index: &mut WalIndex,
-    wal_frame: &wal::WalFrame,
+    wal_frame: &wal::Frame,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let otap_frame = OtapFrame::decode(wal_frame.data)?;
     let Some(logs_batch) = otap_frame.logs.as_ref() else {

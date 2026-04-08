@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use file_registry::{ByteSize, FileDir, FileId, FileRegistry, TimestampNs};
-use wal::WalRegistry;
+use wal::Registry as WalRegistry;
 
 const INDEX_EXT: &str = "sfst";
 

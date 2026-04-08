@@ -301,7 +301,7 @@ fn log_entry_json(
 }
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = wal::WalReader::open(path)?;
+    let mut reader = wal::Reader::open(path)?;
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
 

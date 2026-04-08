@@ -5,7 +5,7 @@ use arrow::datatypes::DataType;
 use crate::otap_frame::OtapFrame;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = wal::WalReader::open(path)?;
+    let mut reader = wal::Reader::open(path)?;
 
     let Some(wal_frame) = reader.next_frame()? else {
         return Err("WAL file is empty".into());

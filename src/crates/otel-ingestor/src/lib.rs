@@ -13,7 +13,7 @@ use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsSe
 use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use tokio::sync::RwLock;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use wal::{Config as WalConfig, RotationConfig, WalRegistry, WalWriterMap};
+use wal::{Config as WalConfig, Ingester, RotationConfig};
 
 mod aggregation;
 mod arrow_bridge;
@@ -257,9 +257,7 @@ fn create_logs_service(
     let machine_id = journal_common::load_machine_id().context("failed to load machine ID")?;
     let boot_id = journal_common::load_boot_id().context("failed to load boot ID")?;
 
-    let wal_registry = WalRegistry::new(wal_path);
-
-    let writer_config = WalConfig {
+    let config = WalConfig {
         rotation: RotationConfig {
             max_log_entries: logs_config.wal.max_log_entries,
             max_file_size: ByteSize(logs_config.wal.max_file_size.as_u64()),
@@ -269,8 +267,8 @@ fn create_logs_service(
         compression_enabled: logs_config.wal.compression_enabled,
     };
 
-    let writer_map = WalWriterMap::new(wal_registry, writer_config, machine_id, boot_id)
-        .with_context(|| format!("creating WAL writer map in {:?}", wal_path))?;
+    let ingester = Ingester::new(wal_path, config, machine_id, boot_id)
+        .with_context(|| format!("creating WAL ingester in {:?}", wal_path))?;
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
@@ -279,5 +277,5 @@ fn create_logs_service(
         "logs ingestion enabled (WAL)"
     );
 
-    Ok(NetdataLogsService::new(writer_map, sender))
+    Ok(NetdataLogsService::new(ingester, sender))
 }

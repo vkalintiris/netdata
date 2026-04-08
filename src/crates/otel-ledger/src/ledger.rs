@@ -3,7 +3,7 @@ use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use file_registry::{ByteSize, FileId};
 use tokio_util::sync::CancellationToken;
-use wal::WalRegistry;
+use wal::Registry as WalRegistry;
 
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;

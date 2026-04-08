@@ -24,7 +24,7 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_logs = limit.unwrap_or(u32::MAX) as usize;
 
-    let mut reader = wal::WalReader::open(path)?;
+    let mut reader = wal::Reader::open(path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
 

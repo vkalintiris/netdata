@@ -7,7 +7,7 @@ use opentelemetry_proto::tonic::collector::logs::v1::{
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use tonic::{Request, Response, Status};
-use wal::WalWriterMap;
+use wal::Ingester;
 
 use crate::arrow_bridge;
 use crate::ledger_sender::LedgerSender;
@@ -47,12 +47,12 @@ fn ns_hash_from_resource(rl: &ResourceLogs) -> u64 {
 }
 
 pub struct NetdataLogsService {
-    wal: Mutex<WalWriterMap>,
+    wal: Mutex<Ingester>,
     sender: LedgerSender,
 }
 
 impl NetdataLogsService {
-    pub fn new(wal: WalWriterMap, sender: LedgerSender) -> Self {
+    pub fn new(wal: Ingester, sender: LedgerSender) -> Self {
         Self {
             wal: Mutex::new(wal),
             sender,
@@ -84,8 +84,7 @@ impl LogsService for NetdataLogsService {
                 Status::internal("Arrow encode error")
             })?;
 
-            let writer = wal.get_or_create(ns_hash);
-            writer.write_frame(&data, count).map_err(|e| {
+            wal.write_frame(ns_hash, &data, count).map_err(|e| {
                 tracing::error!(%e, "failed to write WAL entry");
                 Status::internal("WAL write error")
             })?;

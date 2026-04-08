@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use file_registry::FileDir;
 use uuid::Uuid;
 
 use crate::Result;
@@ -14,8 +15,9 @@ use crate::format::{
     COMPRESSION_NONE, FLAG_CRC_ENABLED, FORMAT_VERSION, FRAME_ALIGNMENT, FRAME_HEADER_SIZE,
     FileHeader, HEADER_SIZE, WalEvent,
 };
-use crate::registry::WalRegistry;
 use crate::{ByteSize, FileId, TimestampNs};
+
+const WAL_EXT: &str = "wal";
 
 struct ActiveFile {
     id: FileId,
@@ -30,98 +32,58 @@ struct ActiveFile {
     first_frame_at_ns: Option<TimestampNs>,
 }
 
-/// Source of sequence numbers for file creation.
-enum SeqSource {
-    /// Writer owns its own counter (standalone mode).
-    Local(u64),
-    /// Writer shares a counter with other writers.
-    Shared(Arc<AtomicU64>),
-}
+/// Shared sequence counter for globally unique file numbering.
+struct SeqCounter(Arc<AtomicU64>);
 
-impl SeqSource {
-    fn next(&mut self) -> u64 {
-        match self {
-            SeqSource::Local(seq) => {
-                *seq += 1;
-                *seq
-            }
-            SeqSource::Shared(seq) => seq.fetch_add(1, Ordering::Relaxed) + 1,
-        }
+impl SeqCounter {
+    fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
-pub struct WalWriter {
-    registry: Arc<WalRegistry>,
+/// A single WAL output stream for one service (identified by `ns_hash`).
+///
+/// Handles frame writing, compression, rotation, and lifecycle event emission.
+struct Stream {
+    dir: Arc<FileDir>,
     machine_id: Uuid,
     boot_id: Uuid,
     config: Config,
     clock: MonotonicClock,
     active: Option<ActiveFile>,
-    seq_source: SeqSource,
+    seq: SeqCounter,
     ns_hash: u64,
     pending_events: Vec<WalEvent>,
 }
 
-impl WalWriter {
-    /// Create a new WAL writer for a specific service (identified by `ns_hash`).
-    ///
-    /// Scans the directory to find the highest existing sequence number.
-    /// For multi-writer setups, prefer [`with_shared_seq`] to avoid
-    /// redundant directory scans.
-    pub fn new(
-        registry: Arc<WalRegistry>,
-        config: Config,
-        machine_id: Uuid,
-        boot_id: Uuid,
-        ns_hash: u64,
-    ) -> Result<Self> {
-        std::fs::create_dir_all(registry.path())?;
-        let file_seq = registry.scan_max_sequence()?;
-
-        Ok(Self {
-            registry,
-            machine_id,
-            boot_id,
-            config,
-            clock: MonotonicClock::new(),
-            active: None,
-            seq_source: SeqSource::Local(file_seq),
-            ns_hash,
-            pending_events: Vec::new(),
-        })
-    }
-
-    /// Create a new WAL writer with an externally managed sequence counter.
-    ///
-    /// Used when multiple writers share a directory and need a globally
-    /// unique, monotonically increasing sequence number.
-    fn with_shared_seq(
-        registry: Arc<WalRegistry>,
+impl Stream {
+    fn new(
+        dir: Arc<FileDir>,
         machine_id: Uuid,
         boot_id: Uuid,
         config: Config,
-        seq: Arc<AtomicU64>,
+        seq: SeqCounter,
         ns_hash: u64,
     ) -> Self {
         Self {
-            registry,
+            dir,
             machine_id,
             boot_id,
             config,
             clock: MonotonicClock::new(),
             active: None,
-            seq_source: SeqSource::Shared(seq),
+            seq,
             ns_hash,
             pending_events: Vec::new(),
         }
     }
 
-    /// Create a [`FileId`] stamped with this writer's identity.
+    /// Create a [`FileId`] stamped with this stream's identity.
     fn file_id(&self, seq: u64) -> FileId {
         FileId::new(self.machine_id, self.boot_id, seq, self.ns_hash)
     }
 
-    pub fn write_frame(&mut self, data: &[u8], log_entry_count: usize) -> Result<u64> {
+    fn write_frame(&mut self, data: &[u8], log_entry_count: usize) -> Result<u64> {
         if self.should_rotate_with(log_entry_count as u64) {
             self.sync()?;
             self.complete_active_file();
@@ -186,7 +148,7 @@ impl WalWriter {
         Ok(frame_offset)
     }
 
-    pub fn sync(&mut self) -> Result<()> {
+    fn sync(&mut self) -> Result<()> {
         if let Some(active) = &mut self.active {
             active.writer.flush()?;
             active.writer.get_ref().sync_all()?;
@@ -201,13 +163,13 @@ impl WalWriter {
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> Result<Vec<WalEvent>> {
+    fn shutdown(&mut self) -> Result<Vec<WalEvent>> {
         self.sync()?;
         self.complete_active_file();
         Ok(self.take_events())
     }
 
-    pub fn take_events(&mut self) -> Vec<WalEvent> {
+    fn take_events(&mut self) -> Vec<WalEvent> {
         std::mem::take(&mut self.pending_events)
     }
 
@@ -216,9 +178,9 @@ impl WalWriter {
             return Ok(());
         }
 
-        let file_seq = self.seq_source.next();
+        let file_seq = self.seq.next();
         let id = self.file_id(file_seq);
-        let path = self.registry.file_path(id);
+        let path = self.dir.file_path(id);
 
         let file = OpenOptions::new()
             .create_new(true)
@@ -243,7 +205,7 @@ impl WalWriter {
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
 
-        fsync_dir(self.registry.path())?;
+        fsync_dir(self.dir.path())?;
 
         self.pending_events
             .push(WalEvent::FileCreated { id, created_at_ns });
@@ -300,7 +262,7 @@ impl WalWriter {
 
 const FRAME_ALIGNMENT_HEADER: usize = FRAME_HEADER_SIZE;
 
-impl Drop for WalWriter {
+impl Drop for Stream {
     fn drop(&mut self) {
         self.complete_active_file();
     }
@@ -313,80 +275,93 @@ impl Config {
 }
 
 // ---------------------------------------------------------------------------
-// WalWriterMap
+// Ingester
 // ---------------------------------------------------------------------------
 
-/// Manages multiple [`WalWriter`]s keyed by `ns_hash`, with a shared
+/// Manages multiple WAL output [`Stream`]s keyed by `ns_hash`, with a shared
 /// monotonic sequence counter so that file sequence numbers are globally
 /// unique within the WAL directory.
-pub struct WalWriterMap {
-    registry: Arc<WalRegistry>,
+pub struct Ingester {
+    dir: Arc<FileDir>,
     machine_id: Uuid,
     boot_id: Uuid,
     config: Config,
     seq: Arc<AtomicU64>,
-    writers: HashMap<u64, WalWriter>,
+    streams: HashMap<u64, Stream>,
 }
 
-impl WalWriterMap {
-    /// Create a new writer map.
+impl Ingester {
+    /// Create a new ingester.
     ///
     /// Scans the WAL directory once to seed the shared sequence counter.
     pub fn new(
-        registry: WalRegistry,
+        path: &Path,
         config: Config,
         machine_id: Uuid,
         boot_id: Uuid,
     ) -> Result<Self> {
-        std::fs::create_dir_all(registry.path())?;
-        let max_seq = registry.scan_max_sequence()?;
-        let registry = Arc::new(registry);
+        let dir = Arc::new(FileDir::new(path, WAL_EXT));
+        std::fs::create_dir_all(dir.path())?;
+        let max_seq = dir.scan_max_sequence()?;
         Ok(Self {
-            registry,
+            dir,
             machine_id,
             boot_id,
             config,
             seq: Arc::new(AtomicU64::new(max_seq)),
-            writers: HashMap::new(),
+            streams: HashMap::new(),
         })
     }
 
-    /// Get or lazily create a writer for the given `ns_hash`.
-    pub fn get_or_create(&mut self, ns_hash: u64) -> &mut WalWriter {
-        self.writers.entry(ns_hash).or_insert_with(|| {
-            WalWriter::with_shared_seq(
-                Arc::clone(&self.registry),
+    /// Write a frame to the stream for the given `ns_hash`.
+    ///
+    /// Lazily creates a new stream if one doesn't exist for this `ns_hash`.
+    pub fn write_frame(
+        &mut self,
+        ns_hash: u64,
+        data: &[u8],
+        log_entry_count: usize,
+    ) -> Result<u64> {
+        self.get_or_create(ns_hash)
+            .write_frame(data, log_entry_count)
+    }
+
+    /// Get or lazily create a stream for the given `ns_hash`.
+    fn get_or_create(&mut self, ns_hash: u64) -> &mut Stream {
+        self.streams.entry(ns_hash).or_insert_with(|| {
+            Stream::new(
+                Arc::clone(&self.dir),
                 self.machine_id,
                 self.boot_id,
                 self.config.clone(),
-                Arc::clone(&self.seq),
+                SeqCounter(Arc::clone(&self.seq)),
                 ns_hash,
             )
         })
     }
 
-    /// Drain pending events from all writers.
+    /// Drain pending events from all streams.
     pub fn take_all_events(&mut self) -> Vec<WalEvent> {
         let mut events = Vec::new();
-        for writer in self.writers.values_mut() {
-            events.append(&mut writer.take_events());
+        for stream in self.streams.values_mut() {
+            events.append(&mut stream.take_events());
         }
         events
     }
 
-    /// Sync all active writers to disk.
+    /// Sync all active streams to disk.
     pub fn sync_all(&mut self) -> Result<()> {
-        for writer in self.writers.values_mut() {
-            writer.sync()?;
+        for stream in self.streams.values_mut() {
+            stream.sync()?;
         }
         Ok(())
     }
 
-    /// Shut down all writers, returning any remaining events.
+    /// Shut down all streams, returning any remaining events.
     pub fn shutdown_all(&mut self) -> Result<Vec<WalEvent>> {
         let mut events = Vec::new();
-        for writer in self.writers.values_mut() {
-            events.append(&mut writer.shutdown()?);
+        for stream in self.streams.values_mut() {
+            events.append(&mut stream.shutdown()?);
         }
         Ok(events)
     }
@@ -411,29 +386,22 @@ mod tests {
         Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
     }
 
-    fn test_writer_map(tmp: &std::path::Path) -> WalWriterMap {
-        let registry = WalRegistry::new(tmp);
-        WalWriterMap::new(
-            registry,
-            Config::default(),
-            test_machine_id(),
-            test_boot_id(),
-        )
-        .unwrap()
+    fn test_ingester(tmp: &std::path::Path) -> Ingester {
+        Ingester::new(tmp, Config::default(), test_machine_id(), test_boot_id()).unwrap()
     }
 
     #[test]
-    fn writer_map_creates_separate_writers_per_ns_hash() {
+    fn creates_separate_files_per_ns_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut map = test_writer_map(tmp.path());
+        let mut ingester = test_ingester(tmp.path());
 
         let data = b"test payload";
 
-        map.get_or_create(1).write_frame(data, 1).unwrap();
-        map.get_or_create(2).write_frame(data, 1).unwrap();
-        map.get_or_create(1).write_frame(data, 1).unwrap();
+        ingester.write_frame(1, data, 1).unwrap();
+        ingester.write_frame(2, data, 1).unwrap();
+        ingester.write_frame(1, data, 1).unwrap();
 
-        map.sync_all().unwrap();
+        ingester.sync_all().unwrap();
 
         // Two distinct ns_hash values → two WAL files.
         let wal_files: Vec<_> = std::fs::read_dir(tmp.path())
@@ -453,15 +421,15 @@ mod tests {
     }
 
     #[test]
-    fn writer_map_shared_seq_is_globally_unique() {
+    fn shared_seq_is_globally_unique() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut map = test_writer_map(tmp.path());
+        let mut ingester = test_ingester(tmp.path());
 
         let data = b"test payload";
-        map.get_or_create(10).write_frame(data, 1).unwrap();
-        map.get_or_create(20).write_frame(data, 1).unwrap();
+        ingester.write_frame(10, data, 1).unwrap();
+        ingester.write_frame(20, data, 1).unwrap();
 
-        map.sync_all().unwrap();
+        ingester.sync_all().unwrap();
 
         let mut seqs: Vec<u64> = std::fs::read_dir(tmp.path())
             .unwrap()

@@ -30,7 +30,7 @@ pub fn index_wal_file_with_options(
     out_path: &Path,
     cardinality_threshold: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = wal::WalReader::open(wal_path)?;
+    let mut reader = wal::Reader::open(wal_path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
 
