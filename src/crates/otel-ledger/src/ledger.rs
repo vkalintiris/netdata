@@ -3,18 +3,17 @@ use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use file_registry::{ByteSize, FileId};
 use tokio_util::sync::CancellationToken;
-use wal::Registry as WalRegistry;
-
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
 use crate::event::LedgerEvent;
+use crate::index;
 use crate::indexer::Indexer;
 use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
 };
 use crate::recovery::{now_ns, recover_retention, recover_unindexed, recover_unuploaded};
-use crate::registry::{IndexRegistry, Registry};
+use crate::registry::Registry;
 use crate::uploader::Uploader;
 
 pub struct Ledger {
@@ -35,10 +34,10 @@ impl Ledger {
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> anyhow::Result<Self> {
-        let wal = WalRegistry::new(std::path::Path::new(&logs_config.wal.dir));
+        let wal = wal::Registry::new(std::path::Path::new(&logs_config.wal.dir));
         let index_dir = std::path::Path::new(&logs_config.index.dir);
         std::fs::create_dir_all(index_dir)?;
-        let index = IndexRegistry::new(index_dir);
+        let index = index::Registry::new(index_dir);
 
         let mut registry = Registry::new(wal, index);
         registry.recover();
