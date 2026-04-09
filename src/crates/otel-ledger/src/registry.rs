@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use file_registry::{FileId, TimestampNs};
 use crate::index;
+use file_registry::{FileId, TimestampNs};
 
 // ---------------------------------------------------------------------------
 // Remote files (uploaded to object storage)
@@ -27,25 +27,34 @@ impl RemoteRegistry {
         }
     }
 
-    /// Recover remote state by listing files in object storage.
+    /// Recover remote state by listing files under a tenant prefix in object storage.
     ///
     /// Returns `Ok` with the recovered registry, or `Err` if the remote
     /// is unreachable. The caller should skip upload recovery on failure
     /// — uploads will happen naturally during normal operation once the
     /// remote becomes available.
-    pub async fn recover(operator: &opendal::Operator) -> Result<Self, opendal::Error> {
+    pub async fn recover(
+        operator: &opendal::Operator,
+        tenant_id: &str,
+    ) -> Result<Self, opendal::Error> {
         let mut registry = Self::new();
-        let entries = operator.list("").await?;
+        let prefix = format!("{tenant_id}/");
+        let entries = operator.list(&prefix).await?;
 
         for entry in entries {
             let path = entry.path();
-            if let Some(id) = FileId::parse(std::path::Path::new(path)) {
+            let filename = path.strip_prefix(&prefix).unwrap_or(path);
+            if let Some(id) = FileId::parse(std::path::Path::new(filename)) {
                 registry.track(id, path.to_string());
             }
         }
 
         if !registry.is_empty() {
-            tracing::info!("recovered {} remote files", registry.len());
+            tracing::info!(
+                tenant = tenant_id,
+                "recovered {} remote files",
+                registry.len()
+            );
         }
 
         Ok(registry)
@@ -145,6 +154,90 @@ impl Registry {
             .filter(|entry| !self.remote.contains(entry.id.seq))
             .map(|entry| entry.id)
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TenantRegistries
+// ---------------------------------------------------------------------------
+
+/// Manages per-tenant `Registry` instances, one per tenant subdirectory.
+pub struct TenantRegistries {
+    pub tenants: HashMap<String, Registry>,
+    wal_base_dir: std::path::PathBuf,
+    index_base_dir: std::path::PathBuf,
+}
+
+impl TenantRegistries {
+    pub fn new(wal_base_dir: std::path::PathBuf, index_base_dir: std::path::PathBuf) -> Self {
+        Self {
+            tenants: HashMap::new(),
+            wal_base_dir,
+            index_base_dir,
+        }
+    }
+
+    /// Get or lazily create the `Registry` for a tenant.
+    ///
+    /// The returned registry is **not** recovered from disk. During startup,
+    /// use [`discover_tenants`] which calls `recover()` on each registry.
+    /// During normal operation, the ingestor sends all events via IPC so
+    /// recovery is unnecessary (and would conflict with in-flight events).
+    pub fn get_or_create(&mut self, tenant_id: &str) -> &mut Registry {
+        if !self.tenants.contains_key(tenant_id) {
+            let wal_dir = self.wal_base_dir.join(tenant_id);
+            let index_dir = self.index_base_dir.join(tenant_id);
+            let wal = wal::Registry::new(&wal_dir);
+            std::fs::create_dir_all(&index_dir).ok();
+            let index = crate::index::Registry::new(&index_dir);
+            let registry = Registry::new(wal, index);
+            self.tenants.insert(tenant_id.to_string(), registry);
+        }
+        self.tenants.get_mut(tenant_id).unwrap()
+    }
+
+    /// Discover tenants by scanning base directories for subdirectories
+    /// and recovering their registries from disk.
+    ///
+    /// Must be called once at startup, before the ingestor connects.
+    pub fn discover_tenants(&mut self) {
+        let mut tenant_names = Vec::new();
+        for base in [&self.wal_base_dir, &self.index_base_dir] {
+            let entries = match std::fs::read_dir(base) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+                    if let Some(name) = entry.file_name().to_str() {
+                        tenant_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+        for name in tenant_names {
+            let registry = self.get_or_create(&name);
+            registry.recover();
+        }
+        if !self.tenants.is_empty() {
+            tracing::info!(
+                "discovered {} tenant(s): {:?}",
+                self.tenants.len(),
+                self.tenants.keys().collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Registry)> {
+        self.tenants.iter_mut()
+    }
+
+    pub fn get(&self, tenant_id: &str) -> Option<&Registry> {
+        self.tenants.get(tenant_id)
+    }
+
+    pub fn get_mut(&mut self, tenant_id: &str) -> Option<&mut Registry> {
+        self.tenants.get_mut(tenant_id)
     }
 }
 

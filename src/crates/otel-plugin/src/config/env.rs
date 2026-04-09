@@ -5,7 +5,9 @@ use bytesize::ByteSize;
 
 use super::ConfigOverride;
 use super::endpoint::EndpointOverride;
-use super::logs::{IndexOverride, LogsOverride, RetentionOverride, StorageOverride, WalOverride};
+use super::logs::{
+    AuthOverride, IndexOverride, LogsOverride, RetentionOverride, StorageOverride, WalOverride,
+};
 use super::metrics::MetricsOverride;
 
 fn read_env(name: &str) -> Result<Option<String>> {
@@ -138,6 +140,9 @@ impl LogsOverride {
             max_total_size: parse_env_bytesize("NETDATA_OTEL_LOGS_RETENTION_MAX_TOTAL_SIZE")?,
             max_age: parse_env_duration("NETDATA_OTEL_LOGS_RETENTION_MAX_AGE")?,
         };
+        let auth = AuthOverride {
+            enabled: parse_env_bool("NETDATA_OTEL_LOGS_AUTH_ENABLED")?,
+        };
         Ok(Self {
             wal: if wal.has_any() { Some(wal) } else { None },
             index: if index.has_any() { Some(index) } else { None },
@@ -151,6 +156,7 @@ impl LogsOverride {
             } else {
                 None
             },
+            auth: if auth.has_any() { Some(auth) } else { None },
         })
     }
 }

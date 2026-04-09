@@ -24,11 +24,12 @@ impl LedgerSender {
     }
 
     /// Sends all events from a [`WalEvent`] slice (as returned by
-    /// [`WalWriter::take_events`]).
-    pub fn send_events(&self, events: Vec<WalEvent>) {
+    /// [`WalWriter::take_events`]), tagged with the given tenant ID.
+    pub fn send_events(&self, tenant_id: String, events: Vec<WalEvent>) {
         for event in events {
             let msg = WalMessage {
                 seq: self.next_seq(),
+                tenant_id: tenant_id.clone(),
                 event,
             };
             let _ = self.tx.send(msg);

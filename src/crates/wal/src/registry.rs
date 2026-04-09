@@ -153,16 +153,10 @@ mod tests {
     use crate::format::WalEvent;
     use crate::{Config, Ingester, RotationConfig};
 
-    fn test_machine_id() -> uuid::Uuid {
-        uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
-    }
-
-    fn test_boot_id() -> uuid::Uuid {
-        uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
-    }
-
     fn test_file_id(seq: u64) -> FileId {
-        FileId::new(test_machine_id(), test_boot_id(), seq, 0)
+        let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
+        let boot_id = uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap();
+        FileId::new(machine_id, boot_id, seq, 0)
     }
 
     /// Helper: create an Ingester, write entries, shutdown, and return all events.
@@ -177,8 +171,8 @@ mod tests {
             crc_enabled: false,
             compression_enabled: true,
         };
-        let mut ingester =
-            Ingester::new(dir, config, test_machine_id(), test_boot_id()).unwrap();
+        let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut ingester = Ingester::new(dir, config, seq).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {

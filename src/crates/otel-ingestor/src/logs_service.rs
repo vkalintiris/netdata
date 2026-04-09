@@ -1,6 +1,9 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 
+use bridge::config::AuthConfig;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
@@ -46,16 +49,67 @@ fn ns_hash_from_resource(rl: &ResourceLogs) -> u64 {
     wal::compute_ns_hash(namespace, name)
 }
 
+fn validate_tenant_id(id: &str) -> Result<(), Status> {
+    if id.is_empty() || id.len() > 255 {
+        return Err(Status::invalid_argument("tenant ID must be 1-255 bytes"));
+    }
+    if id == "." || id == ".." {
+        return Err(Status::invalid_argument(
+            "tenant ID must not be '.' or '..'",
+        ));
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+    {
+        return Err(Status::invalid_argument(
+            "tenant ID must contain only [a-zA-Z0-9._-]",
+        ));
+    }
+    Ok(())
+}
+
+fn extract_tenant_id(
+    metadata: &tonic::metadata::MetadataMap,
+    auth: &AuthConfig,
+) -> Result<String, Status> {
+    if !auth.enabled {
+        return Ok("default".to_string());
+    }
+    let value = metadata
+        .get(AuthConfig::TENANT_HEADER)
+        .ok_or_else(|| Status::unauthenticated("missing tenant header"))?;
+    let tenant = value
+        .to_str()
+        .map_err(|_| Status::invalid_argument("tenant header must be valid UTF-8"))?;
+    validate_tenant_id(tenant)?;
+    Ok(tenant.to_string())
+}
+
 pub struct NetdataLogsService {
-    wal: Mutex<Ingester>,
+    ingesters: Mutex<HashMap<String, Ingester>>,
     sender: LedgerSender,
+    wal_base_dir: PathBuf,
+    wal_config: wal::Config,
+    seq: Arc<AtomicU64>,
+    auth: AuthConfig,
 }
 
 impl NetdataLogsService {
-    pub fn new(wal: Ingester, sender: LedgerSender) -> Self {
+    pub fn new(
+        sender: LedgerSender,
+        wal_base_dir: PathBuf,
+        wal_config: wal::Config,
+        seq: Arc<AtomicU64>,
+        auth: AuthConfig,
+    ) -> Self {
         Self {
-            wal: Mutex::new(wal),
+            ingesters: Mutex::new(HashMap::new()),
             sender,
+            wal_base_dir,
+            wal_config,
+            seq,
+            auth,
         }
     }
 }
@@ -67,6 +121,7 @@ impl LogsService for NetdataLogsService {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        let tenant_id = extract_tenant_id(request.metadata(), &self.auth)?;
         let req = request.into_inner();
 
         // Group ResourceLogs by ns_hash.
@@ -76,7 +131,22 @@ impl LogsService for NetdataLogsService {
             groups.entry(ns_hash).or_default().push(rl);
         }
 
-        let mut wal = self.wal.lock().unwrap();
+        let mut ingesters = self.ingesters.lock().unwrap();
+        let ingester = if let Some(ing) = ingesters.get_mut(&tenant_id) {
+            ing
+        } else {
+            let path = self.wal_base_dir.join(&tenant_id);
+            let ing = Ingester::new(
+                &path,
+                self.wal_config.clone(),
+                Arc::clone(&self.seq),
+            )
+            .map_err(|e| {
+                tracing::error!(%e, tenant = %tenant_id, "failed to create ingester");
+                Status::internal("ingester creation failed")
+            })?;
+            ingesters.entry(tenant_id.clone()).or_insert(ing)
+        };
 
         for (ns_hash, resource_logs) in groups {
             let (data, count) = arrow_bridge::encode(resource_logs).map_err(|e| {
@@ -84,19 +154,19 @@ impl LogsService for NetdataLogsService {
                 Status::internal("Arrow encode error")
             })?;
 
-            wal.write_frame(ns_hash, &data, count).map_err(|e| {
+            ingester.write_frame(ns_hash, &data, count).map_err(|e| {
                 tracing::error!(%e, "failed to write WAL entry");
                 Status::internal("WAL write error")
             })?;
         }
 
-        wal.sync_all().map_err(|e| {
+        ingester.sync_all().map_err(|e| {
             tracing::error!(%e, "failed to sync WAL");
             Status::internal("WAL sync error")
         })?;
 
-        let events = wal.take_all_events();
-        self.sender.send_events(events);
+        let events = ingester.take_all_events();
+        self.sender.send_events(tenant_id, events);
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,

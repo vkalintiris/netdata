@@ -14,6 +14,8 @@ pub(super) struct LogsOverride {
     pub(super) storage: Option<StorageOverride>,
     #[serde(default)]
     pub(super) retention: Option<RetentionOverride>,
+    #[serde(default)]
+    pub(super) auth: Option<AuthOverride>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -47,6 +49,18 @@ pub(super) struct StorageOverride {
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub(super) struct AuthOverride {
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
+}
+
+impl AuthOverride {
+    pub(super) fn has_any(&self) -> bool {
+        self.enabled.is_some()
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub(super) struct RetentionOverride {
     #[serde(default)]
     pub(super) max_files: Option<usize>,
@@ -62,6 +76,7 @@ impl LogsOverride {
             || self.index.as_ref().is_some_and(|i| i.has_any())
             || self.storage.as_ref().is_some_and(|s| s.has_any())
             || self.retention.as_ref().is_some_and(|r| r.has_any())
+            || self.auth.as_ref().is_some_and(|a| a.has_any())
     }
 }
 
@@ -137,6 +152,11 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         }
         if let Some(v) = r.max_age {
             config.retention.max_age = v;
+        }
+    }
+    if let Some(a) = &o.auth {
+        if let Some(v) = a.enabled {
+            config.auth.enabled = v;
         }
     }
 }

@@ -15,7 +15,6 @@ path = "src/lib.rs"
 bridge = { path = "../netdata-plugin/bridge" }
 ferryboat = { workspace = true }
 flatten_otel = { workspace = true }
-journal-common = { workspace = true }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
 
 # WAL writing

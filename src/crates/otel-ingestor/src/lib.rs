@@ -13,7 +13,7 @@ use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsSe
 use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use tokio::sync::RwLock;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use wal::{Config as WalConfig, Ingester, RotationConfig};
+use wal::{Config as WalConfig, RotationConfig};
 
 mod aggregation;
 mod arrow_bridge;
@@ -252,12 +252,14 @@ fn create_logs_service(
     logs_config: &LogsConfig,
     writer_socket_path: &str,
 ) -> Result<NetdataLogsService> {
-    let wal_path = std::path::Path::new(&logs_config.wal.dir);
+    let wal_base_dir = std::path::PathBuf::from(&logs_config.wal.dir);
 
-    let machine_id = journal_common::load_machine_id().context("failed to load machine ID")?;
-    let boot_id = journal_common::load_boot_id().context("failed to load boot ID")?;
+    // Scan all tenant subdirectories for the global max sequence number.
+    let max_seq = wal::scan_max_sequence_recursive(&wal_base_dir)
+        .with_context(|| format!("scanning WAL dirs in {:?}", wal_base_dir))?;
+    let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(max_seq));
 
-    let config = WalConfig {
+    let wal_config = WalConfig {
         rotation: RotationConfig {
             max_log_entries: logs_config.wal.max_log_entries,
             max_file_size: ByteSize(logs_config.wal.max_file_size.as_u64()),
@@ -267,15 +269,19 @@ fn create_logs_service(
         compression_enabled: logs_config.wal.compression_enabled,
     };
 
-    let ingester = Ingester::new(wal_path, config, machine_id, boot_id)
-        .with_context(|| format!("creating WAL ingester in {:?}", wal_path))?;
-
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
         wal_dir = %logs_config.wal.dir,
-        "logs ingestion enabled (WAL)"
+        max_seq,
+        "logs ingestion enabled (multi-tenant WAL)"
     );
 
-    Ok(NetdataLogsService::new(ingester, sender))
+    Ok(NetdataLogsService::new(
+        sender,
+        wal_base_dir,
+        wal_config,
+        seq,
+        logs_config.auth.clone(),
+    ))
 }

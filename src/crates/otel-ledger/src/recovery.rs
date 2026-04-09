@@ -131,19 +131,24 @@ pub async fn recover_retention(
 pub async fn recover_unuploaded(
     registry: &mut Registry,
     uploader: &mut ComponentHandle<UploaderRequest, UploaderResponse>,
+    tenant_id: &str,
 ) -> anyhow::Result<()> {
     let unuploaded = registry.unuploaded_ids();
     if unuploaded.is_empty() {
         return Ok(());
     }
 
-    tracing::info!("uploading {} un-uploaded index files", unuploaded.len());
+    tracing::info!(
+        tenant = tenant_id,
+        "uploading {} un-uploaded index files",
+        unuploaded.len()
+    );
 
     let requests: Vec<_> = unuploaded
         .iter()
         .map(|&id| {
             let local_path = registry.index.file_path(id);
-            let remote_key = id.to_filename("sfst");
+            let remote_key = format!("{tenant_id}/{}", id.to_filename("sfst"));
             UploaderRequest::Upload {
                 seq: id.seq,
                 local_path,

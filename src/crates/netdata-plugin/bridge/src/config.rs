@@ -70,6 +70,9 @@ pub struct LogsConfig {
     pub storage: StorageConfig,
     /// Retention policy for log index files.
     pub retention: RetentionConfig,
+    /// Tenant authentication configuration.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 /// Remote object storage configuration.
@@ -123,6 +126,25 @@ pub struct RetentionConfig {
     /// Maximum age of WAL files.
     #[serde(with = "humantime_serde")]
     pub max_age: Duration,
+}
+
+/// Tenant authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// When false, all data routes to the "default" tenant.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
+impl AuthConfig {
+    /// The gRPC metadata key used for tenant identification.
+    pub const TENANT_HEADER: &str = "x-scope-orgid";
 }
 
 fn default_max_log_entries() -> usize {

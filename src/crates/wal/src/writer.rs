@@ -293,22 +293,22 @@ pub struct Ingester {
 impl Ingester {
     /// Create a new ingester.
     ///
-    /// Scans the WAL directory once to seed the shared sequence counter.
-    pub fn new(
-        path: &Path,
-        config: Config,
-        machine_id: Uuid,
-        boot_id: Uuid,
-    ) -> Result<Self> {
+    /// Machine and boot IDs are loaded from the system. The caller provides
+    /// a shared sequence counter (e.g., shared across per-tenant ingesters).
+    /// The directory is created if it doesn't exist.
+    pub fn new(path: &Path, config: Config, seq: Arc<AtomicU64>) -> Result<Self> {
+        let machine_id = journal_common::load_machine_id()
+            .map_err(|e| crate::Error::Io(e))?;
+        let boot_id = journal_common::load_boot_id()
+            .map_err(|e| crate::Error::Io(e))?;
         let dir = Arc::new(FileDir::new(path, WAL_EXT));
         std::fs::create_dir_all(dir.path())?;
-        let max_seq = dir.scan_max_sequence()?;
         Ok(Self {
             dir,
             machine_id,
             boot_id,
             config,
-            seq: Arc::new(AtomicU64::new(max_seq)),
+            seq,
             streams: HashMap::new(),
         })
     }
@@ -367,6 +367,27 @@ impl Ingester {
     }
 }
 
+/// Scan all immediate subdirectories of `base` for WAL files and return
+/// the highest sequence number found across all of them.
+///
+/// Returns 0 if the directory doesn't exist or contains no WAL files.
+pub fn scan_max_sequence_recursive(base: &Path) -> Result<u64> {
+    let mut max_seq: u64 = 0;
+    let entries = match std::fs::read_dir(base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+            let dir = FileDir::new(&entry.path(), WAL_EXT);
+            let seq = dir.scan_max_sequence()?;
+            max_seq = max_seq.max(seq);
+        }
+    }
+    Ok(max_seq)
+}
+
 fn fsync_dir(dir: &std::path::Path) -> Result<()> {
     let dir_file = File::open(dir)?;
     dir_file.sync_all()?;
@@ -378,16 +399,9 @@ mod tests {
     use super::*;
     use crate::Config;
 
-    fn test_machine_id() -> Uuid {
-        Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap()
-    }
-
-    fn test_boot_id() -> Uuid {
-        Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap()
-    }
-
     fn test_ingester(tmp: &std::path::Path) -> Ingester {
-        Ingester::new(tmp, Config::default(), test_machine_id(), test_boot_id()).unwrap()
+        let seq = Arc::new(AtomicU64::new(0));
+        Ingester::new(tmp, Config::default(), seq).unwrap()
     }
 
     #[test]

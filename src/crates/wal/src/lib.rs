@@ -11,4 +11,4 @@ pub use error::{Error, Result};
 pub use file_registry::{ByteSize, FileId, TimestampNs, compute_ns_hash};
 pub use reader::{Frame, Reader};
 pub use registry::{File, Registry};
-pub use writer::Ingester;
+pub use writer::{Ingester, scan_max_sequence_recursive};

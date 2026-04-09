@@ -110,5 +110,6 @@ pub enum WalEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalMessage {
     pub seq: u64,
+    pub tenant_id: String,
     pub event: WalEvent,
 }

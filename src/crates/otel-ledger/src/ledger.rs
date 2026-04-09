@@ -1,19 +1,21 @@
+use std::collections::HashMap;
+
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use file_registry::{ByteSize, FileId};
 use tokio_util::sync::CancellationToken;
+
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
 use crate::event::LedgerEvent;
-use crate::index;
 use crate::indexer::Indexer;
 use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
 };
 use crate::recovery::{now_ns, recover_retention, recover_unindexed, recover_unuploaded};
-use crate::registry::Registry;
+use crate::registry::TenantRegistries;
 use crate::uploader::Uploader;
 
 pub struct Ledger {
@@ -22,8 +24,10 @@ pub struct Ledger {
     indexer: ComponentHandle<IndexerRequest, IndexerResponse>,
     cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
-    registry: Registry,
+    registries: TenantRegistries,
     logs_config: LogsConfig,
+    /// Maps file sequence number → tenant ID for routing component responses.
+    seq_to_tenant: HashMap<u64, String>,
     expected_seq: u64,
     pub(crate) cancel: CancellationToken,
 }
@@ -34,13 +38,15 @@ impl Ledger {
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> anyhow::Result<Self> {
-        let wal = wal::Registry::new(std::path::Path::new(&logs_config.wal.dir));
-        let index_dir = std::path::Path::new(&logs_config.index.dir);
-        std::fs::create_dir_all(index_dir)?;
-        let index = index::Registry::new(index_dir);
+        let wal_base_dir = std::path::PathBuf::from(&logs_config.wal.dir);
+        let index_base_dir = std::path::PathBuf::from(&logs_config.index.dir);
 
-        let mut registry = Registry::new(wal, index);
-        registry.recover();
+        std::fs::create_dir_all(&wal_base_dir)?;
+        std::fs::create_dir_all(&index_base_dir)?;
+
+        let mut registries = TenantRegistries::new(wal_base_dir, index_base_dir);
+        registries.discover_tenants();
+
         let cancel = CancellationToken::new();
 
         let mut indexer = ComponentHandle::spawn::<Indexer>((), cancel.child_token());
@@ -48,28 +54,48 @@ impl Ledger {
         let mut cleaner = ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
         tracing::info!("cleaner spawned");
 
-        recover_unindexed(&mut registry, &mut indexer, &mut cleaner).await?;
-        recover_retention(&mut registry, &mut cleaner, &logs_config.retention).await?;
+        // Populate seq_to_tenant from recovered registries and run recovery per tenant.
+        let mut seq_to_tenant = HashMap::new();
+        for (tenant_id, registry) in registries.iter_mut() {
+            // Record all known sequences for this tenant.
+            for entry in registry.wal.archived_files() {
+                seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
+            }
+            for entry in registry.index.values() {
+                seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
+            }
+
+            recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
+            recover_retention(registry, &mut cleaner, &logs_config.retention).await?;
+        }
 
         let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-        let remote_available = match crate::registry::RemoteRegistry::recover(&operator).await {
-            Ok(remote) => {
-                registry.remote = remote;
-                true
-            }
-            Err(e) => {
-                tracing::warn!("remote storage unreachable, skipping upload recovery: {e}");
-                false
-            }
-        };
-
-        let mut uploader = ComponentHandle::spawn::<Uploader>(operator, cancel.child_token());
+        let mut uploader =
+            ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
         tracing::info!("uploader spawned");
 
-        if logs_config.storage.enabled && remote_available {
-            recover_unuploaded(&mut registry, &mut uploader).await?;
+        // Recover remote state and unuploaded files per tenant.
+        for (tenant_id, registry) in registries.iter_mut() {
+            let remote_available =
+                match crate::registry::RemoteRegistry::recover(&operator, tenant_id).await {
+                    Ok(remote) => {
+                        registry.remote = remote;
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            tenant = tenant_id.as_str(),
+                            "remote storage unreachable, skipping upload recovery: {e}"
+                        );
+                        false
+                    }
+                };
+
+            if logs_config.storage.enabled && remote_available {
+                recover_unuploaded(registry, &mut uploader, tenant_id).await?;
+            }
         }
 
         tracing::info!("recovery complete");
@@ -83,8 +109,9 @@ impl Ledger {
             indexer,
             cleaner,
             uploader,
-            registry,
+            registries,
             logs_config: logs_config.clone(),
+            seq_to_tenant,
             expected_seq: 1,
             cancel,
         })
@@ -163,10 +190,15 @@ impl Ledger {
     ) -> netdata_plugin_types::FunctionResult {
         match name {
             "otel-logs" => {
+                let mut total_wal = 0;
+                let mut total_index = 0;
+                for (_tenant_id, registry) in self.registries.tenants.iter() {
+                    total_wal += registry.wal.len();
+                    total_index += registry.index.len();
+                }
                 let payload = format!(
-                    "otel-logs called with args: {args:?}\nwal_files={} index_files={}",
-                    self.registry.wal.len(),
-                    self.registry.index.len(),
+                    "otel-logs called with args: {args:?}\ntenants={} wal_files={total_wal} index_files={total_index}",
+                    self.registries.tenants.len(),
                 );
                 netdata_plugin_types::FunctionResult {
                     transaction: String::new(),
@@ -188,6 +220,8 @@ impl Ledger {
 
     async fn handle_ingestor_msg(&mut self, msg: wal::format::WalMessage) {
         let seq = msg.seq;
+        let tenant_id = msg.tenant_id;
+
         if seq != self.expected_seq {
             tracing::warn!(
                 "sequence gap: expected={} got={seq} missed={}",
@@ -200,7 +234,8 @@ impl Ledger {
         // Log before applying — extract fields for logging.
         match &msg.event {
             wal::format::WalEvent::FileCreated { id, .. } => {
-                tracing::info!("FileCreated seq={seq} id={id}");
+                tracing::info!(tenant = %tenant_id, "FileCreated seq={seq} id={id}");
+                self.seq_to_tenant.insert(id.seq, tenant_id.clone());
             }
             wal::format::WalEvent::FileSynced {
                 id,
@@ -209,6 +244,7 @@ impl Ledger {
                 ..
             } => {
                 tracing::info!(
+                    tenant = %tenant_id,
                     "DataSynced seq={seq} id={id} frames={frame_count} entries={entry_count}",
                 );
             }
@@ -218,12 +254,18 @@ impl Ledger {
                 size,
                 ..
             } => {
-                tracing::info!("FileCompleted seq={seq} id={id} frames={frame_count} size={size}",);
+                tracing::info!(
+                    tenant = %tenant_id,
+                    "FileCompleted seq={seq} id={id} frames={frame_count} size={size}",
+                );
+                self.seq_to_tenant.insert(id.seq, tenant_id.clone());
             }
         }
 
+        let registry = self.registries.get_or_create(&tenant_id);
+
         // Apply the event to the registry.
-        if let Err(e) = self.registry.wal.apply_event(&msg.event) {
+        if let Err(e) = registry.wal.apply_event(&msg.event) {
             tracing::error!("failed to apply WAL event: {e}");
             return;
         }
@@ -231,8 +273,8 @@ impl Ledger {
         // Trigger indexing on file completion.
         if let wal::format::WalEvent::FileCompleted { id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
-                wal_path: self.registry.wal.file_path(id),
-                index_path: self.registry.index.file_path(id),
+                wal_path: registry.wal.file_path(id),
+                index_path: registry.index.file_path(id),
             };
 
             if let Err(e) = self.indexer.send(req) {
@@ -246,33 +288,44 @@ impl Ledger {
             IndexerResponse::IndexFinalized { seq, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
-                let wal_file = self.registry.wal.remove_by_seq(seq);
-                let created_at_ns = wal_file
-                    .as_ref()
-                    .map(|w| w.created_at_ns)
-                    .unwrap_or_default();
-                if let Some(wal_file) = wal_file {
-                    // Delete the now-redundant WAL file.
-                    let wal_path = self.registry.wal.file_path(wal_file.id);
-                    self.request_wal_delete(wal_file.id.seq, wal_path);
+                let tenant_id = match self.seq_to_tenant.get(&seq) {
+                    Some(t) => t.clone(),
+                    None => {
+                        tracing::warn!("index finalized for unknown seq={seq}, no tenant mapping");
+                        return;
+                    }
+                };
 
-                    let index_file_path = self.registry.index.file_path(wal_file.id);
-                    let index_size = ByteSize(
-                        std::fs::metadata(&index_file_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0),
-                    );
-                    self.registry
-                        .index
-                        .track(wal_file.id, created_at_ns, index_size);
+                // Extract what we need from the registry, then drop the borrow
+                // so we can call methods on `self`.
+                let (wal_file_id, wal_path) = {
+                    let registry = self.registries.get_or_create(&tenant_id);
+                    let wal_file = registry.wal.remove_by_seq(seq);
+                    match wal_file {
+                        Some(wf) => {
+                            let wal_path = registry.wal.file_path(wf.id);
+                            let index_file_path = registry.index.file_path(wf.id);
+                            let index_size = ByteSize(
+                                std::fs::metadata(&index_file_path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0),
+                            );
+                            registry.index.track(wf.id, wf.created_at_ns, index_size);
+                            (Some(wf.id), Some(wal_path))
+                        }
+                        None => {
+                            tracing::warn!("index finalized for unknown WAL seq={seq}");
+                            (None, None)
+                        }
+                    }
+                };
 
-                    // Trigger upload if storage is enabled.
-                    self.request_upload(wal_file.id);
-                } else {
-                    tracing::warn!("index finalized for unknown WAL seq={seq}");
+                if let (Some(id), Some(wal_path)) = (wal_file_id, wal_path) {
+                    self.request_wal_delete(id.seq, wal_path);
+                    self.request_upload(id, &tenant_id);
                 }
 
-                self.evaluate_retention();
+                self.evaluate_retention(&tenant_id);
             }
             IndexerResponse::IndexFailed { path, error } => {
                 tracing::error!("indexing failed path={} error={error}", path.display());
@@ -284,8 +337,14 @@ impl Ledger {
         match resp {
             UploaderResponse::Uploaded { seq, remote_key } => {
                 tracing::info!("upload complete seq={seq} remote_key={remote_key}");
-                if let Some(entry) = self.registry.index.get(seq) {
-                    self.registry.remote.track(entry.id, remote_key);
+                let tenant_id = match self.seq_to_tenant.get(&seq) {
+                    Some(t) => t.clone(),
+                    None => return,
+                };
+                if let Some(registry) = self.registries.get_mut(&tenant_id) {
+                    if let Some(entry) = registry.index.get(seq) {
+                        registry.remote.track(entry.id, remote_key);
+                    }
                 }
             }
             UploaderResponse::UploadFailed { seq, error } => {
@@ -300,7 +359,12 @@ impl Ledger {
                 tracing::info!("WAL file deleted seq={sequence}");
             }
             CleanerResponse::IndexFileDeleted { sequence } => {
-                self.registry.index.remove(sequence);
+                let tenant_id = self.seq_to_tenant.remove(&sequence);
+                if let Some(tid) = &tenant_id {
+                    if let Some(registry) = self.registries.get_mut(tid) {
+                        registry.index.remove(sequence);
+                    }
+                }
                 tracing::info!("index file evicted seq={sequence}");
             }
             CleanerResponse::WalFileFailed { sequence, error } => {
@@ -308,7 +372,11 @@ impl Ledger {
             }
             CleanerResponse::IndexFileFailed { sequence, error } => {
                 tracing::error!("index file deletion failed seq={sequence} error={error}");
-                self.registry.index.clear_pending_deletion(sequence);
+                if let Some(tenant_id) = self.seq_to_tenant.get(&sequence) {
+                    if let Some(registry) = self.registries.get_mut(tenant_id) {
+                        registry.index.clear_pending_deletion(sequence);
+                    }
+                }
             }
         }
     }
@@ -320,12 +388,16 @@ impl Ledger {
         }
     }
 
-    fn request_upload(&mut self, id: FileId) {
+    fn request_upload(&mut self, id: FileId, tenant_id: &str) {
         if !self.logs_config.storage.enabled {
             return;
         }
-        let local_path = self.registry.index.file_path(id);
-        let remote_key = id.to_filename("sfst");
+        let registry = match self.registries.get(tenant_id) {
+            Some(r) => r,
+            None => return,
+        };
+        let local_path = registry.index.file_path(id);
+        let remote_key = format!("{}/{}", tenant_id, id.to_filename("sfst"));
         let req = UploaderRequest::Upload {
             seq: id.seq,
             local_path,
@@ -336,16 +408,20 @@ impl Ledger {
         }
     }
 
-    fn evaluate_retention(&mut self) {
-        let to_evict = self
-            .registry
+    fn evaluate_retention(&mut self, tenant_id: &str) {
+        let registry = match self.registries.get_mut(tenant_id) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let to_evict = registry
             .index
             .evaluate_retention(&self.logs_config.retention, now_ns());
 
         for seq in to_evict {
-            self.registry.index.mark_pending_deletion(seq);
-            if let Some(entry) = self.registry.index.get(seq) {
-                let path = self.registry.index.file_path(entry.id);
+            registry.index.mark_pending_deletion(seq);
+            if let Some(entry) = registry.index.get(seq) {
+                let path = registry.index.file_path(entry.id);
                 tracing::info!("retention: evicting seq={seq} path={}", path.display());
                 let req = CleanerRequest::DeleteIndexFile {
                     sequence: seq,
@@ -353,7 +429,7 @@ impl Ledger {
                 };
                 if let Err(e) = self.cleaner.send(req) {
                     tracing::error!("failed to send index eviction seq={seq}: {e}");
-                    self.registry.index.clear_pending_deletion(seq);
+                    registry.index.clear_pending_deletion(seq);
                 }
             }
         }

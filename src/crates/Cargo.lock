@@ -3073,7 +3073,6 @@ dependencies = [
  "ferryboat",
  "file-registry",
  "flatten_otel",
- "journal-common",
  "netdata-plugin-types",
  "opentelemetry-proto",
  "otap-df-pdata",
@@ -5130,6 +5129,7 @@ version = "0.1.3"
 dependencies = [
  "crc32fast",
  "file-registry",
+ "journal-common",
  "lz4_flex",
  "nix",
  "serde",
