@@ -194,45 +194,57 @@ fn default_true() -> bool {
 
 mod opt_bytesize {
     use bytesize::ByteSize;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(val: &Option<ByteSize>, s: S) -> Result<S::Ok, S::Error> {
-        match val {
-            Some(v) => s.serialize_str(&v.to_string()),
-            None => s.serialize_none(),
+        if s.is_human_readable() {
+            val.as_ref().map(|v| v.to_string()).serialize(s)
+        } else {
+            val.as_ref().map(|v| v.as_u64()).serialize(s)
         }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<ByteSize>, D::Error> {
-        let opt = Option::<String>::deserialize(d)?;
-        match opt {
-            None => Ok(None),
-            Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
+        if d.is_human_readable() {
+            let opt = Option::<String>::deserialize(d)?;
+            match opt {
+                None => Ok(None),
+                Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
+            }
+        } else {
+            Option::<u64>::deserialize(d).map(|opt| opt.map(ByteSize))
         }
     }
 }
 
 mod opt_duration {
     use std::time::Duration;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(val: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
-        match val {
-            Some(v) => {
-                let formatted = humantime_serde::re::humantime::format_duration(*v).to_string();
-                s.serialize_str(&formatted)
-            }
-            None => s.serialize_none(),
+        if s.is_human_readable() {
+            val.as_ref()
+                .map(|v| humantime_serde::re::humantime::format_duration(*v).to_string())
+                .serialize(s)
+        } else {
+            val.as_ref()
+                .map(|v| (v.as_secs(), v.subsec_nanos()))
+                .serialize(s)
         }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
-        let opt = Option::<String>::deserialize(d)?;
-        match opt {
-            None => Ok(None),
-            Some(s) => humantime_serde::re::humantime::parse_duration(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
+        if d.is_human_readable() {
+            let opt = Option::<String>::deserialize(d)?;
+            match opt {
+                None => Ok(None),
+                Some(s) => humantime_serde::re::humantime::parse_duration(&s)
+                    .map(Some)
+                    .map_err(serde::de::Error::custom),
+            }
+        } else {
+            let opt = Option::<(u64, u32)>::deserialize(d)?;
+            Ok(opt.map(|(secs, nanos)| Duration::new(secs, nanos)))
         }
     }
 }
