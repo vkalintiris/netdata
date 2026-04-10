@@ -32,6 +32,10 @@ struct Args {
     #[arg(long, default_value_t = 1000)]
     flush_interval_ms: u64,
 
+    /// Tenant ID sent via the X-Scope-OrgID gRPC header
+    #[arg(long)]
+    tenant_id: Option<String>,
+
     /// Tracing log level
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -63,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         args.batch_size,
         flush_interval,
         record_rx,
+        args.tenant_id,
     )
     .await?;
 

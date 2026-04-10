@@ -16,6 +16,7 @@ pub struct Sender {
     batch_size: usize,
     flush_interval: Duration,
     rx: mpsc::Receiver<LogRecord>,
+    tenant_id: Option<String>,
 }
 
 impl Sender {
@@ -24,6 +25,7 @@ impl Sender {
         batch_size: usize,
         flush_interval: Duration,
         rx: mpsc::Receiver<LogRecord>,
+        tenant_id: Option<String>,
     ) -> anyhow::Result<Self> {
         info!("Connecting to OTel endpoint: {}", endpoint);
         let channel = Channel::from_shared(endpoint.to_string())?
@@ -38,6 +40,7 @@ impl Sender {
             batch_size,
             flush_interval,
             rx,
+            tenant_id,
         })
     }
 
@@ -80,7 +83,14 @@ impl Sender {
     async fn flush(&mut self) {
         let records: Vec<LogRecord> = self.batch.drain(..).collect();
         let count = records.len();
-        let request = build_export_request(records);
+        let export = build_export_request(records);
+        let mut request = tonic::Request::new(export);
+
+        if let Some(ref tenant_id) = self.tenant_id {
+            request
+                .metadata_mut()
+                .insert("x-scope-orgid", tenant_id.parse().unwrap());
+        }
 
         match self.client.export(request).await {
             Ok(_response) => {
