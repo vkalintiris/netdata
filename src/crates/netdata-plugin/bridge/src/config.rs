@@ -100,21 +100,60 @@ pub struct IndexConfig {
 pub struct WalConfig {
     /// Directory for WAL file storage.
     pub dir: String,
-    /// Maximum size per WAL file.
-    #[serde(with = "bytesize_serde")]
-    pub max_file_size: ByteSize,
-    /// Maximum log entries per WAL file.
-    #[serde(default = "default_max_log_entries")]
-    pub max_log_entries: usize,
-    /// Maximum time span per WAL file.
-    #[serde(with = "humantime_serde")]
-    pub max_file_duration: Duration,
     /// Whether to compute CRC32 checksums per frame.
     #[serde(default = "default_true")]
     pub crc_enabled: bool,
     /// Whether to LZ4-compress frame payloads.
     #[serde(default = "default_true")]
     pub compression_enabled: bool,
+    /// Per-tenant rotation policies, keyed by tenant name.
+    /// The `"default"` key is required and used as the fallback.
+    pub rotation: HashMap<String, RotationEntry>,
+}
+
+/// A rotation policy entry. All fields are optional so that per-tenant
+/// entries can override only specific values from the `"default"` entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RotationEntry {
+    #[serde(default, with = "opt_bytesize")]
+    pub max_file_size: Option<ByteSize>,
+    #[serde(default)]
+    pub max_log_entries: Option<usize>,
+    #[serde(default, with = "opt_duration")]
+    pub max_file_duration: Option<Duration>,
+}
+
+/// A fully resolved rotation policy (all fields present).
+#[derive(Debug, Clone)]
+pub struct RotationConfig {
+    pub max_file_size: ByteSize,
+    pub max_log_entries: usize,
+    pub max_file_duration: Duration,
+}
+
+impl RotationConfig {
+    /// Resolve the effective rotation for a tenant by merging with the default.
+    pub fn resolve(map: &HashMap<String, RotationEntry>, tenant_id: &str) -> Self {
+        let default = map
+            .get("default")
+            .expect("rotation map must have a \"default\" entry");
+        let tenant = map.get(tenant_id);
+
+        Self {
+            max_file_size: tenant
+                .and_then(|t| t.max_file_size)
+                .or(default.max_file_size)
+                .expect("default rotation must set max_file_size"),
+            max_log_entries: tenant
+                .and_then(|t| t.max_log_entries)
+                .or(default.max_log_entries)
+                .expect("default rotation must set max_log_entries"),
+            max_file_duration: tenant
+                .and_then(|t| t.max_file_duration)
+                .or(default.max_file_duration)
+                .expect("default rotation must set max_file_duration"),
+        }
+    }
 }
 
 /// A retention policy entry. All fields are optional so that per-tenant
@@ -182,10 +221,6 @@ impl Default for AuthConfig {
 impl AuthConfig {
     /// The gRPC metadata key used for tenant identification.
     pub const TENANT_HEADER: &str = "x-scope-orgid";
-}
-
-fn default_max_log_entries() -> usize {
-    50000
 }
 
 fn default_true() -> bool {

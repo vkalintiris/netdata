@@ -1,8 +1,6 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
 use bridge::config::{LogsConfig, RetentionEntry};
-use bytesize::ByteSize;
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,16 +27,12 @@ pub(super) struct IndexOverride {
 pub(super) struct WalOverride {
     #[serde(default)]
     pub(super) dir: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_opt_bytesize")]
-    pub(super) max_file_size: Option<ByteSize>,
-    #[serde(default)]
-    pub(super) max_log_entries: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_opt_duration")]
-    pub(super) max_file_duration: Option<Duration>,
     #[serde(default)]
     pub(super) crc_enabled: Option<bool>,
     #[serde(default)]
     pub(super) compression_enabled: Option<bool>,
+    #[serde(default)]
+    pub(super) rotation: Option<HashMap<String, bridge::config::RotationEntry>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -86,11 +80,9 @@ impl IndexOverride {
 impl WalOverride {
     pub(super) fn has_any(&self) -> bool {
         self.dir.is_some()
-            || self.max_file_size.is_some()
-            || self.max_log_entries.is_some()
-            || self.max_file_duration.is_some()
             || self.crc_enabled.is_some()
             || self.compression_enabled.is_some()
+            || self.rotation.is_some()
     }
 }
 
@@ -99,20 +91,25 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         if let Some(v) = &w.dir {
             config.wal.dir = v.clone();
         }
-        if let Some(v) = w.max_file_size {
-            config.wal.max_file_size = v;
-        }
-        if let Some(v) = w.max_log_entries {
-            config.wal.max_log_entries = v;
-        }
-        if let Some(v) = w.max_file_duration {
-            config.wal.max_file_duration = v;
-        }
         if let Some(v) = w.crc_enabled {
             config.wal.crc_enabled = v;
         }
         if let Some(v) = w.compression_enabled {
             config.wal.compression_enabled = v;
+        }
+        if let Some(r) = &w.rotation {
+            for (tenant, entry) in r {
+                let target = config.wal.rotation.entry(tenant.clone()).or_default();
+                if let Some(v) = entry.max_file_size {
+                    target.max_file_size = Some(v);
+                }
+                if let Some(v) = entry.max_log_entries {
+                    target.max_log_entries = Some(v);
+                }
+                if let Some(v) = entry.max_file_duration {
+                    target.max_file_duration = Some(v);
+                }
+            }
         }
     }
     if let Some(i) = &o.index {
@@ -147,29 +144,5 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         if let Some(v) = a.enabled {
             config.auth.enabled = v;
         }
-    }
-}
-
-fn deserialize_opt_bytesize<'de, D>(d: D) -> Result<Option<ByteSize>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(d)?;
-    match opt {
-        None => Ok(None),
-        Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
-    }
-}
-
-fn deserialize_opt_duration<'de, D>(d: D) -> Result<Option<Duration>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(d)?;
-    match opt {
-        None => Ok(None),
-        Some(s) => humantime::parse_duration(&s)
-            .map(Some)
-            .map_err(serde::de::Error::custom),
     }
 }

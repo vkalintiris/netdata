@@ -8,12 +8,10 @@ use anyhow::{Context, Result};
 use bridge::config::{LogsConfig, PluginConfig};
 use bridge::{IngestorRequest, IngestorResponse};
 use ferryboat::{Connection, Endpoint};
-use file_registry::ByteSize;
 use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
 use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use tokio::sync::RwLock;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use wal::{Config as WalConfig, RotationConfig};
 
 mod aggregation;
 mod arrow_bridge;
@@ -259,16 +257,6 @@ fn create_logs_service(
         .with_context(|| format!("scanning WAL dirs in {:?}", wal_base_dir))?;
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(max_seq));
 
-    let wal_config = WalConfig {
-        rotation: RotationConfig {
-            max_log_entries: logs_config.wal.max_log_entries,
-            max_file_size: ByteSize(logs_config.wal.max_file_size.as_u64()),
-            max_duration: Some(logs_config.wal.max_file_duration),
-        },
-        crc_enabled: logs_config.wal.crc_enabled,
-        compression_enabled: logs_config.wal.compression_enabled,
-    };
-
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
@@ -280,7 +268,7 @@ fn create_logs_service(
     Ok(NetdataLogsService::new(
         sender,
         wal_base_dir,
-        wal_config,
+        logs_config.wal.clone(),
         seq,
         logs_config.auth.clone(),
     ))

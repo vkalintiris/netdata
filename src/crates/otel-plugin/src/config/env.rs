@@ -118,13 +118,25 @@ impl MetricsOverride {
 
 impl LogsOverride {
     fn from_env() -> Result<Self> {
-        let wal = WalOverride {
-            dir: env_var("NETDATA_OTEL_LOGS_WAL_DIR")?,
+        let rotation_default = bridge::config::RotationEntry {
             max_file_size: parse_env_bytesize("NETDATA_OTEL_LOGS_WAL_MAX_FILE_SIZE")?,
             max_log_entries: parse_env_var("NETDATA_OTEL_LOGS_WAL_MAX_LOG_ENTRIES")?,
             max_file_duration: parse_env_duration("NETDATA_OTEL_LOGS_WAL_MAX_FILE_DURATION")?,
+        };
+        let rotation_has_any = rotation_default.max_file_size.is_some()
+            || rotation_default.max_log_entries.is_some()
+            || rotation_default.max_file_duration.is_some();
+        let wal = WalOverride {
+            dir: env_var("NETDATA_OTEL_LOGS_WAL_DIR")?,
             crc_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_CRC_ENABLED")?,
             compression_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_COMPRESSION_ENABLED")?,
+            rotation: if rotation_has_any {
+                let mut map = std::collections::HashMap::new();
+                map.insert("default".to_string(), rotation_default);
+                Some(map)
+            } else {
+                None
+            },
         };
         let index = IndexOverride {
             dir: parse_env_var("NETDATA_OTEL_LOGS_INDEX_DIR")?,

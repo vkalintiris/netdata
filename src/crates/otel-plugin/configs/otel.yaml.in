@@ -41,20 +41,28 @@ logs:
     # Directory for WAL file storage.
     dir: @logdir_POST@/otel/v1/wal
 
-    # Maximum size per WAL file (e.g., "100MB", "1.5GB").
-    max_file_size: "25MB"
-
-    # Maximum log entries per WAL file.
-    max_log_entries: 10000
-
-    # Maximum time span per WAL file (e.g., "2 hours", "1h", "30m").
-    max_file_duration: "2 hours"
-
     # Whether to compute CRC32 checksums per frame.
     crc_enabled: true
 
     # Whether to LZ4-compress frame payloads.
     compression_enabled: true
+
+    rotation:
+      # Default rotation policy, applied to all tenants unless overridden.
+      default:
+        # Maximum size per WAL file (e.g., "100MB", "1.5GB").
+        max_file_size: "25MB"
+
+        # Maximum log entries per WAL file.
+        max_log_entries: 10000
+
+        # Maximum time span per WAL file (e.g., "2 hours", "1h", "30m").
+        max_file_duration: "2 hours"
+
+      # Per-tenant overrides (uncomment and adjust as needed):
+      # certstream:
+      #   max_file_size: "100MB"
+      #   max_log_entries: 50000
 
   index:
     # Directory for index file storage.

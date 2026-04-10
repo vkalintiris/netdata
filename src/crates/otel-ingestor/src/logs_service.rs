@@ -90,7 +90,7 @@ pub struct NetdataLogsService {
     ingesters: Mutex<HashMap<String, Ingester>>,
     sender: LedgerSender,
     wal_base_dir: PathBuf,
-    wal_config: wal::Config,
+    wal_config: bridge::config::WalConfig,
     seq: Arc<AtomicU64>,
     auth: AuthConfig,
 }
@@ -99,7 +99,7 @@ impl NetdataLogsService {
     pub fn new(
         sender: LedgerSender,
         wal_base_dir: PathBuf,
-        wal_config: wal::Config,
+        wal_config: bridge::config::WalConfig,
         seq: Arc<AtomicU64>,
         auth: AuthConfig,
     ) -> Self {
@@ -110,6 +110,22 @@ impl NetdataLogsService {
             wal_config,
             seq,
             auth,
+        }
+    }
+
+    fn resolve_wal_config(&self, tenant_id: &str) -> wal::Config {
+        let rotation = bridge::config::RotationConfig::resolve(
+            &self.wal_config.rotation,
+            tenant_id,
+        );
+        wal::Config {
+            rotation: wal::RotationConfig {
+                max_log_entries: rotation.max_log_entries,
+                max_file_size: file_registry::ByteSize(rotation.max_file_size.as_u64()),
+                max_duration: Some(rotation.max_file_duration),
+            },
+            crc_enabled: self.wal_config.crc_enabled,
+            compression_enabled: self.wal_config.compression_enabled,
         }
     }
 }
@@ -136,9 +152,10 @@ impl LogsService for NetdataLogsService {
             ing
         } else {
             let path = self.wal_base_dir.join(&tenant_id);
+            let wal_config = self.resolve_wal_config(&tenant_id);
             let ing = Ingester::new(
                 &path,
-                self.wal_config.clone(),
+                wal_config,
                 Arc::clone(&self.seq),
             )
             .map_err(|e| {

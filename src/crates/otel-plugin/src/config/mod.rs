@@ -175,11 +175,13 @@ metrics:
 logs:
   wal:
     dir: /var/log/netdata/otel/v1/wal
-    max_file_size: "100MB"
-    max_log_entries: 50000
-    max_file_duration: "2 hours"
     crc_enabled: true
     compression_enabled: true
+    rotation:
+      default:
+        max_file_size: "100MB"
+        max_log_entries: 50000
+        max_file_duration: "2 hours"
   index:
     dir: /var/log/netdata/otel/v1/index
   storage:
@@ -215,12 +217,11 @@ logs:
     fn stock_yaml_logs_parsed() {
         let config = stock_config();
         assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
-        assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(100));
-        assert_eq!(config.logs.wal.max_log_entries, 50000);
-        assert_eq!(
-            config.logs.wal.max_file_duration,
-            Duration::from_secs(2 * 3600)
-        );
+        let rotation =
+            bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
+        assert_eq!(rotation.max_file_size, ByteSize::mb(100));
+        assert_eq!(rotation.max_log_entries, 50000);
+        assert_eq!(rotation.max_file_duration, Duration::from_secs(2 * 3600));
         assert!(config.logs.wal.crc_enabled);
         assert!(config.logs.wal.compression_enabled);
         let retention =
@@ -282,23 +283,29 @@ logs:
     #[test]
     fn override_logs_wal_field() {
         let mut config = stock_config();
-        let o: ConfigOverride =
-            serde_yaml::from_str("logs:\n  wal:\n    max_log_entries: 100000").unwrap();
+        let o: ConfigOverride = serde_yaml::from_str(
+            "logs:\n  wal:\n    rotation:\n      default:\n        max_log_entries: 100000",
+        )
+        .unwrap();
         apply_overrides(&mut config, &o);
-        assert_eq!(config.logs.wal.max_log_entries, 100000);
+        let rotation =
+            bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
+        assert_eq!(rotation.max_log_entries, 100000);
         assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
-        assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(100));
+        assert_eq!(rotation.max_file_size, ByteSize::mb(100));
     }
 
     #[test]
     fn override_logs_bytesize() {
         let mut config = stock_config();
         let o: ConfigOverride = serde_yaml::from_str(
-            "logs:\n  wal:\n    max_file_size: '200MB'\n  retention:\n    default:\n      max_total_size: '2GB'",
+            "logs:\n  wal:\n    rotation:\n      default:\n        max_file_size: '200MB'\n  retention:\n    default:\n      max_total_size: '2GB'",
         )
         .unwrap();
         apply_overrides(&mut config, &o);
-        assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(200));
+        let rotation =
+            bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
+        assert_eq!(rotation.max_file_size, ByteSize::mb(200));
         let retention =
             bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_total_size, ByteSize::gb(2));
@@ -308,17 +315,16 @@ logs:
     fn override_logs_duration() {
         let mut config = stock_config();
         let o: ConfigOverride = serde_yaml::from_str(
-            "logs:\n  retention:\n    default:\n      max_age: '14 days'\n  wal:\n    max_file_duration: '4 hours'",
+            "logs:\n  retention:\n    default:\n      max_age: '14 days'\n  wal:\n    rotation:\n      default:\n        max_file_duration: '4 hours'",
         )
         .unwrap();
         apply_overrides(&mut config, &o);
         let retention =
             bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_age, Duration::from_secs(14 * 24 * 3600));
-        assert_eq!(
-            config.logs.wal.max_file_duration,
-            Duration::from_secs(4 * 3600)
-        );
+        let rotation =
+            bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
+        assert_eq!(rotation.max_file_duration, Duration::from_secs(4 * 3600));
     }
 
     // -- Cross-section overrides --
@@ -396,15 +402,17 @@ logs:
 
     #[test]
     fn invalid_bytesize_in_override_rejected() {
-        let r: Result<ConfigOverride, _> =
-            serde_yaml::from_str("logs:\n  wal:\n    max_file_size: 'not a size'");
+        let r: Result<ConfigOverride, _> = serde_yaml::from_str(
+            "logs:\n  wal:\n    rotation:\n      default:\n        max_file_size: 'not a size'",
+        );
         assert!(r.is_err());
     }
 
     #[test]
     fn invalid_duration_in_override_rejected() {
-        let r: Result<ConfigOverride, _> =
-            serde_yaml::from_str("logs:\n  retention:\n    max_age: 'not a duration'");
+        let r: Result<ConfigOverride, _> = serde_yaml::from_str(
+            "logs:\n  retention:\n    default:\n      max_age: 'not a duration'",
+        );
         assert!(r.is_err());
     }
 
@@ -447,7 +455,9 @@ logs:
         with_env_vars(&[("NETDATA_OTEL_LOGS_WAL_MAX_FILE_SIZE", "200MB")], || {
             let o = ConfigOverride::from_env().unwrap();
             let wal = o.logs.as_ref().unwrap().wal.as_ref().unwrap();
-            assert_eq!(wal.max_file_size, Some(ByteSize::mb(200)));
+            let rotation = wal.rotation.as_ref().unwrap();
+            let entry = rotation.get("default").unwrap();
+            assert_eq!(entry.max_file_size, Some(ByteSize::mb(200)));
         });
     }
 
