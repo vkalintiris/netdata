@@ -186,9 +186,10 @@ logs:
     enabled: false
     uri: "fs:///var/log/netdata/otel/v1/remote"
   retention:
-    max_files: 10
-    max_total_size: "1GB"
-    max_age: "7 days"
+    default:
+      max_files: 10
+      max_total_size: "1GB"
+      max_age: "7 days"
 "#;
 
     fn stock_config() -> PluginConfig {
@@ -222,12 +223,11 @@ logs:
         );
         assert!(config.logs.wal.crc_enabled);
         assert!(config.logs.wal.compression_enabled);
-        assert_eq!(config.logs.retention.max_files, 10);
-        assert_eq!(config.logs.retention.max_total_size, ByteSize::gb(1));
-        assert_eq!(
-            config.logs.retention.max_age,
-            Duration::from_secs(7 * 24 * 3600)
-        );
+        let retention =
+            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        assert_eq!(retention.max_files, 10);
+        assert_eq!(retention.max_total_size, ByteSize::gb(1));
+        assert_eq!(retention.max_age, Duration::from_secs(7 * 24 * 3600));
     }
 
     #[test]
@@ -294,26 +294,27 @@ logs:
     fn override_logs_bytesize() {
         let mut config = stock_config();
         let o: ConfigOverride = serde_yaml::from_str(
-            "logs:\n  wal:\n    max_file_size: '200MB'\n  retention:\n    max_total_size: '2GB'",
+            "logs:\n  wal:\n    max_file_size: '200MB'\n  retention:\n    default:\n      max_total_size: '2GB'",
         )
         .unwrap();
         apply_overrides(&mut config, &o);
         assert_eq!(config.logs.wal.max_file_size, ByteSize::mb(200));
-        assert_eq!(config.logs.retention.max_total_size, ByteSize::gb(2));
+        let retention =
+            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        assert_eq!(retention.max_total_size, ByteSize::gb(2));
     }
 
     #[test]
     fn override_logs_duration() {
         let mut config = stock_config();
         let o: ConfigOverride = serde_yaml::from_str(
-            "logs:\n  retention:\n    max_age: '14 days'\n  wal:\n    max_file_duration: '4 hours'",
+            "logs:\n  retention:\n    default:\n      max_age: '14 days'\n  wal:\n    max_file_duration: '4 hours'",
         )
         .unwrap();
         apply_overrides(&mut config, &o);
-        assert_eq!(
-            config.logs.retention.max_age,
-            Duration::from_secs(14 * 24 * 3600)
-        );
+        let retention =
+            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        assert_eq!(retention.max_age, Duration::from_secs(14 * 24 * 3600));
         assert_eq!(
             config.logs.wal.max_file_duration,
             Duration::from_secs(4 * 3600)
@@ -333,7 +334,8 @@ metrics:
   expiry_duration_secs: 1800
 logs:
   retention:
-    max_files: 20
+    default:
+      max_files: 20
 "#,
         )
         .unwrap();
@@ -341,7 +343,9 @@ logs:
         assert_eq!(config.endpoint.path, "0.0.0.0:9999");
         assert_eq!(config.metrics.expiry_duration_secs, Some(1800));
         assert_eq!(config.metrics.interval_secs, Some(10));
-        assert_eq!(config.logs.retention.max_files, 20);
+        let retention =
+            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        assert_eq!(retention.max_files, 20);
     }
 
     #[test]
@@ -453,8 +457,9 @@ logs:
             &[("NETDATA_OTEL_LOGS_RETENTION_MAX_AGE", "14 days")],
             || {
                 let o = ConfigOverride::from_env().unwrap();
-                let retention = o.logs.as_ref().unwrap().retention.as_ref().unwrap();
-                assert_eq!(retention.max_age, Some(Duration::from_secs(14 * 24 * 3600)));
+                let retention_map = o.logs.as_ref().unwrap().retention.as_ref().unwrap();
+                let entry = retention_map.get("default").unwrap();
+                assert_eq!(entry.max_age, Some(Duration::from_secs(14 * 24 * 3600)));
             },
         );
     }

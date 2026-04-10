@@ -4,6 +4,7 @@
 //! and for IPC serialization (via ferryboat/bincode). They use human-readable
 //! types (`ByteSize`, `humantime_serde`) so the YAML format works naturally.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use bytesize::ByteSize;
@@ -68,8 +69,9 @@ pub struct LogsConfig {
     pub index: IndexConfig,
     /// Remote object storage configuration.
     pub storage: StorageConfig,
-    /// Retention policy for log index files.
-    pub retention: RetentionConfig,
+    /// Per-tenant retention policies, keyed by tenant name.
+    /// The `"default"` key is required and used as the fallback.
+    pub retention: HashMap<String, RetentionEntry>,
     /// Tenant authentication configuration.
     #[serde(default)]
     pub auth: AuthConfig,
@@ -115,17 +117,52 @@ pub struct WalConfig {
     pub compression_enabled: bool,
 }
 
-/// Retention policy for WAL files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A retention policy entry. All fields are optional so that per-tenant
+/// entries can override only specific values from the `"default"` entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RetentionEntry {
+    #[serde(default)]
+    pub max_files: Option<usize>,
+    #[serde(default, with = "opt_bytesize")]
+    pub max_total_size: Option<ByteSize>,
+    #[serde(default, with = "opt_duration")]
+    pub max_age: Option<Duration>,
+}
+
+/// A fully resolved retention policy (all fields present).
+#[derive(Debug, Clone)]
 pub struct RetentionConfig {
-    /// Maximum number of WAL files to retain.
     pub max_files: usize,
-    /// Maximum total size of all WAL files.
-    #[serde(with = "bytesize_serde")]
     pub max_total_size: ByteSize,
-    /// Maximum age of WAL files.
-    #[serde(with = "humantime_serde")]
     pub max_age: Duration,
+}
+
+impl RetentionConfig {
+    /// Resolve the effective retention for a tenant by merging with the default.
+    ///
+    /// Looks up `tenant_id` in the map, then falls back to `"default"` for
+    /// any missing fields. Panics if `"default"` is missing or incomplete.
+    pub fn resolve(map: &HashMap<String, RetentionEntry>, tenant_id: &str) -> Self {
+        let default = map
+            .get("default")
+            .expect("retention map must have a \"default\" entry");
+        let tenant = map.get(tenant_id);
+
+        Self {
+            max_files: tenant
+                .and_then(|t| t.max_files)
+                .or(default.max_files)
+                .expect("default retention must set max_files"),
+            max_total_size: tenant
+                .and_then(|t| t.max_total_size)
+                .or(default.max_total_size)
+                .expect("default retention must set max_total_size"),
+            max_age: tenant
+                .and_then(|t| t.max_age)
+                .or(default.max_age)
+                .expect("default retention must set max_age"),
+        }
+    }
 }
 
 /// Tenant authentication configuration.
@@ -153,4 +190,49 @@ fn default_max_log_entries() -> usize {
 
 fn default_true() -> bool {
     true
+}
+
+mod opt_bytesize {
+    use bytesize::ByteSize;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &Option<ByteSize>, s: S) -> Result<S::Ok, S::Error> {
+        match val {
+            Some(v) => s.serialize_str(&v.to_string()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<ByteSize>, D::Error> {
+        let opt = Option::<String>::deserialize(d)?;
+        match opt {
+            None => Ok(None),
+            Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+mod opt_duration {
+    use std::time::Duration;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match val {
+            Some(v) => {
+                let formatted = humantime_serde::re::humantime::format_duration(*v).to_string();
+                s.serialize_str(&formatted)
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        let opt = Option::<String>::deserialize(d)?;
+        match opt {
+            None => Ok(None),
+            Some(s) => humantime_serde::re::humantime::parse_duration(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+        }
+    }
 }

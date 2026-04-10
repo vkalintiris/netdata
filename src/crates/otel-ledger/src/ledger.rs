@@ -65,8 +65,12 @@ impl Ledger {
                 seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
             }
 
+            let retention = bridge::config::RetentionConfig::resolve(
+                &logs_config.retention,
+                tenant_id,
+            );
             recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
-            recover_retention(registry, &mut cleaner, &logs_config.retention).await?;
+            recover_retention(registry, &mut cleaner, &retention).await?;
         }
 
         let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
@@ -414,9 +418,11 @@ impl Ledger {
             None => return,
         };
 
-        let to_evict = registry
-            .index
-            .evaluate_retention(&self.logs_config.retention, now_ns());
+        let retention = bridge::config::RetentionConfig::resolve(
+            &self.logs_config.retention,
+            tenant_id,
+        );
+        let to_evict = registry.index.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {
             registry.index.mark_pending_deletion(seq);

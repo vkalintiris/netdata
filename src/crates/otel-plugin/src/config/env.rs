@@ -5,9 +5,7 @@ use bytesize::ByteSize;
 
 use super::ConfigOverride;
 use super::endpoint::EndpointOverride;
-use super::logs::{
-    AuthOverride, IndexOverride, LogsOverride, RetentionOverride, StorageOverride, WalOverride,
-};
+use super::logs::{AuthOverride, IndexOverride, LogsOverride, StorageOverride, WalOverride};
 use super::metrics::MetricsOverride;
 
 fn read_env(name: &str) -> Result<Option<String>> {
@@ -135,11 +133,14 @@ impl LogsOverride {
             enabled: parse_env_bool("NETDATA_OTEL_LOGS_STORAGE_ENABLED")?,
             uri: env_var("NETDATA_OTEL_LOGS_STORAGE_URI")?,
         };
-        let retention = RetentionOverride {
+        let retention_default = bridge::config::RetentionEntry {
             max_files: parse_env_var("NETDATA_OTEL_LOGS_RETENTION_MAX_FILES")?,
             max_total_size: parse_env_bytesize("NETDATA_OTEL_LOGS_RETENTION_MAX_TOTAL_SIZE")?,
             max_age: parse_env_duration("NETDATA_OTEL_LOGS_RETENTION_MAX_AGE")?,
         };
+        let retention_has_any = retention_default.max_files.is_some()
+            || retention_default.max_total_size.is_some()
+            || retention_default.max_age.is_some();
         let auth = AuthOverride {
             enabled: parse_env_bool("NETDATA_OTEL_LOGS_AUTH_ENABLED")?,
         };
@@ -151,8 +152,10 @@ impl LogsOverride {
             } else {
                 None
             },
-            retention: if retention.has_any() {
-                Some(retention)
+            retention: if retention_has_any {
+                let mut map = std::collections::HashMap::new();
+                map.insert("default".to_string(), retention_default);
+                Some(map)
             } else {
                 None
             },

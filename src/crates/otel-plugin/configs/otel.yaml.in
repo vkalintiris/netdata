@@ -69,14 +69,21 @@ logs:
     uri: "fs://@logdir_POST@/otel/v1/remote"
 
   retention:
-    # Maximum number of index files to retain.
-    max_files: 100
+    # Default retention policy, applied to all tenants unless overridden.
+    default:
+      # Maximum number of index files to retain.
+      max_files: 100
 
-    # Maximum total size of all index files (e.g., "1GB", "500MB").
-    max_total_size: "10GB"
+      # Maximum total size of all index files (e.g., "1GB", "500MB").
+      max_total_size: "10GB"
 
-    # Maximum age of index files (e.g., "7 days", "1 week", "168h").
-    max_age: "7 days"
+      # Maximum age of index files (e.g., "7 days", "1 week", "168h").
+      max_age: "7 days"
+
+    # Per-tenant overrides (uncomment and adjust as needed):
+    # certstream:
+    #   max_age: "30 days"
+    #   max_total_size: "50GB"
 
   auth:
     # Whether to require tenant identification via the X-Scope-OrgID gRPC

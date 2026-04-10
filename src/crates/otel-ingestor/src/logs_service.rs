@@ -53,9 +53,9 @@ fn validate_tenant_id(id: &str) -> Result<(), Status> {
     if id.is_empty() || id.len() > 255 {
         return Err(Status::invalid_argument("tenant ID must be 1-255 bytes"));
     }
-    if id == "." || id == ".." {
+    if id == "." || id == ".." || id == "default" {
         return Err(Status::invalid_argument(
-            "tenant ID must not be '.' or '..'",
+            "tenant ID must not be '.', '..', or 'default'",
         ));
     }
     if !id

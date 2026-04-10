@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
-use bridge::config::LogsConfig;
+use bridge::config::{LogsConfig, RetentionEntry};
 use bytesize::ByteSize;
 use serde::Deserialize;
 
@@ -13,7 +14,7 @@ pub(super) struct LogsOverride {
     #[serde(default)]
     pub(super) storage: Option<StorageOverride>,
     #[serde(default)]
-    pub(super) retention: Option<RetentionOverride>,
+    pub(super) retention: Option<HashMap<String, RetentionEntry>>,
     #[serde(default)]
     pub(super) auth: Option<AuthOverride>,
 }
@@ -60,22 +61,12 @@ impl AuthOverride {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub(super) struct RetentionOverride {
-    #[serde(default)]
-    pub(super) max_files: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_opt_bytesize")]
-    pub(super) max_total_size: Option<ByteSize>,
-    #[serde(default, deserialize_with = "deserialize_opt_duration")]
-    pub(super) max_age: Option<Duration>,
-}
-
 impl LogsOverride {
     pub(super) fn has_any(&self) -> bool {
         self.wal.as_ref().is_some_and(|w| w.has_any())
             || self.index.as_ref().is_some_and(|i| i.has_any())
             || self.storage.as_ref().is_some_and(|s| s.has_any())
-            || self.retention.as_ref().is_some_and(|r| r.has_any())
+            || self.retention.is_some()
             || self.auth.as_ref().is_some_and(|a| a.has_any())
     }
 }
@@ -100,12 +91,6 @@ impl WalOverride {
             || self.max_file_duration.is_some()
             || self.crc_enabled.is_some()
             || self.compression_enabled.is_some()
-    }
-}
-
-impl RetentionOverride {
-    pub(super) fn has_any(&self) -> bool {
-        self.max_files.is_some() || self.max_total_size.is_some() || self.max_age.is_some()
     }
 }
 
@@ -144,14 +129,18 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         }
     }
     if let Some(r) = &o.retention {
-        if let Some(v) = r.max_files {
-            config.retention.max_files = v;
-        }
-        if let Some(v) = r.max_total_size {
-            config.retention.max_total_size = v;
-        }
-        if let Some(v) = r.max_age {
-            config.retention.max_age = v;
+        // Merge per-tenant entries: override fields replace stock fields.
+        for (tenant, entry) in r {
+            let target = config.retention.entry(tenant.clone()).or_default();
+            if let Some(v) = entry.max_files {
+                target.max_files = Some(v);
+            }
+            if let Some(v) = entry.max_total_size {
+                target.max_total_size = Some(v);
+            }
+            if let Some(v) = entry.max_age {
+                target.max_age = Some(v);
+            }
         }
     }
     if let Some(a) = &o.auth {
