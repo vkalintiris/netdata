@@ -33,7 +33,7 @@ pub enum Error {
     Journal(#[from] journal_core::error::JournalError),
 
     #[error("split-fst error: {0}")]
-    SplitFst(#[from] split_fst::Error),
+    SplitFst(#[from] sfst::Error),
 
     #[error("FST build error: {0}")]
     FstBuild(String),
@@ -84,7 +84,7 @@ pub struct FileIndex {
 impl FileIndex {
     /// Open from split-fst bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let reader = split_fst::Reader::open(data)?;
+        let reader = sfst::Reader::open(data)?;
 
         let metadata: Metadata = reader.metadata()?;
         let low_cardinality: FstBitmap = reader.primary()?;
@@ -349,17 +349,17 @@ impl FileIndexBuilder {
             hc_fields,
         };
 
-        // Pack everything with split_fst::Writer
+        // Pack everything with sfst::Writer
         let zstd_level = 1;
-        let meta_packed = split_fst::pack_metadata(&metadata, zstd_level)?;
-        let primary_packed = split_fst::pack(&low_card_fst, zstd_level)?;
+        let meta_packed = sfst::pack_metadata(&metadata, zstd_level)?;
+        let primary_packed = sfst::pack(&low_card_fst, zstd_level)?;
 
-        let mut writer = split_fst::Writer::new();
+        let mut writer = sfst::Writer::new();
         writer.set_metadata(meta_packed);
         writer.set_primary(primary_packed);
 
         for (_, hc_fst) in &hc_fsts {
-            writer.add_chunk(split_fst::pack(hc_fst, zstd_level)?);
+            writer.add_chunk(sfst::pack(hc_fst, zstd_level)?);
         }
 
         let mut buf = Vec::new();

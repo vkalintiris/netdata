@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::index_registry;
 use file_registry::{FileId, TimestampNs};
 
 // ---------------------------------------------------------------------------
@@ -104,15 +103,15 @@ impl RemoteRegistry {
 
 pub struct Registry {
     pub wal: wal::Registry,
-    pub index: index_registry::Registry,
+    pub sfst: sfst::registry::Registry,
     pub remote: RemoteRegistry,
 }
 
 impl Registry {
-    pub fn new(wal: wal::Registry, index: index_registry::Registry) -> Self {
+    pub fn new(wal: wal::Registry, sfst: sfst::registry::Registry) -> Self {
         Self {
             wal,
-            index,
+            sfst,
             remote: RemoteRegistry::new(),
         }
     }
@@ -122,19 +121,19 @@ impl Registry {
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
     pub fn recover(&mut self) {
-        cleanup_temp_files(self.index.dir());
+        cleanup_temp_files(self.sfst.dir());
 
         self.wal.recover().unwrap_or_else(|e| {
             tracing::error!("failed to recover WAL registry: {e}");
             panic!("WAL registry recovery failed");
         });
-        self.index.recover();
+        self.sfst.recover();
 
-        if !self.wal.is_empty() || !self.index.is_empty() {
+        if !self.wal.is_empty() || !self.sfst.is_empty() {
             tracing::info!(
                 "recovered files from disk: wal_files={} index_files={}",
                 self.wal.len(),
-                self.index.len(),
+                self.sfst.len(),
             );
         }
     }
@@ -143,14 +142,14 @@ impl Registry {
     pub fn unindexed_ids(&self) -> Vec<FileId> {
         self.wal
             .archived_files()
-            .filter(|entry| self.index.get(entry.id.seq).is_none())
+            .filter(|entry| self.sfst.get(entry.id.seq).is_none())
             .map(|entry| entry.id)
             .collect()
     }
 
     /// Returns FileIds of indexed files that have not been uploaded to remote storage.
     pub fn unuploaded_ids(&self) -> Vec<FileId> {
-        self.index
+        self.sfst
             .values()
             .filter(|entry| !self.remote.contains(entry.id.seq))
             .map(|entry| entry.id)
@@ -190,7 +189,7 @@ impl TenantRegistries {
             let index_dir = self.index_base_dir.join(tenant_id);
             let wal = wal::Registry::new(&wal_dir);
             std::fs::create_dir_all(&index_dir).ok();
-            let index = crate::index_registry::Registry::new(&index_dir);
+            let index = sfst::registry::Registry::new(&index_dir);
             let registry = Registry::new(wal, index);
             self.tenants.insert(tenant_id.to_string(), registry);
         }

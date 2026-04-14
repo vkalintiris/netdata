@@ -61,7 +61,7 @@ impl Ledger {
             for entry in registry.wal.archived_files() {
                 seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
             }
-            for entry in registry.index.values() {
+            for entry in registry.sfst.values() {
                 seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
             }
 
@@ -196,7 +196,7 @@ impl Ledger {
                 let mut total_index = 0;
                 for (_tenant_id, registry) in self.registries.tenants.iter() {
                     total_wal += registry.wal.len();
-                    total_index += registry.index.len();
+                    total_index += registry.sfst.len();
                 }
                 let payload = format!(
                     "otel-logs called with args: {args:?}\ntenants={} wal_files={total_wal} index_files={total_index}",
@@ -276,7 +276,7 @@ impl Ledger {
         if let wal::format::WalEvent::FileCompleted { id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
                 wal_path: registry.wal.file_path(id),
-                index_path: registry.index.file_path(id),
+                sfst_path: registry.sfst.file_path(id),
             };
 
             if let Err(e) = self.indexer.send(req) {
@@ -306,13 +306,13 @@ impl Ledger {
                     match wal_file {
                         Some(wf) => {
                             let wal_path = registry.wal.file_path(wf.id);
-                            let index_file_path = registry.index.file_path(wf.id);
+                            let index_file_path = registry.sfst.file_path(wf.id);
                             let index_size = ByteSize(
                                 std::fs::metadata(&index_file_path)
                                     .map(|m| m.len())
                                     .unwrap_or(0),
                             );
-                            registry.index.track(wf.id, wf.created_at_ns, index_size);
+                            registry.sfst.track(wf.id, wf.created_at_ns, index_size);
                             (Some(wf.id), Some(wal_path))
                         }
                         None => {
@@ -344,7 +344,7 @@ impl Ledger {
                     None => return,
                 };
                 if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                    if let Some(entry) = registry.index.get(seq) {
+                    if let Some(entry) = registry.sfst.get(seq) {
                         registry.remote.track(entry.id, remote_key);
                     }
                 }
@@ -364,7 +364,7 @@ impl Ledger {
                 let tenant_id = self.seq_to_tenant.remove(&sequence);
                 if let Some(tid) = &tenant_id {
                     if let Some(registry) = self.registries.get_mut(tid) {
-                        registry.index.remove(sequence);
+                        registry.sfst.remove(sequence);
                     }
                 }
                 tracing::info!("index file evicted seq={sequence}");
@@ -376,7 +376,7 @@ impl Ledger {
                 tracing::error!("index file deletion failed seq={sequence} error={error}");
                 if let Some(tenant_id) = self.seq_to_tenant.get(&sequence) {
                     if let Some(registry) = self.registries.get_mut(tenant_id) {
-                        registry.index.clear_pending_deletion(sequence);
+                        registry.sfst.clear_pending_deletion(sequence);
                     }
                 }
             }
@@ -398,7 +398,7 @@ impl Ledger {
             Some(r) => r,
             None => return,
         };
-        let local_path = registry.index.file_path(id);
+        let local_path = registry.sfst.file_path(id);
         let date = min_date
             .map(|d| d.to_string())
             .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
@@ -421,12 +421,12 @@ impl Ledger {
 
         let retention =
             bridge::config::RetentionConfig::resolve(&self.logs_config.retention, tenant_id);
-        let to_evict = registry.index.evaluate_retention(&retention, now_ns());
+        let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {
-            registry.index.mark_pending_deletion(seq);
-            if let Some(entry) = registry.index.get(seq) {
-                let path = registry.index.file_path(entry.id);
+            registry.sfst.mark_pending_deletion(seq);
+            if let Some(entry) = registry.sfst.get(seq) {
+                let path = registry.sfst.file_path(entry.id);
                 tracing::info!("retention: evicting seq={seq} path={}", path.display());
                 let req = CleanerRequest::DeleteIndexFile {
                     sequence: seq,
@@ -434,7 +434,7 @@ impl Ledger {
                 };
                 if let Err(e) = self.cleaner.send(req) {
                     tracing::error!("failed to send index eviction seq={seq}: {e}");
-                    registry.index.clear_pending_deletion(seq);
+                    registry.sfst.clear_pending_deletion(seq);
                 }
             }
         }

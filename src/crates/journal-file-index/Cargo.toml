@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 fst-index = { workspace = true, features = ["serde"] }
-split-fst = { workspace = true }
+sfst = { workspace = true }
 treight = { path = "../treight", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 zstd = { workspace = true }

@@ -30,7 +30,7 @@ pub async fn recover_unindexed(
         .iter()
         .map(|&id| IndexerRequest::FinalizeIndex {
             wal_path: registry.wal.file_path(id),
-            index_path: registry.index.file_path(id),
+            sfst_path: registry.sfst.file_path(id),
         })
         .collect();
 
@@ -61,13 +61,13 @@ pub async fn recover_unindexed(
                 tracing::error!("recovery: failed to send WAL delete seq={seq}: {e}");
             }
 
-            let index_file_path = registry.index.file_path(id);
+            let index_file_path = registry.sfst.file_path(id);
             let index_size = ByteSize(
                 std::fs::metadata(&index_file_path)
                     .map(|m| m.len())
                     .unwrap_or(0),
             );
-            registry.index.track(id, created_at_ns, index_size);
+            registry.sfst.track(id, created_at_ns, index_size);
             tracing::info!("recovery: index finalized seq={seq}");
         }
         IndexerResponse::IndexFailed {
@@ -92,7 +92,7 @@ pub async fn recover_retention(
     cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
     retention: &bridge::config::RetentionConfig,
 ) -> anyhow::Result<()> {
-    let to_evict = registry.index.evaluate_retention(retention, now_ns());
+    let to_evict = registry.sfst.evaluate_retention(retention, now_ns());
     if to_evict.is_empty() {
         return Ok(());
     }
@@ -102,8 +102,8 @@ pub async fn recover_retention(
     let requests: Vec<_> = to_evict
         .iter()
         .filter_map(|&seq| {
-            registry.index.get(seq).map(|entry| {
-                let path = registry.index.file_path(entry.id);
+            registry.sfst.get(seq).map(|entry| {
+                let path = registry.sfst.file_path(entry.id);
                 CleanerRequest::DeleteIndexFile {
                     sequence: seq,
                     path,
@@ -114,7 +114,7 @@ pub async fn recover_retention(
 
     batch_recover(requests, cleaner, |resp| match resp {
         CleanerResponse::IndexFileDeleted { sequence } => {
-            registry.index.remove(sequence);
+            registry.sfst.remove(sequence);
             tracing::info!("recovery: index file evicted seq={sequence}");
         }
         CleanerResponse::IndexFileFailed { sequence, error } => {
@@ -147,7 +147,7 @@ pub async fn recover_unuploaded(
     let requests: Vec<_> = unuploaded
         .iter()
         .map(|&id| {
-            let local_path = registry.index.file_path(id);
+            let local_path = registry.sfst.file_path(id);
             let date = read_min_date(&local_path)
                 .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
             let remote_key = format!("{tenant_id}/{date}/{}", id.to_filename("sfst"));
@@ -161,7 +161,7 @@ pub async fn recover_unuploaded(
 
     batch_recover(requests, uploader, |resp| match resp {
         UploaderResponse::Uploaded { seq, remote_key } => {
-            if let Some(entry) = registry.index.get(seq) {
+            if let Some(entry) = registry.sfst.get(seq) {
                 registry.remote.track(entry.id, remote_key);
             }
             tracing::info!("recovery: upload complete seq={seq}");
@@ -186,7 +186,7 @@ pub(crate) fn now_ns() -> u64 {
 /// Read the earliest log date from a `.sfst` index file's metadata.
 fn read_min_date(index_path: &std::path::Path) -> Option<String> {
     let data = std::fs::read(index_path).ok()?;
-    let reader = split_fst::Reader::open(&data).ok()?;
+    let reader = sfst::Reader::open(&data).ok()?;
     let meta = reader
         .metadata::<log_index::fst_builder::IndexMetadata>()
         .ok()?;

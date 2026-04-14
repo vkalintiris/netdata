@@ -1,5 +1,5 @@
 [package]
-name = "split-fst"
+name = "sfst"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -15,3 +15,7 @@ bincode = { workspace = true }
 zstd = { workspace = true }
 gix-chunk = { workspace = true }
 thiserror = { workspace = true }
+
+# Registry dependencies
+bridge = { path = "../netdata-plugin/bridge" }
+file-registry = { workspace = true }

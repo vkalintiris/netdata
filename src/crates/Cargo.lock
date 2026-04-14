@@ -2170,8 +2170,8 @@ dependencies = [
  "sd-compat",
  "serde",
  "serde_json",
+ "sfst",
  "siphasher",
- "split-fst",
  "static_assertions",
  "tempfile",
  "thiserror 2.0.18",
@@ -2225,7 +2225,7 @@ dependencies = [
  "journal-index",
  "journal-registry",
  "serde",
- "split-fst",
+ "sfst",
  "tempfile",
  "thiserror 2.0.18",
  "tikv-jemallocator",
@@ -2486,7 +2486,7 @@ dependencies = [
  "otap-df-pdata",
  "roaring 0.11.2",
  "serde",
- "split-fst",
+ "sfst",
  "tracing",
  "treight",
  "twox-hash",
@@ -3105,7 +3105,7 @@ dependencies = [
  "netdata-plugin-types",
  "opendal",
  "serde",
- "split-fst",
+ "sfst",
  "tokio",
  "tokio-util",
  "tracing",
@@ -4214,6 +4214,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sfst"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bridge",
+ "file-registry",
+ "fst-index",
+ "gix-chunk",
+ "serde",
+ "thiserror 2.0.18",
+ "zstd",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4298,18 +4312,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "split-fst"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "fst-index",
- "gix-chunk",
- "serde",
- "thiserror 2.0.18",
- "zstd",
 ]
 
 [[package]]
@@ -5163,7 +5165,7 @@ dependencies = [
  "roaring 0.11.2",
  "serde",
  "serde_json",
- "split-fst",
+ "sfst",
  "wal",
  "zstd",
 ]

@@ -22,19 +22,21 @@
 //!
 //! // Build and pack
 //! let fst: FstIndex<u64> = FstIndex::build([("key", 42u64)]).unwrap();
-//! let packed = split_fst::pack(&fst, 1).unwrap();
+//! let packed = sfst::pack(&fst, 1).unwrap();
 //!
 //! // Write
-//! let mut writer = split_fst::Writer::new();
+//! let mut writer = sfst::Writer::new();
 //! writer.set_primary(packed);
 //! let mut buf = Vec::new();
 //! writer.write_to(&mut buf).unwrap();
 //!
 //! // Read back
-//! let reader = split_fst::Reader::open(&buf).unwrap();
+//! let reader = sfst::Reader::open(&buf).unwrap();
 //! let fst_read: FstIndex<u64> = reader.primary().unwrap();
 //! assert_eq!(fst_read.get(b"key"), Some(&42));
 //! ```
+
+pub mod registry;
 
 use fst_index::FstIndex;
 use serde::Serialize;

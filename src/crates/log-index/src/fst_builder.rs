@@ -155,7 +155,7 @@ fn build_stream_entries(
     log_entries: &[Vec<KeyValueId>],
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
-    writer: &mut split_fst::Writer,
+    writer: &mut sfst::Writer,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut total_bytes = 0usize;
 
@@ -193,7 +193,7 @@ fn build_stream_entries(
 fn build_primary_fst(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut split_fst::Writer,
+    writer: &mut sfst::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
@@ -210,7 +210,7 @@ fn build_primary_fst(
     }
 
     let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries)?;
-    let packed = split_fst::pack(&fst, 3)?;
+    let packed = sfst::pack(&fst, 3)?;
     tracing::debug!(
         "primary FST built: {} fields, {} KB, {}ms",
         low.len(),
@@ -225,7 +225,7 @@ fn build_primary_fst(
 fn build_mid_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut split_fst::Writer,
+    writer: &mut sfst::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -243,7 +243,7 @@ fn build_mid_card_chunks(
         }
 
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
-        let packed = split_fst::pack(&fst, 3)?;
+        let packed = sfst::pack(&fst, 3)?;
         total_kb += packed.len() / 1024;
         writer.add_chunk(packed);
     }
@@ -262,7 +262,7 @@ fn build_mid_card_chunks(
 fn build_high_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut split_fst::Writer,
+    writer: &mut sfst::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -302,7 +302,7 @@ fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
-    writer: &mut split_fst::Writer,
+    writer: &mut sfst::Writer,
 ) -> Result<Vec<ServiceStream>, Box<dyn std::error::Error>> {
     let universe_size = wal_index.num_logs() as u32;
 
@@ -357,7 +357,7 @@ pub fn build_and_write(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
 
-    let mut writer = split_fst::Writer::new();
+    let mut writer = sfst::Writer::new();
 
     let t = Instant::now();
 
@@ -398,7 +398,7 @@ pub fn build_and_write(
                 }),
         )
         .collect();
-    writer.set_fields(split_fst::pack_metadata(&field_table, 1)?);
+    writer.set_fields(sfst::pack_metadata(&field_table, 1)?);
 
     // Metadata (META chunk).
     let metadata = IndexMetadata {
@@ -414,7 +414,7 @@ pub fn build_and_write(
             })
             .collect(),
     };
-    writer.set_metadata(split_fst::pack_metadata(&metadata, 1)?);
+    writer.set_metadata(sfst::pack_metadata(&metadata, 1)?);
 
     let t = Instant::now();
     let tmp_path = out_path.with_extension("sfst.tmp");

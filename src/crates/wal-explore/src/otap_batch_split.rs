@@ -17,7 +17,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let file_size = data.len();
     let reader = IndexReader::open(&data)?;
     let fields = reader.field_table()?;
-    let sfst = split_fst::Reader::open(&data)?;
+    let sfst = sfst::Reader::open(&data)?;
     let streams = reader.streams();
 
     let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();

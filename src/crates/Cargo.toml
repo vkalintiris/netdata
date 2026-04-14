@@ -11,7 +11,7 @@ members = [
     "journal-ts",
     "fst-index",
     "treight",
-    "split-fst",
+    "sfst",
     "journal-log-writer",
     "journal-engine",
     "journal-registry",
@@ -150,7 +150,7 @@ journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 fst-index = { path = "fst-index" }
 treight = { path = "treight" }
-split-fst = { path = "split-fst" }
+sfst = { path = "sfst" }
 sd-compat = { path = "sd-compat" }
 
 # Netdata plugin crates

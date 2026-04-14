@@ -75,7 +75,7 @@ fn start_indexing(
 ) {
     let IndexerRequest::FinalizeIndex {
         wal_path,
-        index_path,
+        sfst_path,
     } = req;
 
     let seq = file_registry::FileId::parse(&wal_path)
@@ -93,14 +93,14 @@ fn start_indexing(
     tracing::info!(
         "FinalizeIndex started wal={} index={}",
         wal_path.display(),
-        index_path.display(),
+        sfst_path.display(),
     );
 
     tokio::task::spawn_blocking(move || {
-        let resp = match log_index::index_wal_file(&wal_path, &index_path) {
+        let resp = match log_index::index_wal_file(&wal_path, &sfst_path) {
             Ok(result) => IndexerResponse::IndexFinalized {
                 seq,
-                path: index_path,
+                path: sfst_path,
                 min_date: result.min_date,
             },
             Err(e) => {

@@ -40,7 +40,7 @@ pub enum IndexerRequest {
         /// Path to the WAL .bin file.
         wal_path: PathBuf,
         /// Path where the .sfst index should be written.
-        index_path: PathBuf,
+        sfst_path: PathBuf,
     },
 }
 

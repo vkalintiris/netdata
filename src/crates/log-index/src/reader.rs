@@ -21,7 +21,7 @@ use fst_index::FstIndex;
 /// Holds the mmap'd data, the deserialized metadata, and the primary FST
 /// (always loaded on open since it's needed for every query).
 pub struct IndexReader<'a> {
-    sfst: split_fst::Reader<'a>,
+    sfst: sfst::Reader<'a>,
     metadata: IndexMetadata,
     primary: FstIndex<BitmapValue>,
 }
@@ -30,8 +30,8 @@ impl<'a> IndexReader<'a> {
     /// Open a split-FST index from a byte slice (typically an mmap).
     ///
     /// Immediately deserializes the metadata and primary FST.
-    pub fn open(data: &'a [u8]) -> Result<Self, split_fst::Error> {
-        let sfst = split_fst::Reader::open(data)?;
+    pub fn open(data: &'a [u8]) -> Result<Self, sfst::Error> {
+        let sfst = sfst::Reader::open(data)?;
         let metadata: IndexMetadata = sfst.metadata()?;
         let primary: FstIndex<BitmapValue> = sfst.primary()?;
         Ok(Self {
@@ -69,7 +69,7 @@ impl<'a> IndexReader<'a> {
     // ── Field table (FLDS chunk, loaded on demand) ──────────────────
 
     /// Load and deserialize the field table from the FLDS chunk.
-    pub fn field_table(&self) -> Result<Vec<FieldEntry>, split_fst::Error> {
+    pub fn field_table(&self) -> Result<Vec<FieldEntry>, sfst::Error> {
         self.sfst.fields()
     }
 
@@ -93,10 +93,7 @@ impl<'a> IndexReader<'a> {
     // ── Secondary chunk loading ─────────────────────────────────────
 
     /// Load a mid-cardinality field's FST by secondary chunk index.
-    pub fn load_mid_field(
-        &self,
-        chunk_index: u16,
-    ) -> Result<FstIndex<BitmapValue>, split_fst::Error> {
+    pub fn load_mid_field(&self, chunk_index: u16) -> Result<FstIndex<BitmapValue>, sfst::Error> {
         self.sfst.chunk(chunk_index)
     }
 
@@ -106,10 +103,9 @@ impl<'a> IndexReader<'a> {
     pub fn load_high_field(
         &self,
         chunk_index: u16,
-    ) -> Result<Vec<(String, BitmapValue)>, split_fst::Error> {
+    ) -> Result<Vec<(String, BitmapValue)>, sfst::Error> {
         let raw = self.sfst.chunk_raw(chunk_index)?;
-        let decompressed =
-            zstd::decode_all(raw).map_err(|e| split_fst::Error::Zstd(e.to_string()))?;
+        let decompressed = zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
         let (entries, _): (Vec<(String, BitmapValue)>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
         Ok(entries)
@@ -125,11 +121,10 @@ impl<'a> IndexReader<'a> {
         &self,
         stream_index: usize,
         num_field_chunks: usize,
-    ) -> Result<Vec<Vec<FileId>>, split_fst::Error> {
+    ) -> Result<Vec<Vec<FileId>>, sfst::Error> {
         let chunk_index = num_field_chunks + stream_index;
         let raw = self.sfst.chunk_raw(chunk_index as u16)?;
-        let decompressed =
-            zstd::decode_all(raw).map_err(|e| split_fst::Error::Zstd(e.to_string()))?;
+        let decompressed = zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
         let (entries, _): (Vec<Vec<FileId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
         Ok(entries)
@@ -156,7 +151,7 @@ impl<'a> IndexReader<'a> {
     pub fn build_string_table(
         &self,
         field_table: &[FieldEntry],
-    ) -> Result<Vec<String>, split_fst::Error> {
+    ) -> Result<Vec<String>, sfst::Error> {
         let total = self.metadata.id_ranges.high_end.0 as usize;
         let mut table = vec![String::new(); total];
         let mut file_id = 0usize;
@@ -187,7 +182,7 @@ impl<'a> IndexReader<'a> {
                 FieldTier::High => {
                     let raw = self.sfst.chunk_raw(chunk_idx)?;
                     let decompressed =
-                        zstd::decode_all(raw).map_err(|e| split_fst::Error::Zstd(e.to_string()))?;
+                        zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
                     let (entries, _): (Vec<(String, BitmapValue)>, _) =
                         bincode::serde::decode_from_slice(
                             &decompressed,

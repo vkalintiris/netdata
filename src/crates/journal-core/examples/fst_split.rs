@@ -340,7 +340,7 @@ fn main() {
 
     let primary_fst: fst_index::FstIndex<PrimaryValue> =
         fst_index::FstIndex::build(primary_entries).expect("failed to build primary FST");
-    let primary_packed = split_fst::pack(&primary_fst, ZSTD_LEVEL).expect("pack primary");
+    let primary_packed = sfst::pack(&primary_fst, ZSTD_LEVEL).expect("pack primary");
 
     println!("=== Primary FST ===");
     println!("  Keys:     {}", primary_fst.len());
@@ -363,7 +363,7 @@ fn main() {
             |(chunk_idx, field_name, fst_entries): (u16, String, Vec<(Key, u64)>)| {
                 let hc_fst: fst_index::FstIndex<u64> =
                     fst_index::FstIndex::build(fst_entries).expect("failed to build HC FST");
-                let packed = split_fst::pack(&hc_fst, ZSTD_LEVEL).expect("pack HC FST");
+                let packed = sfst::pack(&hc_fst, ZSTD_LEVEL).expect("pack HC FST");
                 (chunk_idx, field_name, packed)
             },
         )
@@ -394,7 +394,7 @@ fn main() {
         std::fs::File::create(&output_path).expect("failed to create output file"),
     );
 
-    let mut writer = split_fst::Writer::new();
+    let mut writer = sfst::Writer::new();
     writer.set_primary(primary_packed.clone());
     for (_, _, packed) in &hc_chunks {
         writer.add_chunk(packed.clone());
@@ -447,7 +447,7 @@ fn main() {
     let mmap = unsafe { memmap2::Mmap::map(&read_file) }.expect("mmap");
     let file_data = &mmap[..];
 
-    let reader = split_fst::Reader::open(file_data).expect("open split-fst");
+    let reader = sfst::Reader::open(file_data).expect("open split-fst");
 
     println!("  Num chunks: {}", reader.chunk_count());
 

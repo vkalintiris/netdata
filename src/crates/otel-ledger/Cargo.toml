@@ -21,7 +21,7 @@ journal-common = { workspace = true }
 log-index = { workspace = true }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
 opendal = { workspace = true }
-split-fst = { workspace = true }
+sfst = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

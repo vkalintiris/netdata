@@ -13,7 +13,7 @@ fst-index = { workspace = true, features = ["serde"] }
 hashbrown = { workspace = true }
 roaring = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-split-fst = { workspace = true }
+sfst = { workspace = true }
 treight = { workspace = true, features = ["roaring", "serde"] }
 tracing = { workspace = true }
 twox-hash = { workspace = true, features = ["xxhash64"] }

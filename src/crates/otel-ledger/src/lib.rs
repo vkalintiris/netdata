@@ -1,7 +1,6 @@
 pub mod cleaner;
 pub mod component;
 pub mod event;
-pub mod index_registry;
 pub mod indexer;
 pub mod ipc;
 mod ledger;
