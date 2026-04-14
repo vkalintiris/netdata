@@ -20,7 +20,7 @@ use crate::{ByteSize, FileId, TimestampNs};
 const WAL_EXT: &str = "wal";
 
 struct ActiveFile {
-    id: FileId,
+    file_id: FileId,
     #[allow(dead_code)]
     path: PathBuf,
     writer: BufWriter<File>,
@@ -154,7 +154,7 @@ impl Stream {
             active.writer.get_ref().sync_all()?;
 
             self.pending_events.push(WalEvent::FileSynced {
-                id: active.id,
+                file_id: active.file_id,
                 valid_up_to: active.bytes_written,
                 frame_count: active.frame_count,
                 entry_count: active.log_entry_count,
@@ -179,8 +179,8 @@ impl Stream {
         }
 
         let file_seq = self.seq.next();
-        let id = self.file_id(file_seq);
-        let path = self.dir.file_path(id);
+        let file_id = self.file_id(file_seq);
+        let path = self.dir.file_path(file_id);
 
         let file = OpenOptions::new()
             .create_new(true)
@@ -207,11 +207,13 @@ impl Stream {
 
         fsync_dir(self.dir.path())?;
 
-        self.pending_events
-            .push(WalEvent::FileCreated { id, created_at_ns });
+        self.pending_events.push(WalEvent::FileCreated {
+            file_id,
+            created_at_ns,
+        });
 
         self.active = Some(ActiveFile {
-            id,
+            file_id,
             path,
             writer,
             frame_count: 0,
@@ -250,7 +252,7 @@ impl Stream {
     fn complete_active_file(&mut self) {
         if let Some(active) = self.active.take() {
             self.pending_events.push(WalEvent::FileCompleted {
-                id: active.id,
+                file_id: active.file_id,
                 frame_count: active.frame_count,
                 min_timestamp_ns: active.min_timestamp_ns,
                 max_timestamp_ns: active.max_timestamp_ns,

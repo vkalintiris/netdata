@@ -58,11 +58,11 @@ impl Ledger {
         let mut seq_to_tenant = HashMap::new();
         for (tenant_id, registry) in registries.iter_mut() {
             // Record all known sequences for this tenant.
-            for entry in registry.wal.archived_files() {
-                seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
+            for file in registry.wal.archived_files() {
+                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
             }
-            for entry in registry.sfst.values() {
-                seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
+            for file in registry.sfst.values() {
+                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
             }
 
             let retention =
@@ -235,32 +235,32 @@ impl Ledger {
 
         // Log before applying — extract fields for logging.
         match &msg.event {
-            wal::format::WalEvent::FileCreated { id, .. } => {
-                tracing::info!(tenant = %tenant_id, "FileCreated seq={seq} id={id}");
-                self.seq_to_tenant.insert(id.seq, tenant_id.clone());
+            wal::format::WalEvent::FileCreated { file_id, .. } => {
+                tracing::info!(tenant = %tenant_id, "FileCreated seq={seq} id={file_id}");
+                self.seq_to_tenant.insert(file_id.seq, tenant_id.clone());
             }
             wal::format::WalEvent::FileSynced {
-                id,
+                file_id,
                 frame_count,
                 entry_count,
                 ..
             } => {
                 tracing::info!(
                     tenant = %tenant_id,
-                    "DataSynced seq={seq} id={id} frames={frame_count} entries={entry_count}",
+                    "DataSynced seq={seq} id={file_id} frames={frame_count} entries={entry_count}",
                 );
             }
             wal::format::WalEvent::FileCompleted {
-                id,
+                file_id,
                 frame_count,
                 size,
                 ..
             } => {
                 tracing::info!(
                     tenant = %tenant_id,
-                    "FileCompleted seq={seq} id={id} frames={frame_count} size={size}",
+                    "FileCompleted seq={seq} id={file_id} frames={frame_count} size={size}",
                 );
-                self.seq_to_tenant.insert(id.seq, tenant_id.clone());
+                self.seq_to_tenant.insert(file_id.seq, tenant_id.clone());
             }
         }
 
@@ -273,10 +273,10 @@ impl Ledger {
         }
 
         // Trigger indexing on file completion.
-        if let wal::format::WalEvent::FileCompleted { id, .. } = msg.event {
+        if let wal::format::WalEvent::FileCompleted { file_id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
-                wal_path: registry.wal.file_path(id),
-                sfst_path: registry.sfst.file_path(id),
+                wal_path: registry.wal.file_path(file_id),
+                sfst_path: registry.sfst.file_path(file_id),
             };
 
             if let Err(e) = self.indexer.send(req) {

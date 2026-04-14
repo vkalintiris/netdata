@@ -142,8 +142,8 @@ impl Registry {
     pub fn unindexed_ids(&self) -> Vec<FileId> {
         self.wal
             .archived_files()
-            .filter(|entry| self.sfst.get(entry.id.seq).is_none())
-            .map(|entry| entry.id)
+            .filter(|f| self.sfst.get(f.id.seq).is_none())
+            .map(|f| f.id)
             .collect()
     }
 

@@ -45,8 +45,8 @@ impl Registry {
     pub fn recover(&mut self) -> Result<()> {
         let entries = self.files.dir().scan()?;
 
-        for (id, meta) in entries {
-            let path = self.files.file_path(id);
+        for (file_id, meta) in entries {
+            let path = self.files.file_path(file_id);
 
             let header = match read_header(&path) {
                 Ok(h) => h,
@@ -59,9 +59,9 @@ impl Registry {
             let size = ByteSize(meta.len());
 
             self.files.insert(
-                id.seq,
+                file_id.seq,
                 File {
-                    id,
+                    id: file_id,
                     status: FileStatus::Archived,
                     created_at_ns: TimestampNs(header.created_at),
                     size,
@@ -89,14 +89,17 @@ impl Registry {
     /// Applies a `WalEvent` from the ingester.
     pub fn apply_event(&mut self, event: &WalEvent) -> Result<()> {
         match event {
-            WalEvent::FileCreated { id, created_at_ns } => {
-                if self.files.contains(id.seq) {
-                    return Err(Error::DuplicateSequence(id.seq));
+            WalEvent::FileCreated {
+                file_id,
+                created_at_ns,
+            } => {
+                if self.files.contains(file_id.seq) {
+                    return Err(Error::DuplicateSequence(file_id.seq));
                 }
                 self.files.insert(
-                    id.seq,
+                    file_id.seq,
                     File {
-                        id: *id,
+                        id: *file_id,
                         status: FileStatus::Active,
                         created_at_ns: *created_at_ns,
                         size: ByteSize::ZERO,
@@ -105,11 +108,11 @@ impl Registry {
                 Ok(())
             }
             WalEvent::FileSynced { .. } => Ok(()),
-            WalEvent::FileCompleted { id, size, .. } => {
+            WalEvent::FileCompleted { file_id, size, .. } => {
                 let entry = self
                     .files
-                    .get_mut(id.seq)
-                    .ok_or(Error::UnknownSequence(id.seq))?;
+                    .get_mut(file_id.seq)
+                    .ok_or(Error::UnknownSequence(file_id.seq))?;
                 entry.status = FileStatus::Archived;
                 entry.size = *size;
                 Ok(())

@@ -88,17 +88,17 @@ impl FileHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WalEvent {
     FileCreated {
-        id: FileId,
+        file_id: FileId,
         created_at_ns: TimestampNs,
     },
     FileSynced {
-        id: FileId,
+        file_id: FileId,
         valid_up_to: ByteSize,
         frame_count: u64,
         entry_count: u64,
     },
     FileCompleted {
-        id: FileId,
+        file_id: FileId,
         frame_count: u64,
         min_timestamp_ns: TimestampNs,
         max_timestamp_ns: TimestampNs,
