@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 bincode = { workspace = true }
 bumpalo = { workspace = true }
+chrono = { workspace = true }
 fst-index = { workspace = true, features = ["serde"] }
 hashbrown = { workspace = true }
 roaring = { workspace = true }

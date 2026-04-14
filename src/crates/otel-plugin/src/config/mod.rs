@@ -224,8 +224,7 @@ logs:
         assert_eq!(rotation.max_file_duration, Duration::from_secs(2 * 3600));
         assert!(config.logs.wal.crc_enabled);
         assert!(config.logs.wal.compression_enabled);
-        let retention =
-            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        let retention = bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_files, 10);
         assert_eq!(retention.max_total_size, ByteSize::gb(1));
         assert_eq!(retention.max_age, Duration::from_secs(7 * 24 * 3600));
@@ -306,8 +305,7 @@ logs:
         let rotation =
             bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
         assert_eq!(rotation.max_file_size, ByteSize::mb(200));
-        let retention =
-            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        let retention = bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_total_size, ByteSize::gb(2));
     }
 
@@ -319,8 +317,7 @@ logs:
         )
         .unwrap();
         apply_overrides(&mut config, &o);
-        let retention =
-            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        let retention = bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_age, Duration::from_secs(14 * 24 * 3600));
         let rotation =
             bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
@@ -349,8 +346,7 @@ logs:
         assert_eq!(config.endpoint.path, "0.0.0.0:9999");
         assert_eq!(config.metrics.expiry_duration_secs, Some(1800));
         assert_eq!(config.metrics.interval_secs, Some(10));
-        let retention =
-            bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
+        let retention = bridge::config::RetentionConfig::resolve(&config.logs.retention, "default");
         assert_eq!(retention.max_files, 20);
     }
 

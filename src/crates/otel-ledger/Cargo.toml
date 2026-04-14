@@ -14,12 +14,14 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 bridge = { path = "../netdata-plugin/bridge" }
+chrono = { workspace = true }
 ferryboat = { workspace = true }
 file-registry = { workspace = true }
 journal-common = { workspace = true }
 log-index = { workspace = true }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
 opendal = { workspace = true }
+split-fst = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

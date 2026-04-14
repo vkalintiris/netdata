@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::index;
+use crate::index_registry;
 use file_registry::{FileId, TimestampNs};
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,8 @@ impl RemoteRegistry {
         tenant_id: &str,
     ) -> Result<Self, opendal::Error> {
         let mut registry = Self::new();
-        let prefix = format!("{tenant_id}/");
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let prefix = format!("{tenant_id}/{today}/");
         let entries = operator.list(&prefix).await?;
 
         for entry in entries {
@@ -103,12 +104,12 @@ impl RemoteRegistry {
 
 pub struct Registry {
     pub wal: wal::Registry,
-    pub index: index::Registry,
+    pub index: index_registry::Registry,
     pub remote: RemoteRegistry,
 }
 
 impl Registry {
-    pub fn new(wal: wal::Registry, index: index::Registry) -> Self {
+    pub fn new(wal: wal::Registry, index: index_registry::Registry) -> Self {
         Self {
             wal,
             index,
@@ -189,7 +190,7 @@ impl TenantRegistries {
             let index_dir = self.index_base_dir.join(tenant_id);
             let wal = wal::Registry::new(&wal_dir);
             std::fs::create_dir_all(&index_dir).ok();
-            let index = crate::index::Registry::new(&index_dir);
+            let index = crate::index_registry::Registry::new(&index_dir);
             let registry = Registry::new(wal, index);
             self.tenants.insert(tenant_id.to_string(), registry);
         }

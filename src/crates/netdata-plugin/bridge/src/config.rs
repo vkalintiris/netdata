@@ -253,8 +253,8 @@ mod opt_bytesize {
 }
 
 mod opt_duration {
-    use std::time::Duration;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
 
     pub fn serialize<S: Serializer>(val: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
         if s.is_human_readable() {

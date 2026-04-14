@@ -10,5 +10,5 @@ pub mod reader;
 pub mod wal_index;
 
 pub use fst_builder::build_and_write;
-pub use indexer::index_wal_file;
+pub use indexer::{IndexResult, index_wal_file};
 pub use kv_interner::KeyValueId;

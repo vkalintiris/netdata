@@ -148,7 +148,9 @@ pub async fn recover_unuploaded(
         .iter()
         .map(|&id| {
             let local_path = registry.index.file_path(id);
-            let remote_key = format!("{tenant_id}/{}", id.to_filename("sfst"));
+            let date = read_min_date(&local_path)
+                .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+            let remote_key = format!("{tenant_id}/{date}/{}", id.to_filename("sfst"));
             UploaderRequest::Upload {
                 seq: id.seq,
                 local_path,
@@ -179,4 +181,15 @@ pub(crate) fn now_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
         .as_nanos() as u64
+}
+
+/// Read the earliest log date from a `.sfst` index file's metadata.
+fn read_min_date(index_path: &std::path::Path) -> Option<String> {
+    let data = std::fs::read(index_path).ok()?;
+    let reader = split_fst::Reader::open(&data).ok()?;
+    let meta = reader
+        .metadata::<log_index::fst_builder::IndexMetadata>()
+        .ok()?;
+    let min_sec = *meta.histogram.timestamps.first()? as i64;
+    chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.format("%Y-%m-%d").to_string())
 }

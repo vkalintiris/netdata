@@ -48,7 +48,12 @@ pub enum IndexerRequest {
 #[derive(Debug, Clone)]
 pub enum IndexerResponse {
     /// The index for a file has been finalized successfully.
-    IndexFinalized { seq: u64, path: PathBuf },
+    IndexFinalized {
+        seq: u64,
+        path: PathBuf,
+        /// Earliest log date as "YYYY-MM-DD", or `None` if the index has no logs.
+        min_date: Option<String>,
+    },
     /// Indexing failed for a file.
     IndexFailed { path: PathBuf, error: String },
 }

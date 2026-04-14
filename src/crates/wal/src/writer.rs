@@ -297,10 +297,8 @@ impl Ingester {
     /// a shared sequence counter (e.g., shared across per-tenant ingesters).
     /// The directory is created if it doesn't exist.
     pub fn new(path: &Path, config: Config, seq: Arc<AtomicU64>) -> Result<Self> {
-        let machine_id = journal_common::load_machine_id()
-            .map_err(|e| crate::Error::Io(e))?;
-        let boot_id = journal_common::load_boot_id()
-            .map_err(|e| crate::Error::Io(e))?;
+        let machine_id = journal_common::load_machine_id().map_err(|e| crate::Error::Io(e))?;
+        let boot_id = journal_common::load_boot_id().map_err(|e| crate::Error::Io(e))?;
         let dir = Arc::new(FileDir::new(path, WAL_EXT));
         std::fs::create_dir_all(dir.path())?;
         Ok(Self {

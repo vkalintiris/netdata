@@ -14,10 +14,19 @@ use crate::wal_index::WalIndex;
 
 const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 
+/// Result of indexing a WAL file.
+pub struct IndexResult {
+    /// Earliest log date as "YYYY-MM-DD", or `None` if the file has no logs.
+    pub min_date: Option<String>,
+}
+
 /// Build a split-FST index from a WAL file using default settings.
 ///
 /// Reads the WAL file at `wal_path` and writes the index to `out_path`.
-pub fn index_wal_file(wal_path: &Path, out_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn index_wal_file(
+    wal_path: &Path,
+    out_path: &Path,
+) -> Result<IndexResult, Box<dyn std::error::Error>> {
     index_wal_file_with_options(wal_path, out_path, DEFAULT_CARDINALITY_THRESHOLD)
 }
 
@@ -29,7 +38,7 @@ pub fn index_wal_file_with_options(
     wal_path: &Path,
     out_path: &Path,
     cardinality_threshold: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<IndexResult, Box<dyn std::error::Error>> {
     let mut reader = wal::Reader::open(wal_path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
@@ -46,7 +55,17 @@ pub fn index_wal_file_with_options(
         wal_index.num_logs(),
     );
 
+    let min_date = wal_index
+        .timestamps
+        .iter()
+        .min()
+        .and_then(|&min_ns| {
+            let secs = min_ns / 1_000_000_000;
+            chrono::DateTime::from_timestamp(secs, 0)
+        })
+        .map(|dt| dt.format("%Y-%m-%d").to_string());
+
     crate::build_and_write(&wal_index, out_path)?;
 
-    Ok(())
+    Ok(IndexResult { min_date })
 }

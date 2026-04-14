@@ -65,10 +65,8 @@ impl Ledger {
                 seq_to_tenant.insert(entry.id.seq, tenant_id.clone());
             }
 
-            let retention = bridge::config::RetentionConfig::resolve(
-                &logs_config.retention,
-                tenant_id,
-            );
+            let retention =
+                bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
             recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
             recover_retention(registry, &mut cleaner, &retention).await?;
         }
@@ -289,7 +287,7 @@ impl Ledger {
 
     async fn handle_indexer_resp(&mut self, resp: IndexerResponse) {
         match resp {
-            IndexerResponse::IndexFinalized { seq, .. } => {
+            IndexerResponse::IndexFinalized { seq, min_date, .. } => {
                 tracing::info!("index finalized seq={seq}");
 
                 let tenant_id = match self.seq_to_tenant.get(&seq) {
@@ -326,7 +324,7 @@ impl Ledger {
 
                 if let (Some(id), Some(wal_path)) = (wal_file_id, wal_path) {
                     self.request_wal_delete(id.seq, wal_path);
-                    self.request_upload(id, &tenant_id);
+                    self.request_upload(id, &tenant_id, min_date.as_deref());
                 }
 
                 self.evaluate_retention(&tenant_id);
@@ -392,7 +390,7 @@ impl Ledger {
         }
     }
 
-    fn request_upload(&mut self, id: FileId, tenant_id: &str) {
+    fn request_upload(&mut self, id: FileId, tenant_id: &str, min_date: Option<&str>) {
         if !self.logs_config.storage.enabled {
             return;
         }
@@ -401,7 +399,10 @@ impl Ledger {
             None => return,
         };
         let local_path = registry.index.file_path(id);
-        let remote_key = format!("{}/{}", tenant_id, id.to_filename("sfst"));
+        let date = min_date
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+        let remote_key = format!("{}/{}/{}", tenant_id, date, id.to_filename("sfst"));
         let req = UploaderRequest::Upload {
             seq: id.seq,
             local_path,
@@ -418,10 +419,8 @@ impl Ledger {
             None => return,
         };
 
-        let retention = bridge::config::RetentionConfig::resolve(
-            &self.logs_config.retention,
-            tenant_id,
-        );
+        let retention =
+            bridge::config::RetentionConfig::resolve(&self.logs_config.retention, tenant_id);
         let to_evict = registry.index.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {

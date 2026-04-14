@@ -114,10 +114,8 @@ impl NetdataLogsService {
     }
 
     fn resolve_wal_config(&self, tenant_id: &str) -> wal::Config {
-        let rotation = bridge::config::RotationConfig::resolve(
-            &self.wal_config.rotation,
-            tenant_id,
-        );
+        let rotation =
+            bridge::config::RotationConfig::resolve(&self.wal_config.rotation, tenant_id);
         wal::Config {
             rotation: wal::RotationConfig {
                 max_log_entries: rotation.max_log_entries,
@@ -153,12 +151,7 @@ impl LogsService for NetdataLogsService {
         } else {
             let path = self.wal_base_dir.join(&tenant_id);
             let wal_config = self.resolve_wal_config(&tenant_id);
-            let ing = Ingester::new(
-                &path,
-                wal_config,
-                Arc::clone(&self.seq),
-            )
-            .map_err(|e| {
+            let ing = Ingester::new(&path, wal_config, Arc::clone(&self.seq)).map_err(|e| {
                 tracing::error!(%e, tenant = %tenant_id, "failed to create ingester");
                 Status::internal("ingester creation failed")
             })?;

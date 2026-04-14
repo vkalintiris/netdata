@@ -98,9 +98,10 @@ fn start_indexing(
 
     tokio::task::spawn_blocking(move || {
         let resp = match log_index::index_wal_file(&wal_path, &index_path) {
-            Ok(()) => IndexerResponse::IndexFinalized {
+            Ok(result) => IndexerResponse::IndexFinalized {
                 seq,
                 path: index_path,
+                min_date: result.min_date,
             },
             Err(e) => {
                 tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());
