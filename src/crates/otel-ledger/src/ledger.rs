@@ -74,8 +74,21 @@ impl Ledger {
             recover_retention(registry, &mut cleaner, &retention).await?;
         }
 
+        let retry_layer = opendal::layers::RetryLayer::new()
+            .with_min_delay(std::time::Duration::from_secs(1))
+            .with_max_delay(std::time::Duration::from_secs(30))
+            .with_max_times(10)
+            .with_factor(2.0)
+            .with_jitter()
+            .with_notify(|err: &opendal::Error, dur: std::time::Duration| {
+                tracing::warn!(
+                    "remote storage operation failed, retrying in {:.1}s: {err}",
+                    dur.as_secs_f64(),
+                );
+            });
         let operator = opendal::Operator::from_uri(logs_config.storage.uri.as_str())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .layer(retry_layer);
 
         let mut uploader =
             ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
