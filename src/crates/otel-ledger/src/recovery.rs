@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use file_registry::ByteSize;
 
-use crate::component::{ComponentHandle, batch_recover};
+use crate::component::{ComponentHandle, batch_recover, drain_pending};
 use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
@@ -82,6 +82,31 @@ pub async fn recover_unindexed(
 
     tracing::info!("recovery indexing complete");
     Ok(())
+}
+
+/// Drain pending WAL delete responses from the cleaner.
+///
+/// `recover_unindexed` sends `DeleteWalFile` requests to the cleaner as a
+/// side effect of indexer responses. These must be drained before any
+/// subsequent `batch_recover` on the cleaner, otherwise the responses
+/// interleave and get processed by the wrong handler.
+pub async fn drain_wal_deletes(
+    registry: &mut Registry,
+    cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
+) -> anyhow::Result<()> {
+    drain_pending(cleaner, |resp| match resp {
+        CleanerResponse::WalFileDeleted { sequence } => {
+            registry.wal.remove_by_seq(sequence);
+            tracing::info!("recovery: WAL deleted seq={sequence}");
+        }
+        CleanerResponse::WalFileFailed { sequence, error } => {
+            tracing::error!("recovery: WAL deletion failed seq={sequence}: {error}");
+        }
+        resp => {
+            tracing::warn!("unexpected cleaner response during WAL drain: {resp:?}");
+        }
+    })
+    .await
 }
 
 /// Delete WAL files that already have a corresponding .sfst index.

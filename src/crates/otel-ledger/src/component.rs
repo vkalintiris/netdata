@@ -80,6 +80,25 @@ impl<Req: Send + 'static, Resp: Send + 'static> ComponentHandle<Req, Resp> {
     }
 }
 
+/// Drain all pending responses from a component, processing each one.
+///
+/// Used to flush responses that were enqueued as side effects of another
+/// component's `batch_recover` (e.g., cleaner deletes triggered during
+/// indexer recovery).
+pub async fn drain_pending<Req: Send + 'static, Resp: Send + 'static>(
+    handle: &mut ComponentHandle<Req, Resp>,
+    mut process: impl FnMut(Resp),
+) -> anyhow::Result<()> {
+    while handle.pending() > 0 {
+        let resp = handle
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("component died during drain"))?;
+        process(resp);
+    }
+    Ok(())
+}
+
 /// Send a batch of requests to a component and process all responses.
 ///
 /// Used during recovery to replay pending work through the normal

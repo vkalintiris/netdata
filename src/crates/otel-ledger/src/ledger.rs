@@ -15,7 +15,8 @@ use crate::ipc::{
     UploaderResponse,
 };
 use crate::recovery::{
-    now_ns, recover_orphaned_wals, recover_retention, recover_unindexed, recover_unuploaded,
+    drain_wal_deletes, now_ns, recover_orphaned_wals, recover_retention, recover_unindexed,
+    recover_unuploaded,
 };
 use crate::registry::TenantRegistries;
 use crate::uploader::Uploader;
@@ -56,24 +57,6 @@ impl Ledger {
         let mut cleaner = ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
         tracing::info!("cleaner spawned");
 
-        // Populate seq_to_tenant from recovered registries and run recovery per tenant.
-        let mut seq_to_tenant = HashMap::new();
-        for (tenant_id, registry) in registries.iter_mut() {
-            // Record all known sequences for this tenant.
-            for file in registry.wal.archived_files() {
-                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
-            }
-            for file in registry.sfst.values() {
-                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
-            }
-
-            let retention =
-                bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
-            recover_orphaned_wals(registry, &mut cleaner).await?;
-            recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
-            recover_retention(registry, &mut cleaner, &retention).await?;
-        }
-
         let retry_layer = opendal::layers::RetryLayer::new()
             .with_min_delay(std::time::Duration::from_secs(1))
             .with_max_delay(std::time::Duration::from_secs(30))
@@ -94,8 +77,27 @@ impl Ledger {
             ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
         tracing::info!("uploader spawned");
 
-        // Recover remote state and unuploaded files per tenant.
+        // Populate seq_to_tenant and run recovery per tenant.
+        //
+        // Recovery order matters:
+        //   1. Delete orphaned WALs (have .sfst, WAL is redundant)
+        //   2. Index unindexed WALs (no .sfst yet)
+        //   3. Recover remote registry (discover what's already uploaded)
+        //   4. Upload un-uploaded .sfst files
+        //   5. Evaluate retention (safe now — everything is uploaded)
+        let mut seq_to_tenant = HashMap::new();
         for (tenant_id, registry) in registries.iter_mut() {
+            for file in registry.wal.archived_files() {
+                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
+            }
+            for file in registry.sfst.values() {
+                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
+            }
+
+            recover_orphaned_wals(registry, &mut cleaner).await?;
+            recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
+            drain_wal_deletes(registry, &mut cleaner).await?;
+
             let remote_available =
                 match crate::registry::RemoteRegistry::recover(&operator, tenant_id).await {
                     Ok(remote) => {
@@ -114,6 +116,10 @@ impl Ledger {
             if logs_config.storage.enabled && remote_available {
                 recover_unuploaded(registry, &mut uploader, tenant_id).await?;
             }
+
+            let retention =
+                bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
+            recover_retention(registry, &mut cleaner, &retention).await?;
         }
 
         tracing::info!("recovery complete");
