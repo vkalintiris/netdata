@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -127,7 +128,7 @@ impl LogsOverride {
             || rotation_default.max_log_entries.is_some()
             || rotation_default.max_file_duration.is_some();
         let wal = WalOverride {
-            dir: env_var("NETDATA_OTEL_LOGS_WAL_DIR")?,
+            dir: env_var("NETDATA_OTEL_LOGS_WAL_DIR")?.map(PathBuf::from),
             crc_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_CRC_ENABLED")?,
             compression_enabled: parse_env_bool("NETDATA_OTEL_LOGS_WAL_COMPRESSION_ENABLED")?,
             rotation: if rotation_has_any {
@@ -139,7 +140,7 @@ impl LogsOverride {
             },
         };
         let index = IndexOverride {
-            dir: parse_env_var("NETDATA_OTEL_LOGS_INDEX_DIR")?,
+            dir: env_var("NETDATA_OTEL_LOGS_INDEX_DIR")?.map(PathBuf::from),
         };
         let storage = StorageOverride {
             enabled: parse_env_bool("NETDATA_OTEL_LOGS_STORAGE_ENABLED")?,

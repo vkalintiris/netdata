@@ -38,8 +38,8 @@ impl Ledger {
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> anyhow::Result<Self> {
-        let wal_base_dir = std::path::PathBuf::from(&logs_config.wal.dir);
-        let index_base_dir = std::path::PathBuf::from(&logs_config.index.dir);
+        let wal_base_dir = logs_config.wal.dir.clone();
+        let index_base_dir = logs_config.index.dir.clone();
 
         std::fs::create_dir_all(&wal_base_dir)?;
         std::fs::create_dir_all(&index_base_dir)?;

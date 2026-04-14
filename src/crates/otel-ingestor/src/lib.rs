@@ -250,7 +250,7 @@ fn create_logs_service(
     logs_config: &LogsConfig,
     writer_socket_path: &str,
 ) -> Result<NetdataLogsService> {
-    let wal_base_dir = std::path::PathBuf::from(&logs_config.wal.dir);
+    let wal_base_dir = logs_config.wal.dir.clone();
 
     // Scan all tenant subdirectories for the global max sequence number.
     let max_seq = wal::scan_max_sequence_recursive(&wal_base_dir)
@@ -260,7 +260,7 @@ fn create_logs_service(
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
-        wal_dir = %logs_config.wal.dir,
+        wal_dir = %logs_config.wal.dir.display(),
         max_seq,
         "logs ingestion enabled (multi-tenant WAL)"
     );

@@ -5,6 +5,7 @@
 //! types (`ByteSize`, `humantime_serde`) so the YAML format works naturally.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use bytesize::ByteSize;
@@ -92,14 +93,14 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Directory for index file storage.
-    pub dir: String,
+    pub dir: PathBuf,
 }
 
 /// WAL file configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalConfig {
     /// Directory for WAL file storage.
-    pub dir: String,
+    pub dir: PathBuf,
     /// Whether to compute CRC32 checksums per frame.
     #[serde(default = "default_true")]
     pub crc_enabled: bool,

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use bridge::config::{LogsConfig, RetentionEntry};
 use serde::Deserialize;
@@ -20,13 +21,13 @@ pub(super) struct LogsOverride {
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct IndexOverride {
     #[serde(default)]
-    pub(super) dir: Option<String>,
+    pub(super) dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct WalOverride {
     #[serde(default)]
-    pub(super) dir: Option<String>,
+    pub(super) dir: Option<PathBuf>,
     #[serde(default)]
     pub(super) crc_enabled: Option<bool>,
     #[serde(default)]

@@ -216,7 +216,10 @@ logs:
     #[test]
     fn stock_yaml_logs_parsed() {
         let config = stock_config();
-        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
+        assert_eq!(
+            config.logs.wal.dir,
+            std::path::Path::new("/var/log/netdata/otel/v1/wal")
+        );
         let rotation =
             bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
         assert_eq!(rotation.max_file_size, ByteSize::mb(100));
@@ -290,7 +293,10 @@ logs:
         let rotation =
             bridge::config::RotationConfig::resolve(&config.logs.wal.rotation, "default");
         assert_eq!(rotation.max_log_entries, 100000);
-        assert_eq!(config.logs.wal.dir, "/var/log/netdata/otel/v1/wal");
+        assert_eq!(
+            config.logs.wal.dir,
+            std::path::Path::new("/var/log/netdata/otel/v1/wal")
+        );
         assert_eq!(rotation.max_file_size, ByteSize::mb(100));
     }
 
