@@ -14,7 +14,9 @@ use crate::ipc::{
     CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
     UploaderResponse,
 };
-use crate::recovery::{now_ns, recover_retention, recover_unindexed, recover_unuploaded};
+use crate::recovery::{
+    now_ns, recover_orphaned_wals, recover_retention, recover_unindexed, recover_unuploaded,
+};
 use crate::registry::TenantRegistries;
 use crate::uploader::Uploader;
 
@@ -67,6 +69,7 @@ impl Ledger {
 
             let retention =
                 bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
+            recover_orphaned_wals(registry, &mut cleaner).await?;
             recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
             recover_retention(registry, &mut cleaner, &retention).await?;
         }
@@ -302,18 +305,18 @@ impl Ledger {
                 // so we can call methods on `self`.
                 let (wal_file_id, wal_path) = {
                     let registry = self.registries.get_or_create(&tenant_id);
-                    let wal_file = registry.wal.remove_by_seq(seq);
-                    match wal_file {
+                    match registry.wal.get(seq) {
                         Some(wf) => {
-                            let wal_path = registry.wal.file_path(wf.id);
-                            let index_file_path = registry.sfst.file_path(wf.id);
+                            let id = wf.id;
+                            let wal_path = registry.wal.file_path(id);
+                            let index_file_path = registry.sfst.file_path(id);
                             let index_size = ByteSize(
                                 std::fs::metadata(&index_file_path)
                                     .map(|m| m.len())
                                     .unwrap_or(0),
                             );
-                            registry.sfst.track(wf.id, wf.created_at_ns, index_size);
-                            (Some(wf.id), Some(wal_path))
+                            registry.sfst.track(id, wf.created_at_ns, index_size);
+                            (Some(id), Some(wal_path))
                         }
                         None => {
                             tracing::warn!("index finalized for unknown WAL seq={seq}");
@@ -358,6 +361,11 @@ impl Ledger {
     fn handle_cleaner_resp(&mut self, resp: CleanerResponse) {
         match resp {
             CleanerResponse::WalFileDeleted { sequence } => {
+                if let Some(tenant_id) = self.seq_to_tenant.get(&sequence) {
+                    if let Some(registry) = self.registries.get_mut(tenant_id) {
+                        registry.wal.remove_by_seq(sequence);
+                    }
+                }
                 tracing::info!("WAL file deleted seq={sequence}");
             }
             CleanerResponse::IndexFileDeleted { sequence } => {

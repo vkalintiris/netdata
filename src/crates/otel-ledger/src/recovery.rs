@@ -36,13 +36,8 @@ pub async fn recover_unindexed(
 
     batch_recover(requests, indexer, |resp| match resp {
         IndexerResponse::IndexFinalized { seq, .. } => {
-            let wal_file = registry.wal.remove_by_seq(seq);
-            let created_at_ns = wal_file
-                .as_ref()
-                .map(|w| w.created_at_ns)
-                .unwrap_or_default();
-            let id = match wal_file.map(|w| w.id) {
-                Some(id) => id,
+            let wf = match registry.wal.get(seq) {
+                Some(wf) => wf,
                 None => {
                     tracing::warn!(
                         "recovery: index finalized for unknown WAL seq={seq}, skipping cleanup"
@@ -50,8 +45,11 @@ pub async fn recover_unindexed(
                     return;
                 }
             };
+            let id = wf.id;
+            let created_at_ns = wf.created_at_ns;
 
             // Delete the now-redundant WAL file via the cleaner.
+            // The WAL entry is removed from the registry when the cleaner confirms.
             let wal_path = registry.wal.file_path(id);
             let req = CleanerRequest::DeleteWalFile {
                 sequence: seq,
@@ -84,6 +82,45 @@ pub async fn recover_unindexed(
 
     tracing::info!("recovery indexing complete");
     Ok(())
+}
+
+/// Delete WAL files that already have a corresponding .sfst index.
+///
+/// These are orphaned by a crash between index finalization and WAL deletion.
+/// The .sfst is written atomically (via tmp + rename), so its presence
+/// guarantees the index is complete and the WAL is safe to delete.
+pub async fn recover_orphaned_wals(
+    registry: &mut Registry,
+    cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
+) -> anyhow::Result<()> {
+    let orphaned = registry.orphaned_wal_ids();
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("deleting {} orphaned WAL files", orphaned.len());
+
+    let requests: Vec<_> = orphaned
+        .iter()
+        .map(|&id| CleanerRequest::DeleteWalFile {
+            sequence: id.seq,
+            path: registry.wal.file_path(id),
+        })
+        .collect();
+
+    batch_recover(requests, cleaner, |resp| match resp {
+        CleanerResponse::WalFileDeleted { sequence } => {
+            registry.wal.remove_by_seq(sequence);
+            tracing::info!("recovery: orphaned WAL deleted seq={sequence}");
+        }
+        CleanerResponse::WalFileFailed { sequence, error } => {
+            tracing::error!("recovery: orphaned WAL deletion failed seq={sequence}: {error}");
+        }
+        resp => {
+            tracing::warn!("unexpected cleaner response during orphan recovery: {resp:?}");
+        }
+    })
+    .await
 }
 
 /// Evict index files that exceed the retention policy.

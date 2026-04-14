@@ -147,6 +147,18 @@ impl Registry {
             .collect()
     }
 
+    /// Returns FileIds of archived WAL files that already have a corresponding index.
+    ///
+    /// These are orphaned WAL files left behind by a crash between indexing
+    /// completion and WAL deletion.
+    pub fn orphaned_wal_ids(&self) -> Vec<FileId> {
+        self.wal
+            .archived_files()
+            .filter(|f| self.sfst.get(f.id.seq).is_some())
+            .map(|f| f.id)
+            .collect()
+    }
+
     /// Returns FileIds of indexed files that have not been uploaded to remote storage.
     pub fn unuploaded_ids(&self) -> Vec<FileId> {
         self.sfst

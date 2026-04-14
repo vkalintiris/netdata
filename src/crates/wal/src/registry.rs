@@ -120,6 +120,11 @@ impl Registry {
         }
     }
 
+    /// Look up a file by sequence number.
+    pub fn get(&self, seq: u64) -> Option<&File> {
+        self.files.get(seq)
+    }
+
     /// Removes a file by sequence number.
     pub fn remove_by_seq(&mut self, seq: u64) -> Option<File> {
         self.files.remove(seq)
@@ -250,7 +255,7 @@ mod tests {
 
         registry
             .apply_event(&WalEvent::FileCreated {
-                id,
+                file_id: id,
                 created_at_ns: TimestampNs(1_000_000_000),
             })
             .unwrap();
@@ -261,7 +266,7 @@ mod tests {
 
         registry
             .apply_event(&WalEvent::FileCompleted {
-                id,
+                file_id: id,
                 frame_count: 1,
                 min_timestamp_ns: TimestampNs(1_000_000_000),
                 max_timestamp_ns: TimestampNs(1_000_000_000),
@@ -282,13 +287,13 @@ mod tests {
 
         registry
             .apply_event(&WalEvent::FileCreated {
-                id,
+                file_id: id,
                 created_at_ns: TimestampNs(1_000_000_000),
             })
             .unwrap();
         let err = registry
             .apply_event(&WalEvent::FileCreated {
-                id,
+                file_id: id,
                 created_at_ns: TimestampNs(2_000_000_000),
             })
             .unwrap_err();
