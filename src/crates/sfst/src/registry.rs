@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use file_registry::{ByteSize, FileDir, FileId, FileRegistry, TimestampNs};
 
-const INDEX_EXT: &str = "sfst";
+const SFST_EXT: &str = "sfst";
 
 #[derive(Debug, Clone)]
 pub struct File {
@@ -20,7 +20,7 @@ pub struct Registry {
 impl Registry {
     pub fn new(dir: &Path) -> Self {
         Self {
-            inner: FileRegistry::new(FileDir::new(dir, INDEX_EXT)),
+            inner: FileRegistry::new(FileDir::new(dir, SFST_EXT)),
         }
     }
 
