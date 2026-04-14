@@ -432,6 +432,15 @@ impl Ledger {
         let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {
+            // Don't evict files that haven't been uploaded yet when remote
+            // storage is enabled -- the uploader may still need the local copy.
+            if self.logs_config.storage.enabled && !registry.remote.contains(seq) {
+                tracing::warn!(
+                    "retention: deferring eviction of seq={seq} (pending remote upload)"
+                );
+                continue;
+            }
+
             registry.sfst.mark_pending_deletion(seq);
             if let Some(entry) = registry.sfst.get(seq) {
                 let path = registry.sfst.file_path(entry.id);
