@@ -38,7 +38,7 @@ impl RemoteRegistry {
     ) -> Result<Self, opendal::Error> {
         let mut registry = Self::new();
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let prefix = format!("{tenant_id}/{today}/");
+        let prefix = format!("{tenant_id}/sfst/{today}/");
         let entries = operator.list(&prefix).await?;
 
         for entry in entries {

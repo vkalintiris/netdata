@@ -429,7 +429,7 @@ impl Ledger {
         let date = min_date
             .map(|d| d.to_string())
             .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-        let remote_key = format!("{}/{}/{}", tenant_id, date, id.to_filename("sfst"));
+        let remote_key = format!("{}/sfst/{}/{}", tenant_id, date, id.to_filename("sfst"));
         let req = UploaderRequest::Upload {
             seq: id.seq,
             local_path,

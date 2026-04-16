@@ -212,7 +212,7 @@ pub async fn recover_unuploaded(
             let local_path = registry.sfst.file_path(id);
             let date = read_min_date(&local_path)
                 .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-            let remote_key = format!("{tenant_id}/{date}/{}", id.to_filename("sfst"));
+            let remote_key = format!("{tenant_id}/sfst/{date}/{}", id.to_filename("sfst"));
             UploaderRequest::Upload {
                 seq: id.seq,
                 local_path,
