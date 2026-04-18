@@ -82,9 +82,12 @@ async fn handle_record(
     let now_ns = file_registry::TimestampNs(now_ns());
 
     let key = (tenant_id.clone(), date, machine_id, boot_id);
-    let catalog = catalogs
-        .entry(key)
-        .or_insert_with(|| Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now_ns));
+    let catalog = catalogs.entry(key).or_insert_with(|| {
+        load_local_catalog(&args.catalog_base_dir, &tenant_id, date, machine_id, boot_id)
+            .unwrap_or_else(|| {
+                Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now_ns)
+            })
+    });
 
     catalog.add(entry, now_ns);
 
@@ -133,11 +136,11 @@ async fn handle_record(
     CatalogWriterResponse::Recorded { seq }
 }
 
-fn catalog_filename(machine_id: Uuid, boot_id: Uuid) -> String {
+pub(crate) fn catalog_filename(machine_id: Uuid, boot_id: Uuid) -> String {
     format!("{}-{}.catalog", machine_id.as_simple(), boot_id.as_simple())
 }
 
-fn local_path(
+pub(crate) fn local_path(
     base: &Path,
     tenant_id: &str,
     date: NaiveDate,
@@ -157,6 +160,32 @@ fn remote_key(tenant_id: &str, date: NaiveDate, machine_id: Uuid, boot_id: Uuid)
         date.format("%Y-%m-%d"),
         catalog_filename(machine_id, boot_id),
     )
+}
+
+/// Try to read and parse an existing local catalog for a scope.
+/// Returns `None` on any failure (missing, unreadable, corrupt) — the
+/// caller falls back to a fresh `Catalog`, and the next successful
+/// write overwrites the file on disk.
+fn load_local_catalog(
+    base: &Path,
+    tenant_id: &str,
+    date: NaiveDate,
+    machine_id: Uuid,
+    boot_id: Uuid,
+) -> Option<Catalog> {
+    let path = local_path(base, tenant_id, date, machine_id, boot_id);
+    let bytes = std::fs::read(&path).ok()?;
+    match Catalog::from_json(&bytes) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "local catalog is corrupt, starting fresh; next write will overwrite",
+            );
+            None
+        }
+    }
 }
 
 async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -357,6 +386,56 @@ mod tests {
         let seqs: Vec<u64> = catalog.entries.values().map(|e| e.id.seq).collect();
         assert!(seqs.contains(&1));
         assert!(seqs.contains(&2));
+    }
+
+    #[tokio::test]
+    async fn lazy_load_preserves_existing_entries() {
+        // Seed the local catalog file with one entry (seq=7) before
+        // spawning the CatalogWriter.
+        let local_dir = tempfile::tempdir().unwrap();
+        let seeded_path = expected_local(local_dir.path());
+        std::fs::create_dir_all(seeded_path.parent().unwrap()).unwrap();
+
+        let seeded = {
+            let mut c = Catalog::new(
+                "tenant1".to_string(),
+                date(),
+                machine(),
+                boot(),
+                file_registry::TimestampNs(0),
+            );
+            c.add(entry_for(7), file_registry::TimestampNs(0));
+            c
+        };
+        std::fs::write(&seeded_path, seeded.to_json().unwrap()).unwrap();
+
+        let mut h = Harness::new_with_local_root(local_dir.path().to_path_buf());
+        let resp = h.send_and_recv(record_for(1)).await;
+        assert!(matches!(resp, CatalogWriterResponse::Recorded { seq: 1 }));
+
+        let bytes = std::fs::read(&seeded_path).unwrap();
+        let catalog = Catalog::from_json(&bytes).unwrap();
+        assert_eq!(catalog.entries.len(), 2, "pre-existing entry must survive");
+        let seqs: Vec<u64> = catalog.entries.values().map(|e| e.id.seq).collect();
+        assert!(seqs.contains(&1));
+        assert!(seqs.contains(&7));
+    }
+
+    #[tokio::test]
+    async fn corrupt_local_catalog_is_silently_replaced() {
+        let local_dir = tempfile::tempdir().unwrap();
+        let seeded_path = expected_local(local_dir.path());
+        std::fs::create_dir_all(seeded_path.parent().unwrap()).unwrap();
+        std::fs::write(&seeded_path, b"not valid json at all").unwrap();
+
+        let mut h = Harness::new_with_local_root(local_dir.path().to_path_buf());
+        let resp = h.send_and_recv(record_for(1)).await;
+        assert!(matches!(resp, CatalogWriterResponse::Recorded { seq: 1 }));
+
+        let bytes = std::fs::read(&seeded_path).unwrap();
+        let catalog = Catalog::from_json(&bytes).expect("corrupt file should have been overwritten");
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries.values().next().unwrap().id.seq, 1);
     }
 
     #[tokio::test]

@@ -83,7 +83,7 @@ impl Ledger {
             ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
         tracing::info!("uploader spawned");
 
-        let catalog_writer = ComponentHandle::spawn::<CatalogWriter>(
+        let mut catalog_writer = ComponentHandle::spawn::<CatalogWriter>(
             CatalogWriterArgs {
                 catalog_base_dir: logs_config.index.dir.clone(),
                 operator: operator.clone(),
@@ -99,7 +99,8 @@ impl Ledger {
         //   2. Index unindexed WALs (no .sfst yet)
         //   3. Recover remote registry (discover what's already uploaded)
         //   4. Upload un-uploaded .sfst files
-        //   5. Evaluate retention (safe now — everything is uploaded)
+        //   5. Reconcile catalog against remote registry + local SFSTs
+        //   6. Evaluate retention (safe now — everything is uploaded)
         let mut seq_to_tenant = HashMap::new();
         for (tenant_id, registry) in registries.iter_mut() {
             for file in registry.wal.archived_files() {
@@ -130,6 +131,13 @@ impl Ledger {
 
             if logs_config.storage.enabled && remote_available {
                 recover_unuploaded(registry, &mut uploader, tenant_id).await?;
+                crate::recovery::recover_catalog(
+                    registry,
+                    &mut catalog_writer,
+                    tenant_id,
+                    &logs_config.index.dir,
+                )
+                .await?;
             }
 
             let retention =
@@ -563,7 +571,7 @@ fn derive_date_from_metadata(metadata: &log_index::IndexMetadata) -> chrono::Nai
     }
 }
 
-fn build_catalog_entry(
+pub(crate) fn build_catalog_entry(
     id: FileId,
     remote_key: String,
     metadata: &log_index::IndexMetadata,

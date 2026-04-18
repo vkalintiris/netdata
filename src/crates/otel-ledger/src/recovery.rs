@@ -2,14 +2,20 @@
 //! shutdown or crash. Each function sends requests through the normal component
 //! path via [`batch_recover`], so recovery and steady-state use the same code.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::NaiveDate;
 use file_registry::ByteSize;
+use otel_catalog::Catalog;
+use uuid::Uuid;
 
+use crate::catalog_writer;
 use crate::component::{ComponentHandle, batch_recover, drain_pending};
 use crate::ipc::{
-    CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
-    UploaderResponse,
+    CatalogWriterRequest, CatalogWriterResponse, CleanerRequest, CleanerResponse, IndexerRequest,
+    IndexerResponse, UploaderRequest, UploaderResponse,
 };
 use crate::registry::Registry;
 
@@ -254,4 +260,205 @@ fn read_min_date(index_path: &std::path::Path) -> Option<String> {
         .ok()?;
     let min_sec = *meta.histogram.timestamps.first()? as i64;
     chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.format("%Y-%m-%d").to_string())
+}
+
+type ScopeKey = (String, NaiveDate, Uuid, Uuid);
+
+/// Reconcile catalog state against the remote registry.
+///
+/// For each SFST that is locally present AND already uploaded (tracked
+/// in `RemoteRegistry`), check whether the scope's local catalog file
+/// already contains an entry for the file. If not, read the SFST META
+/// chunk to reconstruct `IndexMetadata`, build a `CatalogEntry`, and
+/// forward a `Record` through the `CatalogWriter` component. The
+/// component's lazy-load picks up the existing local catalog so prior
+/// entries are preserved.
+///
+/// Also cleans up orphan `.catalog.tmp` files from interrupted writes.
+pub async fn recover_catalog(
+    registry: &Registry,
+    catalog_writer: &mut ComponentHandle<CatalogWriterRequest, CatalogWriterResponse>,
+    tenant_id: &str,
+    catalog_base_dir: &Path,
+) -> anyhow::Result<()> {
+    let catalog_root = catalog_base_dir.join(tenant_id).join("catalog");
+    cleanup_catalog_tmp_files(&catalog_root);
+
+    // Cache one `try_load_local_catalog` call per scope.
+    let mut loaded: HashMap<ScopeKey, Option<Catalog>> = HashMap::new();
+    let mut requests: Vec<CatalogWriterRequest> = Vec::new();
+
+    for sfst in registry.sfst.values() {
+        let remote = match registry.remote.get(sfst.id.seq) {
+            Some(r) => r,
+            None => continue,
+        };
+
+        let date = match parse_date_from_remote_key(&remote.remote_key) {
+            Some(d) => d,
+            None => {
+                tracing::warn!(
+                    seq = sfst.id.seq,
+                    remote_key = %remote.remote_key,
+                    "catalog recovery: could not parse date from remote_key, skipping",
+                );
+                continue;
+            }
+        };
+
+        let scope: ScopeKey = (
+            tenant_id.to_string(),
+            date,
+            sfst.id.machine_id,
+            sfst.id.boot_id,
+        );
+
+        let existing = loaded.entry(scope.clone()).or_insert_with(|| {
+            try_load_local_catalog(catalog_base_dir, &scope)
+        });
+
+        if existing.as_ref().is_some_and(|c| c.entries.contains_key(&sfst.id)) {
+            continue;
+        }
+
+        let sfst_path = registry.sfst.file_path(sfst.id);
+        let entry = match build_catalog_entry_from_sfst(&sfst_path, sfst.size, &remote.remote_key,
+                                                         remote.uploaded_at_ns, sfst.id) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(
+                    seq = sfst.id.seq,
+                    path = %sfst_path.display(),
+                    "catalog recovery: skipping SFST: {e}",
+                );
+                continue;
+            }
+        };
+
+        requests.push(CatalogWriterRequest::Record {
+            seq: sfst.id.seq,
+            tenant_id: tenant_id.to_string(),
+            date,
+            entry,
+        });
+    }
+
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        tenant = tenant_id,
+        "catalog recovery: replaying {} entries",
+        requests.len(),
+    );
+
+    batch_recover(requests, catalog_writer, |resp| match resp {
+        CatalogWriterResponse::Recorded { seq } => {
+            tracing::debug!(seq, "catalog recovery: recorded");
+        }
+        CatalogWriterResponse::RecordFailed { seq, stage, error } => {
+            tracing::error!(seq, stage = ?stage, "catalog recovery: failed: {error}");
+        }
+    })
+    .await
+}
+
+fn cleanup_catalog_tmp_files(catalog_root: &Path) {
+    let dates = match std::fs::read_dir(catalog_root) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    for date_entry in dates.flatten() {
+        if !date_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let files = match std::fs::read_dir(date_entry.path()) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        for file_entry in files.flatten() {
+            let path = file_entry.path();
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".catalog.tmp"))
+            {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => tracing::info!("removed stale catalog tmp path={}", path.display()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to remove stale catalog tmp path={}: {e}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn parse_date_from_remote_key(key: &str) -> Option<NaiveDate> {
+    // Expected shape: `{tenant}/sfst/{YYYY-MM-DD}/{file_id}.sfst`
+    let mut parts = key.split('/');
+    let _tenant = parts.next()?;
+    let prefix = parts.next()?;
+    if prefix != "sfst" {
+        return None;
+    }
+    let date_str = parts.next()?;
+    NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
+}
+
+fn try_load_local_catalog(base: &Path, scope: &ScopeKey) -> Option<Catalog> {
+    let (tenant_id, date, machine_id, boot_id) = scope;
+    let path: PathBuf =
+        catalog_writer::local_path(base, tenant_id, *date, *machine_id, *boot_id);
+    let bytes = std::fs::read(&path).ok()?;
+    Catalog::from_json(&bytes).ok()
+}
+
+fn build_catalog_entry_from_sfst(
+    sfst_path: &Path,
+    size: ByteSize,
+    remote_key: &str,
+    uploaded_at_ns: file_registry::TimestampNs,
+    id: file_registry::FileId,
+) -> anyhow::Result<otel_catalog::CatalogEntry> {
+    let data = std::fs::read(sfst_path)
+        .map_err(|e| anyhow::anyhow!("read sfst: {e}"))?;
+    let reader = sfst::Reader::open(&data)
+        .map_err(|e| anyhow::anyhow!("open sfst: {e}"))?;
+    let metadata: log_index::IndexMetadata = reader
+        .metadata()
+        .map_err(|e| anyhow::anyhow!("read sfst metadata: {e}"))?;
+    Ok(crate::ledger::build_catalog_entry(
+        id,
+        remote_key.to_string(),
+        &metadata,
+        size,
+        uploaded_at_ns,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_date_from_remote_key_happy_path() {
+        let key = "tenant1/sfst/2026-04-17/abc123.sfst";
+        let date = parse_date_from_remote_key(key).unwrap();
+        assert_eq!(date, NaiveDate::from_ymd_opt(2026, 4, 17).unwrap());
+    }
+
+    #[test]
+    fn parse_date_from_remote_key_rejects_unknown_shapes() {
+        assert!(parse_date_from_remote_key("").is_none());
+        assert!(parse_date_from_remote_key("tenant1").is_none());
+        assert!(parse_date_from_remote_key("tenant1/catalog/2026-04-17/x").is_none());
+        assert!(parse_date_from_remote_key("tenant1/sfst/not-a-date/x").is_none());
+        assert!(parse_date_from_remote_key("tenant1/sfst").is_none());
+    }
 }
