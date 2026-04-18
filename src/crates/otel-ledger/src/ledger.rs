@@ -3,16 +3,17 @@ use std::collections::HashMap;
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
-use file_registry::{ByteSize, FileId};
+use file_registry::{ByteSize, FileId, TimestampNs};
 use tokio_util::sync::CancellationToken;
 
+use crate::catalog_writer::{CatalogWriter, CatalogWriterArgs};
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
 use crate::event::LedgerEvent;
 use crate::indexer::Indexer;
 use crate::ipc::{
-    CleanerRequest, CleanerResponse, IndexerRequest, IndexerResponse, UploaderRequest,
-    UploaderResponse,
+    CatalogWriterRequest, CatalogWriterResponse, CleanerRequest, CleanerResponse, IndexerRequest,
+    IndexerResponse, UploaderRequest, UploaderResponse,
 };
 use crate::recovery::{
     drain_wal_deletes, now_ns, recover_orphaned_wals, recover_retention, recover_unindexed,
@@ -27,13 +28,14 @@ pub struct Ledger {
     indexer: ComponentHandle<IndexerRequest, IndexerResponse>,
     cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
+    catalog_writer: ComponentHandle<CatalogWriterRequest, CatalogWriterResponse>,
     registries: TenantRegistries,
     logs_config: LogsConfig,
     /// Maps file sequence number → tenant ID for routing component responses.
     seq_to_tenant: HashMap<u64, String>,
     /// IndexMetadata produced by the indexer, keyed by sequence number.
-    /// Populated on `IndexFinalized`, consumed by the catalog writer in
-    /// Phase 3, evicted on `IndexFileDeleted` if retention beats upload.
+    /// Populated on `IndexFinalized`, consumed by the catalog writer on
+    /// `Uploaded`, evicted on `IndexFileDeleted` if retention beats upload.
     pending_catalog: HashMap<u64, log_index::IndexMetadata>,
     expected_seq: u64,
     pub(crate) cancel: CancellationToken,
@@ -80,6 +82,15 @@ impl Ledger {
         let mut uploader =
             ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
         tracing::info!("uploader spawned");
+
+        let catalog_writer = ComponentHandle::spawn::<CatalogWriter>(
+            CatalogWriterArgs {
+                catalog_base_dir: logs_config.index.dir.clone(),
+                operator: operator.clone(),
+            },
+            cancel.child_token(),
+        );
+        tracing::info!("catalog writer spawned");
 
         // Populate seq_to_tenant and run recovery per tenant.
         //
@@ -137,6 +148,7 @@ impl Ledger {
             indexer,
             cleaner,
             uploader,
+            catalog_writer,
             registries,
             logs_config: logs_config.clone(),
             seq_to_tenant,
@@ -162,6 +174,10 @@ impl Ledger {
                     Some(r) => LedgerEvent::UploaderResp(r),
                     None => break Ok(()),
                 },
+                resp = self.catalog_writer.recv() => match resp {
+                    Some(r) => LedgerEvent::CatalogWriterResp(r),
+                    None => break Ok(()),
+                },
                 req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
             };
 
@@ -170,6 +186,7 @@ impl Ledger {
                 LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
                 LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp),
                 LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp),
+                LedgerEvent::CatalogWriterResp(resp) => self.handle_catalog_writer_resp(resp),
                 LedgerEvent::SupervisorReq(req) => {
                     if self.handle_supervisor_req(req).await? {
                         return Ok(());
@@ -377,14 +394,61 @@ impl Ledger {
                     Some(t) => t.clone(),
                     None => return,
                 };
-                if let Some(registry) = self.registries.get_mut(&tenant_id) {
+
+                // Track the uploaded SFST in the remote registry and capture
+                // the info needed to build a catalog entry.
+                let sfst_info = if let Some(registry) = self.registries.get_mut(&tenant_id) {
                     if let Some(entry) = registry.sfst.get(seq) {
-                        registry.remote.track(entry.id, remote_key);
+                        let id = entry.id;
+                        let size = entry.size;
+                        registry.remote.track(id, remote_key.clone());
+                        Some((id, size))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // If the indexer produced metadata for this sequence (populated
+                // in Phase 2 via pending_catalog), forward a record to the
+                // catalog writer.
+                if let (Some((file_id, size)), Some(metadata)) =
+                    (sfst_info, self.pending_catalog.remove(&seq))
+                {
+                    let date = derive_date_from_metadata(&metadata);
+                    let uploaded_at_ns = TimestampNs(now_ns());
+                    let entry = build_catalog_entry(
+                        file_id,
+                        remote_key,
+                        &metadata,
+                        size,
+                        uploaded_at_ns,
+                    );
+                    let req = CatalogWriterRequest::Record {
+                        seq,
+                        tenant_id,
+                        date,
+                        entry,
+                    };
+                    if let Err(e) = self.catalog_writer.send(req) {
+                        tracing::error!("failed to send catalog record seq={seq}: {e}");
                     }
                 }
             }
             UploaderResponse::UploadFailed { seq, error } => {
                 tracing::error!("upload failed seq={seq}: {error}");
+            }
+        }
+    }
+
+    fn handle_catalog_writer_resp(&mut self, resp: CatalogWriterResponse) {
+        match resp {
+            CatalogWriterResponse::Recorded { seq } => {
+                tracing::info!(seq, "catalog recorded");
+            }
+            CatalogWriterResponse::RecordFailed { seq, stage, error } => {
+                tracing::error!(seq, stage = ?stage, "catalog record failed: {error}");
             }
         }
     }
@@ -487,5 +551,53 @@ impl Ledger {
                 }
             }
         }
+    }
+}
+
+fn derive_date_from_metadata(metadata: &log_index::IndexMetadata) -> chrono::NaiveDate {
+    match metadata.histogram.timestamps.first() {
+        Some(&sec) => chrono::DateTime::from_timestamp(sec as i64, 0)
+            .map(|dt| dt.date_naive())
+            .unwrap_or_else(|| chrono::Utc::now().date_naive()),
+        None => chrono::Utc::now().date_naive(),
+    }
+}
+
+fn build_catalog_entry(
+    id: FileId,
+    remote_key: String,
+    metadata: &log_index::IndexMetadata,
+    size: ByteSize,
+    uploaded_at_ns: TimestampNs,
+) -> otel_catalog::CatalogEntry {
+    let min_timestamp_s = metadata
+        .histogram
+        .timestamps
+        .first()
+        .copied()
+        .unwrap_or(0) as i64;
+    let max_timestamp_s = metadata
+        .histogram
+        .timestamps
+        .last()
+        .copied()
+        .unwrap_or(0) as i64;
+    let streams = metadata
+        .streams
+        .iter()
+        .map(|s| otel_catalog::StreamEntry {
+            namespace: s.namespace.clone(),
+            name: s.name.clone(),
+        })
+        .collect();
+    otel_catalog::CatalogEntry {
+        id,
+        remote_key,
+        min_timestamp_s,
+        max_timestamp_s,
+        total_logs: metadata.total_logs,
+        streams,
+        size,
+        uploaded_at_ns,
     }
 }

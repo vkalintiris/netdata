@@ -1,3 +1,4 @@
+pub mod catalog_writer;
 pub mod cleaner;
 pub mod component;
 pub mod event;

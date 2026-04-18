@@ -3116,12 +3116,15 @@ dependencies = [
  "log-index",
  "netdata-plugin-types",
  "opendal",
+ "otel-catalog",
  "serde",
  "sfst",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wal",
 ]
 

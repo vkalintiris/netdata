@@ -1,6 +1,6 @@
 use bridge::LedgerRequest;
 
-use crate::ipc::{CleanerResponse, IndexerResponse, UploaderResponse};
+use crate::ipc::{CatalogWriterResponse, CleanerResponse, IndexerResponse, UploaderResponse};
 
 /// A unified event from any of the ledger's input sources.
 pub enum LedgerEvent {
@@ -12,6 +12,8 @@ pub enum LedgerEvent {
     CleanerResp(CleanerResponse),
     /// A response from the uploader subprocess.
     UploaderResp(UploaderResponse),
+    /// A response from the catalog writer.
+    CatalogWriterResp(CatalogWriterResponse),
     /// A request from the supervisor.
     SupervisorReq(LedgerRequest),
 }

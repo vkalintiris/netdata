@@ -82,6 +82,40 @@ pub enum UploaderResponse {
     UploadFailed { seq: u64, error: String },
 }
 
+/// Requests sent from the ledger to the catalog writer.
+#[derive(Debug, Clone)]
+pub enum CatalogWriterRequest {
+    /// Record a newly-uploaded SFST into the catalog for its scope
+    /// `(tenant_id, date, machine_id, boot_id)`. The scope keys are
+    /// derived from `entry.id.machine_id` / `entry.id.boot_id`.
+    Record {
+        seq: u64,
+        tenant_id: String,
+        date: chrono::NaiveDate,
+        entry: otel_catalog::CatalogEntry,
+    },
+}
+
+/// Which stage of a catalog record write failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogStage {
+    Local,
+    Remote,
+}
+
+/// Responses sent from the catalog writer back to the ledger.
+#[derive(Debug, Clone)]
+pub enum CatalogWriterResponse {
+    /// The record was persisted locally and uploaded successfully.
+    Recorded { seq: u64 },
+    /// The record failed at the indicated stage.
+    RecordFailed {
+        seq: u64,
+        stage: CatalogStage,
+        error: String,
+    },
+}
+
 /// Accept a WAL event connection from the ingestor on the given socket path.
 pub async fn accept_writer(
     socket_path: &str,
