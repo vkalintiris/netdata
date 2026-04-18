@@ -9,6 +9,7 @@ use std::path::Path;
 
 use bumpalo::Bump;
 
+use crate::fst_builder::IndexMetadata;
 use crate::process_frame::process_frame;
 use crate::wal_index::WalIndex;
 
@@ -18,6 +19,10 @@ const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 pub struct IndexResult {
     /// Earliest log date as "YYYY-MM-DD", or `None` if the file has no logs.
     pub min_date: Option<String>,
+    /// Structured metadata describing the produced index (log count, time
+    /// histogram, streams, ID ranges). Same value that was written into the
+    /// SFST META chunk.
+    pub metadata: IndexMetadata,
 }
 
 /// Build a split-FST index from a WAL file using default settings.
@@ -65,7 +70,7 @@ pub fn index_wal_file_with_options(
         })
         .map(|dt| dt.format("%Y-%m-%d").to_string());
 
-    crate::build_and_write(&wal_index, out_path)?;
+    let metadata = crate::build_and_write(&wal_index, out_path)?;
 
-    Ok(IndexResult { min_date })
+    Ok(IndexResult { min_date, metadata })
 }

@@ -102,6 +102,7 @@ fn start_indexing(
                 seq,
                 path: sfst_path,
                 min_date: result.min_date,
+                metadata: result.metadata,
             },
             Err(e) => {
                 tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());

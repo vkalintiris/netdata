@@ -9,6 +9,6 @@ mod process_frame;
 pub mod reader;
 pub mod wal_index;
 
-pub use fst_builder::build_and_write;
+pub use fst_builder::{IndexMetadata, StreamEntry, build_and_write};
 pub use indexer::{IndexResult, index_wal_file};
 pub use kv_interner::KeyValueId;

@@ -53,6 +53,10 @@ pub enum IndexerResponse {
         path: PathBuf,
         /// Earliest log date as "YYYY-MM-DD", or `None` if the index has no logs.
         min_date: Option<String>,
+        /// Structured metadata (log count, histogram, streams) produced by
+        /// the indexer. Cached by the ledger's `pending_catalog` for later
+        /// use by the catalog writer.
+        metadata: log_index::IndexMetadata,
     },
     /// Indexing failed for a file.
     IndexFailed { path: PathBuf, error: String },

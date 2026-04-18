@@ -31,6 +31,10 @@ pub struct Ledger {
     logs_config: LogsConfig,
     /// Maps file sequence number → tenant ID for routing component responses.
     seq_to_tenant: HashMap<u64, String>,
+    /// IndexMetadata produced by the indexer, keyed by sequence number.
+    /// Populated on `IndexFinalized`, consumed by the catalog writer in
+    /// Phase 3, evicted on `IndexFileDeleted` if retention beats upload.
+    pending_catalog: HashMap<u64, log_index::IndexMetadata>,
     expected_seq: u64,
     pub(crate) cancel: CancellationToken,
 }
@@ -136,6 +140,7 @@ impl Ledger {
             registries,
             logs_config: logs_config.clone(),
             seq_to_tenant,
+            pending_catalog: HashMap::new(),
             expected_seq: 1,
             cancel,
         })
@@ -309,8 +314,15 @@ impl Ledger {
 
     async fn handle_indexer_resp(&mut self, resp: IndexerResponse) {
         match resp {
-            IndexerResponse::IndexFinalized { seq, min_date, .. } => {
+            IndexerResponse::IndexFinalized {
+                seq,
+                min_date,
+                metadata,
+                ..
+            } => {
                 tracing::info!("index finalized seq={seq}");
+
+                self.pending_catalog.insert(seq, metadata);
 
                 let tenant_id = match self.seq_to_tenant.get(&seq) {
                     Some(t) => t.clone(),
@@ -394,6 +406,7 @@ impl Ledger {
                         registry.sfst.remove(sequence);
                     }
                 }
+                self.pending_catalog.remove(&sequence);
                 tracing::info!("index file evicted seq={sequence}");
             }
             CleanerResponse::WalFileFailed { sequence, error } => {

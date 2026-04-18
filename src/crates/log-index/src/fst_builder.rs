@@ -354,7 +354,7 @@ fn build_streams(
 pub fn build_and_write(
     wal_index: &WalIndex,
     out_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<IndexMetadata, Box<dyn std::error::Error>> {
     let t_start = Instant::now();
 
     let mut writer = sfst::Writer::new();
@@ -435,7 +435,7 @@ pub fn build_and_write(
         t_start.elapsed().as_millis(),
     );
 
-    Ok(())
+    Ok(metadata)
 }
 
 /// Remap a single roaring bitmap from insertion order to time-sorted order,
