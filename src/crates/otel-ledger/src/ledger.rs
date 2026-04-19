@@ -34,8 +34,10 @@ pub struct Ledger {
     /// Maps file sequence number → tenant ID for routing component responses.
     seq_to_tenant: HashMap<u64, String>,
     /// IndexMetadata produced by the indexer, keyed by sequence number.
-    /// Populated on `IndexFinalized`, consumed by the catalog writer on
-    /// `Uploaded`, evicted on `IndexFileDeleted` if retention beats upload.
+    /// Populated on `IndexFinalized`. Drained on `Uploaded` when storage
+    /// is enabled (the normal path). When storage is disabled, no
+    /// `Uploaded` will ever fire, so entries are cleaned up on
+    /// `IndexFileDeleted` when retention evicts the local SFST instead.
     pending_catalog: HashMap<u64, log_index::IndexMetadata>,
     expected_seq: u64,
     pub(crate) cancel: CancellationToken,
