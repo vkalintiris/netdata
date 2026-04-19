@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::component::Component;
 use crate::ipc::{CatalogStage, CatalogWriterRequest, CatalogWriterResponse};
+use crate::recovery::now_ns;
 
 /// Arguments required to spawn a [`CatalogWriter`].
 pub struct CatalogWriterArgs {
@@ -140,6 +141,12 @@ pub(crate) fn catalog_filename(machine_id: Uuid, boot_id: Uuid) -> String {
     format!("{}-{}.catalog", machine_id.as_simple(), boot_id.as_simple())
 }
 
+/// Build the local catalog file path for a scope.
+///
+/// `tenant_id` is expected to be pre-validated by
+/// `otel_ingestor::logs_service::validate_tenant_id` (rejects `..`, `/`,
+/// null bytes, and restricts to `[a-zA-Z0-9._-]`). Do not feed unvalidated
+/// strings into this function — the components are `join`'d as-is.
 pub(crate) fn local_path(
     base: &Path,
     tenant_id: &str,
@@ -166,6 +173,9 @@ fn remote_key(tenant_id: &str, date: NaiveDate, machine_id: Uuid, boot_id: Uuid)
 /// Returns `None` on any failure (missing, unreadable, corrupt) — the
 /// caller falls back to a fresh `Catalog`, and the next successful
 /// write overwrites the file on disk.
+///
+/// Corrupt files are renamed to `{name}.bad.{now_ns}` before returning
+/// `None` so an operator can inspect them after the next write.
 fn load_local_catalog(
     base: &Path,
     tenant_id: &str,
@@ -178,11 +188,21 @@ fn load_local_catalog(
     match Catalog::from_json(&bytes) {
         Ok(c) => Some(c),
         Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "local catalog is corrupt, starting fresh; next write will overwrite",
-            );
+            let bad_path = path.with_extension(format!("catalog.bad.{}", now_ns()));
+            match std::fs::rename(&path, &bad_path) {
+                Ok(()) => tracing::warn!(
+                    path = %path.display(),
+                    preserved_as = %bad_path.display(),
+                    error = %e,
+                    "local catalog is corrupt; preserved as .bad and starting fresh",
+                ),
+                Err(rename_err) => tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    rename_error = %rename_err,
+                    "local catalog is corrupt; failed to preserve, will be overwritten",
+                ),
+            }
             None
         }
     }
@@ -200,14 +220,6 @@ async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<
     drop(file);
     tokio::fs::rename(&tmp_path, final_path).await?;
     Ok(())
-}
-
-fn now_ns() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_nanos() as u64
 }
 
 #[cfg(test)]
@@ -422,20 +434,109 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_local_catalog_is_silently_replaced() {
+    async fn corrupt_local_catalog_is_preserved_as_bad_and_replaced() {
         let local_dir = tempfile::tempdir().unwrap();
         let seeded_path = expected_local(local_dir.path());
         std::fs::create_dir_all(seeded_path.parent().unwrap()).unwrap();
-        std::fs::write(&seeded_path, b"not valid json at all").unwrap();
+        let corrupt_bytes: &[u8] = b"not valid json at all";
+        std::fs::write(&seeded_path, corrupt_bytes).unwrap();
 
         let mut h = Harness::new_with_local_root(local_dir.path().to_path_buf());
         let resp = h.send_and_recv(record_for(1)).await;
         assert!(matches!(resp, CatalogWriterResponse::Recorded { seq: 1 }));
 
+        // The new catalog file is valid and contains just the new entry.
         let bytes = std::fs::read(&seeded_path).unwrap();
-        let catalog = Catalog::from_json(&bytes).expect("corrupt file should have been overwritten");
+        let catalog = Catalog::from_json(&bytes).expect("new file should be valid JSON");
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(catalog.entries.values().next().unwrap().id.seq, 1);
+
+        // The original corrupt bytes are preserved alongside under a .bad.<ts> name.
+        let parent = seeded_path.parent().unwrap();
+        let mut bad_files: Vec<_> = std::fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.contains(".catalog.bad."))
+            })
+            .collect();
+        assert_eq!(bad_files.len(), 1, "expected exactly one .bad preservation file");
+        let bad_bytes = std::fs::read(bad_files.pop().unwrap().path()).unwrap();
+        assert_eq!(bad_bytes, corrupt_bytes);
+    }
+
+    #[tokio::test]
+    async fn remote_failure_preserves_local_then_converges_on_next_success() {
+        // Shared local dir across two component instances (simulates the
+        // process restart / recovery path rather than an in-process swap).
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_root = local_dir.path().to_path_buf();
+
+        // First writer: remote operator rooted at a regular file.
+        // Any write attempt fails with ENOTDIR when opendal tries to
+        // mkdir -p under the "root".
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        let sentinel_file = sentinel_dir.path().join("not_a_dir");
+        std::fs::write(&sentinel_file, b"").unwrap();
+        let bad_uri = format!("fs://{}", sentinel_file.display());
+        let bad_operator = Operator::from_uri(bad_uri.as_str()).expect("build bad operator");
+
+        let cancel1 = CancellationToken::new();
+        let mut handle1 = ComponentHandle::spawn::<CatalogWriter>(
+            CatalogWriterArgs {
+                catalog_base_dir: local_root.clone(),
+                operator: bad_operator,
+            },
+            cancel1.child_token(),
+        );
+
+        handle1.send(record_for(1)).unwrap();
+        let resp = handle1.recv().await.unwrap();
+        match resp {
+            CatalogWriterResponse::RecordFailed {
+                seq: 1,
+                stage: CatalogStage::Remote,
+                ..
+            } => {}
+            other => panic!("expected RecordFailed(Remote), got {other:?}"),
+        }
+
+        // Local write still succeeded.
+        let local_bytes = std::fs::read(expected_local(&local_root)).unwrap();
+        let catalog = Catalog::from_json(&local_bytes).unwrap();
+        assert_eq!(catalog.entries.len(), 1);
+
+        cancel1.cancel();
+
+        // Second writer: good operator. Shares the same local dir, so
+        // lazy-load picks up the existing entry. Sending the same record
+        // is idempotent; the subsequent write uploads the current state.
+        let good_remote = tempfile::tempdir().unwrap();
+        let good_root = good_remote.path().to_path_buf();
+        let good_operator = build_operator(&good_root);
+
+        let cancel2 = CancellationToken::new();
+        let mut handle2 = ComponentHandle::spawn::<CatalogWriter>(
+            CatalogWriterArgs {
+                catalog_base_dir: local_root.clone(),
+                operator: good_operator,
+            },
+            cancel2.child_token(),
+        );
+
+        handle2.send(record_for(1)).unwrap();
+        let resp = handle2.recv().await.unwrap();
+        assert!(matches!(resp, CatalogWriterResponse::Recorded { seq: 1 }));
+
+        let remote_path = good_root.join(expected_remote());
+        let remote_bytes = std::fs::read(&remote_path).unwrap();
+        let remote_catalog = Catalog::from_json(&remote_bytes).unwrap();
+        assert_eq!(remote_catalog.entries.len(), 1);
+        assert_eq!(remote_catalog.entries.values().next().unwrap().id.seq, 1);
+
+        cancel2.cancel();
     }
 
     #[tokio::test]

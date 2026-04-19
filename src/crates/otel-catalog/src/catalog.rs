@@ -55,6 +55,10 @@ impl Catalog {
         removed
     }
 
+    // TODO: O(n) scan. The BTreeMap is keyed by FileId, not time, so range
+    // filtering touches every entry. Fine at current scales (~hundreds of
+    // entries per scope); revisit with an interval index or date-bucketed
+    // key if query planner workloads show it matters.
     pub fn entries_in_range<'a>(
         &'a self,
         min_s: i64,

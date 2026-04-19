@@ -245,6 +245,8 @@ pub async fn recover_unuploaded(
 }
 
 pub(crate) fn now_ns() -> u64 {
+    // `Duration::as_nanos()` returns `u128`; the `u64` cast is safe until
+    // year 2554 (current nanos are ~1.7e18, `u64::MAX` is ~1.8e19).
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
@@ -419,6 +421,10 @@ fn try_load_local_catalog(base: &Path, scope: &ScopeKey) -> Option<Catalog> {
     Catalog::from_json(&bytes).ok()
 }
 
+// TODO: reads the entire SFST file into memory just to decode the META
+// chunk. Fine at current SFST sizes (few MB to tens of MB, bounded by WAL
+// rotation), but wasteful per entry. A bounded header-range read (or mmap
+// wrapper) would cap memory regardless of file size.
 fn build_catalog_entry_from_sfst(
     sfst_path: &Path,
     size: ByteSize,

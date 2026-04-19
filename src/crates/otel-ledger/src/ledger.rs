@@ -580,6 +580,10 @@ pub(crate) fn build_catalog_entry(
     size: ByteSize,
     uploaded_at_ns: TimestampNs,
 ) -> otel_catalog::CatalogEntry {
+    // SparseHistogram stores seconds as `u32` (overflows year 2106); we
+    // widen to `i64` to match CatalogEntry. On an empty histogram (an SFST
+    // with no logs — shouldn't happen in practice) the 0 fallback yields
+    // a [0, 0] epoch range that no real query will match.
     let min_timestamp_s = metadata
         .histogram
         .timestamps
