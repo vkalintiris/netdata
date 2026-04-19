@@ -11,11 +11,12 @@ use uuid::Uuid;
 use crate::Result;
 use crate::clock::MonotonicClock;
 use crate::config::Config;
+use file_registry::{ByteSize, FileId, TimestampNs};
+
 use crate::format::{
     COMPRESSION_NONE, FLAG_CRC_ENABLED, FORMAT_VERSION, FRAME_ALIGNMENT, FRAME_HEADER_SIZE,
-    FileHeader, HEADER_SIZE, WalEvent,
+    FileEvent, FileHeader, HEADER_SIZE,
 };
-use crate::{ByteSize, FileId, TimestampNs};
 
 const WAL_EXT: &str = "wal";
 
@@ -53,7 +54,7 @@ struct Stream {
     active: Option<ActiveFile>,
     seq: SeqCounter,
     ns_hash: u64,
-    pending_events: Vec<WalEvent>,
+    pending_events: Vec<FileEvent>,
 }
 
 impl Stream {
@@ -153,7 +154,7 @@ impl Stream {
             active.writer.flush()?;
             active.writer.get_ref().sync_all()?;
 
-            self.pending_events.push(WalEvent::FileSynced {
+            self.pending_events.push(FileEvent::Synced {
                 file_id: active.file_id,
                 valid_up_to: active.bytes_written,
                 frame_count: active.frame_count,
@@ -163,13 +164,13 @@ impl Stream {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> Result<Vec<WalEvent>> {
+    fn shutdown(&mut self) -> Result<Vec<FileEvent>> {
         self.sync()?;
         self.complete_active_file();
         Ok(self.take_events())
     }
 
-    fn take_events(&mut self) -> Vec<WalEvent> {
+    fn take_events(&mut self) -> Vec<FileEvent> {
         std::mem::take(&mut self.pending_events)
     }
 
@@ -207,7 +208,7 @@ impl Stream {
 
         fsync_dir(self.dir.path())?;
 
-        self.pending_events.push(WalEvent::FileCreated {
+        self.pending_events.push(FileEvent::Created {
             file_id,
             created_at_ns,
         });
@@ -251,7 +252,7 @@ impl Stream {
 
     fn complete_active_file(&mut self) {
         if let Some(active) = self.active.take() {
-            self.pending_events.push(WalEvent::FileCompleted {
+            self.pending_events.push(FileEvent::Completed {
                 file_id: active.file_id,
                 frame_count: active.frame_count,
                 min_timestamp_ns: active.min_timestamp_ns,
@@ -277,13 +278,13 @@ impl Config {
 }
 
 // ---------------------------------------------------------------------------
-// Ingester
+// Writer
 // ---------------------------------------------------------------------------
 
 /// Manages multiple WAL output [`Stream`]s keyed by `ns_hash`, with a shared
 /// monotonic sequence counter so that file sequence numbers are globally
 /// unique within the WAL directory.
-pub struct Ingester {
+pub struct Writer {
     dir: Arc<FileDir>,
     machine_id: Uuid,
     boot_id: Uuid,
@@ -292,11 +293,11 @@ pub struct Ingester {
     streams: HashMap<u64, Stream>,
 }
 
-impl Ingester {
-    /// Create a new ingester.
+impl Writer {
+    /// Create a new writer.
     ///
     /// Machine and boot IDs are loaded from the system. The caller provides
-    /// a shared sequence counter (e.g., shared across per-tenant ingesters).
+    /// a shared sequence counter (e.g., shared across per-tenant writers).
     /// The directory is created if it doesn't exist.
     pub fn new(path: &Path, config: Config, seq: Arc<AtomicU64>) -> Result<Self> {
         let machine_id = journal_common::load_machine_id().map_err(|e| crate::Error::Io(e))?;
@@ -341,7 +342,7 @@ impl Ingester {
     }
 
     /// Drain pending events from all streams.
-    pub fn take_all_events(&mut self) -> Vec<WalEvent> {
+    pub fn take_all_events(&mut self) -> Vec<FileEvent> {
         let mut events = Vec::new();
         for stream in self.streams.values_mut() {
             events.append(&mut stream.take_events());
@@ -358,7 +359,7 @@ impl Ingester {
     }
 
     /// Shut down all streams, returning any remaining events.
-    pub fn shutdown_all(&mut self) -> Result<Vec<WalEvent>> {
+    pub fn shutdown_all(&mut self) -> Result<Vec<FileEvent>> {
         let mut events = Vec::new();
         for stream in self.streams.values_mut() {
             events.append(&mut stream.shutdown()?);
@@ -399,23 +400,23 @@ mod tests {
     use super::*;
     use crate::Config;
 
-    fn test_ingester(tmp: &std::path::Path) -> Ingester {
+    fn test_writer(tmp: &std::path::Path) -> Writer {
         let seq = Arc::new(AtomicU64::new(0));
-        Ingester::new(tmp, Config::default(), seq).unwrap()
+        Writer::new(tmp, Config::default(), seq).unwrap()
     }
 
     #[test]
     fn creates_separate_files_per_ns_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ingester = test_ingester(tmp.path());
+        let mut writer = test_writer(tmp.path());
 
         let data = b"test payload";
 
-        ingester.write_frame(1, data, 1).unwrap();
-        ingester.write_frame(2, data, 1).unwrap();
-        ingester.write_frame(1, data, 1).unwrap();
+        writer.write_frame(1, data, 1).unwrap();
+        writer.write_frame(2, data, 1).unwrap();
+        writer.write_frame(1, data, 1).unwrap();
 
-        ingester.sync_all().unwrap();
+        writer.sync_all().unwrap();
 
         // Two distinct ns_hash values → two WAL files.
         let wal_files: Vec<_> = std::fs::read_dir(tmp.path())
@@ -428,7 +429,7 @@ mod tests {
         // Verify filenames carry distinct ns_hash suffixes.
         let mut hashes: Vec<u64> = wal_files
             .iter()
-            .map(|e| crate::FileId::parse(&e.path()).unwrap().ns_hash)
+            .map(|e| FileId::parse(&e.path()).unwrap().ns_hash)
             .collect();
         hashes.sort();
         assert_eq!(hashes, vec![1, 2]);
@@ -437,18 +438,18 @@ mod tests {
     #[test]
     fn shared_seq_is_globally_unique() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ingester = test_ingester(tmp.path());
+        let mut writer = test_writer(tmp.path());
 
         let data = b"test payload";
-        ingester.write_frame(10, data, 1).unwrap();
-        ingester.write_frame(20, data, 1).unwrap();
+        writer.write_frame(10, data, 1).unwrap();
+        writer.write_frame(20, data, 1).unwrap();
 
-        ingester.sync_all().unwrap();
+        writer.sync_all().unwrap();
 
         let mut seqs: Vec<u64> = std::fs::read_dir(tmp.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .map(|e| crate::FileId::parse(&e.path()).unwrap().seq)
+            .map(|e| FileId::parse(&e.path()).unwrap().seq)
             .collect();
         seqs.sort();
         // Sequences must be distinct (1, 2) — not both 1.

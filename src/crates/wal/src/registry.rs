@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 
 use file_registry::{FileDir, FileRegistry};
 
-use crate::format::{HEADER_SIZE, WalEvent};
-use crate::{ByteSize, FileId, TimestampNs};
+use file_registry::{ByteSize, FileId, TimestampNs};
+
+use crate::format::{FileEvent, HEADER_SIZE};
 use crate::{Error, Result};
 
 const WAL_EXT: &str = "wal";
@@ -12,9 +13,9 @@ const WAL_EXT: &str = "wal";
 /// Lifecycle status of a WAL file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
-    /// The ingester is actively writing to this file.
+    /// The writer is actively writing to this file.
     Active,
-    /// The ingester has finished writing; the file is immutable.
+    /// The writer has finished writing; the file is immutable.
     Archived,
 }
 
@@ -86,10 +87,10 @@ impl Registry {
         Ok(self.files.dir().scan_max_sequence()?)
     }
 
-    /// Applies a `WalEvent` from the ingester.
-    pub fn apply_event(&mut self, event: &WalEvent) -> Result<()> {
+    /// Applies a `FileEvent` from the writer.
+    pub fn apply_event(&mut self, event: &FileEvent) -> Result<()> {
         match event {
-            WalEvent::FileCreated {
+            FileEvent::Created {
                 file_id,
                 created_at_ns,
             } => {
@@ -107,8 +108,8 @@ impl Registry {
                 );
                 Ok(())
             }
-            WalEvent::FileSynced { .. } => Ok(()),
-            WalEvent::FileCompleted { file_id, size, .. } => {
+            FileEvent::Synced { .. } => Ok(()),
+            FileEvent::Completed { file_id, size, .. } => {
                 let entry = self
                     .files
                     .get_mut(file_id.seq)
@@ -158,8 +159,8 @@ fn read_header(path: &std::path::Path) -> Result<crate::format::FileHeader> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::WalEvent;
-    use crate::{Config, Ingester, RotationConfig};
+    use crate::format::FileEvent;
+    use crate::{Config, RotationConfig, Writer};
 
     fn test_file_id(seq: u64) -> FileId {
         let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
@@ -167,8 +168,8 @@ mod tests {
         FileId::new(machine_id, boot_id, seq, 0)
     }
 
-    /// Helper: create an Ingester, write entries, shutdown, and return all events.
-    fn write_wal_files(dir: &std::path::Path, entry_counts: &[usize]) -> Vec<WalEvent> {
+    /// Helper: create a Writer, write entries, shutdown, and return all events.
+    fn write_wal_files(dir: &std::path::Path, entry_counts: &[usize]) -> Vec<FileEvent> {
         let entries_per_file: usize = *entry_counts.iter().max().unwrap_or(&10);
         let config = Config {
             rotation: RotationConfig {
@@ -180,17 +181,17 @@ mod tests {
             compression_enabled: true,
         };
         let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let mut ingester = Ingester::new(dir, config, seq).unwrap();
+        let mut writer = Writer::new(dir, config, seq).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
-                ingester
+                writer
                     .write_frame(0, &(i as u32).to_le_bytes(), 1)
                     .unwrap();
             }
-            all_events.extend(ingester.take_all_events());
+            all_events.extend(writer.take_all_events());
         }
-        all_events.extend(ingester.shutdown_all().unwrap());
+        all_events.extend(writer.shutdown_all().unwrap());
         all_events
     }
 
@@ -254,7 +255,7 @@ mod tests {
         registry.recover().unwrap();
 
         registry
-            .apply_event(&WalEvent::FileCreated {
+            .apply_event(&FileEvent::Created {
                 file_id: id,
                 created_at_ns: TimestampNs(1_000_000_000),
             })
@@ -265,7 +266,7 @@ mod tests {
         assert_eq!(registry.archived_files().count(), 0);
 
         registry
-            .apply_event(&WalEvent::FileCompleted {
+            .apply_event(&FileEvent::Completed {
                 file_id: id,
                 frame_count: 1,
                 min_timestamp_ns: TimestampNs(1_000_000_000),
@@ -286,13 +287,13 @@ mod tests {
         registry.recover().unwrap();
 
         registry
-            .apply_event(&WalEvent::FileCreated {
+            .apply_event(&FileEvent::Created {
                 file_id: id,
                 created_at_ns: TimestampNs(1_000_000_000),
             })
             .unwrap();
         let err = registry
-            .apply_event(&WalEvent::FileCreated {
+            .apply_event(&FileEvent::Created {
                 file_id: id,
                 created_at_ns: TimestampNs(2_000_000_000),
             })

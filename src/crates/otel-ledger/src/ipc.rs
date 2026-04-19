@@ -119,9 +119,9 @@ pub enum CatalogWriterResponse {
 /// Accept a WAL event connection from the ingestor on the given socket path.
 pub async fn accept_writer(
     socket_path: &str,
-) -> Result<Connection<(), wal::format::WalMessage>, ferryboat::Error> {
+) -> Result<Connection<(), wal::Message>, ferryboat::Error> {
     let _ = std::fs::remove_file(socket_path);
     let endpoint = Endpoint::ipc(socket_path);
-    let mut listener = Listener::<(), wal::format::WalMessage>::bind(endpoint).open()?;
+    let mut listener = Listener::<(), wal::Message>::bind(endpoint).open()?;
     listener.accept().await
 }

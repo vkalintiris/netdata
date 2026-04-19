@@ -2,13 +2,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ferryboat::{Connection, Endpoint};
 use tokio::sync::mpsc;
-use wal::format::{WalEvent, WalMessage};
 
 /// Sends WAL events to the ledger over a direct ferryboat IPC socket.
 ///
 /// Messages are fire-and-forget: silently dropped if the connection is lost.
 pub struct LedgerSender {
-    tx: mpsc::UnboundedSender<WalMessage>,
+    tx: mpsc::UnboundedSender<wal::Message>,
     seq: AtomicU64,
 }
 
@@ -23,11 +22,11 @@ impl LedgerSender {
         }
     }
 
-    /// Sends all events from a [`WalEvent`] slice (as returned by
+    /// Sends all events from a [`wal::FileEvent`] slice (as returned by
     /// [`WalWriter::take_events`]), tagged with the given tenant ID.
-    pub fn send_events(&self, tenant_id: String, events: Vec<WalEvent>) {
+    pub fn send_events(&self, tenant_id: String, events: Vec<wal::FileEvent>) {
         for event in events {
-            let msg = WalMessage {
+            let msg = wal::Message {
                 seq: self.next_seq(),
                 tenant_id: tenant_id.clone(),
                 event,
@@ -41,10 +40,10 @@ impl LedgerSender {
     }
 }
 
-async fn sender_task(mut rx: mpsc::UnboundedReceiver<WalMessage>, socket_path: String) {
+async fn sender_task(mut rx: mpsc::UnboundedReceiver<wal::Message>, socket_path: String) {
     let endpoint = Endpoint::ipc(&socket_path);
 
-    let mut conn = match Connection::<WalMessage, ()>::connect(endpoint)
+    let mut conn = match Connection::<wal::Message, ()>::connect(endpoint)
         .max_retries(None)
         .retry_interval(std::time::Duration::from_secs(1))
         .open()

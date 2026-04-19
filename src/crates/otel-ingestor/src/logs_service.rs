@@ -10,7 +10,6 @@ use opentelemetry_proto::tonic::collector::logs::v1::{
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use tonic::{Request, Response, Status};
-use wal::Ingester;
 
 use crate::arrow_bridge;
 use crate::ledger_sender::LedgerSender;
@@ -46,7 +45,7 @@ fn ns_hash_from_resource(rl: &ResourceLogs) -> u64 {
         }
     }
 
-    wal::compute_ns_hash(namespace, name)
+    file_registry::compute_ns_hash(namespace, name)
 }
 
 fn validate_tenant_id(id: &str) -> Result<(), Status> {
@@ -87,7 +86,7 @@ fn extract_tenant_id(
 }
 
 pub struct NetdataLogsService {
-    ingesters: Mutex<HashMap<String, Ingester>>,
+    writers: Mutex<HashMap<String, wal::Writer>>,
     sender: LedgerSender,
     wal_base_dir: PathBuf,
     wal_config: bridge::config::WalConfig,
@@ -104,7 +103,7 @@ impl NetdataLogsService {
         auth: AuthConfig,
     ) -> Self {
         Self {
-            ingesters: Mutex::new(HashMap::new()),
+            writers: Mutex::new(HashMap::new()),
             sender,
             wal_base_dir,
             wal_config,
@@ -145,17 +144,17 @@ impl LogsService for NetdataLogsService {
             groups.entry(ns_hash).or_default().push(rl);
         }
 
-        let mut ingesters = self.ingesters.lock().unwrap();
-        let ingester = if let Some(ing) = ingesters.get_mut(&tenant_id) {
-            ing
+        let mut writers = self.writers.lock().unwrap();
+        let writer = if let Some(w) = writers.get_mut(&tenant_id) {
+            w
         } else {
             let path = self.wal_base_dir.join(&tenant_id);
             let wal_config = self.resolve_wal_config(&tenant_id);
-            let ing = Ingester::new(&path, wal_config, Arc::clone(&self.seq)).map_err(|e| {
-                tracing::error!(%e, tenant = %tenant_id, "failed to create ingester");
-                Status::internal("ingester creation failed")
+            let w = wal::Writer::new(&path, wal_config, Arc::clone(&self.seq)).map_err(|e| {
+                tracing::error!(%e, tenant = %tenant_id, "failed to create WAL writer");
+                Status::internal("WAL writer creation failed")
             })?;
-            ingesters.entry(tenant_id.clone()).or_insert(ing)
+            writers.entry(tenant_id.clone()).or_insert(w)
         };
 
         for (ns_hash, resource_logs) in groups {
@@ -164,18 +163,18 @@ impl LogsService for NetdataLogsService {
                 Status::internal("Arrow encode error")
             })?;
 
-            ingester.write_frame(ns_hash, &data, count).map_err(|e| {
+            writer.write_frame(ns_hash, &data, count).map_err(|e| {
                 tracing::error!(%e, "failed to write WAL entry");
                 Status::internal("WAL write error")
             })?;
         }
 
-        ingester.sync_all().map_err(|e| {
+        writer.sync_all().map_err(|e| {
             tracing::error!(%e, "failed to sync WAL");
             Status::internal("WAL sync error")
         })?;
 
-        let events = ingester.take_all_events();
+        let events = writer.take_all_events();
         self.sender.send_events(tenant_id, events);
 
         Ok(Response::new(ExportLogsServiceResponse {

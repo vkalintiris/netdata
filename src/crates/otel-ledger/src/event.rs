@@ -5,7 +5,7 @@ use crate::ipc::{CatalogWriterResponse, CleanerResponse, IndexerResponse, Upload
 /// A unified event from any of the ledger's input sources.
 pub enum LedgerEvent {
     /// A WAL message from the ingestor.
-    WalMsg(wal::format::WalMessage),
+    WalMsg(wal::Message),
     /// A response from the indexer subprocess.
     IndexerResp(IndexerResponse),
     /// A response from the cleaner subprocess.

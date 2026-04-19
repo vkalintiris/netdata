@@ -24,7 +24,7 @@ use crate::uploader::Uploader;
 
 pub struct Ledger {
     supervisor: Connection<LedgerResponse, LedgerRequest>,
-    ingestor: Connection<(), wal::format::WalMessage>,
+    ingestor: Connection<(), wal::Message>,
     indexer: ComponentHandle<IndexerRequest, IndexerResponse>,
     cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
@@ -274,7 +274,7 @@ impl Ledger {
         }
     }
 
-    async fn handle_ingestor_msg(&mut self, msg: wal::format::WalMessage) {
+    async fn handle_ingestor_msg(&mut self, msg: wal::Message) {
         let seq = msg.seq;
         let tenant_id = msg.tenant_id;
 
@@ -289,11 +289,11 @@ impl Ledger {
 
         // Log before applying — extract fields for logging.
         match &msg.event {
-            wal::format::WalEvent::FileCreated { file_id, .. } => {
+            wal::FileEvent::Created { file_id, .. } => {
                 tracing::info!(tenant = %tenant_id, "FileCreated seq={seq} id={file_id}");
                 self.seq_to_tenant.insert(file_id.seq, tenant_id.clone());
             }
-            wal::format::WalEvent::FileSynced {
+            wal::FileEvent::Synced {
                 file_id,
                 frame_count,
                 entry_count,
@@ -304,7 +304,7 @@ impl Ledger {
                     "DataSynced seq={seq} id={file_id} frames={frame_count} entries={entry_count}",
                 );
             }
-            wal::format::WalEvent::FileCompleted {
+            wal::FileEvent::Completed {
                 file_id,
                 frame_count,
                 size,
@@ -327,7 +327,7 @@ impl Ledger {
         }
 
         // Trigger indexing on file completion.
-        if let wal::format::WalEvent::FileCompleted { file_id, .. } = msg.event {
+        if let wal::FileEvent::Completed { file_id, .. } = msg.event {
             let req = IndexerRequest::FinalizeIndex {
                 wal_path: registry.wal.file_path(file_id),
                 sfst_path: registry.sfst.file_path(file_id),

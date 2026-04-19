@@ -2,7 +2,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use crate::TimestampNs;
+use file_registry::TimestampNs;
+
 use crate::format::{COMPRESSION_LZ4, FRAME_ALIGNMENT, FRAME_HEADER_SIZE, FileHeader, HEADER_SIZE};
 use crate::{Error, Result};
 

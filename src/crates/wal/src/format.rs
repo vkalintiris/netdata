@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ByteSize, FileId, TimestampNs};
+use file_registry::{ByteSize, FileId, TimestampNs};
 
 // -- Constants ----------------------------------------------------------
 
@@ -86,18 +86,18 @@ impl FileHeader {
 
 /// Events produced by the WAL writer during file lifecycle operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WalEvent {
-    FileCreated {
+pub enum FileEvent {
+    Created {
         file_id: FileId,
         created_at_ns: TimestampNs,
     },
-    FileSynced {
+    Synced {
         file_id: FileId,
         valid_up_to: ByteSize,
         frame_count: u64,
         entry_count: u64,
     },
-    FileCompleted {
+    Completed {
         file_id: FileId,
         frame_count: u64,
         min_timestamp_ns: TimestampNs,
@@ -106,10 +106,10 @@ pub enum WalEvent {
     },
 }
 
-/// A sequenced WAL event sent over IPC.
+/// A sequenced file event sent over IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalMessage {
+pub struct Message {
     pub seq: u64,
     pub tenant_id: String,
-    pub event: WalEvent,
+    pub event: FileEvent,
 }

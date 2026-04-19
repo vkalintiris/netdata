@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::ByteSize;
+use file_registry::ByteSize;
 
 /// When to rotate a WAL file and start a new one.
 #[derive(Debug, Clone)]
