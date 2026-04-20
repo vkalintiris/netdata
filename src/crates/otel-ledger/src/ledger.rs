@@ -38,7 +38,7 @@ pub struct Ledger {
     /// is enabled (the normal path). When storage is disabled, no
     /// `Uploaded` will ever fire, so entries are cleaned up on
     /// `IndexFileDeleted` when retention evicts the local SFST instead.
-    pending_catalog: HashMap<u64, log_index::IndexMetadata>,
+    pending_metadata: HashMap<u64, log_index::IndexMetadata>,
     expected_seq: u64,
     pub(crate) cancel: CancellationToken,
 }
@@ -99,10 +99,13 @@ impl Ledger {
         // Recovery order matters:
         //   1. Delete orphaned WALs (have .sfst, WAL is redundant)
         //   2. Index unindexed WALs (no .sfst yet)
-        //   3. Recover remote registry (discover what's already uploaded)
-        //   4. Upload un-uploaded .sfst files
-        //   5. Reconcile catalog against remote registry + local SFSTs
-        //   6. Evaluate retention (safe now — everything is uploaded)
+        //   3. Load local catalog files → Persisted entries
+        //   4. Recover remote registry (discover what's already uploaded)
+        //   5. Reconcile remote uploads → Pending entries for uploads
+        //      that have no catalog record yet
+        //   6. Upload un-uploaded .sfst files
+        //   7. Replay Record requests for Pending catalog entries
+        //   8. Evaluate retention (safe now — Pending entries block eviction)
         let mut seq_to_tenant = HashMap::new();
         for (tenant_id, registry) in registries.iter_mut() {
             for file in registry.wal.archived_files() {
@@ -116,30 +119,28 @@ impl Ledger {
             recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
             drain_wal_deletes(registry, &mut cleaner).await?;
 
-            let remote_available =
-                match crate::registry::RemoteRegistry::recover(&operator, tenant_id).await {
-                    Ok(remote) => {
-                        registry.remote = remote;
-                        true
+            crate::recovery::load_local_catalogs(&logs_config.index.dir, tenant_id, registry)?;
+
+            if logs_config.storage.enabled {
+                match crate::recovery::reconcile_remote_uploads(registry, &operator, tenant_id)
+                    .await
+                {
+                    Ok(()) => {
+                        recover_unuploaded(registry, &mut uploader, tenant_id).await?;
+                        crate::recovery::recover_catalog(
+                            registry,
+                            &mut catalog_writer,
+                            tenant_id,
+                        )
+                        .await?;
                     }
                     Err(e) => {
                         tracing::warn!(
                             tenant = tenant_id.as_str(),
                             "remote storage unreachable, skipping upload recovery: {e}"
                         );
-                        false
                     }
-                };
-
-            if logs_config.storage.enabled && remote_available {
-                recover_unuploaded(registry, &mut uploader, tenant_id).await?;
-                crate::recovery::recover_catalog(
-                    registry,
-                    &mut catalog_writer,
-                    tenant_id,
-                    &logs_config.index.dir,
-                )
-                .await?;
+                }
             }
 
             let retention =
@@ -162,7 +163,7 @@ impl Ledger {
             registries,
             logs_config: logs_config.clone(),
             seq_to_tenant,
-            pending_catalog: HashMap::new(),
+            pending_metadata: HashMap::new(),
             expected_seq: 1,
             cancel,
         })
@@ -349,7 +350,7 @@ impl Ledger {
             } => {
                 tracing::info!("index finalized seq={seq}");
 
-                self.pending_catalog.insert(seq, metadata);
+                self.pending_metadata.insert(seq, metadata);
 
                 let tenant_id = match self.seq_to_tenant.get(&seq) {
                     Some(t) => t.clone(),
@@ -405,26 +406,17 @@ impl Ledger {
                     None => return,
                 };
 
-                // Track the uploaded SFST in the remote registry and capture
-                // the info needed to build a catalog entry.
-                let sfst_info = if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                    if let Some(entry) = registry.sfst.get(seq) {
-                        let id = entry.id;
-                        let size = entry.size;
-                        registry.remote.track(id, remote_key.clone());
-                        Some((id, size))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                let sfst_info = self
+                    .registries
+                    .get(&tenant_id)
+                    .and_then(|r| r.sfst.get(seq))
+                    .map(|entry| (entry.id, entry.size));
 
-                // If the indexer produced metadata for this sequence (populated
-                // in Phase 2 via pending_catalog), forward a record to the
-                // catalog writer.
+                // If the indexer produced metadata for this sequence (cached in
+                // pending_metadata since IndexFinalized), forward a record to
+                // the catalog writer.
                 if let (Some((file_id, size)), Some(metadata)) =
-                    (sfst_info, self.pending_catalog.remove(&seq))
+                    (sfst_info, self.pending_metadata.remove(&seq))
                 {
                     let date = derive_date_from_metadata(&metadata);
                     let uploaded_at_ns = TimestampNs(now_ns());
@@ -435,6 +427,11 @@ impl Ledger {
                         size,
                         uploaded_at_ns,
                     );
+
+                    if let Some(registry) = self.registries.get_mut(&tenant_id) {
+                        registry.catalog.insert_pending(entry.clone());
+                    }
+
                     let req = CatalogWriterRequest::Record {
                         seq,
                         tenant_id,
@@ -456,6 +453,11 @@ impl Ledger {
         match resp {
             CatalogWriterResponse::Recorded { seq } => {
                 tracing::info!(seq, "catalog recorded");
+                if let Some(tenant_id) = self.seq_to_tenant.get(&seq).cloned() {
+                    if let Some(registry) = self.registries.get_mut(&tenant_id) {
+                        registry.catalog.mark_persisted(seq);
+                    }
+                }
             }
             CatalogWriterResponse::RecordFailed { seq, stage, error } => {
                 tracing::error!(seq, stage = ?stage, "catalog record failed: {error}");
@@ -478,9 +480,10 @@ impl Ledger {
                 if let Some(tid) = &tenant_id {
                     if let Some(registry) = self.registries.get_mut(tid) {
                         registry.sfst.remove(sequence);
+                        registry.catalog.remove(sequence);
                     }
                 }
-                self.pending_catalog.remove(&sequence);
+                self.pending_metadata.remove(&sequence);
                 tracing::info!("index file evicted seq={sequence}");
             }
             CleanerResponse::WalFileFailed { sequence, error } => {
@@ -538,11 +541,13 @@ impl Ledger {
         let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {
-            // Don't evict files that haven't been uploaded yet when remote
-            // storage is enabled -- the uploader may still need the local copy.
-            if self.logs_config.storage.enabled && !registry.remote.contains(seq) {
+            // Don't evict files whose catalog entry isn't yet Persisted. This
+            // covers both "not yet uploaded" (no catalog entry) and "uploaded
+            // but catalog Record failed" (Pending) -- in the latter case
+            // recovery needs the local SFST header to rebuild the entry.
+            if self.logs_config.storage.enabled && !registry.catalog.is_persisted(seq) {
                 tracing::warn!(
-                    "retention: deferring eviction of seq={seq} (pending remote upload)"
+                    "retention: deferring eviction of seq={seq} (upload or catalog pending)"
                 );
                 continue;
             }

@@ -1,99 +1,99 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use file_registry::{FileId, TimestampNs};
+use file_registry::FileId;
 
 // ---------------------------------------------------------------------------
-// Remote files (uploaded to object storage)
+// Catalog registry (ledger-side view of uploaded + cataloged state)
 // ---------------------------------------------------------------------------
+
+/// Whether a catalog `Record` for an uploaded SFST has been acknowledged by
+/// the `CatalogWriter`. `Pending` entries block retention eviction because
+/// recovery may need to re-read the local SFST header to rebuild the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Pending,
+    Persisted,
+}
 
 #[derive(Debug, Clone)]
-pub struct RemoteFile {
-    pub id: FileId,
-    pub remote_key: String,
-    pub uploaded_at_ns: TimestampNs,
+pub struct CatalogRegistryEntry {
+    pub entry: otel_catalog::CatalogEntry,
+    pub visibility: Visibility,
 }
 
-pub struct RemoteRegistry {
-    files: BTreeMap<u64, RemoteFile>,
+pub struct CatalogRegistry {
+    entries: BTreeMap<u64, CatalogRegistryEntry>,
 }
 
-impl RemoteRegistry {
+impl CatalogRegistry {
     pub fn new() -> Self {
         Self {
-            files: BTreeMap::new(),
+            entries: BTreeMap::new(),
         }
     }
 
-    /// Recover remote state by listing files under a tenant prefix in object storage.
-    ///
-    /// Returns `Ok` with the recovered registry, or `Err` if the remote
-    /// is unreachable. The caller should skip upload recovery on failure
-    /// — uploads will happen naturally during normal operation once the
-    /// remote becomes available.
-    pub async fn recover(
-        operator: &opendal::Operator,
-        tenant_id: &str,
-    ) -> Result<Self, opendal::Error> {
-        let mut registry = Self::new();
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let prefix = format!("{tenant_id}/sfst/{today}/");
-        let entries = operator.list(&prefix).await?;
-
-        for entry in entries {
-            let path = entry.path();
-            let filename = path.strip_prefix(&prefix).unwrap_or(path);
-            if let Some(id) = FileId::parse(std::path::Path::new(filename)) {
-                registry.track(id, path.to_string());
-            }
-        }
-
-        if !registry.is_empty() {
-            tracing::info!(
-                tenant = tenant_id,
-                "recovered {} remote files",
-                registry.len()
-            );
-        }
-
-        Ok(registry)
-    }
-
-    pub fn track(&mut self, id: FileId, remote_key: String) {
-        self.files.insert(
-            id.seq,
-            RemoteFile {
-                id,
-                remote_key,
-                uploaded_at_ns: TimestampNs(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64,
-                ),
+    /// Insert a newly-uploaded SFST as `Pending`. Overwrites any existing
+    /// entry for the same `seq` (idempotent on retry / duplicate Uploaded).
+    pub fn insert_pending(&mut self, entry: otel_catalog::CatalogEntry) {
+        self.entries.insert(
+            entry.id.seq,
+            CatalogRegistryEntry {
+                entry,
+                visibility: Visibility::Pending,
             },
         );
     }
 
+    /// Insert an entry as already `Persisted`. Used at startup when loading
+    /// entries from local catalog files on disk.
+    pub fn insert_persisted(&mut self, entry: otel_catalog::CatalogEntry) {
+        self.entries.insert(
+            entry.id.seq,
+            CatalogRegistryEntry {
+                entry,
+                visibility: Visibility::Persisted,
+            },
+        );
+    }
+
+    /// Flip the entry for `seq` to `Persisted`. No-op if not present.
+    pub fn mark_persisted(&mut self, seq: u64) {
+        if let Some(e) = self.entries.get_mut(&seq) {
+            e.visibility = Visibility::Persisted;
+        }
+    }
+
     pub fn contains(&self, seq: u64) -> bool {
-        self.files.contains_key(&seq)
+        self.entries.contains_key(&seq)
     }
 
-    pub fn get(&self, seq: u64) -> Option<&RemoteFile> {
-        self.files.get(&seq)
+    pub fn get(&self, seq: u64) -> Option<&CatalogRegistryEntry> {
+        self.entries.get(&seq)
     }
 
-    pub fn remove(&mut self, seq: u64) -> Option<RemoteFile> {
-        self.files.remove(&seq)
+    pub fn remove(&mut self, seq: u64) -> Option<CatalogRegistryEntry> {
+        self.entries.remove(&seq)
     }
 
     pub fn len(&self) -> usize {
-        self.files.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
+        self.entries.is_empty()
+    }
+
+    pub fn iter_pending(&self) -> impl Iterator<Item = &CatalogRegistryEntry> {
+        self.entries
+            .values()
+            .filter(|e| e.visibility == Visibility::Pending)
+    }
+
+    pub fn is_persisted(&self, seq: u64) -> bool {
+        self.entries
+            .get(&seq)
+            .is_some_and(|e| e.visibility == Visibility::Persisted)
     }
 }
 
@@ -104,7 +104,7 @@ impl RemoteRegistry {
 pub struct Registry {
     pub wal: wal::Registry,
     pub sfst: sfst::registry::Registry,
-    pub remote: RemoteRegistry,
+    pub catalog: CatalogRegistry,
 }
 
 impl Registry {
@@ -112,7 +112,7 @@ impl Registry {
         Self {
             wal,
             sfst,
-            remote: RemoteRegistry::new(),
+            catalog: CatalogRegistry::new(),
         }
     }
 
@@ -160,12 +160,22 @@ impl Registry {
     }
 
     /// Returns FileIds of indexed files that have not been uploaded to remote storage.
+    ///
+    /// "Uploaded" means present in `catalog` regardless of visibility: a `Pending`
+    /// entry was successfully uploaded but its catalog `Record` has not yet been
+    /// acknowledged — re-uploading would not make progress.
     pub fn unuploaded_ids(&self) -> Vec<FileId> {
         self.sfst
             .values()
-            .filter(|entry| !self.remote.contains(entry.id.seq))
+            .filter(|entry| !self.catalog.contains(entry.id.seq))
             .map(|entry| entry.id)
             .collect()
+    }
+
+    /// Returns FileIds of uploaded SFSTs whose catalog `Record` has not yet
+    /// been acknowledged by the `CatalogWriter`.
+    pub fn uncataloged_ids(&self) -> Vec<FileId> {
+        self.catalog.iter_pending().map(|e| e.entry.id).collect()
     }
 }
 
@@ -274,4 +284,141 @@ fn cleanup_temp_files(dir: &Path) {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use file_registry::{ByteSize, TimestampNs};
+    use otel_catalog::CatalogEntry;
+    use uuid::Uuid;
+
+    fn make_entry(seq: u64) -> CatalogEntry {
+        CatalogEntry {
+            id: FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), seq, 0),
+            remote_key: format!("t/sfst/2026-04-17/{seq}.sfst"),
+            min_timestamp_s: 1_700_000_000,
+            max_timestamp_s: 1_700_003_600,
+            total_logs: 10,
+            streams: vec![],
+            size: ByteSize(1024),
+            uploaded_at_ns: TimestampNs(1_700_000_000_000_000_000),
+        }
+    }
+
+    #[test]
+    fn insert_pending_is_visible_and_pending() {
+        let mut cr = CatalogRegistry::new();
+        cr.insert_pending(make_entry(1));
+
+        assert!(cr.contains(1));
+        assert_eq!(cr.len(), 1);
+        assert_eq!(cr.get(1).unwrap().visibility, Visibility::Pending);
+        assert_eq!(cr.iter_pending().count(), 1);
+    }
+
+    #[test]
+    fn mark_persisted_flips_visibility_and_removes_from_pending_iter() {
+        let mut cr = CatalogRegistry::new();
+        cr.insert_pending(make_entry(1));
+        cr.mark_persisted(1);
+
+        assert_eq!(cr.get(1).unwrap().visibility, Visibility::Persisted);
+        assert_eq!(cr.iter_pending().count(), 0);
+        assert!(cr.contains(1));
+    }
+
+    #[test]
+    fn mark_persisted_missing_seq_is_noop() {
+        let mut cr = CatalogRegistry::new();
+        cr.mark_persisted(42);
+        assert!(!cr.contains(42));
+        assert_eq!(cr.len(), 0);
+    }
+
+    #[test]
+    fn insert_pending_overwrites_existing_entry() {
+        let mut cr = CatalogRegistry::new();
+        cr.insert_pending(make_entry(1));
+        cr.mark_persisted(1);
+        cr.insert_pending(make_entry(1));
+
+        assert_eq!(cr.get(1).unwrap().visibility, Visibility::Pending);
+        assert_eq!(cr.len(), 1);
+    }
+
+    #[test]
+    fn remove_returns_entry_and_clears() {
+        let mut cr = CatalogRegistry::new();
+        cr.insert_pending(make_entry(1));
+        let removed = cr.remove(1).unwrap();
+
+        assert_eq!(removed.entry.id.seq, 1);
+        assert!(!cr.contains(1));
+        assert!(cr.is_empty());
+    }
+
+    #[test]
+    fn iter_pending_filters_mixed_visibilities() {
+        let mut cr = CatalogRegistry::new();
+        cr.insert_pending(make_entry(1));
+        cr.insert_pending(make_entry(2));
+        cr.insert_pending(make_entry(3));
+        cr.mark_persisted(2);
+
+        let pending: Vec<u64> = cr.iter_pending().map(|e| e.entry.id.seq).collect();
+        assert_eq!(pending, vec![1, 3]);
+    }
+
+    #[test]
+    fn uncataloged_ids_returns_only_pending() {
+        let wal_dir = tempfile::tempdir().unwrap();
+        let sfst_dir = tempfile::tempdir().unwrap();
+        let wal = wal::Registry::new(wal_dir.path());
+        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let mut reg = Registry::new(wal, sfst);
+
+        reg.catalog.insert_pending(make_entry(1));
+        reg.catalog.insert_pending(make_entry(2));
+        reg.catalog.mark_persisted(2);
+
+        let pending: Vec<u64> = reg.uncataloged_ids().iter().map(|id| id.seq).collect();
+        assert_eq!(pending, vec![1]);
+    }
+
+    #[test]
+    fn is_persisted_only_true_for_persisted_entries() {
+        let mut cr = CatalogRegistry::new();
+        assert!(!cr.is_persisted(1));
+
+        cr.insert_pending(make_entry(1));
+        assert!(!cr.is_persisted(1));
+
+        cr.mark_persisted(1);
+        assert!(cr.is_persisted(1));
+    }
+
+    #[test]
+    fn unuploaded_ids_excludes_pending_and_persisted() {
+        let wal_dir = tempfile::tempdir().unwrap();
+        let sfst_dir = tempfile::tempdir().unwrap();
+        let wal = wal::Registry::new(wal_dir.path());
+        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let mut reg = Registry::new(wal, sfst);
+
+        // Three indexed SFSTs exist locally.
+        let seqs = [1u64, 2, 3];
+        for &seq in &seqs {
+            let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), seq, 0);
+            reg.sfst.track(id, TimestampNs(0), ByteSize(1));
+        }
+        // seq=1 is still unuploaded; seq=2 is Pending; seq=3 is Persisted.
+        reg.catalog.insert_pending(make_entry(2));
+        reg.catalog.insert_pending(make_entry(3));
+        reg.catalog.mark_persisted(3);
+
+        let unuploaded: Vec<u64> = reg.unuploaded_ids().iter().map(|id| id.seq).collect();
+        assert_eq!(unuploaded, vec![1]);
+    }
+
 }
