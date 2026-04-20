@@ -174,6 +174,11 @@ impl Registry {
 
     /// Returns FileIds of uploaded SFSTs whose catalog `Record` has not yet
     /// been acknowledged by the `CatalogWriter`.
+    ///
+    /// Currently no production code path consumes this — it's here for a
+    /// future periodic retry sweep and for observability (e.g. exporting a
+    /// "pending catalog writes" gauge). In steady state this set should be
+    /// near-empty; a growing count means catalog writes are failing silently.
     pub fn uncataloged_ids(&self) -> Vec<FileId> {
         self.catalog.iter_pending().map(|e| e.entry.id).collect()
     }

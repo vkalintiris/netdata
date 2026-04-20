@@ -156,15 +156,33 @@ pub async fn recover_retention(
     registry: &mut Registry,
     cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
     retention: &bridge::config::RetentionConfig,
+    storage_enabled: bool,
 ) -> anyhow::Result<()> {
     let to_evict = registry.sfst.evaluate_retention(retention, now_ns());
     if to_evict.is_empty() {
         return Ok(());
     }
 
-    tracing::info!("retention: evicting {} old index files", to_evict.len());
+    // Mirror the steady-state retention guard at ledger.rs: when remote
+    // storage is enabled, defer eviction unless the catalog entry is
+    // Persisted. A Pending entry means the catalog Record hasn't been
+    // acknowledged -- evicting the local SFST now would make the next
+    // restart unable to rebuild the catalog entry from its header.
+    let (evictable, deferred): (Vec<u64>, Vec<u64>) = to_evict
+        .into_iter()
+        .partition(|&seq| !storage_enabled || registry.catalog.is_persisted(seq));
+    for seq in deferred {
+        tracing::warn!(
+            "recovery: deferring eviction of seq={seq} (upload or catalog pending)"
+        );
+    }
+    if evictable.is_empty() {
+        return Ok(());
+    }
 
-    let requests: Vec<_> = to_evict
+    tracing::info!("retention: evicting {} old index files", evictable.len());
+
+    let requests: Vec<_> = evictable
         .iter()
         .filter_map(|&seq| {
             registry.sfst.get(seq).map(|entry| {
@@ -180,6 +198,7 @@ pub async fn recover_retention(
     batch_recover(requests, cleaner, |resp| match resp {
         CleanerResponse::IndexFileDeleted { sequence } => {
             registry.sfst.remove(sequence);
+            registry.catalog.remove(sequence);
             tracing::info!("recovery: index file evicted seq={sequence}");
         }
         CleanerResponse::IndexFileFailed { sequence, error } => {
@@ -665,6 +684,78 @@ mod tests {
 
         load_local_catalogs(base.path(), "no-such-tenant", &mut reg).unwrap();
         assert!(reg.catalog.is_empty());
+    }
+
+    async fn run_recover_retention(
+        registry: &mut Registry,
+        retention: &bridge::config::RetentionConfig,
+        storage_enabled: bool,
+    ) {
+        use crate::cleaner::Cleaner;
+        use crate::component::ComponentHandle;
+        use tokio_util::sync::CancellationToken;
+
+        let cancel = CancellationToken::new();
+        let mut cleaner =
+            ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
+        recover_retention(registry, &mut cleaner, retention, storage_enabled)
+            .await
+            .unwrap();
+        cancel.cancel();
+    }
+
+    fn evict_all_retention() -> bridge::config::RetentionConfig {
+        bridge::config::RetentionConfig {
+            max_files: 0,
+            max_total_size: bytesize::ByteSize::b(u64::MAX),
+            max_age: std::time::Duration::from_secs(u64::MAX / 2),
+        }
+    }
+
+    #[tokio::test]
+    async fn recover_retention_defers_pending_and_evicts_persisted() {
+        let wal_dir = tempfile::tempdir().unwrap();
+        let sfst_dir = tempfile::tempdir().unwrap();
+        let wal = wal::Registry::new(wal_dir.path());
+        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let mut reg = Registry::new(wal, sfst);
+
+        let machine = uuid::Uuid::from_u128(1);
+        let boot = uuid::Uuid::from_u128(2);
+        for seq in [1u64, 2] {
+            let id = file_registry::FileId::new(machine, boot, seq, 0);
+            reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+        }
+        reg.catalog.insert_pending(make_entry(1));
+        reg.catalog.insert_persisted(make_entry(2));
+
+        run_recover_retention(&mut reg, &evict_all_retention(), true).await;
+
+        assert!(reg.sfst.get(1).is_some(), "Pending seq must not be evicted");
+        assert!(reg.catalog.contains(1));
+        assert!(reg.sfst.get(2).is_none(), "Persisted seq must be evicted");
+        assert!(!reg.catalog.contains(2));
+    }
+
+    #[tokio::test]
+    async fn recover_retention_evicts_all_when_storage_disabled() {
+        let wal_dir = tempfile::tempdir().unwrap();
+        let sfst_dir = tempfile::tempdir().unwrap();
+        let wal = wal::Registry::new(wal_dir.path());
+        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let mut reg = Registry::new(wal, sfst);
+
+        let machine = uuid::Uuid::from_u128(1);
+        let boot = uuid::Uuid::from_u128(2);
+        for seq in [1u64, 2] {
+            let id = file_registry::FileId::new(machine, boot, seq, 0);
+            reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+        }
+
+        run_recover_retention(&mut reg, &evict_all_retention(), false).await;
+
+        assert!(reg.sfst.get(1).is_none());
+        assert!(reg.sfst.get(2).is_none());
     }
 
     #[test]

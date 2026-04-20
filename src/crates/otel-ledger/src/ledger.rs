@@ -145,7 +145,13 @@ impl Ledger {
 
             let retention =
                 bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
-            recover_retention(registry, &mut cleaner, &retention).await?;
+            recover_retention(
+                registry,
+                &mut cleaner,
+                &retention,
+                logs_config.storage.enabled,
+            )
+            .await?;
         }
 
         tracing::info!("recovery complete");

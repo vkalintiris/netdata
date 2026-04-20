@@ -3109,6 +3109,7 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "bridge",
+ "bytesize",
  "chrono",
  "ferryboat",
  "file-registry",
