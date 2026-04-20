@@ -61,8 +61,8 @@ impl Catalog {
     // key if query planner workloads show it matters.
     pub fn entries_in_range<'a>(
         &'a self,
-        min_s: i64,
-        max_s: i64,
+        min_s: u32,
+        max_s: u32,
     ) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
         self.entries
             .values()
@@ -140,7 +140,7 @@ mod tests {
         )
     }
 
-    fn entry_at(seq: u64, min_s: i64, max_s: i64, streams: Vec<StreamEntry>) -> CatalogEntry {
+    fn entry_at(seq: u64, min_s: u32, max_s: u32, streams: Vec<StreamEntry>) -> CatalogEntry {
         CatalogEntry {
             id: FileId::new(Uuid::nil(), Uuid::from_u128(1), seq, 0),
             remote_key: format!("tenant1/sfst/2026-04-17/{seq}.sfst"),

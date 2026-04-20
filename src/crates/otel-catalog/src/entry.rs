@@ -26,8 +26,8 @@ impl StreamEntry {
 pub struct CatalogEntry {
     pub id: FileId,
     pub remote_key: String,
-    pub min_timestamp_s: i64,
-    pub max_timestamp_s: i64,
+    pub min_timestamp_s: u32,
+    pub max_timestamp_s: u32,
     pub total_logs: u32,
     pub streams: Vec<StreamEntry>,
     pub size: ByteSize,

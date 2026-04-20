@@ -8,7 +8,7 @@ use crate::entry::StreamEntry;
 /// pair in its `streams`.
 #[derive(Debug, Clone)]
 pub struct CatalogQuery {
-    pub min_timestamp_s: i64,
-    pub max_timestamp_s: i64,
+    pub min_timestamp_s: u32,
+    pub max_timestamp_s: u32,
     pub stream: Option<StreamEntry>,
 }
