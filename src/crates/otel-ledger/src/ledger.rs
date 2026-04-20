@@ -370,13 +370,11 @@ impl Ledger {
                         Some(wf) => {
                             let id = wf.id;
                             let wal_path = registry.wal.file_path(id);
-                            let index_file_path = registry.sfst.file_path(id);
-                            let index_size = ByteSize(
-                                std::fs::metadata(&index_file_path)
-                                    .map(|m| m.len())
-                                    .unwrap_or(0),
+                            let sfst_path = registry.sfst.file_path(id);
+                            let sfst_size = ByteSize(
+                                std::fs::metadata(&sfst_path).map(|m| m.len()).unwrap_or(0),
                             );
-                            registry.sfst.track(id, wf.created_at_ns, index_size);
+                            registry.sfst.track(id, wf.created_at_ns, sfst_size);
                             (Some(id), Some(wal_path))
                         }
                         None => {
@@ -414,9 +412,10 @@ impl Ledger {
                     .and_then(|r| r.sfst.get(seq))
                     .map(|entry| (entry.id, entry.size));
 
-                // If the indexer produced metadata for this sequence (cached in
-                // pending_metadata since IndexFinalized), forward a record to
-                // the catalog writer.
+                // Build the catalog entry from metadata the indexer cached on
+                // IndexFinalized and forward a record to the catalog writer.
+                // Both lookups are expected to hit in steady state; the guard
+                // is defensive against races on restart.
                 if let (Some((file_id, size)), Some(metadata)) =
                     (sfst_info, self.pending_metadata.remove(&seq))
                 {
