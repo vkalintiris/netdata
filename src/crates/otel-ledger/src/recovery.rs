@@ -172,9 +172,7 @@ pub async fn recover_retention(
         .into_iter()
         .partition(|&seq| !storage_enabled || registry.catalog.is_persisted(seq));
     for seq in deferred {
-        tracing::warn!(
-            "recovery: deferring eviction of seq={seq} (upload or catalog pending)"
-        );
+        tracing::warn!("recovery: deferring eviction of seq={seq} (upload or catalog pending)");
     }
     if evictable.is_empty() {
         return Ok(());
@@ -329,7 +327,11 @@ pub fn load_local_catalogs(
     };
 
     for date_entry in date_entries.flatten() {
-        if !date_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+        if !date_entry
+            .file_type()
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
         let files = match std::fs::read_dir(date_entry.path()) {
@@ -507,7 +509,11 @@ fn cleanup_catalog_tmp_files(catalog_root: &Path) {
         Err(_) => return,
     };
     for date_entry in dates.flatten() {
-        if !date_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+        if !date_entry
+            .file_type()
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
         let files = match std::fs::read_dir(date_entry.path()) {
@@ -559,10 +565,8 @@ fn build_catalog_entry_from_sfst(
     uploaded_at_ns: file_registry::TimestampNs,
     id: file_registry::FileId,
 ) -> anyhow::Result<otel_catalog::CatalogEntry> {
-    let data = std::fs::read(sfst_path)
-        .map_err(|e| anyhow::anyhow!("read sfst: {e}"))?;
-    let reader = sfst::Reader::open(&data)
-        .map_err(|e| anyhow::anyhow!("open sfst: {e}"))?;
+    let data = std::fs::read(sfst_path).map_err(|e| anyhow::anyhow!("read sfst: {e}"))?;
+    let reader = sfst::Reader::open(&data).map_err(|e| anyhow::anyhow!("open sfst: {e}"))?;
     let metadata: log_index::IndexMetadata = reader
         .metadata()
         .map_err(|e| anyhow::anyhow!("read sfst metadata: {e}"))?;
@@ -621,7 +625,10 @@ mod tests {
         boot: uuid::Uuid,
         entries: &[otel_catalog::CatalogEntry],
     ) {
-        let dir = base.join(tenant_id).join("catalog").join(date.format("%Y-%m-%d").to_string());
+        let dir = base
+            .join(tenant_id)
+            .join("catalog")
+            .join(date.format("%Y-%m-%d").to_string());
         std::fs::create_dir_all(&dir).unwrap();
         let filename = format!("{}-{}.catalog", machine.as_simple(), boot.as_simple());
         let mut catalog = Catalog::new(
@@ -653,7 +660,8 @@ mod tests {
         let boot = uuid::Uuid::from_u128(2);
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine, boot, seq, 0);
-            reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+            reg.sfst
+                .track(id, file_registry::TimestampNs(0), ByteSize(1));
         }
 
         let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
@@ -670,7 +678,10 @@ mod tests {
 
         assert!(reg.catalog.is_persisted(1));
         assert!(reg.catalog.is_persisted(2));
-        assert!(!reg.catalog.contains(3), "historical entry must be filtered out");
+        assert!(
+            !reg.catalog.contains(3),
+            "historical entry must be filtered out"
+        );
     }
 
     #[test]
@@ -696,8 +707,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let cancel = CancellationToken::new();
-        let mut cleaner =
-            ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
+        let mut cleaner = ComponentHandle::spawn::<Cleaner>((), cancel.child_token());
         recover_retention(registry, &mut cleaner, retention, storage_enabled)
             .await
             .unwrap();
@@ -724,7 +734,8 @@ mod tests {
         let boot = uuid::Uuid::from_u128(2);
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine, boot, seq, 0);
-            reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+            reg.sfst
+                .track(id, file_registry::TimestampNs(0), ByteSize(1));
         }
         reg.catalog.insert_pending(make_entry(1));
         reg.catalog.insert_persisted(make_entry(2));
@@ -749,7 +760,8 @@ mod tests {
         let boot = uuid::Uuid::from_u128(2);
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine, boot, seq, 0);
-            reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+            reg.sfst
+                .track(id, file_registry::TimestampNs(0), ByteSize(1));
         }
 
         run_recover_retention(&mut reg, &evict_all_retention(), false).await;
@@ -770,19 +782,30 @@ mod tests {
         let machine = uuid::Uuid::from_u128(1);
         let boot = uuid::Uuid::from_u128(2);
         let id = file_registry::FileId::new(machine, boot, 1, 0);
-        reg.sfst.track(id, file_registry::TimestampNs(0), ByteSize(1));
+        reg.sfst
+            .track(id, file_registry::TimestampNs(0), ByteSize(1));
 
         let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
-        let dir = base.path().join("tenant1").join("catalog")
+        let dir = base
+            .path()
+            .join("tenant1")
+            .join("catalog")
             .join(date.format("%Y-%m-%d").to_string());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join(format!("{}-{}.catalog", machine.as_simple(), boot.as_simple())),
+            dir.join(format!(
+                "{}-{}.catalog",
+                machine.as_simple(),
+                boot.as_simple()
+            )),
             b"not valid json",
         )
         .unwrap();
 
         load_local_catalogs(base.path(), "tenant1", &mut reg).unwrap();
-        assert!(reg.catalog.is_empty(), "corrupt file should be skipped, not loaded");
+        assert!(
+            reg.catalog.is_empty(),
+            "corrupt file should be skipped, not loaded"
+        );
     }
 }

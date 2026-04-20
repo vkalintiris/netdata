@@ -69,10 +69,7 @@ impl Catalog {
             .filter(move |e| e.max_timestamp_s >= min_s && e.min_timestamp_s <= max_s)
     }
 
-    pub fn find<'a>(
-        &'a self,
-        q: &'a CatalogQuery,
-    ) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
+    pub fn find<'a>(&'a self, q: &'a CatalogQuery) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
         self.entries_in_range(q.min_timestamp_s, q.max_timestamp_s)
             .filter(move |e| match &q.stream {
                 Some(s) => e.streams.contains(s),
@@ -216,20 +213,36 @@ mod tests {
         c.add(entry_at(2, 300, 400, vec![]), now);
         c.add(entry_at(3, 150, 350, vec![]), now);
 
-        let q = CatalogQuery { min_timestamp_s: 50, max_timestamp_s: 250, stream: None };
+        let q = CatalogQuery {
+            min_timestamp_s: 50,
+            max_timestamp_s: 250,
+            stream: None,
+        };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
 
         // Inclusive edges: query ends at 200 (entry 1's max), starts at 300 (entry 2's min)
-        let q = CatalogQuery { min_timestamp_s: 200, max_timestamp_s: 300, stream: None };
+        let q = CatalogQuery {
+            min_timestamp_s: 200,
+            max_timestamp_s: 300,
+            stream: None,
+        };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 2, 3]);
 
-        let q = CatalogQuery { min_timestamp_s: 500, max_timestamp_s: 600, stream: None };
+        let q = CatalogQuery {
+            min_timestamp_s: 500,
+            max_timestamp_s: 600,
+            stream: None,
+        };
         assert_eq!(c.find(&q).count(), 0);
 
         // Single-point range that hits entry 1 (max=200) and entry 3 (min=150, max=350)
-        let q = CatalogQuery { min_timestamp_s: 200, max_timestamp_s: 200, stream: None };
+        let q = CatalogQuery {
+            min_timestamp_s: 200,
+            max_timestamp_s: 200,
+            stream: None,
+        };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
     }

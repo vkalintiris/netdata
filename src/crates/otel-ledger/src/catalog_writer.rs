@@ -84,10 +84,14 @@ async fn handle_record(
 
     let key = (tenant_id.clone(), date, machine_id, boot_id);
     let catalog = catalogs.entry(key).or_insert_with(|| {
-        load_local_catalog(&args.catalog_base_dir, &tenant_id, date, machine_id, boot_id)
-            .unwrap_or_else(|| {
-                Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now_ns)
-            })
+        load_local_catalog(
+            &args.catalog_base_dir,
+            &tenant_id,
+            date,
+            machine_id,
+            boot_id,
+        )
+        .unwrap_or_else(|| Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now_ns))
     });
 
     catalog.add(entry, now_ns);
@@ -104,7 +108,13 @@ async fn handle_record(
         }
     };
 
-    let local_final = local_path(&args.catalog_base_dir, &tenant_id, date, machine_id, boot_id);
+    let local_final = local_path(
+        &args.catalog_base_dir,
+        &tenant_id,
+        date,
+        machine_id,
+        boot_id,
+    );
     if let Err(e) = write_local_atomic(&local_final, &bytes).await {
         tracing::error!(seq, path = %local_final.display(), "catalog local write failed: {e}");
         return CatalogWriterResponse::RecordFailed {
@@ -335,10 +345,7 @@ mod tests {
             }
         }
 
-        async fn send_and_recv(
-            &mut self,
-            req: CatalogWriterRequest,
-        ) -> CatalogWriterResponse {
+        async fn send_and_recv(&mut self, req: CatalogWriterRequest) -> CatalogWriterResponse {
             self.handle.send(req).unwrap();
             self.handle.recv().await.unwrap()
         }
@@ -462,7 +469,11 @@ mod tests {
                     .is_some_and(|n| n.contains(".catalog.bad."))
             })
             .collect();
-        assert_eq!(bad_files.len(), 1, "expected exactly one .bad preservation file");
+        assert_eq!(
+            bad_files.len(),
+            1,
+            "expected exactly one .bad preservation file"
+        );
         let bad_bytes = std::fs::read(bad_files.pop().unwrap().path()).unwrap();
         assert_eq!(bad_bytes, corrupt_bytes);
     }

@@ -425,5 +425,4 @@ mod tests {
         let unuploaded: Vec<u64> = reg.unuploaded_ids().iter().map(|id| id.seq).collect();
         assert_eq!(unuploaded, vec![1]);
     }
-
 }

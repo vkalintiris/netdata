@@ -127,12 +127,8 @@ impl Ledger {
                 {
                     Ok(()) => {
                         recover_unuploaded(registry, &mut uploader, tenant_id).await?;
-                        crate::recovery::recover_catalog(
-                            registry,
-                            &mut catalog_writer,
-                            tenant_id,
-                        )
-                        .await?;
+                        crate::recovery::recover_catalog(registry, &mut catalog_writer, tenant_id)
+                            .await?;
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -426,13 +422,8 @@ impl Ledger {
                 {
                     let date = derive_date_from_metadata(&metadata);
                     let uploaded_at_ns = TimestampNs(now_ns());
-                    let entry = build_catalog_entry(
-                        file_id,
-                        remote_key,
-                        &metadata,
-                        size,
-                        uploaded_at_ns,
-                    );
+                    let entry =
+                        build_catalog_entry(file_id, remote_key, &metadata, size, uploaded_at_ns);
 
                     if let Some(registry) = self.registries.get_mut(&tenant_id) {
                         registry.catalog.insert_pending(entry.clone());
@@ -595,18 +586,8 @@ pub(crate) fn build_catalog_entry(
     // widen to `i64` to match CatalogEntry. On an empty histogram (an SFST
     // with no logs — shouldn't happen in practice) the 0 fallback yields
     // a [0, 0] epoch range that no real query will match.
-    let min_timestamp_s = metadata
-        .histogram
-        .timestamps
-        .first()
-        .copied()
-        .unwrap_or(0) as i64;
-    let max_timestamp_s = metadata
-        .histogram
-        .timestamps
-        .last()
-        .copied()
-        .unwrap_or(0) as i64;
+    let min_timestamp_s = metadata.histogram.timestamps.first().copied().unwrap_or(0) as i64;
+    let max_timestamp_s = metadata.histogram.timestamps.last().copied().unwrap_or(0) as i64;
     let streams = metadata
         .streams
         .iter()

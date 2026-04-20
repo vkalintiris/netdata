@@ -185,9 +185,7 @@ mod tests {
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
-                writer
-                    .write_frame(0, &(i as u32).to_le_bytes(), 1)
-                    .unwrap();
+                writer.write_frame(0, &(i as u32).to_le_bytes(), 1).unwrap();
             }
             all_events.extend(writer.take_all_events());
         }
