@@ -66,15 +66,12 @@ pub struct MetricsConfig {
 pub struct LogsConfig {
     /// WAL file configuration (rotation, storage).
     pub wal: WalConfig,
-    /// Index file configuration.
+    /// Index file configuration (storage dir, retention).
     pub index: IndexConfig,
     /// Catalog file configuration.
     pub catalog: CatalogConfig,
     /// Remote object storage configuration.
     pub storage: StorageConfig,
-    /// Per-tenant retention policies, keyed by tenant name.
-    /// The `"default"` key is required and used as the fallback.
-    pub retention: HashMap<String, RetentionEntry>,
     /// Tenant authentication configuration.
     #[serde(default)]
     pub auth: AuthConfig,
@@ -96,6 +93,9 @@ pub struct StorageConfig {
 pub struct IndexConfig {
     /// Directory for SFST index file storage. Layout: `{dir}/{tenant}/*.sfst`.
     pub dir: PathBuf,
+    /// Per-tenant retention policies for SFST files, keyed by tenant name.
+    /// The `"default"` key is required and used as the fallback.
+    pub retention: HashMap<String, RetentionEntry>,
 }
 
 /// Catalog file configuration.

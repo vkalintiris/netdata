@@ -13,8 +13,6 @@ pub(super) struct LogsOverride {
     #[serde(default)]
     pub(super) storage: Option<StorageOverride>,
     #[serde(default)]
-    pub(super) retention: Option<HashMap<String, RetentionEntry>>,
-    #[serde(default)]
     pub(super) auth: Option<AuthOverride>,
 }
 
@@ -22,6 +20,8 @@ pub(super) struct LogsOverride {
 pub(super) struct IndexOverride {
     #[serde(default)]
     pub(super) dir: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) retention: Option<HashMap<String, RetentionEntry>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -61,7 +61,6 @@ impl LogsOverride {
         self.wal.as_ref().is_some_and(|w| w.has_any())
             || self.index.as_ref().is_some_and(|i| i.has_any())
             || self.storage.as_ref().is_some_and(|s| s.has_any())
-            || self.retention.is_some()
             || self.auth.as_ref().is_some_and(|a| a.has_any())
     }
 }
@@ -74,7 +73,7 @@ impl StorageOverride {
 
 impl IndexOverride {
     pub(super) fn has_any(&self) -> bool {
-        self.dir.is_some()
+        self.dir.is_some() || self.retention.is_some()
     }
 }
 
@@ -117,6 +116,21 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         if let Some(v) = &i.dir {
             config.index.dir = v.clone();
         }
+        if let Some(r) = &i.retention {
+            // Merge per-tenant entries: override fields replace stock fields.
+            for (tenant, entry) in r {
+                let target = config.index.retention.entry(tenant.clone()).or_default();
+                if let Some(v) = entry.max_files {
+                    target.max_files = Some(v);
+                }
+                if let Some(v) = entry.max_total_size {
+                    target.max_total_size = Some(v);
+                }
+                if let Some(v) = entry.max_age {
+                    target.max_age = Some(v);
+                }
+            }
+        }
     }
     if let Some(s) = &o.storage {
         if let Some(v) = s.enabled {
@@ -124,21 +138,6 @@ pub(super) fn apply(config: &mut LogsConfig, o: &LogsOverride) {
         }
         if let Some(v) = &s.uri {
             config.storage.uri = v.clone();
-        }
-    }
-    if let Some(r) = &o.retention {
-        // Merge per-tenant entries: override fields replace stock fields.
-        for (tenant, entry) in r {
-            let target = config.retention.entry(tenant.clone()).or_default();
-            if let Some(v) = entry.max_files {
-                target.max_files = Some(v);
-            }
-            if let Some(v) = entry.max_total_size {
-                target.max_total_size = Some(v);
-            }
-            if let Some(v) = entry.max_age {
-                target.max_age = Some(v);
-            }
         }
     }
     if let Some(a) = &o.auth {

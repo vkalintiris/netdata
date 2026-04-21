@@ -148,7 +148,7 @@ impl Ledger {
             }
 
             let retention =
-                bridge::config::RetentionConfig::resolve(&logs_config.retention, tenant_id);
+                bridge::config::RetentionConfig::resolve(&logs_config.index.retention, tenant_id);
             recover_retention(
                 registry,
                 &mut cleaner,
@@ -600,7 +600,7 @@ impl Ledger {
         };
 
         let retention =
-            bridge::config::RetentionConfig::resolve(&self.logs_config.retention, tenant_id);
+            bridge::config::RetentionConfig::resolve(&self.logs_config.index.retention, tenant_id);
         let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {

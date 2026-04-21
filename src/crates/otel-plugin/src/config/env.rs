@@ -139,21 +139,30 @@ impl LogsOverride {
                 None
             },
         };
+        let retention_default = bridge::config::RetentionEntry {
+            max_files: parse_env_var("NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_FILES")?,
+            max_total_size: parse_env_bytesize(
+                "NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_TOTAL_SIZE",
+            )?,
+            max_age: parse_env_duration("NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_AGE")?,
+        };
+        let retention_has_any = retention_default.max_files.is_some()
+            || retention_default.max_total_size.is_some()
+            || retention_default.max_age.is_some();
         let index = IndexOverride {
             dir: env_var("NETDATA_OTEL_LOGS_INDEX_DIR")?.map(PathBuf::from),
+            retention: if retention_has_any {
+                let mut map = std::collections::HashMap::new();
+                map.insert("default".to_string(), retention_default);
+                Some(map)
+            } else {
+                None
+            },
         };
         let storage = StorageOverride {
             enabled: parse_env_bool("NETDATA_OTEL_LOGS_STORAGE_ENABLED")?,
             uri: env_var("NETDATA_OTEL_LOGS_STORAGE_URI")?,
         };
-        let retention_default = bridge::config::RetentionEntry {
-            max_files: parse_env_var("NETDATA_OTEL_LOGS_RETENTION_MAX_FILES")?,
-            max_total_size: parse_env_bytesize("NETDATA_OTEL_LOGS_RETENTION_MAX_TOTAL_SIZE")?,
-            max_age: parse_env_duration("NETDATA_OTEL_LOGS_RETENTION_MAX_AGE")?,
-        };
-        let retention_has_any = retention_default.max_files.is_some()
-            || retention_default.max_total_size.is_some()
-            || retention_default.max_age.is_some();
         let auth = AuthOverride {
             enabled: parse_env_bool("NETDATA_OTEL_LOGS_AUTH_ENABLED")?,
         };
@@ -162,13 +171,6 @@ impl LogsOverride {
             index: if index.has_any() { Some(index) } else { None },
             storage: if storage.has_any() {
                 Some(storage)
-            } else {
-                None
-            },
-            retention: if retention_has_any {
-                let mut map = std::collections::HashMap::new();
-                map.insert("default".to_string(), retention_default);
-                Some(map)
             } else {
                 None
             },
