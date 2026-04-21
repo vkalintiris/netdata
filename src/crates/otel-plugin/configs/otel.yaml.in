@@ -65,11 +65,21 @@ logs:
       #   max_log_entries: 50000
 
   index:
-    # Directory for index file storage.
+    # Directory for SFST index file storage.
+    # Layout: {dir}/{tenant}/{file_id}.sfst
     dir: @logdir_POST@/otel/v1/index
 
+  catalog:
+    # Directory for catalog file storage.
+    # Layout: {dir}/{YYYY-MM-DD}/{tenant}/{machine}-{boot}-{max_seq}.catalog
+    dir: @logdir_POST@/otel/v1/catalog
+
+    # Number of SFST entries accumulated in the per-tenant in-memory
+    # accumulator before it rotates into an immutable catalog file.
+    rotation_count: 10
+
   storage:
-    # Whether to upload index files to remote object storage.
+    # Whether to upload SFST and catalog files to remote object storage.
     enabled: false
 
     # OpenDAL URI for the remote storage backend.

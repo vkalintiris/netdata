@@ -168,7 +168,7 @@ pub async fn recover_retention(
     // in `evaluate_retention`).
     let (evictable, deferred): (Vec<u64>, Vec<u64>) = to_evict
         .into_iter()
-        .partition(|seq| !storage_enabled || registry.rotated_seqs.contains(seq));
+        .partition(|&seq| !storage_enabled || registry.is_rotated(seq));
     for seq in deferred {
         tracing::warn!("recovery: deferring eviction of seq={seq} (upload or catalog pending)");
     }
@@ -193,9 +193,7 @@ pub async fn recover_retention(
 
     batch_recover(requests, cleaner, |resp| match resp {
         CleanerResponse::IndexFileDeleted { sequence } => {
-            registry.sfst.remove(sequence);
-            registry.uploaded_seqs.remove(&sequence);
-            registry.rotated_seqs.remove(&sequence);
+            registry.evict_seq(sequence);
             tracing::info!("recovery: index file evicted seq={sequence}");
         }
         CleanerResponse::IndexFileFailed { sequence, error } => {
@@ -271,7 +269,7 @@ pub async fn recover_unuploaded(
                     return;
                 }
             };
-            registry.uploaded_seqs.insert(seq);
+            registry.mark_uploaded(seq);
             let date = match parse_date_from_remote_key(&remote_key) {
                 Some(d) => d,
                 None => {
@@ -326,14 +324,14 @@ fn read_min_date(index_path: &std::path::Path) -> Option<String> {
     chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.format("%Y-%m-%d").to_string())
 }
 
-/// Populate `registry.uploaded_seqs` and `registry.rotated_seqs` from the
-/// catalog files already present on local disk (discovered by
-/// `catalog_files.recover()`).
+/// Replay the catalog files already present on local disk (discovered by
+/// `catalog_files.recover()`) into the registry's in-memory uploaded /
+/// rotated state.
 ///
-/// Each catalog file is parsed; every entry's seq is added to both sets.
-/// Membership in `rotated_seqs` is sufficient to satisfy the retention
-/// guard; membership in `uploaded_seqs` prevents re-upload of already-
-/// known-uploaded SFSTs.
+/// Each catalog file is parsed; every entry's seq is marked as both
+/// uploaded and rotated. Rotated state satisfies the retention guard so
+/// those SFSTs can be evicted; uploaded state prevents re-upload of
+/// already-known-uploaded SFSTs.
 pub fn seed_from_catalog_files(registry: &mut Registry) {
     let paths: Vec<std::path::PathBuf> =
         registry.catalog_files.iter().map(|(p, _)| p.clone()).collect();
@@ -358,8 +356,8 @@ pub fn seed_from_catalog_files(registry: &mut Registry) {
             }
         };
         for entry in catalog.entries.values() {
-            registry.uploaded_seqs.insert(entry.id.seq);
-            registry.rotated_seqs.insert(entry.id.seq);
+            registry.mark_uploaded(entry.id.seq);
+            registry.mark_rotated(entry.id.seq);
             seeded += 1;
         }
     }
@@ -373,9 +371,9 @@ pub fn seed_from_catalog_files(registry: &mut Registry) {
 }
 
 /// List SFSTs in today's remote prefix. For each one, mark it uploaded;
-/// for those not already in `rotated_seqs`, read the local SFST header
-/// and forward a fresh `AddEntry` to the catalog builder so the entry
-/// ends up in a future closed catalog file.
+/// for those not yet rotated into a closed catalog, read the local SFST
+/// header and forward a fresh `AddEntry` to the catalog builder so the
+/// entry ends up in a future closed catalog file.
 ///
 /// Returns `Err` if the remote is unreachable — the caller should skip
 /// further remote-dependent recovery.
@@ -404,9 +402,9 @@ pub async fn reconcile_remote_uploads(
             None => continue,
         };
 
-        registry.uploaded_seqs.insert(id.seq);
+        registry.mark_uploaded(id.seq);
 
-        if registry.rotated_seqs.contains(&id.seq) {
+        if registry.is_rotated(id.seq) {
             continue;
         }
 
@@ -605,8 +603,8 @@ mod tests {
         seed_from_catalog_files(&mut reg);
 
         for seq in [1u64, 2, 3] {
-            assert!(reg.uploaded_seqs.contains(&seq));
-            assert!(reg.rotated_seqs.contains(&seq));
+            assert!(reg.is_uploaded(seq));
+            assert!(reg.is_rotated(seq));
         }
     }
 
@@ -629,8 +627,8 @@ mod tests {
         reg.catalog_files.recover();
 
         seed_from_catalog_files(&mut reg);
-        assert!(reg.uploaded_seqs.is_empty());
-        assert!(reg.rotated_seqs.is_empty());
+        assert!(!reg.is_uploaded(1));
+        assert!(!reg.is_rotated(1));
     }
 
     async fn run_recover_retention(
@@ -669,14 +667,14 @@ mod tests {
                 .track(id, file_registry::TimestampNs(0), ByteSize(1));
         }
         // Only seq=2 is in a closed catalog; seq=1 is not.
-        reg.rotated_seqs.insert(2);
+        reg.mark_rotated(2);
 
         run_recover_retention(&mut reg, &evict_all_retention(), true).await;
 
         assert!(reg.sfst.get(1).is_some(), "unrotated seq must not be evicted");
-        assert!(!reg.rotated_seqs.contains(&1));
+        assert!(!reg.is_rotated(1));
         assert!(reg.sfst.get(2).is_none(), "rotated seq must be evicted");
-        assert!(!reg.rotated_seqs.contains(&2));
+        assert!(!reg.is_rotated(2));
     }
 
     #[tokio::test]

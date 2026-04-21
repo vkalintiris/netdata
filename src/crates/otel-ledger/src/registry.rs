@@ -13,13 +13,12 @@ pub struct Registry {
     /// Immutable catalog files present on local disk.
     pub catalog_files: otel_catalog::registry::Registry,
     /// SFST sequence numbers that have been successfully uploaded to remote
-    /// object storage. Used to answer "do I need to upload this SFST?" and
-    /// to seed the catalog builder's accumulator on recovery.
-    pub uploaded_seqs: BTreeSet<u64>,
+    /// object storage. Gated access via [`Registry::mark_uploaded`] etc.
+    uploaded_seqs: BTreeSet<u64>,
     /// SFST sequence numbers whose catalog entry has been written to a
     /// closed on-disk catalog file. Retention defers SFST eviction until
-    /// this set contains the seq.
-    pub rotated_seqs: BTreeSet<u64>,
+    /// this set contains the seq. Gated access via [`Registry::mark_rotated`] etc.
+    rotated_seqs: BTreeSet<u64>,
 }
 
 impl Registry {
@@ -91,15 +90,59 @@ impl Registry {
             .map(|entry| entry.id)
             .collect()
     }
+
+    /// Mark this SFST sequence as uploaded to remote object storage.
+    pub fn mark_uploaded(&mut self, seq: u64) {
+        self.uploaded_seqs.insert(seq);
+    }
+
+    /// Whether this SFST sequence has been uploaded.
+    pub fn is_uploaded(&self, seq: u64) -> bool {
+        self.uploaded_seqs.contains(&seq)
+    }
+
+    /// Mark this SFST sequence as written into a closed, on-disk catalog file.
+    /// Retention consults this set before evicting local SFSTs.
+    pub fn mark_rotated(&mut self, seq: u64) {
+        self.rotated_seqs.insert(seq);
+    }
+
+    /// Mark many SFST sequences as rotated in one call.
+    pub fn mark_rotated_many(&mut self, seqs: impl IntoIterator<Item = u64>) {
+        self.rotated_seqs.extend(seqs);
+    }
+
+    /// Whether this SFST sequence's catalog entry is in a closed catalog file.
+    pub fn is_rotated(&self, seq: u64) -> bool {
+        self.rotated_seqs.contains(&seq)
+    }
+
+    /// Drop all per-seq state for this sequence.
+    ///
+    /// Called on [`CleanerResponse::IndexFileDeleted`] to keep `sfst`,
+    /// `uploaded_seqs`, and `rotated_seqs` in sync when a local SFST is
+    /// evicted. Any new per-seq state added in the future must also be
+    /// cleaned up here.
+    pub fn evict_seq(&mut self, seq: u64) {
+        self.sfst.remove(seq);
+        self.uploaded_seqs.remove(&seq);
+        self.rotated_seqs.remove(&seq);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // TenantRegistries
 // ---------------------------------------------------------------------------
 
-/// Manages per-tenant `Registry` instances, one per tenant subdirectory.
+/// Manages per-tenant `Registry` instances, one per tenant subdirectory,
+/// and the sequence-number → tenant routing table used to dispatch
+/// component responses back to the owning tenant.
 pub struct TenantRegistries {
     pub tenants: HashMap<String, Registry>,
+    /// Maps an SFST sequence number to the tenant that owns it. Populated
+    /// as files are created / discovered on disk and consumed by every
+    /// seq-keyed response handler.
+    seq_to_tenant: HashMap<u64, String>,
     wal_base_dir: std::path::PathBuf,
     index_base_dir: std::path::PathBuf,
     catalog_base_dir: std::path::PathBuf,
@@ -113,10 +156,41 @@ impl TenantRegistries {
     ) -> Self {
         Self {
             tenants: HashMap::new(),
+            seq_to_tenant: HashMap::new(),
             wal_base_dir,
             index_base_dir,
             catalog_base_dir,
         }
+    }
+
+    /// Record that `seq` belongs to `tenant_id`. Subsequent component
+    /// responses carrying this `seq` can be routed back to the right tenant
+    /// via [`Self::for_seq`] / [`Self::for_seq_mut`].
+    pub fn route_seq_to(&mut self, seq: u64, tenant_id: String) {
+        self.seq_to_tenant.insert(seq, tenant_id);
+    }
+
+    /// Look up the registry that owns `seq`. Returns the tenant id and a
+    /// shared reference to its registry, or `None` if `seq` isn't routed.
+    pub fn for_seq(&self, seq: u64) -> Option<(&str, &Registry)> {
+        let tenant_id = self.seq_to_tenant.get(&seq)?.as_str();
+        let registry = self.tenants.get(tenant_id)?;
+        Some((tenant_id, registry))
+    }
+
+    /// Mutable variant of [`Self::for_seq`]. Returns an owned `String` for
+    /// the tenant id so the caller can safely hold it across further
+    /// mutations of `self`.
+    pub fn for_seq_mut(&mut self, seq: u64) -> Option<(String, &mut Registry)> {
+        let tenant_id = self.seq_to_tenant.get(&seq)?.clone();
+        let registry = self.tenants.get_mut(&tenant_id)?;
+        Some((tenant_id, registry))
+    }
+
+    /// Remove the routing entry for `seq` and return the tenant it pointed
+    /// at. Used after eviction when the seq is no longer reachable.
+    pub fn forget_seq(&mut self, seq: u64) -> Option<String> {
+        self.seq_to_tenant.remove(&seq)
     }
 
     /// Get or lazily create the `Registry` for a tenant.
@@ -240,8 +314,8 @@ mod tests {
             let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), seq, 0);
             reg.sfst.track(id, TimestampNs(0), ByteSize(1));
         }
-        reg.uploaded_seqs.insert(2);
-        reg.uploaded_seqs.insert(3);
+        reg.mark_uploaded(2);
+        reg.mark_uploaded(3);
 
         let unuploaded: Vec<u64> =
             reg.unuploaded_ids().iter().map(|id| id.seq).collect();
@@ -253,7 +327,7 @@ mod tests {
         let mut reg = make_registry();
         let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 5, 0);
         reg.sfst.track(id, TimestampNs(0), ByteSize(1));
-        reg.uploaded_seqs.insert(5);
+        reg.mark_uploaded(5);
 
         assert!(reg.unuploaded_ids().is_empty());
     }
@@ -261,10 +335,49 @@ mod tests {
     #[test]
     fn rotated_seqs_tracks_membership() {
         let mut reg = make_registry();
-        assert!(!reg.rotated_seqs.contains(&1));
-        reg.rotated_seqs.insert(1);
-        assert!(reg.rotated_seqs.contains(&1));
-        reg.rotated_seqs.remove(&1);
-        assert!(!reg.rotated_seqs.contains(&1));
+        assert!(!reg.is_rotated(1));
+        reg.mark_rotated(1);
+        assert!(reg.is_rotated(1));
+        reg.evict_seq(1);
+        assert!(!reg.is_rotated(1));
+    }
+
+    #[test]
+    fn evict_seq_clears_all_per_seq_state() {
+        let mut reg = make_registry();
+        let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 42, 0);
+        reg.sfst.track(id, TimestampNs(0), ByteSize(1));
+        reg.mark_uploaded(42);
+        reg.mark_rotated(42);
+
+        reg.evict_seq(42);
+
+        assert!(reg.sfst.get(42).is_none());
+        assert!(!reg.is_uploaded(42));
+        assert!(!reg.is_rotated(42));
+    }
+
+    #[test]
+    fn for_seq_mut_round_trips_routing() {
+        let wal_base = tempfile::tempdir().unwrap();
+        let index_base = tempfile::tempdir().unwrap();
+        let catalog_base = tempfile::tempdir().unwrap();
+
+        let mut tr = TenantRegistries::new(
+            wal_base.path().to_path_buf(),
+            index_base.path().to_path_buf(),
+            catalog_base.path().to_path_buf(),
+        );
+        tr.get_or_create("tenant-a");
+        tr.route_seq_to(10, "tenant-a".to_string());
+
+        let (tid, registry) = tr.for_seq_mut(10).expect("routed");
+        assert_eq!(tid, "tenant-a");
+        registry.mark_uploaded(10);
+        assert!(tr.for_seq(10).unwrap().1.is_uploaded(10));
+
+        let forgotten = tr.forget_seq(10);
+        assert_eq!(forgotten.as_deref(), Some("tenant-a"));
+        assert!(tr.for_seq(10).is_none());
     }
 }

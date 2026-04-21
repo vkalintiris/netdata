@@ -184,6 +184,9 @@ logs:
         max_file_duration: "2 hours"
   index:
     dir: /var/log/netdata/otel/v1/index
+  catalog:
+    dir: /var/log/netdata/otel/v1/catalog
+    rotation_count: 10
   storage:
     enabled: false
     uri: "fs:///var/log/netdata/otel/v1/remote"

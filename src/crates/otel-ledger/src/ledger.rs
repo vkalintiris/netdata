@@ -31,8 +31,6 @@ pub struct Ledger {
     catalog_builder: ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     registries: TenantRegistries,
     logs_config: LogsConfig,
-    /// Maps file sequence number → tenant ID for routing component responses.
-    seq_to_tenant: HashMap<u64, String>,
     /// IndexMetadata produced by the indexer, keyed by sequence number.
     /// Populated on `IndexFinalized`. Drained on `Uploaded` when storage
     /// is enabled (the normal path). When storage is disabled, no
@@ -97,23 +95,23 @@ impl Ledger {
         );
         tracing::info!("catalog builder spawned");
 
-        // Populate seq_to_tenant and run recovery per tenant.
+        // Populate routing and run recovery per tenant.
         //
         // Recovery order matters:
         //   1. Delete orphaned WALs (have .sfst, WAL is redundant)
         //   2. Index unindexed WALs (no .sfst yet)
-        //   3. Seed rotated_seqs + uploaded_seqs from local catalog files
-        //   4. LIST remote (if enabled) → populate uploaded_seqs and
+        //   3. Seed rotated / uploaded state from local catalog files
+        //   4. LIST remote (if enabled) → mark uploaded and
         //      re-send uncataloged entries to the catalog builder
         //   5. Upload un-uploaded .sfst files (sends AddEntry on success)
-        //   6. Evaluate retention (rotated_seqs already reflects disk state)
-        let mut seq_to_tenant = HashMap::new();
+        //   6. Evaluate retention (rotated state already reflects disk)
+        let mut seq_routes: Vec<(u64, String)> = Vec::new();
         for (tenant_id, registry) in registries.iter_mut() {
             for file in registry.wal.archived_files() {
-                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
+                seq_routes.push((file.id.seq, tenant_id.clone()));
             }
             for file in registry.sfst.values() {
-                seq_to_tenant.insert(file.id.seq, tenant_id.clone());
+                seq_routes.push((file.id.seq, tenant_id.clone()));
             }
 
             recover_orphaned_wals(registry, &mut cleaner).await?;
@@ -162,6 +160,10 @@ impl Ledger {
 
         tracing::info!("recovery complete");
 
+        for (seq, tenant_id) in seq_routes {
+            registries.route_seq_to(seq, tenant_id);
+        }
+
         let ingestor = crate::ipc::accept_writer(writer_socket_path).await?;
         tracing::info!("ingestor connected");
 
@@ -174,7 +176,6 @@ impl Ledger {
             catalog_builder,
             registries,
             logs_config: logs_config.clone(),
-            seq_to_tenant,
             pending_metadata: HashMap::new(),
             expected_seq: 1,
             cancel,
@@ -304,7 +305,7 @@ impl Ledger {
         match &msg.event {
             wal::FileEvent::Created { file_id, .. } => {
                 tracing::info!(tenant = %tenant_id, "FileCreated seq={seq} id={file_id}");
-                self.seq_to_tenant.insert(file_id.seq, tenant_id.clone());
+                self.registries.route_seq_to(file_id.seq, tenant_id.clone());
             }
             wal::FileEvent::Synced {
                 file_id,
@@ -327,7 +328,7 @@ impl Ledger {
                     tenant = %tenant_id,
                     "FileCompleted seq={seq} id={file_id} frames={frame_count} size={size}",
                 );
-                self.seq_to_tenant.insert(file_id.seq, tenant_id.clone());
+                self.registries.route_seq_to(file_id.seq, tenant_id.clone());
             }
         }
 
@@ -364,8 +365,8 @@ impl Ledger {
 
                 self.pending_metadata.insert(seq, metadata);
 
-                let tenant_id = match self.seq_to_tenant.get(&seq) {
-                    Some(t) => t.clone(),
+                let tenant_id = match self.registries.for_seq(seq) {
+                    Some((t, _)) => t.to_string(),
                     None => {
                         tracing::warn!("index finalized for unknown seq={seq}, no tenant mapping");
                         return;
@@ -411,20 +412,14 @@ impl Ledger {
         match resp {
             UploaderResponse::Uploaded { seq, remote_key } => {
                 tracing::info!("upload complete seq={seq} remote_key={remote_key}");
-                let tenant_id = match self.seq_to_tenant.get(&seq) {
-                    Some(t) => t.clone(),
+                let (tenant_id, sfst_info) = match self.registries.for_seq_mut(seq) {
+                    Some((tid, registry)) => {
+                        let info = registry.sfst.get(seq).map(|entry| (entry.id, entry.size));
+                        registry.mark_uploaded(seq);
+                        (tid, info)
+                    }
                     None => return,
                 };
-
-                let sfst_info = self
-                    .registries
-                    .get(&tenant_id)
-                    .and_then(|r| r.sfst.get(seq))
-                    .map(|entry| (entry.id, entry.size));
-
-                if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                    registry.uploaded_seqs.insert(seq);
-                }
 
                 // Build the catalog entry from metadata the indexer cached on
                 // IndexFinalized and forward it to the catalog builder. Both
@@ -512,9 +507,7 @@ impl Ledger {
                         size,
                     );
                     registry.catalog_files.track(file, path.clone());
-                    for seq in &seqs {
-                        registry.rotated_seqs.insert(*seq);
-                    }
+                    registry.mark_rotated_many(seqs.iter().copied());
                 }
 
                 if self.logs_config.storage.enabled {
@@ -545,22 +538,16 @@ impl Ledger {
     fn handle_cleaner_resp(&mut self, resp: CleanerResponse) {
         match resp {
             CleanerResponse::WalFileDeleted { sequence } => {
-                if let Some(tenant_id) = self.seq_to_tenant.get(&sequence) {
-                    if let Some(registry) = self.registries.get_mut(tenant_id) {
-                        registry.wal.remove_by_seq(sequence);
-                    }
+                if let Some((_, registry)) = self.registries.for_seq_mut(sequence) {
+                    registry.wal.remove_by_seq(sequence);
                 }
                 tracing::info!("WAL file deleted seq={sequence}");
             }
             CleanerResponse::IndexFileDeleted { sequence } => {
-                let tenant_id = self.seq_to_tenant.remove(&sequence);
-                if let Some(tid) = &tenant_id {
-                    if let Some(registry) = self.registries.get_mut(tid) {
-                        registry.sfst.remove(sequence);
-                        registry.uploaded_seqs.remove(&sequence);
-                        registry.rotated_seqs.remove(&sequence);
-                    }
+                if let Some((_, registry)) = self.registries.for_seq_mut(sequence) {
+                    registry.evict_seq(sequence);
                 }
+                self.registries.forget_seq(sequence);
                 self.pending_metadata.remove(&sequence);
                 tracing::info!("index file evicted seq={sequence}");
             }
@@ -569,10 +556,8 @@ impl Ledger {
             }
             CleanerResponse::IndexFileFailed { sequence, error } => {
                 tracing::error!("index file deletion failed seq={sequence} error={error}");
-                if let Some(tenant_id) = self.seq_to_tenant.get(&sequence) {
-                    if let Some(registry) = self.registries.get_mut(tenant_id) {
-                        registry.sfst.clear_pending_deletion(sequence);
-                    }
+                if let Some((_, registry)) = self.registries.for_seq_mut(sequence) {
+                    registry.sfst.clear_pending_deletion(sequence);
                 }
             }
         }
@@ -624,7 +609,7 @@ impl Ledger {
             // uploaded" and "uploaded but catalog rotation hasn't happened
             // yet." Recovery can't reconstruct an in-flight accumulator
             // entry after the local SFST is gone.
-            if self.logs_config.storage.enabled && !registry.rotated_seqs.contains(&seq) {
+            if self.logs_config.storage.enabled && !registry.is_rotated(seq) {
                 tracing::warn!(
                     "retention: deferring eviction of seq={seq} (upload or catalog pending)"
                 );
