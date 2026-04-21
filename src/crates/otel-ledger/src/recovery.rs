@@ -151,45 +151,62 @@ pub async fn recover_orphaned_wals(
     .await
 }
 
-/// Evict index files that exceed the retention policy.
+/// Evict SFST and catalog files that exceed their retention policies.
+///
+/// SFST retention uses the three-knob policy (`max_files` /
+/// `max_total_size` / `max_age`). Catalog retention is derived from the
+/// tenant's SFST `max_age` — see
+/// [`crate::ledger::catalog_retention_days`].
 pub async fn recover_retention(
     registry: &mut Registry,
     cleaner: &mut ComponentHandle<CleanerRequest, CleanerResponse>,
     retention: &bridge::config::RetentionConfig,
     storage_enabled: bool,
 ) -> anyhow::Result<()> {
-    let to_evict = registry.sfst.evaluate_retention(retention, now_ns());
-    if to_evict.is_empty() {
-        return Ok(());
-    }
-
+    // SFST pass.
+    let to_evict_sfst = registry.sfst.evaluate_retention(retention, now_ns());
     // Defer eviction when remote storage is enabled and the SFST's entry
     // isn't yet in a closed, on-disk catalog file (see the identical guard
     // in `evaluate_retention`).
-    let (evictable, deferred): (Vec<u64>, Vec<u64>) = to_evict
+    let (evictable_sfst, deferred_sfst): (Vec<u64>, Vec<u64>) = to_evict_sfst
         .into_iter()
         .partition(|&seq| !storage_enabled || registry.is_rotated(seq));
-    for seq in deferred {
+    for seq in deferred_sfst {
         tracing::warn!("recovery: deferring eviction of seq={seq} (upload or catalog pending)");
     }
-    if evictable.is_empty() {
+
+    // Catalog pass. Day-count derived from SFST max_age.
+    let catalog_days = crate::ledger::catalog_retention_days(retention);
+    let today = chrono::Utc::now().date_naive();
+    let evictable_catalog = registry
+        .catalog_files
+        .evaluate_retention(catalog_days, today);
+
+    if evictable_sfst.is_empty() && evictable_catalog.is_empty() {
         return Ok(());
     }
 
-    tracing::info!("retention: evicting {} old index files", evictable.len());
+    tracing::info!(
+        "retention: evicting {} index file(s) and {} catalog file(s)",
+        evictable_sfst.len(),
+        evictable_catalog.len(),
+    );
 
-    let requests: Vec<_> = evictable
-        .iter()
-        .filter_map(|&seq| {
-            registry.sfst.get(seq).map(|entry| {
-                let path = registry.sfst.file_path(entry.id);
-                CleanerRequest::DeleteIndexFile {
-                    sequence: seq,
-                    path,
-                }
-            })
-        })
-        .collect();
+    let mut requests: Vec<CleanerRequest> = Vec::with_capacity(
+        evictable_sfst.len() + evictable_catalog.len(),
+    );
+    for &seq in &evictable_sfst {
+        if let Some(entry) = registry.sfst.get(seq) {
+            let path = registry.sfst.file_path(entry.id);
+            requests.push(CleanerRequest::DeleteIndexFile {
+                sequence: seq,
+                path,
+            });
+        }
+    }
+    for path in evictable_catalog {
+        requests.push(CleanerRequest::DeleteCatalogFile { path });
+    }
 
     batch_recover(requests, cleaner, |resp| match resp {
         CleanerResponse::IndexFileDeleted { sequence } => {
@@ -198,6 +215,16 @@ pub async fn recover_retention(
         }
         CleanerResponse::IndexFileFailed { sequence, error } => {
             tracing::error!("recovery: index eviction failed seq={sequence} error={error}");
+        }
+        CleanerResponse::CatalogFileDeleted { path } => {
+            registry.catalog_files.remove(&path);
+            tracing::info!(path = %path.display(), "recovery: catalog file evicted");
+        }
+        CleanerResponse::CatalogFileFailed { path, error } => {
+            tracing::error!(
+                path = %path.display(),
+                "recovery: catalog eviction failed: {error}",
+            );
         }
         resp => {
             tracing::warn!("unexpected cleaner response during retention recovery: {resp:?}");

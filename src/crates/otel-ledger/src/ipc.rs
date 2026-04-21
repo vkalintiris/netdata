@@ -17,6 +17,10 @@ pub enum CleanerRequest {
     DeleteWalFile { sequence: u64, path: PathBuf },
     /// Delete an index file evicted by retention policy.
     DeleteIndexFile { sequence: u64, path: PathBuf },
+    /// Delete a catalog file evicted by retention policy. Catalog files are
+    /// not seq-keyed (they span multiple SFST seqs), so they're routed by
+    /// path.
+    DeleteCatalogFile { path: PathBuf },
 }
 
 /// Responses sent from the cleaner back to the ledger.
@@ -26,10 +30,14 @@ pub enum CleanerResponse {
     WalFileDeleted { sequence: u64 },
     /// An index file has been deleted.
     IndexFileDeleted { sequence: u64 },
+    /// A catalog file has been deleted.
+    CatalogFileDeleted { path: PathBuf },
     /// Failed to delete a WAL file.
     WalFileFailed { sequence: u64, error: String },
     /// Failed to delete an index file.
     IndexFileFailed { sequence: u64, error: String },
+    /// Failed to delete a catalog file.
+    CatalogFileFailed { path: PathBuf, error: String },
 }
 
 /// Requests sent from the ledger to the indexer.

@@ -560,6 +560,27 @@ impl Ledger {
                     registry.sfst.clear_pending_deletion(sequence);
                 }
             }
+            CleanerResponse::CatalogFileDeleted { path } => {
+                // Catalog files are path-keyed, not seq-keyed, and the
+                // catalog_files registry is per-tenant. The path is unique
+                // across tenants, so calling `remove` on every tenant's
+                // registry is safe — only the owning tenant's entry matches.
+                for (_, registry) in self.registries.iter_mut() {
+                    if registry.catalog_files.remove(&path).is_some() {
+                        break;
+                    }
+                }
+                tracing::info!(path = %path.display(), "catalog file evicted");
+            }
+            CleanerResponse::CatalogFileFailed { path, error } => {
+                tracing::error!(
+                    path = %path.display(),
+                    "catalog file deletion failed: {error}",
+                );
+                for (_, registry) in self.registries.iter_mut() {
+                    registry.catalog_files.clear_pending_deletion(&path);
+                }
+            }
         }
     }
 
@@ -594,15 +615,19 @@ impl Ledger {
     }
 
     fn evaluate_retention(&mut self, tenant_id: &str) {
+        let retention =
+            bridge::config::RetentionConfig::resolve(&self.logs_config.index.retention, tenant_id);
+        let catalog_days = catalog_retention_days(&retention);
+        let today = chrono::Utc::now().date_naive();
+
         let registry = match self.registries.get_mut(tenant_id) {
             Some(r) => r,
             None => return,
         };
 
-        let retention =
-            bridge::config::RetentionConfig::resolve(&self.logs_config.index.retention, tenant_id);
+        // SFST retention pass. Uses the three-knob policy
+        // (max_files / max_total_size / max_age).
         let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
-
         for seq in to_evict {
             // Don't evict the local SFST unless its entry is already in a
             // closed, on-disk catalog file. This covers both "not yet
@@ -630,6 +655,23 @@ impl Ledger {
                 }
             }
         }
+
+        // Catalog retention pass. Day-count derived from the tenant's
+        // SFST `max_age`; see `catalog_retention_days`. A catalog file is
+        // evicted when its date is strictly older than `today - max_days`.
+        let to_evict_catalog = registry.catalog_files.evaluate_retention(catalog_days, today);
+        for path in to_evict_catalog {
+            registry.catalog_files.mark_pending_deletion(&path);
+            tracing::info!("retention: evicting catalog path={}", path.display());
+            let req = CleanerRequest::DeleteCatalogFile { path: path.clone() };
+            if let Err(e) = self.cleaner.send(req) {
+                tracing::error!(
+                    path = %path.display(),
+                    "failed to send catalog eviction: {e}",
+                );
+                registry.catalog_files.clear_pending_deletion(&path);
+            }
+        }
     }
 }
 
@@ -640,6 +682,22 @@ fn derive_date_from_metadata(metadata: &log_index::IndexMetadata) -> chrono::Nai
             .unwrap_or_else(|| chrono::Utc::now().date_naive()),
         None => chrono::Utc::now().date_naive(),
     }
+}
+
+/// Derive the catalog retention window (in whole days) from a tenant's
+/// resolved SFST retention policy. Uses ceiling division so a non-integer
+/// `max_age` in days doesn't trim catalog coverage below SFST coverage.
+///
+/// This is the single source of truth for "how long do local catalog
+/// files live?" — there is no independent knob. See `CatalogConfig` in
+/// bridge/config.rs and the doc on `evaluate_retention` for the rationale.
+pub(crate) fn catalog_retention_days(retention: &bridge::config::RetentionConfig) -> u32 {
+    retention
+        .max_age
+        .as_secs()
+        .div_ceil(86_400)
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 pub(crate) fn build_catalog_entry(

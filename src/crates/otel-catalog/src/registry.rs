@@ -145,6 +145,23 @@ impl Registry {
         }
     }
 
+    /// Return paths of catalog files whose date is strictly older than
+    /// `today - max_days`. Files already `pending_deletion` are excluded
+    /// to avoid double-scheduling. Does not mutate retention state — the
+    /// caller is expected to `mark_pending_deletion` on each returned
+    /// path before dispatching the delete.
+    pub fn evaluate_retention(&self, max_days: u32, today: NaiveDate) -> Vec<PathBuf> {
+        let cutoff = match today.checked_sub_signed(chrono::Duration::days(max_days as i64)) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        self.files
+            .iter()
+            .filter(|(_, f)| !f.pending_deletion && f.date < cutoff)
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// Scan `{base_dir}/{date}/{tenant_id}/*.catalog` and reconstruct
     /// registry state from disk. Only files belonging to this `Registry`'s
     /// tenant are loaded; other tenants' subdirs under the same date are
@@ -449,5 +466,71 @@ mod tests {
         let mut reg = Registry::new(&missing, TENANT.to_string());
         reg.recover();
         assert!(reg.is_empty());
+    }
+
+    fn track_at(reg: &mut Registry, d: NaiveDate, max_seq: u64) -> PathBuf {
+        let path = reg.file_path(d, machine(), boot(), max_seq);
+        reg.track(
+            File::new(
+                d,
+                machine(),
+                boot(),
+                max_seq,
+                TimestampNs(0),
+                ByteSize(1024),
+            ),
+            path.clone(),
+        );
+        path
+    }
+
+    #[test]
+    fn evaluate_retention_evicts_files_older_than_cutoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+        let d_old = today - chrono::Duration::days(10);
+        let d_boundary = today - chrono::Duration::days(7);
+        let d_fresh = today - chrono::Duration::days(3);
+
+        let p_old = track_at(&mut reg, d_old, 1);
+        let _p_boundary = track_at(&mut reg, d_boundary, 2);
+        let _p_fresh = track_at(&mut reg, d_fresh, 3);
+
+        // max_days = 7 → cutoff = today - 7 days = d_boundary. Strictly
+        // older means d_old only; the file dated exactly on the cutoff
+        // (d_boundary) is kept.
+        let evicted = reg.evaluate_retention(7, today);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0], p_old);
+    }
+
+    #[test]
+    fn evaluate_retention_excludes_pending_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+        let d_old = today - chrono::Duration::days(30);
+
+        let p = track_at(&mut reg, d_old, 1);
+        reg.mark_pending_deletion(&p);
+
+        let evicted = reg.evaluate_retention(7, today);
+        assert!(evicted.is_empty(), "pending_deletion entries must be skipped");
+    }
+
+    #[test]
+    fn evaluate_retention_with_huge_max_days_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+        track_at(&mut reg, today - chrono::Duration::days(1000), 1);
+
+        // max_days so large that cutoff underflows → eviction list empty.
+        let evicted = reg.evaluate_retention(u32::MAX, today);
+        assert!(evicted.is_empty());
     }
 }

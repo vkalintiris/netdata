@@ -47,6 +47,10 @@ fn process(req: CleanerRequest) -> CleanerResponse {
             Ok(()) => CleanerResponse::IndexFileDeleted { sequence },
             Err(error) => CleanerResponse::IndexFileFailed { sequence, error },
         },
+        CleanerRequest::DeleteCatalogFile { path } => match remove_file(&path) {
+            Ok(()) => CleanerResponse::CatalogFileDeleted { path },
+            Err(error) => CleanerResponse::CatalogFileFailed { path, error },
+        },
     }
 }
 
