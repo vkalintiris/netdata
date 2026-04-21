@@ -67,6 +67,55 @@ impl Component for Uploader {
                             let _ = tx.send(resp);
                         });
                     }
+                    Some(UploaderRequest::UploadCatalog { local_path, remote_key }) => {
+                        let op = operator.clone();
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let start = Instant::now();
+                            tracing::info!(
+                                path = %local_path.display(),
+                                remote_key = %remote_key,
+                                "catalog upload started",
+                            );
+
+                            let resp = match tokio::fs::read(&local_path).await {
+                                Ok(data) => match op.write(&remote_key, data).await {
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            remote_key = %remote_key,
+                                            elapsed_ms = start.elapsed().as_millis() as u64,
+                                            "catalog upload complete",
+                                        );
+                                        UploaderResponse::CatalogUploaded { local_path, remote_key }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            remote_key = %remote_key,
+                                            "catalog upload failed: {e}",
+                                        );
+                                        UploaderResponse::CatalogUploadFailed {
+                                            local_path,
+                                            remote_key,
+                                            error: e.to_string(),
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    tracing::error!(
+                                        path = %local_path.display(),
+                                        "failed to read catalog file: {e}",
+                                    );
+                                    UploaderResponse::CatalogUploadFailed {
+                                        local_path,
+                                        remote_key,
+                                        error: e.to_string(),
+                                    }
+                                }
+                            };
+
+                            let _ = tx.send(resp);
+                        });
+                    }
                     None => break,
                 },
             }

@@ -6,13 +6,13 @@ use ferryboat::Connection;
 use file_registry::{ByteSize, FileId, TimestampNs};
 use tokio_util::sync::CancellationToken;
 
-use crate::catalog_writer::{CatalogWriter, CatalogWriterArgs};
+use crate::catalog_builder::{CatalogBuilder, CatalogBuilderArgs};
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
 use crate::event::LedgerEvent;
 use crate::indexer::Indexer;
 use crate::ipc::{
-    CatalogWriterRequest, CatalogWriterResponse, CleanerRequest, CleanerResponse, IndexerRequest,
+    CatalogBuilderRequest, CatalogBuilderResponse, CleanerRequest, CleanerResponse, IndexerRequest,
     IndexerResponse, UploaderRequest, UploaderResponse,
 };
 use crate::recovery::{
@@ -28,7 +28,7 @@ pub struct Ledger {
     indexer: ComponentHandle<IndexerRequest, IndexerResponse>,
     cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
-    catalog_writer: ComponentHandle<CatalogWriterRequest, CatalogWriterResponse>,
+    catalog_builder: ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     registries: TenantRegistries,
     logs_config: LogsConfig,
     /// Maps file sequence number → tenant ID for routing component responses.
@@ -51,11 +51,14 @@ impl Ledger {
     ) -> anyhow::Result<Self> {
         let wal_base_dir = logs_config.wal.dir.clone();
         let index_base_dir = logs_config.index.dir.clone();
+        let catalog_base_dir = logs_config.catalog.dir.clone();
 
         std::fs::create_dir_all(&wal_base_dir)?;
         std::fs::create_dir_all(&index_base_dir)?;
+        std::fs::create_dir_all(&catalog_base_dir)?;
 
-        let mut registries = TenantRegistries::new(wal_base_dir, index_base_dir);
+        let mut registries =
+            TenantRegistries::new(wal_base_dir, index_base_dir, catalog_base_dir.clone());
         registries.discover_tenants();
 
         let cancel = CancellationToken::new();
@@ -85,27 +88,25 @@ impl Ledger {
             ComponentHandle::spawn::<Uploader>(operator.clone(), cancel.child_token());
         tracing::info!("uploader spawned");
 
-        let mut catalog_writer = ComponentHandle::spawn::<CatalogWriter>(
-            CatalogWriterArgs {
-                catalog_base_dir: logs_config.index.dir.clone(),
-                operator: operator.clone(),
+        let mut catalog_builder = ComponentHandle::spawn::<CatalogBuilder>(
+            CatalogBuilderArgs {
+                catalog_base_dir: catalog_base_dir.clone(),
+                rotation_count: logs_config.catalog.rotation_count,
             },
             cancel.child_token(),
         );
-        tracing::info!("catalog writer spawned");
+        tracing::info!("catalog builder spawned");
 
         // Populate seq_to_tenant and run recovery per tenant.
         //
         // Recovery order matters:
         //   1. Delete orphaned WALs (have .sfst, WAL is redundant)
         //   2. Index unindexed WALs (no .sfst yet)
-        //   3. Load local catalog files → Persisted entries
-        //   4. Recover remote registry (discover what's already uploaded)
-        //   5. Reconcile remote uploads → Pending entries for uploads
-        //      that have no catalog record yet
-        //   6. Upload un-uploaded .sfst files
-        //   7. Replay Record requests for Pending catalog entries
-        //   8. Evaluate retention (safe now — Pending entries block eviction)
+        //   3. Seed rotated_seqs + uploaded_seqs from local catalog files
+        //   4. LIST remote (if enabled) → populate uploaded_seqs and
+        //      re-send uncataloged entries to the catalog builder
+        //   5. Upload un-uploaded .sfst files (sends AddEntry on success)
+        //   6. Evaluate retention (rotated_seqs already reflects disk state)
         let mut seq_to_tenant = HashMap::new();
         for (tenant_id, registry) in registries.iter_mut() {
             for file in registry.wal.archived_files() {
@@ -119,16 +120,25 @@ impl Ledger {
             recover_unindexed(registry, &mut indexer, &mut cleaner).await?;
             drain_wal_deletes(registry, &mut cleaner).await?;
 
-            crate::recovery::load_local_catalogs(&logs_config.index.dir, tenant_id, registry)?;
+            crate::recovery::seed_from_catalog_files(registry);
 
             if logs_config.storage.enabled {
-                match crate::recovery::reconcile_remote_uploads(registry, &operator, tenant_id)
-                    .await
+                match crate::recovery::reconcile_remote_uploads(
+                    registry,
+                    &mut catalog_builder,
+                    &operator,
+                    tenant_id,
+                )
+                .await
                 {
                     Ok(()) => {
-                        recover_unuploaded(registry, &mut uploader, tenant_id).await?;
-                        crate::recovery::recover_catalog(registry, &mut catalog_writer, tenant_id)
-                            .await?;
+                        recover_unuploaded(
+                            registry,
+                            &mut uploader,
+                            &mut catalog_builder,
+                            tenant_id,
+                        )
+                        .await?;
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -161,7 +171,7 @@ impl Ledger {
             indexer,
             cleaner,
             uploader,
-            catalog_writer,
+            catalog_builder,
             registries,
             logs_config: logs_config.clone(),
             seq_to_tenant,
@@ -187,8 +197,8 @@ impl Ledger {
                     Some(r) => LedgerEvent::UploaderResp(r),
                     None => break Ok(()),
                 },
-                resp = self.catalog_writer.recv() => match resp {
-                    Some(r) => LedgerEvent::CatalogWriterResp(r),
+                resp = self.catalog_builder.recv() => match resp {
+                    Some(r) => LedgerEvent::CatalogBuilderResp(r),
                     None => break Ok(()),
                 },
                 req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
@@ -199,7 +209,7 @@ impl Ledger {
                 LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
                 LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp),
                 LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp),
-                LedgerEvent::CatalogWriterResp(resp) => self.handle_catalog_writer_resp(resp),
+                LedgerEvent::CatalogBuilderResp(resp) => self.handle_catalog_builder_resp(resp),
                 LedgerEvent::SupervisorReq(req) => {
                     if self.handle_supervisor_req(req).await? {
                         return Ok(());
@@ -412,10 +422,14 @@ impl Ledger {
                     .and_then(|r| r.sfst.get(seq))
                     .map(|entry| (entry.id, entry.size));
 
+                if let Some(registry) = self.registries.get_mut(&tenant_id) {
+                    registry.uploaded_seqs.insert(seq);
+                }
+
                 // Build the catalog entry from metadata the indexer cached on
-                // IndexFinalized and forward a record to the catalog writer.
-                // Both lookups are expected to hit in steady state; the guard
-                // is defensive against races on restart.
+                // IndexFinalized and forward it to the catalog builder. Both
+                // lookups are expected to hit in steady state; the guard is
+                // defensive against races on restart.
                 if let (Some((file_id, size)), Some(metadata)) =
                     (sfst_info, self.pending_metadata.remove(&seq))
                 {
@@ -424,39 +438,106 @@ impl Ledger {
                     let entry =
                         build_catalog_entry(file_id, remote_key, &metadata, size, uploaded_at_ns);
 
-                    if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                        registry.catalog.insert_pending(entry.clone());
-                    }
-
-                    let req = CatalogWriterRequest::Record {
-                        seq,
+                    let req = CatalogBuilderRequest::AddEntry {
                         tenant_id,
                         date,
                         entry,
                     };
-                    if let Err(e) = self.catalog_writer.send(req) {
-                        tracing::error!("failed to send catalog record seq={seq}: {e}");
+                    if let Err(e) = self.catalog_builder.send(req) {
+                        tracing::error!("failed to send catalog add entry seq={seq}: {e}");
                     }
                 }
             }
             UploaderResponse::UploadFailed { seq, error } => {
                 tracing::error!("upload failed seq={seq}: {error}");
             }
+            UploaderResponse::CatalogUploaded { local_path, remote_key } => {
+                tracing::info!(
+                    path = %local_path.display(),
+                    remote_key = %remote_key,
+                    "catalog upload complete",
+                );
+            }
+            UploaderResponse::CatalogUploadFailed {
+                local_path,
+                remote_key,
+                error,
+            } => {
+                tracing::error!(
+                    path = %local_path.display(),
+                    remote_key = %remote_key,
+                    "catalog upload failed: {error}",
+                );
+            }
         }
     }
 
-    fn handle_catalog_writer_resp(&mut self, resp: CatalogWriterResponse) {
+    fn handle_catalog_builder_resp(&mut self, resp: CatalogBuilderResponse) {
         match resp {
-            CatalogWriterResponse::Recorded { seq } => {
-                tracing::info!(seq, "catalog recorded");
-                if let Some(tenant_id) = self.seq_to_tenant.get(&seq).cloned() {
-                    if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                        registry.catalog.mark_persisted(seq);
+            CatalogBuilderResponse::EntryAccepted { seq } => {
+                tracing::debug!(seq, "catalog entry accepted");
+            }
+            CatalogBuilderResponse::Rotated {
+                tenant_id,
+                date,
+                machine_id,
+                boot_id,
+                max_seq,
+                path,
+                size,
+                created_at_ns,
+                seqs,
+            } => {
+                tracing::info!(
+                    tenant = %tenant_id,
+                    max_seq,
+                    path = %path.display(),
+                    "catalog rotated",
+                );
+
+                let remote_key = format!(
+                    "{}/{}/catalog/{}",
+                    date.format("%Y-%m-%d"),
+                    tenant_id,
+                    otel_catalog::registry::filename(machine_id, boot_id, max_seq),
+                );
+
+                if let Some(registry) = self.registries.get_mut(&tenant_id) {
+                    let file = otel_catalog::registry::File::new(
+                        date,
+                        machine_id,
+                        boot_id,
+                        max_seq,
+                        created_at_ns,
+                        size,
+                    );
+                    registry.catalog_files.track(file, path.clone());
+                    for seq in &seqs {
+                        registry.rotated_seqs.insert(*seq);
+                    }
+                }
+
+                if self.logs_config.storage.enabled {
+                    let req = UploaderRequest::UploadCatalog {
+                        local_path: path,
+                        remote_key,
+                    };
+                    if let Err(e) = self.uploader.send(req) {
+                        tracing::error!("failed to send catalog upload request: {e}");
                     }
                 }
             }
-            CatalogWriterResponse::RecordFailed { seq, stage, error } => {
-                tracing::error!(seq, stage = ?stage, "catalog record failed: {error}");
+            CatalogBuilderResponse::RotationFailed {
+                tenant_id,
+                max_seq,
+                error,
+                ..
+            } => {
+                tracing::error!(
+                    tenant = %tenant_id,
+                    max_seq,
+                    "catalog rotation failed: {error}",
+                );
             }
         }
     }
@@ -476,7 +557,8 @@ impl Ledger {
                 if let Some(tid) = &tenant_id {
                     if let Some(registry) = self.registries.get_mut(tid) {
                         registry.sfst.remove(sequence);
-                        registry.catalog.remove(sequence);
+                        registry.uploaded_seqs.remove(&sequence);
+                        registry.rotated_seqs.remove(&sequence);
                     }
                 }
                 self.pending_metadata.remove(&sequence);
@@ -537,11 +619,12 @@ impl Ledger {
         let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
 
         for seq in to_evict {
-            // Don't evict files whose catalog entry isn't yet Persisted. This
-            // covers both "not yet uploaded" (no catalog entry) and "uploaded
-            // but catalog Record failed" (Pending) -- in the latter case
-            // recovery needs the local SFST header to rebuild the entry.
-            if self.logs_config.storage.enabled && !registry.catalog.is_persisted(seq) {
+            // Don't evict the local SFST unless its entry is already in a
+            // closed, on-disk catalog file. This covers both "not yet
+            // uploaded" and "uploaded but catalog rotation hasn't happened
+            // yet." Recovery can't reconstruct an in-flight accumulator
+            // entry after the local SFST is gone.
+            if self.logs_config.storage.enabled && !registry.rotated_seqs.contains(&seq) {
                 tracing::warn!(
                     "retention: deferring eviction of seq={seq} (upload or catalog pending)"
                 );

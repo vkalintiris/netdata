@@ -8,6 +8,7 @@
 pub mod catalog;
 pub mod entry;
 pub mod query;
+pub mod registry;
 
 pub use catalog::Catalog;
 pub use entry::{CatalogEntry, StreamEntry};

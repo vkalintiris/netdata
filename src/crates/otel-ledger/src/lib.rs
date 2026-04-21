@@ -1,4 +1,4 @@
-pub mod catalog_writer;
+pub mod catalog_builder;
 pub mod cleaner;
 pub mod component;
 pub mod event;

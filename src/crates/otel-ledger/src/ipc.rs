@@ -66,9 +66,14 @@ pub enum IndexerResponse {
 /// Requests sent from the ledger to the uploader.
 #[derive(Debug, Clone)]
 pub enum UploaderRequest {
-    /// Upload an index file to remote object storage.
+    /// Upload an index (SFST) file to remote object storage.
     Upload {
         seq: u64,
+        local_path: PathBuf,
+        remote_key: String,
+    },
+    /// Upload a catalog file to remote object storage.
+    UploadCatalog {
         local_path: PathBuf,
         remote_key: String,
     },
@@ -77,42 +82,66 @@ pub enum UploaderRequest {
 /// Responses sent from the uploader back to the ledger.
 #[derive(Debug, Clone)]
 pub enum UploaderResponse {
-    /// The file has been uploaded successfully.
+    /// An SFST file has been uploaded successfully.
     Uploaded { seq: u64, remote_key: String },
-    /// Failed to upload the file.
+    /// Failed to upload an SFST file.
     UploadFailed { seq: u64, error: String },
+    /// A catalog file has been uploaded successfully.
+    CatalogUploaded {
+        local_path: PathBuf,
+        remote_key: String,
+    },
+    /// Failed to upload a catalog file.
+    CatalogUploadFailed {
+        local_path: PathBuf,
+        remote_key: String,
+        error: String,
+    },
 }
 
-/// Requests sent from the ledger to the catalog writer.
+/// Requests sent from the ledger to the catalog builder.
 #[derive(Debug, Clone)]
-pub enum CatalogWriterRequest {
-    /// Record a newly-uploaded SFST into the catalog for its scope
-    /// `(tenant_id, date, machine_id, boot_id)`. The scope keys are
-    /// derived from `entry.id.machine_id` / `entry.id.boot_id`.
-    Record {
-        seq: u64,
+pub enum CatalogBuilderRequest {
+    /// Add a newly-uploaded SFST's catalog entry to the in-memory accumulator
+    /// for its scope `(tenant_id, date, entry.id.machine_id, entry.id.boot_id)`.
+    /// The builder may rotate and emit a new catalog file as a side effect
+    /// (see [`CatalogBuilderResponse::Rotated`]).
+    AddEntry {
         tenant_id: String,
         date: chrono::NaiveDate,
         entry: otel_catalog::CatalogEntry,
     },
 }
 
-/// Which stage of a catalog record write failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CatalogStage {
-    Local,
-    Remote,
-}
-
-/// Responses sent from the catalog writer back to the ledger.
+/// Responses sent from the catalog builder back to the ledger.
 #[derive(Debug, Clone)]
-pub enum CatalogWriterResponse {
-    /// The record was persisted locally and uploaded successfully.
-    Recorded { seq: u64 },
-    /// The record failed at the indicated stage.
-    RecordFailed {
-        seq: u64,
-        stage: CatalogStage,
+pub enum CatalogBuilderResponse {
+    /// The entry joined the accumulator; no rotation was triggered.
+    EntryAccepted { seq: u64 },
+    /// The accumulator reached the rotation threshold and a new catalog
+    /// file was written to `path`. The accumulator for this scope is now
+    /// empty. The ledger is responsible for registering the file and
+    /// sending it to the uploader.
+    Rotated {
+        tenant_id: String,
+        date: chrono::NaiveDate,
+        machine_id: uuid::Uuid,
+        boot_id: uuid::Uuid,
+        max_seq: u64,
+        path: std::path::PathBuf,
+        size: file_registry::ByteSize,
+        created_at_ns: file_registry::TimestampNs,
+        /// All SFST sequence numbers included in the rotated catalog file.
+        seqs: Vec<u64>,
+    },
+    /// Rotation failed (serialization or local write). The accumulator is
+    /// left intact so the next `AddEntry` will retry.
+    RotationFailed {
+        tenant_id: String,
+        date: chrono::NaiveDate,
+        machine_id: uuid::Uuid,
+        boot_id: uuid::Uuid,
+        max_seq: u64,
         error: String,
     },
 }

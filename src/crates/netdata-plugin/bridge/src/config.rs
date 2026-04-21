@@ -68,6 +68,8 @@ pub struct LogsConfig {
     pub wal: WalConfig,
     /// Index file configuration.
     pub index: IndexConfig,
+    /// Catalog file configuration.
+    pub catalog: CatalogConfig,
     /// Remote object storage configuration.
     pub storage: StorageConfig,
     /// Per-tenant retention policies, keyed by tenant name.
@@ -92,8 +94,23 @@ pub struct StorageConfig {
 /// Index file configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
-    /// Directory for index file storage.
+    /// Directory for SFST index file storage. Layout: `{dir}/{tenant}/*.sfst`.
     pub dir: PathBuf,
+}
+
+/// Catalog file configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogConfig {
+    /// Directory for catalog file storage. Layout: `{dir}/{date}/{tenant}/*.catalog`.
+    pub dir: PathBuf,
+    /// Number of SFST entries accumulated before the catalog builder
+    /// rotates an in-memory accumulator to an immutable catalog file.
+    #[serde(default = "default_catalog_rotation_count")]
+    pub rotation_count: usize,
+}
+
+fn default_catalog_rotation_count() -> usize {
+    10
 }
 
 /// WAL file configuration.
