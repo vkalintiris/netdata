@@ -192,6 +192,11 @@ pub async fn recover_retention(
         evictable_catalog.len(),
     );
 
+    // Note: unlike the steady-state `Ledger::evaluate_retention` path,
+    // we don't `mark_pending_deletion` here. `batch_recover` sends all
+    // requests and synchronously drains all responses before returning,
+    // and the ledger event loop hasn't started yet — so there's no
+    // concurrent retention pass that could double-schedule.
     let mut requests: Vec<CleanerRequest> = Vec::with_capacity(
         evictable_sfst.len() + evictable_catalog.len(),
     );

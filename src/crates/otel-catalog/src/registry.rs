@@ -139,9 +139,16 @@ impl Registry {
         }
     }
 
-    pub fn clear_pending_deletion(&mut self, path: &Path) {
+    /// Clear the `pending_deletion` flag on `path` if it's tracked.
+    /// Returns `true` if `path` was found (the flag may or may not have
+    /// been set), `false` if the path isn't tracked at all — so callers
+    /// iterating per-tenant registries can stop on the first match.
+    pub fn clear_pending_deletion(&mut self, path: &Path) -> bool {
         if let Some(entry) = self.files.get_mut(path) {
             entry.pending_deletion = false;
+            true
+        } else {
+            false
         }
     }
 

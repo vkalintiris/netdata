@@ -577,8 +577,12 @@ impl Ledger {
                     path = %path.display(),
                     "catalog file deletion failed: {error}",
                 );
+                // Symmetric with CatalogFileDeleted above: path is globally
+                // unique across tenants, so stop after the first hit.
                 for (_, registry) in self.registries.iter_mut() {
-                    registry.catalog_files.clear_pending_deletion(&path);
+                    if registry.catalog_files.clear_pending_deletion(&path) {
+                        break;
+                    }
                 }
             }
         }
