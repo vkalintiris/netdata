@@ -1,4 +1,4 @@
-//! Indexer component that builds split-FST indexes from completed WAL files.
+//! Indexer component that builds split-FST indexes from closed WAL files.
 //!
 //! Manages its own concurrency: tracks in-flight indexing tasks and queues
 //! excess requests when the concurrency limit is reached.
@@ -73,7 +73,7 @@ fn start_indexing(
     in_flight: &mut HashMap<u64, IndexerTask>,
     done_tx: mpsc::UnboundedSender<(u64, IndexerResponse)>,
 ) {
-    let IndexerRequest::FinalizeIndex {
+    let IndexerRequest::Index {
         wal_path,
         sfst_path,
     } = req;
@@ -91,21 +91,21 @@ fn start_indexing(
     );
 
     tracing::info!(
-        "FinalizeIndex started wal={} index={}",
+        "indexing started wal={} index={}",
         wal_path.display(),
         sfst_path.display(),
     );
 
     tokio::task::spawn_blocking(move || {
         let resp = match log_index::index_wal_file(&wal_path, &sfst_path) {
-            Ok(result) => IndexerResponse::IndexFinalized {
+            Ok(result) => IndexerResponse::Indexed {
                 seq,
                 path: sfst_path,
                 min_date: result.min_date,
                 metadata: result.metadata,
             },
             Err(e) => {
-                tracing::error!("FinalizeIndex failed wal={}: {e}", wal_path.display());
+                tracing::error!("indexing failed wal={}: {e}", wal_path.display());
                 IndexerResponse::IndexFailed {
                     path: wal_path,
                     error: e.to_string(),

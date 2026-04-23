@@ -97,7 +97,7 @@ pub enum FileEvent {
         frame_count: u64,
         entry_count: u64,
     },
-    Completed {
+    Closed {
         file_id: FileId,
         frame_count: u64,
         min_timestamp_ns: TimestampNs,
@@ -109,7 +109,7 @@ pub enum FileEvent {
 /// A sequenced file event sent over IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub seq: u64,
+    pub frame_seq: u64,
     pub tenant_id: String,
     pub event: FileEvent,
 }

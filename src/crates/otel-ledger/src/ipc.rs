@@ -43,11 +43,11 @@ pub enum CleanerResponse {
 /// Requests sent from the ledger to the indexer.
 #[derive(Debug, Clone)]
 pub enum IndexerRequest {
-    /// The file has been archived — finalize its index.
-    FinalizeIndex {
-        /// Path to the WAL .bin file.
+    /// Build an SFST index for the given WAL file.
+    Index {
+        /// Path to the `.wal` file to index.
         wal_path: PathBuf,
-        /// Path where the .sfst index should be written.
+        /// Path where the `.sfst` index should be written.
         sfst_path: PathBuf,
     },
 }
@@ -55,8 +55,8 @@ pub enum IndexerRequest {
 /// Responses sent from the indexer back to the ledger.
 #[derive(Debug, Clone)]
 pub enum IndexerResponse {
-    /// The index for a file has been finalized successfully.
-    IndexFinalized {
+    /// The SFST has been written successfully.
+    Indexed {
         seq: u64,
         path: PathBuf,
         /// Earliest log date as "YYYY-MM-DD", or `None` if the index has no logs.

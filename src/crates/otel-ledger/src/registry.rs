@@ -117,12 +117,8 @@ impl Registry {
         self.rotated_seqs.contains(&seq)
     }
 
-    /// Drop all per-seq state for this sequence.
-    ///
-    /// Called on [`CleanerResponse::IndexFileDeleted`] to keep `sfst`,
-    /// `uploaded_seqs`, and `rotated_seqs` in sync when a local SFST is
-    /// evicted. Any new per-seq state added in the future must also be
-    /// cleaned up here.
+    /// Drop all per-seq state for this sequence. Any new per-seq state
+    /// added in the future must also be cleaned up here.
     pub fn evict_seq(&mut self, seq: u64) {
         self.sfst.remove(seq);
         self.uploaded_seqs.remove(&seq);
@@ -170,6 +166,18 @@ impl TenantRegistries {
         self.seq_to_tenant.insert(seq, tenant_id);
     }
 
+    /// Apply a WAL event for `tenant_id`, creating the per-tenant registry
+    /// on first sight and routing the seq on file-lifecycle events.
+    pub fn apply_wal_event(&mut self, tenant_id: &str, event: &wal::FileEvent) -> wal::Result<()> {
+        // Synced fires mid-file and adds no new (seq, tenant) mapping.
+        if let wal::FileEvent::Created { file_id, .. } | wal::FileEvent::Closed { file_id, .. } =
+            event
+        {
+            self.route_seq_to(file_id.seq, tenant_id.to_string());
+        }
+        self.get_or_create(tenant_id).wal.apply_event(event)
+    }
+
     /// Look up the registry that owns `seq`. Returns the tenant id and a
     /// shared reference to its registry, or `None` if `seq` isn't routed.
     pub fn for_seq(&self, seq: u64) -> Option<(&str, &Registry)> {
@@ -193,13 +201,10 @@ impl TenantRegistries {
         self.seq_to_tenant.remove(&seq)
     }
 
-    /// Get or lazily create the `Registry` for a tenant.
-    ///
-    /// The returned registry is **not** recovered from disk. During startup,
-    /// use [`discover_tenants`] which calls `recover()` on each registry.
-    /// During normal operation, the ingestor sends all events via IPC so
-    /// recovery is unnecessary (and would conflict with in-flight events).
-    pub fn get_or_create(&mut self, tenant_id: &str) -> &mut Registry {
+    /// Get or lazily create the `Registry` for a tenant. The new registry
+    /// is **not** recovered from disk — callers that need on-disk state
+    /// must call `Registry::recover` themselves.
+    pub(crate) fn get_or_create(&mut self, tenant_id: &str) -> &mut Registry {
         if !self.tenants.contains_key(tenant_id) {
             let wal_dir = self.wal_base_dir.join(tenant_id);
             let index_dir = self.index_base_dir.join(tenant_id);

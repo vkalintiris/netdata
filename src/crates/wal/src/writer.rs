@@ -87,7 +87,7 @@ impl Stream {
     fn write_frame(&mut self, data: &[u8], log_entry_count: usize) -> Result<u64> {
         if self.should_rotate_with(log_entry_count as u64) {
             self.sync()?;
-            self.complete_active_file();
+            self.close_active_file();
         }
 
         self.ensure_file()?;
@@ -166,7 +166,7 @@ impl Stream {
 
     fn shutdown(&mut self) -> Result<Vec<FileEvent>> {
         self.sync()?;
-        self.complete_active_file();
+        self.close_active_file();
         Ok(self.take_events())
     }
 
@@ -250,9 +250,9 @@ impl Stream {
         false
     }
 
-    fn complete_active_file(&mut self) {
+    fn close_active_file(&mut self) {
         if let Some(active) = self.active.take() {
-            self.pending_events.push(FileEvent::Completed {
+            self.pending_events.push(FileEvent::Closed {
                 file_id: active.file_id,
                 frame_count: active.frame_count,
                 min_timestamp_ns: active.min_timestamp_ns,
@@ -267,7 +267,7 @@ const FRAME_ALIGNMENT_HEADER: usize = FRAME_HEADER_SIZE;
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.complete_active_file();
+        self.close_active_file();
     }
 }
 

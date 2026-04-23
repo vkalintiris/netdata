@@ -109,7 +109,7 @@ impl Registry {
                 Ok(())
             }
             FileEvent::Synced { .. } => Ok(()),
-            FileEvent::Completed { file_id, size, .. } => {
+            FileEvent::Closed { file_id, size, .. } => {
                 let entry = self
                     .files
                     .get_mut(file_id.seq)
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(registry.archived_files().count(), 0);
 
         registry
-            .apply_event(&FileEvent::Completed {
+            .apply_event(&FileEvent::Closed {
                 file_id: id,
                 frame_count: 1,
                 min_timestamp_ns: TimestampNs(1_000_000_000),

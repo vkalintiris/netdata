@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 /// Messages are fire-and-forget: silently dropped if the connection is lost.
 pub struct LedgerSender {
     tx: mpsc::UnboundedSender<wal::Message>,
-    seq: AtomicU64,
+    frame_seq: AtomicU64,
 }
 
 impl LedgerSender {
@@ -18,7 +18,7 @@ impl LedgerSender {
         tokio::spawn(sender_task(rx, socket_path.to_string()));
         Self {
             tx,
-            seq: AtomicU64::new(1),
+            frame_seq: AtomicU64::new(1),
         }
     }
 
@@ -27,7 +27,7 @@ impl LedgerSender {
     pub fn send_events(&self, tenant_id: String, events: Vec<wal::FileEvent>) {
         for event in events {
             let msg = wal::Message {
-                seq: self.next_seq(),
+                frame_seq: self.next_frame_seq(),
                 tenant_id: tenant_id.clone(),
                 event,
             };
@@ -35,8 +35,8 @@ impl LedgerSender {
         }
     }
 
-    fn next_seq(&self) -> u64 {
-        self.seq.fetch_add(1, Ordering::Relaxed)
+    fn next_frame_seq(&self) -> u64 {
+        self.frame_seq.fetch_add(1, Ordering::Relaxed)
     }
 }
 

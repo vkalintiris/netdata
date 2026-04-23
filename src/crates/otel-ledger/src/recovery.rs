@@ -31,19 +31,19 @@ pub async fn recover_unindexed(
 
     let requests: Vec<_> = unindexed
         .iter()
-        .map(|&id| IndexerRequest::FinalizeIndex {
+        .map(|&id| IndexerRequest::Index {
             wal_path: registry.wal.file_path(id),
             sfst_path: registry.sfst.file_path(id),
         })
         .collect();
 
     batch_recover(requests, indexer, |resp| match resp {
-        IndexerResponse::IndexFinalized { seq, .. } => {
+        IndexerResponse::Indexed { seq, .. } => {
             let wf = match registry.wal.get(seq) {
                 Some(wf) => wf,
                 None => {
                     tracing::warn!(
-                        "recovery: index finalized for unknown WAL seq={seq}, skipping cleanup"
+                        "recovery: indexed unknown WAL seq={seq}, skipping cleanup"
                     );
                     return;
                 }
@@ -69,7 +69,7 @@ pub async fn recover_unindexed(
                     .unwrap_or(0),
             );
             registry.sfst.track(id, created_at_ns, index_size);
-            tracing::info!("recovery: index finalized seq={seq}");
+            tracing::info!("recovery: indexed seq={seq}");
         }
         IndexerResponse::IndexFailed {
             ref path,
@@ -262,9 +262,9 @@ pub async fn recover_unuploaded(
         .iter()
         .map(|&id| {
             let local_path = registry.sfst.file_path(id);
-            let date = read_min_date(&local_path)
-                .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-            let remote_key = format!("{tenant_id}/sfst/{date}/{}", id.to_filename("sfst"));
+            let date =
+                read_min_date(&local_path).unwrap_or_else(|| chrono::Utc::now().date_naive());
+            let remote_key = crate::remote_keys::sfst(tenant_id, date, id);
             UploaderRequest::Upload {
                 seq: id.seq,
                 local_path,
@@ -301,7 +301,7 @@ pub async fn recover_unuploaded(
                 }
             };
             registry.mark_uploaded(seq);
-            let date = match parse_date_from_remote_key(&remote_key) {
+            let date = match crate::remote_keys::parse_sfst_date(&remote_key) {
                 Some(d) => d,
                 None => {
                     tracing::warn!(
@@ -345,14 +345,14 @@ pub(crate) fn now_ns() -> u64 {
 }
 
 /// Read the earliest log date from a `.sfst` index file's metadata.
-fn read_min_date(index_path: &std::path::Path) -> Option<String> {
+fn read_min_date(index_path: &std::path::Path) -> Option<NaiveDate> {
     let data = std::fs::read(index_path).ok()?;
     let reader = sfst::Reader::open(&data).ok()?;
     let meta = reader
         .metadata::<log_index::fst_builder::IndexMetadata>()
         .ok()?;
     let min_sec = *meta.histogram.timestamps.first()? as i64;
-    chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.format("%Y-%m-%d").to_string())
+    chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.date_naive())
 }
 
 /// Replay the catalog files already present on local disk (discovered by
@@ -421,8 +421,8 @@ pub async fn reconcile_remote_uploads(
     operator: &opendal::Operator,
     tenant_id: &str,
 ) -> Result<(), opendal::Error> {
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let prefix = format!("{tenant_id}/sfst/{today}/");
+    let today = chrono::Utc::now().date_naive();
+    let prefix = crate::remote_keys::sfst_prefix(tenant_id, today);
     let entries = operator.list(&prefix).await?;
 
     let uploaded_at_ns = file_registry::TimestampNs(now_ns());
@@ -468,7 +468,7 @@ pub async fn reconcile_remote_uploads(
                     continue;
                 }
             };
-        let date = match parse_date_from_remote_key(path) {
+        let date = match crate::remote_keys::parse_sfst_date(path) {
             Some(d) => d,
             None => {
                 tracing::warn!(
@@ -498,18 +498,6 @@ pub async fn reconcile_remote_uploads(
         );
     }
     Ok(())
-}
-
-fn parse_date_from_remote_key(key: &str) -> Option<NaiveDate> {
-    // Expected shape: `{tenant}/sfst/{YYYY-MM-DD}/{file_id}.sfst`
-    let mut parts = key.split('/');
-    let _tenant = parts.next()?;
-    let prefix = parts.next()?;
-    if prefix != "sfst" {
-        return None;
-    }
-    let date_str = parts.next()?;
-    NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
 }
 
 // TODO: reads the entire SFST file into memory just to decode the META
@@ -542,22 +530,6 @@ mod tests {
     use super::*;
     use otel_catalog::StreamEntry;
 
-    #[test]
-    fn parse_date_from_remote_key_happy_path() {
-        let key = "tenant1/sfst/2026-04-17/abc123.sfst";
-        let date = parse_date_from_remote_key(key).unwrap();
-        assert_eq!(date, NaiveDate::from_ymd_opt(2026, 4, 17).unwrap());
-    }
-
-    #[test]
-    fn parse_date_from_remote_key_rejects_unknown_shapes() {
-        assert!(parse_date_from_remote_key("").is_none());
-        assert!(parse_date_from_remote_key("tenant1").is_none());
-        assert!(parse_date_from_remote_key("tenant1/catalog/2026-04-17/x").is_none());
-        assert!(parse_date_from_remote_key("tenant1/sfst/not-a-date/x").is_none());
-        assert!(parse_date_from_remote_key("tenant1/sfst").is_none());
-    }
-
     fn machine() -> uuid::Uuid {
         uuid::Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
     }
@@ -567,9 +539,11 @@ mod tests {
     }
 
     fn make_entry(seq: u64) -> otel_catalog::CatalogEntry {
+        let id = file_registry::FileId::new(machine(), boot(), seq, 0);
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
         otel_catalog::CatalogEntry {
-            id: file_registry::FileId::new(machine(), boot(), seq, 0),
-            remote_key: format!("tenant1/sfst/2026-04-17/{seq}.sfst"),
+            id,
+            remote_key: crate::remote_keys::sfst("tenant1", date, id),
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 10,

@@ -7,6 +7,7 @@ pub mod ipc;
 mod ledger;
 mod recovery;
 pub mod registry;
+pub mod remote_keys;
 pub mod uploader;
 
 pub use ledger::Ledger;
