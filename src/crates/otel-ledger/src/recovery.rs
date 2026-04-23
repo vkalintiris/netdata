@@ -197,9 +197,8 @@ pub async fn recover_retention(
     // requests and synchronously drains all responses before returning,
     // and the ledger event loop hasn't started yet — so there's no
     // concurrent retention pass that could double-schedule.
-    let mut requests: Vec<CleanerRequest> = Vec::with_capacity(
-        evictable_sfst.len() + evictable_catalog.len(),
-    );
+    let mut requests: Vec<CleanerRequest> =
+        Vec::with_capacity(evictable_sfst.len() + evictable_catalog.len());
     for &seq in &evictable_sfst {
         if let Some(entry) = registry.sfst.get(seq) {
             let path = registry.sfst.file_path(entry.id);
@@ -365,8 +364,11 @@ fn read_min_date(index_path: &std::path::Path) -> Option<String> {
 /// those SFSTs can be evicted; uploaded state prevents re-upload of
 /// already-known-uploaded SFSTs.
 pub fn seed_from_catalog_files(registry: &mut Registry) {
-    let paths: Vec<std::path::PathBuf> =
-        registry.catalog_files.iter().map(|(p, _)| p.clone()).collect();
+    let paths: Vec<std::path::PathBuf> = registry
+        .catalog_files
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
     if paths.is_empty() {
         return;
     }
@@ -454,23 +456,18 @@ pub async fn reconcile_remote_uploads(
 
         let size = sfst_entry.size;
         let sfst_path = registry.sfst.file_path(id);
-        let catalog_entry = match build_catalog_entry_from_sfst(
-            &sfst_path,
-            size,
-            path,
-            uploaded_at_ns,
-            id,
-        ) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(
-                    seq = id.seq,
-                    path = %sfst_path.display(),
-                    "failed to rebuild catalog entry from SFST: {e}",
-                );
-                continue;
-            }
-        };
+        let catalog_entry =
+            match build_catalog_entry_from_sfst(&sfst_path, size, path, uploaded_at_ns, id) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(
+                        seq = id.seq,
+                        path = %sfst_path.display(),
+                        "failed to rebuild catalog entry from SFST: {e}",
+                    );
+                    continue;
+                }
+            };
         let date = match parse_date_from_remote_key(path) {
             Some(d) => d,
             None => {
@@ -703,7 +700,10 @@ mod tests {
 
         run_recover_retention(&mut reg, &evict_all_retention(), true).await;
 
-        assert!(reg.sfst.get(1).is_some(), "unrotated seq must not be evicted");
+        assert!(
+            reg.sfst.get(1).is_some(),
+            "unrotated seq must not be evicted"
+        );
         assert!(!reg.is_rotated(1));
         assert!(reg.sfst.get(2).is_none(), "rotated seq must be evicted");
         assert!(!reg.is_rotated(2));

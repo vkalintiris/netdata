@@ -191,7 +191,11 @@ impl Registry {
 
         for date_entry in date_entries.flatten() {
             let date_path = date_entry.path();
-            if !date_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            if !date_entry
+                .file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let date_str = match date_entry.file_name().to_str() {
@@ -407,11 +411,11 @@ mod tests {
     #[test]
     fn recover_picks_up_files_written_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
-        let expected = tmp
-            .path()
-            .join("2026-04-17")
-            .join(TENANT)
-            .join(filename(machine(), boot(), 42));
+        let expected =
+            tmp.path()
+                .join("2026-04-17")
+                .join(TENANT)
+                .join(filename(machine(), boot(), 42));
         write_catalog_at(&expected);
 
         let mut reg = Registry::new(tmp.path(), TENANT.to_string());
@@ -427,12 +431,11 @@ mod tests {
     fn recover_filters_to_this_tenant() {
         let tmp = tempfile::tempdir().unwrap();
         // Same date, two tenants.
-        write_catalog_at(
-            &tmp.path()
-                .join("2026-04-17")
-                .join(TENANT)
-                .join(filename(machine(), boot(), 1)),
-        );
+        write_catalog_at(&tmp.path().join("2026-04-17").join(TENANT).join(filename(
+            machine(),
+            boot(),
+            1,
+        )));
         write_catalog_at(
             &tmp.path()
                 .join("2026-04-17")
@@ -525,7 +528,10 @@ mod tests {
         reg.mark_pending_deletion(&p);
 
         let evicted = reg.evaluate_retention(7, today);
-        assert!(evicted.is_empty(), "pending_deletion entries must be skipped");
+        assert!(
+            evicted.is_empty(),
+            "pending_deletion entries must be skipped"
+        );
     }
 
     #[test]

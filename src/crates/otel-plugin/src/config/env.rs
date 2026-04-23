@@ -141,9 +141,7 @@ impl LogsOverride {
         };
         let retention_default = bridge::config::RetentionEntry {
             max_files: parse_env_var("NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_FILES")?,
-            max_total_size: parse_env_bytesize(
-                "NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_TOTAL_SIZE",
-            )?,
+            max_total_size: parse_env_bytesize("NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_TOTAL_SIZE")?,
             max_age: parse_env_duration("NETDATA_OTEL_LOGS_INDEX_RETENTION_MAX_AGE")?,
         };
         let retention_has_any = retention_default.max_files.is_some()

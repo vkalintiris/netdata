@@ -79,9 +79,9 @@ async fn handle_request(
     let now = TimestampNs(now_ns());
 
     let key: ScopeKey = (tenant_id.clone(), date, machine_id, boot_id);
-    let catalog = accumulators.entry(key.clone()).or_insert_with(|| {
-        Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now)
-    });
+    let catalog = accumulators
+        .entry(key.clone())
+        .or_insert_with(|| Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now));
     catalog.add(entry, now);
 
     if catalog.entries.len() < args.rotation_count {
@@ -182,7 +182,9 @@ pub(crate) fn scope_path(
 ) -> PathBuf {
     base.join(date.format("%Y-%m-%d").to_string())
         .join(tenant_id)
-        .join(otel_catalog::registry::filename(machine_id, boot_id, max_seq))
+        .join(otel_catalog::registry::filename(
+            machine_id, boot_id, max_seq,
+        ))
 }
 
 async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -285,8 +287,7 @@ mod tests {
             CatalogBuilderResponse::EntryAccepted { seq: 1 }
         ));
 
-        let expected_path =
-            scope_path(&h.base, "tenant1", date(), machine(), boot(), 1);
+        let expected_path = scope_path(&h.base, "tenant1", date(), machine(), boot(), 1);
         assert!(!expected_path.exists(), "must not rotate below threshold");
     }
 
@@ -346,9 +347,7 @@ mod tests {
         ));
         let r = h.send_recv(add_request(4)).await;
         let second_path = match r {
-            CatalogBuilderResponse::Rotated {
-                path, max_seq, ..
-            } => {
+            CatalogBuilderResponse::Rotated { path, max_seq, .. } => {
                 assert_eq!(max_seq, 4);
                 path
             }

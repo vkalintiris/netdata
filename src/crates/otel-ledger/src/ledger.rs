@@ -446,7 +446,10 @@ impl Ledger {
             UploaderResponse::UploadFailed { seq, error } => {
                 tracing::error!("upload failed seq={seq}: {error}");
             }
-            UploaderResponse::CatalogUploaded { local_path, remote_key } => {
+            UploaderResponse::CatalogUploaded {
+                local_path,
+                remote_key,
+            } => {
                 tracing::info!(
                     path = %local_path.display(),
                     remote_key = %remote_key,
@@ -663,7 +666,9 @@ impl Ledger {
         // Catalog retention pass. Day-count derived from the tenant's
         // SFST `max_age`; see `catalog_retention_days`. A catalog file is
         // evicted when its date is strictly older than `today - max_days`.
-        let to_evict_catalog = registry.catalog_files.evaluate_retention(catalog_days, today);
+        let to_evict_catalog = registry
+            .catalog_files
+            .evaluate_retention(catalog_days, today);
         for path in to_evict_catalog {
             registry.catalog_files.mark_pending_deletion(&path);
             tracing::info!("retention: evicting catalog path={}", path.display());
