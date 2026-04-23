@@ -11,66 +11,51 @@ use crate::ipc::{CleanerRequest, IndexerResponse, UploaderRequest};
 use super::Ledger;
 
 impl Ledger {
+    #[tracing::instrument(skip_all)]
     pub(super) async fn handle_indexer_resp(&mut self, resp: IndexerResponse) {
         match resp {
+            IndexerResponse::IndexFailed { path, error } => {
+                tracing::error!(path = %path.display(), "indexing failed: {error}");
+            }
             IndexerResponse::Indexed {
                 seq,
                 min_date,
                 metadata,
                 ..
             } => {
-                tracing::info!("indexed seq={seq}");
+                tracing::info!(seq, "indexed");
+
+                let Some((tenant_id, registry)) = self.registries.for_seq_mut(seq) else {
+                    tracing::warn!(seq, "indexed unknown seq; no tenant mapping");
+                    return;
+                };
+                let Some(wal_file) = registry.wal.get(seq) else {
+                    tracing::warn!(seq, "indexed unknown WAL");
+                    return;
+                };
+                let file_id = wal_file.id;
+                let created_at_ns = wal_file.created_at_ns;
+
+                let wal_path = registry.wal.file_path(file_id);
+                let sfst_path = registry.sfst.file_path(file_id);
+                let sfst_size =
+                    ByteSize(std::fs::metadata(&sfst_path).map(|m| m.len()).unwrap_or(0));
+
+                registry.sfst.track(file_id, created_at_ns, sfst_size);
 
                 self.pending_metadata.insert(seq, metadata);
 
-                let tenant_id = match self.registries.for_seq(seq) {
-                    Some((t, _)) => t.to_string(),
-                    None => {
-                        tracing::warn!("indexed unknown seq={seq}, no tenant mapping");
-                        return;
-                    }
+                let req = CleanerRequest::DeleteWalFile {
+                    sequence: file_id.seq,
+                    path: wal_path,
                 };
-
-                let (wal_file_id, wal_path) = {
-                    let registry = self
-                        .registries
-                        .get_mut(&tenant_id)
-                        .expect("tenant present after for_seq");
-                    match registry.wal.get(seq) {
-                        Some(wf) => {
-                            let id = wf.id;
-                            let wal_path = registry.wal.file_path(id);
-                            let sfst_path = registry.sfst.file_path(id);
-                            let sfst_size = ByteSize(
-                                std::fs::metadata(&sfst_path).map(|m| m.len()).unwrap_or(0),
-                            );
-                            registry.sfst.track(id, wf.created_at_ns, sfst_size);
-                            (Some(id), Some(wal_path))
-                        }
-                        None => {
-                            tracing::warn!("indexed unknown WAL seq={seq}");
-                            (None, None)
-                        }
-                    }
-                };
-
-                if let (Some(id), Some(wal_path)) = (wal_file_id, wal_path) {
-                    self.request_wal_delete(id.seq, wal_path);
-                    self.request_upload(id, &tenant_id, min_date.as_deref());
+                if let Err(e) = self.cleaner.send(req) {
+                    tracing::error!(seq = file_id.seq, "failed to send WAL delete request: {e}");
                 }
 
+                self.request_upload(file_id, &tenant_id, min_date.as_deref());
                 self.evaluate_retention(&tenant_id);
             }
-            IndexerResponse::IndexFailed { path, error } => {
-                tracing::error!("indexing failed path={} error={error}", path.display());
-            }
-        }
-    }
-
-    fn request_wal_delete(&mut self, sequence: u64, path: std::path::PathBuf) {
-        let req = CleanerRequest::DeleteWalFile { sequence, path };
-        if let Err(e) = self.cleaner.send(req) {
-            tracing::error!("failed to send WAL delete request seq={sequence}: {e}");
         }
     }
 
@@ -78,10 +63,10 @@ impl Ledger {
         if !self.logs_config.storage.enabled {
             return;
         }
-        let registry = match self.registries.get(tenant_id) {
-            Some(r) => r,
-            None => return,
-        };
+        let registry = self
+            .registries
+            .get(tenant_id)
+            .expect("tenant present after for_seq_mut");
         let local_path = registry.sfst.file_path(id);
         let date = min_date
             .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
@@ -93,7 +78,7 @@ impl Ledger {
             remote_key,
         };
         if let Err(e) = self.uploader.send(req) {
-            tracing::error!("failed to send upload request seq={}: {e}", id.seq);
+            tracing::error!(seq = id.seq, "failed to send upload request: {e}");
         }
     }
 }
