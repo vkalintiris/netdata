@@ -5,11 +5,14 @@
 //! WAL messages from the ingestor, responses from the workers, and
 //! requests from the supervisor.
 
+mod catalog_builder;
+mod cleaner;
 mod helpers;
+mod indexer;
 mod ingestor;
-mod responses;
 mod retention;
 mod rpc;
+mod uploader;
 
 pub(crate) use helpers::{build_catalog_entry, catalog_retention_days};
 
