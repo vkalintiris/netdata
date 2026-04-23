@@ -103,6 +103,7 @@ fn start_indexing(
                 path: sfst_path,
                 min_date: result.min_date,
                 metadata: result.metadata,
+                size: file_registry::ByteSize(result.size),
             },
             Err(e) => {
                 tracing::error!("indexing failed wal={}: {e}", wal_path.display());

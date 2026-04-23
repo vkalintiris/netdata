@@ -66,6 +66,8 @@ pub enum IndexerResponse {
         /// corresponding `Uploaded` fires, then used to build the catalog
         /// entry sent to the catalog writer.
         metadata: log_index::IndexMetadata,
+        /// Byte size of the written SFST file.
+        size: file_registry::ByteSize,
     },
     /// Indexing failed for a file.
     IndexFailed { path: PathBuf, error: String },

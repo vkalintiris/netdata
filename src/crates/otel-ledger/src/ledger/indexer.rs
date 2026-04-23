@@ -4,7 +4,7 @@
 //! out to the cleaner (delete the now-redundant WAL file) and the uploader
 //! (upload the SFST, if storage is enabled). On `IndexFailed`, logs.
 
-use file_registry::{ByteSize, FileId};
+use file_registry::FileId;
 
 use crate::ipc::{CleanerRequest, IndexerResponse, UploaderRequest};
 
@@ -21,6 +21,7 @@ impl Ledger {
                 seq,
                 min_date,
                 metadata,
+                size,
                 ..
             } => {
                 tracing::info!(seq, "indexed");
@@ -37,11 +38,8 @@ impl Ledger {
                 let created_at_ns = wal_file.created_at_ns;
 
                 let wal_path = registry.wal.file_path(file_id);
-                let sfst_path = registry.sfst.file_path(file_id);
-                let sfst_size =
-                    ByteSize(std::fs::metadata(&sfst_path).map(|m| m.len()).unwrap_or(0));
 
-                registry.sfst.track(file_id, created_at_ns, sfst_size);
+                registry.sfst.track(file_id, created_at_ns, size);
 
                 self.pending_metadata.insert(seq, metadata);
 

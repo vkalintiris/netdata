@@ -23,6 +23,8 @@ pub struct IndexResult {
     /// histogram, streams, ID ranges). Same value that was written into the
     /// SFST META chunk.
     pub metadata: IndexMetadata,
+    /// Byte size of the written SFST file.
+    pub size: u64,
 }
 
 /// Build a split-FST index from a WAL file using default settings.
@@ -71,6 +73,11 @@ pub fn index_wal_file_with_options(
         .map(|dt| dt.format("%Y-%m-%d").to_string());
 
     let metadata = crate::build_and_write(&wal_index, out_path)?;
+    let size = std::fs::metadata(out_path)?.len();
 
-    Ok(IndexResult { min_date, metadata })
+    Ok(IndexResult {
+        min_date,
+        metadata,
+        size,
+    })
 }
