@@ -1,25 +1,7 @@
 //! WAL message handling.
-//!
-//! The ingestor is a separate process that writes OTEL logs into per-tenant
-//! WAL files and streams [`wal::FileEvent`]s back over IPC — one per
-//! Created / Synced / Closed transition. This handler is the sole sink
-//! for those events.
-//!
-//! Each message:
-//! - checks `msg.frame_seq` against `expected_frame_seq` and logs a gap if
-//!   IPC frames were dropped;
-//! - applies the event to the owning tenant's registry — lazily creating
-//!   the tenant's `Registry` on first sight, and recording the
-//!   `FileId.seq`→tenant routing so later worker responses (indexer,
-//!   uploader, cleaner, catalog builder) can be dispatched back to the
-//!   right tenant;
-//! - on `Closed`, sends an `Index` request to the indexer — kicking off
-//!   the downstream indexing → upload → catalog pipeline driven by
-//!   [`super::responses`].
-
-use crate::ipc::IndexerRequest;
 
 use super::Ledger;
+use crate::ipc::IndexerRequest;
 
 impl Ledger {
     #[tracing::instrument(

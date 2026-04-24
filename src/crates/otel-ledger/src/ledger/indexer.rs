@@ -1,8 +1,4 @@
 //! Indexer response handling.
-//!
-//! On `Indexed`, tracks the new SFST on the tenant's registry, then fans
-//! out to the cleaner (delete the now-redundant WAL file) and the uploader
-//! (upload the SFST, if storage is enabled). On `IndexFailed`, logs.
 
 use file_registry::FileId;
 
@@ -26,12 +22,13 @@ impl Ledger {
             } => {
                 tracing::info!(seq, "indexed");
 
+                // Lookup tenant registry
                 let Some((tenant_id, registry)) = self.registries.for_seq_mut(seq) else {
-                    tracing::warn!(seq, "indexed unknown seq; no tenant mapping");
+                    tracing::error!(seq, "indexed unknown seq; no tenant mapping");
                     return;
                 };
                 let Some(wal_file) = registry.wal.get(seq) else {
-                    tracing::warn!(seq, "indexed unknown WAL");
+                    tracing::error!(seq, "indexed unknown WAL");
                     return;
                 };
                 let file_id = wal_file.id;
@@ -39,10 +36,13 @@ impl Ledger {
 
                 let wal_path = registry.wal.file_path(file_id);
 
+                // Track SFST file in registry
                 registry.sfst.track(file_id, created_at_ns, size);
 
+                // Store SFST file metadata
                 self.pending_metadata.insert(seq, metadata);
 
+                // Delete WAL file
                 let req = CleanerRequest::DeleteWalFile {
                     sequence: file_id.seq,
                     path: wal_path,
@@ -51,7 +51,10 @@ impl Ledger {
                     tracing::error!(seq = file_id.seq, "failed to send WAL delete request: {e}");
                 }
 
+                // Upload it to remote storage
                 self.request_upload(file_id, &tenant_id, min_date.as_deref());
+
+                // Run retention for the tenant
                 self.evaluate_retention(&tenant_id);
             }
         }
