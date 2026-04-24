@@ -47,7 +47,7 @@ pub fn catalog(
         "{}/{}/catalog/{}",
         date.format("%Y-%m-%d"),
         tenant_id,
-        otel_catalog::registry::filename(machine_id, boot_id, max_seq),
+        otel_catalog::filename(machine_id, boot_id, max_seq),
     )
 }
 

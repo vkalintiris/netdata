@@ -9,9 +9,9 @@ use file_registry::FileId;
 
 pub struct Registry {
     pub wal: wal::Registry,
-    pub sfst: sfst::registry::Registry,
+    pub sfst: sfst::Registry,
     /// Immutable catalog files present on local disk.
-    pub catalog_files: otel_catalog::registry::Registry,
+    pub catalog_files: otel_catalog::Registry,
     /// SFST sequence numbers that have been successfully uploaded to remote
     /// object storage. Gated access via [`Registry::mark_uploaded`] etc.
     uploaded_seqs: BTreeSet<u64>,
@@ -24,8 +24,8 @@ pub struct Registry {
 impl Registry {
     pub fn new(
         wal: wal::Registry,
-        sfst: sfst::registry::Registry,
-        catalog_files: otel_catalog::registry::Registry,
+        sfst: sfst::Registry,
+        catalog_files: otel_catalog::Registry,
     ) -> Self {
         Self {
             wal,
@@ -210,11 +210,11 @@ impl TenantRegistries {
             let index_dir = self.index_base_dir.join(tenant_id);
             let wal = wal::Registry::new(&wal_dir);
             std::fs::create_dir_all(&index_dir).ok();
-            let index = sfst::registry::Registry::new(&index_dir);
+            let index = sfst::Registry::new(&index_dir);
             // Catalog files live under `{catalog_base_dir}/{date}/{tenant}/`.
             // Per-date subdirs are created lazily by the catalog builder on
             // first rotation.
-            let catalog_files = otel_catalog::registry::Registry::new(
+            let catalog_files = otel_catalog::Registry::new(
                 &self.catalog_base_dir,
                 tenant_id.to_string(),
             );
@@ -303,9 +303,9 @@ mod tests {
         let sfst_dir = tempfile::tempdir().unwrap();
         let catalog_dir = tempfile::tempdir().unwrap();
         let wal = wal::Registry::new(wal_dir.path());
-        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let sfst = sfst::Registry::new(sfst_dir.path());
         let catalog_files =
-            otel_catalog::registry::Registry::new(catalog_dir.path(), "tenant1".to_string());
+            otel_catalog::Registry::new(catalog_dir.path(), "tenant1".to_string());
         // Keep tempdirs alive for the test's lifetime.
         std::mem::forget((wal_dir, sfst_dir, catalog_dir));
         Registry::new(wal, sfst, catalog_files)

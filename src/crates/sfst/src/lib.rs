@@ -38,6 +38,8 @@
 
 pub mod registry;
 
+pub use registry::{File, Registry};
+
 use fst_index::FstIndex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

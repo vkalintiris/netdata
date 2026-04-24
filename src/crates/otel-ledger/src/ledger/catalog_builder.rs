@@ -37,7 +37,7 @@ impl Ledger {
                     crate::remote_keys::catalog(date, &tenant_id, machine_id, boot_id, max_seq);
 
                 if let Some(registry) = self.registries.get_mut(&tenant_id) {
-                    let file = otel_catalog::registry::File::new(
+                    let file = otel_catalog::File::new(
                         date,
                         machine_id,
                         boot_id,

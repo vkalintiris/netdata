@@ -182,9 +182,7 @@ pub(crate) fn scope_path(
 ) -> PathBuf {
     base.join(date.format("%Y-%m-%d").to_string())
         .join(tenant_id)
-        .join(otel_catalog::registry::filename(
-            machine_id, boot_id, max_seq,
-        ))
+        .join(otel_catalog::filename(machine_id, boot_id, max_seq))
 }
 
 async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<()> {

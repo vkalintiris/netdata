@@ -557,9 +557,9 @@ mod tests {
         let wal_dir = tempfile::tempdir().unwrap();
         let sfst_dir = tempfile::tempdir().unwrap();
         let wal = wal::Registry::new(wal_dir.path());
-        let sfst = sfst::registry::Registry::new(sfst_dir.path());
+        let sfst = sfst::Registry::new(sfst_dir.path());
         let catalog_files =
-            otel_catalog::registry::Registry::new(catalog_dir, "tenant1".to_string());
+            otel_catalog::Registry::new(catalog_dir, "tenant1".to_string());
         // Keep tempdirs alive for the test's lifetime.
         std::mem::forget((wal_dir, sfst_dir));
         Registry::new(wal, sfst, catalog_files)
@@ -575,7 +575,7 @@ mod tests {
             .join("tenant1");
         std::fs::create_dir_all(&dir).unwrap();
         let max_seq = entries.iter().map(|e| e.id.seq).max().unwrap();
-        let path = dir.join(otel_catalog::registry::filename(machine(), boot(), max_seq));
+        let path = dir.join(otel_catalog::filename(machine(), boot(), max_seq));
         let mut catalog = Catalog::new(
             "tenant1".to_string(),
             date,
@@ -623,7 +623,7 @@ mod tests {
             .join("tenant1");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join(otel_catalog::registry::filename(machine(), boot(), 1)),
+            dir.join(otel_catalog::filename(machine(), boot(), 1)),
             b"not valid json",
         )
         .unwrap();

@@ -13,6 +13,7 @@ pub mod registry;
 pub use catalog::Catalog;
 pub use entry::{CatalogEntry, StreamEntry};
 pub use query::CatalogQuery;
+pub use registry::{File, Registry, filename};
 
 /// Current on-disk / on-wire catalog format version.
 pub const FORMAT_VERSION: u32 = 1;

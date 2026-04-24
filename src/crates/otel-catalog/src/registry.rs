@@ -6,7 +6,7 @@
 //! date-partitioned directory: `{base}/{YYYY-MM-DD}/{name}.catalog`.
 //!
 //! The registry tracks locally-present catalog files, mirrors the API
-//! shape of [`sfst::registry::Registry`], and is consulted by retention
+//! shape of [`sfst::Registry`], and is consulted by retention
 //! and by query-time discovery.
 
 use std::collections::BTreeMap;
