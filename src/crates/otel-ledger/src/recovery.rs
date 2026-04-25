@@ -42,9 +42,7 @@ pub async fn recover_unindexed(
             let wf = match registry.wal.get(seq) {
                 Some(wf) => wf,
                 None => {
-                    tracing::warn!(
-                        "recovery: indexed unknown WAL seq={seq}, skipping cleanup"
-                    );
+                    tracing::warn!("recovery: indexed unknown WAL seq={seq}, skipping cleanup");
                     return;
                 }
             };
@@ -543,11 +541,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
         otel_catalog::CatalogEntry {
             id,
-            remote_key: crate::remote_keys::sfst(
-                &TenantId::from("tenant1"),
-                date,
-                id,
-            ),
+            remote_key: crate::remote_keys::sfst(&TenantId::from("tenant1"), date, id),
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 10,
@@ -562,8 +556,7 @@ mod tests {
         let sfst_dir = tempfile::tempdir().unwrap();
         let wal = wal::Registry::new(wal_dir.path());
         let sfst = sfst::Registry::new(sfst_dir.path());
-        let catalog_files =
-            otel_catalog::Registry::new(catalog_dir, TenantId::from("tenant1"));
+        let catalog_files = otel_catalog::Registry::new(catalog_dir, TenantId::from("tenant1"));
         // Keep tempdirs alive for the test's lifetime.
         std::mem::forget((wal_dir, sfst_dir));
         Registry::new(wal, sfst, catalog_files)
