@@ -9,12 +9,11 @@
 //! shape of [`sfst::Registry`], and is consulted by retention
 //! and by query-time discovery.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use file_registry::{ByteSize, TenantId, TimestampNs};
+use file_registry::{ByteSize, FileRegistry, TenantId, TimestampNs};
 use uuid::Uuid;
 
 const CATALOG_EXT: &str = "catalog";
@@ -70,7 +69,7 @@ pub struct Registry {
     tenant_id: TenantId,
     /// Keyed by on-disk path. Catalog files are identified by their full
     /// `(date, machine, boot, max_seq)` tuple which the path encodes.
-    files: BTreeMap<PathBuf, File>,
+    files: FileRegistry<PathBuf, File>,
 }
 
 impl Registry {
@@ -78,7 +77,7 @@ impl Registry {
         Self {
             base_dir: base_dir.to_path_buf(),
             tenant_id,
-            files: BTreeMap::new(),
+            files: FileRegistry::new(),
         }
     }
 

@@ -14,28 +14,30 @@ pub struct File {
 }
 
 pub struct Registry {
-    inner: FileRegistry<File>,
+    dir: FileDir,
+    inner: FileRegistry<u64, File>,
 }
 
 impl Registry {
     pub fn new(dir: &Path) -> Self {
         Self {
-            inner: FileRegistry::new(FileDir::new(dir, SFST_EXT)),
+            dir: FileDir::new(dir, SFST_EXT),
+            inner: FileRegistry::new(),
         }
     }
 
     pub fn dir(&self) -> &Path {
-        self.inner.dir().path()
+        self.dir.path()
     }
 
     /// Derive the on-disk path for an index file from its FileId.
     pub fn file_path(&self, id: FileId) -> PathBuf {
-        self.inner.file_path(id)
+        self.dir.file_path(id)
     }
 
     /// Scan the directory for `.sfst` files and reconstruct state.
     pub fn recover(&mut self) {
-        let scan_results = self.inner.dir().scan().unwrap_or_default();
+        let scan_results = self.dir.scan().unwrap_or_default();
 
         for (id, meta) in scan_results {
             let size = ByteSize(meta.len());
@@ -76,23 +78,23 @@ impl Registry {
     }
 
     pub fn remove(&mut self, seq: u64) -> Option<File> {
-        self.inner.remove(seq)
+        self.inner.remove(&seq)
     }
 
     pub fn mark_pending_deletion(&mut self, seq: u64) {
-        if let Some(entry) = self.inner.get_mut(seq) {
+        if let Some(entry) = self.inner.get_mut(&seq) {
             entry.pending_deletion = true;
         }
     }
 
     pub fn clear_pending_deletion(&mut self, seq: u64) {
-        if let Some(entry) = self.inner.get_mut(seq) {
+        if let Some(entry) = self.inner.get_mut(&seq) {
             entry.pending_deletion = false;
         }
     }
 
     pub fn get(&self, seq: u64) -> Option<&File> {
-        self.inner.get(seq)
+        self.inner.get(&seq)
     }
 
     pub fn values(&self) -> impl Iterator<Item = &File> {

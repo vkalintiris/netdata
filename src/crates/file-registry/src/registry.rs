@@ -1,59 +1,67 @@
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 
-use crate::FileId;
-use crate::dir::FileDir;
-
-/// An ordered collection of files with per-file metadata.
+/// An ordered keyed collection with per-entry metadata.
 ///
-/// Files are keyed by sequence number (`u64`), providing chronological ordering.
-/// Path derivation is delegated to the owned [`FileDir`].
-pub struct FileRegistry<M> {
-    dir: FileDir,
-    files: BTreeMap<u64, M>,
+/// Generic over the key type so callers can pick the natural identifier for
+/// their domain (sequence numbers for WAL/SFST, on-disk paths for catalog
+/// files keyed by `(date, machine, boot, max_seq)`). Path derivation and
+/// directory scanning are not part of this type — callers that need them
+/// own a [`FileDir`](crate::FileDir) alongside.
+pub struct FileRegistry<K, M> {
+    files: BTreeMap<K, M>,
 }
 
-impl<M> FileRegistry<M> {
-    pub fn new(dir: FileDir) -> Self {
+impl<K: Ord, M> FileRegistry<K, M> {
+    pub fn new() -> Self {
         Self {
-            dir,
             files: BTreeMap::new(),
         }
     }
 
-    pub fn dir(&self) -> &FileDir {
-        &self.dir
+    pub fn insert(&mut self, key: K, entry: M) -> Option<M> {
+        self.files.insert(key, entry)
     }
 
-    /// Derive the on-disk path for a file.
-    pub fn file_path(&self, id: FileId) -> std::path::PathBuf {
-        self.dir.file_path(id)
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<M>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.files.remove(key)
     }
 
-    pub fn insert(&mut self, seq: u64, entry: M) -> Option<M> {
-        self.files.insert(seq, entry)
+    pub fn get<Q>(&self, key: &Q) -> Option<&M>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.files.get(key)
     }
 
-    pub fn remove(&mut self, seq: u64) -> Option<M> {
-        self.files.remove(&seq)
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut M>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.files.get_mut(key)
     }
 
-    pub fn get(&self, seq: u64) -> Option<&M> {
-        self.files.get(&seq)
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.files.contains_key(key)
     }
+}
 
-    pub fn get_mut(&mut self, seq: u64) -> Option<&mut M> {
-        self.files.get_mut(&seq)
-    }
-
-    pub fn contains(&self, seq: u64) -> bool {
-        self.files.contains_key(&seq)
-    }
-
+impl<K, M> FileRegistry<K, M> {
     pub fn values(&self) -> impl Iterator<Item = &M> {
         self.files.values()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&u64, &M)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &M)> {
         self.files.iter()
     }
 
@@ -63,5 +71,11 @@ impl<M> FileRegistry<M> {
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+}
+
+impl<K: Ord, M> Default for FileRegistry<K, M> {
+    fn default() -> Self {
+        Self::new()
     }
 }

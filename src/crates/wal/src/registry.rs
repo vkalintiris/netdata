@@ -32,22 +32,24 @@ pub struct File {
 ///
 /// Files are keyed by sequence number, which provides chronological ordering.
 pub struct Registry {
-    files: FileRegistry<File>,
+    dir: FileDir,
+    files: FileRegistry<u64, File>,
 }
 
 impl Registry {
     pub fn new(path: &Path) -> Self {
         Self {
-            files: FileRegistry::new(FileDir::new(path, WAL_EXT)),
+            dir: FileDir::new(path, WAL_EXT),
+            files: FileRegistry::new(),
         }
     }
 
     /// Recovers registry state by scanning the directory and reading file headers.
     pub fn recover(&mut self) -> Result<()> {
-        let entries = self.files.dir().scan()?;
+        let entries = self.dir.scan()?;
 
         for (file_id, meta) in entries {
-            let path = self.files.file_path(file_id);
+            let path = self.dir.file_path(file_id);
 
             let header = match read_header(&path) {
                 Ok(h) => h,
@@ -74,17 +76,17 @@ impl Registry {
     }
 
     pub fn path(&self) -> &Path {
-        self.files.dir().path()
+        self.dir.path()
     }
 
     /// Derive the on-disk path for a WAL file.
     pub fn file_path(&self, id: FileId) -> PathBuf {
-        self.files.file_path(id)
+        self.dir.file_path(id)
     }
 
     /// Scan the directory for the highest existing sequence number.
     pub fn scan_max_sequence(&self) -> Result<u64> {
-        Ok(self.files.dir().scan_max_sequence()?)
+        Ok(self.dir.scan_max_sequence()?)
     }
 
     /// Applies a `FileEvent` from the writer.
@@ -94,7 +96,7 @@ impl Registry {
                 file_id,
                 created_at_ns,
             } => {
-                if self.files.contains(file_id.seq) {
+                if self.files.contains(&file_id.seq) {
                     return Err(Error::DuplicateSequence(file_id.seq));
                 }
                 self.files.insert(
@@ -112,7 +114,7 @@ impl Registry {
             FileEvent::Closed { file_id, size, .. } => {
                 let entry = self
                     .files
-                    .get_mut(file_id.seq)
+                    .get_mut(&file_id.seq)
                     .ok_or(Error::UnknownSequence(file_id.seq))?;
                 entry.status = FileStatus::Archived;
                 entry.size = *size;
@@ -123,12 +125,12 @@ impl Registry {
 
     /// Look up a file by sequence number.
     pub fn get(&self, seq: u64) -> Option<&File> {
-        self.files.get(seq)
+        self.files.get(&seq)
     }
 
     /// Removes a file by sequence number.
     pub fn remove_by_seq(&mut self, seq: u64) -> Option<File> {
-        self.files.remove(seq)
+        self.files.remove(&seq)
     }
 
     /// Returns all archived files, ordered by sequence number.
