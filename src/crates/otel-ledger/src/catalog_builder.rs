@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use file_registry::{ByteSize, TimestampNs};
+use file_registry::{ByteSize, TenantId, TimestampNs};
 use otel_catalog::Catalog;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +32,7 @@ pub struct CatalogBuilderArgs {
 
 pub struct CatalogBuilder;
 
-type ScopeKey = (String, NaiveDate, Uuid, Uuid);
+type ScopeKey = (TenantId, NaiveDate, Uuid, Uuid);
 
 impl Component for CatalogBuilder {
     type Request = CatalogBuilderRequest;
@@ -174,14 +174,14 @@ async fn handle_request(
 /// `otel_ingestor::logs_service::validate_tenant_id`.
 pub(crate) fn scope_path(
     base: &Path,
-    tenant_id: &str,
+    tenant_id: &TenantId,
     date: NaiveDate,
     machine_id: Uuid,
     boot_id: Uuid,
     max_seq: u64,
 ) -> PathBuf {
     base.join(date.format("%Y-%m-%d").to_string())
-        .join(tenant_id)
+        .join(tenant_id.as_str())
         .join(otel_catalog::filename(machine_id, boot_id, max_seq))
 }
 
@@ -233,7 +233,7 @@ mod tests {
 
     fn add_request(seq: u64) -> CatalogBuilderRequest {
         CatalogBuilderRequest::AddEntry {
-            tenant_id: "tenant1".to_string(),
+            tenant_id: TenantId::from("tenant1"),
             date: date(),
             entry: entry_for(seq),
         }
@@ -285,7 +285,14 @@ mod tests {
             CatalogBuilderResponse::EntryAccepted { seq: 1 }
         ));
 
-        let expected_path = scope_path(&h.base, "tenant1", date(), machine(), boot(), 1);
+        let expected_path = scope_path(
+            &h.base,
+            &TenantId::from("tenant1"),
+            date(),
+            machine(),
+            boot(),
+            1,
+        );
         assert!(!expected_path.exists(), "must not rotate below threshold");
     }
 
@@ -310,7 +317,7 @@ mod tests {
                 seqs,
                 ..
             } => {
-                assert_eq!(tenant_id, "tenant1");
+                assert_eq!(tenant_id.as_str(), "tenant1");
                 assert_eq!(max_seq, 3);
                 let mut seen = seqs.clone();
                 seen.sort();
@@ -433,7 +440,7 @@ mod tests {
         };
         assert!(matches!(
             h.send_recv(CatalogBuilderRequest::AddEntry {
-                tenant_id: "tenant1".to_string(),
+                tenant_id: TenantId::from("tenant1"),
                 date: date(),
                 entry: other_entry,
             })

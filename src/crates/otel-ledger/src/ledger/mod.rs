@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
+use file_registry::TenantId;
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog_builder::{CatalogBuilder, CatalogBuilderArgs};
@@ -122,7 +123,7 @@ impl Ledger {
         //      re-send uncataloged entries to the catalog builder
         //   5. Upload un-uploaded .sfst files (sends AddEntry on success)
         //   6. Evaluate retention (rotated state already reflects disk)
-        let mut seq_routes: Vec<(u64, String)> = Vec::new();
+        let mut seq_routes: Vec<(u64, TenantId)> = Vec::new();
         for (tenant_id, registry) in registries.iter_mut() {
             for file in registry.wal.archived_files() {
                 seq_routes.push((file.id.seq, tenant_id.clone()));
@@ -164,8 +165,10 @@ impl Ledger {
                 }
             }
 
-            let retention =
-                bridge::config::RetentionConfig::resolve(&logs_config.index.retention, tenant_id);
+            let retention = bridge::config::RetentionConfig::resolve(
+                &logs_config.index.retention,
+                tenant_id.as_str(),
+            );
             recover_retention(
                 registry,
                 &mut cleaner,

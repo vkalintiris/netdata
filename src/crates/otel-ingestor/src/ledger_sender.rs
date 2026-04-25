@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ferryboat::{Connection, Endpoint};
+use file_registry::TenantId;
 use tokio::sync::mpsc;
 
 /// Sends WAL events to the ledger over a direct ferryboat IPC socket.
@@ -24,7 +25,7 @@ impl LedgerSender {
 
     /// Sends all events from a [`wal::FileEvent`] slice (as returned by
     /// [`WalWriter::take_events`]), tagged with the given tenant ID.
-    pub fn send_events(&self, tenant_id: String, events: Vec<wal::FileEvent>) {
+    pub fn send_events(&self, tenant_id: TenantId, events: Vec<wal::FileEvent>) {
         for event in events {
             let msg = wal::Message {
                 frame_seq: self.next_frame_seq(),

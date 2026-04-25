@@ -1,5 +1,5 @@
 mod types;
-pub use types::{ByteSize, FileId, TimestampNs, compute_ns_hash};
+pub use types::{ByteSize, FileId, TenantId, TimestampNs, compute_ns_hash};
 
 mod dir;
 pub use dir::FileDir;

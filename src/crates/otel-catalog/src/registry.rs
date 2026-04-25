@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use file_registry::{ByteSize, TimestampNs};
+use file_registry::{ByteSize, TenantId, TimestampNs};
 use uuid::Uuid;
 
 const CATALOG_EXT: &str = "catalog";
@@ -67,14 +67,14 @@ pub struct Registry {
     /// types inside the shared bucket.
     base_dir: PathBuf,
     /// The tenant this `Registry` owns. Recovery filters to this tenant.
-    tenant_id: String,
+    tenant_id: TenantId,
     /// Keyed by on-disk path. Catalog files are identified by their full
     /// `(date, machine, boot, max_seq)` tuple which the path encodes.
     files: BTreeMap<PathBuf, File>,
 }
 
 impl Registry {
-    pub fn new(base_dir: &Path, tenant_id: String) -> Self {
+    pub fn new(base_dir: &Path, tenant_id: TenantId) -> Self {
         Self {
             base_dir: base_dir.to_path_buf(),
             tenant_id,
@@ -86,7 +86,7 @@ impl Registry {
         &self.base_dir
     }
 
-    pub fn tenant_id(&self) -> &str {
+    pub fn tenant_id(&self) -> &TenantId {
         &self.tenant_id
     }
 
@@ -100,7 +100,7 @@ impl Registry {
     ) -> PathBuf {
         self.base_dir
             .join(date.format("%Y-%m-%d").to_string())
-            .join(&self.tenant_id)
+            .join(self.tenant_id.as_str())
             .join(filename(machine_id, boot_id, max_seq))
     }
 
@@ -207,7 +207,7 @@ impl Registry {
                 Err(_) => continue, // non-date subdirs (e.g. per-tenant sfst dirs) live here too
             };
 
-            let tenant_catalog_dir = date_path.join(&self.tenant_id);
+            let tenant_catalog_dir = date_path.join(self.tenant_id.as_str());
             let files = match std::fs::read_dir(&tenant_catalog_dir) {
                 Ok(e) => e,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn file_path_is_base_date_tenant_filename() {
         let tmp = tempfile::tempdir().unwrap();
-        let reg = Registry::new(tmp.path(), TENANT.to_string());
+        let reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         let p = reg.file_path(date(), machine(), boot(), 7);
         assert!(p.starts_with(tmp.path()));
         let s = p.to_str().unwrap();
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn track_and_remove() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         let path = reg.file_path(date(), machine(), boot(), 10);
         let file = File {
             date: date(),
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn pending_deletion_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         let path = reg.file_path(date(), machine(), boot(), 1);
         reg.track(
             File {
@@ -418,7 +418,7 @@ mod tests {
                 .join(filename(machine(), boot(), 42));
         write_catalog_at(&expected);
 
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         reg.recover();
 
         assert_eq!(reg.len(), 1);
@@ -443,7 +443,7 @@ mod tests {
                 .join(filename(machine(), boot(), 2)),
         );
 
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         reg.recover();
 
         assert_eq!(reg.len(), 1, "must not load other tenants' catalogs");
@@ -463,7 +463,7 @@ mod tests {
                 .join("garbage-name.catalog"),
         );
 
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
         reg.recover();
 
         assert_eq!(reg.len(), 0);
@@ -473,7 +473,7 @@ mod tests {
     fn recover_nonexistent_base_dir_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("no-such-dir");
-        let mut reg = Registry::new(&missing, TENANT.to_string());
+        let mut reg = Registry::new(&missing, TenantId::from(TENANT));
         reg.recover();
         assert!(reg.is_empty());
     }
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn evaluate_retention_evicts_files_older_than_cutoff() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
 
         let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
         let d_old = today - chrono::Duration::days(10);
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn evaluate_retention_excludes_pending_deletion() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
 
         let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
         let d_old = today - chrono::Duration::days(30);
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn evaluate_retention_with_huge_max_days_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut reg = Registry::new(tmp.path(), TENANT.to_string());
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
 
         let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
         track_at(&mut reg, today - chrono::Duration::days(1000), 1);

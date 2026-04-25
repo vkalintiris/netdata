@@ -1,5 +1,7 @@
 //! Steady-state retention pass.
 
+use file_registry::TenantId;
+
 use crate::ipc::CleanerRequest;
 use crate::recovery::now_ns;
 
@@ -7,9 +9,11 @@ use super::Ledger;
 use super::helpers::catalog_retention_days;
 
 impl Ledger {
-    pub(super) fn evaluate_retention(&mut self, tenant_id: &str) {
-        let retention =
-            bridge::config::RetentionConfig::resolve(&self.logs_config.index.retention, tenant_id);
+    pub(super) fn evaluate_retention(&mut self, tenant_id: &TenantId) {
+        let retention = bridge::config::RetentionConfig::resolve(
+            &self.logs_config.index.retention,
+            tenant_id.as_str(),
+        );
         let catalog_days = catalog_retention_days(&retention);
         let today = chrono::Utc::now().date_naive();
 

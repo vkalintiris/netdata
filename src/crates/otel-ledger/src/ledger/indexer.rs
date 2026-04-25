@@ -1,6 +1,6 @@
 //! Indexer response handling.
 
-use file_registry::FileId;
+use file_registry::{FileId, TenantId};
 
 use crate::ipc::{CleanerRequest, IndexerResponse, UploaderRequest};
 
@@ -60,7 +60,7 @@ impl Ledger {
         }
     }
 
-    fn request_upload(&mut self, id: FileId, tenant_id: &str, min_date: Option<&str>) {
+    fn request_upload(&mut self, id: FileId, tenant_id: &TenantId, min_date: Option<&str>) {
         if !self.logs_config.storage.enabled {
             return;
         }

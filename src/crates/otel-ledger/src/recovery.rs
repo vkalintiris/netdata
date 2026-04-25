@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use file_registry::ByteSize;
+use file_registry::{ByteSize, TenantId};
 use otel_catalog::Catalog;
 
 use crate::component::{ComponentHandle, batch_recover, drain_pending};
@@ -245,7 +245,7 @@ pub async fn recover_unuploaded(
     registry: &mut Registry,
     uploader: &mut ComponentHandle<UploaderRequest, UploaderResponse>,
     catalog_builder: &mut ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
-    tenant_id: &str,
+    tenant_id: &TenantId,
 ) -> anyhow::Result<()> {
     let unuploaded = registry.unuploaded_ids();
     if unuploaded.is_empty() {
@@ -253,7 +253,7 @@ pub async fn recover_unuploaded(
     }
 
     tracing::info!(
-        tenant = tenant_id,
+        tenant = %tenant_id,
         "uploading {} un-uploaded index files",
         unuploaded.len()
     );
@@ -313,7 +313,7 @@ pub async fn recover_unuploaded(
                 }
             };
             let req = CatalogBuilderRequest::AddEntry {
-                tenant_id: tenant_id.to_string(),
+                tenant_id: tenant_id.clone(),
                 date,
                 entry,
             };
@@ -419,7 +419,7 @@ pub async fn reconcile_remote_uploads(
     registry: &mut Registry,
     catalog_builder: &mut ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     operator: &opendal::Operator,
-    tenant_id: &str,
+    tenant_id: &TenantId,
 ) -> Result<(), opendal::Error> {
     let today = chrono::Utc::now().date_naive();
     let prefix = crate::remote_keys::sfst_prefix(tenant_id, today);
@@ -480,7 +480,7 @@ pub async fn reconcile_remote_uploads(
             }
         };
         let req = CatalogBuilderRequest::AddEntry {
-            tenant_id: tenant_id.to_string(),
+            tenant_id: tenant_id.clone(),
             date,
             entry: catalog_entry,
         };
@@ -493,7 +493,7 @@ pub async fn reconcile_remote_uploads(
 
     if reconciled > 0 {
         tracing::info!(
-            tenant = tenant_id,
+            tenant = %tenant_id,
             "reconciled {reconciled} uncataloged remote uploads",
         );
     }
@@ -543,7 +543,11 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
         otel_catalog::CatalogEntry {
             id,
-            remote_key: crate::remote_keys::sfst("tenant1", date, id),
+            remote_key: crate::remote_keys::sfst(
+                &TenantId::from("tenant1"),
+                date,
+                id,
+            ),
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 10,
@@ -559,7 +563,7 @@ mod tests {
         let wal = wal::Registry::new(wal_dir.path());
         let sfst = sfst::Registry::new(sfst_dir.path());
         let catalog_files =
-            otel_catalog::Registry::new(catalog_dir, "tenant1".to_string());
+            otel_catalog::Registry::new(catalog_dir, TenantId::from("tenant1"));
         // Keep tempdirs alive for the test's lifetime.
         std::mem::forget((wal_dir, sfst_dir));
         Registry::new(wal, sfst, catalog_files)
@@ -577,7 +581,7 @@ mod tests {
         let max_seq = entries.iter().map(|e| e.id.seq).max().unwrap();
         let path = dir.join(otel_catalog::filename(machine(), boot(), max_seq));
         let mut catalog = Catalog::new(
-            "tenant1".to_string(),
+            TenantId::from("tenant1"),
             date,
             machine(),
             boot(),

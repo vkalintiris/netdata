@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use file_registry::FileId;
+use file_registry::{FileId, TenantId};
 
 // ---------------------------------------------------------------------------
 // Composition
@@ -134,11 +134,11 @@ impl Registry {
 /// and the sequence-number → tenant routing table used to dispatch
 /// component responses back to the owning tenant.
 pub struct TenantRegistries {
-    pub tenants: HashMap<String, Registry>,
+    pub tenants: HashMap<TenantId, Registry>,
     /// Maps an SFST sequence number to the tenant that owns it. Populated
     /// as files are created / discovered on disk and consumed by every
     /// seq-keyed response handler.
-    seq_to_tenant: HashMap<u64, String>,
+    seq_to_tenant: HashMap<u64, TenantId>,
     wal_base_dir: std::path::PathBuf,
     index_base_dir: std::path::PathBuf,
     catalog_base_dir: std::path::PathBuf,
@@ -162,34 +162,38 @@ impl TenantRegistries {
     /// Record that `seq` belongs to `tenant_id`. Subsequent component
     /// responses carrying this `seq` can be routed back to the right tenant
     /// via [`Self::for_seq`] / [`Self::for_seq_mut`].
-    pub fn route_seq_to(&mut self, seq: u64, tenant_id: String) {
+    pub fn route_seq_to(&mut self, seq: u64, tenant_id: TenantId) {
         self.seq_to_tenant.insert(seq, tenant_id);
     }
 
     /// Apply a WAL event for `tenant_id`, creating the per-tenant registry
     /// on first sight and routing the seq on file-lifecycle events.
-    pub fn apply_wal_event(&mut self, tenant_id: &str, event: &wal::FileEvent) -> wal::Result<()> {
+    pub fn apply_wal_event(
+        &mut self,
+        tenant_id: &TenantId,
+        event: &wal::FileEvent,
+    ) -> wal::Result<()> {
         // Synced fires mid-file and adds no new (seq, tenant) mapping.
         if let wal::FileEvent::Created { file_id, .. } | wal::FileEvent::Closed { file_id, .. } =
             event
         {
-            self.route_seq_to(file_id.seq, tenant_id.to_string());
+            self.route_seq_to(file_id.seq, tenant_id.clone());
         }
         self.get_or_create(tenant_id).wal.apply_event(event)
     }
 
     /// Look up the registry that owns `seq`. Returns the tenant id and a
     /// shared reference to its registry, or `None` if `seq` isn't routed.
-    pub fn for_seq(&self, seq: u64) -> Option<(&str, &Registry)> {
-        let tenant_id = self.seq_to_tenant.get(&seq)?.as_str();
+    pub fn for_seq(&self, seq: u64) -> Option<(&TenantId, &Registry)> {
+        let tenant_id = self.seq_to_tenant.get(&seq)?;
         let registry = self.tenants.get(tenant_id)?;
         Some((tenant_id, registry))
     }
 
-    /// Mutable variant of [`Self::for_seq`]. Returns an owned `String` for
-    /// the tenant id so the caller can safely hold it across further
-    /// mutations of `self`.
-    pub fn for_seq_mut(&mut self, seq: u64) -> Option<(String, &mut Registry)> {
+    /// Mutable variant of [`Self::for_seq`]. Returns an owned [`TenantId`]
+    /// so the caller can safely hold it across further mutations of `self`
+    /// (cloning is a refcount bump).
+    pub fn for_seq_mut(&mut self, seq: u64) -> Option<(TenantId, &mut Registry)> {
         let tenant_id = self.seq_to_tenant.get(&seq)?.clone();
         let registry = self.tenants.get_mut(&tenant_id)?;
         Some((tenant_id, registry))
@@ -197,29 +201,27 @@ impl TenantRegistries {
 
     /// Remove the routing entry for `seq` and return the tenant it pointed
     /// at. Used after eviction when the seq is no longer reachable.
-    pub fn forget_seq(&mut self, seq: u64) -> Option<String> {
+    pub fn forget_seq(&mut self, seq: u64) -> Option<TenantId> {
         self.seq_to_tenant.remove(&seq)
     }
 
     /// Get or lazily create the `Registry` for a tenant. The new registry
     /// is **not** recovered from disk — callers that need on-disk state
     /// must call `Registry::recover` themselves.
-    pub(crate) fn get_or_create(&mut self, tenant_id: &str) -> &mut Registry {
+    pub(crate) fn get_or_create(&mut self, tenant_id: &TenantId) -> &mut Registry {
         if !self.tenants.contains_key(tenant_id) {
-            let wal_dir = self.wal_base_dir.join(tenant_id);
-            let index_dir = self.index_base_dir.join(tenant_id);
+            let wal_dir = self.wal_base_dir.join(tenant_id.as_str());
+            let index_dir = self.index_base_dir.join(tenant_id.as_str());
             let wal = wal::Registry::new(&wal_dir);
             std::fs::create_dir_all(&index_dir).ok();
             let index = sfst::Registry::new(&index_dir);
             // Catalog files live under `{catalog_base_dir}/{date}/{tenant}/`.
             // Per-date subdirs are created lazily by the catalog builder on
             // first rotation.
-            let catalog_files = otel_catalog::Registry::new(
-                &self.catalog_base_dir,
-                tenant_id.to_string(),
-            );
+            let catalog_files =
+                otel_catalog::Registry::new(&self.catalog_base_dir, tenant_id.clone());
             let registry = Registry::new(wal, index, catalog_files);
-            self.tenants.insert(tenant_id.to_string(), registry);
+            self.tenants.insert(tenant_id.clone(), registry);
         }
         self.tenants.get_mut(tenant_id).unwrap()
     }
@@ -229,7 +231,7 @@ impl TenantRegistries {
     ///
     /// Must be called once at startup, before the ingestor connects.
     pub fn discover_tenants(&mut self) {
-        let mut tenant_names = Vec::new();
+        let mut tenant_names: Vec<TenantId> = Vec::new();
         for base in [&self.wal_base_dir, &self.index_base_dir] {
             let entries = match std::fs::read_dir(base) {
                 Ok(e) => e,
@@ -238,7 +240,7 @@ impl TenantRegistries {
             for entry in entries.flatten() {
                 if entry.file_type().map_or(false, |ft| ft.is_dir()) {
                     if let Some(name) = entry.file_name().to_str() {
-                        tenant_names.push(name.to_string());
+                        tenant_names.push(TenantId::from(name));
                     }
                 }
             }
@@ -256,15 +258,15 @@ impl TenantRegistries {
         }
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Registry)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&TenantId, &mut Registry)> {
         self.tenants.iter_mut()
     }
 
-    pub fn get(&self, tenant_id: &str) -> Option<&Registry> {
+    pub fn get(&self, tenant_id: &TenantId) -> Option<&Registry> {
         self.tenants.get(tenant_id)
     }
 
-    pub fn get_mut(&mut self, tenant_id: &str) -> Option<&mut Registry> {
+    pub fn get_mut(&mut self, tenant_id: &TenantId) -> Option<&mut Registry> {
         self.tenants.get_mut(tenant_id)
     }
 }
@@ -305,7 +307,7 @@ mod tests {
         let wal = wal::Registry::new(wal_dir.path());
         let sfst = sfst::Registry::new(sfst_dir.path());
         let catalog_files =
-            otel_catalog::Registry::new(catalog_dir.path(), "tenant1".to_string());
+            otel_catalog::Registry::new(catalog_dir.path(), TenantId::from("tenant1"));
         // Keep tempdirs alive for the test's lifetime.
         std::mem::forget((wal_dir, sfst_dir, catalog_dir));
         Registry::new(wal, sfst, catalog_files)
@@ -372,16 +374,17 @@ mod tests {
             index_base.path().to_path_buf(),
             catalog_base.path().to_path_buf(),
         );
-        tr.get_or_create("tenant-a");
-        tr.route_seq_to(10, "tenant-a".to_string());
+        let tenant_a = TenantId::from("tenant-a");
+        tr.get_or_create(&tenant_a);
+        tr.route_seq_to(10, tenant_a.clone());
 
         let (tid, registry) = tr.for_seq_mut(10).expect("routed");
-        assert_eq!(tid, "tenant-a");
+        assert_eq!(tid, tenant_a);
         registry.mark_uploaded(10);
         assert!(tr.for_seq(10).unwrap().1.is_uploaded(10));
 
         let forgotten = tr.forget_seq(10);
-        assert_eq!(forgotten.as_deref(), Some("tenant-a"));
+        assert_eq!(forgotten, Some(tenant_a));
         assert!(tr.for_seq(10).is_none());
     }
 }

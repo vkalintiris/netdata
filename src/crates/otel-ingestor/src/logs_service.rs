@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use bridge::config::AuthConfig;
+use file_registry::TenantId;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
@@ -71,9 +72,9 @@ fn validate_tenant_id(id: &str) -> Result<(), Status> {
 fn extract_tenant_id(
     metadata: &tonic::metadata::MetadataMap,
     auth: &AuthConfig,
-) -> Result<String, Status> {
+) -> Result<TenantId, Status> {
     if !auth.enabled {
-        return Ok("default".to_string());
+        return Ok(TenantId::from("default"));
     }
     let value = metadata
         .get(AuthConfig::TENANT_HEADER)
@@ -82,11 +83,11 @@ fn extract_tenant_id(
         .to_str()
         .map_err(|_| Status::invalid_argument("tenant header must be valid UTF-8"))?;
     validate_tenant_id(tenant)?;
-    Ok(tenant.to_string())
+    Ok(TenantId::from(tenant))
 }
 
 pub struct NetdataLogsService {
-    writers: Mutex<HashMap<String, wal::Writer>>,
+    writers: Mutex<HashMap<TenantId, wal::Writer>>,
     sender: LedgerSender,
     wal_base_dir: PathBuf,
     wal_config: bridge::config::WalConfig,
@@ -148,8 +149,8 @@ impl LogsService for NetdataLogsService {
         let writer = if let Some(w) = writers.get_mut(&tenant_id) {
             w
         } else {
-            let path = self.wal_base_dir.join(&tenant_id);
-            let wal_config = self.resolve_wal_config(&tenant_id);
+            let path = self.wal_base_dir.join(tenant_id.as_str());
+            let wal_config = self.resolve_wal_config(tenant_id.as_str());
             let w = wal::Writer::new(&path, wal_config, Arc::clone(&self.seq)).map_err(|e| {
                 tracing::error!(%e, tenant = %tenant_id, "failed to create WAL writer");
                 Status::internal("WAL writer creation failed")

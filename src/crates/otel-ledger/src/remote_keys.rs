@@ -17,11 +17,11 @@
 //! inverse `parse_*` functions sit together so they stay in sync.
 
 use chrono::NaiveDate;
-use file_registry::FileId;
+use file_registry::{FileId, TenantId};
 use uuid::Uuid;
 
 /// Remote key for an uploaded SFST file.
-pub fn sfst(tenant_id: &str, date: NaiveDate, id: FileId) -> String {
+pub fn sfst(tenant_id: &TenantId, date: NaiveDate, id: FileId) -> String {
     format!(
         "{}/sfst/{}/{}",
         tenant_id,
@@ -31,14 +31,14 @@ pub fn sfst(tenant_id: &str, date: NaiveDate, id: FileId) -> String {
 }
 
 /// LIST prefix for every SFST uploaded for `tenant_id` on `date`.
-pub fn sfst_prefix(tenant_id: &str, date: NaiveDate) -> String {
+pub fn sfst_prefix(tenant_id: &TenantId, date: NaiveDate) -> String {
     format!("{}/sfst/{}/", tenant_id, date.format("%Y-%m-%d"))
 }
 
 /// Remote key for a rotated catalog file.
 pub fn catalog(
     date: NaiveDate,
-    tenant_id: &str,
+    tenant_id: &TenantId,
     machine_id: Uuid,
     boot_id: Uuid,
     max_seq: u64,
@@ -82,10 +82,14 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 4, 17).unwrap()
     }
 
+    fn tenant() -> TenantId {
+        TenantId::from("tenant1")
+    }
+
     #[test]
     fn sfst_key_and_date_roundtrip() {
         let id = FileId::new(machine(), boot(), 42, 0);
-        let key = sfst("tenant1", sample_date(), id);
+        let key = sfst(&tenant(), sample_date(), id);
         assert!(key.starts_with("tenant1/sfst/2026-04-17/"));
         assert!(key.ends_with(".sfst"));
         assert_eq!(parse_sfst_date(&key), Some(sample_date()));
@@ -94,14 +98,14 @@ mod tests {
     #[test]
     fn sfst_prefix_has_trailing_slash() {
         assert_eq!(
-            sfst_prefix("tenant1", sample_date()),
+            sfst_prefix(&tenant(), sample_date()),
             "tenant1/sfst/2026-04-17/",
         );
     }
 
     #[test]
     fn catalog_key_is_date_first() {
-        let key = catalog(sample_date(), "tenant1", machine(), boot(), 100);
+        let key = catalog(sample_date(), &tenant(), machine(), boot(), 100);
         assert!(key.starts_with("2026-04-17/tenant1/catalog/"));
         assert!(key.ends_with(".catalog"));
     }

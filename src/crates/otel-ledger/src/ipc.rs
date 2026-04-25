@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use ferryboat::{Connection, Endpoint, Listener};
+use file_registry::TenantId;
 
 /// Default socket path for the writer → ledger connection.
 pub const WRITER_SOCKET_PATH: &str = "/tmp/netdata-ledger-writer.sock";
@@ -117,7 +118,7 @@ pub enum CatalogBuilderRequest {
     /// The builder may rotate and emit a new catalog file as a side effect
     /// (see [`CatalogBuilderResponse::Rotated`]).
     AddEntry {
-        tenant_id: String,
+        tenant_id: TenantId,
         date: chrono::NaiveDate,
         entry: otel_catalog::CatalogEntry,
     },
@@ -133,7 +134,7 @@ pub enum CatalogBuilderResponse {
     /// empty. The ledger is responsible for registering the file and
     /// sending it to the uploader.
     Rotated {
-        tenant_id: String,
+        tenant_id: TenantId,
         date: chrono::NaiveDate,
         machine_id: uuid::Uuid,
         boot_id: uuid::Uuid,
@@ -147,7 +148,7 @@ pub enum CatalogBuilderResponse {
     /// Rotation failed (serialization or local write). The accumulator is
     /// left intact so the next `AddEntry` will retry.
     RotationFailed {
-        tenant_id: String,
+        tenant_id: TenantId,
         date: chrono::NaiveDate,
         machine_id: uuid::Uuid,
         boot_id: uuid::Uuid,

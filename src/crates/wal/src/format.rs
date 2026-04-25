@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use file_registry::{ByteSize, FileId, TimestampNs};
+use file_registry::{ByteSize, FileId, TenantId, TimestampNs};
 
 // -- Constants ----------------------------------------------------------
 
@@ -110,6 +110,6 @@ pub enum FileEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub frame_seq: u64,
-    pub tenant_id: String,
+    pub tenant_id: TenantId,
     pub event: FileEvent,
 }

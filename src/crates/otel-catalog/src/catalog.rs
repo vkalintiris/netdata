@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use file_registry::{FileId, TimestampNs};
+use file_registry::{FileId, TenantId, TimestampNs};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -12,7 +12,7 @@ use crate::{Error, FORMAT_VERSION};
 /// Per-tenant, per-date, per-machine, per-boot record of uploaded SFSTs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Catalog {
-    pub tenant_id: String,
+    pub tenant_id: TenantId,
     pub date: NaiveDate,
     pub machine_id: Uuid,
     pub boot_id: Uuid,
@@ -23,7 +23,7 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn new(
-        tenant_id: String,
+        tenant_id: TenantId,
         date: NaiveDate,
         machine_id: Uuid,
         boot_id: Uuid,
@@ -115,7 +115,7 @@ impl Catalog {
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     version: u32,
-    tenant_id: String,
+    tenant_id: TenantId,
     date: NaiveDate,
     machine_id: Uuid,
     boot_id: Uuid,
@@ -132,7 +132,7 @@ mod tests {
 
     fn test_catalog() -> Catalog {
         Catalog::new(
-            "tenant1".to_string(),
+            TenantId::from("tenant1"),
             NaiveDate::from_ymd_opt(2026, 4, 17).unwrap(),
             Uuid::nil(),
             Uuid::from_u128(1),

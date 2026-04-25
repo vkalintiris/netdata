@@ -1,10 +1,75 @@
+use std::borrow::Borrow;
 use std::fmt;
 use std::hash::Hasher;
 use std::path::Path;
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use twox_hash::XxHash64;
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// TenantId
+// ---------------------------------------------------------------------------
+
+/// Cheaply-cloneable tenant identifier. Wire format is an opaque string.
+///
+/// Wraps an `Arc<str>` so cloning is a refcount bump and multiple routing
+/// entries for the same tenant share one heap allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TenantId(Arc<str>);
+
+impl TenantId {
+    pub fn new(s: impl Into<Arc<str>>) -> Self {
+        Self(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TenantId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for TenantId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for TenantId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for TenantId {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for TenantId {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl Serialize for TenantId {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for TenantId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(|s| TenantId(Arc::from(s)))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TimestampNs
