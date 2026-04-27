@@ -1,8 +1,25 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use file_registry::{ByteSize, FileDir, FileId, FileRegistry};
 
-use crate::FileSummary;
+use crate::{FileSummary, StreamEntry};
+
+/// Candidate-selection query.
+///
+/// Describes the slice of SFST files a caller wants to operate on. Used by
+/// [`Registry::candidates`] to filter the registry without opening any
+/// file. All filtering is done against the cheap fields stored inline on
+/// each [`File`] entry.
+#[derive(Debug, Clone)]
+pub struct Query {
+    /// Time window of interest, in seconds since the Unix epoch.
+    /// Inclusive lower bound, exclusive upper bound.
+    pub time_range: Range<u32>,
+    /// Stream filter. `None` matches every stream; `Some(s)` requires
+    /// exact equality with the file's [`FileSummary::stream`].
+    pub stream: Option<StreamEntry>,
+}
 
 const SFST_EXT: &str = "sfst";
 
@@ -114,6 +131,32 @@ impl Registry {
         self.inner.values()
     }
 
+    /// Files in the registry whose summary intersects `q`.
+    ///
+    /// Pure filter — does not open any SFST file. Excludes entries marked
+    /// `pending_deletion` so callers don't see files that are queued for
+    /// removal by the cleaner.
+    ///
+    /// Time-range overlap is computed against the file's full
+    /// `[min_timestamp_s, max_timestamp_s]` range (inclusive on both ends);
+    /// the query's `time_range` is `[start, end)` (half-open). A file is
+    /// included if any second is shared by both ranges.
+    ///
+    /// Stream filter, when present, is exact equality on
+    /// `(namespace, name)` — there is no partial / prefix matching, by
+    /// design (each SFST holds exactly one stream; see [`StreamEntry`]).
+    pub fn candidates<'a>(&'a self, q: &'a Query) -> impl Iterator<Item = &'a File> + 'a {
+        self.inner
+            .values()
+            .filter(|f| !f.pending_deletion)
+            .filter(move |f| range_overlaps(&f.summary, &q.time_range))
+            .filter(move |f| {
+                q.stream
+                    .as_ref()
+                    .is_none_or(|s| &f.summary.stream == s)
+            })
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -177,6 +220,21 @@ impl Registry {
 
         to_evict
     }
+}
+
+/// True iff the file's `[min, max]` second range shares any second with
+/// the query's half-open `[start, end)` range.
+///
+/// Edge cases:
+/// - Empty SFSTs (`total_logs == 0`, `min == max == 0`) overlap with any
+///   query that includes second 0; in practice they're filtered earlier
+///   by retention.
+/// - A query with `start == end` is empty and matches no file.
+fn range_overlaps(summary: &FileSummary, q: &Range<u32>) -> bool {
+    if q.start >= q.end {
+        return false;
+    }
+    summary.max_timestamp_s >= q.start && summary.min_timestamp_s < q.end
 }
 
 /// Read the `SUMR` chunk of an SFST file and decode the summary.
@@ -271,5 +329,194 @@ mod tests {
         };
         reg.track(id, ByteSize(1), summary.clone());
         assert_eq!(reg.get(5).unwrap().summary, summary);
+    }
+
+    // ── Candidate selection tests ───────────────────────────────────
+
+    fn fid(seq: u64) -> FileId {
+        FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), seq, 0)
+    }
+
+    fn populate(
+        reg: &mut Registry,
+        entries: &[(u64, u32, u32, &str, &str)], // (seq, min_s, max_s, ns, name)
+    ) {
+        for &(seq, min_s, max_s, ns, name) in entries {
+            reg.track(
+                fid(seq),
+                ByteSize(1),
+                FileSummary {
+                    min_timestamp_s: min_s,
+                    max_timestamp_s: max_s,
+                    total_logs: 1,
+                    stream: StreamEntry::new(ns, name),
+                },
+            );
+        }
+    }
+
+    fn seqs<'a>(iter: impl Iterator<Item = &'a File>) -> Vec<u64> {
+        let mut v: Vec<u64> = iter.map(|f| f.id.seq).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn candidates_filter_by_time_range_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "ns", "a"),
+                (2, 300, 400, "ns", "a"),
+                (3, 150, 350, "ns", "a"),
+            ],
+        );
+
+        // Window [50, 250) covers files 1 and 3.
+        let q = Query {
+            time_range: 50..250,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 3]);
+
+        // Window [500, 600) covers nothing.
+        let q = Query {
+            time_range: 500..600,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn candidates_inclusive_lower_exclusive_upper() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "ns", "a"),
+                (2, 200, 300, "ns", "a"),
+                (3, 300, 400, "ns", "a"),
+            ],
+        );
+
+        // Query [200, 300) — touches file 1's max (200, inclusive),
+        // touches file 2's min (200, inclusive), does NOT touch file 3
+        // because q.end=300 is exclusive and file 3's min is 300.
+        let q = Query {
+            time_range: 200..300,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2]);
+    }
+
+    #[test]
+    fn candidates_single_point_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "ns", "a"),
+                (2, 150, 250, "ns", "a"),
+                (3, 300, 400, "ns", "a"),
+            ],
+        );
+
+        // [150, 151) hits file 1 (max=200 ≥ 150, min=100 < 151) and file 2
+        // (max=250 ≥ 150, min=150 < 151), but not file 3.
+        let q = Query {
+            time_range: 150..151,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2]);
+    }
+
+    #[test]
+    fn candidates_empty_query_matches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(&mut reg, &[(1, 100, 200, "ns", "a")]);
+
+        // start == end is an empty window.
+        let q = Query {
+            time_range: 200..200,
+            stream: None,
+        };
+        assert!(reg.candidates(&q).next().is_none());
+    }
+
+    #[test]
+    fn candidates_filter_by_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "prod", "api"),
+                (2, 100, 200, "prod", "worker"),
+                (3, 100, 200, "staging", "api"),
+            ],
+        );
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: Some(StreamEntry::new("prod", "api")),
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1]);
+    }
+
+    #[test]
+    fn candidates_no_stream_filter_returns_all_in_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "prod", "api"),
+                (2, 100, 200, "prod", "worker"),
+                (3, 100, 200, "staging", "api"),
+            ],
+        );
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn candidates_skip_pending_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        populate(
+            &mut reg,
+            &[
+                (1, 100, 200, "ns", "a"),
+                (2, 100, 200, "ns", "a"),
+                (3, 100, 200, "ns", "a"),
+            ],
+        );
+        reg.mark_pending_deletion(2);
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 3]);
+    }
+
+    #[test]
+    fn candidates_on_empty_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::new(dir.path());
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert!(reg.candidates(&q).next().is_none());
     }
 }
