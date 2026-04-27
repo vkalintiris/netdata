@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use file_registry::{ByteSize, FileDir, FileId, FileRegistry, TimestampNs};
+use file_registry::{ByteSize, FileDir, FileId, FileRegistry};
 
 use crate::FileSummary;
 
@@ -10,7 +9,6 @@ const SFST_EXT: &str = "sfst";
 #[derive(Debug, Clone)]
 pub struct File {
     pub id: FileId,
-    pub created_at_ns: TimestampNs,
     pub size: ByteSize,
     /// Cheap summary fields lifted off the SFST file's `SUMR` chunk. Stored
     /// inline so the query planner and catalog builder can read them without
@@ -52,17 +50,6 @@ impl Registry {
         for (id, meta) in scan_results {
             let size = ByteSize(meta.len());
 
-            // Use the file's modification time as an approximation for
-            // creation time. The actual WAL `created_at_ns` is not available
-            // when the .wal has already been deleted.
-            let created_at_ns = TimestampNs(
-                meta.modified()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64,
-            );
-
             let path = dir.join(id.to_filename(SFST_EXT));
             let summary = match read_summary(&path) {
                 Ok(s) => s,
@@ -80,7 +67,6 @@ impl Registry {
                 id.seq,
                 File {
                     id,
-                    created_at_ns,
                     size,
                     summary,
                     pending_deletion: false,
@@ -92,18 +78,11 @@ impl Registry {
         recovered
     }
 
-    pub fn track(
-        &mut self,
-        id: FileId,
-        created_at_ns: TimestampNs,
-        size: ByteSize,
-        summary: FileSummary,
-    ) {
+    pub fn track(&mut self, id: FileId, size: ByteSize, summary: FileSummary) {
         self.inner.insert(
             id.seq,
             File {
                 id,
-                created_at_ns,
                 size,
                 summary,
                 pending_deletion: false,
@@ -148,6 +127,11 @@ impl Registry {
     /// Only files that are not already pending deletion are considered.
     /// Files are evaluated oldest-first (by sequence number). A file is
     /// marked for eviction if any limit is exceeded.
+    ///
+    /// Age is measured against `summary.max_timestamp_s` — the most recent
+    /// log entry in the file. An empty SFST (`total_logs == 0`,
+    /// `max_timestamp_s == 0`) ages out immediately, which matches the
+    /// "no useful data" disposition.
     pub fn evaluate_retention(
         &self,
         retention: &bridge::config::RetentionConfig,
@@ -155,7 +139,8 @@ impl Registry {
     ) -> Vec<u64> {
         let max_files = retention.max_files;
         let max_total_size = retention.max_total_size.as_u64();
-        let max_age_ns = retention.max_age.as_nanos() as u64;
+        let max_age_s = retention.max_age.as_secs();
+        let now_s = (now_ns / 1_000_000_000) as u64;
 
         let eligible: Vec<&File> = self
             .inner
@@ -179,7 +164,7 @@ impl Registry {
             if remaining_size > max_total_size {
                 should_evict = true;
             }
-            if now_ns.saturating_sub(entry.created_at_ns.as_u64()) > max_age_ns {
+            if now_s.saturating_sub(entry.summary.max_timestamp_s as u64) > max_age_s {
                 should_evict = true;
             }
 
@@ -284,7 +269,7 @@ mod tests {
             total_logs: 7,
             stream: StreamEntry::new("a", "b"),
         };
-        reg.track(id, TimestampNs(0), ByteSize(1), summary.clone());
+        reg.track(id, ByteSize(1), summary.clone());
         assert_eq!(reg.get(5).unwrap().summary, summary);
     }
 }

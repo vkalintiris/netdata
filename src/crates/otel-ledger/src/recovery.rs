@@ -48,7 +48,6 @@ pub async fn recover_unindexed(
                 }
             };
             let id = wf.id;
-            let created_at_ns = wf.created_at_ns;
 
             // Delete the now-redundant WAL file via the cleaner.
             // The WAL entry is removed from the registry when the cleaner confirms.
@@ -67,7 +66,7 @@ pub async fn recover_unindexed(
                     .map(|m| m.len())
                     .unwrap_or(0),
             );
-            registry.sfst.track(id, created_at_ns, index_size, summary);
+            registry.sfst.track(id, index_size, summary);
             tracing::info!("recovery: indexed seq={seq}");
         }
         IndexerResponse::IndexFailed {
@@ -623,7 +622,7 @@ mod tests {
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
             reg.sfst
-                .track(id, file_registry::TimestampNs(0), ByteSize(1), empty_summary());
+                .track(id, ByteSize(1), empty_summary());
         }
         // Only seq=2 is in a closed catalog; seq=1 is not.
         reg.mark_rotated(2);
@@ -647,7 +646,7 @@ mod tests {
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
             reg.sfst
-                .track(id, file_registry::TimestampNs(0), ByteSize(1), empty_summary());
+                .track(id, ByteSize(1), empty_summary());
         }
 
         run_recover_retention(&mut reg, &evict_all_retention(), false).await;

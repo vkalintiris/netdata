@@ -297,7 +297,7 @@ fn cleanup_temp_files(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use file_registry::{ByteSize, TimestampNs};
+    use file_registry::ByteSize;
     use uuid::Uuid;
 
     fn make_registry() -> Registry {
@@ -321,7 +321,7 @@ mod tests {
 
         for seq in [1u64, 2, 3] {
             let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), seq, 0);
-            reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
+            reg.sfst.track(id, ByteSize(1), empty_summary());
         }
         reg.mark_uploaded(2);
         reg.mark_uploaded(3);
@@ -334,7 +334,7 @@ mod tests {
     fn unuploaded_ids_is_empty_when_all_uploaded() {
         let mut reg = make_registry();
         let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 5, 0);
-        reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
+        reg.sfst.track(id, ByteSize(1), empty_summary());
         reg.mark_uploaded(5);
 
         assert!(reg.unuploaded_ids().is_empty());
@@ -354,7 +354,7 @@ mod tests {
     fn evict_seq_clears_all_per_seq_state() {
         let mut reg = make_registry();
         let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 42, 0);
-        reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
+        reg.sfst.track(id, ByteSize(1), empty_summary());
         reg.mark_uploaded(42);
         reg.mark_rotated(42);
 

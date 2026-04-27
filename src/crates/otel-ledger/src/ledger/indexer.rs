@@ -29,14 +29,13 @@ impl Ledger {
                     return;
                 };
                 let file_id = wal_file.id;
-                let created_at_ns = wal_file.created_at_ns;
 
                 let wal_path = registry.wal.file_path(file_id);
 
                 // Track SFST file in registry. Summary fields (timestamps,
                 // total logs, stream) live on the registry entry; the
                 // uploader response handler reads them back from there.
-                registry.sfst.track(file_id, created_at_ns, size, summary);
+                registry.sfst.track(file_id, size, summary);
 
                 // Delete WAL file
                 let req = CleanerRequest::DeleteWalFile {
