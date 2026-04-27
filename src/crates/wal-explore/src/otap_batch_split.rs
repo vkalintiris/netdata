@@ -18,15 +18,15 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let reader = IndexReader::open(&data)?;
     let fields = reader.field_table()?;
     let sfst = sfst::Reader::open(&data)?;
-    let streams = reader.streams();
+    let stream = reader.stream();
 
     let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
 
     let mut total_original = 0usize;
     let mut total_batched = 0usize;
 
-    for (si, stream) in streams.iter().enumerate() {
-        let chunk_idx = (num_field_chunks + si) as u16;
+    {
+        let chunk_idx = num_field_chunks as u16;
         let compressed_raw = sfst.chunk_raw(chunk_idx)?;
         let original_size = compressed_raw.len();
 
@@ -37,7 +37,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
         // Split into batches and compress each independently.
         let mut batched_total = 0usize;
-        let num_batches = (entries.len() + BATCH_SIZE - 1) / BATCH_SIZE;
+        let num_batches = entries.len().div_ceil(BATCH_SIZE);
         for batch in entries.chunks(BATCH_SIZE) {
             let raw = bincode::serde::encode_to_vec(batch, bincode::config::standard())?;
             let packed = zstd::encode_all(&raw[..], 1)?;
@@ -63,7 +63,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         println!(
-            "STREAM[{si}] {namespace}/{name}  ({} logs, {} batches)",
+            "STREAM {namespace}/{name}  ({} logs, {} batches)",
             entries.len(),
             num_batches,
         );

@@ -45,7 +45,7 @@ pub(crate) fn build_catalog_entry(
         min_timestamp_s: summary.min_timestamp_s,
         max_timestamp_s: summary.max_timestamp_s,
         total_logs: summary.total_logs,
-        streams: summary.streams.clone(),
+        stream: summary.stream.clone(),
         size: sfst_file.size,
         uploaded_at_ns,
     }

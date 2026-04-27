@@ -500,7 +500,7 @@ mod tests {
             min_timestamp_s: 0,
             max_timestamp_s: 0,
             total_logs: 0,
-            streams: Vec::new(),
+            stream: sfst::StreamEntry::new("", ""),
         }
     }
 
@@ -513,7 +513,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 10,
-            streams: vec![StreamEntry::new("prod", "api", 0)],
+            stream: StreamEntry::new("prod", "api"),
             size: ByteSize(1024),
             uploaded_at_ns: file_registry::TimestampNs(2_000_000_000),
         }

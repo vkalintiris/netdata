@@ -70,9 +70,9 @@ impl<'a> IndexReader<'a> {
         &self.metadata.histogram
     }
 
-    /// Stream metadata entries.
-    pub fn streams(&self) -> &[StreamEntry] {
-        &self.summary.streams
+    /// The file's single stream.
+    pub fn stream(&self) -> &StreamEntry {
+        &self.summary.stream
     }
 
     // ── Field table (FLDS chunk, loaded on demand) ──────────────────
@@ -122,17 +122,17 @@ impl<'a> IndexReader<'a> {
 
     // ── Stream log entries ──────────────────────────────────────────
 
-    /// Load a stream's log entries by stream index.
+    /// Load the file's log entries.
     ///
-    /// `num_field_chunks` is the number of mid + high field chunks
-    /// (i.e., the count of non-low fields). Stream chunks start after them.
+    /// Each SFST has exactly one stream (see [`sfst::StreamEntry`]); its
+    /// log entries chunk sits immediately after the field chunks.
+    /// `num_field_chunks` is the number of mid + high field chunks (i.e.,
+    /// the count of non-low fields).
     pub fn load_stream_entries(
         &self,
-        stream_index: usize,
         num_field_chunks: usize,
     ) -> Result<Vec<Vec<FileId>>, sfst::Error> {
-        let chunk_index = num_field_chunks + stream_index;
-        let raw = self.sfst.chunk_raw(chunk_index as u16)?;
+        let raw = self.sfst.chunk_raw(num_field_chunks as u16)?;
         let decompressed = zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
         let (entries, _): (Vec<Vec<FileId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;

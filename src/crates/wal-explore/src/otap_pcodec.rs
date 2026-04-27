@@ -15,7 +15,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let reader = IndexReader::open(&data)?;
     let fields = reader.field_table()?;
     let sfst = sfst::Reader::open(&data)?;
-    let streams = reader.streams();
+    let stream = reader.stream();
 
     let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
 
@@ -24,8 +24,8 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut total_logs = 0usize;
     let mut total_ids = 0usize;
 
-    for (si, stream) in streams.iter().enumerate() {
-        let chunk_idx = (num_field_chunks + si) as u16;
+    {
+        let chunk_idx = num_field_chunks as u16;
         let compressed_raw = sfst.chunk_raw(chunk_idx)?;
         let zstd_size = compressed_raw.len();
 
@@ -82,7 +82,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             0.0
         };
 
-        println!("STREAM[{si}] {namespace}/{name}",);
+        println!("STREAM {namespace}/{name}",);
         println!(
             "  logs: {num_logs}  ids: {}  ids/log: {:.1}",
             ids.len(),

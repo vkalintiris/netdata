@@ -88,19 +88,17 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Stream chunks
-    let streams = reader.streams();
+    // The single stream chunk.
+    let stream = reader.stream();
     let mut stream_total = 0usize;
-    for (si, stream) in streams.iter().enumerate() {
-        let sc_idx = (num_field_chunks + si) as u16;
-        if let Ok(raw) = sfst.chunk_raw(sc_idx) {
-            print_section(
-                &format!("STREAM[{si}] {}/{}", stream.namespace, stream.name),
-                raw.len(),
-                file_size,
-            );
-            stream_total += raw.len();
-        }
+    let sc_idx = num_field_chunks as u16;
+    if let Ok(raw) = sfst.chunk_raw(sc_idx) {
+        print_section(
+            &format!("STREAM {}/{}", stream.namespace, stream.name),
+            raw.len(),
+            file_size,
+        );
+        stream_total += raw.len();
     }
 
     total_sections += field_total + stream_total;

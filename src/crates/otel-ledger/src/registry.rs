@@ -318,7 +318,7 @@ mod tests {
             min_timestamp_s: 0,
             max_timestamp_s: 0,
             total_logs: 0,
-            streams: Vec::new(),
+            stream: sfst::StreamEntry::new("", ""),
         }
     }
 

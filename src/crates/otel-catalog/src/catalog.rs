@@ -72,7 +72,7 @@ impl Catalog {
     pub fn find<'a>(&'a self, q: &'a CatalogQuery) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
         self.entries_in_range(q.min_timestamp_s, q.max_timestamp_s)
             .filter(move |e| match &q.stream {
-                Some(s) => e.streams.contains(s),
+                Some(s) => e.stream == *s,
                 None => true,
             })
     }
@@ -140,14 +140,14 @@ mod tests {
         )
     }
 
-    fn entry_at(seq: u64, min_s: u32, max_s: u32, streams: Vec<StreamEntry>) -> CatalogEntry {
+    fn entry_at(seq: u64, min_s: u32, max_s: u32, stream: StreamEntry) -> CatalogEntry {
         CatalogEntry {
             id: FileId::new(Uuid::nil(), Uuid::from_u128(1), seq, 0),
             remote_key: format!("tenant1/sfst/2026-04-17/{seq}.sfst"),
             min_timestamp_s: min_s,
             max_timestamp_s: max_s,
             total_logs: 10,
-            streams,
+            stream,
             size: ByteSize(1024),
             uploaded_at_ns: TimestampNs(2_000_000_000),
         }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn add_then_remove_returns_to_empty() {
         let mut c = test_catalog();
-        let e = entry_at(1, 100, 200, vec![]);
+        let e = entry_at(1, 100, 200, StreamEntry::new("", ""));
         c.add(e.clone(), TimestampNs(3_000_000_000));
         assert_eq!(c.entries.len(), 1);
 
@@ -186,8 +186,8 @@ mod tests {
     fn add_older_now_does_not_regress_updated_at() {
         let mut c = test_catalog();
         let high = TimestampNs(5_000_000_000);
-        c.add(entry_at(1, 100, 200, vec![]), high);
-        c.add(entry_at(2, 300, 400, vec![]), TimestampNs(1_000));
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), high);
+        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), TimestampNs(1_000));
         assert_eq!(c.updated_at_ns, high);
     }
 
@@ -195,10 +195,10 @@ mod tests {
     fn roundtrip_json_preserves_entries_and_metadata() {
         let mut c = test_catalog();
         c.add(
-            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
+            entry_at(1, 100, 200, StreamEntry::new("prod", "api")),
             TimestampNs(3_000_000_000),
         );
-        c.add(entry_at(2, 300, 500, vec![]), TimestampNs(4_000_000_000));
+        c.add(entry_at(2, 300, 500, StreamEntry::new("", "")), TimestampNs(4_000_000_000));
 
         let bytes = c.to_json().unwrap();
         let parsed = Catalog::from_json(&bytes).unwrap();
@@ -209,9 +209,9 @@ mod tests {
     fn find_range_overlap_semantics() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, vec![]), now);
-        c.add(entry_at(2, 300, 400, vec![]), now);
-        c.add(entry_at(3, 150, 350, vec![]), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
+        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), now);
+        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")), now);
 
         let q = CatalogQuery {
             min_timestamp_s: 50,
@@ -248,34 +248,21 @@ mod tests {
     }
 
     #[test]
-    fn find_with_stream_filter_matches_any_listed_stream() {
+    fn find_with_stream_filter_matches_by_exact_equality() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
+        // Two entries on the "api" stream, one on "worker".
+        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")), now);
         c.add(
-            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
+            entry_at(2, 100, 200, StreamEntry::new("prod", "worker")),
             now,
         );
-        c.add(
-            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "worker", 0)]),
-            now,
-        );
-        c.add(
-            entry_at(
-                3,
-                100,
-                200,
-                vec![
-                    StreamEntry::new("prod", "api", 0),
-                    StreamEntry::new("prod", "worker", 0),
-                ],
-            ),
-            now,
-        );
+        c.add(entry_at(3, 100, 200, StreamEntry::new("prod", "api")), now);
 
         let q = CatalogQuery {
             min_timestamp_s: 0,
             max_timestamp_s: 1000,
-            stream: Some(StreamEntry::new("prod", "api", 0)),
+            stream: Some(StreamEntry::new("prod", "api")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
@@ -285,16 +272,16 @@ mod tests {
     fn find_empty_string_stream_matches_only_empty_string_entry() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, vec![StreamEntry::new("", "", 0)]), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
         c.add(
-            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
+            entry_at(2, 100, 200, StreamEntry::new("prod", "api")),
             now,
         );
 
         let q = CatalogQuery {
             min_timestamp_s: 0,
             max_timestamp_s: 1000,
-            stream: Some(StreamEntry::new("", "", 0)),
+            stream: Some(StreamEntry::new("", "")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1]);
@@ -304,9 +291,9 @@ mod tests {
     fn entries_in_range_agrees_with_find_when_no_stream_filter() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, vec![]), now);
-        c.add(entry_at(2, 300, 400, vec![]), now);
-        c.add(entry_at(3, 150, 350, vec![]), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
+        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), now);
+        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")), now);
 
         let direct: Vec<u64> = c.entries_in_range(150, 350).map(|e| e.id.seq).collect();
         let via_find: Vec<u64> = c

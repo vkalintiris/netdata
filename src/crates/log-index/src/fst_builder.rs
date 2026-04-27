@@ -139,47 +139,43 @@ fn build_id_translation(wal_index: &WalIndex) -> (Vec<FileId>, IdRanges) {
     )
 }
 
-/// Build per-stream log entry chunks.
+/// Build the single per-stream log entries chunk.
 ///
-/// For each stream, collects its log positions in time-sorted order,
-/// translates [`KeyValueId`]s to [`FileId`]s, and serializes with bincode + zstd.
+/// Collects log positions in time-sorted order, translates [`KeyValueId`]s
+/// to [`FileId`]s, and serializes with bincode + zstd.
 fn build_stream_entries(
-    streams: &[ServiceStream],
+    stream: &ServiceStream,
     log_entries: &[Vec<KeyValueId>],
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
     writer: &mut sfst::Writer,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut total_bytes = 0usize;
+    // Map insertion-order positions to (sorted_pos, insertion_pos),
+    // then iterate in time-sorted order.
+    let mut by_time: Vec<(u32, u32)> = stream
+        .positions
+        .iter()
+        .map(|&ins| (time_order.to_sorted(ins), ins))
+        .collect();
+    by_time.sort_unstable();
 
-    for stream in streams {
-        // Map insertion-order positions to (sorted_pos, insertion_pos),
-        // then iterate in time-sorted order.
-        let mut by_time: Vec<(u32, u32)> = stream
-            .positions
-            .iter()
-            .map(|&ins| (time_order.to_sorted(ins), ins))
-            .collect();
-        by_time.sort_unstable();
+    // Translate KeyValueIds → FileIds.
+    let entries: Vec<Vec<FileId>> = by_time
+        .iter()
+        .map(|&(_, ins)| {
+            log_entries[ins as usize]
+                .iter()
+                .map(|&kv_id| kv_to_file[kv_id.idx()])
+                .collect()
+        })
+        .collect();
 
-        // Translate KeyValueIds → FileIds.
-        let entries: Vec<Vec<FileId>> = by_time
-            .iter()
-            .map(|&(_, ins)| {
-                log_entries[ins as usize]
-                    .iter()
-                    .map(|&kv_id| kv_to_file[kv_id.idx()])
-                    .collect()
-            })
-            .collect();
+    let raw = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
+    let packed = zstd::encode_all(&raw[..], 1)?;
+    let len = packed.len();
+    writer.add_chunk(packed);
 
-        let raw = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
-        let packed = zstd::encode_all(&raw[..], 1)?;
-        total_bytes += packed.len();
-        writer.add_chunk(packed);
-    }
-
-    Ok(total_bytes)
+    Ok(len)
 }
 
 /// Build the primary FST: low-card `key=value` entries with bitmaps.
@@ -290,17 +286,23 @@ fn build_high_card_chunks(
     Ok(())
 }
 
-/// Print stream info and build per-stream log entry chunks.
+/// Resolve and write the file's single stream.
+///
+/// Each SFST file is required to contain exactly one `(namespace, name)`
+/// pair — the WAL writer partitions frames by `ns_hash`, and the ingestor
+/// rejects writes whose `(namespace, name)` doesn't match the canonical
+/// pair for an `ns_hash`. If multiple streams are seen here, a hash
+/// collision slipped through (or the ingestor's collision check is
+/// missing/disabled). Either way, the WAL file cannot be safely indexed
+/// because there is no single stream identity to attach to the SFST.
 fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
     writer: &mut sfst::Writer,
-) -> Result<Vec<ServiceStream>, Box<dyn std::error::Error>> {
-    let universe_size = wal_index.num_logs() as u32;
-
+) -> Result<ServiceStream, Box<dyn std::error::Error>> {
     let t = Instant::now();
-    let streams = wal_index.service_streams();
+    let mut streams = wal_index.service_streams();
 
     tracing::debug!(
         "streams derived: {} streams, {}ms",
@@ -308,23 +310,51 @@ fn build_streams(
         t.elapsed().as_millis(),
     );
 
-    for (i, s) in streams.iter().enumerate() {
-        let namespace = if s.namespace.is_empty() {
-            "<none>"
-        } else {
-            &s.namespace
-        };
-        let name = if s.name.is_empty() { "<none>" } else { &s.name };
-        let pct = s.positions.len() as f64 / universe_size as f64 * 100.0;
-        tracing::debug!(
-            "  stream[{i}] {namespace}/{name}: {} logs ({pct:.1}%)",
-            s.positions.len(),
-        );
-    }
+    let stream = match streams.len() {
+        1 => streams.pop().expect("len == 1"),
+        0 => {
+            return Err(format!(
+                "cannot build SFST: WAL contains no service.name/service.namespace data \
+                 ({} log entries)",
+                wal_index.num_logs(),
+            )
+            .into());
+        }
+        n => {
+            // Collect a short summary of the offenders for the error message.
+            let detail = streams
+                .iter()
+                .map(|s| format!("{:?}/{:?} ({} logs)", s.namespace, s.name, s.positions.len()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "cannot build SFST: WAL contains {n} streams (expected 1, ns_hash collision?): \
+                 [{detail}]"
+            )
+            .into());
+        }
+    };
+
+    let universe_size = wal_index.num_logs() as u32;
+    let namespace = if stream.namespace.is_empty() {
+        "<none>"
+    } else {
+        &stream.namespace
+    };
+    let name = if stream.name.is_empty() {
+        "<none>"
+    } else {
+        &stream.name
+    };
+    let pct = stream.positions.len() as f64 / universe_size as f64 * 100.0;
+    tracing::debug!(
+        "  stream {namespace}/{name}: {} logs ({pct:.1}%)",
+        stream.positions.len(),
+    );
 
     let t_entries = Instant::now();
     let stream_bytes = build_stream_entries(
-        &streams,
+        &stream,
         &wal_index.log_entries,
         time_order,
         kv_to_file,
@@ -336,7 +366,7 @@ fn build_streams(
         t_entries.elapsed().as_millis(),
     );
 
-    Ok(streams)
+    Ok(stream)
 }
 
 /// Build and write a split-fst index file.
@@ -368,7 +398,7 @@ pub fn build_and_write(
     build_high_card_chunks(wal_index, &time_order, &mut writer)?;
 
     let (kv_to_file, id_ranges) = build_id_translation(wal_index);
-    let streams = build_streams(wal_index, &time_order, &kv_to_file, &mut writer)?;
+    let stream = build_streams(wal_index, &time_order, &kv_to_file, &mut writer)?;
 
     // Field table (FLDS chunk).
     let field_table: Vec<FieldEntry> = wal_index
@@ -405,14 +435,10 @@ pub fn build_and_write(
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
         max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs: wal_index.num_logs() as u32,
-        streams: streams
-            .iter()
-            .map(|s| sfst::StreamEntry {
-                namespace: s.namespace.clone(),
-                name: s.name.clone(),
-                log_count: s.positions.len() as u32,
-            })
-            .collect(),
+        stream: sfst::StreamEntry {
+            namespace: stream.namespace.clone(),
+            name: stream.name.clone(),
+        },
     };
     writer.set_summary(sfst::pack_metadata(&summary, 1)?);
 

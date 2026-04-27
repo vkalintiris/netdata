@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 pub use sfst::StreamEntry;
 
 /// One uploaded SFST file tracked by the catalog.
+///
+/// Each entry corresponds to exactly one SFST, which itself contains
+/// exactly one stream — see [`sfst::StreamEntry`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub id: FileId,
@@ -10,7 +13,7 @@ pub struct CatalogEntry {
     pub min_timestamp_s: u32,
     pub max_timestamp_s: u32,
     pub total_logs: u32,
-    pub streams: Vec<StreamEntry>,
+    pub stream: StreamEntry,
     pub size: ByteSize,
     pub uploaded_at_ns: TimestampNs,
 }
@@ -22,7 +25,7 @@ mod tests {
 
     #[test]
     fn stream_entry_roundtrip() {
-        let s = StreamEntry::new("prod", "api", 800);
+        let s = StreamEntry::new("prod", "api");
         let json = serde_json::to_string(&s).unwrap();
         let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
@@ -30,7 +33,7 @@ mod tests {
 
     #[test]
     fn stream_entry_empty_strings_roundtrip() {
-        let s = StreamEntry::new("", "", 0);
+        let s = StreamEntry::new("", "");
         let json = serde_json::to_string(&s).unwrap();
         let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
@@ -44,10 +47,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
-            streams: vec![
-                StreamEntry::new("prod", "api", 800),
-                StreamEntry::new("prod", "worker", 434),
-            ],
+            stream: StreamEntry::new("prod", "api"),
             size: ByteSize(9876),
             uploaded_at_ns: TimestampNs(1_700_003_700_000_000_000),
         };

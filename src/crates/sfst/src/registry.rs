@@ -232,13 +232,13 @@ mod tests {
             min_timestamp_s: 100,
             max_timestamp_s: 200,
             total_logs: 50,
-            streams: vec![StreamEntry::new("ns", "a", 50)],
+            stream: StreamEntry::new("ns", "a"),
         };
         let s2 = FileSummary {
             min_timestamp_s: 300,
             max_timestamp_s: 400,
             total_logs: 25,
-            streams: vec![StreamEntry::new("ns", "b", 25)],
+            stream: StreamEntry::new("ns", "b"),
         };
         write_sfst_with_summary(dir.path(), id1, &s1);
         write_sfst_with_summary(dir.path(), id2, &s2);
@@ -260,7 +260,7 @@ mod tests {
             min_timestamp_s: 1,
             max_timestamp_s: 2,
             total_logs: 1,
-            streams: vec![],
+            stream: StreamEntry::new("", ""),
         };
         write_sfst_with_summary(dir.path(), id_good, &s);
         // Garbage file with the right extension/name shape but invalid contents.
@@ -282,7 +282,7 @@ mod tests {
             min_timestamp_s: 1,
             max_timestamp_s: 9,
             total_logs: 7,
-            streams: vec![StreamEntry::new("a", "b", 7)],
+            stream: StreamEntry::new("a", "b"),
         };
         reg.track(id, TimestampNs(0), ByteSize(1), summary.clone());
         assert_eq!(reg.get(5).unwrap().summary, summary);

@@ -24,37 +24,35 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
         .count();
 
     let mut total_printed = 0u32;
+    let stream = reader.stream();
+    let t = Instant::now();
+    let entries = reader.load_stream_entries(num_field_chunks)?;
+    eprintln!(
+        "stream {}/{}: {} entries ({:.0}ms)",
+        stream.namespace,
+        stream.name,
+        entries.len(),
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
 
-    for (si, stream) in reader.streams().iter().enumerate() {
-        let t = Instant::now();
-        let entries = reader.load_stream_entries(si, num_field_chunks)?;
-        eprintln!(
-            "stream {si} ({}/{}): {} entries ({:.0}ms)",
-            stream.namespace,
-            stream.name,
-            entries.len(),
-            t.elapsed().as_secs_f64() * 1000.0,
-        );
-
-        for (pos, file_ids) in entries.iter().enumerate() {
-            if let Some(max) = limit {
-                if total_printed >= max {
-                    return Ok(());
-                }
+    for (pos, file_ids) in entries.iter().enumerate() {
+        if let Some(max) = limit {
+            if total_printed >= max {
+                return Ok(());
             }
-
-            println!("--- log {total_printed} (stream {si}, pos {pos})");
-            for id in file_ids {
-                let idx = id.0 as usize;
-                if idx < string_table.len() {
-                    println!("  {}", string_table[idx]);
-                } else {
-                    println!("  <unknown FileId({})>", id.0);
-                }
-            }
-
-            total_printed += 1;
         }
+
+        println!("--- log {total_printed} (pos {pos})");
+        for id in file_ids {
+            let idx = id.0 as usize;
+            if idx < string_table.len() {
+                println!("  {}", string_table[idx]);
+            } else {
+                println!("  <unknown FileId({})>", id.0);
+            }
+        }
+
+        total_printed += 1;
     }
 
     eprintln!("{total_printed} log entries");

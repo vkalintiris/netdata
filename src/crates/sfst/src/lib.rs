@@ -62,24 +62,28 @@ const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
 
 // ── Summary ──────────────────────────────────────────────────────
 
-/// `(namespace, name)` pair identifying a log stream, plus the count of
-/// entries from that stream contained in this SFST.
+/// `(namespace, name)` pair identifying a log stream.
 ///
-/// This is the canonical stream identifier across the codebase — the registry,
-/// the catalog, and the indexer all use it.
+/// Each SFST file contains exactly one stream — the WAL writer partitions
+/// frames by `ns_hash = hash(namespace, name)`, and the indexer asserts
+/// that all data in a single WAL file resolves to one `(namespace, name)`
+/// pair. Hash collisions are detected at the ingestor (see
+/// `NetdataLogsService`); a colliding WAL file is permanently
+/// un-indexable until the operator removes it.
+///
+/// This is the canonical stream identifier across the codebase — the
+/// registry, the catalog, and the indexer all use it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StreamEntry {
     pub namespace: String,
     pub name: String,
-    pub log_count: u32,
 }
 
 impl StreamEntry {
-    pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M, log_count: u32) -> Self {
+    pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M) -> Self {
         Self {
             namespace: namespace.into(),
             name: name.into(),
-            log_count,
         }
     }
 }
@@ -94,7 +98,7 @@ pub struct FileSummary {
     pub min_timestamp_s: u32,
     pub max_timestamp_s: u32,
     pub total_logs: u32,
-    pub streams: Vec<StreamEntry>,
+    pub stream: StreamEntry,
 }
 
 fn hc_chunk_id(index: u16) -> gix_chunk::Id {
@@ -565,10 +569,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
-            streams: vec![
-                StreamEntry::new("prod", "api", 800),
-                StreamEntry::new("prod", "worker", 434),
-            ],
+            stream: StreamEntry::new("prod", "api"),
         };
 
         let fst: FstIndex<u64> = FstIndex::build([("a", 1u64)]).unwrap();
@@ -600,7 +601,7 @@ mod tests {
             min_timestamp_s: 100,
             max_timestamp_s: 200,
             total_logs: 50,
-            streams: vec![StreamEntry::new("a", "b", 50)],
+            stream: StreamEntry::new("a", "b"),
         };
         let heavy = HeavyMeta {
             histogram: vec![100, 150, 200],
