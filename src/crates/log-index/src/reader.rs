@@ -12,16 +12,18 @@
 //! chunk, loaded on demand via [`IndexReader::field_table`].
 
 use crate::fst_builder::{
-    BitmapValue, FieldEntry, FieldTier, FileId, IdRanges, IndexMetadata, StreamEntry,
+    BitmapValue, FieldEntry, FieldTier, FileId, IdRanges, IndexMetadata,
 };
 use fst_index::FstIndex;
+use sfst::{FileSummary, StreamEntry};
 
 /// A successfully opened split-FST index.
 ///
-/// Holds the mmap'd data, the deserialized metadata, and the primary FST
-/// (always loaded on open since it's needed for every query).
+/// Holds the mmap'd data, the deserialized summary + metadata, and the
+/// primary FST (always loaded on open since it's needed for every query).
 pub struct IndexReader<'a> {
     sfst: sfst::Reader<'a>,
+    summary: FileSummary,
     metadata: IndexMetadata,
     primary: FstIndex<BitmapValue>,
 }
@@ -29,26 +31,33 @@ pub struct IndexReader<'a> {
 impl<'a> IndexReader<'a> {
     /// Open a split-FST index from a byte slice (typically an mmap).
     ///
-    /// Immediately deserializes the metadata and primary FST.
+    /// Immediately deserializes the summary, metadata, and primary FST.
     pub fn open(data: &'a [u8]) -> Result<Self, sfst::Error> {
         let sfst = sfst::Reader::open(data)?;
+        let summary: FileSummary = sfst.summary()?;
         let metadata: IndexMetadata = sfst.metadata()?;
         let primary: FstIndex<BitmapValue> = sfst.primary()?;
         Ok(Self {
             sfst,
+            summary,
             metadata,
             primary,
         })
     }
 
-    /// The deserialized index metadata.
+    /// The cheap summary fields (timestamps, total logs, streams).
+    pub fn summary(&self) -> &FileSummary {
+        &self.summary
+    }
+
+    /// The heavy index metadata (histogram + id_ranges).
     pub fn metadata(&self) -> &IndexMetadata {
         &self.metadata
     }
 
     /// Total number of log entries in this index.
     pub fn total_logs(&self) -> u32 {
-        self.metadata.total_logs
+        self.summary.total_logs
     }
 
     /// The ID ranges for the three cardinality tiers.
@@ -63,7 +72,7 @@ impl<'a> IndexReader<'a> {
 
     /// Stream metadata entries.
     pub fn streams(&self) -> &[StreamEntry] {
-        &self.metadata.streams
+        &self.summary.streams
     }
 
     // ── Field table (FLDS chunk, loaded on demand) ──────────────────

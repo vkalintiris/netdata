@@ -38,7 +38,7 @@ pub async fn recover_unindexed(
         .collect();
 
     batch_recover(requests, indexer, |resp| match resp {
-        IndexerResponse::Indexed { seq, .. } => {
+        IndexerResponse::Indexed { seq, summary, .. } => {
             let wf = match registry.wal.get(seq) {
                 Some(wf) => wf,
                 None => {
@@ -66,7 +66,7 @@ pub async fn recover_unindexed(
                     .map(|m| m.len())
                     .unwrap_or(0),
             );
-            registry.sfst.track(id, created_at_ns, index_size);
+            registry.sfst.track(id, created_at_ns, index_size, summary);
             tracing::info!("recovery: indexed seq={seq}");
         }
         IndexerResponse::IndexFailed {
@@ -273,31 +273,20 @@ pub async fn recover_unuploaded(
 
     batch_recover(requests, uploader, |resp| match resp {
         UploaderResponse::Uploaded { seq, remote_key } => {
-            let (id, size, sfst_path) = match registry.sfst.get(seq) {
-                Some(entry) => (entry.id, entry.size, registry.sfst.file_path(entry.id)),
+            let sfst_file = match registry.sfst.get(seq) {
+                Some(entry) => entry.clone(),
                 None => {
                     tracing::warn!("recovery: upload complete for unknown seq={seq}");
                     return;
                 }
             };
             let uploaded_at_ns = file_registry::TimestampNs(now_ns());
-            let entry = match build_catalog_entry_from_sfst(
-                &sfst_path,
-                size,
-                &remote_key,
+            // Summary fields are already on the registry entry.
+            let entry = crate::ledger::build_catalog_entry(
+                &sfst_file,
+                remote_key.clone(),
                 uploaded_at_ns,
-                id,
-            ) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(
-                        seq,
-                        path = %sfst_path.display(),
-                        "recovery: failed to rebuild catalog entry: {e}",
-                    );
-                    return;
-                }
-            };
+            );
             registry.mark_uploaded(seq);
             let date = match crate::remote_keys::parse_sfst_date(&remote_key) {
                 Some(d) => d,
@@ -342,15 +331,15 @@ pub(crate) fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-/// Read the earliest log date from a `.sfst` index file's metadata.
+/// Read the earliest log date from a `.sfst` index file's summary.
 fn read_min_date(index_path: &std::path::Path) -> Option<NaiveDate> {
     let data = std::fs::read(index_path).ok()?;
     let reader = sfst::Reader::open(&data).ok()?;
-    let meta = reader
-        .metadata::<log_index::fst_builder::IndexMetadata>()
-        .ok()?;
-    let min_sec = *meta.histogram.timestamps.first()? as i64;
-    chrono::DateTime::from_timestamp(min_sec, 0).map(|dt| dt.date_naive())
+    let summary = reader.summary().ok()?;
+    if summary.total_logs == 0 {
+        return None;
+    }
+    chrono::DateTime::from_timestamp(summary.min_timestamp_s as i64, 0).map(|dt| dt.date_naive())
 }
 
 /// Replay the catalog files already present on local disk (discovered by
@@ -452,20 +441,14 @@ pub async fn reconcile_remote_uploads(
             }
         };
 
-        let size = sfst_entry.size;
-        let sfst_path = registry.sfst.file_path(id);
-        let catalog_entry =
-            match build_catalog_entry_from_sfst(&sfst_path, size, path, uploaded_at_ns, id) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(
-                        seq = id.seq,
-                        path = %sfst_path.display(),
-                        "failed to rebuild catalog entry from SFST: {e}",
-                    );
-                    continue;
-                }
-            };
+        // The registry already has the summary fields (populated either at
+        // indexing time or by Registry::recover reading the SUMR chunk).
+        // No need to re-read the SFST file.
+        let catalog_entry = crate::ledger::build_catalog_entry(
+            sfst_entry,
+            path.to_string(),
+            uploaded_at_ns,
+        );
         let date = match crate::remote_keys::parse_sfst_date(path) {
             Some(d) => d,
             None => {
@@ -498,30 +481,6 @@ pub async fn reconcile_remote_uploads(
     Ok(())
 }
 
-// TODO: reads the entire SFST file into memory just to decode the META
-// chunk. Fine at current SFST sizes (few MB to tens of MB, bounded by WAL
-// rotation), but wasteful per entry. A bounded header-range read (or mmap
-// wrapper) would cap memory regardless of file size.
-fn build_catalog_entry_from_sfst(
-    sfst_path: &Path,
-    size: ByteSize,
-    remote_key: &str,
-    uploaded_at_ns: file_registry::TimestampNs,
-    id: file_registry::FileId,
-) -> anyhow::Result<otel_catalog::CatalogEntry> {
-    let data = std::fs::read(sfst_path).map_err(|e| anyhow::anyhow!("read sfst: {e}"))?;
-    let reader = sfst::Reader::open(&data).map_err(|e| anyhow::anyhow!("open sfst: {e}"))?;
-    let metadata: log_index::IndexMetadata = reader
-        .metadata()
-        .map_err(|e| anyhow::anyhow!("read sfst metadata: {e}"))?;
-    Ok(crate::ledger::build_catalog_entry(
-        id,
-        remote_key.to_string(),
-        &metadata,
-        size,
-        uploaded_at_ns,
-    ))
-}
 
 #[cfg(test)]
 mod tests {
@@ -536,6 +495,15 @@ mod tests {
         uuid::Uuid::from_u128(0xaaaa_bbbb_cccc_dddd_eeee_ffff_0000_1111)
     }
 
+    fn empty_summary() -> sfst::FileSummary {
+        sfst::FileSummary {
+            min_timestamp_s: 0,
+            max_timestamp_s: 0,
+            total_logs: 0,
+            streams: Vec::new(),
+        }
+    }
+
     fn make_entry(seq: u64) -> otel_catalog::CatalogEntry {
         let id = file_registry::FileId::new(machine(), boot(), seq, 0);
         let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
@@ -545,7 +513,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 10,
-            streams: vec![StreamEntry::new("prod", "api")],
+            streams: vec![StreamEntry::new("prod", "api", 0)],
             size: ByteSize(1024),
             uploaded_at_ns: file_registry::TimestampNs(2_000_000_000),
         }
@@ -664,7 +632,7 @@ mod tests {
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
             reg.sfst
-                .track(id, file_registry::TimestampNs(0), ByteSize(1));
+                .track(id, file_registry::TimestampNs(0), ByteSize(1), empty_summary());
         }
         // Only seq=2 is in a closed catalog; seq=1 is not.
         reg.mark_rotated(2);
@@ -688,7 +656,7 @@ mod tests {
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
             reg.sfst
-                .track(id, file_registry::TimestampNs(0), ByteSize(1));
+                .track(id, file_registry::TimestampNs(0), ByteSize(1), empty_summary());
         }
 
         run_recover_retention(&mut reg, &evict_all_retention(), false).await;

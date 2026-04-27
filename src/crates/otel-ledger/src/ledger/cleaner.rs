@@ -23,7 +23,6 @@ impl Ledger {
                     registry.evict_seq(sequence);
                 }
                 self.registries.forget_seq(sequence);
-                self.pending_metadata.remove(&sequence);
                 tracing::info!("index file evicted seq={sequence}");
             }
             CleanerResponse::WalFileFailed { sequence, error } => {

@@ -313,13 +313,22 @@ mod tests {
         Registry::new(wal, sfst, catalog_files)
     }
 
+    fn empty_summary() -> sfst::FileSummary {
+        sfst::FileSummary {
+            min_timestamp_s: 0,
+            max_timestamp_s: 0,
+            total_logs: 0,
+            streams: Vec::new(),
+        }
+    }
+
     #[test]
     fn unuploaded_ids_excludes_uploaded_seqs() {
         let mut reg = make_registry();
 
         for seq in [1u64, 2, 3] {
             let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), seq, 0);
-            reg.sfst.track(id, TimestampNs(0), ByteSize(1));
+            reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
         }
         reg.mark_uploaded(2);
         reg.mark_uploaded(3);
@@ -332,7 +341,7 @@ mod tests {
     fn unuploaded_ids_is_empty_when_all_uploaded() {
         let mut reg = make_registry();
         let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 5, 0);
-        reg.sfst.track(id, TimestampNs(0), ByteSize(1));
+        reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
         reg.mark_uploaded(5);
 
         assert!(reg.unuploaded_ids().is_empty());
@@ -352,7 +361,7 @@ mod tests {
     fn evict_seq_clears_all_per_seq_state() {
         let mut reg = make_registry();
         let id = FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 42, 0);
-        reg.sfst.track(id, TimestampNs(0), ByteSize(1));
+        reg.sfst.track(id, TimestampNs(0), ByteSize(1), empty_summary());
         reg.mark_uploaded(42);
         reg.mark_rotated(42);
 

@@ -102,7 +102,7 @@ fn start_indexing(
                 seq,
                 path: sfst_path,
                 min_date: result.min_date,
-                metadata: result.metadata,
+                summary: result.summary,
                 size: file_registry::ByteSize(result.size),
             },
             Err(e) => {

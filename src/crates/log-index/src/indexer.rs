@@ -19,9 +19,11 @@ const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 pub struct IndexResult {
     /// Earliest log date as "YYYY-MM-DD", or `None` if the file has no logs.
     pub min_date: Option<String>,
-    /// Structured metadata describing the produced index (log count, time
-    /// histogram, streams, ID ranges). Same value that was written into the
-    /// SFST META chunk.
+    /// Cheap summary fields written into the SFST SUMR chunk and stored
+    /// inline on the registry entry.
+    pub summary: sfst::FileSummary,
+    /// Heavy index metadata (histogram + id_ranges) written into the SFST
+    /// META chunk. Used at query time, not by the registry.
     pub metadata: IndexMetadata,
     /// Byte size of the written SFST file.
     pub size: u64,
@@ -72,11 +74,12 @@ pub fn index_wal_file_with_options(
         })
         .map(|dt| dt.format("%Y-%m-%d").to_string());
 
-    let metadata = crate::build_and_write(&wal_index, out_path)?;
+    let (summary, metadata) = crate::build_and_write(&wal_index, out_path)?;
     let size = std::fs::metadata(out_path)?.len();
 
     Ok(IndexResult {
         min_date,
+        summary,
         metadata,
         size,
     })

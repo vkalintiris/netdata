@@ -16,8 +16,6 @@ mod uploader;
 
 pub(crate) use helpers::{build_catalog_entry, catalog_retention_days};
 
-use std::collections::HashMap;
-
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
@@ -49,12 +47,6 @@ pub struct Ledger {
     catalog_builder: ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     registries: TenantRegistries,
     logs_config: LogsConfig,
-    /// IndexMetadata produced by the indexer, keyed by sequence number.
-    /// Populated on `Indexed`. Drained on `Uploaded` when storage is
-    /// enabled (the normal path). When storage is disabled, no `Uploaded`
-    /// will ever fire, so entries are cleaned up on `IndexFileDeleted`
-    /// when retention evicts the local SFST instead.
-    pending_metadata: HashMap<u64, log_index::IndexMetadata>,
     expected_frame_seq: u64,
     pub(crate) cancel: CancellationToken,
 }
@@ -196,7 +188,6 @@ impl Ledger {
             catalog_builder,
             registries,
             logs_config: logs_config.clone(),
-            pending_metadata: HashMap::new(),
             expected_frame_seq: 1,
             cancel,
         })

@@ -19,3 +19,8 @@ thiserror = { workspace = true }
 # Registry dependencies
 bridge = { path = "../netdata-plugin/bridge" }
 file-registry = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+uuid = { workspace = true }

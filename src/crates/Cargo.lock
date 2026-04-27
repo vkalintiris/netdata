@@ -3062,6 +3062,7 @@ dependencies = [
  "file-registry",
  "serde",
  "serde_json",
+ "sfst",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
@@ -4241,7 +4242,10 @@ dependencies = [
  "fst-index",
  "gix-chunk",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+ "uuid",
  "zstd",
 ]
 

@@ -62,11 +62,11 @@ pub enum IndexerResponse {
         path: PathBuf,
         /// Earliest log date as "YYYY-MM-DD", or `None` if the index has no logs.
         min_date: Option<String>,
-        /// Structured metadata (log count, histogram, streams) produced by
-        /// the indexer. Cached by the ledger's `pending_metadata` until the
-        /// corresponding `Uploaded` fires, then used to build the catalog
-        /// entry sent to the catalog writer.
-        metadata: log_index::IndexMetadata,
+        /// Cheap summary fields (min/max timestamp, total logs, streams).
+        /// Stored on the registry entry on `track`; used by the uploader
+        /// response handler to build the catalog entry directly from the
+        /// registry without a pending-metadata side-channel.
+        summary: sfst::FileSummary,
         /// Byte size of the written SFST file.
         size: file_registry::ByteSize,
     },

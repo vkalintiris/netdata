@@ -1,14 +1,18 @@
 //! Shared helpers.
 
-use file_registry::{ByteSize, FileId, TimestampNs};
+use file_registry::TimestampNs;
 
-pub(super) fn derive_date_from_metadata(metadata: &log_index::IndexMetadata) -> chrono::NaiveDate {
-    match metadata.histogram.timestamps.first() {
-        Some(&sec) => chrono::DateTime::from_timestamp(sec as i64, 0)
-            .map(|dt| dt.date_naive())
-            .unwrap_or_else(|| chrono::Utc::now().date_naive()),
-        None => chrono::Utc::now().date_naive(),
+/// Derive the catalog partition date from an SFST file's summary.
+///
+/// Uses the file's earliest timestamp. On an empty summary (an SFST with no
+/// logs — shouldn't happen in practice) falls back to the current date.
+pub(super) fn derive_date_from_summary(summary: &sfst::FileSummary) -> chrono::NaiveDate {
+    if summary.total_logs == 0 {
+        return chrono::Utc::now().date_naive();
     }
+    chrono::DateTime::from_timestamp(summary.min_timestamp_s as i64, 0)
+        .map(|dt| dt.date_naive())
+        .unwrap_or_else(|| chrono::Utc::now().date_naive())
 }
 
 /// Catalog retention window (whole days) derived from a tenant's SFST
@@ -24,34 +28,25 @@ pub(crate) fn catalog_retention_days(retention: &bridge::config::RetentionConfig
         .unwrap_or(u32::MAX)
 }
 
+/// Build a [`otel_catalog::CatalogEntry`] from a registered SFST file.
+///
+/// All summary fields come from `sfst_file.summary`, which the registry
+/// populated either at indexing time (`Registry::track`) or at recovery time
+/// (`Registry::recover`). No reads against the SFST file itself.
 pub(crate) fn build_catalog_entry(
-    id: FileId,
+    sfst_file: &sfst::File,
     remote_key: String,
-    metadata: &log_index::IndexMetadata,
-    size: ByteSize,
     uploaded_at_ns: TimestampNs,
 ) -> otel_catalog::CatalogEntry {
-    // On an empty histogram (an SFST with no logs — shouldn't happen in
-    // practice) the 0 fallback yields a [0, 0] epoch range that no real
-    // query will match.
-    let min_timestamp_s = metadata.histogram.timestamps.first().copied().unwrap_or(0);
-    let max_timestamp_s = metadata.histogram.timestamps.last().copied().unwrap_or(0);
-    let streams = metadata
-        .streams
-        .iter()
-        .map(|s| otel_catalog::StreamEntry {
-            namespace: s.namespace.clone(),
-            name: s.name.clone(),
-        })
-        .collect();
+    let summary = &sfst_file.summary;
     otel_catalog::CatalogEntry {
-        id,
+        id: sfst_file.id,
         remote_key,
-        min_timestamp_s,
-        max_timestamp_s,
-        total_logs: metadata.total_logs,
-        streams,
-        size,
+        min_timestamp_s: summary.min_timestamp_s,
+        max_timestamp_s: summary.max_timestamp_s,
+        total_logs: summary.total_logs,
+        streams: summary.streams.clone(),
+        size: sfst_file.size,
         uploaded_at_ns,
     }
 }

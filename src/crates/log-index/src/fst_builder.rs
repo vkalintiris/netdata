@@ -68,18 +68,18 @@ pub struct FieldEntry {
     pub tier: FieldTier,
 }
 
-/// Metadata stored in the META chunk of the split-fst file.
+/// Heavy query-time metadata stored in the META chunk.
 ///
-/// Always loaded first by the reader. Contains enough information to plan
-/// a query (time range from histogram, which tier to consult via id_ranges,
-/// which stream to load). Intentionally small — field information lives in
-/// the separate FLDS chunk.
+/// Holds the data the query engine needs once it has decided to scan a file:
+/// the sparse timestamp histogram and the cardinality-tier ID ranges. The
+/// cheap-to-read summary fields (min/max timestamp, total log count, stream
+/// list) live in their own [`sfst::FileSummary`] in the SUMR chunk and on
+/// the registry entry; readers that only need those fields should call
+/// [`sfst::Reader::summary`] instead of opening this chunk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexMetadata {
-    pub total_logs: u32,
     pub histogram: SparseHistogram,
     pub id_ranges: IdRanges,
-    pub streams: Vec<StreamEntry>,
 }
 
 /// Contiguous ID ranges for the three cardinality tiers.
@@ -93,13 +93,6 @@ pub struct IdRanges {
     pub low_end: FileId,
     pub mid_end: FileId,
     pub high_end: FileId,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamEntry {
-    pub namespace: String,
-    pub name: String,
-    pub log_count: u32,
 }
 
 /// Build tier-aligned file ID translation table.
@@ -349,12 +342,16 @@ fn build_streams(
 /// Build and write a split-fst index file.
 ///
 /// This is Phase 2 of the indexing pipeline. Takes the [`WalIndex`] built by
-/// Phase 1 and produces a split-fst file with: metadata, primary FST,
+/// Phase 1 and produces a split-fst file with: summary, metadata, primary FST,
 /// secondary chunks (mid/high-card), and per-stream log entries.
+///
+/// Returns both the cheap-to-read [`sfst::FileSummary`] (which the registry
+/// stores inline) and the heavier [`IndexMetadata`] (only needed for query
+/// planning and execution).
 pub fn build_and_write(
     wal_index: &WalIndex,
     out_path: &Path,
-) -> Result<IndexMetadata, Box<dyn std::error::Error>> {
+) -> Result<(sfst::FileSummary, IndexMetadata), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
 
     let mut writer = sfst::Writer::new();
@@ -400,19 +397,28 @@ pub fn build_and_write(
         .collect();
     writer.set_fields(sfst::pack_metadata(&field_table, 1)?);
 
-    // Metadata (META chunk).
-    let metadata = IndexMetadata {
+    // Compute histogram once; reused by both the summary (for min/max
+    // derivation) and the heavy metadata.
+    let histogram = wal_index.sparse_histogram(&time_order);
+
+    let summary = sfst::FileSummary {
+        min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
+        max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs: wal_index.num_logs() as u32,
-        histogram: wal_index.sparse_histogram(&time_order),
-        id_ranges,
         streams: streams
             .iter()
-            .map(|s| StreamEntry {
+            .map(|s| sfst::StreamEntry {
                 namespace: s.namespace.clone(),
                 name: s.name.clone(),
                 log_count: s.positions.len() as u32,
             })
             .collect(),
+    };
+    writer.set_summary(sfst::pack_metadata(&summary, 1)?);
+
+    let metadata = IndexMetadata {
+        histogram,
+        id_ranges,
     };
     writer.set_metadata(sfst::pack_metadata(&metadata, 1)?);
 
@@ -435,7 +441,7 @@ pub fn build_and_write(
         t_start.elapsed().as_millis(),
     );
 
-    Ok(metadata)
+    Ok((summary, metadata))
 }
 
 /// Remap a single roaring bitmap from insertion order to time-sorted order,

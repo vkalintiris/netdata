@@ -10,10 +10,17 @@
 //! ```text
 //! [Header: 12 bytes]          magic "SFST" + version u32 LE + num_chunks u32 LE
 //! [TOC]                       gix-chunk (12 bytes × (num_chunks + 1))
+//! [Summary chunk]             chunk ID: b"SUMR" — registry-cheap fields
+//! [Metadata chunk]            chunk ID: b"META" — histogram + id_ranges
+//! [Fields chunk]              chunk ID: b"FLDS"
 //! [Primary chunk]             chunk ID: b"PRIM"
 //! [Secondary chunk 0]         chunk ID: [b'H', b'C', hi, lo]
 //! [Secondary chunk 1]         ...
 //! ```
+//!
+//! The `SUMR` chunk is written first after the TOC so a reader that only needs
+//! summary fields (min/max timestamp, total log count, stream list) can stop
+//! after a small read. This is what `Registry::recover` does.
 //!
 //! # Example
 //!
@@ -41,16 +48,54 @@ pub mod registry;
 pub use registry::{File, Registry};
 
 use fst_index::FstIndex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use std::io::Write;
 
 const MAGIC: &[u8; 4] = b"SFST";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
+const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
 const CHUNK_META: gix_chunk::Id = *b"META";
 const CHUNK_FLDS: gix_chunk::Id = *b"FLDS";
 const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
+
+// ── Summary ──────────────────────────────────────────────────────
+
+/// `(namespace, name)` pair identifying a log stream, plus the count of
+/// entries from that stream contained in this SFST.
+///
+/// This is the canonical stream identifier across the codebase — the registry,
+/// the catalog, and the indexer all use it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StreamEntry {
+    pub namespace: String,
+    pub name: String,
+    pub log_count: u32,
+}
+
+impl StreamEntry {
+    pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M, log_count: u32) -> Self {
+        Self {
+            namespace: namespace.into(),
+            name: name.into(),
+            log_count,
+        }
+    }
+}
+
+/// Cheap-to-read summary of an SFST file.
+///
+/// Stored in its own `SUMR` chunk so the registry can rebuild itself from
+/// the file without decompressing the heavier `META` chunk (histogram +
+/// id_ranges). All four fields are also held inline on `sfst::File`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSummary {
+    pub min_timestamp_s: u32,
+    pub max_timestamp_s: u32,
+    pub total_logs: u32,
+    pub streams: Vec<StreamEntry>,
+}
 
 fn hc_chunk_id(index: u16) -> gix_chunk::Id {
     [b'H', b'C', (index >> 8) as u8, (index & 0xff) as u8]
@@ -115,6 +160,7 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<FstIndex<T>, Error> {
 /// is a standalone function, callers can run it in parallel with rayon before
 /// collecting results into the writer.
 pub struct Writer {
+    summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
     fields: Option<Vec<u8>>,
     primary: Option<Vec<u8>>,
@@ -124,11 +170,17 @@ pub struct Writer {
 impl Writer {
     pub fn new() -> Self {
         Self {
+            summary: None,
             metadata: None,
             fields: None,
             primary: None,
             chunks: Vec::new(),
         }
+    }
+
+    /// Set the summary chunk (pre-compressed bytes, e.g. bincode + zstd).
+    pub fn set_summary(&mut self, packed: Vec<u8>) {
+        self.summary = Some(packed);
     }
 
     /// Set the metadata chunk (pre-compressed bytes, e.g. bincode + zstd).
@@ -156,7 +208,8 @@ impl Writer {
     /// Serialize the entire split-FST file to `w`.
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
-        let num_chunks = self.metadata.is_some() as usize
+        let num_chunks = self.summary.is_some() as usize
+            + self.metadata.is_some() as usize
             + self.fields.is_some() as usize
             + 1 // primary
             + self.chunks.len();
@@ -166,8 +219,12 @@ impl Writer {
         w.write_all(&VERSION.to_le_bytes())?;
         w.write_all(&(num_chunks as u32).to_le_bytes())?;
 
-        // Plan chunks
+        // Plan chunks. Order matters: SUMR first so a recovery-only reader
+        // can stop after the summary without paging through META/PRIM.
         let mut index = gix_chunk::file::Index::for_writing();
+        if let Some(sum) = &self.summary {
+            index.plan_chunk(CHUNK_SUMMARY, sum.len() as u64);
+        }
         if let Some(meta) = &self.metadata {
             index.plan_chunk(CHUNK_META, meta.len() as u64);
         }
@@ -183,6 +240,12 @@ impl Writer {
         let mut chunk_writer = index
             .into_write(&mut *w, HEADER_SIZE)
             .map_err(|e| Error::Toc(format!("{e}")))?;
+
+        if let Some(sum) = &self.summary {
+            let id = chunk_writer.next_chunk().expect("expected SUMR chunk");
+            assert_eq!(id, CHUNK_SUMMARY);
+            chunk_writer.write_all(sum)?;
+        }
 
         if let Some(meta) = &self.metadata {
             let id = chunk_writer.next_chunk().expect("expected META chunk");
@@ -268,10 +331,11 @@ impl<'a> Reader<'a> {
         let toc = gix_chunk::file::Index::from_bytes(data, HEADER_SIZE, num_chunks)
             .map_err(|e| Error::Toc(format!("{e}")))?;
 
-        // Determine how many non-secondary chunks exist (META? + FLDS? + PRIM)
+        // Determine how many non-secondary chunks exist (SUMR? + META? + FLDS? + PRIM)
+        let has_summary = toc.data_by_id(data, CHUNK_SUMMARY).is_ok();
         let has_meta = toc.data_by_id(data, CHUNK_META).is_ok();
         let has_flds = toc.data_by_id(data, CHUNK_FLDS).is_ok();
-        let non_secondary = has_meta as u32 + has_flds as u32 + 1; // META? + FLDS? + PRIM
+        let non_secondary = has_summary as u32 + has_meta as u32 + has_flds as u32 + 1;
         let num_secondary = num_chunks.saturating_sub(non_secondary) as u16;
 
         Ok(Self {
@@ -279,6 +343,23 @@ impl<'a> Reader<'a> {
             toc,
             num_secondary,
         })
+    }
+
+    /// Decompress and deserialize the summary chunk.
+    pub fn summary(&self) -> Result<FileSummary, Error> {
+        unpack_metadata(self.summary_raw()?)
+    }
+
+    /// Raw compressed bytes of the summary chunk.
+    pub fn summary_raw(&self) -> Result<&'a [u8], Error> {
+        self.toc
+            .data_by_id(self.data, CHUNK_SUMMARY)
+            .map_err(|e| Error::Toc(format!("{e}")))
+    }
+
+    /// Whether a summary chunk is present.
+    pub fn has_summary(&self) -> bool {
+        self.toc.data_by_id(self.data, CHUNK_SUMMARY).is_ok()
     }
 
     /// Decompress and deserialize the metadata chunk.
@@ -476,6 +557,73 @@ mod tests {
 
         let c0: FstIndex<u64> = reader.chunk(0).unwrap();
         assert_eq!(c0.get(b"val1"), Some(&10));
+    }
+
+    #[test]
+    fn round_trip_summary() {
+        let summary = FileSummary {
+            min_timestamp_s: 1_700_000_000,
+            max_timestamp_s: 1_700_003_600,
+            total_logs: 1234,
+            streams: vec![
+                StreamEntry::new("prod", "api", 800),
+                StreamEntry::new("prod", "worker", 434),
+            ],
+        };
+
+        let fst: FstIndex<u64> = FstIndex::build([("a", 1u64)]).unwrap();
+        let mut writer = Writer::new();
+        writer.set_summary(pack_metadata(&summary, 1).unwrap());
+        writer.set_primary(pack(&fst, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.has_summary());
+        assert!(!reader.has_metadata());
+        assert_eq!(reader.chunk_count(), 0);
+
+        let read: FileSummary = reader.summary().unwrap();
+        assert_eq!(read, summary);
+    }
+
+    #[test]
+    fn round_trip_summary_alongside_metadata() {
+        // Mixed file with both SUMR and META plus PRIM.
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct HeavyMeta {
+            histogram: Vec<u32>,
+        }
+
+        let summary = FileSummary {
+            min_timestamp_s: 100,
+            max_timestamp_s: 200,
+            total_logs: 50,
+            streams: vec![StreamEntry::new("a", "b", 50)],
+        };
+        let heavy = HeavyMeta {
+            histogram: vec![100, 150, 200],
+        };
+
+        let primary: FstIndex<u64> = FstIndex::build([("k", 1u64)]).unwrap();
+
+        let mut writer = Writer::new();
+        writer.set_summary(pack_metadata(&summary, 1).unwrap());
+        writer.set_metadata(pack_metadata(&heavy, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.has_summary());
+        assert!(reader.has_metadata());
+        assert_eq!(reader.chunk_count(), 0);
+
+        assert_eq!(reader.summary().unwrap(), summary);
+        let h: HeavyMeta = reader.metadata().unwrap();
+        assert_eq!(h, heavy);
     }
 
     #[test]

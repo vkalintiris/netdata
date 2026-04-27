@@ -225,7 +225,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 100,
-            streams: vec![StreamEntry::new("prod", "api")],
+            streams: vec![StreamEntry::new("prod", "api", 0)],
             size: ByteSize(1024),
             uploaded_at_ns: TimestampNs(2_000_000_000),
         }

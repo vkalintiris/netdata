@@ -1,25 +1,6 @@
 use file_registry::{ByteSize, FileId, TimestampNs};
 use serde::{Deserialize, Serialize};
-
-/// A `(namespace, name)` pair identifying a log stream source.
-///
-/// Used both as a listing of streams inside a [`CatalogEntry`] and as a filter
-/// in [`crate::CatalogQuery`]. Matching is exact equality; empty strings are
-/// valid values that match only empty strings.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct StreamEntry {
-    pub namespace: String,
-    pub name: String,
-}
-
-impl StreamEntry {
-    pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M) -> Self {
-        Self {
-            namespace: namespace.into(),
-            name: name.into(),
-        }
-    }
-}
+pub use sfst::StreamEntry;
 
 /// One uploaded SFST file tracked by the catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +22,7 @@ mod tests {
 
     #[test]
     fn stream_entry_roundtrip() {
-        let s = StreamEntry::new("prod", "api");
+        let s = StreamEntry::new("prod", "api", 800);
         let json = serde_json::to_string(&s).unwrap();
         let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
@@ -49,7 +30,7 @@ mod tests {
 
     #[test]
     fn stream_entry_empty_strings_roundtrip() {
-        let s = StreamEntry::new("", "");
+        let s = StreamEntry::new("", "", 0);
         let json = serde_json::to_string(&s).unwrap();
         let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
@@ -64,8 +45,8 @@ mod tests {
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
             streams: vec![
-                StreamEntry::new("prod", "api"),
-                StreamEntry::new("prod", "worker"),
+                StreamEntry::new("prod", "api", 800),
+                StreamEntry::new("prod", "worker", 434),
             ],
             size: ByteSize(9876),
             uploaded_at_ns: TimestampNs(1_700_003_700_000_000_000),

@@ -16,7 +16,7 @@ impl Ledger {
             IndexerResponse::Indexed {
                 seq,
                 min_date,
-                metadata,
+                summary,
                 size,
                 ..
             } => {
@@ -36,11 +36,10 @@ impl Ledger {
 
                 let wal_path = registry.wal.file_path(file_id);
 
-                // Track SFST file in registry
-                registry.sfst.track(file_id, created_at_ns, size);
-
-                // Store SFST file metadata
-                self.pending_metadata.insert(seq, metadata);
+                // Track SFST file in registry. Summary fields (timestamps,
+                // total logs, streams) live on the registry entry; the
+                // uploader response handler reads them back from there.
+                registry.sfst.track(file_id, created_at_ns, size, summary);
 
                 // Delete WAL file
                 let req = CleanerRequest::DeleteWalFile {

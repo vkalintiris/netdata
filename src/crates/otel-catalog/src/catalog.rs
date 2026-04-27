@@ -195,7 +195,7 @@ mod tests {
     fn roundtrip_json_preserves_entries_and_metadata() {
         let mut c = test_catalog();
         c.add(
-            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api")]),
+            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
             TimestampNs(3_000_000_000),
         );
         c.add(entry_at(2, 300, 500, vec![]), TimestampNs(4_000_000_000));
@@ -252,11 +252,11 @@ mod tests {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
         c.add(
-            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api")]),
+            entry_at(1, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
             now,
         );
         c.add(
-            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "worker")]),
+            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "worker", 0)]),
             now,
         );
         c.add(
@@ -265,8 +265,8 @@ mod tests {
                 100,
                 200,
                 vec![
-                    StreamEntry::new("prod", "api"),
-                    StreamEntry::new("prod", "worker"),
+                    StreamEntry::new("prod", "api", 0),
+                    StreamEntry::new("prod", "worker", 0),
                 ],
             ),
             now,
@@ -275,7 +275,7 @@ mod tests {
         let q = CatalogQuery {
             min_timestamp_s: 0,
             max_timestamp_s: 1000,
-            stream: Some(StreamEntry::new("prod", "api")),
+            stream: Some(StreamEntry::new("prod", "api", 0)),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
@@ -285,16 +285,16 @@ mod tests {
     fn find_empty_string_stream_matches_only_empty_string_entry() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, vec![StreamEntry::new("", "")]), now);
+        c.add(entry_at(1, 100, 200, vec![StreamEntry::new("", "", 0)]), now);
         c.add(
-            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "api")]),
+            entry_at(2, 100, 200, vec![StreamEntry::new("prod", "api", 0)]),
             now,
         );
 
         let q = CatalogQuery {
             min_timestamp_s: 0,
             max_timestamp_s: 1000,
-            stream: Some(StreamEntry::new("", "")),
+            stream: Some(StreamEntry::new("", "", 0)),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1]);
