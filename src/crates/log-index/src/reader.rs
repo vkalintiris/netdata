@@ -11,9 +11,7 @@
 //! Field structure (names, cardinalities, tiers) lives in a separate FLDS
 //! chunk, loaded on demand via [`IndexReader::field_table`].
 
-use crate::fst_builder::{
-    BitmapValue, FieldEntry, FieldTier, FileId, IdRanges, IndexMetadata,
-};
+use crate::fst_builder::{BitmapValue, FieldEntry, FieldTier, FileId, IdRanges, IndexMetadata};
 use fst_index::FstIndex;
 use sfst::{FileSummary, StreamEntry};
 

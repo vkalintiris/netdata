@@ -302,13 +302,11 @@ fn build_streams(
     } else {
         &stream.name
     };
-    tracing::debug!(
-        "stream {namespace}/{name}: {} logs",
-        wal_index.num_logs(),
-    );
+    tracing::debug!("stream {namespace}/{name}: {} logs", wal_index.num_logs(),);
 
     let t = Instant::now();
-    let stream_bytes = build_stream_entries(&wal_index.log_entries, time_order, kv_to_file, writer)?;
+    let stream_bytes =
+        build_stream_entries(&wal_index.log_entries, time_order, kv_to_file, writer)?;
     tracing::debug!(
         "stream log entries built: {} KB, {}ms",
         stream_bytes / 1024,

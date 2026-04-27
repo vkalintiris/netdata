@@ -288,11 +288,8 @@ pub async fn recover_unuploaded(
             };
             let uploaded_at_ns = file_registry::TimestampNs(now_ns());
             // Summary fields are already on the registry entry.
-            let entry = crate::ledger::build_catalog_entry(
-                &sfst_file,
-                remote_key.clone(),
-                uploaded_at_ns,
-            );
+            let entry =
+                crate::ledger::build_catalog_entry(&sfst_file, remote_key.clone(), uploaded_at_ns);
             registry.mark_uploaded(seq);
             let date = match crate::remote_keys::parse_sfst_date(&remote_key) {
                 Some(d) => d,
@@ -441,11 +438,8 @@ pub async fn reconcile_remote_uploads(
         // The registry already has the summary fields (populated either at
         // indexing time or by Registry::recover reading the SUMR chunk).
         // No need to re-read the SFST file.
-        let catalog_entry = crate::ledger::build_catalog_entry(
-            sfst_entry,
-            path.to_string(),
-            uploaded_at_ns,
-        );
+        let catalog_entry =
+            crate::ledger::build_catalog_entry(sfst_entry, path.to_string(), uploaded_at_ns);
         let date = match crate::remote_keys::parse_sfst_date(path) {
             Some(d) => d,
             None => {
@@ -477,7 +471,6 @@ pub async fn reconcile_remote_uploads(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -621,8 +614,7 @@ mod tests {
 
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
-            reg.sfst
-                .track(id, ByteSize(1), empty_summary());
+            reg.sfst.track(id, ByteSize(1), empty_summary());
         }
         // Only seq=2 is in a closed catalog; seq=1 is not.
         reg.mark_rotated(2);
@@ -645,8 +637,7 @@ mod tests {
 
         for seq in [1u64, 2] {
             let id = file_registry::FileId::new(machine(), boot(), seq, 0);
-            reg.sfst
-                .track(id, ByteSize(1), empty_summary());
+            reg.sfst.track(id, ByteSize(1), empty_summary());
         }
 
         run_recover_retention(&mut reg, &evict_all_retention(), false).await;

@@ -187,7 +187,10 @@ mod tests {
         let mut c = test_catalog();
         let high = TimestampNs(5_000_000_000);
         c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), high);
-        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), TimestampNs(1_000));
+        c.add(
+            entry_at(2, 300, 400, StreamEntry::new("", "")),
+            TimestampNs(1_000),
+        );
         assert_eq!(c.updated_at_ns, high);
     }
 
@@ -198,7 +201,10 @@ mod tests {
             entry_at(1, 100, 200, StreamEntry::new("prod", "api")),
             TimestampNs(3_000_000_000),
         );
-        c.add(entry_at(2, 300, 500, StreamEntry::new("", "")), TimestampNs(4_000_000_000));
+        c.add(
+            entry_at(2, 300, 500, StreamEntry::new("", "")),
+            TimestampNs(4_000_000_000),
+        );
 
         let bytes = c.to_json().unwrap();
         let parsed = Catalog::from_json(&bytes).unwrap();
@@ -273,10 +279,7 @@ mod tests {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
         c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
-        c.add(
-            entry_at(2, 100, 200, StreamEntry::new("prod", "api")),
-            now,
-        );
+        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "api")), now);
 
         let q = CatalogQuery {
             min_timestamp_s: 0,

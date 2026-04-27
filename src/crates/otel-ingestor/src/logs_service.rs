@@ -420,7 +420,10 @@ mod tests {
         let s = extract_stream(&rl(Some("prod"), Some("api"), 0));
         assert_eq!(s.namespace.as_deref(), Some("prod"));
         assert_eq!(s.name.as_deref(), Some("api"));
-        assert_eq!(s.hash, file_registry::compute_ns_hash(Some("prod"), Some("api")));
+        assert_eq!(
+            s.hash,
+            file_registry::compute_ns_hash(Some("prod"), Some("api"))
+        );
     }
 
     #[test]
@@ -508,7 +511,11 @@ mod tests {
         // Build a group keyed at fake_hash but with different (ns, name).
         let mut groups = HashMap::new();
         groups.insert(
-            (fake_hash, Some("staging".to_string()), Some("api".to_string())),
+            (
+                fake_hash,
+                Some("staging".to_string()),
+                Some("api".to_string()),
+            ),
             StreamGroup {
                 log_record_count: 12,
                 resource_logs: Vec::new(),
@@ -520,8 +527,14 @@ mod tests {
         assert_eq!(r.collisions.len(), 1);
         let c = &r.collisions[0];
         assert_eq!(c.hash, fake_hash);
-        assert_eq!(c.canonical, (Some("prod".to_string()), Some("api".to_string())));
-        assert_eq!(c.rejected, (Some("staging".to_string()), Some("api".to_string())));
+        assert_eq!(
+            c.canonical,
+            (Some("prod".to_string()), Some("api".to_string()))
+        );
+        assert_eq!(
+            c.rejected,
+            (Some("staging".to_string()), Some("api".to_string()))
+        );
         assert_eq!(c.rejected_log_records, 12);
     }
 
@@ -536,7 +549,11 @@ mod tests {
 
         let mut groups = HashMap::new();
         groups.insert(
-            (fake_hash, Some("staging".to_string()), Some("api".to_string())),
+            (
+                fake_hash,
+                Some("staging".to_string()),
+                Some("api".to_string()),
+            ),
             StreamGroup {
                 log_record_count: 1,
                 resource_logs: Vec::new(),

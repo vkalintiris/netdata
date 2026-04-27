@@ -48,8 +48,8 @@ pub mod registry;
 pub use registry::{File, Registry};
 
 use fst_index::FstIndex;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 
 const MAGIC: &[u8; 4] = b"SFST";
