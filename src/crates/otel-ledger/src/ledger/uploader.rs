@@ -13,7 +13,7 @@ use crate::ipc::{CatalogBuilderRequest, UploaderResponse};
 use crate::recovery::now_ns;
 
 use super::Ledger;
-use super::helpers::{build_catalog_entry, derive_date_from_summary};
+use super::helpers::{build_catalog_entry, date_from_summary};
 
 impl Ledger {
     pub(super) fn handle_uploader_resp(&mut self, resp: UploaderResponse) {
@@ -29,7 +29,8 @@ impl Ledger {
                             registry.mark_uploaded(seq);
                             return;
                         };
-                        let date = derive_date_from_summary(&sfst_file.summary);
+                        let date = date_from_summary(&sfst_file.summary)
+                            .unwrap_or_else(|| chrono::Utc::now().date_naive());
                         let uploaded_at_ns = TimestampNs(now_ns());
                         let entry = build_catalog_entry(&sfst_file, remote_key, uploaded_at_ns);
                         registry.mark_uploaded(seq);

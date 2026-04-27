@@ -101,7 +101,6 @@ fn start_indexing(
             Ok(result) => IndexerResponse::Indexed {
                 seq,
                 path: sfst_path,
-                min_date: result.min_date,
                 summary: result.summary,
                 size: file_registry::ByteSize(result.size),
             },

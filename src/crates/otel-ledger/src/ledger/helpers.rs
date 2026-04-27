@@ -2,17 +2,18 @@
 
 use file_registry::TimestampNs;
 
-/// Derive the catalog partition date from an SFST file's summary.
+/// Convert a summary's `min_timestamp_s` to the calendar date used for
+/// catalog partitioning.
 ///
-/// Uses the file's earliest timestamp. On an empty summary (an SFST with no
-/// logs — shouldn't happen in practice) falls back to the current date.
-pub(super) fn derive_date_from_summary(summary: &sfst::FileSummary) -> chrono::NaiveDate {
+/// Returns `None` for an empty SFST (`total_logs == 0`) or a timestamp
+/// outside the representable chrono range. Callers fall back to the
+/// current date when `None` — encoded once at each call site rather than
+/// hidden inside this helper, so the fallback is visible.
+pub(crate) fn date_from_summary(summary: &sfst::FileSummary) -> Option<chrono::NaiveDate> {
     if summary.total_logs == 0 {
-        return chrono::Utc::now().date_naive();
+        return None;
     }
-    chrono::DateTime::from_timestamp(summary.min_timestamp_s as i64, 0)
-        .map(|dt| dt.date_naive())
-        .unwrap_or_else(|| chrono::Utc::now().date_naive())
+    chrono::DateTime::from_timestamp(summary.min_timestamp_s as i64, 0).map(|dt| dt.date_naive())
 }
 
 /// Catalog retention window (whole days) derived from a tenant's SFST

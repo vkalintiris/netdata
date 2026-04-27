@@ -16,9 +16,10 @@ use crate::wal_index::WalIndex;
 const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 
 /// Result of indexing a WAL file.
+///
+/// The earliest log date is derivable from `summary.min_timestamp_s` — we
+/// don't return it separately.
 pub struct IndexResult {
-    /// Earliest log date as "YYYY-MM-DD", or `None` if the file has no logs.
-    pub min_date: Option<String>,
     /// Cheap summary fields written into the SFST SUMR chunk and stored
     /// inline on the registry entry.
     pub summary: sfst::FileSummary,
@@ -64,21 +65,10 @@ pub fn index_wal_file_with_options(
         wal_index.num_logs(),
     );
 
-    let min_date = wal_index
-        .timestamps
-        .iter()
-        .min()
-        .and_then(|&min_ns| {
-            let secs = min_ns / 1_000_000_000;
-            chrono::DateTime::from_timestamp(secs, 0)
-        })
-        .map(|dt| dt.format("%Y-%m-%d").to_string());
-
     let (summary, metadata) = crate::build_and_write(&wal_index, out_path)?;
     let size = std::fs::metadata(out_path)?.len();
 
     Ok(IndexResult {
-        min_date,
         summary,
         metadata,
         size,

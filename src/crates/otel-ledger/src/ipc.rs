@@ -60,9 +60,7 @@ pub enum IndexerResponse {
     Indexed {
         seq: u64,
         path: PathBuf,
-        /// Earliest log date as "YYYY-MM-DD", or `None` if the index has no logs.
-        min_date: Option<String>,
-        /// Cheap summary fields (min/max timestamp, total logs, streams).
+        /// Cheap summary fields (min/max timestamp, total logs, stream).
         /// Stored on the registry entry on `track`; used by the uploader
         /// response handler to build the catalog entry directly from the
         /// registry without a pending-metadata side-channel.

@@ -8,6 +8,8 @@ mod ledger;
 mod recovery;
 pub mod registry;
 pub mod remote_keys;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod uploader;
 
 pub use ledger::Ledger;

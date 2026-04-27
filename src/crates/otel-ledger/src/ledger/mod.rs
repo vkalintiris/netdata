@@ -14,7 +14,7 @@ mod retention;
 mod rpc;
 mod uploader;
 
-pub(crate) use helpers::{build_catalog_entry, catalog_retention_days};
+pub(crate) use helpers::{build_catalog_entry, catalog_retention_days, date_from_summary};
 
 use bridge::config::LogsConfig;
 use bridge::{LedgerRequest, LedgerResponse};

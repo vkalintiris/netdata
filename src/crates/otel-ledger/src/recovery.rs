@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 use chrono::NaiveDate;
 use file_registry::{ByteSize, TenantId};
 use otel_catalog::Catalog;
@@ -259,9 +260,15 @@ pub async fn recover_unuploaded(
     let requests: Vec<_> = unuploaded
         .iter()
         .map(|&id| {
+            // The summary is already loaded on the registry entry from the
+            // SUMR-chunk read in `Registry::recover` — no need to reopen
+            // the file here.
+            let date = registry
+                .sfst
+                .get(id.seq)
+                .and_then(|f| date_from_summary(&f.summary))
+                .unwrap_or_else(|| chrono::Utc::now().date_naive());
             let local_path = registry.sfst.file_path(id);
-            let date =
-                read_min_date(&local_path).unwrap_or_else(|| chrono::Utc::now().date_naive());
             let remote_key = crate::remote_keys::sfst(tenant_id, date, id);
             UploaderRequest::Upload {
                 seq: id.seq,
@@ -331,16 +338,7 @@ pub(crate) fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-/// Read the earliest log date from a `.sfst` index file's summary.
-fn read_min_date(index_path: &std::path::Path) -> Option<NaiveDate> {
-    let data = std::fs::read(index_path).ok()?;
-    let reader = sfst::Reader::open(&data).ok()?;
-    let summary = reader.summary().ok()?;
-    if summary.total_logs == 0 {
-        return None;
-    }
-    chrono::DateTime::from_timestamp(summary.min_timestamp_s as i64, 0).map(|dt| dt.date_naive())
-}
+use crate::ledger::date_from_summary;
 
 /// Replay the catalog files already present on local disk (discovered by
 /// `catalog_files.recover()`) into the registry's in-memory uploaded /
@@ -495,14 +493,7 @@ mod tests {
         uuid::Uuid::from_u128(0xaaaa_bbbb_cccc_dddd_eeee_ffff_0000_1111)
     }
 
-    fn empty_summary() -> sfst::FileSummary {
-        sfst::FileSummary {
-            min_timestamp_s: 0,
-            max_timestamp_s: 0,
-            total_logs: 0,
-            stream: sfst::StreamEntry::new("", ""),
-        }
-    }
+    use crate::test_helpers::empty_summary;
 
     fn make_entry(seq: u64) -> otel_catalog::CatalogEntry {
         let id = file_registry::FileId::new(machine(), boot(), seq, 0);

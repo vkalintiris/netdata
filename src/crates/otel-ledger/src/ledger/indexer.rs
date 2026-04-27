@@ -5,6 +5,7 @@ use file_registry::{FileId, TenantId};
 use crate::ipc::{CleanerRequest, IndexerResponse, UploaderRequest};
 
 use super::Ledger;
+use super::date_from_summary;
 
 impl Ledger {
     #[tracing::instrument(skip_all)]
@@ -14,11 +15,7 @@ impl Ledger {
                 tracing::error!(path = %path.display(), "indexing failed: {error}");
             }
             IndexerResponse::Indexed {
-                seq,
-                min_date,
-                summary,
-                size,
-                ..
+                seq, summary, size, ..
             } => {
                 tracing::info!(seq, "indexed");
 
@@ -37,7 +34,7 @@ impl Ledger {
                 let wal_path = registry.wal.file_path(file_id);
 
                 // Track SFST file in registry. Summary fields (timestamps,
-                // total logs, streams) live on the registry entry; the
+                // total logs, stream) live on the registry entry; the
                 // uploader response handler reads them back from there.
                 registry.sfst.track(file_id, created_at_ns, size, summary);
 
@@ -51,7 +48,7 @@ impl Ledger {
                 }
 
                 // Upload it to remote storage
-                self.request_upload(file_id, &tenant_id, min_date.as_deref());
+                self.request_upload(file_id, &tenant_id);
 
                 // Run retention for the tenant
                 self.evaluate_retention(&tenant_id);
@@ -59,7 +56,7 @@ impl Ledger {
         }
     }
 
-    fn request_upload(&mut self, id: FileId, tenant_id: &TenantId, min_date: Option<&str>) {
+    fn request_upload(&mut self, id: FileId, tenant_id: &TenantId) {
         if !self.logs_config.storage.enabled {
             return;
         }
@@ -68,8 +65,10 @@ impl Ledger {
             .get(tenant_id)
             .expect("tenant present after for_seq_mut");
         let local_path = registry.sfst.file_path(id);
-        let date = min_date
-            .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        let date = registry
+            .sfst
+            .get(id.seq)
+            .and_then(|f| date_from_summary(&f.summary))
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
         let remote_key = crate::remote_keys::sfst(tenant_id, date, id);
         let req = UploaderRequest::Upload {

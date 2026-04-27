@@ -313,14 +313,7 @@ mod tests {
         Registry::new(wal, sfst, catalog_files)
     }
 
-    fn empty_summary() -> sfst::FileSummary {
-        sfst::FileSummary {
-            min_timestamp_s: 0,
-            max_timestamp_s: 0,
-            total_logs: 0,
-            stream: sfst::StreamEntry::new("", ""),
-        }
-    }
+    use crate::test_helpers::empty_summary;
 
     #[test]
     fn unuploaded_ids_excludes_uploaded_seqs() {

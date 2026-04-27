@@ -139,30 +139,20 @@ fn build_id_translation(wal_index: &WalIndex) -> (Vec<FileId>, IdRanges) {
     )
 }
 
-/// Build the single per-stream log entries chunk.
+/// Build the file's single log-entries chunk in chronological order.
 ///
-/// Collects log positions in time-sorted order, translates [`KeyValueId`]s
-/// to [`FileId`]s, and serializes with bincode + zstd.
+/// Iterates [`TimeOrder::iter_by_time`] to walk insertion-order positions
+/// in chronological order, translates each log's [`KeyValueId`]s to
+/// [`FileId`]s, and serializes the result with bincode + zstd.
 fn build_stream_entries(
-    stream: &ServiceStream,
     log_entries: &[Vec<KeyValueId>],
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
     writer: &mut sfst::Writer,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    // Map insertion-order positions to (sorted_pos, insertion_pos),
-    // then iterate in time-sorted order.
-    let mut by_time: Vec<(u32, u32)> = stream
-        .positions
-        .iter()
-        .map(|&ins| (time_order.to_sorted(ins), ins))
-        .collect();
-    by_time.sort_unstable();
-
-    // Translate KeyValueIds → FileIds.
-    let entries: Vec<Vec<FileId>> = by_time
-        .iter()
-        .map(|&(_, ins)| {
+    let entries: Vec<Vec<FileId>> = time_order
+        .iter_by_time()
+        .map(|ins| {
             log_entries[ins as usize]
                 .iter()
                 .map(|&kv_id| kv_to_file[kv_id.idx()])
@@ -291,51 +281,17 @@ fn build_high_card_chunks(
 /// Each SFST file is required to contain exactly one `(namespace, name)`
 /// pair — the WAL writer partitions frames by `ns_hash`, and the ingestor
 /// rejects writes whose `(namespace, name)` doesn't match the canonical
-/// pair for an `ns_hash`. If multiple streams are seen here, a hash
-/// collision slipped through (or the ingestor's collision check is
-/// missing/disabled). Either way, the WAL file cannot be safely indexed
-/// because there is no single stream identity to attach to the SFST.
+/// pair for an `ns_hash`. If multiple distinct values are seen for either
+/// key, [`WalIndex::service_stream`] surfaces the offenders via
+/// [`MultipleStreamsError`] and we fail the index build.
 fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[FileId],
     writer: &mut sfst::Writer,
 ) -> Result<ServiceStream, Box<dyn std::error::Error>> {
-    let t = Instant::now();
-    let mut streams = wal_index.service_streams();
+    let stream = wal_index.service_stream()?;
 
-    tracing::debug!(
-        "streams derived: {} streams, {}ms",
-        streams.len(),
-        t.elapsed().as_millis(),
-    );
-
-    let stream = match streams.len() {
-        1 => streams.pop().expect("len == 1"),
-        0 => {
-            return Err(format!(
-                "cannot build SFST: WAL contains no service.name/service.namespace data \
-                 ({} log entries)",
-                wal_index.num_logs(),
-            )
-            .into());
-        }
-        n => {
-            // Collect a short summary of the offenders for the error message.
-            let detail = streams
-                .iter()
-                .map(|s| format!("{:?}/{:?} ({} logs)", s.namespace, s.name, s.positions.len()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "cannot build SFST: WAL contains {n} streams (expected 1, ns_hash collision?): \
-                 [{detail}]"
-            )
-            .into());
-        }
-    };
-
-    let universe_size = wal_index.num_logs() as u32;
     let namespace = if stream.namespace.is_empty() {
         "<none>"
     } else {
@@ -346,24 +302,17 @@ fn build_streams(
     } else {
         &stream.name
     };
-    let pct = stream.positions.len() as f64 / universe_size as f64 * 100.0;
     tracing::debug!(
-        "  stream {namespace}/{name}: {} logs ({pct:.1}%)",
-        stream.positions.len(),
+        "stream {namespace}/{name}: {} logs",
+        wal_index.num_logs(),
     );
 
-    let t_entries = Instant::now();
-    let stream_bytes = build_stream_entries(
-        &stream,
-        &wal_index.log_entries,
-        time_order,
-        kv_to_file,
-        writer,
-    )?;
+    let t = Instant::now();
+    let stream_bytes = build_stream_entries(&wal_index.log_entries, time_order, kv_to_file, writer)?;
     tracing::debug!(
         "stream log entries built: {} KB, {}ms",
         stream_bytes / 1024,
-        t_entries.elapsed().as_millis(),
+        t.elapsed().as_millis(),
     );
 
     Ok(stream)

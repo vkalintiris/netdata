@@ -15,13 +15,39 @@ use roaring::RoaringBitmap;
 
 use crate::kv_interner::{KeyValueId, KeyValueInterner};
 
-/// A stream identified by its service.name / service.namespace combination.
+/// A stream identified by its (service.namespace, service.name) pair.
+///
+/// Each WAL file holds exactly one such stream; the ingestor's collision
+/// table guarantees this. There is no `positions` field because every log
+/// in the file belongs to the stream — callers iterate `time_order` to
+/// reach them in chronological order.
+#[derive(Debug)]
 pub struct ServiceStream {
     pub namespace: String,
     pub name: String,
-    /// Insertion-order log positions belonging to this stream.
-    pub positions: Vec<u32>,
 }
+
+/// The WAL contains multiple distinct `(namespace, name)` identities — an
+/// `ns_hash` collision slipped past the ingestor's canonical-stream
+/// table. The file cannot be safely indexed.
+#[derive(Debug)]
+pub struct MultipleStreamsError {
+    pub namespaces: Vec<String>,
+    pub names: Vec<String>,
+}
+
+impl std::fmt::Display for MultipleStreamsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "WAL contains multiple stream identities (ns_hash collision?): \
+             namespaces={:?}, names={:?}",
+            self.namespaces, self.names,
+        )
+    }
+}
+
+impl std::error::Error for MultipleStreamsError {}
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
 ///
@@ -116,96 +142,41 @@ impl<'a> WalIndex<'a> {
         }
     }
 
-    /// Derive streams by cross-joining service.namespace and service.name bitmaps.
+    /// Extract the file's single `(service.namespace, service.name)` stream.
     ///
-    /// Scans the interner for `service.name=X` and `service.namespace=Y` entries,
-    /// then AND-s their bitmaps to find which (namespace, name) combinations have
-    /// logs. Logs not covered by any service.name bitmap go to a catch-all stream.
-    pub fn service_streams(&self) -> Vec<ServiceStream> {
-        // Collect all service.name and service.namespace key=value pairs.
-        let mut namespace_entries: Vec<(&str, KeyValueId)> = Vec::new();
-        let mut name_entries: Vec<(&str, KeyValueId)> = Vec::new();
+    /// Walks the interner once for `service.name=X` and `service.namespace=Y`
+    /// entries. The ingestor partitions WAL files by `ns_hash` and rejects
+    /// writes whose `(namespace, name)` doesn't match the canonical pair
+    /// for that hash, so every WAL file should expose at most one of each.
+    /// Missing values default to the empty string (the catch-all stream).
+    ///
+    /// Returns [`MultipleStreamsError`] if more than one distinct value is
+    /// found for either key — that means an `ns_hash` collision slipped
+    /// past the ingestor's check and the file has no single stream
+    /// identity to attach to the SFST.
+    pub fn service_stream(&self) -> Result<ServiceStream, MultipleStreamsError> {
+        let mut namespaces: Vec<&str> = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
 
-        for (kv_id, kv_pair) in self.kv_interner.strings().iter().enumerate() {
+        for kv_pair in self.kv_interner.strings().iter() {
             if let Some(name) = kv_pair.strip_prefix("service.name=") {
-                name_entries.push((name, KeyValueId::from(kv_id)));
+                names.push(name);
             } else if let Some(namespace) = kv_pair.strip_prefix("service.namespace=") {
-                namespace_entries.push((namespace, KeyValueId::from(kv_id)));
+                namespaces.push(namespace);
             }
         }
 
-        let mut streams: Vec<ServiceStream> = Vec::new();
-        let mut covered = RoaringBitmap::new();
-
-        if namespace_entries.is_empty() {
-            // No namespaces: each service.name defines a stream directly.
-            for (name, kv_id) in name_entries {
-                let bm = self.bitmap(kv_id);
-
-                if !bm.is_empty() {
-                    streams.push(ServiceStream {
-                        namespace: String::new(),
-                        name: name.to_string(),
-                        positions: bm.iter().collect(),
-                    });
-
-                    covered |= bm;
-                }
-            }
-        } else {
-            // Cross-join: AND each (namespace, name) pair to find logs that
-            // belong to both. Each non-empty intersection becomes a stream.
-            for &(namespace, namespace_kv_id) in &namespace_entries {
-                let namespace_bm = self.bitmap(namespace_kv_id);
-
-                for &(name, name_kv_id) in &name_entries {
-                    let name_bm = self.bitmap(name_kv_id);
-
-                    let intersection = namespace_bm & name_bm;
-
-                    if !intersection.is_empty() {
-                        streams.push(ServiceStream {
-                            namespace: namespace.to_string(),
-                            name: name.to_string(),
-                            positions: intersection.iter().collect(),
-                        });
-
-                        covered |= &intersection;
-                    }
-                }
-            }
-
-            // Logs with a service.name but no matching namespace get their
-            // own namespace-less stream.
-            for &(name, name_kv_id) in &name_entries {
-                let name_bm = self.bitmap(name_kv_id);
-
-                let uncovered_in_name = name_bm - &covered;
-                if !uncovered_in_name.is_empty() {
-                    streams.push(ServiceStream {
-                        namespace: String::new(),
-                        name: name.to_string(),
-                        positions: uncovered_in_name.iter().collect(),
-                    });
-
-                    covered |= &uncovered_in_name;
-                }
-            }
-        }
-
-        // Catch-all: logs with no service.name at all.
-        let universe_size = self.num_logs() as u32;
-        let all: RoaringBitmap = (0..universe_size).collect();
-        let uncovered = all - &covered;
-        if !uncovered.is_empty() {
-            streams.push(ServiceStream {
-                namespace: String::new(),
-                name: String::new(),
-                positions: uncovered.iter().collect(),
+        if namespaces.len() > 1 || names.len() > 1 {
+            return Err(MultipleStreamsError {
+                namespaces: namespaces.into_iter().map(String::from).collect(),
+                names: names.into_iter().map(String::from).collect(),
             });
         }
 
-        streams
+        Ok(ServiceStream {
+            namespace: namespaces.first().copied().unwrap_or("").to_string(),
+            name: names.first().copied().unwrap_or("").to_string(),
+        })
     }
 }
 
@@ -311,6 +282,99 @@ fn build_time_order(timestamps: &[i64]) -> TimeOrder {
     TimeOrder {
         sorted_position,
         insertion_position,
+    }
+}
+
+#[cfg(test)]
+mod service_stream_tests {
+    use super::*;
+    use bumpalo::Bump;
+
+    fn idx<'a>(arena: &'a Bump) -> WalIndex<'a> {
+        WalIndex::new(arena, 100)
+    }
+
+    #[test]
+    fn returns_pair_when_one_namespace_and_one_name() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        w.kv_interner.intern("service.namespace=prod");
+        w.kv_interner.intern("service.name=api");
+        let s = w.service_stream().unwrap();
+        assert_eq!(s.namespace, "prod");
+        assert_eq!(s.name, "api");
+    }
+
+    #[test]
+    fn name_only_returns_empty_namespace() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        w.kv_interner.intern("service.name=api");
+        let s = w.service_stream().unwrap();
+        assert_eq!(s.namespace, "");
+        assert_eq!(s.name, "api");
+    }
+
+    #[test]
+    fn namespace_only_returns_empty_name() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        w.kv_interner.intern("service.namespace=prod");
+        let s = w.service_stream().unwrap();
+        assert_eq!(s.namespace, "prod");
+        assert_eq!(s.name, "");
+    }
+
+    #[test]
+    fn neither_returns_empty_pair() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        // Some unrelated kv pairs in the interner — shouldn't affect the result.
+        w.kv_interner.intern("host.name=foo");
+        w.kv_interner.intern("k8s.pod.uid=bar");
+        let s = w.service_stream().unwrap();
+        assert_eq!(s.namespace, "");
+        assert_eq!(s.name, "");
+    }
+
+    #[test]
+    fn multiple_names_yield_error() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        w.kv_interner.intern("service.namespace=prod");
+        w.kv_interner.intern("service.name=api");
+        w.kv_interner.intern("service.name=worker");
+        let err = w.service_stream().unwrap_err();
+        assert_eq!(err.namespaces, vec!["prod"]);
+        assert_eq!(err.names.len(), 2);
+        assert!(err.names.contains(&"api".to_string()));
+        assert!(err.names.contains(&"worker".to_string()));
+    }
+
+    #[test]
+    fn multiple_namespaces_yield_error() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        w.kv_interner.intern("service.namespace=prod");
+        w.kv_interner.intern("service.namespace=staging");
+        w.kv_interner.intern("service.name=api");
+        let err = w.service_stream().unwrap_err();
+        assert_eq!(err.names, vec!["api"]);
+        assert_eq!(err.namespaces.len(), 2);
+        assert!(err.namespaces.contains(&"prod".to_string()));
+        assert!(err.namespaces.contains(&"staging".to_string()));
+    }
+
+    #[test]
+    fn prefix_matching_does_not_pick_up_subkeys() {
+        let arena = Bump::new();
+        let mut w = idx(&arena);
+        // Keys that share the prefix without the trailing `=` must not match.
+        w.kv_interner.intern("service.name_extra=foo");
+        w.kv_interner.intern("service.namespace_extra=bar");
+        let s = w.service_stream().unwrap();
+        assert_eq!(s.namespace, "");
+        assert_eq!(s.name, "");
     }
 }
 
