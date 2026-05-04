@@ -20,12 +20,26 @@ pub enum FileStatus {
 }
 
 /// A WAL file tracked by the registry.
+///
+/// `min_timestamp_ns` / `max_timestamp_ns` are the **log-data** time
+/// range of the records written into the file (per the OTel hierarchy,
+/// `time_unix_nano` → `observed_time_unix_nano`). They're populated
+/// incrementally from `FileEvent::Synced` while the file is `Active`,
+/// and finalized by `FileEvent::Closed` once it's `Archived`.
+///
+/// On recovery (registry rebuilt from disk), these fields are left at
+/// `TimestampNs::ZERO` — the WAL file format does not yet carry a
+/// summary footer, so the values can only come from in-process events.
+/// A re-index of the WAL produces an SFST whose summary has the
+/// authoritative range.
 #[derive(Debug, Clone)]
 pub struct File {
     pub id: FileId,
     pub status: FileStatus,
     pub created_at_ns: TimestampNs,
     pub size: ByteSize,
+    pub min_timestamp_ns: TimestampNs,
+    pub max_timestamp_ns: TimestampNs,
 }
 
 /// An ordered collection of WAL files.
@@ -66,6 +80,11 @@ impl Registry {
                     status: FileStatus::Archived,
                     created_at_ns: TimestampNs(header.created_at),
                     size,
+                    // Recovery cannot retrieve log-data range from the
+                    // WAL file format today. Re-indexing populates the
+                    // SFST summary with the authoritative values.
+                    min_timestamp_ns: TimestampNs::ZERO,
+                    max_timestamp_ns: TimestampNs::ZERO,
                 },
             );
         }
@@ -104,18 +123,43 @@ impl Registry {
                         status: FileStatus::Active,
                         created_at_ns: *created_at_ns,
                         size: ByteSize::ZERO,
+                        min_timestamp_ns: TimestampNs::ZERO,
+                        max_timestamp_ns: TimestampNs::ZERO,
                     },
                 );
                 Ok(())
             }
-            FileEvent::Synced { .. } => Ok(()),
-            FileEvent::Closed { file_id, size, .. } => {
+            FileEvent::Synced {
+                file_id,
+                min_timestamp_ns,
+                max_timestamp_ns,
+                ..
+            } => {
+                // The event carries the writer's current accumulator
+                // state (not a delta), so a direct overwrite is correct.
+                let entry = self
+                    .files
+                    .get_mut(file_id.seq)
+                    .ok_or(Error::UnknownSequence(file_id.seq))?;
+                entry.min_timestamp_ns = *min_timestamp_ns;
+                entry.max_timestamp_ns = *max_timestamp_ns;
+                Ok(())
+            }
+            FileEvent::Closed {
+                file_id,
+                size,
+                min_timestamp_ns,
+                max_timestamp_ns,
+                ..
+            } => {
                 let entry = self
                     .files
                     .get_mut(file_id.seq)
                     .ok_or(Error::UnknownSequence(file_id.seq))?;
                 entry.status = FileStatus::Archived;
                 entry.size = *size;
+                entry.min_timestamp_ns = *min_timestamp_ns;
+                entry.max_timestamp_ns = *max_timestamp_ns;
                 Ok(())
             }
         }
@@ -185,7 +229,15 @@ mod tests {
         let mut all_events = Vec::new();
         for &count in entry_counts {
             for i in 0..count {
-                writer.write_frame(0, &(i as u32).to_le_bytes(), 1).unwrap();
+                writer
+                    .write_frame(
+                        0,
+                        &(i as u32).to_le_bytes(),
+                        1,
+                        TimestampNs::ZERO,
+                        TimestampNs::ZERO,
+                    )
+                    .unwrap();
             }
             all_events.extend(writer.take_all_events());
         }
@@ -242,6 +294,70 @@ mod tests {
         let removed = registry.remove_by_seq(1).unwrap();
         assert_eq!(removed.id.seq, 1);
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn apply_event_tracks_log_ts_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new(dir.path());
+        let id = test_file_id(7);
+
+        registry
+            .apply_event(&FileEvent::Created {
+                file_id: id,
+                created_at_ns: TimestampNs(1),
+            })
+            .unwrap();
+        // Created starts at ZERO/ZERO.
+        let f = registry.get(7).unwrap();
+        assert_eq!(f.min_timestamp_ns, TimestampNs::ZERO);
+        assert_eq!(f.max_timestamp_ns, TimestampNs::ZERO);
+
+        // First Synced sets the range.
+        registry
+            .apply_event(&FileEvent::Synced {
+                file_id: id,
+                valid_up_to: ByteSize(100),
+                frame_count: 1,
+                entry_count: 5,
+                min_timestamp_ns: TimestampNs(200),
+                max_timestamp_ns: TimestampNs(300),
+            })
+            .unwrap();
+        let f = registry.get(7).unwrap();
+        assert_eq!(f.min_timestamp_ns, TimestampNs(200));
+        assert_eq!(f.max_timestamp_ns, TimestampNs(300));
+
+        // Second Synced overwrites with the writer's current accumulator
+        // state — wider range now.
+        registry
+            .apply_event(&FileEvent::Synced {
+                file_id: id,
+                valid_up_to: ByteSize(200),
+                frame_count: 2,
+                entry_count: 10,
+                min_timestamp_ns: TimestampNs(150),
+                max_timestamp_ns: TimestampNs(400),
+            })
+            .unwrap();
+        let f = registry.get(7).unwrap();
+        assert_eq!(f.min_timestamp_ns, TimestampNs(150));
+        assert_eq!(f.max_timestamp_ns, TimestampNs(400));
+
+        // Closed finalizes.
+        registry
+            .apply_event(&FileEvent::Closed {
+                file_id: id,
+                frame_count: 2,
+                min_timestamp_ns: TimestampNs(150),
+                max_timestamp_ns: TimestampNs(400),
+                size: ByteSize(200),
+            })
+            .unwrap();
+        let f = registry.get(7).unwrap();
+        assert_eq!(f.status, FileStatus::Archived);
+        assert_eq!(f.min_timestamp_ns, TimestampNs(150));
+        assert_eq!(f.max_timestamp_ns, TimestampNs(400));
     }
 
     #[test]

@@ -85,6 +85,14 @@ impl FileHeader {
 // -- Events -------------------------------------------------------------
 
 /// Events produced by the WAL writer during file lifecycle operations.
+///
+/// `min_timestamp_ns` / `max_timestamp_ns` carry the **log-data** time
+/// range accumulated so far for the file — derived from each frame's
+/// per-row OTel timestamps as supplied by the caller of
+/// `Writer::write_frame`. They are *not* wall-clock frame-arrival times.
+/// `TimestampNs::ZERO` on both means "no log-data timestamps observed
+/// yet" (e.g. all frames so far had logs missing both `time_unix_nano`
+/// and `observed_time_unix_nano`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileEvent {
     Created {
@@ -96,11 +104,17 @@ pub enum FileEvent {
         valid_up_to: ByteSize,
         frame_count: u64,
         entry_count: u64,
+        /// Earliest log-data timestamp accumulated for this file so far.
+        min_timestamp_ns: TimestampNs,
+        /// Latest log-data timestamp accumulated for this file so far.
+        max_timestamp_ns: TimestampNs,
     },
     Closed {
         file_id: FileId,
         frame_count: u64,
+        /// Earliest log-data timestamp in this file (final value).
         min_timestamp_ns: TimestampNs,
+        /// Latest log-data timestamp in this file (final value).
         max_timestamp_ns: TimestampNs,
         size: ByteSize,
     },

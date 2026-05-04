@@ -82,6 +82,46 @@ fn count_log_records(rl: &ResourceLogs) -> usize {
     rl.scope_logs.iter().map(|sl| sl.log_records.len()).sum()
 }
 
+/// Compute the `(min, max)` log-data time range for a group of `ResourceLogs`.
+///
+/// Mirrors the OTel timestamp hierarchy used by the indexer
+/// (`log_index::process_frame::collect_timestamps`):
+///
+/// 1. `time_unix_nano` (event time) when non-zero.
+/// 2. `observed_time_unix_nano` when `time_unix_nano` is zero or missing.
+/// 3. Otherwise the row contributes nothing — unlike the indexer, the
+///    ingestor doesn't have a frame `ingestion_ns` to fall back on (the
+///    WAL writer assigns it after this function returns).
+///
+/// Returns `(TimestampNs::ZERO, TimestampNs::ZERO)` when no row in the
+/// group carried a usable timestamp; the WAL writer treats that as a
+/// signal to leave its per-file accumulator unchanged.
+fn compute_log_ts_range(rls: &[ResourceLogs]) -> (file_registry::TimestampNs, file_registry::TimestampNs) {
+    let mut min: Option<u64> = None;
+    let mut max: Option<u64> = None;
+
+    for rl in rls {
+        for sl in &rl.scope_logs {
+            for lr in &sl.log_records {
+                let ts = if lr.time_unix_nano != 0 {
+                    lr.time_unix_nano
+                } else if lr.observed_time_unix_nano != 0 {
+                    lr.observed_time_unix_nano
+                } else {
+                    continue;
+                };
+                min = Some(min.map_or(ts, |m| m.min(ts)));
+                max = Some(max.map_or(ts, |m| m.max(ts)));
+            }
+        }
+    }
+
+    match (min, max) {
+        (Some(lo), Some(hi)) => (file_registry::TimestampNs(lo), file_registry::TimestampNs(hi)),
+        _ => (file_registry::TimestampNs::ZERO, file_registry::TimestampNs::ZERO),
+    }
+}
+
 /// One collision: a request group whose `(namespace, name)` doesn't match
 /// the canonical pair already registered for its `ns_hash`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,15 +375,18 @@ impl LogsService for NetdataLogsService {
         };
 
         for (ns_hash, group) in accepted {
+            let (log_min_ts, log_max_ts) = compute_log_ts_range(&group.resource_logs);
             let (data, count) = arrow_bridge::encode(group.resource_logs).map_err(|e| {
                 tracing::error!(%e, "failed to encode Arrow");
                 Status::internal("Arrow encode error")
             })?;
 
-            writer.write_frame(ns_hash, &data, count).map_err(|e| {
-                tracing::error!(%e, "failed to write WAL entry");
-                Status::internal("WAL write error")
-            })?;
+            writer
+                .write_frame(ns_hash, &data, count, log_min_ts, log_max_ts)
+                .map_err(|e| {
+                    tracing::error!(%e, "failed to write WAL entry");
+                    Status::internal("WAL write error")
+                })?;
         }
 
         writer.sync_all().map_err(|e| {
@@ -377,6 +420,27 @@ mod tests {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
     use opentelemetry_proto::tonic::logs::v1::{LogRecord, ScopeLogs};
     use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    /// Build a `ResourceLogs` with `log_count` records, each carrying the
+    /// timestamps from the corresponding `(time_unix_nano, observed_time_unix_nano)`
+    /// pair in `tss`.
+    fn rl_with_ts(
+        namespace: Option<&str>,
+        name: Option<&str>,
+        tss: &[(u64, u64)],
+    ) -> ResourceLogs {
+        let mut base = rl(namespace, name, 0);
+        let records: Vec<LogRecord> = tss
+            .iter()
+            .map(|&(t, ot)| LogRecord {
+                time_unix_nano: t,
+                observed_time_unix_nano: ot,
+                ..LogRecord::default()
+            })
+            .collect();
+        base.scope_logs[0].log_records = records;
+        base
+    }
 
     fn rl(namespace: Option<&str>, name: Option<&str>, log_count: usize) -> ResourceLogs {
         let mut attrs = Vec::new();
@@ -413,6 +477,79 @@ mod tests {
 
     fn tenant() -> TenantId {
         TenantId::from("t1")
+    }
+
+    #[test]
+    fn compute_log_ts_range_uses_time_unix_nano_first() {
+        let rls = vec![rl_with_ts(
+            Some("prod"),
+            Some("api"),
+            &[(100, 999), (200, 999), (50, 999)],
+        )];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs(50));
+        assert_eq!(max, file_registry::TimestampNs(200));
+    }
+
+    #[test]
+    fn compute_log_ts_range_falls_back_to_observed() {
+        let rls = vec![rl_with_ts(
+            Some("prod"),
+            Some("api"),
+            &[(0, 100), (0, 300), (0, 200)],
+        )];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs(100));
+        assert_eq!(max, file_registry::TimestampNs(300));
+    }
+
+    #[test]
+    fn compute_log_ts_range_skips_rows_with_neither() {
+        // Two rows with timestamps, two without.
+        let rls = vec![rl_with_ts(
+            Some("prod"),
+            Some("api"),
+            &[(0, 0), (100, 0), (0, 0), (50, 0)],
+        )];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs(50));
+        assert_eq!(max, file_registry::TimestampNs(100));
+    }
+
+    #[test]
+    fn compute_log_ts_range_all_missing_returns_zero() {
+        let rls = vec![rl_with_ts(
+            Some("prod"),
+            Some("api"),
+            &[(0, 0), (0, 0)],
+        )];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs::ZERO);
+        assert_eq!(max, file_registry::TimestampNs::ZERO);
+    }
+
+    #[test]
+    fn compute_log_ts_range_mixes_time_and_observed_per_row() {
+        // Row 1 uses time_unix_nano=200; row 2 falls back to observed=50.
+        let rls = vec![rl_with_ts(
+            Some("prod"),
+            Some("api"),
+            &[(200, 999), (0, 50)],
+        )];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs(50));
+        assert_eq!(max, file_registry::TimestampNs(200));
+    }
+
+    #[test]
+    fn compute_log_ts_range_aggregates_across_resource_logs() {
+        let rls = vec![
+            rl_with_ts(Some("a"), Some("b"), &[(100, 0), (200, 0)]),
+            rl_with_ts(Some("c"), Some("d"), &[(50, 0), (300, 0)]),
+        ];
+        let (min, max) = compute_log_ts_range(&rls);
+        assert_eq!(min, file_registry::TimestampNs(50));
+        assert_eq!(max, file_registry::TimestampNs(300));
     }
 
     #[test]

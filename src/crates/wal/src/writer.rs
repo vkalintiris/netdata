@@ -84,7 +84,13 @@ impl Stream {
         FileId::new(self.machine_id, self.boot_id, seq, self.ns_hash)
     }
 
-    fn write_frame(&mut self, data: &[u8], log_entry_count: usize) -> Result<u64> {
+    fn write_frame(
+        &mut self,
+        data: &[u8],
+        log_entry_count: usize,
+        log_min_ts_ns: TimestampNs,
+        log_max_ts_ns: TimestampNs,
+    ) -> Result<u64> {
         if self.should_rotate_with(log_entry_count as u64) {
             self.sync()?;
             self.close_active_file();
@@ -139,11 +145,20 @@ impl Stream {
         if active.first_frame_at_ns.is_none() {
             active.first_frame_at_ns = Some(ts);
         }
-        if active.min_timestamp_ns == TimestampNs::ZERO || ts < active.min_timestamp_ns {
-            active.min_timestamp_ns = ts;
-        }
-        if ts > active.max_timestamp_ns {
-            active.max_timestamp_ns = ts;
+
+        // Accumulate log-data min/max for this file. ZERO means "no log
+        // timestamps in this frame" (all rows missing both
+        // `time_unix_nano` and `observed_time_unix_nano`); skip in that
+        // case so the prior accumulator state isn't clobbered.
+        if log_min_ts_ns != TimestampNs::ZERO {
+            if active.min_timestamp_ns == TimestampNs::ZERO
+                || log_min_ts_ns < active.min_timestamp_ns
+            {
+                active.min_timestamp_ns = log_min_ts_ns;
+            }
+            if log_max_ts_ns > active.max_timestamp_ns {
+                active.max_timestamp_ns = log_max_ts_ns;
+            }
         }
 
         Ok(frame_offset)
@@ -159,6 +174,8 @@ impl Stream {
                 valid_up_to: active.bytes_written,
                 frame_count: active.frame_count,
                 entry_count: active.log_entry_count,
+                min_timestamp_ns: active.min_timestamp_ns,
+                max_timestamp_ns: active.max_timestamp_ns,
             });
         }
         Ok(())
@@ -317,14 +334,23 @@ impl Writer {
     /// Write a frame to the stream for the given `ns_hash`.
     ///
     /// Lazily creates a new stream if one doesn't exist for this `ns_hash`.
+    ///
+    /// `log_min_ts_ns` / `log_max_ts_ns` describe the OTel time range of
+    /// the log records inside `data` (per the hierarchy `time_unix_nano`
+    /// → `observed_time_unix_nano`; see the ingestor's
+    /// `compute_log_ts_range`). Pass `TimestampNs::ZERO` for both when no
+    /// log row in the frame had a usable timestamp — the writer's
+    /// per-file accumulator is then left unchanged.
     pub fn write_frame(
         &mut self,
         ns_hash: u64,
         data: &[u8],
         log_entry_count: usize,
+        log_min_ts_ns: TimestampNs,
+        log_max_ts_ns: TimestampNs,
     ) -> Result<u64> {
         self.get_or_create(ns_hash)
-            .write_frame(data, log_entry_count)
+            .write_frame(data, log_entry_count, log_min_ts_ns, log_max_ts_ns)
     }
 
     /// Get or lazily create a stream for the given `ns_hash`.
@@ -412,9 +438,15 @@ mod tests {
 
         let data = b"test payload";
 
-        writer.write_frame(1, data, 1).unwrap();
-        writer.write_frame(2, data, 1).unwrap();
-        writer.write_frame(1, data, 1).unwrap();
+        writer
+            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
+        writer
+            .write_frame(2, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
+        writer
+            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
 
         writer.sync_all().unwrap();
 
@@ -436,13 +468,96 @@ mod tests {
     }
 
     #[test]
+    fn accumulates_log_ts_range_across_frames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut writer = test_writer(tmp.path());
+        let data = b"x";
+
+        // Three frames with growing & overlapping ranges.
+        writer
+            .write_frame(1, data, 1, TimestampNs(200), TimestampNs(300))
+            .unwrap();
+        writer
+            .write_frame(1, data, 1, TimestampNs(150), TimestampNs(250))
+            .unwrap();
+        writer
+            .write_frame(1, data, 1, TimestampNs(180), TimestampNs(400))
+            .unwrap();
+
+        writer.sync_all().unwrap();
+        let events = writer.take_all_events();
+
+        let synced = events
+            .iter()
+            .find_map(|e| match e {
+                FileEvent::Synced {
+                    min_timestamp_ns,
+                    max_timestamp_ns,
+                    ..
+                } => Some((*min_timestamp_ns, *max_timestamp_ns)),
+                _ => None,
+            })
+            .expect("expected a Synced event");
+        assert_eq!(synced, (TimestampNs(150), TimestampNs(400)));
+
+        let final_events = writer.shutdown_all().unwrap();
+        let closed = final_events
+            .iter()
+            .find_map(|e| match e {
+                FileEvent::Closed {
+                    min_timestamp_ns,
+                    max_timestamp_ns,
+                    ..
+                } => Some((*min_timestamp_ns, *max_timestamp_ns)),
+                _ => None,
+            })
+            .expect("expected a Closed event");
+        assert_eq!(closed, (TimestampNs(150), TimestampNs(400)));
+    }
+
+    #[test]
+    fn zero_log_ts_does_not_clobber_accumulator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut writer = test_writer(tmp.path());
+        let data = b"x";
+
+        writer
+            .write_frame(1, data, 1, TimestampNs(500), TimestampNs(600))
+            .unwrap();
+        // Frame whose logs all lacked time/observed timestamps — must
+        // not regress the accumulator.
+        writer
+            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
+
+        writer.sync_all().unwrap();
+        let events = writer.take_all_events();
+        let synced = events
+            .iter()
+            .find_map(|e| match e {
+                FileEvent::Synced {
+                    min_timestamp_ns,
+                    max_timestamp_ns,
+                    ..
+                } => Some((*min_timestamp_ns, *max_timestamp_ns)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(synced, (TimestampNs(500), TimestampNs(600)));
+    }
+
+    #[test]
     fn shared_seq_is_globally_unique() {
         let tmp = tempfile::tempdir().unwrap();
         let mut writer = test_writer(tmp.path());
 
         let data = b"test payload";
-        writer.write_frame(10, data, 1).unwrap();
-        writer.write_frame(20, data, 1).unwrap();
+        writer
+            .write_frame(10, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
+        writer
+            .write_frame(20, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .unwrap();
 
         writer.sync_all().unwrap();
 
