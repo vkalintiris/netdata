@@ -1,6 +1,6 @@
+pub use file_registry::StreamEntry;
 use file_registry::{ByteSize, FileId, TimestampNs};
 use serde::{Deserialize, Serialize};
-pub use sfst::StreamEntry;
 
 /// One uploaded SFST file tracked by the catalog.
 ///

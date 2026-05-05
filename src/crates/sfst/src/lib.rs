@@ -62,31 +62,7 @@ const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
 
 // ── Summary ──────────────────────────────────────────────────────
 
-/// `(namespace, name)` pair identifying a log stream.
-///
-/// Each SFST file contains exactly one stream — the WAL writer partitions
-/// frames by `ns_hash = hash(namespace, name)`, and the indexer asserts
-/// that all data in a single WAL file resolves to one `(namespace, name)`
-/// pair. Hash collisions are detected at the ingestor (see
-/// `NetdataLogsService`); a colliding WAL file is permanently
-/// un-indexable until the operator removes it.
-///
-/// This is the canonical stream identifier across the codebase — the
-/// registry, the catalog, and the indexer all use it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct StreamEntry {
-    pub namespace: String,
-    pub name: String,
-}
-
-impl StreamEntry {
-    pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M) -> Self {
-        Self {
-            namespace: namespace.into(),
-            name: name.into(),
-        }
-    }
-}
+pub use file_registry::StreamEntry;
 
 /// Cheap-to-read summary of an SFST file.
 ///

@@ -11,6 +11,8 @@ pub mod wal_index;
 
 pub use fst_builder::{IndexMetadata, build_and_write};
 pub use indexer::{IndexResult, index_wal_file};
-// Re-export the canonical stream/summary types from sfst for convenience.
 pub use kv_interner::KeyValueId;
-pub use sfst::{FileSummary, StreamEntry};
+// Canonical stream identifier lives in `file_registry`; the file format
+// is owned by `sfst`. Re-export both for caller convenience.
+pub use file_registry::StreamEntry;
+pub use sfst::FileSummary;

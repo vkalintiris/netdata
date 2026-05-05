@@ -2481,6 +2481,7 @@ dependencies = [
  "bincode",
  "bumpalo",
  "chrono",
+ "file-registry",
  "fst-index",
  "hashbrown 0.15.5",
  "otap-df-pdata",

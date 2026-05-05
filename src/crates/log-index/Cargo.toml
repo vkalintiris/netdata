@@ -9,6 +9,7 @@ publish = false
 bincode = { workspace = true }
 bumpalo = { workspace = true }
 chrono = { workspace = true }
+file-registry = { workspace = true }
 fst-index = { workspace = true, features = ["serde"] }
 hashbrown = { workspace = true }
 roaring = { workspace = true }

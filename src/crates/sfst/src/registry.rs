@@ -1,25 +1,9 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use file_registry::{ByteSize, FileDir, FileId, FileRegistry};
+use file_registry::{ByteSize, FileDir, FileId, FileRegistry, Query};
 
-use crate::{FileSummary, StreamEntry};
-
-/// Candidate-selection query.
-///
-/// Describes the slice of SFST files a caller wants to operate on. Used by
-/// [`Registry::candidates`] to filter the registry without opening any
-/// file. All filtering is done against the cheap fields stored inline on
-/// each [`File`] entry.
-#[derive(Debug, Clone)]
-pub struct Query {
-    /// Time window of interest, in seconds since the Unix epoch.
-    /// Inclusive lower bound, exclusive upper bound.
-    pub time_range: Range<u32>,
-    /// Stream filter. `None` matches every stream; `Some(s)` requires
-    /// exact equality with the file's [`FileSummary::stream`].
-    pub stream: Option<StreamEntry>,
-}
+use crate::FileSummary;
 
 const SFST_EXT: &str = "sfst";
 

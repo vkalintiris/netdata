@@ -1,9 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use file_registry::{FileDir, FileRegistry};
-
-use file_registry::{ByteSize, FileId, TimestampNs};
+use file_registry::{ByteSize, FileDir, FileId, FileRegistry, Query, TimestampNs};
 
 use crate::format::{FileEvent, HEADER_SIZE};
 use crate::{Error, Result};
@@ -182,6 +180,42 @@ impl Registry {
             .filter(|f| f.status == FileStatus::Archived)
     }
 
+    /// Files in the registry whose log-data range intersects `q`.
+    ///
+    /// Pure filter — does not open any WAL file. Both `Active` (currently
+    /// being written) and `Archived` (sealed, awaiting indexing) files
+    /// are included; Active files are how the planner reaches real-time
+    /// data not yet flushed into an SFST.
+    ///
+    /// Files with `min_timestamp_ns == ZERO` are skipped: such a file
+    /// either hasn't received its first `Synced` event yet (a sub-second
+    /// window between `Created` and the first sync of a brand-new
+    /// stream) or was recovered from disk after a process restart
+    /// (recovery cannot retrieve the log-data range from the WAL format
+    /// today). Either way the planner has no authoritative range to
+    /// filter against. The same `Archived(ZERO, ZERO)` case from a
+    /// failed `recover_unindexed` is impossible in steady state because
+    /// the ledger refuses to start when indexing fails.
+    ///
+    /// Stream filter is matched against the file's `id.ns_hash`
+    /// (one hash per `(namespace, name)` pair); equivalent to comparing
+    /// canonical stream identities given the ingestor's collision-
+    /// detection invariant.
+    pub fn candidates<'a>(&'a self, q: &'a Query) -> impl Iterator<Item = &'a File> + 'a {
+        let q_min_ns = (q.time_range.start as u64) * 1_000_000_000;
+        let q_max_ns = (q.time_range.end as u64) * 1_000_000_000;
+        let stream_hash = q
+            .stream
+            .as_ref()
+            .map(|s| file_registry::compute_ns_hash(Some(&s.namespace), Some(&s.name)));
+
+        self.files
+            .values()
+            .filter(|f| f.min_timestamp_ns != TimestampNs::ZERO)
+            .filter(move |f| range_overlaps_ns(f, q_min_ns, q_max_ns))
+            .filter(move |f| stream_hash.is_none_or(|h| f.id.ns_hash == h))
+    }
+
     pub fn len(&self) -> usize {
         self.files.len()
     }
@@ -189,6 +223,17 @@ impl Registry {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
+}
+
+/// True iff the file's nanosecond range `[min, max]` (inclusive on both
+/// ends) overlaps the query's `[q_start_ns, q_end_ns)` (half-open).
+///
+/// An empty query (`start >= end`) matches no file.
+fn range_overlaps_ns(file: &File, q_start_ns: u64, q_end_ns: u64) -> bool {
+    if q_start_ns >= q_end_ns {
+        return false;
+    }
+    file.max_timestamp_ns.0 >= q_start_ns && file.min_timestamp_ns.0 < q_end_ns
 }
 
 /// Read and parse the WAL file header.
@@ -391,6 +436,207 @@ mod tests {
             .unwrap();
 
         assert_eq!(registry.archived_files().count(), 1);
+    }
+
+    // ── candidates() tests ───────────────────────────────────────
+
+    use file_registry::StreamEntry;
+
+    fn fid_with(seq: u64, ns_hash: u64) -> FileId {
+        let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
+        let boot_id = uuid::Uuid::try_parse("7f3b2a1e9c4d4f8ab1c2d3e4f5a6b7c8").unwrap();
+        FileId::new(machine_id, boot_id, seq, ns_hash)
+    }
+
+    /// Insert a file via the event flow with the given (min, max) range
+    /// in nanoseconds and the requested status.
+    fn track(
+        reg: &mut Registry,
+        seq: u64,
+        ns_hash: u64,
+        min_ns: u64,
+        max_ns: u64,
+        status: FileStatus,
+    ) -> FileId {
+        let id = fid_with(seq, ns_hash);
+        reg.apply_event(&FileEvent::Created {
+            file_id: id,
+            created_at_ns: TimestampNs(0),
+        })
+        .unwrap();
+        match status {
+            FileStatus::Active => {
+                reg.apply_event(&FileEvent::Synced {
+                    file_id: id,
+                    valid_up_to: ByteSize(0),
+                    frame_count: 0,
+                    entry_count: 0,
+                    min_timestamp_ns: TimestampNs(min_ns),
+                    max_timestamp_ns: TimestampNs(max_ns),
+                })
+                .unwrap();
+            }
+            FileStatus::Archived => {
+                reg.apply_event(&FileEvent::Closed {
+                    file_id: id,
+                    frame_count: 0,
+                    min_timestamp_ns: TimestampNs(min_ns),
+                    max_timestamp_ns: TimestampNs(max_ns),
+                    size: ByteSize(0),
+                })
+                .unwrap();
+            }
+        }
+        id
+    }
+
+    fn seqs<'a>(iter: impl Iterator<Item = &'a File>) -> Vec<u64> {
+        let mut v: Vec<u64> = iter.map(|f| f.id.seq).collect();
+        v.sort();
+        v
+    }
+
+    /// Convert a seconds-since-epoch value to nanoseconds for fixture
+    /// readability.
+    const NS: u64 = 1_000_000_000;
+
+    #[test]
+    fn candidates_filter_by_time_range_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+
+        track(&mut reg, 1, 7, 100 * NS, 200 * NS, FileStatus::Archived);
+        track(&mut reg, 2, 7, 300 * NS, 400 * NS, FileStatus::Archived);
+        track(&mut reg, 3, 7, 150 * NS, 350 * NS, FileStatus::Archived);
+
+        let q = Query {
+            time_range: 50..250,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 3]);
+    }
+
+    #[test]
+    fn candidates_inclusive_lower_exclusive_upper() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+
+        track(&mut reg, 1, 7, 100 * NS, 200 * NS, FileStatus::Archived);
+        track(&mut reg, 2, 7, 200 * NS, 300 * NS, FileStatus::Archived);
+        track(&mut reg, 3, 7, 300 * NS, 400 * NS, FileStatus::Archived);
+
+        // Query [200, 300):
+        // - file 1: max=200 ≥ 200 (inclusive lower) and min=100 < 300 → in
+        // - file 2: max=300 ≥ 200 and min=200 < 300 → in
+        // - file 3: min=300, but query.end=300 (exclusive) → out
+        let q = Query {
+            time_range: 200..300,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2]);
+    }
+
+    #[test]
+    fn candidates_empty_query_matches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+        track(&mut reg, 1, 7, 100 * NS, 200 * NS, FileStatus::Archived);
+
+        let q = Query {
+            time_range: 200..200,
+            stream: None,
+        };
+        assert!(reg.candidates(&q).next().is_none());
+    }
+
+    #[test]
+    fn candidates_filter_by_stream_via_ns_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+
+        let api_hash = file_registry::compute_ns_hash(Some("prod"), Some("api"));
+        let worker_hash = file_registry::compute_ns_hash(Some("prod"), Some("worker"));
+        track(
+            &mut reg,
+            1,
+            api_hash,
+            100 * NS,
+            200 * NS,
+            FileStatus::Archived,
+        );
+        track(
+            &mut reg,
+            2,
+            worker_hash,
+            100 * NS,
+            200 * NS,
+            FileStatus::Archived,
+        );
+        track(
+            &mut reg,
+            3,
+            api_hash,
+            100 * NS,
+            200 * NS,
+            FileStatus::Active,
+        );
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: Some(StreamEntry::new("prod", "api")),
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 3]);
+    }
+
+    #[test]
+    fn candidates_skip_files_with_zero_min_ts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+
+        // File with zero min — its first Synced event hasn't happened
+        // yet (or this is a recovery-from-disk file with no in-process
+        // event history). Must be excluded.
+        let id_zero = fid_with(1, 7);
+        reg.apply_event(&FileEvent::Created {
+            file_id: id_zero,
+            created_at_ns: TimestampNs(0),
+        })
+        .unwrap();
+
+        // File with a real range — must be included.
+        track(&mut reg, 2, 7, 100 * NS, 200 * NS, FileStatus::Active);
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![2]);
+    }
+
+    #[test]
+    fn candidates_includes_active_and_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(dir.path());
+
+        track(&mut reg, 1, 7, 100 * NS, 200 * NS, FileStatus::Active);
+        track(&mut reg, 2, 7, 100 * NS, 200 * NS, FileStatus::Archived);
+
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2]);
+    }
+
+    #[test]
+    fn candidates_on_empty_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::new(dir.path());
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert!(reg.candidates(&q).next().is_none());
     }
 
     #[test]
