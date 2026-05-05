@@ -18,6 +18,13 @@ use crate::ipc::{
 use crate::registry::Registry;
 
 /// Index any WAL files that were archived but not yet indexed.
+///
+/// **Hard-fails** if any WAL cannot be indexed: the ledger refuses to
+/// start with un-indexable WAL files, because leaving them around would
+/// produce a registry entry with no SFST counterpart and a `(ZERO, ZERO)`
+/// log-data range — an invalid state the query planner would have to
+/// special-case. Operators must remove or repair the offending file
+/// before restarting.
 pub async fn recover_unindexed(
     registry: &mut Registry,
     indexer: &mut ComponentHandle<IndexerRequest, IndexerResponse>,
@@ -38,6 +45,7 @@ pub async fn recover_unindexed(
         })
         .collect();
 
+    let mut failures: Vec<(std::path::PathBuf, String)> = Vec::new();
     batch_recover(requests, indexer, |resp| match resp {
         IndexerResponse::Indexed { seq, summary, .. } => {
             let wf = match registry.wal.get(seq) {
@@ -69,17 +77,29 @@ pub async fn recover_unindexed(
             registry.sfst.track(id, index_size, summary);
             tracing::info!("recovery: indexed seq={seq}");
         }
-        IndexerResponse::IndexFailed {
-            ref path,
-            ref error,
-        } => {
+        IndexerResponse::IndexFailed { path, error } => {
             tracing::error!(
                 "recovery: indexing failed path={} error={error}",
-                path.display()
+                path.display(),
             );
+            failures.push((path.clone(), error.clone()));
         }
     })
     .await?;
+
+    if !failures.is_empty() {
+        let detail = failures
+            .iter()
+            .map(|(p, e)| format!("{} ({e})", p.display()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!(
+            "recovery: failed to index {} WAL file(s); refusing to start. \
+             Resolve the underlying failure (corrupt frame, disk error, etc.) \
+             and remove or repair the offending file before retrying. Details: {detail}",
+            failures.len(),
+        );
+    }
 
     tracing::info!("recovery indexing complete");
     Ok(())
