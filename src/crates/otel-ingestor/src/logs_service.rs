@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use bridge::config::AuthConfig;
-use file_registry::TenantId;
+use file_registry::{MonotonicClock, TenantId};
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsPartialSuccess, ExportLogsServiceRequest, ExportLogsServiceResponse,
     logs_service_server::LogsService,
@@ -85,20 +85,30 @@ fn count_log_records(rl: &ResourceLogs) -> usize {
 /// Compute the `(min, max)` log-data time range for a group of `ResourceLogs`.
 ///
 /// Mirrors the OTel timestamp hierarchy used by the indexer
-/// (`log_index::process_frame::collect_timestamps`):
+/// (`log_index::process_frame::collect_timestamps`) so the WAL's
+/// accumulated range matches what the indexer will eventually compute
+/// for the file's SFST summary:
 ///
 /// 1. `time_unix_nano` (event time) when non-zero.
 /// 2. `observed_time_unix_nano` when `time_unix_nano` is zero or missing.
-/// 3. Otherwise the row contributes nothing — unlike the indexer, the
-///    ingestor doesn't have a frame `ingestion_ns` to fall back on (the
-///    WAL writer assigns it after this function returns).
+/// 3. `ingestion_ns + row_idx` as the last-resort fallback, where
+///    `row_idx` is the row's position across all `ResourceLogs` in the
+///    group. This matches the indexer's tier-3 behaviour exactly.
 ///
-/// Returns `(TimestampNs::ZERO, TimestampNs::ZERO)` when no row in the
-/// group carried a usable timestamp; the WAL writer treats that as a
-/// signal to leave its per-file accumulator unchanged.
-fn compute_log_ts_range(rls: &[ResourceLogs]) -> (file_registry::TimestampNs, file_registry::TimestampNs) {
+/// # Panics
+///
+/// Panics if `rls` carries zero log records. Callers in `export()` are
+/// guaranteed to hand in a non-empty group: `export()` filters
+/// `ResourceLogs` with no records and short-circuits when no accepted
+/// group remains, so by the time this function runs, every group has at
+/// least one row.
+fn compute_log_ts_range(
+    rls: &[ResourceLogs],
+    ingestion_ns: file_registry::TimestampNs,
+) -> (file_registry::TimestampNs, file_registry::TimestampNs) {
     let mut min: Option<u64> = None;
     let mut max: Option<u64> = None;
+    let mut row_idx: u64 = 0;
 
     for rl in rls {
         for sl in &rl.scope_logs {
@@ -108,18 +118,20 @@ fn compute_log_ts_range(rls: &[ResourceLogs]) -> (file_registry::TimestampNs, fi
                 } else if lr.observed_time_unix_nano != 0 {
                     lr.observed_time_unix_nano
                 } else {
-                    continue;
+                    ingestion_ns.0 + row_idx
                 };
+                row_idx += 1;
                 min = Some(min.map_or(ts, |m| m.min(ts)));
                 max = Some(max.map_or(ts, |m| m.max(ts)));
             }
         }
     }
 
-    match (min, max) {
-        (Some(lo), Some(hi)) => (file_registry::TimestampNs(lo), file_registry::TimestampNs(hi)),
-        _ => (file_registry::TimestampNs::ZERO, file_registry::TimestampNs::ZERO),
-    }
+    let expect_msg = "at least one log record";
+    (
+        file_registry::TimestampNs(min.expect(expect_msg)),
+        file_registry::TimestampNs(max.expect(expect_msg)),
+    )
 }
 
 /// One collision: a request group whose `(namespace, name)` doesn't match
@@ -217,6 +229,25 @@ fn check_collisions(
     }
 }
 
+/// Build the OTLP `partial_success` payload from the collision list.
+///
+/// Returns `None` when the list is empty (no collisions = full success);
+/// otherwise builds a payload that reports the total rejected count and a
+/// developer-facing message naming each colliding pair.
+fn build_partial_success(collisions: &[Collision]) -> Option<ExportLogsPartialSuccess> {
+    if collisions.is_empty() {
+        return None;
+    }
+    let total: i64 = collisions
+        .iter()
+        .map(|c| c.rejected_log_records as i64)
+        .sum();
+    Some(ExportLogsPartialSuccess {
+        rejected_log_records: total,
+        error_message: format_collision_error(collisions),
+    })
+}
+
 /// Format collision details for `ExportLogsPartialSuccess::error_message`.
 fn format_collision_error(collisions: &[Collision]) -> String {
     fn show(opt: &Option<String>) -> &str {
@@ -290,6 +321,13 @@ pub struct NetdataLogsService {
     /// table is empty and the first write of a tenant's stream re-establishes
     /// the canonical pair.
     canonical: Mutex<HashMap<(TenantId, u64), CanonicalStream>>,
+    /// Process-wide monotonic clock. Provides the per-frame `ingestion_ns`
+    /// stamped on disk by the WAL writer and the same value the indexer
+    /// will use as its tier-3 fallback for log rows missing both
+    /// `time_unix_nano` and `observed_time_unix_nano`. Sharing a single
+    /// clock across all tenants and streams keeps `ingestion_ns`
+    /// monotonic globally within this process.
+    clock: Mutex<MonotonicClock>,
     sender: LedgerSender,
     wal_base_dir: PathBuf,
     wal_config: bridge::config::WalConfig,
@@ -308,6 +346,7 @@ impl NetdataLogsService {
         Self {
             writers: Mutex::new(HashMap::new()),
             canonical: Mutex::new(HashMap::new()),
+            clock: Mutex::new(MonotonicClock::new()),
             sender,
             wal_base_dir,
             wal_config,
@@ -341,8 +380,21 @@ impl LogsService for NetdataLogsService {
         let tenant_id = extract_tenant_id(request.metadata(), &self.auth)?;
         let req = request.into_inner();
 
+        // Drop ResourceLogs that carry zero log records.
+        let resource_logs: Vec<ResourceLogs> = req
+            .resource_logs
+            .into_iter()
+            .filter(|rl| count_log_records(rl) > 0)
+            .collect();
+
+        if resource_logs.is_empty() {
+            return Ok(Response::new(ExportLogsServiceResponse {
+                partial_success: None,
+            }));
+        }
+
         // Group, then run the collision check.
-        let groups = group_by_stream(req.resource_logs);
+        let groups = group_by_stream(resource_logs);
         let CollisionCheck {
             accepted,
             collisions,
@@ -360,7 +412,14 @@ impl LogsService for NetdataLogsService {
             );
         }
 
-        // Write only the accepted groups.
+        // No-op short-circuit: every group was rejected as a collision,
+        // so there's nothing to write.
+        if accepted.is_empty() {
+            return Ok(Response::new(ExportLogsServiceResponse {
+                partial_success: build_partial_success(&collisions),
+            }));
+        }
+
         let mut writers = self.writers.lock().unwrap();
         let writer = if let Some(w) = writers.get_mut(&tenant_id) {
             w
@@ -375,14 +434,20 @@ impl LogsService for NetdataLogsService {
         };
 
         for (ns_hash, group) in accepted {
-            let (log_min_ts, log_max_ts) = compute_log_ts_range(&group.resource_logs);
+            // One clock tick per frame. The same value flows into the
+            // WAL frame header (`ingestion_ns`), into the indexer's
+            // tier-3 fallback during indexing, and into
+            // `compute_log_ts_range` so the WAL summary matches the
+            // eventual SFST summary numerically.
+            let ingestion_ns = self.clock.lock().unwrap().now_ns();
+            let (log_min_ts, log_max_ts) = compute_log_ts_range(&group.resource_logs, ingestion_ns);
             let (data, count) = arrow_bridge::encode(group.resource_logs).map_err(|e| {
                 tracing::error!(%e, "failed to encode Arrow");
                 Status::internal("Arrow encode error")
             })?;
 
             writer
-                .write_frame(ns_hash, &data, count, log_min_ts, log_max_ts)
+                .write_frame(ns_hash, &data, count, ingestion_ns, log_min_ts, log_max_ts)
                 .map_err(|e| {
                     tracing::error!(%e, "failed to write WAL entry");
                     Status::internal("WAL write error")
@@ -397,20 +462,9 @@ impl LogsService for NetdataLogsService {
         let events = writer.take_all_events();
         self.sender.send_events(tenant_id, events);
 
-        let partial_success = if collisions.is_empty() {
-            None
-        } else {
-            let total: i64 = collisions
-                .iter()
-                .map(|c| c.rejected_log_records as i64)
-                .sum();
-            Some(ExportLogsPartialSuccess {
-                rejected_log_records: total,
-                error_message: format_collision_error(&collisions),
-            })
-        };
-
-        Ok(Response::new(ExportLogsServiceResponse { partial_success }))
+        Ok(Response::new(ExportLogsServiceResponse {
+            partial_success: build_partial_success(&collisions),
+        }))
     }
 }
 
@@ -424,11 +478,7 @@ mod tests {
     /// Build a `ResourceLogs` with `log_count` records, each carrying the
     /// timestamps from the corresponding `(time_unix_nano, observed_time_unix_nano)`
     /// pair in `tss`.
-    fn rl_with_ts(
-        namespace: Option<&str>,
-        name: Option<&str>,
-        tss: &[(u64, u64)],
-    ) -> ResourceLogs {
+    fn rl_with_ts(namespace: Option<&str>, name: Option<&str>, tss: &[(u64, u64)]) -> ResourceLogs {
         let mut base = rl(namespace, name, 0);
         let records: Vec<LogRecord> = tss
             .iter()
@@ -479,6 +529,15 @@ mod tests {
         TenantId::from("t1")
     }
 
+    /// All compute_log_ts_range tests use a fixed ingestion_ns far
+    /// outside the range of "real" timestamps in the fixtures so it's
+    /// easy to tell tier-3 fallback values apart from the rows' own.
+    const TEST_INGESTION_NS: u64 = 1_000_000;
+
+    fn ingestion() -> file_registry::TimestampNs {
+        file_registry::TimestampNs(TEST_INGESTION_NS)
+    }
+
     #[test]
     fn compute_log_ts_range_uses_time_unix_nano_first() {
         let rls = vec![rl_with_ts(
@@ -486,7 +545,7 @@ mod tests {
             Some("api"),
             &[(100, 999), (200, 999), (50, 999)],
         )];
-        let (min, max) = compute_log_ts_range(&rls);
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
         assert_eq!(min, file_registry::TimestampNs(50));
         assert_eq!(max, file_registry::TimestampNs(200));
     }
@@ -498,34 +557,60 @@ mod tests {
             Some("api"),
             &[(0, 100), (0, 300), (0, 200)],
         )];
-        let (min, max) = compute_log_ts_range(&rls);
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
         assert_eq!(min, file_registry::TimestampNs(100));
         assert_eq!(max, file_registry::TimestampNs(300));
     }
 
     #[test]
-    fn compute_log_ts_range_skips_rows_with_neither() {
-        // Two rows with timestamps, two without.
+    fn compute_log_ts_range_synthesizes_fallback_per_row() {
+        // Two rows with explicit timestamps, two without. The two
+        // missing rows must get `ingestion_ns + row_idx` (their position
+        // across the whole iteration), exactly mirroring the indexer's
+        // tier-3 fallback. row_idx values: 0, 1, 2, 3.
+        // Rows: (0,0)→fallback at 1_000_000+0
+        //       (100,0)→100
+        //       (0,0)→fallback at 1_000_000+2
+        //       (50,0)→50
         let rls = vec![rl_with_ts(
             Some("prod"),
             Some("api"),
             &[(0, 0), (100, 0), (0, 0), (50, 0)],
         )];
-        let (min, max) = compute_log_ts_range(&rls);
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
         assert_eq!(min, file_registry::TimestampNs(50));
-        assert_eq!(max, file_registry::TimestampNs(100));
+        assert_eq!(max, file_registry::TimestampNs(TEST_INGESTION_NS + 2));
     }
 
     #[test]
-    fn compute_log_ts_range_all_missing_returns_zero() {
-        let rls = vec![rl_with_ts(
-            Some("prod"),
-            Some("api"),
-            &[(0, 0), (0, 0)],
-        )];
-        let (min, max) = compute_log_ts_range(&rls);
-        assert_eq!(min, file_registry::TimestampNs::ZERO);
-        assert_eq!(max, file_registry::TimestampNs::ZERO);
+    fn compute_log_ts_range_all_missing_uses_ingestion_plus_row_idx() {
+        // No row carries a timestamp. The synthesized fallbacks span
+        // [ingestion_ns, ingestion_ns + N - 1] for N rows.
+        let rls = vec![rl_with_ts(Some("prod"), Some("api"), &[(0, 0); 5])];
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
+        assert_eq!(min, file_registry::TimestampNs(TEST_INGESTION_NS));
+        assert_eq!(max, file_registry::TimestampNs(TEST_INGESTION_NS + 4));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one log record")]
+    fn compute_log_ts_range_panics_on_empty_input() {
+        // The function's precondition is documented and codified at
+        // every call site (see the `debug_assert!` in `export()`). The
+        // panic guards against silent breakage if a future caller ever
+        // hands in an empty group.
+        let rls: Vec<ResourceLogs> = Vec::new();
+        let _ = compute_log_ts_range(&rls, ingestion());
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one log record")]
+    fn compute_log_ts_range_panics_when_all_resource_logs_have_no_records() {
+        // Same precondition: a group of `ResourceLogs` whose `scope_logs`
+        // are all empty also has zero log records and must not reach
+        // this function.
+        let rls = vec![rl(Some("prod"), Some("api"), 0)];
+        let _ = compute_log_ts_range(&rls, ingestion());
     }
 
     #[test]
@@ -536,7 +621,7 @@ mod tests {
             Some("api"),
             &[(200, 999), (0, 50)],
         )];
-        let (min, max) = compute_log_ts_range(&rls);
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
         assert_eq!(min, file_registry::TimestampNs(50));
         assert_eq!(max, file_registry::TimestampNs(200));
     }
@@ -547,9 +632,23 @@ mod tests {
             rl_with_ts(Some("a"), Some("b"), &[(100, 0), (200, 0)]),
             rl_with_ts(Some("c"), Some("d"), &[(50, 0), (300, 0)]),
         ];
-        let (min, max) = compute_log_ts_range(&rls);
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
         assert_eq!(min, file_registry::TimestampNs(50));
         assert_eq!(max, file_registry::TimestampNs(300));
+    }
+
+    #[test]
+    fn compute_log_ts_range_row_idx_continues_across_resource_logs() {
+        // Indexer tier-3 increments row_idx across all rows in the
+        // group, not per-ResourceLogs. The fallback row in the second
+        // ResourceLogs must use row_idx = 2 (after two rows in rls[0]).
+        let rls = vec![
+            rl_with_ts(Some("a"), Some("b"), &[(100, 0), (200, 0)]),
+            rl_with_ts(Some("c"), Some("d"), &[(0, 0)]),
+        ];
+        let (min, max) = compute_log_ts_range(&rls, ingestion());
+        assert_eq!(min, file_registry::TimestampNs(100));
+        assert_eq!(max, file_registry::TimestampNs(TEST_INGESTION_NS + 2));
     }
 
     #[test]
@@ -718,6 +817,108 @@ mod tests {
         let r2 = check_collisions(&mut canonical, &t2, groups_t2);
         assert!(r2.collisions.is_empty());
         assert_eq!(r2.accepted.len(), 1);
+    }
+
+    /// Build a `NetdataLogsService` rooted at `wal_dir`. The
+    /// `LedgerSender` points at a path that intentionally won't accept a
+    /// connection — `send_events` is fire-and-forget over an internal
+    /// channel, so the unconnected sender doesn't block the service. The
+    /// background reconnect task gets dropped at end of test along with
+    /// the tokio runtime.
+    fn test_service(wal_dir: std::path::PathBuf) -> NetdataLogsService {
+        let socket = format!("/tmp/netdata-ingestor-test-{}.sock", std::process::id());
+        let sender = LedgerSender::new(&socket);
+
+        let mut rotation = HashMap::new();
+        rotation.insert(
+            "default".to_string(),
+            bridge::config::RotationEntry {
+                max_file_size: Some(bytesize::ByteSize::mb(64)),
+                max_log_entries: Some(100_000),
+                max_file_duration: Some(std::time::Duration::from_secs(3600)),
+            },
+        );
+        let wal_config = bridge::config::WalConfig {
+            dir: wal_dir.clone(),
+            crc_enabled: true,
+            compression_enabled: true,
+            rotation,
+        };
+
+        NetdataLogsService::new(
+            sender,
+            wal_dir,
+            wal_config,
+            Arc::new(AtomicU64::new(0)),
+            bridge::config::AuthConfig::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn empty_request_creates_no_wal_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_dir = tmp.path().to_path_buf();
+        let service = test_service(wal_dir.clone());
+
+        let req = Request::new(ExportLogsServiceRequest {
+            resource_logs: vec![],
+        });
+        let resp = service.export(req).await.unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(&wal_dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "no tenant directory should be created on a fully empty request"
+        );
+        assert!(resp.into_inner().partial_success.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_resource_logs_create_no_wal_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_dir = tmp.path().to_path_buf();
+        let service = test_service(wal_dir.clone());
+
+        // Two ResourceLogs with stream identity but zero log records.
+        // Pre-fix, each of these would have claimed a canonical pair and
+        // produced a WAL file with a zero-entry frame.
+        let req = Request::new(ExportLogsServiceRequest {
+            resource_logs: vec![
+                rl(Some("prod"), Some("api"), 0),
+                rl(Some("prod"), Some("worker"), 0),
+            ],
+        });
+        let resp = service.export(req).await.unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(&wal_dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "empty ResourceLogs must not create any WAL files"
+        );
+        assert!(resp.into_inner().partial_success.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_resource_logs_do_not_claim_canonical_pair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_dir = tmp.path().to_path_buf();
+        let service = test_service(wal_dir.clone());
+
+        // First request: empty ResourceLogs for `(prod, api)`. Pre-fix,
+        // this would claim the canonical pair for that ns_hash.
+        let _ = service
+            .export(Request::new(ExportLogsServiceRequest {
+                resource_logs: vec![rl(Some("prod"), Some("api"), 0)],
+            }))
+            .await
+            .unwrap();
+
+        // The canonical table should be empty — no claim was made.
+        let canonical = service.canonical.lock().unwrap();
+        assert!(
+            canonical.is_empty(),
+            "empty request must not have claimed a canonical (ns, name) pair"
+        );
     }
 
     #[test]

@@ -4,12 +4,12 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use file_registry::FileDir;
 use uuid::Uuid;
 
 use crate::Result;
-use crate::clock::MonotonicClock;
 use crate::config::Config;
 use file_registry::{ByteSize, FileId, TimestampNs};
 
@@ -44,13 +44,16 @@ impl SeqCounter {
 
 /// A single WAL output stream for one service (identified by `ns_hash`).
 ///
-/// Handles frame writing, compression, rotation, and lifecycle event emission.
+/// Handles frame writing, compression, rotation, and lifecycle event
+/// emission. The stream does not own a clock — every per-frame
+/// monotonic timestamp comes from the caller (typically a single
+/// process-wide `MonotonicClock` in the ingestor) so that
+/// frame-level ordering is consistent across all streams.
 struct Stream {
     dir: Arc<FileDir>,
     machine_id: Uuid,
     boot_id: Uuid,
     config: Config,
-    clock: MonotonicClock,
     active: Option<ActiveFile>,
     seq: SeqCounter,
     ns_hash: u64,
@@ -71,7 +74,6 @@ impl Stream {
             machine_id,
             boot_id,
             config,
-            clock: MonotonicClock::new(),
             active: None,
             seq,
             ns_hash,
@@ -88,17 +90,18 @@ impl Stream {
         &mut self,
         data: &[u8],
         log_entry_count: usize,
+        ingestion_ns: TimestampNs,
         log_min_ts_ns: TimestampNs,
         log_max_ts_ns: TimestampNs,
     ) -> Result<u64> {
-        if self.should_rotate_with(log_entry_count as u64) {
+        if self.should_rotate_with(log_entry_count as u64, ingestion_ns) {
             self.sync()?;
             self.close_active_file();
         }
 
         self.ensure_file()?;
 
-        let ts = TimestampNs(self.clock.now_ns());
+        let ts = ingestion_ns;
 
         let compressed = if self.config.compression_lz4() {
             lz4_flex::block::compress(data)
@@ -214,7 +217,15 @@ impl Stream {
             flags |= COMPRESSION_NONE;
         }
 
-        let created_at_ns = TimestampNs(self.clock.now_ns());
+        // The header's `created_at` is a per-file diagnostic, not used for
+        // ordering — `SystemTime::now()` is sufficient. Frame-level
+        // ordering is the caller-supplied `ingestion_ns` instead.
+        let created_at_ns = TimestampNs(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before Unix epoch")
+                .as_nanos() as u64,
+        );
         let header = FileHeader {
             version: FORMAT_VERSION,
             flags,
@@ -245,7 +256,7 @@ impl Stream {
         Ok(())
     }
 
-    fn should_rotate_with(&self, incoming_entries: u64) -> bool {
+    fn should_rotate_with(&self, incoming_entries: u64, ingestion_ns: TimestampNs) -> bool {
         let Some(active) = &self.active else {
             return false;
         };
@@ -258,8 +269,7 @@ impl Stream {
         if let (Some(max_dur), Some(first_frame_at)) =
             (self.config.rotation.max_duration, active.first_frame_at_ns)
         {
-            let now = self.clock.last_ns;
-            let elapsed_ns = now.saturating_sub(first_frame_at.0);
+            let elapsed_ns = ingestion_ns.0.saturating_sub(first_frame_at.0);
             if elapsed_ns >= max_dur.as_nanos() as u64 {
                 return true;
             }
@@ -335,22 +345,35 @@ impl Writer {
     ///
     /// Lazily creates a new stream if one doesn't exist for this `ns_hash`.
     ///
+    /// `ingestion_ns` is the caller's monotonic timestamp for this frame
+    /// — stamped into the frame header on disk and used by the indexer
+    /// as the tier-3 fallback (`ingestion_ns + row_offset`) for log rows
+    /// that lack `time_unix_nano` and `observed_time_unix_nano`. Callers
+    /// should typically obtain it from a single process-wide
+    /// [`file_registry::MonotonicClock`].
+    ///
     /// `log_min_ts_ns` / `log_max_ts_ns` describe the OTel time range of
     /// the log records inside `data` (per the hierarchy `time_unix_nano`
-    /// → `observed_time_unix_nano`; see the ingestor's
-    /// `compute_log_ts_range`). Pass `TimestampNs::ZERO` for both when no
-    /// log row in the frame had a usable timestamp — the writer's
-    /// per-file accumulator is then left unchanged.
+    /// → `observed_time_unix_nano` → `ingestion_ns + row_offset`; see
+    /// the ingestor's `compute_log_ts_range`). Pass `TimestampNs::ZERO`
+    /// for both when no log row in the frame had a usable timestamp —
+    /// the writer's per-file accumulator is then left unchanged.
     pub fn write_frame(
         &mut self,
         ns_hash: u64,
         data: &[u8],
         log_entry_count: usize,
+        ingestion_ns: TimestampNs,
         log_min_ts_ns: TimestampNs,
         log_max_ts_ns: TimestampNs,
     ) -> Result<u64> {
-        self.get_or_create(ns_hash)
-            .write_frame(data, log_entry_count, log_min_ts_ns, log_max_ts_ns)
+        self.get_or_create(ns_hash).write_frame(
+            data,
+            log_entry_count,
+            ingestion_ns,
+            log_min_ts_ns,
+            log_max_ts_ns,
+        )
     }
 
     /// Get or lazily create a stream for the given `ns_hash`.
@@ -439,13 +462,13 @@ mod tests {
         let data = b"test payload";
 
         writer
-            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(1, data, 1, TimestampNs(1), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
         writer
-            .write_frame(2, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(2, data, 1, TimestampNs(2), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
         writer
-            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(1, data, 1, TimestampNs(3), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
 
         writer.sync_all().unwrap();
@@ -475,13 +498,13 @@ mod tests {
 
         // Three frames with growing & overlapping ranges.
         writer
-            .write_frame(1, data, 1, TimestampNs(200), TimestampNs(300))
+            .write_frame(1, data, 1, TimestampNs(1), TimestampNs(200), TimestampNs(300))
             .unwrap();
         writer
-            .write_frame(1, data, 1, TimestampNs(150), TimestampNs(250))
+            .write_frame(1, data, 1, TimestampNs(2), TimestampNs(150), TimestampNs(250))
             .unwrap();
         writer
-            .write_frame(1, data, 1, TimestampNs(180), TimestampNs(400))
+            .write_frame(1, data, 1, TimestampNs(3), TimestampNs(180), TimestampNs(400))
             .unwrap();
 
         writer.sync_all().unwrap();
@@ -522,12 +545,14 @@ mod tests {
         let data = b"x";
 
         writer
-            .write_frame(1, data, 1, TimestampNs(500), TimestampNs(600))
+            .write_frame(1, data, 1, TimestampNs(1), TimestampNs(500), TimestampNs(600))
             .unwrap();
         // Frame whose logs all lacked time/observed timestamps — must
-        // not regress the accumulator.
+        // not regress the accumulator. (In production the ingestor would
+        // synthesize a fallback range; this test exercises the defense-
+        // in-depth ZERO/ZERO skip.)
         writer
-            .write_frame(1, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(1, data, 1, TimestampNs(2), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
 
         writer.sync_all().unwrap();
@@ -553,10 +578,10 @@ mod tests {
 
         let data = b"test payload";
         writer
-            .write_frame(10, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(10, data, 1, TimestampNs(1), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
         writer
-            .write_frame(20, data, 1, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(20, data, 1, TimestampNs(2), TimestampNs::ZERO, TimestampNs::ZERO)
             .unwrap();
 
         writer.sync_all().unwrap();

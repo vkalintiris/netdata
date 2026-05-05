@@ -234,6 +234,7 @@ mod tests {
                         0,
                         &(i as u32).to_le_bytes(),
                         1,
+                        TimestampNs(i as u64 + 1),
                         TimestampNs::ZERO,
                         TimestampNs::ZERO,
                     )
