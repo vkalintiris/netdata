@@ -150,11 +150,7 @@ impl Registry {
             .values()
             .filter(|f| !f.pending_deletion)
             .filter(move |f| range_overlaps(&f.summary, &q.time_range))
-            .filter(move |f| {
-                q.stream
-                    .as_ref()
-                    .is_none_or(|s| &f.summary.stream == s)
-            })
+            .filter(move |f| q.stream.as_ref().is_none_or(|s| &f.summary.stream == s))
     }
 
     pub fn len(&self) -> usize {
