@@ -13,29 +13,41 @@ use crate::registry::Registry;
 
 /// One file the query planner has decided is a candidate for a read.
 ///
-/// References point into the registries, so the result is bounded by
-/// the lifetime of the `Registry` it was produced from. Downstream code
-/// matches on the variant to choose the right reader (`sfst::Reader`
-/// vs `wal::Reader`) and access pattern.
+/// `Sfst` and `Wal` reference local files (registry-owned). `Remote`
+/// is an owned `CatalogEntry` parsed from a catalog file — it describes
+/// an SFST that exists in remote object storage but no longer locally.
+/// Downstream code matches on the variant to choose the right reader
+/// and access pattern (open via `sfst::Reader`, walk frames via
+/// `wal::Reader`, or fetch + cache + open for `Remote`).
 #[derive(Debug, Clone)]
 pub enum CandidateSource<'a> {
-    /// A sealed, indexed file. Open with `sfst::Reader::open`.
+    /// A sealed, indexed file on local disk. Open with `sfst::Reader::open`.
     Sfst(&'a sfst::File),
     /// A WAL file (active or archived) whose data has not yet been
     /// reflected in an SFST. Open with `wal::Reader::open`.
     Wal(&'a wal::File),
+    /// An SFST that lives only in remote object storage — described by a
+    /// catalog entry. Reader needs to fetch by `entry.remote_key` first
+    /// (separate concern from the planner).
+    Remote(otel_catalog::CatalogEntry),
 }
 
 impl Registry {
     /// Identify the set of files needed to satisfy `q`, deduplicated
-    /// across the SFST and WAL registries.
+    /// across the SFST registry, the WAL registry, and the catalog.
     ///
-    /// During the brief window between an SFST being tracked and its
-    /// originating WAL being deleted, a single `seq` lives in both
-    /// registries. The planner returns only the SFST candidate in that
-    /// case — the SFST is sealed, has a query-friendly layout, and
-    /// carries the authoritative summary. Reading the WAL would be
-    /// strictly more work for the same data.
+    /// Sources are walked in priority order so that the dedup rule —
+    /// **local always wins over remote, SFST always wins over WAL** —
+    /// falls out naturally:
+    ///
+    /// 1. `Remote` (catalog entries) seeded first — the lowest-priority
+    ///    source. An SFST that has been retention-evicted locally lives
+    ///    only here.
+    /// 2. `Wal` next — overwrites a `Remote` for the same seq if the
+    ///    WAL hasn't yet been indexed.
+    /// 3. `Sfst` last — the authoritative local source. Wins over both
+    ///    `Wal` (post-index, pre-WAL-delete window) and `Remote` (still
+    ///    local, not yet evicted).
     ///
     /// Output is sorted by `FileId.seq` for determinism. Seq is
     /// monotonic at allocation time, so the order correlates with file
@@ -45,10 +57,15 @@ impl Registry {
     pub fn plan_candidates<'a>(&'a self, q: &Query) -> Vec<CandidateSource<'a>> {
         let mut by_seq: HashMap<u64, CandidateSource<'a>> = HashMap::new();
 
-        // WAL first so SFST overwrites on the same seq.
+        // Remote (catalog) first, lowest priority.
+        for entry in self.catalog_files.candidates(q) {
+            by_seq.insert(entry.id.seq, CandidateSource::Remote(entry));
+        }
+        // WAL next — overwrites Remote for unindexed in-flight files.
         for f in self.wal.candidates(q) {
             by_seq.insert(f.id.seq, CandidateSource::Wal(f));
         }
+        // SFST last — authoritative local source, wins over everything.
         for f in self.sfst.candidates(q) {
             by_seq.insert(f.id.seq, CandidateSource::Sfst(f));
         }
@@ -57,6 +74,7 @@ impl Registry {
         out.sort_by_key(|c| match c {
             CandidateSource::Sfst(f) => f.id.seq,
             CandidateSource::Wal(f) => f.id.seq,
+            CandidateSource::Remote(e) => e.id.seq,
         });
         out
     }
@@ -125,6 +143,42 @@ mod tests {
                 total_logs: 1,
                 stream: StreamEntry::new("ns", "a"),
             },
+        );
+    }
+
+    /// Write a real catalog file containing one entry for `seq` and
+    /// register it with the catalog registry. The entry's stream is
+    /// always `("ns", "a")` to match `track_sfst`'s default.
+    fn track_remote(reg: &mut Registry, seq: u64, min_s: u32, max_s: u32) {
+        use chrono::NaiveDate;
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let entry = otel_catalog::CatalogEntry {
+            id: fid(seq, 0),
+            remote_key: format!("k{seq}"),
+            min_timestamp_s: min_s,
+            max_timestamp_s: max_s,
+            total_logs: 1,
+            stream: StreamEntry::new("ns", "a"),
+            size: ByteSize(1),
+            uploaded_at_ns: TimestampNs(0),
+        };
+
+        let mut catalog = otel_catalog::Catalog::new(
+            TenantId::from("tenant1"),
+            date,
+            machine(),
+            boot(),
+            TimestampNs(0),
+        );
+        catalog.add(entry, TimestampNs(0));
+
+        let path = reg.catalog_files.file_path(date, machine(), boot(), seq);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, catalog.to_json().unwrap()).unwrap();
+        let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+        reg.catalog_files.track(
+            otel_catalog::File::new(date, machine(), boot(), seq, TimestampNs(0), size),
+            path,
         );
     }
 
@@ -214,6 +268,73 @@ mod tests {
         let plan = reg.plan_candidates(&q);
         assert_eq!(plan.len(), 1);
         assert!(matches!(plan[0], CandidateSource::Sfst(f) if f.id.seq == 1));
+    }
+
+    #[test]
+    fn remote_only_candidates() {
+        let mut reg = make_registry();
+        track_remote(&mut reg, 1, 100, 200);
+        track_remote(&mut reg, 2, 300, 400);
+
+        let plan = reg.plan_candidates(&full_range_query());
+        assert_eq!(plan.len(), 2);
+        for c in &plan {
+            assert!(matches!(c, CandidateSource::Remote(_)));
+        }
+    }
+
+    #[test]
+    fn local_sfst_wins_over_remote_for_same_seq() {
+        // Pre-eviction: same seq is both indexed locally AND uploaded.
+        // The planner returns the local SFST; the catalog is hidden.
+        let mut reg = make_registry();
+        track_sfst(&mut reg, 1, 7, 100, 200);
+        track_remote(&mut reg, 1, 100, 200);
+
+        let plan = reg.plan_candidates(&full_range_query());
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(plan[0], CandidateSource::Sfst(f) if f.id.seq == 1));
+    }
+
+    #[test]
+    fn local_wal_wins_over_remote_for_same_seq() {
+        // An archived WAL whose original SFST has been evicted but the
+        // catalog still records it. The local WAL has the data; the
+        // planner picks WAL over Remote.
+        let mut reg = make_registry();
+        track_wal(&mut reg, 1, 7, 100, 200);
+        track_remote(&mut reg, 1, 100, 200);
+
+        let plan = reg.plan_candidates(&full_range_query());
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(plan[0], CandidateSource::Wal(f) if f.id.seq == 1));
+    }
+
+    #[test]
+    fn three_way_disjoint_returns_all_sources() {
+        let mut reg = make_registry();
+        track_sfst(&mut reg, 1, 7, 100, 200);
+        track_wal(&mut reg, 2, 7, 300, 400);
+        track_remote(&mut reg, 3, 500, 600);
+
+        let plan = reg.plan_candidates(&full_range_query());
+        assert_eq!(plan.len(), 3);
+        // Sorted by seq.
+        assert!(matches!(plan[0], CandidateSource::Sfst(f) if f.id.seq == 1));
+        assert!(matches!(plan[1], CandidateSource::Wal(f) if f.id.seq == 2));
+        assert!(matches!(plan[2], CandidateSource::Remote(ref e) if e.id.seq == 3));
+    }
+
+    #[test]
+    fn remote_excluded_by_time_range() {
+        let mut reg = make_registry();
+        track_remote(&mut reg, 1, 1000, 2000);
+
+        let q = Query {
+            time_range: 0..500,
+            stream: None,
+        };
+        assert!(reg.plan_candidates(&q).is_empty());
     }
 
     #[test]

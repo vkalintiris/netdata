@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use file_registry::{ByteSize, TenantId, TimestampNs};
+use file_registry::{ByteSize, Query, TenantId, TimestampNs};
 use uuid::Uuid;
+
+use crate::{Catalog, CatalogEntry};
 
 const CATALOG_EXT: &str = "catalog";
 
@@ -123,6 +125,33 @@ impl Registry {
 
     pub fn iter(&self) -> impl Iterator<Item = (&PathBuf, &File)> {
         self.files.iter()
+    }
+
+    /// Yield catalog entries that match `q`, drawn from every locally-
+    /// tracked catalog file (skipping those marked `pending_deletion`).
+    ///
+    /// Each catalog file is read and JSON-parsed lazily as the iterator
+    /// advances; corrupt or unreadable files are logged and skipped so a
+    /// single bad file doesn't sink the whole query. Entries are yielded
+    /// owned (`CatalogEntry`, not `&CatalogEntry`) because the parsed
+    /// `Catalog` they came from goes out of scope between files.
+    ///
+    /// The match logic is the same as [`Catalog::find`]: time-range
+    /// overlap on `[min_timestamp_s, max_timestamp_s]` against the
+    /// query's `[start, end)` plus optional exact stream equality.
+    ///
+    /// At v1 this re-parses every catalog file on every call. For
+    /// tenants with months of history (hundreds of files) this is single-
+    /// digit ms; revisit with a parsed-catalog cache when that becomes
+    /// the bottleneck.
+    pub fn candidates<'a>(&'a self, q: &Query) -> impl Iterator<Item = CatalogEntry> + 'a {
+        // Clone `q` once so the inner closure can borrow it across files
+        // without tying the iterator's lifetime to the caller's `q`.
+        let q_owned = q.clone();
+        self.files
+            .iter()
+            .filter(|(_, f)| !f.pending_deletion)
+            .flat_map(move |(path, _)| read_catalog_entries(path, &q_owned))
     }
 
     pub fn len(&self) -> usize {
@@ -273,6 +302,34 @@ impl Registry {
             }
         }
     }
+}
+
+/// Read and parse a catalog file from `path`, then return the entries
+/// matching `q`. Read or parse failures are logged and yield an empty
+/// vec so the calling iterator skips this file rather than erroring out
+/// the whole query.
+fn read_catalog_entries(path: &Path, q: &Query) -> Vec<CatalogEntry> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                "candidates: failed to read catalog file: {e}",
+            );
+            return Vec::new();
+        }
+    };
+    let catalog = match Catalog::from_json(&bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                "candidates: failed to parse catalog file: {e}",
+            );
+            return Vec::new();
+        }
+    };
+    catalog.find(q).cloned().collect()
 }
 
 /// Format a catalog filename: `{machine:32}-{boot:32}-{max_seq:010}.catalog`.
@@ -545,5 +602,188 @@ mod tests {
         // max_days so large that cutoff underflows → eviction list empty.
         let evicted = reg.evaluate_retention(u32::MAX, today);
         assert!(evicted.is_empty());
+    }
+
+    // ── candidates() tests ───────────────────────────────────────
+
+    use crate::entry::StreamEntry;
+
+    /// Write a catalog file containing `entries` to disk and return the
+    /// path. Also tracks it in the registry under the canonical
+    /// `(date, machine, boot, max_seq)` path.
+    fn write_catalog_file(
+        reg: &mut Registry,
+        max_seq: u64,
+        entries: Vec<CatalogEntry>,
+    ) -> PathBuf {
+        let path = reg.file_path(date(), machine(), boot(), max_seq);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let cat = {
+            let mut c = Catalog::new(
+                TenantId::from(TENANT),
+                date(),
+                machine(),
+                boot(),
+                TimestampNs(0),
+            );
+            for e in entries {
+                c.add(e, TimestampNs(0));
+            }
+            c
+        };
+        std::fs::write(&path, cat.to_json().unwrap()).unwrap();
+        let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+        reg.track(
+            File::new(date(), machine(), boot(), max_seq, TimestampNs(0), size),
+            path.clone(),
+        );
+        path
+    }
+
+    fn entry_at(seq: u64, min_s: u32, max_s: u32, stream: StreamEntry) -> CatalogEntry {
+        CatalogEntry {
+            id: file_registry::FileId::new(machine(), boot(), seq, 0),
+            remote_key: format!("k{seq}"),
+            min_timestamp_s: min_s,
+            max_timestamp_s: max_s,
+            total_logs: 1,
+            stream,
+            size: ByteSize(1),
+            uploaded_at_ns: TimestampNs(0),
+        }
+    }
+
+    fn seqs(mut iter: impl Iterator<Item = CatalogEntry>) -> Vec<u64> {
+        let mut v: Vec<u64> = std::iter::from_fn(|| iter.next().map(|e| e.id.seq)).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn candidates_yields_matching_entries_from_one_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        write_catalog_file(
+            &mut reg,
+            10,
+            vec![
+                entry_at(1, 100, 200, StreamEntry::new("ns", "a")),
+                entry_at(2, 300, 400, StreamEntry::new("ns", "a")),
+            ],
+        );
+
+        let q = Query {
+            time_range: 50..250,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1]);
+    }
+
+    #[test]
+    fn candidates_aggregates_across_catalog_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        write_catalog_file(
+            &mut reg,
+            10,
+            vec![entry_at(1, 100, 200, StreamEntry::new("ns", "a"))],
+        );
+        write_catalog_file(
+            &mut reg,
+            20,
+            vec![entry_at(2, 300, 400, StreamEntry::new("ns", "a"))],
+        );
+
+        let q = Query {
+            time_range: 0..1000,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1, 2]);
+    }
+
+    #[test]
+    fn candidates_applies_stream_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        write_catalog_file(
+            &mut reg,
+            10,
+            vec![
+                entry_at(1, 100, 200, StreamEntry::new("prod", "api")),
+                entry_at(2, 100, 200, StreamEntry::new("prod", "worker")),
+            ],
+        );
+
+        let q = Query {
+            time_range: 0..1000,
+            stream: Some(StreamEntry::new("prod", "api")),
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1]);
+    }
+
+    #[test]
+    fn candidates_skips_pending_deletion_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        let live = write_catalog_file(
+            &mut reg,
+            10,
+            vec![entry_at(1, 100, 200, StreamEntry::new("ns", "a"))],
+        );
+        let evicting = write_catalog_file(
+            &mut reg,
+            20,
+            vec![entry_at(2, 100, 200, StreamEntry::new("ns", "a"))],
+        );
+        reg.mark_pending_deletion(&evicting);
+        // `live` stays in normal state.
+        let _ = live;
+
+        let q = Query {
+            time_range: 0..1000,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1]);
+    }
+
+    #[test]
+    fn candidates_skips_corrupt_catalog_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+
+        // Good catalog with one entry.
+        write_catalog_file(
+            &mut reg,
+            10,
+            vec![entry_at(1, 100, 200, StreamEntry::new("ns", "a"))],
+        );
+
+        // Corrupt catalog: file exists but contains garbage. The registry
+        // tracks it; candidates() should log+skip it without poisoning
+        // the iterator.
+        let bad_path = reg.file_path(date(), machine(), boot(), 20);
+        std::fs::create_dir_all(bad_path.parent().unwrap()).unwrap();
+        std::fs::write(&bad_path, b"not valid json").unwrap();
+        reg.track(
+            File::new(date(), machine(), boot(), 20, TimestampNs(0), ByteSize(14)),
+            bad_path,
+        );
+
+        let q = Query {
+            time_range: 0..1000,
+            stream: None,
+        };
+        assert_eq!(seqs(reg.candidates(&q)), vec![1]);
+    }
+
+    #[test]
+    fn candidates_on_empty_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        let q = Query {
+            time_range: 0..u32::MAX,
+            stream: None,
+        };
+        assert_eq!(reg.candidates(&q).count(), 0);
     }
 }

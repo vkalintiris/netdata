@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use chrono::NaiveDate;
-use file_registry::{FileId, TenantId, TimestampNs};
+use file_registry::{FileId, Query, TenantId, TimestampNs};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::entry::CatalogEntry;
-use crate::query::CatalogQuery;
 use crate::{Error, FORMAT_VERSION};
 
 /// Per-tenant, per-date, per-machine, per-boot record of uploaded SFSTs.
@@ -59,22 +59,20 @@ impl Catalog {
     // filtering touches every entry. Fine at current scales (~hundreds of
     // entries per scope); revisit with an interval index or date-bucketed
     // key if query planner workloads show it matters.
-    pub fn entries_in_range<'a>(
-        &'a self,
-        min_s: u32,
-        max_s: u32,
-    ) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
+    /// Iterate entries whose `[min_timestamp_s, max_timestamp_s]` range
+    /// (inclusive on both ends) intersects the query's `[start, end)`
+    /// range (half-open) — matching the convention used by
+    /// `sfst::Registry::candidates` and `wal::Registry::candidates`.
+    pub fn find<'a>(&'a self, q: &Query) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
+        // Extract q's contents upfront so the filter closures don't borrow
+        // q. Decouples the iterator's lifetime from q's, letting callers
+        // pass a temporary `Query`.
+        let q_range = q.time_range.clone();
+        let q_stream = q.stream.clone();
         self.entries
             .values()
-            .filter(move |e| e.max_timestamp_s >= min_s && e.min_timestamp_s <= max_s)
-    }
-
-    pub fn find<'a>(&'a self, q: &'a CatalogQuery) -> impl Iterator<Item = &'a CatalogEntry> + 'a {
-        self.entries_in_range(q.min_timestamp_s, q.max_timestamp_s)
-            .filter(move |e| match &q.stream {
-                Some(s) => e.stream == *s,
-                None => true,
-            })
+            .filter(move |e| range_overlaps(e, &q_range))
+            .filter(move |e| q_stream.as_ref().is_none_or(|s| e.stream == *s))
     }
 
     pub fn to_json(&self) -> Result<Vec<u8>, Error> {
@@ -110,6 +108,18 @@ impl Catalog {
             updated_at_ns: env.updated_at_ns,
         })
     }
+}
+
+/// True iff the entry's `[min_timestamp_s, max_timestamp_s]` range
+/// (inclusive on both ends) shares any second with the query's
+/// `[start, end)` range (half-open).
+///
+/// An empty query (`start >= end`) matches no entry.
+fn range_overlaps(entry: &CatalogEntry, q: &Range<u32>) -> bool {
+    if q.start >= q.end {
+        return false;
+    }
+    entry.max_timestamp_s >= q.start && entry.min_timestamp_s < q.end
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,34 +229,36 @@ mod tests {
         c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), now);
         c.add(entry_at(3, 150, 350, StreamEntry::new("", "")), now);
 
-        let q = CatalogQuery {
-            min_timestamp_s: 50,
-            max_timestamp_s: 250,
+        // Window [50, 250) — file 1's max=200 is in range, file 3's
+        // min=150 is in range, file 2's min=300 is past the upper bound.
+        let q = Query {
+            time_range: 50..250,
             stream: None,
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
 
-        // Inclusive edges: query ends at 200 (entry 1's max), starts at 300 (entry 2's min)
-        let q = CatalogQuery {
-            min_timestamp_s: 200,
-            max_timestamp_s: 300,
+        // Inclusive lower / exclusive upper edges. Window [200, 300):
+        //  - file 1: max=200 ≥ 200 ✓ and min=100 < 300 ✓ → in
+        //  - file 2: max=400 ≥ 200 ✓ and min=300 < 300 ✗ → out
+        //  - file 3: max=350 ≥ 200 ✓ and min=150 < 300 ✓ → in
+        let q = Query {
+            time_range: 200..300,
             stream: None,
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
-        assert_eq!(hits, vec![1, 2, 3]);
+        assert_eq!(hits, vec![1, 3]);
 
-        let q = CatalogQuery {
-            min_timestamp_s: 500,
-            max_timestamp_s: 600,
+        let q = Query {
+            time_range: 500..600,
             stream: None,
         };
         assert_eq!(c.find(&q).count(), 0);
 
-        // Single-point range that hits entry 1 (max=200) and entry 3 (min=150, max=350)
-        let q = CatalogQuery {
-            min_timestamp_s: 200,
-            max_timestamp_s: 200,
+        // Single-second range [200, 201) hits file 1 (max=200) and
+        // file 3 (min=150, max=350); file 2's min=300 is out.
+        let q = Query {
+            time_range: 200..201,
             stream: None,
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
@@ -265,9 +277,8 @@ mod tests {
         );
         c.add(entry_at(3, 100, 200, StreamEntry::new("prod", "api")), now);
 
-        let q = CatalogQuery {
-            min_timestamp_s: 0,
-            max_timestamp_s: 1000,
+        let q = Query {
+            time_range: 0..1000,
             stream: Some(StreamEntry::new("prod", "api")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
@@ -281,9 +292,8 @@ mod tests {
         c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
         c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "api")), now);
 
-        let q = CatalogQuery {
-            min_timestamp_s: 0,
-            max_timestamp_s: 1000,
+        let q = Query {
+            time_range: 0..1000,
             stream: Some(StreamEntry::new("", "")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
@@ -291,23 +301,17 @@ mod tests {
     }
 
     #[test]
-    fn entries_in_range_agrees_with_find_when_no_stream_filter() {
+    fn find_empty_query_matches_nothing() {
         let mut c = test_catalog();
         let now = TimestampNs(3_000_000_000);
         c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
-        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), now);
-        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")), now);
 
-        let direct: Vec<u64> = c.entries_in_range(150, 350).map(|e| e.id.seq).collect();
-        let via_find: Vec<u64> = c
-            .find(&CatalogQuery {
-                min_timestamp_s: 150,
-                max_timestamp_s: 350,
-                stream: None,
-            })
-            .map(|e| e.id.seq)
-            .collect();
-        assert_eq!(direct, via_find);
+        // start == end → empty window.
+        let q = Query {
+            time_range: 200..200,
+            stream: None,
+        };
+        assert_eq!(c.find(&q).count(), 0);
     }
 
     #[test]
