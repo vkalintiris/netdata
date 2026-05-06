@@ -201,7 +201,10 @@ impl Registry {
     /// (one hash per `(namespace, name)` pair); equivalent to comparing
     /// canonical stream identities given the ingestor's collision-
     /// detection invariant.
-    pub fn candidates<'a>(&'a self, q: &'a Query) -> impl Iterator<Item = &'a File> + 'a {
+    pub fn candidates<'a>(&'a self, q: &Query) -> impl Iterator<Item = &'a File> + 'a {
+        // Extract q's contents upfront so the filter closures don't borrow
+        // q. This decouples the iterator's lifetime from q's, letting
+        // callers pass a temporary `Query` without binding it to a local.
         let q_min_ns = (q.time_range.start as u64) * 1_000_000_000;
         let q_max_ns = (q.time_range.end as u64) * 1_000_000_000;
         let stream_hash = q

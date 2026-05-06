@@ -129,12 +129,17 @@ impl Registry {
     /// Stream filter, when present, is exact equality on
     /// `(namespace, name)` — there is no partial / prefix matching, by
     /// design (each SFST holds exactly one stream; see [`StreamEntry`]).
-    pub fn candidates<'a>(&'a self, q: &'a Query) -> impl Iterator<Item = &'a File> + 'a {
+    pub fn candidates<'a>(&'a self, q: &Query) -> impl Iterator<Item = &'a File> + 'a {
+        // Extract q's contents upfront so the filter closures don't borrow
+        // q. This decouples the iterator's lifetime from q's, letting
+        // callers pass a temporary `Query` without binding it to a local.
+        let q_range = q.time_range.clone();
+        let q_stream = q.stream.clone();
         self.inner
             .values()
             .filter(|f| !f.pending_deletion)
-            .filter(move |f| range_overlaps(&f.summary, &q.time_range))
-            .filter(move |f| q.stream.as_ref().is_none_or(|s| &f.summary.stream == s))
+            .filter(move |f| range_overlaps(&f.summary, &q_range))
+            .filter(move |f| q_stream.as_ref().is_none_or(|s| &f.summary.stream == s))
     }
 
     pub fn len(&self) -> usize {
