@@ -13,6 +13,7 @@
 //! 4. Supervisor registers the declarations and enters its main loop.
 
 pub mod config;
+pub mod function;
 
 use netdata_plugin_types::{FunctionDeclaration, FunctionResult};
 use serde::{Deserialize, Serialize};
