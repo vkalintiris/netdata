@@ -3125,6 +3125,7 @@ dependencies = [
  "opendal",
  "otel-catalog",
  "serde",
+ "serde_json",
  "sfst",
  "tempfile",
  "tokio",

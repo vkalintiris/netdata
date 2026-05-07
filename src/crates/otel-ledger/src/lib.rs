@@ -42,10 +42,18 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         }
     };
 
-    let declarations = vec![netdata_plugin_types::FunctionDeclaration::new(
+    let mut decl = netdata_plugin_types::FunctionDeclaration::new(
         "otel-logs",
         "Query OpenTelemetry logs",
-    )];
+    );
+    decl.global = true;
+    decl.tags = Some("logs".to_string());
+    decl.access = Some(
+        netdata_plugin_types::HttpAccess::SIGNED_ID
+            | netdata_plugin_types::HttpAccess::SAME_SPACE
+            | netdata_plugin_types::HttpAccess::SENSITIVE_DATA,
+    );
+    let declarations = vec![decl];
 
     supervisor
         .send(LedgerResponse::Ready { declarations })

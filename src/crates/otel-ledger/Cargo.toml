@@ -24,6 +24,7 @@ opendal = { workspace = true }
 otel-catalog = { workspace = true }
 sfst = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 uuid = { workspace = true }
