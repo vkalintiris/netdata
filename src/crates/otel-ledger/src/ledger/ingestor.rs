@@ -19,27 +19,33 @@ impl Ledger {
         }
         self.expected_frame_seq = msg.frame_seq + 1;
 
-        // Apply the event to the proper registry
-        if let Err(e) = self.registries.apply_wal_event(&msg.tenant_id, &msg.event) {
-            tracing::error!("failed to apply WAL event: {e}");
-            return;
-        }
+        let req = {
+            let mut registries = self.registries.write().await;
 
-        // Send an indexing request when a WAL file is closed.
-        if let wal::FileEvent::Closed { file_id, .. } = msg.event {
-            let registry = self
-                .registries
-                .get(&msg.tenant_id)
-                .expect("tenant registry present after applying WAL event");
-
-            let req = IndexerRequest::Index {
-                wal_path: registry.wal.file_path(file_id),
-                sfst_path: registry.sfst.file_path(file_id),
-            };
-
-            if let Err(e) = self.indexer.send(req) {
-                tracing::error!("failed to send to indexer: {e}");
+            if let Err(e) = registries.apply_wal_event(&msg.tenant_id, &msg.event) {
+                tracing::error!("failed to apply WAL event: {e}");
+                return;
             }
+
+            // Build an indexing request when a WAL file is closed.
+            if let wal::FileEvent::Closed { file_id, .. } = msg.event {
+                let registry = registries
+                    .get(&msg.tenant_id)
+                    .expect("tenant registry present after applying WAL event");
+
+                Some(IndexerRequest::Index {
+                    wal_path: registry.wal.file_path(file_id),
+                    sfst_path: registry.sfst.file_path(file_id),
+                })
+            } else {
+                None
+            }
+        };
+
+        if let Some(req) = req
+            && let Err(e) = self.indexer.send(req)
+        {
+            tracing::error!("failed to send to indexer: {e}");
         }
     }
 }

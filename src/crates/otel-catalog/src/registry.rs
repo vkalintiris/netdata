@@ -611,11 +611,7 @@ mod tests {
     /// Write a catalog file containing `entries` to disk and return the
     /// path. Also tracks it in the registry under the canonical
     /// `(date, machine, boot, max_seq)` path.
-    fn write_catalog_file(
-        reg: &mut Registry,
-        max_seq: u64,
-        entries: Vec<CatalogEntry>,
-    ) -> PathBuf {
+    fn write_catalog_file(reg: &mut Registry, max_seq: u64, entries: Vec<CatalogEntry>) -> PathBuf {
         let path = reg.file_path(date(), machine(), boot(), max_seq);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let cat = {

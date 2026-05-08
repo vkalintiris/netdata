@@ -112,6 +112,21 @@ pub struct FunctionCallContext {
 }
 
 impl FunctionCallContext {
+    /// Build a context from its parts. The engine builds these
+    /// internally; this constructor exists for tests and any caller
+    /// that drives `FunctionHandler::on_call` directly.
+    pub fn new(
+        transaction: String,
+        progress: ProgressState,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            transaction,
+            progress,
+            cancellation,
+        }
+    }
+
     /// Returns the transaction identifier for this function call.
     pub fn transaction(&self) -> &str {
         &self.transaction
@@ -281,9 +296,12 @@ impl<H: FunctionHandler> RawFunctionHandler for HandlerAdapter<H> {
 
         ticker.abort();
 
+        // Fall back to 0 if the system clock is somehow before the
+        // epoch — losing the cache TTL is preferable to crashing the
+        // worker on a clock adjustment.
         let current_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
 
         let expires: u64 = current_timestamp + 2;

@@ -19,23 +19,29 @@ impl Ledger {
             } => {
                 tracing::info!(seq, "indexed");
 
-                // Lookup tenant registry
-                let Some((tenant_id, registry)) = self.registries.for_seq_mut(seq) else {
-                    tracing::error!(seq, "indexed unknown seq; no tenant mapping");
+                let Some((tenant_id, file_id, wal_path)) = ({
+                    let mut registries = self.registries.write().await;
+                    let Some((tenant_id, registry)) = registries.for_seq_mut(seq) else {
+                        tracing::error!(seq, "indexed unknown seq; no tenant mapping");
+                        return;
+                    };
+                    let Some(wal_file) = registry.wal.get(seq) else {
+                        tracing::error!(seq, "indexed unknown WAL");
+                        return;
+                    };
+                    let file_id = wal_file.id;
+                    let wal_path = registry.wal.file_path(file_id);
+
+                    // Track SFST file in registry. Summary fields
+                    // (timestamps, total logs, stream) live on the
+                    // registry entry; the uploader response handler
+                    // reads them back from there.
+                    registry.sfst.track(file_id, size, summary);
+
+                    Some((tenant_id, file_id, wal_path))
+                }) else {
                     return;
                 };
-                let Some(wal_file) = registry.wal.get(seq) else {
-                    tracing::error!(seq, "indexed unknown WAL");
-                    return;
-                };
-                let file_id = wal_file.id;
-
-                let wal_path = registry.wal.file_path(file_id);
-
-                // Track SFST file in registry. Summary fields (timestamps,
-                // total logs, stream) live on the registry entry; the
-                // uploader response handler reads them back from there.
-                registry.sfst.track(file_id, size, summary);
 
                 // Delete WAL file
                 let req = CleanerRequest::DeleteWalFile {
@@ -47,33 +53,35 @@ impl Ledger {
                 }
 
                 // Upload it to remote storage
-                self.request_upload(file_id, &tenant_id);
+                self.request_upload(file_id, &tenant_id).await;
 
                 // Run retention for the tenant
-                self.evaluate_retention(&tenant_id);
+                self.evaluate_retention(&tenant_id).await;
             }
         }
     }
 
-    fn request_upload(&mut self, id: FileId, tenant_id: &TenantId) {
+    async fn request_upload(&mut self, id: FileId, tenant_id: &TenantId) {
         if !self.logs_config.storage.enabled {
             return;
         }
-        let registry = self
-            .registries
-            .get(tenant_id)
-            .expect("tenant present after for_seq_mut");
-        let local_path = registry.sfst.file_path(id);
-        let date = registry
-            .sfst
-            .get(id.seq)
-            .and_then(|f| date_from_summary(&f.summary))
-            .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        let remote_key = crate::remote_keys::sfst(tenant_id, date, id);
-        let req = UploaderRequest::Upload {
-            seq: id.seq,
-            local_path,
-            remote_key,
+        let req = {
+            let registries = self.registries.read().await;
+            let registry = registries
+                .get(tenant_id)
+                .expect("tenant present after for_seq_mut");
+            let local_path = registry.sfst.file_path(id);
+            let date = registry
+                .sfst
+                .get(id.seq)
+                .and_then(|f| date_from_summary(&f.summary))
+                .unwrap_or_else(|| chrono::Utc::now().date_naive());
+            let remote_key = crate::remote_keys::sfst(tenant_id, date, id);
+            UploaderRequest::Upload {
+                seq: id.seq,
+                local_path,
+                remote_key,
+            }
         };
         if let Err(e) = self.uploader.send(req) {
             tracing::error!(seq = id.seq, "failed to send upload request: {e}");

@@ -3114,6 +3114,7 @@ name = "otel-ledger"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bridge",
  "bytesize",
  "chrono",
@@ -3121,6 +3122,8 @@ dependencies = [
  "file-registry",
  "journal-common",
  "log-index",
+ "netdata-plugin-error",
+ "netdata-plugin-protocol",
  "netdata-plugin-types",
  "opendal",
  "otel-catalog",
@@ -3890,7 +3893,6 @@ name = "rt"
 version = "0.1.3"
 dependencies = [
  "async-trait",
- "bridge",
  "bytes",
  "console-subscriber",
  "futures",

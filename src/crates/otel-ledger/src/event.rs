@@ -1,4 +1,4 @@
-use bridge::LedgerRequest;
+use bridge::{LedgerRequest, LedgerResponse};
 
 use crate::ipc::{CatalogBuilderResponse, CleanerResponse, IndexerResponse, UploaderResponse};
 
@@ -16,4 +16,8 @@ pub enum LedgerEvent {
     CatalogBuilderResp(CatalogBuilderResponse),
     /// A request from the supervisor.
     SupervisorReq(LedgerRequest),
+    /// A response produced by a spawned function-handler task that
+    /// needs to be forwarded to the supervisor. The run-loop owns
+    /// `self.supervisor`, so handlers funnel through this arm.
+    OutboundResp(LedgerResponse),
 }

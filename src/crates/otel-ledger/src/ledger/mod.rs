@@ -15,11 +15,17 @@ mod rpc;
 mod uploader;
 
 pub(crate) use helpers::{build_catalog_entry, catalog_retention_days, date_from_summary};
+pub(crate) use rpc::OtelLogsHandler;
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use bridge::config::LogsConfig;
+use bridge::function::HandlerAdapter;
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use file_registry::TenantId;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog_builder::{CatalogBuilder, CatalogBuilderArgs};
@@ -45,10 +51,25 @@ pub struct Ledger {
     cleaner: ComponentHandle<CleanerRequest, CleanerResponse>,
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
     catalog_builder: ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
-    registries: TenantRegistries,
+    registries: Arc<RwLock<TenantRegistries>>,
     logs_config: LogsConfig,
     expected_frame_seq: u64,
     pub(crate) cancel: CancellationToken,
+
+    /// Sender side of the outbound funnel. Spawned function-handler
+    /// tasks send `LedgerResponse` here; the run-loop forwards them
+    /// to `self.supervisor`.
+    outbound_tx: mpsc::UnboundedSender<LedgerResponse>,
+    /// Receiver side; consumed by the run-loop's `select!`.
+    outbound_rx: mpsc::UnboundedReceiver<LedgerResponse>,
+    /// Per-call cancellation tokens. Populated on `LedgerRequest::Call`,
+    /// cancelled and dropped on `LedgerRequest::Cancel`, dropped on
+    /// `LedgerResponse::Result`.
+    transactions: HashMap<String, CancellationToken>,
+    /// Function-call dispatcher. Adapts the typed `OtelLogsHandler` to
+    /// the raw `FunctionCall` / `FunctionResult` shape the engine
+    /// produces.
+    handler: Arc<HandlerAdapter<OtelLogsHandler>>,
 }
 
 impl Ledger {
@@ -179,6 +200,18 @@ impl Ledger {
         let ingestor = crate::ipc::accept_writer(writer_socket_path).await?;
         tracing::info!("ingestor connected");
 
+        // Wrap registries for shared access between the run-loop and
+        // spawned function-handler tasks. Recovery above ran against
+        // the local owned value, so no lock contention happens until
+        // a Call arrives.
+        let registries = Arc::new(RwLock::new(registries));
+
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+
+        let handler = Arc::new(HandlerAdapter::new(OtelLogsHandler::new(
+            registries.clone(),
+        )));
+
         Ok(Self {
             supervisor,
             ingestor,
@@ -190,6 +223,10 @@ impl Ledger {
             logs_config: logs_config.clone(),
             expected_frame_seq: 1,
             cancel,
+            outbound_tx,
+            outbound_rx,
+            transactions: HashMap::new(),
+            handler,
         })
     }
 
@@ -214,19 +251,23 @@ impl Ledger {
                     None => break Ok(()),
                 },
                 req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
+                Some(out) = self.outbound_rx.recv() => LedgerEvent::OutboundResp(out),
             };
 
             match event {
                 LedgerEvent::WalMsg(msg) => self.handle_ingestor_msg(msg).await,
                 LedgerEvent::IndexerResp(resp) => self.handle_indexer_resp(resp).await,
-                LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp),
-                LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp),
-                LedgerEvent::CatalogBuilderResp(resp) => self.handle_catalog_builder_resp(resp),
+                LedgerEvent::CleanerResp(resp) => self.handle_cleaner_resp(resp).await,
+                LedgerEvent::UploaderResp(resp) => self.handle_uploader_resp(resp).await,
+                LedgerEvent::CatalogBuilderResp(resp) => {
+                    self.handle_catalog_builder_resp(resp).await
+                }
                 LedgerEvent::SupervisorReq(req) => {
                     if self.handle_supervisor_req(req).await? {
                         return Ok(());
                     }
                 }
+                LedgerEvent::OutboundResp(resp) => self.handle_outbound_resp(resp).await?,
             }
         }
     }

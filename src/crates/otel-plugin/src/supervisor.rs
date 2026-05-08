@@ -65,6 +65,8 @@ struct Supervisor {
     ledger_child: ChildGuard,
     /// Maps function name → owning worker.
     routing: HashMap<String, Worker>,
+    /// Maps in-flight transaction id → owning worker.
+    transactions: HashMap<String, Worker>,
     reader: MessageReader<tokio::io::Stdin>,
     writer: MessageWriter<tokio::io::Stdout>,
     /// Removes socket files on drop.
@@ -138,31 +140,37 @@ impl Supervisor {
             return;
         };
 
-        match worker {
+        // Record the transaction so subsequent Cancel / Result events
+        // can route to the right worker without fan-out.
+        self.transactions.insert(call.transaction.clone(), worker);
+
+        let send_result = match worker {
             Worker::Ingestor => {
                 let req = IngestorRequest::Call {
-                    transaction: call.transaction,
+                    transaction: call.transaction.clone(),
                     timeout: call.timeout,
                     name: call.name,
                     args: call.args,
                     payload: call.payload,
                 };
-                if let Err(e) = self.ingestor.send(req).await {
-                    tracing::error!("failed to send to ingestor: {e}");
-                }
+                self.ingestor.send(req).await.map_err(|e| ("ingestor", e))
             }
             Worker::Ledger => {
                 let req = LedgerRequest::Call {
-                    transaction: call.transaction,
+                    transaction: call.transaction.clone(),
                     timeout: call.timeout,
                     name: call.name,
                     args: call.args,
                     payload: call.payload,
                 };
-                if let Err(e) = self.ledger.send(req).await {
-                    tracing::error!("failed to send to ledger: {e}");
-                }
+                self.ledger.send(req).await.map_err(|e| ("ledger", e))
             }
+        };
+
+        if let Err((worker_name, e)) = send_result {
+            tracing::error!("failed to send to {worker_name}: {e}");
+            // Worker never received the call — drop the transaction.
+            self.transactions.remove(&call.transaction);
         }
     }
 
@@ -193,18 +201,28 @@ impl Supervisor {
         .await;
     }
 
-    /// Route a cancel to the appropriate worker.
+    /// Route a cancel to the worker that owns the transaction.
     async fn handle_cancel(&mut self, transaction: String) {
-        // We don't track which worker owns a transaction, so send to both.
-        let req = IngestorRequest::Cancel {
-            transaction: transaction.clone(),
+        let Some(worker) = self.transactions.remove(&transaction) else {
+            tracing::debug!(
+                transaction = %transaction,
+                "cancel for unknown transaction, ignoring"
+            );
+            return;
         };
-        if let Err(e) = self.ingestor.send(req).await {
-            tracing::error!("failed to send cancel to ingestor: {e}");
-        }
-        let req = LedgerRequest::Cancel { transaction };
-        if let Err(e) = self.ledger.send(req).await {
-            tracing::error!("failed to send cancel to ledger: {e}");
+        match worker {
+            Worker::Ingestor => {
+                let req = IngestorRequest::Cancel { transaction };
+                if let Err(e) = self.ingestor.send(req).await {
+                    tracing::error!("failed to send cancel to ingestor: {e}");
+                }
+            }
+            Worker::Ledger => {
+                let req = LedgerRequest::Cancel { transaction };
+                if let Err(e) = self.ledger.send(req).await {
+                    tracing::error!("failed to send cancel to ledger: {e}");
+                }
+            }
         }
     }
 
@@ -212,7 +230,16 @@ impl Supervisor {
     async fn handle_ingestor_response(&mut self, resp: IngestorResponse) {
         match resp {
             IngestorResponse::Result(result) => {
-                if let Err(e) = self
+                // If the transaction was already removed by a Cancel,
+                // the agent considers it done — don't forward the
+                // post-cancel Result. Otherwise drain the entry and
+                // forward.
+                if self.transactions.remove(&result.transaction).is_none() {
+                    tracing::debug!(
+                        transaction = %result.transaction,
+                        "dropping post-cancel result from ingestor"
+                    );
+                } else if let Err(e) = self
                     .writer
                     .send(Message::FunctionResult(Box::new(result)))
                     .await
@@ -249,7 +276,16 @@ impl Supervisor {
     async fn handle_ledger_response(&mut self, resp: LedgerResponse) {
         match resp {
             LedgerResponse::Result(result) => {
-                if let Err(e) = self
+                // If the transaction was already removed by a Cancel,
+                // the agent considers it done — don't forward the
+                // post-cancel Result. Otherwise drain the entry and
+                // forward.
+                if self.transactions.remove(&result.transaction).is_none() {
+                    tracing::debug!(
+                        transaction = %result.transaction,
+                        "dropping post-cancel result from ledger"
+                    );
+                } else if let Err(e) = self
                     .writer
                     .send(Message::FunctionResult(Box::new(result)))
                     .await
@@ -456,6 +492,7 @@ pub async fn run() -> anyhow::Result<()> {
         ledger: ledger_conn,
         ledger_child,
         routing: HashMap::new(),
+        transactions: HashMap::new(),
         reader: MessageReader::new(tokio::io::stdin()),
         writer: MessageWriter::new(tokio::io::stdout()),
         sockets: [writer_sock, ledger_sock, ingestor_sock],
