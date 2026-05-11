@@ -137,9 +137,13 @@ pub enum CatalogBuilderResponse {
         machine_id: uuid::Uuid,
         boot_id: uuid::Uuid,
         max_seq: u64,
+        /// Union `[min_timestamp_s, max_timestamp_s]` across all
+        /// entries in the rotated catalog. Encoded into the filename
+        /// so the planner can pre-filter without opening the file.
+        min_timestamp_s: u32,
+        max_timestamp_s: u32,
         path: std::path::PathBuf,
         size: file_registry::ByteSize,
-        created_at_ns: file_registry::TimestampNs,
         /// All SFST sequence numbers included in the rotated catalog file.
         seqs: Vec<u64>,
     },

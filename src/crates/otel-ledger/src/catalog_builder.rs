@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use file_registry::{ByteSize, TenantId, TimestampNs};
+use file_registry::{ByteSize, TenantId};
 use otel_catalog::Catalog;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,6 @@ use uuid::Uuid;
 
 use crate::component::Component;
 use crate::ipc::{CatalogBuilderRequest, CatalogBuilderResponse};
-use crate::recovery::now_ns;
 
 pub struct CatalogBuilderArgs {
     /// Tenant-prefix root for catalog storage (typically `logs_config.index.dir`).
@@ -76,24 +75,38 @@ async fn handle_request(
     let seq = entry.id.seq;
     let machine_id = entry.id.machine_id;
     let boot_id = entry.id.boot_id;
-    let now = TimestampNs(now_ns());
 
     let key: ScopeKey = (tenant_id.clone(), date, machine_id, boot_id);
     let catalog = accumulators
         .entry(key.clone())
-        .or_insert_with(|| Catalog::new(tenant_id.clone(), date, machine_id, boot_id, now));
-    catalog.add(entry, now);
+        .or_insert_with(|| Catalog::new(tenant_id.clone(), date, machine_id, boot_id));
+    catalog.add(entry);
 
     if catalog.entries.len() < args.rotation_count {
         return CatalogBuilderResponse::EntryAccepted { seq };
     }
 
+    // Fold the accumulator down to (max_seq, min_ts, max_ts, seqs)
+    // in one pass. `unwrap_or(seq)` covers the impossible empty case
+    // (we just added an entry, so entries is non-empty).
     let max_seq = catalog
         .entries
         .values()
         .map(|e| e.id.seq)
         .max()
         .unwrap_or(seq);
+    let min_timestamp_s = catalog
+        .entries
+        .values()
+        .map(|e| e.min_timestamp_s)
+        .min()
+        .unwrap_or(0);
+    let max_timestamp_s = catalog
+        .entries
+        .values()
+        .map(|e| e.max_timestamp_s)
+        .max()
+        .unwrap_or(0);
     let seqs: Vec<u64> = catalog.entries.values().map(|e| e.id.seq).collect();
 
     let bytes = match catalog.to_json() {
@@ -123,6 +136,8 @@ async fn handle_request(
         machine_id,
         boot_id,
         max_seq,
+        min_timestamp_s,
+        max_timestamp_s,
     );
     if let Err(e) = write_local_atomic(&path, &bytes).await {
         tracing::error!(
@@ -157,21 +172,23 @@ async fn handle_request(
         machine_id,
         boot_id,
         max_seq,
+        min_timestamp_s,
+        max_timestamp_s,
         path,
         size,
-        created_at_ns: now,
         seqs,
     }
 }
 
 /// Full on-disk path for a catalog file.
 ///
-/// Layout: `{base}/{YYYY-MM-DD}/{tenant_id}/{machine}-{boot}-{max_seq}.catalog`.
+/// Layout: `{base}/{YYYY-MM-DD}/{tenant_id}/{machine}-{boot}-{max_seq}-{min_ts}-{max_ts}.catalog`.
 /// The base directory (`logs_config.catalog.dir`) is dedicated to catalog
 /// files, so there's no `catalog/` subdir — same convention as WAL and SFST.
 ///
 /// `tenant_id` is expected to be pre-validated by
 /// `otel_ingestor::logs_service::validate_tenant_id`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn scope_path(
     base: &Path,
     tenant_id: &TenantId,
@@ -179,10 +196,18 @@ pub(crate) fn scope_path(
     machine_id: Uuid,
     boot_id: Uuid,
     max_seq: u64,
+    min_timestamp_s: u32,
+    max_timestamp_s: u32,
 ) -> PathBuf {
     base.join(date.format("%Y-%m-%d").to_string())
         .join(tenant_id.as_str())
-        .join(otel_catalog::filename(machine_id, boot_id, max_seq))
+        .join(otel_catalog::filename(
+            machine_id,
+            boot_id,
+            max_seq,
+            min_timestamp_s,
+            max_timestamp_s,
+        ))
 }
 
 async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -227,7 +252,7 @@ mod tests {
             total_logs: 100,
             stream: StreamEntry::new("prod", "api"),
             size: ByteSize(1024),
-            uploaded_at_ns: TimestampNs(2_000_000_000),
+            uploaded_at_ns: file_registry::TimestampNs(2_000_000_000),
         }
     }
 
@@ -292,6 +317,8 @@ mod tests {
             machine(),
             boot(),
             1,
+            1_700_000_000,
+            1_700_003_600,
         );
         assert!(!expected_path.exists(), "must not rotate below threshold");
     }

@@ -543,16 +543,18 @@ mod tests {
             .join("tenant1");
         std::fs::create_dir_all(&dir).unwrap();
         let max_seq = entries.iter().map(|e| e.id.seq).max().unwrap();
-        let path = dir.join(otel_catalog::filename(machine(), boot(), max_seq));
-        let mut catalog = Catalog::new(
-            TenantId::from("tenant1"),
-            date,
+        let min_ts = entries.iter().map(|e| e.min_timestamp_s).min().unwrap_or(0);
+        let max_ts = entries.iter().map(|e| e.max_timestamp_s).max().unwrap_or(0);
+        let path = dir.join(otel_catalog::filename(
             machine(),
             boot(),
-            file_registry::TimestampNs(0),
-        );
+            max_seq,
+            min_ts,
+            max_ts,
+        ));
+        let mut catalog = Catalog::new(TenantId::from("tenant1"), date, machine(), boot());
         for entry in entries {
-            catalog.add(entry.clone(), file_registry::TimestampNs(0));
+            catalog.add(entry.clone());
         }
         std::fs::write(&path, catalog.to_json().unwrap()).unwrap();
         path
@@ -591,7 +593,7 @@ mod tests {
             .join("tenant1");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join(otel_catalog::filename(machine(), boot(), 1)),
+            dir.join(otel_catalog::filename(machine(), boot(), 1, 0, 0)),
             b"not valid json",
         )
         .unwrap();

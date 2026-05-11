@@ -21,9 +21,10 @@ impl Ledger {
                 machine_id,
                 boot_id,
                 max_seq,
+                min_timestamp_s,
+                max_timestamp_s,
                 path,
                 size,
-                created_at_ns,
                 seqs,
             } => {
                 tracing::info!(
@@ -33,8 +34,15 @@ impl Ledger {
                     "catalog rotated",
                 );
 
-                let remote_key =
-                    crate::remote_keys::catalog(date, &tenant_id, machine_id, boot_id, max_seq);
+                let remote_key = crate::remote_keys::catalog(
+                    date,
+                    &tenant_id,
+                    machine_id,
+                    boot_id,
+                    max_seq,
+                    min_timestamp_s,
+                    max_timestamp_s,
+                );
 
                 {
                     let mut registries = self.registries.write().await;
@@ -44,7 +52,8 @@ impl Ledger {
                             machine_id,
                             boot_id,
                             max_seq,
-                            created_at_ns,
+                            min_timestamp_s,
+                            max_timestamp_s,
                             size,
                         );
                         registry.catalog_files.track(file, path.clone());

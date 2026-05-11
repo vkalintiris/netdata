@@ -42,12 +42,20 @@ pub fn catalog(
     machine_id: Uuid,
     boot_id: Uuid,
     max_seq: u64,
+    min_timestamp_s: u32,
+    max_timestamp_s: u32,
 ) -> String {
     format!(
         "{}/{}/catalog/{}",
         date.format("%Y-%m-%d"),
         tenant_id,
-        otel_catalog::filename(machine_id, boot_id, max_seq),
+        otel_catalog::filename(
+            machine_id,
+            boot_id,
+            max_seq,
+            min_timestamp_s,
+            max_timestamp_s,
+        ),
     )
 }
 
@@ -105,7 +113,15 @@ mod tests {
 
     #[test]
     fn catalog_key_is_date_first() {
-        let key = catalog(sample_date(), &tenant(), machine(), boot(), 100);
+        let key = catalog(
+            sample_date(),
+            &tenant(),
+            machine(),
+            boot(),
+            100,
+            1_700_000_000,
+            1_700_003_600,
+        );
         assert!(key.starts_with("2026-04-17/tenant1/catalog/"));
         assert!(key.ends_with(".catalog"));
     }

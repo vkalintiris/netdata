@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
-use file_registry::{FileId, Query, TenantId, TimestampNs};
+use file_registry::{FileId, Query, TenantId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +10,12 @@ use crate::entry::CatalogEntry;
 use crate::{Error, FORMAT_VERSION};
 
 /// Per-tenant, per-date, per-machine, per-boot record of uploaded SFSTs.
+///
+/// The catalog file's identifying metadata (tenant, date, machine, boot)
+/// is encoded in the path; entries carry their own per-SFST timestamps,
+/// and the file's union `[min, max]` time range is encoded in the
+/// filename. No per-catalog "created_at" timestamp is stored — nothing
+/// in the planner reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Catalog {
     pub tenant_id: TenantId,
@@ -17,42 +23,25 @@ pub struct Catalog {
     pub machine_id: Uuid,
     pub boot_id: Uuid,
     pub entries: BTreeMap<FileId, CatalogEntry>,
-    pub created_at_ns: TimestampNs,
-    pub updated_at_ns: TimestampNs,
 }
 
 impl Catalog {
-    pub fn new(
-        tenant_id: TenantId,
-        date: NaiveDate,
-        machine_id: Uuid,
-        boot_id: Uuid,
-        now_ns: TimestampNs,
-    ) -> Self {
+    pub fn new(tenant_id: TenantId, date: NaiveDate, machine_id: Uuid, boot_id: Uuid) -> Self {
         Self {
             tenant_id,
             date,
             machine_id,
             boot_id,
             entries: BTreeMap::new(),
-            created_at_ns: now_ns,
-            updated_at_ns: now_ns,
         }
     }
 
-    pub fn add(&mut self, entry: CatalogEntry, now_ns: TimestampNs) {
+    pub fn add(&mut self, entry: CatalogEntry) {
         self.entries.insert(entry.id, entry);
-        if now_ns > self.updated_at_ns {
-            self.updated_at_ns = now_ns;
-        }
     }
 
-    pub fn remove(&mut self, id: &FileId, now_ns: TimestampNs) -> Option<CatalogEntry> {
-        let removed = self.entries.remove(id);
-        if removed.is_some() && now_ns > self.updated_at_ns {
-            self.updated_at_ns = now_ns;
-        }
-        removed
+    pub fn remove(&mut self, id: &FileId) -> Option<CatalogEntry> {
+        self.entries.remove(id)
     }
 
     // TODO: O(n) scan. The BTreeMap is keyed by FileId, not time, so range
@@ -82,8 +71,6 @@ impl Catalog {
             date: self.date,
             machine_id: self.machine_id,
             boot_id: self.boot_id,
-            created_at_ns: self.created_at_ns,
-            updated_at_ns: self.updated_at_ns,
             entries: self.entries.values().cloned().collect(),
         };
         Ok(serde_json::to_vec(&env)?)
@@ -104,8 +91,6 @@ impl Catalog {
             machine_id: env.machine_id,
             boot_id: env.boot_id,
             entries,
-            created_at_ns: env.created_at_ns,
-            updated_at_ns: env.updated_at_ns,
         })
     }
 }
@@ -129,8 +114,6 @@ struct Envelope {
     date: NaiveDate,
     machine_id: Uuid,
     boot_id: Uuid,
-    created_at_ns: TimestampNs,
-    updated_at_ns: TimestampNs,
     entries: Vec<CatalogEntry>,
 }
 
@@ -138,7 +121,7 @@ struct Envelope {
 mod tests {
     use super::*;
     use crate::entry::StreamEntry;
-    use file_registry::ByteSize;
+    use file_registry::{ByteSize, TimestampNs};
 
     fn test_catalog() -> Catalog {
         Catalog::new(
@@ -146,7 +129,6 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 4, 17).unwrap(),
             Uuid::nil(),
             Uuid::from_u128(1),
-            TimestampNs(1_000_000_000),
         )
     }
 
@@ -164,57 +146,28 @@ mod tests {
     }
 
     #[test]
-    fn new_has_empty_entries_and_matching_timestamps() {
+    fn new_has_empty_entries() {
         let c = test_catalog();
         assert!(c.entries.is_empty());
-        assert_eq!(c.created_at_ns, c.updated_at_ns);
     }
 
     #[test]
     fn add_then_remove_returns_to_empty() {
         let mut c = test_catalog();
         let e = entry_at(1, 100, 200, StreamEntry::new("", ""));
-        c.add(e.clone(), TimestampNs(3_000_000_000));
+        c.add(e.clone());
         assert_eq!(c.entries.len(), 1);
 
-        let removed = c.remove(&e.id, TimestampNs(4_000_000_000)).unwrap();
+        let removed = c.remove(&e.id).unwrap();
         assert_eq!(removed, e);
         assert!(c.entries.is_empty());
-        assert_eq!(c.updated_at_ns, TimestampNs(4_000_000_000));
-    }
-
-    #[test]
-    fn remove_missing_returns_none_without_advancing_updated_at() {
-        let mut c = test_catalog();
-        let before = c.updated_at_ns;
-        let fake = FileId::new(Uuid::nil(), Uuid::from_u128(1), 42, 0);
-        assert!(c.remove(&fake, TimestampNs(9_999_999_999)).is_none());
-        assert_eq!(c.updated_at_ns, before);
-    }
-
-    #[test]
-    fn add_older_now_does_not_regress_updated_at() {
-        let mut c = test_catalog();
-        let high = TimestampNs(5_000_000_000);
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), high);
-        c.add(
-            entry_at(2, 300, 400, StreamEntry::new("", "")),
-            TimestampNs(1_000),
-        );
-        assert_eq!(c.updated_at_ns, high);
     }
 
     #[test]
     fn roundtrip_json_preserves_entries_and_metadata() {
         let mut c = test_catalog();
-        c.add(
-            entry_at(1, 100, 200, StreamEntry::new("prod", "api")),
-            TimestampNs(3_000_000_000),
-        );
-        c.add(
-            entry_at(2, 300, 500, StreamEntry::new("", "")),
-            TimestampNs(4_000_000_000),
-        );
+        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")));
+        c.add(entry_at(2, 300, 500, StreamEntry::new("", "")));
 
         let bytes = c.to_json().unwrap();
         let parsed = Catalog::from_json(&bytes).unwrap();
@@ -224,10 +177,9 @@ mod tests {
     #[test]
     fn find_range_overlap_semantics() {
         let mut c = test_catalog();
-        let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
-        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")), now);
-        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
+        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")));
+        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")));
 
         // Window [50, 250) — file 1's max=200 is in range, file 3's
         // min=150 is in range, file 2's min=300 is past the upper bound.
@@ -268,14 +220,10 @@ mod tests {
     #[test]
     fn find_with_stream_filter_matches_by_exact_equality() {
         let mut c = test_catalog();
-        let now = TimestampNs(3_000_000_000);
         // Two entries on the "api" stream, one on "worker".
-        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")), now);
-        c.add(
-            entry_at(2, 100, 200, StreamEntry::new("prod", "worker")),
-            now,
-        );
-        c.add(entry_at(3, 100, 200, StreamEntry::new("prod", "api")), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")));
+        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "worker")));
+        c.add(entry_at(3, 100, 200, StreamEntry::new("prod", "api")));
 
         let q = Query {
             time_range: 0..1000,
@@ -288,9 +236,8 @@ mod tests {
     #[test]
     fn find_empty_string_stream_matches_only_empty_string_entry() {
         let mut c = test_catalog();
-        let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
-        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "api")), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
+        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "api")));
 
         let q = Query {
             time_range: 0..1000,
@@ -303,8 +250,7 @@ mod tests {
     #[test]
     fn find_empty_query_matches_nothing() {
         let mut c = test_catalog();
-        let now = TimestampNs(3_000_000_000);
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")), now);
+        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
 
         // start == end → empty window.
         let q = Query {
@@ -322,8 +268,6 @@ mod tests {
             "date": "2026-04-17",
             "machine_id": "00000000-0000-0000-0000-000000000000",
             "boot_id": "00000000-0000-0000-0000-000000000000",
-            "created_at_ns": 0,
-            "updated_at_ns": 0,
             "entries": []
         }"#;
         match Catalog::from_json(json) {
