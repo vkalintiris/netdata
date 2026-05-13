@@ -128,7 +128,7 @@ void send_node_info_with_wait(RRDHOST *host)
     // sc is automatically freed when both waiter and query release their references
 }
 
-void send_node_update_with_wait(RRDHOST *host, int live, int queryable)
+void send_node_update_with_wait(RRDHOST *host, int live, int queryable, NODE_CONNECTIVITY_REASON reason)
 {
     if (unlikely(!host || !__atomic_load_n(&host->aclk_host_config, __ATOMIC_ACQUIRE)))
         return;
@@ -142,7 +142,7 @@ void send_node_update_with_wait(RRDHOST *host, int live, int queryable)
 
     struct aclk_sync_completion *sc = aclk_sync_completion_create();
 
-    aclk_host_state_update(host, live, queryable, sc);
+    aclk_host_state_update(host, live, queryable, reason, sc);
 
     bool success = aclk_sync_completion_timedwait(sc, 30);
     if (!success) {

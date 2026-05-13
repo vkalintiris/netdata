@@ -383,7 +383,9 @@ static int remove_ephemeral_host(BUFFER *wb, RRDHOST *host, bool report_error, b
         send_node_info_with_wait(host);
 
     if (unregister) {
-        send_node_update_with_wait(host, 0, 0);
+        // netdatacli remove-stale-node: same Cloud-side effect as a DB rotation
+        // (the agent no longer represents this node), so reuse NO_RETENTION.
+        send_node_update_with_wait(host, 0, 0, NODE_CONNECTIVITY_REASON_NO_RETENTION);
 
         unregister_node(host->machine_guid);
         host->node_id = UUID_ZERO;

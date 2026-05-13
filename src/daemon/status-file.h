@@ -185,4 +185,9 @@ ssize_t daemon_status_file_get_reliability(void);
 ND_MACHINE_GUID daemon_status_file_get_host_id(void);
 size_t daemon_status_file_get_fatal_worker_job_id(void);
 
+// Returns the exit reason recorded by the previous run, as loaded from the
+// status file during daemon_status_file_init(). Used by ACLK to populate
+// UpdateAgentConnection.exit_reasons on the first connect after restart.
+EXIT_REASON daemon_status_file_get_last_exit_reason(void);
+
 #endif //NETDATA_STATUS_FILE_H

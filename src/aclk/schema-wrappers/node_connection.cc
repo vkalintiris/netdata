@@ -37,6 +37,11 @@ char *generate_node_instance_connection(size_t *len, const node_instance_connect
         }
     }
 
+    // The C-side enum values are defined to match the proto enum 1:1, so a
+    // direct cast is correct. A switch would be defensive against future drift
+    // but adds no value as long as the two enums move together.
+    msg.set_reason(static_cast<nodeinstance::v1::NodeInstanceConnectivityReason>(data->reason));
+
     *len = PROTO_COMPAT_MSG_SIZE(msg);
     char *bin = (char*)mallocz(*len);
     if (bin)

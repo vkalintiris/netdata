@@ -938,7 +938,7 @@ bool aclk_host_state_update_auto(RRDHOST *host) {
             live = 1;
             break;
     }
-    aclk_host_state_update(host, live, 1, NULL);
+    aclk_host_state_update(host, live, 1, NODE_CONNECTIVITY_REASON_UNSPECIFIED, NULL);
     return true;
 }
 
@@ -969,7 +969,7 @@ void aclk_create_node_instance_job(RRDHOST *host)
     aclk_add_job(query);
 }
 
-void aclk_update_node_instance_job(RRDHOST *host, int live, int queryable, struct aclk_sync_completion *sync_completion)
+void aclk_update_node_instance_job(RRDHOST *host, int live, int queryable, NODE_CONNECTIVITY_REASON reason, struct aclk_sync_completion *sync_completion)
 {
     if (unlikely(!host)) {
         if (sync_completion)
@@ -993,7 +993,8 @@ void aclk_update_node_instance_job(RRDHOST *host, int live, int queryable, struc
         .hops = hops,
         .live = live,
         .queryable = queryable,
-        .session_id = aclk_session_newarch};
+        .session_id = aclk_session_newarch,
+        .reason = reason};
 
     char node_id[UUID_STR_LEN];
     uuid_unparse_lower(host->node_id.uuid, node_id);
@@ -1017,7 +1018,7 @@ void aclk_update_node_instance_job(RRDHOST *host, int live, int queryable, struc
     aclk_add_job(query);
 }
 
-void aclk_host_state_update(RRDHOST *host, int live, int queryable, struct aclk_sync_completion *sync_completion)
+void aclk_host_state_update(RRDHOST *host, int live, int queryable, NODE_CONNECTIVITY_REASON reason, struct aclk_sync_completion *sync_completion)
 {
     if (!aclk_online()) {
         if (sync_completion)
@@ -1031,7 +1032,7 @@ void aclk_host_state_update(RRDHOST *host, int live, int queryable, struct aclk_
             aclk_sync_completion_signal(sync_completion);
     }
     else
-        aclk_update_node_instance_job(host, live, queryable, sync_completion);
+        aclk_update_node_instance_job(host, live, queryable, reason, sync_completion);
 }
 
 void aclk_send_node_instances()
@@ -1040,7 +1041,7 @@ void aclk_send_node_instances()
     dfe_start_reentrant(rrdhost_root_index, host)
     {
         int live = rrdhost_ingestion_status(host) == RRDHOST_INGEST_STATUS_ONLINE ? 1 : 0;
-        aclk_host_state_update(host, live, 1, NULL);
+        aclk_host_state_update(host, live, 1, NODE_CONNECTIVITY_REASON_UNSPECIFIED, NULL);
     }
     dfe_done(host);
 }

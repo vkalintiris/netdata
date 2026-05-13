@@ -266,7 +266,10 @@ static void svc_rrdhost_cleanup_orphan_hosts(RRDHOST *protected_host) {
             RRDHOST *cloud_host = rrdhost_find_by_guid(machine_guid);
             if (cloud_host) {
                 send_node_info_with_wait(cloud_host);
-                send_node_update_with_wait(cloud_host, 0, 0);
+                // Host's archived data has rotated out of the agent's DB.
+                // Cloud uses NO_RETENTION to drop the node instance immediately
+                // instead of waiting the 60-day prune window.
+                send_node_update_with_wait(cloud_host, 0, 0, NODE_CONNECTIVITY_REASON_NO_RETENTION);
             }
 
             // Re-acquire lock for cleanup

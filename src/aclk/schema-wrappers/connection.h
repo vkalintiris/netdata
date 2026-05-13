@@ -4,6 +4,7 @@
 #define ACLK_SCHEMA_WRAPPER_CONNECTION_H
 
 #include "capability.h"
+#include "libnetdata/libnetdata.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,15 @@ typedef struct {
     unsigned int lwt:1;
 
     const struct capability *capabilities;
+
+    // Bitmap of EXIT_REASON values to expand into UpdateAgentConnection.exit_reasons.
+    // - On reachable=true (initial connect): the previous run's reasons, loaded
+    //   from the status file via daemon_status_file_get_last_exit_reason().
+    // - On reachable=false (graceful disconnect): the current run's reasons
+    //   via exit_initiated_get().
+    // - On LWT: always EXIT_REASON_NONE (MQTT LWT is fixed at CONNECT time,
+    //   before any exit reason is known).
+    EXIT_REASON exit_reasons;
 
 // TODO in future optional fields
 // > 15 optional fields:

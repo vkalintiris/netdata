@@ -4,6 +4,7 @@
 #define ACLK_SCHEMA_WRAPPER_NODE_CONNECTION_H
 
 #include "capability.h"
+#include "connectivity_reason.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,8 @@ typedef struct {
 
     int32_t hops;
     const struct capability *capabilities;
+
+    NODE_CONNECTIVITY_REASON reason;
 } node_instance_connection_t;
 
 char *generate_node_instance_connection(size_t *len, const node_instance_connection_t *data);

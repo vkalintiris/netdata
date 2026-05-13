@@ -1736,3 +1736,7 @@ ND_MACHINE_GUID daemon_status_file_get_host_id(void) {
 size_t daemon_status_file_get_fatal_worker_job_id(void) {
     return session_status.fatal.worker_job_id;
 }
+
+EXIT_REASON daemon_status_file_get_last_exit_reason(void) {
+    return last_session_status.exit_reason;
+}

@@ -4,6 +4,7 @@
 #include "aclk_util.h"
 #include "aclk.h"
 #include "aclk_capas.h"
+#include "daemon/status-file.h"
 
 #include "schema-wrappers/proto_2_json.h"
 
@@ -200,11 +201,21 @@ uint16_t aclk_send_agent_connection_update(mqtt_wss_client client, int reachable
     size_t len;
     uint16_t pid;
 
+    // reachable=true is sent on the first connect after restart: surface the
+    // previous run's exit reasons, loaded from the status file early in startup.
+    // reachable=false is sent during aclk_graceful_disconnect(), after
+    // netdata_cleanup_and_exit() has populated exit_initiated_set(), so the
+    // current run's reasons are available.
+    EXIT_REASON exit_reasons = reachable
+        ? daemon_status_file_get_last_exit_reason()
+        : exit_initiated_get();
+
     update_agent_connection_t conn = {
         .reachable = (reachable ? 1 : 0),
         .lwt = 0,
         .session_id = aclk_session_newarch,
         .capabilities = aclk_get_agent_capas(),
+        .exit_reasons = exit_reasons,
     };
 
     CLAIM_ID claim_id = claim_id_get();
@@ -234,11 +245,15 @@ uint16_t aclk_send_agent_connection_update(mqtt_wss_client client, int reachable
 }
 
 char *aclk_generate_lwt(size_t *size) {
+    // LWT is registered at MQTT CONNECT, before any exit reason exists.
+    // Cloud receives this only on abrupt connection loss; exit_reasons stays
+    // EXIT_REASON_NONE by design — there is no way to update the LWT later.
     update_agent_connection_t conn = {
         .reachable = 0,
         .lwt = 1,
         .session_id = aclk_session_newarch,
-        .capabilities = NULL
+        .capabilities = NULL,
+        .exit_reasons = EXIT_REASON_NONE,
     };
 
     CLAIM_ID claim_id = claim_id_get();

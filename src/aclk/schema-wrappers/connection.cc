@@ -11,6 +11,54 @@
 
 using namespace agent::v1;
 
+// Maps a single EXIT_REASON bit to its AgentExitReason proto enum.
+// The proto values are sequential (0..20) and do NOT match the EXIT_REASON
+// bitmap positions (1<<0..1<<19), so mapping is by name/semantics, not by
+// numeric value. Returns AGENT_EXIT_REASON_NONE if the bit is unknown.
+static AgentExitReason exit_reason_bit_to_proto(EXIT_REASON bit) {
+    switch (bit) {
+        case EXIT_REASON_SIGBUS:          return AGENT_EXIT_REASON_SIGBUS;
+        case EXIT_REASON_SIGSEGV:         return AGENT_EXIT_REASON_SIGSEGV;
+        case EXIT_REASON_SIGFPE:          return AGENT_EXIT_REASON_SIGFPE;
+        case EXIT_REASON_SIGILL:          return AGENT_EXIT_REASON_SIGILL;
+        case EXIT_REASON_SIGABRT:         return AGENT_EXIT_REASON_SIGABRT;
+        case EXIT_REASON_SIGSYS:          return AGENT_EXIT_REASON_SIGSYS;
+        case EXIT_REASON_SIGXCPU:         return AGENT_EXIT_REASON_SIGXCPU;
+        case EXIT_REASON_SIGXFSZ:         return AGENT_EXIT_REASON_SIGXFSZ;
+        case EXIT_REASON_OUT_OF_MEMORY:   return AGENT_EXIT_REASON_OUT_OF_MEMORY;
+        case EXIT_REASON_ALREADY_RUNNING: return AGENT_EXIT_REASON_ALREADY_RUNNING;
+        case EXIT_REASON_FATAL:           return AGENT_EXIT_REASON_FATAL;
+        case EXIT_REASON_API_QUIT:        return AGENT_EXIT_REASON_API_QUIT;
+        case EXIT_REASON_CMD_EXIT:        return AGENT_EXIT_REASON_CMD_EXIT;
+        case EXIT_REASON_SIGQUIT:         return AGENT_EXIT_REASON_SIGQUIT;
+        case EXIT_REASON_SIGTERM:         return AGENT_EXIT_REASON_SIGTERM;
+        case EXIT_REASON_SIGINT:          return AGENT_EXIT_REASON_SIGINT;
+        case EXIT_REASON_SERVICE_STOP:    return AGENT_EXIT_REASON_SERVICE_STOP;
+        case EXIT_REASON_SYSTEM_SHUTDOWN: return AGENT_EXIT_REASON_SYSTEM_SHUTDOWN;
+        case EXIT_REASON_UPDATE:          return AGENT_EXIT_REASON_UPDATE;
+        case EXIT_REASON_SHUTDOWN_TIMEOUT:return AGENT_EXIT_REASON_SHUTDOWN_TIMEOUT;
+        case EXIT_REASON_NONE:            return AGENT_EXIT_REASON_NONE;
+    }
+    return AGENT_EXIT_REASON_NONE;
+}
+
+static void add_exit_reasons(UpdateAgentConnection &connupd, EXIT_REASON reasons) {
+    if (reasons == EXIT_REASON_NONE)
+        return;
+
+    // Walk the bitmap; emit one proto enum per set bit. Unknown bits map to
+    // AGENT_EXIT_REASON_NONE and are skipped (forward-compatibility for new
+    // EXIT_REASON values that haven't been added to the proto yet).
+    for (unsigned i = 0; i < sizeof(EXIT_REASON) * 8; i++) {
+        EXIT_REASON bit = (EXIT_REASON)(1u << i);
+        if (!(reasons & bit))
+            continue;
+        AgentExitReason proto_val = exit_reason_bit_to_proto(bit);
+        if (proto_val != AGENT_EXIT_REASON_NONE)
+            connupd.add_exit_reasons(proto_val);
+    }
+}
+
 char *generate_update_agent_connection(size_t *len, const update_agent_connection_t *data)
 {
     UpdateAgentConnection connupd;
@@ -20,6 +68,8 @@ char *generate_update_agent_connection(size_t *len, const update_agent_connectio
     connupd.set_session_id(data->session_id);
 
     connupd.set_update_source((data->lwt) ? CONNECTION_UPDATE_SOURCE_LWT : CONNECTION_UPDATE_SOURCE_AGENT);
+
+    add_exit_reasons(connupd, data->exit_reasons);
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
