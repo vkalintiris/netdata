@@ -390,9 +390,38 @@ pub struct Grouping {
 pub struct LogRangeExpr {
     pub selector: StreamSelector,
     pub stages: Vec<PipelineStage>,
+    /// At-most-one unwrap. Loki's yacc allows it before or after
+    /// the RANGE token; we record only its presence and the
+    /// caller can inspect source positions via the span if needed.
+    pub unwrap: Option<UnwrapExpr>,
     /// Range window length in nanoseconds (always positive).
     pub range_ns: i64,
     /// Optional offset; may be negative.
     pub offset_ns: Option<i64>,
     pub span: Span,
+}
+
+/// `unwrapExpr` (syntax.y:157): the `| unwrap` modifier that turns
+/// a string-valued label into a numeric value for a range agg.
+///
+/// - `| unwrap latency`         → bare identifier
+/// - `| unwrap duration(latency)` / `bytes(size)` / `duration_seconds(t)`
+/// - Trailing post-filters: `| unwrap latency | level="warn" | n>5`
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwrapExpr {
+    pub conv_op: Option<ConvOp>,
+    pub identifier: String,
+    pub post_filters: Vec<LabelFilter>,
+    pub span: Span,
+}
+
+/// Conversion operator on an unwrap (`syntax.y:163`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConvOp {
+    /// `bytes(...)` — parse value as bytes.
+    Bytes,
+    /// `duration(...)` — parse value as Go duration string.
+    Duration,
+    /// `duration_seconds(...)` — parse value as a float seconds count.
+    DurationSeconds,
 }

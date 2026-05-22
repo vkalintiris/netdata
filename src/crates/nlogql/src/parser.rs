@@ -9,10 +9,11 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    DecolorizeStage, Expr, Grouping, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem,
-    LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue,
-    LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage,
-    PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector,
+    ConvOp, DecolorizeStage, Expr, Grouping, IpFilterOp, LabelExtraction, LabelFilter,
+    LabelFormatItem, LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp,
+    LineFilterValue, LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag,
+    ParserStage, PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector,
+    UnwrapExpr,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -332,31 +333,96 @@ fn grouping<'a>() -> impl Parser<'a, &'a str, Grouping, Extra<'a>> + Clone {
 /// RANGE/offset. Stages on both sides are merged in source order.
 /// Unwrap (SOW-10) is intentionally not handled yet.
 pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Extra<'a>> + Clone {
-    let pre_stages = ws()
-        .ignore_then(pipeline_stage())
-        .repeated()
-        .collect::<Vec<_>>();
-    let post_stages = ws()
-        .ignore_then(pipeline_stage())
-        .repeated()
-        .collect::<Vec<_>>();
+    // A body element is either a pipeline stage or an unwrap.
+    // Unwrap is tried first because both start with `|` and unwrap's
+    // keyword check would otherwise be shadowed by line-filter
+    // operators that share the same leading char.
+    let element = choice((
+        unwrap_expr().map(BodyElement::Unwrap),
+        pipeline_stage().map(BodyElement::Stage),
+    ));
+    let body = ws().ignore_then(element).repeated().collect::<Vec<_>>();
 
     selector()
-        .then(pre_stages)
+        .then(body.clone())
         .then_ignore(ws())
         .then(range_token())
         .then(ws().ignore_then(offset_expr()).or_not())
-        .then(post_stages)
-        .map_with(|((((sel, pre), range_ns), offset_ns), post), e| {
-            let mut stages = pre;
-            stages.extend(post);
-            LogRangeExpr {
-                selector: sel,
-                stages,
-                range_ns,
-                offset_ns,
-                span: e.span().into(),
-            }
+        .then(body)
+        .map_with(
+            |((((sel, pre), range_ns), offset_ns), post), e| {
+                let mut stages = Vec::new();
+                let mut unwrap = None;
+                for el in pre.into_iter().chain(post) {
+                    match el {
+                        BodyElement::Stage(s) => stages.push(s),
+                        // Loki's grammar permits at most one unwrap;
+                        // if the user writes more than one we take
+                        // the last (last-write-wins). Semantic
+                        // validation happens in a later pass.
+                        BodyElement::Unwrap(u) => unwrap = Some(u),
+                    }
+                }
+                LogRangeExpr {
+                    selector: sel,
+                    stages,
+                    unwrap,
+                    range_ns,
+                    offset_ns,
+                    span: e.span().into(),
+                }
+            },
+        )
+}
+
+enum BodyElement {
+    Stage(PipelineStage),
+    Unwrap(UnwrapExpr),
+}
+
+/// `unwrapExpr` (syntax.y:157):
+///   `| unwrap IDENTIFIER`
+///   `| unwrap convOp ( IDENTIFIER )`
+///   `unwrapExpr | labelFilter`  — post-filter chain
+fn unwrap_expr<'a>() -> impl Parser<'a, &'a str, UnwrapExpr, Extra<'a>> + Clone {
+    // duration_seconds before duration so the prefix match resolves
+    // to the longer form. (keyword()'s rewind handles this too, but
+    // ordering is still meaningful for clarity.)
+    let conv = choice((
+        keyword("duration_seconds").to(ConvOp::DurationSeconds),
+        keyword("duration").to(ConvOp::Duration),
+        keyword("bytes").to(ConvOp::Bytes),
+    ));
+
+    let conv_form = conv
+        .then_ignore(ws())
+        .then_ignore(just('('))
+        .then_ignore(ws())
+        .then(identifier())
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .map(|(c, name): (ConvOp, &str)| (Some(c), name.to_string()));
+    let plain_form = identifier().map(|n: &str| (None, n.to_string()));
+    let unwrap_body = choice((conv_form, plain_form));
+
+    just('|')
+        .then_ignore(ws())
+        .then_ignore(keyword("unwrap"))
+        .then_ignore(ws())
+        .ignore_then(unwrap_body)
+        .then(
+            ws()
+                .ignore_then(just('|'))
+                .ignore_then(ws())
+                .ignore_then(label_filter())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .map_with(|((conv_op, identifier), post_filters), e| UnwrapExpr {
+            conv_op,
+            identifier,
+            post_filters,
+            span: e.span().into(),
         })
 }
 
@@ -1918,6 +1984,126 @@ mod tests {
         let r = expect_range_agg(input);
         assert_eq!(r.span.start, 0);
         assert_eq!(r.span.end, input.len());
+    }
+
+    // ============= SOW-10 unwrap expression tests ===================
+
+    #[test]
+    fn unwrap_plain_identifier() {
+        let r = parse_log_range(r#"{foo="bar"} | unwrap latency [5m]"#);
+        let u = r.unwrap.as_ref().expect("unwrap present");
+        assert_eq!(u.identifier, "latency");
+        assert!(u.conv_op.is_none());
+        assert!(u.post_filters.is_empty());
+    }
+
+    #[test]
+    fn unwrap_with_conv_duration() {
+        let r = parse_log_range(r#"{foo="bar"} | unwrap duration(latency) [5m]"#);
+        let u = r.unwrap.as_ref().unwrap();
+        assert_eq!(u.identifier, "latency");
+        assert_eq!(u.conv_op, Some(ConvOp::Duration));
+    }
+
+    #[test]
+    fn unwrap_with_conv_bytes() {
+        let r = parse_log_range(r#"{foo="bar"} | unwrap bytes(size) [5m]"#);
+        assert_eq!(r.unwrap.as_ref().unwrap().conv_op, Some(ConvOp::Bytes));
+    }
+
+    #[test]
+    fn unwrap_with_conv_duration_seconds() {
+        // duration_seconds is the longer-prefix form — must not be
+        // misread as `duration(_seconds)` or similar.
+        let r = parse_log_range(r#"{foo="bar"} | unwrap duration_seconds(t) [5m]"#);
+        assert_eq!(
+            r.unwrap.as_ref().unwrap().conv_op,
+            Some(ConvOp::DurationSeconds),
+        );
+    }
+
+    #[test]
+    fn unwrap_with_post_filter() {
+        let r = parse_log_range(
+            r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#,
+        );
+        let u = r.unwrap.as_ref().unwrap();
+        assert_eq!(u.post_filters.len(), 1);
+        assert!(matches!(u.post_filters[0], LabelFilter::String(_)));
+    }
+
+    #[test]
+    fn unwrap_with_multiple_post_filters() {
+        let r = parse_log_range(
+            r#"{foo="bar"} | unwrap latency | level="warn" | n > 5 [5m]"#,
+        );
+        assert_eq!(r.unwrap.as_ref().unwrap().post_filters.len(), 2);
+    }
+
+    #[test]
+    fn unwrap_before_pipeline_then_range() {
+        // `{...} | unwrap x | level="warn" [5m]` — unwrap with post
+        // filter, then RANGE.
+        let r = parse_log_range(
+            r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#,
+        );
+        assert!(r.unwrap.is_some());
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+    }
+
+    #[test]
+    fn unwrap_after_range() {
+        // Loki's alternate layout: `selector RANGE unwrap`.
+        let r = parse_log_range(r#"{foo="bar"} [5m] | unwrap latency"#);
+        assert!(r.unwrap.is_some());
+    }
+
+    #[test]
+    fn unwrap_with_filter_stage_before() {
+        // Pipeline stages can precede the unwrap.
+        let r = parse_log_range(
+            r#"{foo="bar"} | logfmt | unwrap latency [5m]"#,
+        );
+        assert_eq!(r.stages.len(), 1);
+        assert!(matches!(&r.stages[0], PipelineStage::Parser(_)));
+        assert!(r.unwrap.is_some());
+    }
+
+    #[test]
+    fn unwrap_inside_quantile_over_time() {
+        // From parser_test.go-style: a real Loki query.
+        let r = expect_range_agg(
+            r#"quantile_over_time(0.99, {foo="bar"} | unwrap duration(latency) [5m])"#,
+        );
+        assert_eq!(r.op, RangeOp::QuantileOverTime);
+        assert_eq!(r.parameter, Some(0.99));
+        let u = r.log_range.unwrap.as_ref().unwrap();
+        assert_eq!(u.identifier, "latency");
+        assert_eq!(u.conv_op, Some(ConvOp::Duration));
+    }
+
+    #[test]
+    fn unwrap_inside_sum_over_time() {
+        let r = expect_range_agg(
+            r#"sum_over_time({foo="bar"} | unwrap bytes(size) [5m])"#,
+        );
+        assert_eq!(r.op, RangeOp::SumOverTime);
+        assert_eq!(
+            r.log_range.unwrap.as_ref().unwrap().conv_op,
+            Some(ConvOp::Bytes),
+        );
+    }
+
+    #[test]
+    fn unwrap_missing_identifier_rejected() {
+        assert!(parse_log_range_err(r#"{foo="bar"} | unwrap [5m]"#));
+    }
+
+    #[test]
+    fn unwrap_conv_missing_close_paren_rejected() {
+        assert!(parse_log_range_err(
+            r#"{foo="bar"} | unwrap duration(latency [5m]"#,
+        ));
     }
 
     #[test]
