@@ -53,6 +53,9 @@ members = [
     "wal",
     "wal-explore",
     "log-index",
+
+    # LogQL
+    "nlogql",
 ]
 
 [workspace.package]

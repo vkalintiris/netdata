@@ -1,0 +1,16 @@
+[package]
+name = "nlogql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Netdata's LogQL parser and evaluator."
+license = "GPL-3.0-or-later"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chumsky = "0.13"
+
+[dev-dependencies]
