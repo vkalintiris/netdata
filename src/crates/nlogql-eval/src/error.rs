@@ -10,6 +10,11 @@
 pub enum LowerError {
     /// Feature not yet wired through to the lowering layer.
     Unimplemented { what: &'static str },
+    /// A pipeline stage the parser accepts but that we deliberately
+    /// don't lower yet — the evaluator can't execute it. Today
+    /// this is `line_format` and `label_format`, both deferred to
+    /// a follow-up plan that introduces a Go-template engine.
+    DeferredStage { stage: &'static str },
 }
 
 impl std::fmt::Display for LowerError {
@@ -17,6 +22,13 @@ impl std::fmt::Display for LowerError {
         match self {
             LowerError::Unimplemented { what } => {
                 write!(f, "lower: not yet implemented: {what}")
+            }
+            LowerError::DeferredStage { stage } => {
+                write!(
+                    f,
+                    "lower: pipeline stage `{stage}` is not supported in \
+                     this build (deferred to a follow-up plan)"
+                )
             }
         }
     }
