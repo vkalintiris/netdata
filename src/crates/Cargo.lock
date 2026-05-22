@@ -2752,6 +2752,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlogql-eval"
+version = "0.1.3"
+dependencies = [
+ "nlogql",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
