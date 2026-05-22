@@ -28,10 +28,22 @@ scan. Those layers join later, behind the same `Backend` trait.
 
 ## Confirmed decisions
 
-- **Library + thin binary.** `nlogql-eval` is a new library crate;
-  `nlogql-query` is a small binary in the same crate's `bin/` (or
-  a separate `nlogql-cli` crate). The library is the integration
-  surface for `otel-ledger`'s future function-call use.
+- **Single crate with a feature-gated binary.** `nlogql-eval`
+  holds both the library and the `nlogql-query` `bin/` target,
+  with the binary gated behind a default-on `cli` feature so the
+  library can be imported by `otel-ledger` later without dragging
+  in `clap` and friends. (Resolves open question 1.)
+- **Defer `line_format` / `label_format` templating.** The
+  evaluator returns a hard error ("`line_format` template stage
+  not yet implemented") rather than silently emitting the
+  original line — better to fail loudly than produce wrong
+  results. Real templating lands in a separate plan after
+  Phase F closes. (Resolves open question 2.)
+- **CLI flags for time range** (`--start`, `--end`) defaulting
+  to the SFST file's full extent. (Resolves open question 3.)
+- **NDJSON output, one record per line.** Loki-compatible JSON
+  shape comes later if/when tooling needs it. (Resolves open
+  question 4.)
 - **AST → IR lowering.** The AST mirrors Loki's grammar; the IR is
   for execution. Lowering normalizes equivalent surface forms,
   catches type errors once, and shrinks the evaluator's surface
@@ -211,14 +223,25 @@ Goal: walk a `Plan` IR with a `Backend` impl and produce results.
 - And/Or compose. Parens already collapse via the AST.
 - Tests covering each value type.
 
-### SOW-F4 — Format stages
+### SOW-F4 — Format stages — **deferred to a follow-up plan**
 
-- `line_format`: render Go-template-style string against
-  current labels + line. Use the `gtmpl` crate or implement a
-  small interpreter for the subset Loki uses.
-- `label_format`: rename labels and/or compute new values via
-  template.
-- Tests with realistic templates.
+`| line_format "<tmpl>"` and `| label_format <items>` require a
+Go-template engine (substitution, control flow, pipelines, plus
+Loki's added functions like `__line__` and `regexReplaceAll`).
+The full surface is a chunky piece of work and is independent of
+the rest of the evaluator — adding it later doesn't force a
+refactor.
+
+For this plan, the evaluator returns a `Error::Unimplemented {
+stage: "line_format" }` (or `"label_format"`) when it encounters
+these stages. The parser already accepts them, so we still take
+the AST hit; we just refuse to evaluate. Real implementation
+lands in a separate plan.
+
+Rename-form `label_format new=old` (label-to-label, no template)
+could be implemented here trivially — it's just a label-set
+mutation. Decide during SOW-F5 whether to land the rename half
+or hold for the follow-up.
 
 ### SOW-F5 — Structural stages (drop / keep / decolorize)
 
@@ -321,31 +344,14 @@ Commit subjects: `nlogql-eval: SOW-N — short title`.
 The `-N` is digits within phase, e.g. `D2`, `F6`.
 Plan amendments land here as `**Amended YYYY-MM-DD:**` lines.
 
-## Open questions
+## Resolved at plan time
 
-These should be resolved before SOW-D1:
+All four open questions were settled before SOW-D1; their
+resolutions live in **Confirmed decisions** above:
 
-1. **One crate or two?** Add a `bin/` to `nlogql-eval`, or a
-   separate `nlogql-cli` crate? Single-crate is simpler;
-   separate-crate keeps the library dependency lean (no clap,
-   no serde for stdout formatting). Lean: single crate with a
-   feature-gated `bin` target.
-
-2. **Template engine for `line_format` / `label_format`?** Loki
-   uses Go's `text/template` semantics. Options:
-   - `gtmpl` crate (Go-template subset, last published 2024)
-   - Hand-roll a small interpreter for the `{{ .label }}` subset
-     Loki actually uses
-   - Defer entirely — return raw line unchanged in SOW-F4 and
-     fold in real templating later.
-
-3. **Time-range source.** Where does the `[start, end)` window
-   come from for non-metric queries? CLI flag with defaults?
-   Backend-derived (the SFST's natural time range)? Both with
-   CLI overriding? Lean: CLI flag with `--start`/`--end` defaulting
-   to the SFST's full extent.
-
-4. **Output format compatibility.** Match Loki's
-   `/loki/api/v1/query` JSON shape exactly, or roll our own?
-   Lean: NDJSON one-record-per-line first (simple, easy to
-   compose), Loki-shape JSON later if/when needed for tooling.
+1. Single crate with a feature-gated `cli` binary.
+2. Defer template evaluation; return `Error::Unimplemented` for
+   `line_format` / `label_format` stages.
+3. `--start` / `--end` CLI flags, defaulting to the SFST's full
+   time extent.
+4. NDJSON output, Loki-shape compatibility deferred.
