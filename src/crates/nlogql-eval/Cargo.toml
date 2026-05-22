@@ -20,6 +20,7 @@ cli = []
 
 [dependencies]
 nlogql = { path = "../nlogql" }
+regex = { workspace = true }
 twox-hash = { workspace = true, features = ["xxhash64"] }
 
 [dev-dependencies]
