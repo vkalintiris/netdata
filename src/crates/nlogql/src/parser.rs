@@ -9,10 +9,10 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    DecolorizeStage, Expr, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem,
+    DecolorizeStage, Expr, Grouping, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem,
     LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue,
     LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage,
-    PipelineExpr, PipelineStage, StreamSelector,
+    PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -35,9 +35,19 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
 /// `root: expr` (syntax.y:99). Outer whitespace is permitted on
 /// either side.
 fn root<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> {
-    ws().ignore_then(log_expr())
+    ws().ignore_then(top_level_expr())
         .then_ignore(ws())
         .then_ignore(end())
+}
+
+/// `expr` (syntax.y:102): log or metric. The variants-of expression
+/// is out of scope per the plan. Range aggregations are tried first
+/// because they're keyword-led; log expressions start with `{`.
+fn top_level_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
+    choice((
+        range_aggregation_expr().map(Expr::RangeAggregation),
+        log_expr(),
+    ))
 }
 
 /// `logExpr` (syntax.y:108).
@@ -230,6 +240,89 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .collect()
 }
 
+// -- Range aggregations (SOW-09) -----------------------------------
+
+/// `rangeAggregationExpr` (syntax.y:169): a 15-op `*_over_time`-style
+/// call, with optional first-positional parameter (for
+/// `quantile_over_time`) and optional trailing `by`/`without`
+/// grouping.
+fn range_aggregation_expr<'a>()
+-> impl Parser<'a, &'a str, RangeAggregationExpr, Extra<'a>> + Clone {
+    let arg_with_param = number()
+        .then_ignore(ws())
+        .then_ignore(just(','))
+        .then_ignore(ws())
+        .then(log_range_expr())
+        .map(|(n, lr)| (Some(n), lr));
+    let arg_no_param = log_range_expr().map(|lr| (None, lr));
+
+    range_op()
+        .then_ignore(ws())
+        .then_ignore(just('('))
+        .then_ignore(ws())
+        .then(choice((arg_with_param, arg_no_param)))
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .then(ws().ignore_then(grouping()).or_not())
+        .map_with(
+            |((op, (parameter, log_range)), grouping), e| RangeAggregationExpr {
+                op,
+                log_range,
+                parameter,
+                grouping,
+                span: e.span().into(),
+            },
+        )
+}
+
+/// The 15 range operators (syntax.y:492). `keyword()` enforces word
+/// boundaries, so `rate` doesn't match the `rate` prefix of
+/// `rate_counter` — order within the choice is irrelevant.
+fn range_op<'a>() -> impl Parser<'a, &'a str, RangeOp, Extra<'a>> + Clone {
+    // chumsky's choice() tuple arity has a practical ceiling; split
+    // across two nested choices to stay under it.
+    let a = choice((
+        keyword("absent_over_time").to(RangeOp::AbsentOverTime),
+        keyword("avg_over_time").to(RangeOp::AvgOverTime),
+        keyword("bytes_over_time").to(RangeOp::BytesOverTime),
+        keyword("bytes_rate").to(RangeOp::BytesRate),
+        keyword("count_over_time").to(RangeOp::CountOverTime),
+        keyword("first_over_time").to(RangeOp::FirstOverTime),
+        keyword("last_over_time").to(RangeOp::LastOverTime),
+        keyword("max_over_time").to(RangeOp::MaxOverTime),
+    ));
+    let b = choice((
+        keyword("min_over_time").to(RangeOp::MinOverTime),
+        keyword("quantile_over_time").to(RangeOp::QuantileOverTime),
+        keyword("rate_counter").to(RangeOp::RateCounter),
+        keyword("rate").to(RangeOp::Rate),
+        keyword("stddev_over_time").to(RangeOp::StddevOverTime),
+        keyword("stdvar_over_time").to(RangeOp::StdvarOverTime),
+        keyword("sum_over_time").to(RangeOp::SumOverTime),
+    ));
+    choice((a, b))
+}
+
+/// `grouping` (syntax.y:518): `(by|without) ( <labels>? )`.
+fn grouping<'a>() -> impl Parser<'a, &'a str, Grouping, Extra<'a>> + Clone {
+    let kw = choice((keyword("by").to(false), keyword("without").to(true)));
+    let labels = identifier()
+        .map(|s: &str| s.to_string())
+        .separated_by(ws().then(just(',')).then(ws()))
+        .collect::<Vec<_>>();
+    kw.then_ignore(ws())
+        .then_ignore(just('('))
+        .then_ignore(ws())
+        .then(labels)
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .map_with(|(without, labels), e| Grouping {
+            without,
+            labels,
+            span: e.span().into(),
+        })
+}
+
 // -- Log range expression (SOW-08) ---------------------------------
 
 /// `logRangeExpr` (syntax.y:128). Argument to range aggregations.
@@ -238,9 +331,6 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
 /// and also Loki's alternate layout where the pipeline trails the
 /// RANGE/offset. Stages on both sides are merged in source order.
 /// Unwrap (SOW-10) is intentionally not handled yet.
-///
-/// `#[allow(dead_code)]` until SOW-09 wires range aggregations.
-#[allow(dead_code)]
 pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Extra<'a>> + Clone {
     let pre_stages = ws()
         .ignore_then(pipeline_stage())
@@ -273,7 +363,6 @@ pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Ext
 /// `RANGE` token: `[<duration>]`. In Loki this is one lexer token;
 /// here we parse the brackets explicitly with internal whitespace
 /// allowed for readability.
-#[allow(dead_code)]
 fn range_token<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
     just('[')
         .ignore_then(ws())
@@ -284,7 +373,6 @@ fn range_token<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
 
 /// `offsetExpr` (syntax.y:510): `offset <duration>`. The duration
 /// may be negative (Loki returns DURATION with a negative value).
-#[allow(dead_code)]
 fn offset_expr<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
     keyword("offset").ignore_then(ws()).ignore_then(duration())
 }
@@ -685,14 +773,21 @@ mod tests {
     fn expect_selector(input: &str) -> StreamSelector {
         match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
             Expr::Selector(s) => s,
-            Expr::Pipeline(_) => panic!("expected bare selector for {input:?}"),
+            other => panic!("expected bare selector for {input:?}, got {other:?}"),
         }
     }
 
     fn expect_pipeline(input: &str) -> PipelineExpr {
         match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
             Expr::Pipeline(p) => p,
-            Expr::Selector(_) => panic!("expected pipeline for {input:?}"),
+            other => panic!("expected pipeline for {input:?}, got {other:?}"),
+        }
+    }
+
+    fn expect_range_agg(input: &str) -> RangeAggregationExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::RangeAggregation(r) => r,
+            other => panic!("expected range aggregation for {input:?}, got {other:?}"),
         }
     }
 
@@ -1678,6 +1773,151 @@ mod tests {
     #[test]
     fn log_range_offset_missing_duration() {
         assert!(parse_log_range_err(r#"{foo="bar"}[5m] offset"#));
+    }
+
+    // ============= SOW-09 range aggregation tests ===================
+
+    #[test]
+    fn rate_basic() {
+        let r = expect_range_agg(r#"rate({foo="bar"}[5m])"#);
+        assert_eq!(r.op, RangeOp::Rate);
+        assert_eq!(r.log_range.range_ns, 5 * MIN_NS);
+        assert!(r.parameter.is_none());
+        assert!(r.grouping.is_none());
+    }
+
+    #[test]
+    fn count_over_time_with_filter() {
+        // From parser_test.go: `count_over_time({foo="bar"}[12h] |= "error")`
+        let r = expect_range_agg(r#"count_over_time({foo="bar"}[12h] |= "error")"#);
+        assert_eq!(r.op, RangeOp::CountOverTime);
+        assert_eq!(r.log_range.range_ns, 12 * 60 * MIN_NS);
+        assert_eq!(r.log_range.stages.len(), 1);
+    }
+
+    #[test]
+    fn count_over_time_pipeline_before_range() {
+        // From parser_test.go: `count_over_time({foo="bar"} |= "error" [12h])`
+        let r = expect_range_agg(r#"count_over_time({foo="bar"} |= "error" [12h])"#);
+        assert_eq!(r.log_range.range_ns, 12 * 60 * MIN_NS);
+        assert_eq!(r.log_range.stages.len(), 1);
+    }
+
+    #[test]
+    fn quantile_over_time_with_parameter() {
+        let r = expect_range_agg(r#"quantile_over_time(0.99, {foo="bar"}[5m])"#);
+        assert_eq!(r.op, RangeOp::QuantileOverTime);
+        assert_eq!(r.parameter, Some(0.99));
+    }
+
+    #[test]
+    fn rate_with_by_grouping() {
+        let r = expect_range_agg(r#"rate({foo="bar"}[5m]) by (job, instance)"#);
+        let g = r.grouping.as_ref().expect("grouping present");
+        assert!(!g.without);
+        assert_eq!(g.labels, vec!["job".to_string(), "instance".to_string()]);
+    }
+
+    #[test]
+    fn rate_with_without_grouping() {
+        let r = expect_range_agg(r#"rate({foo="bar"}[5m]) without (job)"#);
+        let g = r.grouping.as_ref().expect("grouping present");
+        assert!(g.without);
+        assert_eq!(g.labels, vec!["job".to_string()]);
+    }
+
+    #[test]
+    fn rate_with_empty_by_grouping() {
+        let r = expect_range_agg(r#"rate({foo="bar"}[5m]) by ()"#);
+        let g = r.grouping.as_ref().expect("grouping present");
+        assert!(g.labels.is_empty());
+    }
+
+    #[test]
+    fn quantile_over_time_with_param_and_grouping() {
+        let r = expect_range_agg(
+            r#"quantile_over_time(0.95, {foo="bar"}[5m]) by (job)"#,
+        );
+        assert_eq!(r.parameter, Some(0.95));
+        assert!(r.grouping.is_some());
+    }
+
+    #[test]
+    fn all_fifteen_range_ops() {
+        for (kw, op) in [
+            ("absent_over_time", RangeOp::AbsentOverTime),
+            ("avg_over_time", RangeOp::AvgOverTime),
+            ("bytes_over_time", RangeOp::BytesOverTime),
+            ("bytes_rate", RangeOp::BytesRate),
+            ("count_over_time", RangeOp::CountOverTime),
+            ("first_over_time", RangeOp::FirstOverTime),
+            ("last_over_time", RangeOp::LastOverTime),
+            ("max_over_time", RangeOp::MaxOverTime),
+            ("min_over_time", RangeOp::MinOverTime),
+            ("rate", RangeOp::Rate),
+            ("rate_counter", RangeOp::RateCounter),
+            ("stddev_over_time", RangeOp::StddevOverTime),
+            ("stdvar_over_time", RangeOp::StdvarOverTime),
+            ("sum_over_time", RangeOp::SumOverTime),
+        ] {
+            let q = format!(r#"{kw}({{foo="bar"}}[5m])"#);
+            let r = expect_range_agg(&q);
+            assert_eq!(r.op, op, "op for {kw:?}");
+        }
+        // quantile_over_time requires a parameter.
+        let r = expect_range_agg(r#"quantile_over_time(0.5, {foo="bar"}[5m])"#);
+        assert_eq!(r.op, RangeOp::QuantileOverTime);
+    }
+
+    #[test]
+    fn rate_with_offset() {
+        let r = expect_range_agg(r#"rate({foo="bar"}[5m] offset 10m)"#);
+        assert_eq!(r.log_range.range_ns, 5 * MIN_NS);
+        assert_eq!(r.log_range.offset_ns, Some(10 * MIN_NS));
+    }
+
+    #[test]
+    fn rate_inner_pipeline_multi_stage() {
+        let r = expect_range_agg(
+            r#"count_over_time({foo="bar"} |= "x" | logfmt | latency > 1s [5m])"#,
+        );
+        assert_eq!(r.log_range.stages.len(), 3);
+    }
+
+    #[test]
+    fn rate_missing_parens_rejected() {
+        // Bare op name without parens — Loki rejects, we should too.
+        assert!(parse("rate").is_err());
+    }
+
+    #[test]
+    fn rate_empty_parens_rejected() {
+        assert!(parse("rate()").is_err());
+    }
+
+    #[test]
+    fn rate_unclosed_parens_rejected() {
+        assert!(parse(r#"rate({foo="bar"}[5m]"#).is_err());
+    }
+
+    #[test]
+    fn quantile_param_without_log_range_rejected() {
+        assert!(parse(r#"quantile_over_time(0.99,)"#).is_err());
+    }
+
+    #[test]
+    fn rate_followed_by_orphan_rejected() {
+        // `rate({...}[5m])` followed by stray identifier — should fail
+        // because top-level parse requires end-of-input.
+        assert!(parse(r#"rate({foo="bar"}[5m]) something"#).is_err());
+    }
+
+    #[test]
+    fn rate_span_covers_whole() {
+        let input = r#"rate({foo="bar"}[5m]) by (job)"#;
+        let r = expect_range_agg(input);
+        assert_eq!(r.span.start, 0);
+        assert_eq!(r.span.end, input.len());
     }
 
     #[test]

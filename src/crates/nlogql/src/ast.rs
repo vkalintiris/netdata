@@ -17,6 +17,9 @@ pub enum Expr {
     /// `{...} <stage> <stage> ...` — selector followed by one or
     /// more pipeline stages. Mirrors Loki's `PipelineExpr`.
     Pipeline(PipelineExpr),
+    /// `rate({...}[5m])`, `count_over_time({...}[5m])`,
+    /// `quantile_over_time(0.99, {...}[5m])`, etc. (SOW-09)
+    RangeAggregation(RangeAggregationExpr),
 }
 
 impl Expr {
@@ -24,6 +27,7 @@ impl Expr {
         match self {
             Expr::Selector(s) => s.span,
             Expr::Pipeline(p) => p.span,
+            Expr::RangeAggregation(r) => r.span,
         }
     }
 }
@@ -322,6 +326,53 @@ pub enum LabelSelector {
     Name { name: String, span: Span },
     /// `drop foo="bar"` — drop only when `foo="bar"`.
     Matched(Matcher),
+}
+
+/// A range aggregation: `rangeOp(logRange)`, with optional first
+/// argument (e.g. `quantile_over_time(0.99, ...)`) and optional
+/// trailing `by(...)`/`without(...)` grouping.
+///
+/// `syntax.y:169-174`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeAggregationExpr {
+    pub op: RangeOp,
+    pub log_range: LogRangeExpr,
+    /// First positional argument when present (currently only used
+    /// by `quantile_over_time`).
+    pub parameter: Option<f64>,
+    pub grouping: Option<Grouping>,
+    pub span: Span,
+}
+
+/// One of 15 range operators (`syntax.y:492`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeOp {
+    AbsentOverTime,
+    AvgOverTime,
+    BytesOverTime,
+    BytesRate,
+    CountOverTime,
+    FirstOverTime,
+    LastOverTime,
+    MaxOverTime,
+    MinOverTime,
+    QuantileOverTime,
+    Rate,
+    RateCounter,
+    StddevOverTime,
+    StdvarOverTime,
+    SumOverTime,
+}
+
+/// `by(labels)` / `without(labels)` / `by()` / `without()`.
+/// (`syntax.y:518`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping {
+    /// `false` for `by`, `true` for `without`.
+    pub without: bool,
+    /// May be empty for the bare `by()` / `without()` forms.
+    pub labels: Vec<String>,
+    pub span: Span,
 }
 
 /// A log range expression: `selector pipeline? RANGE offset? pipeline?`.
