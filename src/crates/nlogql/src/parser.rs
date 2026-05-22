@@ -2437,6 +2437,59 @@ mod tests {
         assert_eq!(b.span.end, input.len());
     }
 
+    // ============= SOW-18 deterministic stress =======================
+
+    /// Hand-picked "weird" inputs that have historically broken
+    /// combinator parsers. Property: each one either parses or
+    /// returns an error — no panics, no infinite loops.
+    ///
+    /// A larger random search lives in `fuzz/` under cargo-fuzz.
+    #[test]
+    fn stress_no_panic_on_weird_inputs() {
+        let cases: &[&str] = &[
+            "",
+            " ",
+            "\n",
+            "\t\r\n  ",
+            "#",
+            "# comment only",
+            "# unclosed line filter\n{foo=\"bar\"} |= ",
+            "{",
+            "}",
+            "{}",
+            "{{}}",
+            "((((((((((",
+            "))))))))",
+            "((((((((((1))))))))))",
+            "rate(rate(rate(rate(rate(",
+            "1 + + + +",
+            "0xFFFFFFFFFFFFFFFF",
+            "0b101010101010101010101010101010101010101010101010101010101010101",
+            "{foo=\"\\\"\\\\\\n\\t\\r\\0\"}",
+            "{foo=`backtick raw`}",
+            "{foo=\"\u{1f600}\"}",      // emoji in value
+            "{é=\"value\"}",            // unicode identifier
+            "rate({a=\"b\"}[9999999999d])", // huge duration
+            "rate({a=\"b\"}[0s])",
+            "rate({a=\"b\"}[1ns])",
+            "rate({a=\"b\"}[5m] offset -99999999w)",
+            // Deeply nested binops (precedence stress).
+            "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1",
+            "2^2^2^2^2^2^2^2",
+            "1*2/3%4+5-6==7!=8>9>=10<11<=12 or 1 and 2 unless 3",
+            // Pipeline-stage spam.
+            "{a=\"b\"} | logfmt | logfmt | logfmt | json | json | unpack | decolorize",
+            // Compound label filter with mixed value types.
+            "{a=\"b\"} | logfmt | x=\"y\" and y>5 or z=ip(\"10/8\") and t>5m",
+            // Trailing junk after a valid query.
+            "rate({a=\"b\"}[5m]) garbage trailing words",
+        ];
+        for c in cases {
+            // The result doesn't matter — we just must not panic.
+            let _ = parse(c);
+        }
+    }
+
     // ============= SOW-17 round-trip property ========================
 
     /// `parse(display(parse(input)?)?) == parse(input)?` — the
