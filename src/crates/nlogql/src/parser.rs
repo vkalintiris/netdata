@@ -11,11 +11,11 @@ use chumsky::prelude::*;
 use crate::Extra;
 use crate::ast::{
     BinaryExpr, BinaryModifier, BinaryOp, ConvOp, DecolorizeStage, Expr, GroupSide, Grouping,
-    IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem, LabelFormatStage, LabelSelector,
-    LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue, LineFormatStage, LiteralExpr,
-    LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr,
-    PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector, UnwrapExpr,
-    VectorAggregationExpr, VectorMatching, VectorOp,
+    IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem, LabelFormatStage, LabelReplaceExpr,
+    LabelSelector, LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue, LineFormatStage,
+    LiteralExpr, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage,
+    PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector, UnwrapExpr,
+    VectorAggregationExpr, VectorExpr, VectorMatching, VectorOp,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -257,10 +257,13 @@ fn metric_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
     recursive(|me| {
         let vec_agg = vector_aggregation_expr_inner(me.clone());
 
+        let label_replace = label_replace_expr_inner(me.clone());
         let atom = choice((
             me.clone()
                 .delimited_by(just('(').then(ws()), ws().then(just(')'))),
             vec_agg.map(Expr::VectorAggregation),
+            label_replace.map(Expr::LabelReplace),
+            vector_expr().map(Expr::Vector),
             range_aggregation_expr().map(Expr::RangeAggregation),
             literal_expr().map(Expr::Literal),
         ));
@@ -389,6 +392,55 @@ fn binary_modifier<'a>() -> impl Parser<'a, &'a str, BinaryModifier, Extra<'a>> 
                 group,
                 include,
             }
+        })
+}
+
+/// `labelReplaceExpr` (syntax.y:187): five-arg call form.
+/// Takes the outer metric expression parser so the first argument
+/// can be any `metric_expr`.
+fn label_replace_expr_inner<'a>(
+    me: impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone + 'a,
+) -> impl Parser<'a, &'a str, LabelReplaceExpr, Extra<'a>> + Clone + 'a {
+    let comma = ws().then(just(',')).then(ws());
+    keyword("label_replace")
+        .ignore_then(ws())
+        .ignore_then(just('('))
+        .ignore_then(ws())
+        .ignore_then(me)
+        .then_ignore(comma.clone())
+        .then(string_literal())
+        .then_ignore(comma.clone())
+        .then(string_literal())
+        .then_ignore(comma.clone())
+        .then(string_literal())
+        .then_ignore(comma)
+        .then(string_literal())
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .map_with(
+            |((((expr, dst_label), replacement), src_label), regex), e| LabelReplaceExpr {
+                expr: Box::new(expr),
+                dst_label,
+                replacement,
+                src_label,
+                regex,
+                span: e.span().into(),
+            },
+        )
+}
+
+/// `vectorExpr` (syntax.y:470): `vector(<number>)`.
+fn vector_expr<'a>() -> impl Parser<'a, &'a str, VectorExpr, Extra<'a>> + Clone {
+    keyword("vector")
+        .ignore_then(ws())
+        .ignore_then(just('('))
+        .ignore_then(ws())
+        .ignore_then(number())
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .map_with(|value, e| VectorExpr {
+            value,
+            span: e.span().into(),
         })
 }
 
@@ -2314,6 +2366,100 @@ mod tests {
         let b = expect_binary(input);
         assert_eq!(b.span.start, 0);
         assert_eq!(b.span.end, input.len());
+    }
+
+    // ============= SOW-13 misc metric expression tests ==============
+
+    fn expect_label_replace(input: &str) -> LabelReplaceExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::LabelReplace(l) => l,
+            other => panic!("expected label_replace, got {other:?}"),
+        }
+    }
+
+    fn expect_vector_lit(input: &str) -> VectorExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::Vector(v) => v,
+            other => panic!("expected vector(...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_replace_basic() {
+        let lr = expect_label_replace(
+            r#"label_replace(rate({a="b"}[5m]), "dst", "$1", "src", "(.+)")"#,
+        );
+        assert_eq!(lr.dst_label, "dst");
+        assert_eq!(lr.replacement, "$1");
+        assert_eq!(lr.src_label, "src");
+        assert_eq!(lr.regex, "(.+)");
+        assert!(matches!(&*lr.expr, Expr::RangeAggregation(_)));
+    }
+
+    #[test]
+    fn label_replace_with_vector_aggregation_inner() {
+        let lr = expect_label_replace(
+            r#"label_replace(sum(rate({a="b"}[5m])) by (job), "dst", "$1", "job", "(.*)")"#,
+        );
+        assert!(matches!(&*lr.expr, Expr::VectorAggregation(_)));
+    }
+
+    #[test]
+    fn label_replace_with_binop_inner() {
+        // The first arg can itself be a binop.
+        let lr = expect_label_replace(
+            r#"label_replace(rate({a="b"}[5m]) * 2, "dst", "r", "src", ".*")"#,
+        );
+        assert!(matches!(&*lr.expr, Expr::Binary(_)));
+    }
+
+    #[test]
+    fn label_replace_too_few_args_rejected() {
+        // Three string args instead of four.
+        assert!(parse(r#"label_replace(rate({a="b"}[5m]), "x", "y", "z")"#).is_err());
+    }
+
+    #[test]
+    fn label_replace_span_covers_whole() {
+        let input = r#"label_replace(rate({a="b"}[5m]), "d", "$1", "s", ".+")"#;
+        let lr = expect_label_replace(input);
+        assert_eq!(lr.span.start, 0);
+        assert_eq!(lr.span.end, input.len());
+    }
+
+    #[test]
+    fn vector_scalar() {
+        let v = expect_vector_lit("vector(1)");
+        assert_eq!(v.value, 1.0);
+    }
+
+    #[test]
+    fn vector_decimal() {
+        let v = expect_vector_lit("vector(3.14)");
+        assert_eq!(v.value, 3.14);
+    }
+
+    #[test]
+    fn vector_in_binop() {
+        // `vector(0) + rate(...)` — vector wraps a scalar so it can
+        // participate in vector arithmetic.
+        let b = expect_binary(r#"vector(0) + rate({a="b"}[5m])"#);
+        assert_eq!(b.op, BinaryOp::Add);
+        assert!(matches!(&*b.lhs, Expr::Vector(_)));
+        assert!(matches!(&*b.rhs, Expr::RangeAggregation(_)));
+    }
+
+    #[test]
+    fn vector_missing_paren_rejected() {
+        assert!(parse("vector 1").is_err());
+    }
+
+    #[test]
+    fn vector_span_covers_whole() {
+        let input = "vector(42)";
+        let v = expect_vector_lit(input);
+        assert_eq!(v.span.start, 0);
+        assert_eq!(v.span.end, input.len());
     }
 
     // ============= SOW-11 vector aggregation tests ==================

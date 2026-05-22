@@ -27,6 +27,10 @@ pub enum Expr {
     Binary(BinaryExpr),
     /// Bare numeric literal (`1`, `2.5`, `-3`). (SOW-12)
     Literal(LiteralExpr),
+    /// `label_replace(expr, dst, replacement, src, regex)`. (SOW-13)
+    LabelReplace(LabelReplaceExpr),
+    /// `vector(<number>)` — a scalar wrapped as a 0-d vector. (SOW-13)
+    Vector(VectorExpr),
 }
 
 impl Expr {
@@ -38,6 +42,8 @@ impl Expr {
             Expr::VectorAggregation(v) => v.span,
             Expr::Binary(b) => b.span,
             Expr::Literal(l) => l.span,
+            Expr::LabelReplace(l) => l.span,
+            Expr::Vector(v) => v.span,
         }
     }
 }
@@ -459,6 +465,28 @@ pub enum GroupSide {
 /// any leading sign.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiteralExpr {
+    pub value: f64,
+    pub span: Span,
+}
+
+/// `label_replace(expr, dst, replacement, src, regex)`
+/// (`syntax.y:187`). Rewrites the `dst` label on `expr`'s output
+/// using a regex match against `src`. Mirrors Prometheus's
+/// `label_replace`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelReplaceExpr {
+    pub expr: Box<Expr>,
+    pub dst_label: String,
+    pub replacement: String,
+    pub src_label: String,
+    pub regex: String,
+    pub span: Span,
+}
+
+/// `vector(<number>)` — a 0-dimensional vector carrying a single
+/// scalar value (`syntax.y:470`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorExpr {
     pub value: f64,
     pub span: Span,
 }
