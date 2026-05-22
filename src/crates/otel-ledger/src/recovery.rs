@@ -405,10 +405,17 @@ pub fn seed_from_catalog_files(registry: &mut Registry) {
     }
 }
 
-/// List SFSTs in today's remote prefix. For each one, mark it uploaded;
-/// for those not yet rotated into a closed catalog, read the local SFST
-/// header and forward a fresh `AddEntry` to the catalog builder so the
-/// entry ends up in a future closed catalog file.
+/// List SFSTs in remote storage for every date in the catalog retention
+/// window (today, today-1, ..., today-N). For each one, mark it uploaded;
+/// for those not yet rotated into a closed catalog, build a fresh
+/// `AddEntry` from the local SFST registry's summary and send it to the
+/// catalog builder.
+///
+/// Multi-day scope guards against the "agent down for >1 day" case:
+/// SFSTs uploaded yesterday but never rotated would otherwise stay
+/// invisible to the catalog builder on the next start. The window is
+/// capped at the catalog retention window — older catalogs would have
+/// been retention-evicted anyway, so reconstructing them is pointless.
 ///
 /// Returns `Err` if the remote is unreachable — the caller should skip
 /// further remote-dependent recovery.
@@ -416,77 +423,174 @@ pub fn seed_from_catalog_files(registry: &mut Registry) {
 /// SFSTs discovered in remote storage whose local file is missing are
 /// logged and skipped — the catalog entry cannot be reconstructed
 /// without the file's header.
+/// Upper bound on the date range walked by `reconcile_remote_uploads`.
+/// Caps the loop so a pathologically-configured retention (e.g.,
+/// `max_age` that overflows to `u32::MAX` days in
+/// `catalog_retention_days`) doesn't issue millions of LIST calls at
+/// startup. 366 days covers any reasonable human-scale retention; older
+/// remote SFSTs are still queryable via locally-recovered catalog
+/// files, just not auto-discovered if their catalog never landed.
+const MAX_RECONCILE_DAYS: u32 = 366;
+
 pub async fn reconcile_remote_uploads(
     registry: &mut Registry,
     catalog_builder: &mut ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     operator: &opendal::Operator,
     tenant_id: &TenantId,
+    retention: &bridge::config::RetentionConfig,
 ) -> Result<(), opendal::Error> {
     let today = chrono::Utc::now().date_naive();
-    let prefix = crate::remote_keys::sfst_prefix(tenant_id, today);
-    let entries = operator.list(&prefix).await?;
-
+    let max_days = crate::ledger::catalog_retention_days(retention).min(MAX_RECONCILE_DAYS);
     let uploaded_at_ns = file_registry::TimestampNs(now_ns());
+
+    // Build the date-and-prefix list, then issue all LIST calls in
+    // parallel — typical S3 LIST is ~100-200ms and a retention window
+    // of 30 days would otherwise add several seconds to startup.
+    let dates_and_prefixes: Vec<(chrono::NaiveDate, String)> = (0..=max_days)
+        .filter_map(|offset| {
+            today
+                .checked_sub_signed(chrono::Duration::days(offset as i64))
+                .map(|d| (d, crate::remote_keys::sfst_prefix(tenant_id, d)))
+        })
+        .collect();
+
+    let list_results = futures::future::join_all(
+        dates_and_prefixes
+            .iter()
+            .map(|(_, prefix)| operator.list(prefix)),
+    )
+    .await;
+
     let mut reconciled = 0usize;
 
-    for entry in entries {
-        let path = entry.path();
-        let filename = path.strip_prefix(&prefix).unwrap_or(path);
-        let id = match file_registry::FileId::parse(Path::new(filename)) {
-            Some(id) => id,
-            None => continue,
-        };
+    for ((date, prefix), result) in dates_and_prefixes.iter().zip(list_results) {
+        let entries = result?;
+        for entry in entries {
+            let path = entry.path();
+            let filename = path.strip_prefix(prefix.as_str()).unwrap_or(path);
+            let id = match file_registry::FileId::parse(Path::new(filename)) {
+                Some(id) => id,
+                None => continue,
+            };
 
-        registry.mark_uploaded(id.seq);
+            registry.mark_uploaded(id.seq);
 
-        if registry.is_rotated(id.seq) {
-            continue;
-        }
-
-        let sfst_entry = match registry.sfst.get(id.seq) {
-            Some(e) => e,
-            None => {
-                tracing::warn!(
-                    seq = id.seq,
-                    remote_key = %path,
-                    "remote SFST has no local file, skipping catalog reconstruction"
-                );
+            if registry.is_rotated(id.seq) {
                 continue;
             }
-        };
 
-        // The registry already has the summary fields (populated either at
-        // indexing time or by Registry::recover reading the SUMR chunk).
-        // No need to re-read the SFST file.
-        let catalog_entry =
-            crate::ledger::build_catalog_entry(sfst_entry, path.to_string(), uploaded_at_ns);
-        let date = match crate::remote_keys::parse_sfst_date(path) {
-            Some(d) => d,
-            None => {
-                tracing::warn!(
-                    seq = id.seq,
-                    remote_key = %path,
-                    "could not parse date from remote_key, skipping",
-                );
+            let sfst_entry = match registry.sfst.get(id.seq) {
+                Some(e) => e,
+                None => {
+                    tracing::warn!(
+                        seq = id.seq,
+                        remote_key = %path,
+                        "remote SFST has no local file, skipping catalog reconstruction"
+                    );
+                    continue;
+                }
+            };
+
+            // Registry already has summary fields; no SFST re-read.
+            let catalog_entry =
+                crate::ledger::build_catalog_entry(sfst_entry, path.to_string(), uploaded_at_ns);
+            let req = CatalogBuilderRequest::AddEntry {
+                tenant_id: tenant_id.clone(),
+                date: *date,
+                entry: catalog_entry,
+            };
+            if let Err(e) = catalog_builder.send(req) {
+                tracing::error!(seq = id.seq, "failed to enqueue AddEntry: {e}");
                 continue;
             }
-        };
-        let req = CatalogBuilderRequest::AddEntry {
-            tenant_id: tenant_id.clone(),
-            date,
-            entry: catalog_entry,
-        };
-        if let Err(e) = catalog_builder.send(req) {
-            tracing::error!(seq = id.seq, "failed to enqueue AddEntry: {e}");
-            continue;
+            reconciled += 1;
         }
-        reconciled += 1;
     }
 
     if reconciled > 0 {
         tracing::info!(
             tenant = %tenant_id,
             "reconciled {reconciled} uncataloged remote uploads",
+        );
+    }
+    Ok(())
+}
+
+/// Re-upload local catalog files that are missing from remote storage.
+///
+/// Covers the crash-between-write-and-upload window: the catalog builder
+/// writes the local file atomically, then sends `UploadCatalog` and may
+/// die before the uploader actually puts the object. Without this pass,
+/// the remote would silently lose that catalog file. Also covers
+/// permanent upload failures (`CatalogUploadFailed`) that the steady-
+/// state handler currently logs and drops.
+///
+/// Strategy: per-catalog `stat()` against the remote. Cheaper than a
+/// LIST + symmetric-diff when the local catalog count is small (we
+/// expect ≤ retention_days × rotations_per_day) and the failure rate is
+/// near-zero.
+pub async fn reconcile_local_catalog_uploads(
+    registry: &Registry,
+    uploader: &mut ComponentHandle<UploaderRequest, UploaderResponse>,
+    operator: &opendal::Operator,
+    tenant_id: &TenantId,
+    retention: &bridge::config::RetentionConfig,
+) -> Result<(), opendal::Error> {
+    let today = chrono::Utc::now().date_naive();
+    let max_days = crate::ledger::catalog_retention_days(retention);
+    // Files strictly older than `cutoff` will be evicted by the
+    // subsequent retention pass. Re-uploading them is pointless and
+    // also unsafe: the spawned upload task reads the local file via
+    // `tokio::fs::read`, but the cleaner could concurrently delete it.
+    // The `checked_sub_signed` fallback for absurd retention values
+    // means "no cutoff applies" — match retention.rs's own guard.
+    let cutoff = today.checked_sub_signed(chrono::Duration::days(max_days as i64));
+
+    let mut reconciled = 0usize;
+
+    for (local_path, file) in registry.catalog_files.iter() {
+        if file.is_pending_deletion() {
+            continue;
+        }
+        if let Some(cutoff) = cutoff
+            && file.date < cutoff
+        {
+            // About to be evicted; don't fight retention.
+            continue;
+        }
+        let remote_key = crate::remote_keys::catalog(
+            file.date,
+            tenant_id,
+            file.machine_id,
+            file.boot_id,
+            file.max_seq,
+            file.min_timestamp_s,
+            file.max_timestamp_s,
+        );
+        match operator.stat(&remote_key).await {
+            Ok(_) => continue, // present remotely; nothing to do
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
+                let req = UploaderRequest::UploadCatalog {
+                    local_path: local_path.clone(),
+                    remote_key: remote_key.clone(),
+                };
+                if let Err(e) = uploader.send(req) {
+                    tracing::error!(
+                        path = %local_path.display(),
+                        "failed to enqueue UploadCatalog: {e}",
+                    );
+                    continue;
+                }
+                reconciled += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    if reconciled > 0 {
+        tracing::info!(
+            tenant = %tenant_id,
+            "re-uploaded {reconciled} local catalog file(s) missing from remote",
         );
     }
     Ok(())
@@ -666,5 +770,225 @@ mod tests {
 
         assert!(reg.sfst.get(1).is_none());
         assert!(reg.sfst.get(2).is_none());
+    }
+
+    // ── reconcile_local_catalog_uploads tests ────────────────────
+
+    /// Returns an OpenDAL operator backed by a fresh tempdir, plus the
+    /// `TempDir` guard the caller must keep alive for the test's
+    /// duration. The `fs` service is the only backend already enabled
+    /// for the crate; using it here lets tests run without adding a
+    /// dev-only feature flag for `services-memory`.
+    fn fs_operator() -> (opendal::Operator, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut builder = opendal::services::Fs::default();
+        builder = builder.root(tmp.path().to_str().unwrap());
+        let op = opendal::Operator::new(builder).unwrap().finish();
+        (op, tmp)
+    }
+
+    /// Place a real catalog file on disk under the registry's canonical
+    /// path and `track` it. The file's body is an empty catalog; we
+    /// only care about path identity and the byte content the uploader
+    /// will read.
+    fn place_local_catalog(
+        reg: &mut Registry,
+        date: NaiveDate,
+        max_seq: u64,
+        min_ts: u32,
+        max_ts: u32,
+    ) -> std::path::PathBuf {
+        let path = reg
+            .catalog_files
+            .file_path(date, machine(), boot(), max_seq, min_ts, max_ts);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"catalog-bytes").unwrap();
+        let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+        reg.catalog_files.track(
+            otel_catalog::File::new(date, machine(), boot(), max_seq, min_ts, max_ts, size),
+            path.clone(),
+        );
+        path
+    }
+
+    #[tokio::test]
+    async fn reconcile_local_catalog_uploads_re_uploads_missing_files() {
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let mut reg = make_registry(catalog_dir.path());
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let local_path = place_local_catalog(&mut reg, date, 10, 100, 200);
+
+        let (op, _op_tmp) = fs_operator();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut uploader = crate::component::ComponentHandle::spawn::<crate::uploader::Uploader>(
+            op.clone(),
+            cancel.child_token(),
+        );
+
+        reconcile_local_catalog_uploads(
+            &reg,
+            &mut uploader,
+            &op,
+            &TenantId::from("tenant1"),
+            &evict_all_retention(),
+        )
+            .await
+            .unwrap();
+
+        // Drain the one queued upload.
+        let resp = uploader.recv().await.unwrap();
+        assert!(matches!(resp, UploaderResponse::CatalogUploaded { .. }));
+
+        // Remote now has the file.
+        let expected_remote = crate::remote_keys::catalog(
+            date,
+            &TenantId::from("tenant1"),
+            machine(),
+            boot(),
+            10,
+            100,
+            200,
+        );
+        let bytes = op.read(&expected_remote).await.unwrap().to_vec();
+        assert_eq!(&bytes[..], b"catalog-bytes");
+        let _ = local_path;
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn reconcile_local_catalog_uploads_skips_existing_files() {
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let mut reg = make_registry(catalog_dir.path());
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let _path = place_local_catalog(&mut reg, date, 10, 100, 200);
+
+        let (op, _op_tmp) = fs_operator();
+        // Pre-populate the remote so reconcile finds it already present.
+        let remote_key = crate::remote_keys::catalog(
+            date,
+            &TenantId::from("tenant1"),
+            machine(),
+            boot(),
+            10,
+            100,
+            200,
+        );
+        op.write(&remote_key, b"existing-bytes".to_vec())
+            .await
+            .unwrap();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut uploader = crate::component::ComponentHandle::spawn::<crate::uploader::Uploader>(
+            op.clone(),
+            cancel.child_token(),
+        );
+
+        reconcile_local_catalog_uploads(
+            &reg,
+            &mut uploader,
+            &op,
+            &TenantId::from("tenant1"),
+            &evict_all_retention(),
+        )
+            .await
+            .unwrap();
+
+        // No UploadCatalog was enqueued.
+        assert_eq!(uploader.pending(), 0);
+        // Remote is unchanged.
+        let bytes = op.read(&remote_key).await.unwrap().to_vec();
+        assert_eq!(&bytes[..], b"existing-bytes");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn reconcile_local_catalog_uploads_skips_past_retention_files() {
+        // A catalog file past the retention cutoff must not be
+        // re-uploaded: the subsequent retention pass will delete it
+        // locally, and a concurrent upload task would race the cleaner.
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let mut reg = make_registry(catalog_dir.path());
+
+        // Place a catalog dated 30 days ago; retention is 7 days.
+        let today = chrono::Utc::now().date_naive();
+        let old_date = today - chrono::Duration::days(30);
+        place_local_catalog(&mut reg, old_date, 10, 100, 200);
+
+        let (op, _op_tmp) = fs_operator();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut uploader = crate::component::ComponentHandle::spawn::<crate::uploader::Uploader>(
+            op.clone(),
+            cancel.child_token(),
+        );
+
+        let retention = bridge::config::RetentionConfig {
+            max_files: 100,
+            max_total_size: bytesize::ByteSize::b(u64::MAX),
+            max_age: std::time::Duration::from_secs(7 * 86_400),
+        };
+
+        reconcile_local_catalog_uploads(
+            &reg,
+            &mut uploader,
+            &op,
+            &TenantId::from("tenant1"),
+            &retention,
+        )
+        .await
+        .unwrap();
+
+        // Past-retention file was skipped: no UploadCatalog enqueued.
+        assert_eq!(uploader.pending(), 0);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn reconcile_local_catalog_uploads_skips_pending_deletion_files() {
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let mut reg = make_registry(catalog_dir.path());
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let path = place_local_catalog(&mut reg, date, 10, 100, 200);
+        reg.catalog_files.mark_pending_deletion(&path);
+
+        let (op, _op_tmp) = fs_operator();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut uploader = crate::component::ComponentHandle::spawn::<crate::uploader::Uploader>(
+            op.clone(),
+            cancel.child_token(),
+        );
+
+        reconcile_local_catalog_uploads(
+            &reg,
+            &mut uploader,
+            &op,
+            &TenantId::from("tenant1"),
+            &evict_all_retention(),
+        )
+            .await
+            .unwrap();
+
+        // Pending-deletion files are skipped: nothing was uploaded.
+        assert_eq!(uploader.pending(), 0);
+        let remote_key = crate::remote_keys::catalog(
+            date,
+            &TenantId::from("tenant1"),
+            machine(),
+            boot(),
+            10,
+            100,
+            200,
+        );
+        assert!(matches!(
+            op.stat(&remote_key).await.unwrap_err().kind(),
+            opendal::ErrorKind::NotFound
+        ));
+
+        cancel.cancel();
     }
 }

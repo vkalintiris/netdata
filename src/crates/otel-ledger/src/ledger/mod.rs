@@ -152,11 +152,16 @@ impl Ledger {
             crate::recovery::seed_from_catalog_files(registry);
 
             if logs_config.storage.enabled {
+                let retention = bridge::config::RetentionConfig::resolve(
+                    &logs_config.index.retention,
+                    tenant_id.as_str(),
+                );
                 match crate::recovery::reconcile_remote_uploads(
                     registry,
                     &mut catalog_builder,
                     &operator,
                     tenant_id,
+                    &retention,
                 )
                 .await
                 {
@@ -168,6 +173,20 @@ impl Ledger {
                             tenant_id,
                         )
                         .await?;
+                        if let Err(e) = crate::recovery::reconcile_local_catalog_uploads(
+                            registry,
+                            &mut uploader,
+                            &operator,
+                            tenant_id,
+                            &retention,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                tenant = tenant_id.as_str(),
+                                "catalog upload reconciliation failed: {e}"
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
