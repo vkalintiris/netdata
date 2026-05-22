@@ -43,11 +43,42 @@
 //! - [`output`] — result serialization (NDJSON for now).
 //! - [`error`] — error types used across the crate.
 //!
+//! ## The AST/IR boundary
+//!
+//! The [`nlogql`] parser produces an [`Expr`](nlogql::ast::Expr)
+//! tree that mirrors Loki's `syntax.y` grammar one-to-one. That's
+//! the right shape for *grammar* fidelity but the wrong shape for
+//! *execution*:
+//!
+//! - The AST records spans on every node — the evaluator doesn't
+//!   need them at runtime, but it would have to drag them through
+//!   every computation.
+//! - The AST keeps surface-syntax variants the evaluator can't run
+//!   (today: `line_format` and `label_format`, both deferred to a
+//!   follow-up plan).
+//! - Some queries are *syntactically* valid but *semantically*
+//!   broken — `topk` without its count, `quantile_over_time(2, ...)`
+//!   with a quantile outside `[0, 1]`. The parser is permissive
+//!   here so that error reporting is layered: the parser deals in
+//!   syntax, the lowering layer deals in semantics.
+//!
+//! The [`Plan`] IR is the post-lowering shape that the evaluator
+//! consumes. It is reachable only via [`lower`], which:
+//!
+//! 1. Re-uses AST sub-types (`Matcher`, `LineFilter`, `LabelFilter`,
+//!    etc.) where they're already in the right shape — the IR is
+//!    deliberately *not* a wholesale rewrite.
+//! 2. Omits variants the evaluator can't execute, so the type
+//!    itself encodes "this is runnable today."
+//! 3. Surfaces semantic errors as [`LowerError`] with the source
+//!    [`Span`](nlogql::span::Span) of the offending AST node, so
+//!    callers can resolve to line/column against the original query.
+//!
 //! ## Current status
 //!
-//! Scaffold only — `lower()` returns `Err(LowerError::Unimplemented)`
-//! for every input. Productions land progressively across the SOWs
-//! in `docs/nlogql-evaluator-plan.md`.
+//! Lowering is complete (Phase D landed). The evaluator (`eval`),
+//! storage backends, and output formatter are stubs filled in
+//! during Phases E–G of `docs/nlogql-evaluator-plan.md`.
 
 pub mod error;
 pub mod eval;

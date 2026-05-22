@@ -53,11 +53,13 @@ fn lower_stage(stage: &PipelineStage) -> Result<LogStage, LowerError> {
         PipelineStage::Decolorize(_) => Ok(LogStage::Decolorize),
         PipelineStage::DropLabels(l) => Ok(LogStage::DropLabels(l.clone())),
         PipelineStage::KeepLabels(l) => Ok(LogStage::KeepLabels(l.clone())),
-        PipelineStage::LineFormat(_) => Err(LowerError::DeferredStage {
+        PipelineStage::LineFormat(s) => Err(LowerError::DeferredStage {
             stage: "line_format",
+            span: s.span,
         }),
-        PipelineStage::LabelFormat(_) => Err(LowerError::DeferredStage {
+        PipelineStage::LabelFormat(s) => Err(LowerError::DeferredStage {
             stage: "label_format",
+            span: s.span,
         }),
     }
 }
@@ -83,7 +85,9 @@ fn lower_metric(expr: &Expr) -> Result<MetricPlan, LowerError> {
             src_label: lr.src_label.clone(),
             regex: lr.regex.clone(),
         })),
-        Expr::Selector(_) | Expr::Pipeline(_) => Err(LowerError::LogInMetricPosition),
+        Expr::Selector(_) | Expr::Pipeline(_) => Err(LowerError::LogInMetricPosition {
+            span: expr.span(),
+        }),
     }
 }
 
@@ -91,13 +95,22 @@ fn lower_range_agg(r: &RangeAggregationExpr) -> Result<MetricPlan, LowerError> {
     let op_name = range_op_name(r.op);
     match (r.op, r.parameter) {
         (RangeOp::QuantileOverTime, None) => {
-            return Err(LowerError::MissingParameter { op: op_name });
+            return Err(LowerError::MissingParameter {
+                op: op_name,
+                span: r.span,
+            });
         }
         (RangeOp::QuantileOverTime, Some(q)) if !(0.0..=1.0).contains(&q) => {
-            return Err(LowerError::QuantileOutOfRange { value: q });
+            return Err(LowerError::QuantileOutOfRange {
+                value: q,
+                span: r.span,
+            });
         }
         (op, Some(_)) if op != RangeOp::QuantileOverTime => {
-            return Err(LowerError::UnexpectedParameter { op: op_name });
+            return Err(LowerError::UnexpectedParameter {
+                op: op_name,
+                span: r.span,
+            });
         }
         _ => {}
     }
@@ -116,8 +129,18 @@ fn lower_vector_agg(v: &VectorAggregationExpr) -> Result<MetricPlan, LowerError>
         VectorOp::TopK | VectorOp::BottomK | VectorOp::ApproxTopK,
     );
     match (needs_param, v.parameter) {
-        (true, None) => return Err(LowerError::MissingParameter { op: op_name }),
-        (false, Some(_)) => return Err(LowerError::UnexpectedParameter { op: op_name }),
+        (true, None) => {
+            return Err(LowerError::MissingParameter {
+                op: op_name,
+                span: v.span,
+            });
+        }
+        (false, Some(_)) => {
+            return Err(LowerError::UnexpectedParameter {
+                op: op_name,
+                span: v.span,
+            });
+        }
         _ => {}
     }
     Ok(MetricPlan::VectorAgg(VectorAggPlan {
@@ -234,7 +257,7 @@ mod tests {
     #[test]
     fn line_format_is_deferred() {
         let err = lower_str(r#"{app="foo"} | line_format "{{.x}}""#).unwrap_err();
-        assert!(matches!(err, LowerError::DeferredStage { stage: "line_format" }));
+        assert!(matches!(err, LowerError::DeferredStage { stage: "line_format", .. }));
     }
 
     // ---- metric path -----------------------------------------------
@@ -283,7 +306,7 @@ mod tests {
         let err = lower_str(r#"quantile_over_time({app="foo"}[5m])"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::MissingParameter { op: "quantile_over_time" },
+            LowerError::MissingParameter { op: "quantile_over_time", .. },
         ));
     }
 
@@ -310,7 +333,7 @@ mod tests {
         let err = lower_str(r#"count_over_time(5, {app="foo"}[5m])"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::UnexpectedParameter { op: "count_over_time" },
+            LowerError::UnexpectedParameter { op: "count_over_time", .. },
         ));
     }
 
@@ -345,7 +368,7 @@ mod tests {
         let err = lower_str(r#"topk(rate({app="foo"}[5m]))"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::MissingParameter { op: "topk" },
+            LowerError::MissingParameter { op: "topk", .. },
         ));
     }
 
@@ -356,7 +379,7 @@ mod tests {
         let err = lower_str(r#"sum(3, rate({app="foo"}[5m]))"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::UnexpectedParameter { op: "sum" },
+            LowerError::UnexpectedParameter { op: "sum", .. },
         ));
     }
 
@@ -415,6 +438,89 @@ mod tests {
                 assert!(matches!(*b.rhs, MetricPlan::RangeAgg(_)));
             }
             other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    // ---- error span coverage --------------------------------------
+
+    #[test]
+    fn error_carries_span() {
+        // The span points at the failing AST node (`topk(...)` here).
+        let err = lower_str(r#"topk(rate({app="foo"}[5m]))"#).unwrap_err();
+        assert!(matches!(err, LowerError::MissingParameter { .. }));
+        let span = err.span();
+        // The whole topk call covers the entire input.
+        assert_eq!(span.start, 0);
+        assert!(span.end > 0);
+    }
+
+    #[test]
+    fn error_message_includes_byte_range() {
+        let err = lower_str(r#"sum(3, rate({app="foo"}[5m]))"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("byte ") && msg.contains("sum"),
+            "expected byte-range + op name in: {msg}",
+        );
+    }
+
+    #[test]
+    fn quantile_out_of_range_displays_value() {
+        let err = lower_str(r#"quantile_over_time(2, {app="foo"}[5m])"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("got 2"), "expected `got 2` in: {msg}");
+    }
+
+    // ---- LogInMetricPosition via manual AST -----------------------
+
+    #[test]
+    fn log_in_metric_position_via_manual_ast() {
+        // The parser doesn't construct this (binop atoms come from
+        // metric_expr only), so we hand-build the AST.
+        use nlogql::ast::{
+            BinaryExpr, BinaryModifier, BinaryOp, Expr, LiteralExpr, StreamSelector,
+        };
+        use nlogql::span::Span;
+
+        let sel = Expr::Selector(StreamSelector {
+            matchers: Vec::new(),
+            span: Span::new(0, 2),
+        });
+        let lit = Expr::Literal(LiteralExpr {
+            value: 1.0,
+            span: Span::new(5, 6),
+        });
+        let bin = Expr::Binary(BinaryExpr {
+            op: BinaryOp::Add,
+            lhs: Box::new(sel),
+            rhs: Box::new(lit),
+            modifier: BinaryModifier::default(),
+            span: Span::new(0, 6),
+        });
+
+        let err = lower(&bin).unwrap_err();
+        assert!(matches!(err, LowerError::LogInMetricPosition { .. }));
+        // Span points at the offending lhs (the selector).
+        assert_eq!(err.span().start, 0);
+        assert_eq!(err.span().end, 2);
+    }
+
+    // ---- LowerError Display sanity --------------------------------
+
+    #[test]
+    fn each_error_variant_displays() {
+        // Exercise every variant's Display arm so changes there
+        // don't break the format silently.
+        let cases: &[&str] = &[
+            r#"{a="b"} | line_format "x""#,                  // DeferredStage
+            r#"quantile_over_time({a="b"}[5m])"#,            // MissingParameter
+            r#"sum(3, rate({a="b"}[5m]))"#,                  // UnexpectedParameter
+            r#"quantile_over_time(2, {a="b"}[5m])"#,         // QuantileOutOfRange
+        ];
+        for q in cases {
+            let err = lower_str(q).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.starts_with("lower at byte "), "{q:?} -> {msg}");
         }
     }
 }
