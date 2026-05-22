@@ -38,3 +38,9 @@ impl From<Span> for Range<usize> {
         s.as_range()
     }
 }
+
+impl From<chumsky::span::SimpleSpan> for Span {
+    fn from(s: chumsky::span::SimpleSpan) -> Self {
+        Self::new(s.start, s.end)
+    }
+}
