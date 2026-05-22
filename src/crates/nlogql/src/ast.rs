@@ -47,6 +47,11 @@ pub enum PipelineStage {
     /// `| status >= 400`, `| host = ip("10/8")`, `| a > 1 and b < 2`,
     /// etc. (SOW-05).
     LabelFilter(LabelFilter),
+    /// `| line_format "{{ .ip }}"` — rewrite the log line. (SOW-06)
+    LineFormat(LineFormatStage),
+    /// `| label_format new=old, x="{{ .y }}"` — rename or template
+    /// labels. (SOW-06)
+    LabelFormat(LabelFormatStage),
 }
 
 /// A LogQL stream selector: `{name1 op "val1", name2 op "val2", ...}`.
@@ -248,4 +253,40 @@ pub enum NumericOp {
 pub enum IpFilterOp {
     Eq,
     NotEq,
+}
+
+/// `line_format "<template>"` — Go template rewrite of the log line.
+/// We treat the template body as an opaque string; template parsing
+/// happens at evaluation time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineFormatStage {
+    pub template: String,
+    pub span: Span,
+}
+
+/// `label_format <item> (, <item>)*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelFormatStage {
+    /// Non-empty.
+    pub items: Vec<LabelFormatItem>,
+    pub span: Span,
+}
+
+/// One `label_format` item — either a label-to-label rename or a
+/// Go-template that produces the new label's value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelFormatItem {
+    /// `dst = src` — copy `src`'s value into `dst`. (`syntax.y:289`)
+    Rename {
+        dst: String,
+        src: String,
+        span: Span,
+    },
+    /// `dst = "<template>"` — set `dst` to the template's expansion.
+    /// (`syntax.y:290`)
+    Template {
+        dst: String,
+        template: String,
+        span: Span,
+    },
 }

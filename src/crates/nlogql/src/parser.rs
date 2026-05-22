@@ -9,9 +9,9 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    Expr, IpFilterOp, LabelExtraction, LabelFilter, LineFilter, LineFilterOp, LineFilterValue,
-    Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr, PipelineStage,
-    StreamSelector,
+    Expr, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem, LabelFormatStage, LineFilter,
+    LineFilterOp, LineFilterValue, LineFormatStage, Matcher, MatcherOp, NumericOp, ParserFlag,
+    ParserStage, PipelineExpr, PipelineStage, StreamSelector,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -109,7 +109,12 @@ fn pipeline_stage<'a>() -> impl Parser<'a, &'a str, PipelineStage, Extra<'a>> + 
     // parsers first; chumsky backtracks if no keyword matches and
     // tries label_filter.
     let pipe_prefixed = just('|').ignore_then(ws()).ignore_then(choice((
+        // Keyword-led: each starts with a distinct fixed token.
         parser_stage().map(PipelineStage::Parser),
+        line_format_stage().map(PipelineStage::LineFormat),
+        label_format_stage().map(PipelineStage::LabelFormat),
+        // Identifier-led: tried last because it commits to whatever
+        // identifier appears first.
         label_filter().map(PipelineStage::LabelFilter),
     )));
     // Line filters tried first because `|=`, `|~`, `|>` share a
@@ -219,6 +224,67 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .separated_by(ws().then(just(',')).then(ws()))
         .at_least(1)
         .collect()
+}
+
+// -- Format stages (SOW-06) ----------------------------------------
+
+/// `lineFormatExpr` (syntax.y:284): `LINE_FMT STRING`.
+fn line_format_stage<'a>() -> impl Parser<'a, &'a str, LineFormatStage, Extra<'a>> + Clone {
+    keyword("line_format")
+        .ignore_then(ws())
+        .ignore_then(string_literal())
+        .map_with(|template, e| LineFormatStage {
+            template,
+            span: e.span().into(),
+        })
+}
+
+/// `labelFormatExpr` (syntax.y:299): `LABEL_FMT labelsFormat`.
+fn label_format_stage<'a>() -> impl Parser<'a, &'a str, LabelFormatStage, Extra<'a>> + Clone {
+    keyword("label_format")
+        .ignore_then(ws())
+        .ignore_then(
+            label_format_item()
+                .separated_by(ws().then(just(',')).then(ws()))
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .map_with(|items, e| LabelFormatStage {
+            items,
+            span: e.span().into(),
+        })
+}
+
+/// `labelFormat` (syntax.y:288): `IDENTIFIER EQ (IDENTIFIER | STRING)`.
+/// String RHS yields a template; identifier RHS yields a rename.
+fn label_format_item<'a>() -> impl Parser<'a, &'a str, LabelFormatItem, Extra<'a>> + Clone {
+    enum Rhs {
+        Rename(String),
+        Template(String),
+    }
+
+    let rhs = choice((
+        string_literal().map(Rhs::Template),
+        identifier().map(|s: &str| Rhs::Rename(s.to_string())),
+    ));
+
+    identifier()
+        .then_ignore(ws())
+        .then_ignore(just('='))
+        .then_ignore(ws())
+        .then(rhs)
+        .map_with(|(dst, rhs), e| {
+            let span = e.span().into();
+            let dst = dst.to_string();
+            match rhs {
+                Rhs::Rename(src) => LabelFormatItem::Rename { dst, src, span },
+                Rhs::Template(template) => LabelFormatItem::Template {
+                    dst,
+                    template,
+                    span,
+                },
+            }
+        })
 }
 
 // -- Label filters (SOW-05) ----------------------------------------
@@ -534,6 +600,20 @@ mod tests {
         match stage {
             PipelineStage::LabelFilter(lf) => lf,
             other => panic!("expected label filter, got {other:?}"),
+        }
+    }
+
+    fn line_format_of(stage: &PipelineStage) -> &LineFormatStage {
+        match stage {
+            PipelineStage::LineFormat(lf) => lf,
+            other => panic!("expected line_format, got {other:?}"),
+        }
+    }
+
+    fn label_format_of(stage: &PipelineStage) -> &LabelFormatStage {
+        match stage {
+            PipelineStage::LabelFormat(lf) => lf,
+            other => panic!("expected label_format, got {other:?}"),
         }
     }
 
@@ -1173,5 +1253,101 @@ mod tests {
     #[test]
     fn label_filter_dangling_and_rejected() {
         assert!(parse(r#"{app="foo"} | a > 1 and"#).is_err());
+    }
+
+    // ============= SOW-06 format stage tests ========================
+
+    #[test]
+    fn line_format_basic() {
+        let p = expect_pipeline(r#"{app="foo"} | line_format "{{ .ip }}""#);
+        assert_eq!(line_format_of(&p.stages[0]).template, "{{ .ip }}");
+    }
+
+    #[test]
+    fn line_format_with_literal_text() {
+        let p = expect_pipeline(r#"{app="foo"} | line_format "request {{.method}} from {{.ip}}""#);
+        assert_eq!(
+            line_format_of(&p.stages[0]).template,
+            "request {{.method}} from {{.ip}}",
+        );
+    }
+
+    #[test]
+    fn label_format_rename_single() {
+        // `new = src` — identifier RHS yields a Rename.
+        let p = expect_pipeline(r#"{app="foo"} | label_format new=old"#);
+        let lf = label_format_of(&p.stages[0]);
+        assert_eq!(lf.items.len(), 1);
+        match &lf.items[0] {
+            LabelFormatItem::Rename { dst, src, .. } => {
+                assert_eq!(dst, "new");
+                assert_eq!(src, "old");
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_format_template_single() {
+        // `new = "{{ .x }}"` — string RHS yields a Template.
+        let p = expect_pipeline(r#"{app="foo"} | label_format new="{{ .x }}""#);
+        match &label_format_of(&p.stages[0]).items[0] {
+            LabelFormatItem::Template { dst, template, .. } => {
+                assert_eq!(dst, "new");
+                assert_eq!(template, "{{ .x }}");
+            }
+            other => panic!("expected Template, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_format_mixed_multi() {
+        let p = expect_pipeline(r#"{app="foo"} | label_format a=b, c="{{ .d }}", e=f"#);
+        let lf = label_format_of(&p.stages[0]);
+        assert_eq!(lf.items.len(), 3);
+        assert!(matches!(lf.items[0], LabelFormatItem::Rename { .. }));
+        assert!(matches!(lf.items[1], LabelFormatItem::Template { .. }));
+        assert!(matches!(lf.items[2], LabelFormatItem::Rename { .. }));
+    }
+
+    #[test]
+    fn label_format_keyword_required() {
+        // Bare `new=old` without the keyword is not a label_format —
+        // it's an identifier-led label_filter (which itself needs an
+        // op, so this should fail).
+        // Bare `new=old` matches a label_filter (matcher with `=` and
+        // identifier RHS) — but matcher requires a STRING RHS, so it
+        // fails. Confirm the parse errors out.
+        assert!(parse(r#"{app="foo"} | new=old"#).is_err());
+    }
+
+    #[test]
+    fn line_format_missing_string_rejected() {
+        assert!(parse(r#"{app="foo"} | line_format"#).is_err());
+    }
+
+    #[test]
+    fn label_format_missing_items_rejected() {
+        assert!(parse(r#"{app="foo"} | label_format"#).is_err());
+    }
+
+    #[test]
+    fn label_format_missing_rhs_rejected() {
+        assert!(parse(r#"{app="foo"} | label_format new="#).is_err());
+    }
+
+    #[test]
+    fn composition_filter_parser_then_line_format() {
+        let p = expect_pipeline(
+            r#"{app="foo"} |= "x" | logfmt | latency > 1s | line_format "{{ .level }}""#,
+        );
+        assert_eq!(p.stages.len(), 4);
+        assert!(matches!(&p.stages[0], PipelineStage::LineFilter(_)));
+        assert!(matches!(parser_of(&p.stages[1]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            label_filter_of(&p.stages[2]),
+            LabelFilter::Duration { .. }
+        ));
+        assert!(matches!(&p.stages[3], PipelineStage::LineFormat(_)));
     }
 }
