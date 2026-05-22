@@ -626,9 +626,17 @@ pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Ext
     ));
     let body = ws().ignore_then(element).repeated().collect::<Vec<_>>();
 
-    selector()
-        .then(body.clone())
-        .then_ignore(ws())
+    // The "inner" of a log-range expression is the selector plus
+    // its pre-RANGE body (pipeline stages and/or unwrap). Loki's
+    // grammar (syntax.y:131-148) lets the inner be wrapped in
+    // parens: `({foo="bar"} |= "x")[5m]`. Accept either form.
+    let inner = selector().then(body.clone());
+    let inner_paren = inner
+        .clone()
+        .delimited_by(just('(').then(ws()), ws().then(just(')')));
+    let head = choice((inner_paren, inner));
+
+    head.then_ignore(ws())
         .then(range_token())
         .then(ws().ignore_then(offset_expr()).or_not())
         .then(body)
@@ -2427,6 +2435,134 @@ mod tests {
         let b = expect_binary(input);
         assert_eq!(b.span.start, 0);
         assert_eq!(b.span.end, input.len());
+    }
+
+    // ============= SOW-16 compliance corpus =========================
+
+    /// A representative slice of queries from Loki's `parser_test.go`
+    /// (`~/.cache/nlogql-loki-reference/`). Every one is expected
+    /// to parse successfully. Any case we deliberately don't
+    /// support belongs in `nlogql/EXPECTED_FAILS.md`, not here.
+    #[test]
+    fn compliance_positive_corpus() {
+        let queries: &[&str] = &[
+            // basic selectors
+            r#"{foo="bar"}"#,
+            r#"{ foo = "bar" }"#,
+            r#"{ namespace="buzz", foo != "bar" }"#,
+            r#"{ foo =~ "bar" }"#,
+            r#"{ namespace="buzz", foo !~ "bar" }"#,
+            r#"{ foo = "bar", bar != "baz" }"#,
+            // line filters
+            r#"{foo="bar"} |= "baz""#,
+            r#"{foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap""#,
+            r#"{foo="bar"} |= ip("123.123.123.123")"#,
+            r#"{foo="bar"} != ip("123.123.123.123")"#,
+            r#"{foo="bar"} |= ip("123.123.123.123")|= "baz""#,
+            r#"{foo="bar"} != ip("123.123.123.123")|= "baz""#,
+            r#"{foo="bar"} |= "baz" |= ip("123.123.123.123")"#,
+            // parser stages
+            r#"{ foo = "bar" } | decolorize"#,
+            r#"{ foo = "bar" }|logfmt --strict"#,
+            r#"{ foo = "bar" }|logfmt --strict --keep-empty|length>5d"#,
+            r#"{ foo = "bar" }|logfmt|rate="a""#,
+            r#"{ foo = "bar" }|logfmt|length>5d"#,
+            // range aggregations — single function
+            r#"count_over_time({foo="bar"}[12h] |= "error")"#,
+            r#"count_over_time({foo="bar"} |= "error" [12h])"#,
+            r#"count_over_time({ foo = "bar" }[12m])"#,
+            r#"bytes_over_time({ foo = "bar" }[12m])"#,
+            r#"bytes_rate({ foo = "bar" }[12m])"#,
+            r#"rate({ foo = "bar" }[5h])"#,
+            r#"rate({ foo = "bar" }[5d])"#,
+            r#"count_over_time({ foo = "bar" }[1w])"#,
+            r#"absent_over_time({ foo = "bar" }[1w])"#,
+            r#"rate({ foo = "bar" }[1y])"#,
+            // vector aggregations
+            r#"sum(rate({ foo = "bar" }[5h]))"#,
+            r#"avg(count_over_time({ foo = "bar" }[5h])) by (bar,foo)"#,
+            r#"avg(count_over_time({ foo = "bar" }[5h])) by ()"#,
+            r#"max without (bar) (count_over_time({ foo = "bar" }[5h]))"#,
+            r#"max without () (count_over_time({ foo = "bar" }[5h]))"#,
+            r#"topk(10,count_over_time({ foo = "bar" }[5h])) without (bar)"#,
+            r#"bottomk(30 ,sum(rate({ foo = "bar" }[5h])) by (foo))"#,
+            r#"max( sum(count_over_time({ foo = "bar" }[5h])) without (foo,bar) ) by (foo)"#,
+            r#"approx_topk(2, count_over_time({ foo = "bar" }[5h])) by (foo)"#,
+            // ip-typed label filters — only `=` and `!=` (Loki's
+            // `ipLabelFilter` rejects `>`/`>=`/`<`/`<=`).
+            r#"{ foo = "bar" }|logfmt|addr=ip("1.2.3.4")"#,
+            r#"{ foo = "bar" }|logfmt|addr!=ip("1.2.3.4")"#,
+            // `ip` as a label name (identifier), not a filter call
+            r#"{ foo = "bar" }|logfmt|ip="2.3.4.5""#,
+            r#"{ foo = "bar" }|logfmt|ip="2.3.4.5"|ip="abc""#,
+            r#"{ foo = "bar" }|logfmt|ip="2.3.4.5"|ip="abc"|ipaddr=ip("4.5.6.7")"#,
+            r#"{ foo = "bar" }|logfmt|ip="2.3.4.5"|ip="abc"|ipaddr=ip("4.5.6.7")|ip=ip("6.7.8.9")"#,
+            // chained label filters with ip()
+            r#"{ foo = "bar" }|logfmt|remote_addr=ip("2.3.4.5")|level="error"|addr=ip("1.2.3.4")"#,
+            r#"{ foo = "bar" }|logfmt|remote_addr!=ip("2.3.4.5")|level="error"|addr!=ip("1.2.3.4")"#,
+            // parenthesised inner of a range expression
+            r#"count_over_time(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap")[5m])"#,
+            r#"bytes_over_time(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap")[5m])"#,
+            r#"bytes_over_time(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap" | unpack)[5m])"#,
+            r#"sum(count_over_time(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap")[5m])) by (foo)"#,
+            r#"sum(bytes_rate(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap")[5m])) by (foo)"#,
+            r#"topk(5,count_over_time(({foo="bar"} |= "baz" |~ "blip" != "flip" !~ "flap")[5m])) without (foo)"#,
+        ];
+
+        let mut failures = Vec::new();
+        for q in queries {
+            if let Err(e) = parse(q) {
+                failures.push(format!("FAIL {q:?}: {e}"));
+            }
+        }
+        if !failures.is_empty() {
+            panic!(
+                "compliance corpus: {}/{} cases failed\n{}",
+                failures.len(),
+                queries.len(),
+                failures.join("\n"),
+            );
+        }
+    }
+
+    /// Queries Loki's `parser_test.go` expects to fail. Verify ours
+    /// rejects them too.
+    #[test]
+    fn compliance_negative_corpus() {
+        let queries: &[&str] = &[
+            // Unknown range op.
+            r#"unk({ foo = "bar" }[5m])"#,
+            // Vector op `min` requires inner metric expression, not log range directly.
+            r#"min({ foo = "bar" }[5m])"#,
+            // Unknown duration unit.
+            r#"rate({ foo = "bar" }[5minutes])"#,
+            // label_replace argument count wrong (one arg).
+            r#"label_replace(rate({ foo = "bar" }[5m]),"")"#,
+            // Unclosed range bracket.
+            r#"rate({ foo = "bar" }[5)"#,
+            // bottomk requires numeric first arg, not identifier.
+            r#"bottomk(he,count_over_time({ foo = "bar" }[5h]))"#,
+            // ip-filter only accepts `=` and `!=` (syntax.y:323).
+            r#"{ foo = "bar" }|logfmt|addr>=ip("1.2.3.4")"#,
+            r#"{ foo = "bar" }|logfmt|addr>ip("1.2.3.4")"#,
+            r#"{ foo = "bar" }|logfmt|addr<=ip("1.2.3.4")"#,
+            r#"{ foo = "bar" }|logfmt|addr<ip("1.2.3.4")"#,
+        ];
+
+        let mut surprises = Vec::new();
+        for q in queries {
+            if parse(q).is_ok() {
+                surprises.push(format!("UNEXPECTED OK {q:?}"));
+            }
+        }
+        if !surprises.is_empty() {
+            panic!(
+                "{}/{} negative cases unexpectedly parsed:\n{}",
+                surprises.len(),
+                queries.len(),
+                surprises.join("\n"),
+            );
+        }
     }
 
     // ============= SOW-15 error message tests =======================
