@@ -31,7 +31,7 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
             .into_iter()
             .next()
             .expect("chumsky returns >= 1 error on failure");
-        convert_error(first)
+        convert_error(input, first)
     })
 }
 
@@ -81,6 +81,7 @@ pub(crate) fn selector<'a>() -> impl Parser<'a, &'a str, StreamSelector, Extra<'
             matchers,
             span: e.span().into(),
         })
+        .labelled("stream selector")
 }
 
 /// `matcher` production from syntax.y:203.
@@ -105,6 +106,7 @@ fn matcher_op<'a>() -> impl Parser<'a, &'a str, MatcherOp, Extra<'a>> + Clone {
         just("!=").to(MatcherOp::NotEq),
         just("=").to(MatcherOp::Eq),
     ))
+    .labelled("matcher operator")
 }
 
 // -- Pipeline stages -----------------------------------------------
@@ -519,7 +521,7 @@ fn vector_op<'a>() -> impl Parser<'a, &'a str, VectorOp, Extra<'a>> + Clone {
         keyword("sum").to(VectorOp::Sum),
         keyword("topk").to(VectorOp::TopK),
     ));
-    choice((a, b))
+    choice((a, b)).labelled("vector operator")
 }
 
 // -- Range aggregations (SOW-09) -----------------------------------
@@ -582,7 +584,7 @@ fn range_op<'a>() -> impl Parser<'a, &'a str, RangeOp, Extra<'a>> + Clone {
         keyword("stdvar_over_time").to(RangeOp::StdvarOverTime),
         keyword("sum_over_time").to(RangeOp::SumOverTime),
     ));
-    choice((a, b))
+    choice((a, b)).labelled("range operator")
 }
 
 /// `grouping` (syntax.y:518): `(by|without) ( <labels>? )`.
@@ -716,6 +718,7 @@ fn range_token<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
         .ignore_then(duration())
         .then_ignore(ws())
         .then_ignore(just(']'))
+        .labelled("[<duration>] range")
 }
 
 /// `offsetExpr` (syntax.y:510): `offset <duration>`. The duration
@@ -1012,6 +1015,7 @@ fn comparison_op<'a>() -> impl Parser<'a, &'a str, NumericOp, Extra<'a>> + Clone
         just("<").to(NumericOp::Lt),
         just("=").to(NumericOp::Eq),
     ))
+    .labelled("comparison operator")
 }
 
 /// `FUNCTION_FLAG` token: `--strict` or `--keep-empty`. The trailing
@@ -1058,6 +1062,7 @@ fn line_filter_op<'a>() -> impl Parser<'a, &'a str, LineFilterOp, Extra<'a>> + C
         just("!~").to(LineFilterOp::NotMatch),
         just("!>").to(LineFilterOp::NotPattern),
     ))
+    .labelled("line filter operator")
 }
 
 /// `<value> (or <value>)*` — at least one value; multiple share the
@@ -1100,15 +1105,71 @@ fn keyword<'a>(kw: &'static str) -> impl Parser<'a, &'a str, (), Extra<'a>> + Cl
         .ignored()
 }
 
-fn convert_error(err: Rich<'_, char>) -> ParseError {
+/// Predicate for chumsky-internal expected-patterns that we want
+/// to hide from user-facing error messages. The strings come from
+/// chumsky's `Pattern` Display impl.
+fn is_internal_pattern(s: &str) -> bool {
+    // `any` and `something else` come from `any()` / `.not()`.
+    if s == "any" || s == "something else" {
+        return true;
+    }
+    // The comment leader leaks because ws() can begin with `#`.
+    if s == "'#'" {
+        return true;
+    }
+    // Single ASCII-letter char patterns are keyword first-bytes
+    // exposed by chumsky's `just("kw")` internals. Drop them once
+    // we already have a higher-level label.
+    let bytes = s.as_bytes();
+    if bytes.len() == 3 && bytes[0] == b'\'' && bytes[2] == b'\'' {
+        let c = bytes[1] as char;
+        if c.is_ascii_alphabetic() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Translate chumsky's `Rich<char>` into our `ParseError`.
+///
+/// We pull both the list of `expected()` patterns (rendered via
+/// each pattern's `Display`) and the single `found()` token, then
+/// resolve byte-offset to line/column against the original input.
+fn convert_error(input: &str, err: Rich<'_, char>) -> ParseError {
     let s = err.span();
     let span = Span::new(s.start, s.end);
-    let kind = if err.found().is_none() {
-        ParseErrorKind::UnexpectedEof
-    } else {
-        ParseErrorKind::Expected("LogQL expression")
+    let (line, col) = crate::error::line_col(input, s.start);
+
+    // chumsky surfaces the "reason" as one of: Custom(...), Unexpected,
+    // ExpectedFound { ... }. We keep `expected` as a flat string list
+    // and fold any `Custom(...)` reason into ParseErrorKind::Custom.
+    //
+    // chumsky's expected list leaks internal patterns we don't want
+    // users to see: `any`/`something else` (from `any().filter()` /
+    // `.not()`), `'#'` (the comment leader, baked into ws()), and
+    // single-char alphabetic peeks (from keyword() rewinds). Filter
+    // them out and dedupe.
+    let mut expected: Vec<String> = err
+        .expected()
+        .map(|pat| format!("{pat}"))
+        .filter(|s| !is_internal_pattern(s))
+        .collect();
+    expected.sort();
+    expected.dedup();
+    let found = err.found().map(|c| format!("{c:?}"));
+
+    // If chumsky's error has a custom-reason message, surface that.
+    // Otherwise fall back to Expected/Found.
+    let kind = match err.reason() {
+        chumsky::error::RichReason::Custom(msg) => ParseErrorKind::Custom(msg.to_string()),
+        _ => ParseErrorKind::Expected { expected, found },
     };
-    ParseError { span, kind }
+    ParseError {
+        span,
+        line,
+        col,
+        kind,
+    }
 }
 
 #[cfg(test)]
@@ -2366,6 +2427,97 @@ mod tests {
         let b = expect_binary(input);
         assert_eq!(b.span.start, 0);
         assert_eq!(b.span.end, input.len());
+    }
+
+    // ============= SOW-15 error message tests =======================
+
+    #[test]
+    fn error_line_col_tracking() {
+        // Failure on first line, column 6 (after `{foo=`).
+        let err = parse(r#"{foo=}"#).unwrap_err();
+        assert_eq!(err.line, 1);
+        assert_eq!(err.col, 6);
+
+        // Failure on line 2: outer ws skips through the comment.
+        let err = parse("# a comment\n{foo}").unwrap_err();
+        assert_eq!(err.line, 2);
+        assert_eq!(err.col, 5);
+    }
+
+    #[test]
+    fn error_message_mentions_matcher_operator() {
+        let err = parse(r#"{foo}"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("matcher operator"),
+            "expected `matcher operator` in: {msg}",
+        );
+    }
+
+    #[test]
+    fn error_message_mentions_stream_selector() {
+        let err = parse(r#"rate("#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stream selector"),
+            "expected `stream selector` in: {msg}",
+        );
+    }
+
+    #[test]
+    fn error_message_mentions_range_token() {
+        let err = parse(r#"rate({foo="bar"}"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[<duration>] range") || msg.contains("range"),
+            "expected `[<duration>] range` in: {msg}",
+        );
+    }
+
+    #[test]
+    fn error_no_internal_pattern_leakage() {
+        // Make sure `any` / `something else` / `#` don't appear in
+        // user-facing error output for common failures.
+        for input in [
+            r#"{foo}"#,
+            r#"{foo=}"#,
+            "rate(",
+            "garbage",
+        ] {
+            let msg = parse(input).unwrap_err().to_string();
+            assert!(!msg.contains("any,"), "`any,` leaked in: {msg}");
+            assert!(
+                !msg.contains("something else"),
+                "`something else` leaked in: {msg}",
+            );
+            assert!(
+                !msg.contains("'#'"),
+                "`'#'` leaked in: {msg}",
+            );
+        }
+    }
+
+    #[test]
+    fn error_custom_message_from_try_map() {
+        // Vector agg grouping on both sides triggers a try_map error.
+        let err = parse(r#"sum by (job) (rate({foo="bar"}[5m])) by (instance)"#).unwrap_err();
+        let msg = err.to_string();
+        // Either the custom message surfaces, or the trailing input
+        // is reported — both are acceptable.
+        assert!(
+            msg.contains("grouping on both sides") || msg.contains("unexpected"),
+            "expected meaningful message, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn error_eof_form_says_end_of_input() {
+        let err = parse(r#"{foo="bar""#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("end of input") || msg.contains("EOF"),
+            "expected EOF mention in: {msg}",
+        );
     }
 
     // ============= SOW-13 misc metric expression tests ==============

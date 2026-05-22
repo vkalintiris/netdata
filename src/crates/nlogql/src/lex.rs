@@ -41,7 +41,7 @@ pub fn identifier<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> + Clone 
     let rest = any()
         .filter(|c: &char| c.is_alphanumeric() || *c == '_')
         .repeated();
-    first.then(rest).to_slice()
+    first.then(rest).to_slice().labelled("identifier")
 }
 
 // ---------------------------------------------------------------
@@ -85,7 +85,7 @@ pub fn string_literal<'a>() -> impl Parser<'a, &'a str, String, Extra<'a>> + Clo
         .collect::<String>()
         .delimited_by(just('`'), just('`'));
 
-    choice((double_quoted, raw))
+    choice((double_quoted, raw)).labelled("string literal")
 }
 
 // ---------------------------------------------------------------
@@ -144,7 +144,7 @@ pub fn number<'a>() -> impl Parser<'a, &'a str, f64, Extra<'a>> + Clone {
         .to_slice()
         .map(|s: &str| s.parse::<f64>().unwrap_or(0.0));
 
-    choice((hex, binary, decimal))
+    choice((hex, binary, decimal)).labelled("number")
 }
 
 // ---------------------------------------------------------------
@@ -206,6 +206,7 @@ pub fn duration<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
             let total: i64 = parts.into_iter().sum();
             if sign.is_some() { -total } else { total }
         })
+        .labelled("duration")
 }
 
 // ---------------------------------------------------------------
@@ -261,6 +262,7 @@ pub fn bytes<'a>() -> impl Parser<'a, &'a str, u64, Extra<'a>> + Clone {
             let n: f64 = n_str.parse().unwrap_or(0.0);
             (n * mult as f64) as u64
         })
+        .labelled("byte size")
 }
 
 // ---------------------------------------------------------------
