@@ -6,7 +6,10 @@
 use crate::span::Span;
 
 /// Top-level expression. Grows as we add productions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Note: only `PartialEq` is derived — `LabelFilter::Numeric` holds
+/// an `f64`, which has no total equality (NaN).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// `{label="value", ...}` — log stream selector standing alone,
     /// no pipeline.
@@ -26,7 +29,7 @@ impl Expr {
 }
 
 /// Selector composed with one or more pipeline stages.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PipelineExpr {
     pub selector: StreamSelector,
     /// Non-empty; an empty pipeline collapses to `Expr::Selector`.
@@ -35,12 +38,15 @@ pub struct PipelineExpr {
 }
 
 /// One pipeline stage. Variants land progressively across SOW-03+.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PipelineStage {
     /// `|= "x"`, `!~ "y"`, etc. (SOW-03).
     LineFilter(LineFilter),
     /// `| json`, `| logfmt --strict`, `| regexp "..."`, etc. (SOW-04).
     Parser(ParserStage),
+    /// `| status >= 400`, `| host = ip("10/8")`, `| a > 1 and b < 2`,
+    /// etc. (SOW-05).
+    LabelFilter(LabelFilter),
 }
 
 /// A LogQL stream selector: `{name1 op "val1", name2 op "val2", ...}`.
@@ -158,4 +164,88 @@ pub enum ParserFlag {
     Strict,
     /// `--keep-empty` — emit labels even when the value is empty.
     KeepEmpty,
+}
+
+/// A label filter expression. Atomic variants compare a single
+/// label against a typed value; `And`/`Or` compose them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LabelFilter {
+    /// `name (= | != | =~ | !~) "value"` — a reused
+    /// [`Matcher`]. (`syntax.y:303`)
+    String(Matcher),
+    /// `name (= | !=) ip("cidr")`. (`syntax.y:323`)
+    Ip {
+        name: String,
+        op: IpFilterOp,
+        value: String,
+        span: Span,
+    },
+    /// `name OP <number>` — numeric comparison. (`syntax.y:352`)
+    Numeric {
+        name: String,
+        op: NumericOp,
+        value: f64,
+        span: Span,
+    },
+    /// `name OP <duration>` — duration value in nanoseconds.
+    /// (`syntax.y:332`)
+    Duration {
+        name: String,
+        op: NumericOp,
+        /// Signed nanoseconds.
+        value: i64,
+        span: Span,
+    },
+    /// `name OP <bytes>` — byte-quantity comparison. (`syntax.y:342`)
+    Bytes {
+        name: String,
+        op: NumericOp,
+        value: u64,
+        span: Span,
+    },
+    /// `left AND right`, expressed as `,`, `and`, or by adjacency.
+    And {
+        left: Box<LabelFilter>,
+        right: Box<LabelFilter>,
+        span: Span,
+    },
+    /// `left OR right`.
+    Or {
+        left: Box<LabelFilter>,
+        right: Box<LabelFilter>,
+        span: Span,
+    },
+}
+
+impl LabelFilter {
+    pub fn span(&self) -> Span {
+        match self {
+            LabelFilter::String(m) => m.span,
+            LabelFilter::Ip { span, .. }
+            | LabelFilter::Numeric { span, .. }
+            | LabelFilter::Duration { span, .. }
+            | LabelFilter::Bytes { span, .. }
+            | LabelFilter::And { span, .. }
+            | LabelFilter::Or { span, .. } => *span,
+        }
+    }
+}
+
+/// Numeric / duration / bytes comparison operator. Six variants; `==`
+/// and `=` both yield `Eq` (`syntax.y:339,349,359`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericOp {
+    Eq,
+    NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+/// Operator for an `ip(...)` label filter — only equality variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IpFilterOp {
+    Eq,
+    NotEq,
 }

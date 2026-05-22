@@ -9,11 +9,12 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    Expr, LabelExtraction, LineFilter, LineFilterOp, LineFilterValue, Matcher, MatcherOp,
-    ParserFlag, ParserStage, PipelineExpr, PipelineStage, StreamSelector,
+    Expr, IpFilterOp, LabelExtraction, LabelFilter, LineFilter, LineFilterOp, LineFilterValue,
+    Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr, PipelineStage,
+    StreamSelector,
 };
+use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
-use crate::lex::{identifier, string_literal, ws};
 use crate::span::Span;
 
 /// Parse a LogQL query string into an AST.
@@ -99,13 +100,18 @@ fn matcher_op<'a>() -> impl Parser<'a, &'a str, MatcherOp, Extra<'a>> + Clone {
 
 /// `pipelineStage` (syntax.y:215). Line filters have their op as
 /// the first token (`|=`, `!~`, etc.) — no separate `|`. All other
-/// stages start with a literal `|` then a stage-kind keyword.
+/// stages start with a literal `|` then a stage-kind keyword or an
+/// identifier-led label filter.
 fn pipeline_stage<'a>() -> impl Parser<'a, &'a str, PipelineStage, Extra<'a>> + Clone {
     let line = line_filter().map(PipelineStage::LineFilter);
-    let pipe_prefixed = just('|')
-        .ignore_then(ws())
-        .ignore_then(parser_stage())
-        .map(PipelineStage::Parser);
+    // Keyword-led stages share a first byte with identifier-led
+    // label filters (e.g. `json` vs `json_size > 5`). Order keyword
+    // parsers first; chumsky backtracks if no keyword matches and
+    // tries label_filter.
+    let pipe_prefixed = just('|').ignore_then(ws()).ignore_then(choice((
+        parser_stage().map(PipelineStage::Parser),
+        label_filter().map(PipelineStage::LabelFilter),
+    )));
     // Line filters tried first because `|=`, `|~`, `|>` share a
     // first byte with the bare `|`. chumsky backtracks zero-cost
     // when `line_filter_op()` fails to match.
@@ -213,6 +219,168 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .separated_by(ws().then(just(',')).then(ws()))
         .at_least(1)
         .collect()
+}
+
+// -- Label filters (SOW-05) ----------------------------------------
+
+/// `labelFilter` (syntax.y:302) with AND/OR composition and parens.
+///
+/// Atoms: ip / duration / bytes / numeric / string-matcher, tried
+/// in that order so the disambiguation works without committing to
+/// a wrong branch.
+fn label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    recursive(|expr| {
+        let atom = choice((
+            expr.delimited_by(just('(').then(ws()), ws().then(just(')'))),
+            atomic_label_filter(),
+        ));
+
+        // AND-level: comma, `and` keyword. Adjacency (no separator
+        // at all between two atoms) is also valid in Loki; we skip
+        // it for now and require an explicit separator.
+        let and_sep = ws()
+            .ignore_then(choice((just(',').ignored(), keyword("and"))))
+            .then_ignore(ws());
+        let and_expr = atom
+            .clone()
+            .then(and_sep.ignore_then(atom).repeated().collect::<Vec<_>>())
+            .map(|(first, rest)| {
+                rest.into_iter().fold(first, |acc, right| {
+                    let span = Span::new(acc.span().start, right.span().end);
+                    LabelFilter::And {
+                        left: Box::new(acc),
+                        right: Box::new(right),
+                        span,
+                    }
+                })
+            });
+
+        // OR-level: `or` keyword.
+        let or_sep = ws().ignore_then(keyword("or")).then_ignore(ws());
+        and_expr
+            .clone()
+            .then(or_sep.ignore_then(and_expr).repeated().collect::<Vec<_>>())
+            .map(|(first, rest)| {
+                rest.into_iter().fold(first, |acc, right| {
+                    let span = Span::new(acc.span().start, right.span().end);
+                    LabelFilter::Or {
+                        left: Box::new(acc),
+                        right: Box::new(right),
+                        span,
+                    }
+                })
+            })
+    })
+}
+
+/// Atomic label filter: a single labelled comparison. Five variants,
+/// disambiguated by value type. Order matters — most-specific first.
+fn atomic_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    choice((
+        ip_label_filter(),
+        duration_label_filter(),
+        bytes_label_filter(),
+        numeric_label_filter(),
+        string_label_filter(),
+    ))
+}
+
+/// `IDENTIFIER (= | !=) ip("cidr")` (syntax.y:323).
+fn ip_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    identifier()
+        .then_ignore(ws())
+        .then(ip_op())
+        .then_ignore(ws())
+        .then_ignore(keyword("ip"))
+        .then_ignore(ws())
+        .then_ignore(just('('))
+        .then_ignore(ws())
+        .then(string_literal())
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .map_with(|((name, op), value), e| LabelFilter::Ip {
+            name: name.to_string(),
+            op,
+            value,
+            span: e.span().into(),
+        })
+}
+
+fn ip_op<'a>() -> impl Parser<'a, &'a str, IpFilterOp, Extra<'a>> + Clone {
+    choice((
+        just("!=").to(IpFilterOp::NotEq),
+        just("=").to(IpFilterOp::Eq),
+    ))
+}
+
+/// `IDENTIFIER cmp_op DURATION` (syntax.y:332).
+fn duration_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    identifier()
+        .then_ignore(ws())
+        .then(comparison_op())
+        .then_ignore(ws())
+        .then(duration())
+        .map_with(|((name, op), value), e| LabelFilter::Duration {
+            name: name.to_string(),
+            op,
+            value,
+            span: e.span().into(),
+        })
+}
+
+/// `IDENTIFIER cmp_op BYTES` (syntax.y:342).
+fn bytes_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    identifier()
+        .then_ignore(ws())
+        .then(comparison_op())
+        .then_ignore(ws())
+        .then(bytes())
+        .map_with(|((name, op), value), e| LabelFilter::Bytes {
+            name: name.to_string(),
+            op,
+            value,
+            span: e.span().into(),
+        })
+}
+
+/// `IDENTIFIER cmp_op literalExpr` (syntax.y:352). `literalExpr` is
+/// `[+-]? NUMBER` per syntax.y:464.
+fn numeric_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    let signed_number = choice((
+        just('-').ignore_then(number()).map(|n: f64| -n),
+        just('+').ignore_then(number()),
+        number(),
+    ));
+    identifier()
+        .then_ignore(ws())
+        .then(comparison_op())
+        .then_ignore(ws())
+        .then(signed_number)
+        .map_with(|((name, op), value), e| LabelFilter::Numeric {
+            name: name.to_string(),
+            op,
+            value,
+            span: e.span().into(),
+        })
+}
+
+/// `matcher` reused as a label filter (syntax.y:303). String-typed.
+fn string_label_filter<'a>() -> impl Parser<'a, &'a str, LabelFilter, Extra<'a>> + Clone {
+    matcher().map(LabelFilter::String)
+}
+
+/// Six-op comparison: `==`/`=` -> Eq, `!=`, `>=`, `<=`, `>`, `<`.
+/// `==` before `=`, `>=` before `>`, `<=` before `<`.
+fn comparison_op<'a>() -> impl Parser<'a, &'a str, NumericOp, Extra<'a>> + Clone {
+    choice((
+        just("==").to(NumericOp::Eq),
+        just("!=").to(NumericOp::NotEq),
+        just(">=").to(NumericOp::Gte),
+        just("<=").to(NumericOp::Lte),
+        just(">").to(NumericOp::Gt),
+        just("<").to(NumericOp::Lt),
+        just("=").to(NumericOp::Eq),
+    ))
 }
 
 /// `FUNCTION_FLAG` token: `--strict` or `--keep-empty`. The trailing
@@ -351,14 +519,21 @@ mod tests {
     fn line_filter_of(stage: &PipelineStage) -> &LineFilter {
         match stage {
             PipelineStage::LineFilter(lf) => lf,
-            PipelineStage::Parser(_) => panic!("expected line filter"),
+            other => panic!("expected line filter, got {other:?}"),
         }
     }
 
     fn parser_of(stage: &PipelineStage) -> &ParserStage {
         match stage {
             PipelineStage::Parser(p) => p,
-            PipelineStage::LineFilter(_) => panic!("expected parser stage"),
+            other => panic!("expected parser stage, got {other:?}"),
+        }
+    }
+
+    fn label_filter_of(stage: &PipelineStage) -> &LabelFilter {
+        match stage {
+            PipelineStage::LabelFilter(lf) => lf,
+            other => panic!("expected label filter, got {other:?}"),
         }
     }
 
@@ -780,5 +955,223 @@ mod tests {
         // The trailing-character check on parser_flag must reject
         // `--strictly` as a misspelled `--strict`.
         assert!(parse(r#"{app="foo"} | logfmt --strictly"#).is_err());
+    }
+
+    // ============= SOW-05 label filter tests ========================
+
+    const NS: i64 = 1_000_000_000;
+
+    #[test]
+    fn label_filter_string_eq() {
+        let p = expect_pipeline(r#"{app="foo"} | level = "info""#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::String(m) => {
+                assert_eq!(m.name, "level");
+                assert_eq!(m.op, MatcherOp::Eq);
+                assert_eq!(m.value, "info");
+            }
+            other => panic!("expected string filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_string_regex() {
+        let p = expect_pipeline(r#"{app="foo"} | host =~ ".*prod""#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::String(m) => assert_eq!(m.op, MatcherOp::Match),
+            other => panic!("expected string filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_numeric_ops() {
+        // All six numeric comparison operators.
+        for (text, op) in [
+            ("status > 400", NumericOp::Gt),
+            ("status >= 400", NumericOp::Gte),
+            ("status < 400", NumericOp::Lt),
+            ("status <= 400", NumericOp::Lte),
+            ("status == 400", NumericOp::Eq),
+            ("status = 400", NumericOp::Eq),
+            ("status != 400", NumericOp::NotEq),
+        ] {
+            let q = format!(r#"{{app="foo"}} | {text}"#);
+            let p = expect_pipeline(&q);
+            match label_filter_of(&p.stages[0]) {
+                LabelFilter::Numeric { op: got, value, .. } => {
+                    assert_eq!(*got, op, "op for {text:?}");
+                    assert_eq!(*value, 400.0);
+                }
+                other => panic!("expected numeric for {text:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn label_filter_numeric_signed() {
+        let p = expect_pipeline(r#"{app="foo"} | offset > -5"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Numeric { value, .. } => assert_eq!(*value, -5.0),
+            other => panic!("expected numeric, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_duration() {
+        // From parser_test.go: `length>5d` and `latency >= 250ms`.
+        let p = expect_pipeline(r#"{app="foo"} | latency >= 250ms"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Duration { name, op, value, .. } => {
+                assert_eq!(name, "latency");
+                assert_eq!(*op, NumericOp::Gte);
+                assert_eq!(*value, 250 * 1_000_000); // 250ms in ns
+            }
+            other => panic!("expected duration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_bytes() {
+        // From lex_test.go: `size > 250kB`, `size > 200MiB`.
+        let p = expect_pipeline(r#"{app="foo"} | size > 250kB"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Bytes { name, op, value, .. } => {
+                assert_eq!(name, "size");
+                assert_eq!(*op, NumericOp::Gt);
+                assert_eq!(*value, 250_000);
+            }
+            other => panic!("expected bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_ip_eq() {
+        let p = expect_pipeline(r#"{app="foo"} | host = ip("10.0.0.0/8")"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Ip { name, op, value, .. } => {
+                assert_eq!(name, "host");
+                assert_eq!(*op, IpFilterOp::Eq);
+                assert_eq!(value, "10.0.0.0/8");
+            }
+            other => panic!("expected ip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_ip_neq() {
+        let p = expect_pipeline(r#"{app="foo"} | host != ip("10.0.0.0/8")"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Ip { op, .. } => assert_eq!(*op, IpFilterOp::NotEq),
+            other => panic!("expected ip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_and_via_comma() {
+        let p = expect_pipeline(r#"{app="foo"} | status >= 400, latency > 100ms"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::And { left, right, .. } => {
+                assert!(matches!(**left, LabelFilter::Numeric { .. }));
+                assert!(matches!(**right, LabelFilter::Duration { .. }));
+            }
+            other => panic!("expected AND, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_and_via_keyword() {
+        let p = expect_pipeline(r#"{app="foo"} | status >= 400 and latency > 100ms"#);
+        assert!(matches!(
+            label_filter_of(&p.stages[0]),
+            LabelFilter::And { .. }
+        ));
+    }
+
+    #[test]
+    fn label_filter_or() {
+        let p = expect_pipeline(r#"{app="foo"} | status >= 500 or latency > 1s"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Or { left, right, .. } => {
+                assert!(matches!(**left, LabelFilter::Numeric { .. }));
+                assert!(matches!(**right, LabelFilter::Duration { value, .. } if value == NS));
+            }
+            other => panic!("expected OR, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_or_precedence_below_and() {
+        // `a and b or c` parses as `(a and b) or c`, not `a and (b or c)`.
+        let p = expect_pipeline(r#"{app="foo"} | a > 1 and b > 2 or c > 3"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::Or { left, right, .. } => {
+                assert!(matches!(**left, LabelFilter::And { .. }));
+                assert!(matches!(**right, LabelFilter::Numeric { .. }));
+            }
+            other => panic!("expected OR at root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_parens_invert_precedence() {
+        // `a and (b or c)` keeps the OR as a child of AND.
+        let p = expect_pipeline(r#"{app="foo"} | a > 1 and ( b > 2 or c > 3 )"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::And { right, .. } => {
+                assert!(matches!(**right, LabelFilter::Or { .. }));
+            }
+            other => panic!("expected AND at root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_chained_and_is_left_assoc() {
+        // `a , b , c` -> ((a AND b) AND c).
+        let p = expect_pipeline(r#"{app="foo"} | a > 1, b > 2, c > 3"#);
+        match label_filter_of(&p.stages[0]) {
+            LabelFilter::And { left, right, .. } => {
+                assert!(matches!(**left, LabelFilter::And { .. }));
+                assert!(matches!(**right, LabelFilter::Numeric { .. }));
+            }
+            other => panic!("expected AND, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn label_filter_disambiguates_string_vs_unit_value() {
+        // `level = "info"` -> String filter; `level = 200` -> Numeric.
+        let p = expect_pipeline(r#"{app="foo"} | level = "info""#);
+        assert!(matches!(
+            label_filter_of(&p.stages[0]),
+            LabelFilter::String(_)
+        ));
+
+        let p = expect_pipeline(r#"{app="foo"} | level = 200"#);
+        assert!(matches!(
+            label_filter_of(&p.stages[0]),
+            LabelFilter::Numeric { .. }
+        ));
+    }
+
+    #[test]
+    fn label_filter_after_logfmt() {
+        // From parser_test.go-style: `| logfmt | latency >= 250ms`.
+        let p = expect_pipeline(r#"{app="foo"} | logfmt | latency >= 250ms"#);
+        assert_eq!(p.stages.len(), 2);
+        assert!(matches!(parser_of(&p.stages[0]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            label_filter_of(&p.stages[1]),
+            LabelFilter::Duration { .. }
+        ));
+    }
+
+    #[test]
+    fn label_filter_missing_value_rejected() {
+        assert!(parse(r#"{app="foo"} | status >"#).is_err());
+    }
+
+    #[test]
+    fn label_filter_dangling_and_rejected() {
+        assert!(parse(r#"{app="foo"} | a > 1 and"#).is_err());
     }
 }
