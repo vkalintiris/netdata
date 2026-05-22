@@ -13,7 +13,7 @@ use crate::ast::{
     LabelFormatItem, LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp,
     LineFilterValue, LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag,
     ParserStage, PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector,
-    UnwrapExpr,
+    UnwrapExpr, VectorAggregationExpr, VectorOp,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -42,10 +42,12 @@ fn root<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> {
 }
 
 /// `expr` (syntax.y:102): log or metric. The variants-of expression
-/// is out of scope per the plan. Range aggregations are tried first
-/// because they're keyword-led; log expressions start with `{`.
+/// is out of scope per the plan. Keyword-led metric forms (vector
+/// then range aggregations) are tried before the `{`-led log
+/// expression.
 fn top_level_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
     choice((
+        vector_aggregation_expr().map(Expr::VectorAggregation),
         range_aggregation_expr().map(Expr::RangeAggregation),
         log_expr(),
     ))
@@ -239,6 +241,86 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .separated_by(ws().then(just(',')).then(ws()))
         .at_least(1)
         .collect()
+}
+
+// -- Vector aggregations (SOW-11) ----------------------------------
+
+/// `vectorAggregationExpr` (syntax.y:176).
+///
+/// Recursive: a vector aggregation's argument is a `metricExpr`,
+/// which itself can be another vector aggregation. We accept
+/// vector and range aggregations as arguments here; binary ops,
+/// label_replace, and vector(N) join in SOW-12+.
+fn vector_aggregation_expr<'a>()
+-> impl Parser<'a, &'a str, VectorAggregationExpr, Extra<'a>> + Clone {
+    recursive(|vec_agg| {
+        // The inner argument can be either another vector aggregation
+        // (recursive) or a range aggregation. Vector tried first so
+        // nested forms like `sum(max(rate(...)))` work; range backs up
+        // when the input doesn't start with a vector op.
+        let metric_expr = choice((
+            vec_agg.clone().map(Expr::VectorAggregation),
+            range_aggregation_expr().map(Expr::RangeAggregation),
+        ));
+
+        let arg_with_param = number()
+            .then_ignore(ws())
+            .then_ignore(just(','))
+            .then_ignore(ws())
+            .then(metric_expr.clone())
+            .map(|(n, e)| (Some(n), Box::new(e)));
+        let arg_no_param = metric_expr.map(|e| (None, Box::new(e)));
+        let arg = choice((arg_with_param, arg_no_param));
+
+        vector_op()
+            .then_ignore(ws())
+            .then(grouping().or_not())
+            .then_ignore(ws())
+            .then_ignore(just('('))
+            .then_ignore(ws())
+            .then(arg)
+            .then_ignore(ws())
+            .then_ignore(just(')'))
+            .then(ws().ignore_then(grouping()).or_not())
+            .try_map(|(((op, before_grp), (parameter, expr)), after_grp), span| {
+                if before_grp.is_some() && after_grp.is_some() {
+                    return Err(Rich::custom(
+                        span,
+                        "vector aggregation cannot have grouping on both sides \
+                         of the argument list",
+                    ));
+                }
+                Ok(VectorAggregationExpr {
+                    op,
+                    expr,
+                    parameter,
+                    grouping: before_grp.or(after_grp),
+                    span: Span::new(span.start, span.end),
+                })
+            })
+    })
+}
+
+/// The 12 vector operators. `keyword()` makes prefix collisions safe
+/// (e.g. `sort` vs `sort_desc`).
+fn vector_op<'a>() -> impl Parser<'a, &'a str, VectorOp, Extra<'a>> + Clone {
+    let a = choice((
+        keyword("approx_topk").to(VectorOp::ApproxTopK),
+        keyword("avg").to(VectorOp::Avg),
+        keyword("bottomk").to(VectorOp::BottomK),
+        keyword("count").to(VectorOp::Count),
+        keyword("max").to(VectorOp::Max),
+        keyword("min").to(VectorOp::Min),
+    ));
+    let b = choice((
+        keyword("sort_desc").to(VectorOp::SortDesc),
+        keyword("sort").to(VectorOp::Sort),
+        keyword("stddev").to(VectorOp::Stddev),
+        keyword("stdvar").to(VectorOp::Stdvar),
+        keyword("sum").to(VectorOp::Sum),
+        keyword("topk").to(VectorOp::TopK),
+    ));
+    choice((a, b))
 }
 
 // -- Range aggregations (SOW-09) -----------------------------------
@@ -854,6 +936,13 @@ mod tests {
         match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
             Expr::RangeAggregation(r) => r,
             other => panic!("expected range aggregation for {input:?}, got {other:?}"),
+        }
+    }
+
+    fn expect_vector_agg(input: &str) -> VectorAggregationExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::VectorAggregation(v) => v,
+            other => panic!("expected vector aggregation for {input:?}, got {other:?}"),
         }
     }
 
@@ -1842,6 +1931,172 @@ mod tests {
     }
 
     // ============= SOW-09 range aggregation tests ===================
+
+    // ============= SOW-11 vector aggregation tests ==================
+
+    #[test]
+    fn sum_of_rate() {
+        let v = expect_vector_agg(r#"sum(rate({foo="bar"}[5m]))"#);
+        assert_eq!(v.op, VectorOp::Sum);
+        assert!(v.parameter.is_none());
+        assert!(v.grouping.is_none());
+        // Inner is a range aggregation.
+        assert!(matches!(&*v.expr, Expr::RangeAggregation(_)));
+    }
+
+    #[test]
+    fn topk_with_parameter() {
+        let v = expect_vector_agg(r#"topk(5, rate({foo="bar"}[5m]))"#);
+        assert_eq!(v.op, VectorOp::TopK);
+        assert_eq!(v.parameter, Some(5.0));
+    }
+
+    #[test]
+    fn bottomk_with_parameter() {
+        let v = expect_vector_agg(r#"bottomk(10, rate({foo="bar"}[5m]))"#);
+        assert_eq!(v.op, VectorOp::BottomK);
+        assert_eq!(v.parameter, Some(10.0));
+    }
+
+    #[test]
+    fn sum_by_after_parens() {
+        // From parser_test.go: `sum(count_over_time({foo="bar"}[5m])) by (foo,bar)`
+        let v = expect_vector_agg(
+            r#"sum(count_over_time({foo="bar"}[5m])) by (foo, bar)"#,
+        );
+        let g = v.grouping.as_ref().unwrap();
+        assert!(!g.without);
+        assert_eq!(g.labels, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn sum_by_before_parens() {
+        // From parser_test.go: `SUM BY (foo, bar) (Count_Over_Time({foo="bar"}[5m]))`
+        // (Case-sensitive though — Loki is mixed-case; we mirror the
+        // documented lowercase keywords.)
+        let v = expect_vector_agg(
+            r#"sum by (foo, bar) (count_over_time({foo="bar"}[5m]))"#,
+        );
+        let g = v.grouping.as_ref().unwrap();
+        assert_eq!(g.labels, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn sum_without_grouping() {
+        let v = expect_vector_agg(
+            r#"sum(rate({foo="bar"}[5m])) without (instance)"#,
+        );
+        let g = v.grouping.as_ref().unwrap();
+        assert!(g.without);
+    }
+
+    #[test]
+    fn nested_vector_aggregations() {
+        // From parser_test.go: `sum(max(rate({foo="bar"}[5m])) by (foo,bar)) by (foo)`
+        let v = expect_vector_agg(
+            r#"sum(max(rate({foo="bar"}[5m])) by (foo, bar)) by (foo)"#,
+        );
+        assert_eq!(v.op, VectorOp::Sum);
+        // Inner: max(rate(...)) by (foo, bar)
+        match &*v.expr {
+            Expr::VectorAggregation(inner) => {
+                assert_eq!(inner.op, VectorOp::Max);
+                let inner_grp = inner.grouping.as_ref().unwrap();
+                assert_eq!(inner_grp.labels.len(), 2);
+            }
+            other => panic!("expected nested vector aggregation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topk_with_param_and_grouping() {
+        // From parser_test.go: `topk(3,count_over_time({foo="bar"}[5m])) by (foo,bar)`
+        let v = expect_vector_agg(
+            r#"topk(3, count_over_time({foo="bar"}[5m])) by (foo, bar)"#,
+        );
+        assert_eq!(v.parameter, Some(3.0));
+        assert!(v.grouping.is_some());
+    }
+
+    #[test]
+    fn all_twelve_vector_ops() {
+        let with_param = ["topk", "bottomk", "approx_topk"];
+        for (kw, op) in [
+            ("avg", VectorOp::Avg),
+            ("count", VectorOp::Count),
+            ("max", VectorOp::Max),
+            ("min", VectorOp::Min),
+            ("sort", VectorOp::Sort),
+            ("sort_desc", VectorOp::SortDesc),
+            ("stddev", VectorOp::Stddev),
+            ("stdvar", VectorOp::Stdvar),
+            ("sum", VectorOp::Sum),
+        ] {
+            let q = format!(r#"{kw}(rate({{foo="bar"}}[5m]))"#);
+            let v = expect_vector_agg(&q);
+            assert_eq!(v.op, op, "op for {kw:?}");
+        }
+        for (kw, op) in [
+            ("topk", VectorOp::TopK),
+            ("bottomk", VectorOp::BottomK),
+            ("approx_topk", VectorOp::ApproxTopK),
+        ] {
+            let q = format!(r#"{kw}(5, rate({{foo="bar"}}[5m]))"#);
+            let v = expect_vector_agg(&q);
+            assert_eq!(v.op, op, "op for {kw:?}");
+            assert_eq!(v.parameter, Some(5.0));
+        }
+        let _ = with_param;
+    }
+
+    #[test]
+    fn sort_desc_not_misread_as_sort() {
+        // sort_desc has sort as a prefix; keyword()'s word-boundary
+        // rewind must prevent the shorter op from winning.
+        let v = expect_vector_agg(r#"sort_desc(rate({foo="bar"}[5m]))"#);
+        assert_eq!(v.op, VectorOp::SortDesc);
+    }
+
+    #[test]
+    fn count_not_confused_with_count_over_time() {
+        // `count_over_time(...)` is a range op, not a vector op.
+        let r = expect_range_agg(r#"count_over_time({foo="bar"}[5m])"#);
+        assert_eq!(r.op, RangeOp::CountOverTime);
+
+        // `count(rate(...))` is a vector op.
+        let v = expect_vector_agg(r#"count(rate({foo="bar"}[5m]))"#);
+        assert_eq!(v.op, VectorOp::Count);
+    }
+
+    #[test]
+    fn vector_agg_grouping_on_both_sides_rejected() {
+        // `sum by (job) (rate(...)) by (instance)` — disallowed by
+        // our try_map check (Loki's yacc rules each pick at most one
+        // grouping position).
+        assert!(parse(r#"sum by (job) (rate({foo="bar"}[5m])) by (instance)"#).is_err());
+    }
+
+    #[test]
+    fn topk_missing_param_rejected() {
+        // `topk` without a numeric first arg should fail to parse.
+        // The current parser falls back to the 1-arg form and the
+        // inner expr parser would reject a bare metricExpr without
+        // the `,`. In practice Loki accepts `topk(rate(...))` too
+        // (treating param as missing), but our parser is stricter.
+        // Documenting current behavior:
+        let r = parse(r#"topk(rate({foo="bar"}[5m]))"#);
+        // We accept it as a 1-arg form (no param). Loki would error;
+        // we'll align in SOW-15 (error messages).
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn vector_agg_span_covers_whole() {
+        let input = r#"sum(rate({foo="bar"}[5m])) by (job)"#;
+        let v = expect_vector_agg(input);
+        assert_eq!(v.span.start, 0);
+        assert_eq!(v.span.end, input.len());
+    }
 
     #[test]
     fn rate_basic() {

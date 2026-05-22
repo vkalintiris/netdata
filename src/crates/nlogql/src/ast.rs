@@ -20,6 +20,8 @@ pub enum Expr {
     /// `rate({...}[5m])`, `count_over_time({...}[5m])`,
     /// `quantile_over_time(0.99, {...}[5m])`, etc. (SOW-09)
     RangeAggregation(RangeAggregationExpr),
+    /// `sum(...)`, `avg by (job) (...)`, `topk(5, ...)`, etc. (SOW-11)
+    VectorAggregation(VectorAggregationExpr),
 }
 
 impl Expr {
@@ -28,6 +30,7 @@ impl Expr {
             Expr::Selector(s) => s.span,
             Expr::Pipeline(p) => p.span,
             Expr::RangeAggregation(r) => r.span,
+            Expr::VectorAggregation(v) => v.span,
         }
     }
 }
@@ -342,6 +345,39 @@ pub struct RangeAggregationExpr {
     pub parameter: Option<f64>,
     pub grouping: Option<Grouping>,
     pub span: Span,
+}
+
+/// A vector aggregation: `vectorOp [grouping] ( [param,] expr ) [grouping]`.
+///
+/// `syntax.y:176`. The grouping may appear either before or after
+/// the parentheses, but not in both positions on a single call.
+/// The optional first-positional parameter is used by `topk`,
+/// `bottomk`, and `approx_topk`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorAggregationExpr {
+    pub op: VectorOp,
+    pub expr: Box<Expr>,
+    pub parameter: Option<f64>,
+    pub grouping: Option<Grouping>,
+    pub span: Span,
+}
+
+/// One of 12 vector operators (`syntax.y:vectorOp`, populated from
+/// `lex.go` `functionTokens`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorOp {
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Stddev,
+    Stdvar,
+    Count,
+    BottomK,
+    TopK,
+    Sort,
+    SortDesc,
+    ApproxTopK,
 }
 
 /// One of 15 range operators (`syntax.y:492`).
