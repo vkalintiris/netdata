@@ -1,7 +1,16 @@
 //! LogQL AST.
 //!
-//! Populated incrementally as we mirror productions from Loki's
-//! `syntax.y` (kept locally at `~/.cache/nlogql-loki-reference/`).
+//! AST node families, grouped by the grammar production they
+//! correspond to in Loki's `syntax.y` (kept locally at
+//! `~/.cache/nlogql-loki-reference/`).
+//!
+//! Every node carries a [`Span`] into the original query string.
+//! Every node implements [`Display`](std::fmt::Display) such that
+//! `parse(input)?.to_string()` produces a canonical (normalized)
+//! LogQL string that re-parses to an equivalent AST — see the
+//! `roundtrip_*` tests in [`crate::parser`].
+
+use std::fmt::{self, Write as _};
 
 use crate::span::Span;
 
@@ -571,4 +580,580 @@ pub enum ConvOp {
     Duration,
     /// `duration_seconds(...)` — parse value as a float seconds count.
     DurationSeconds,
+}
+
+// ============================================================
+// Display impls — canonical (normalized) LogQL serialization.
+// ============================================================
+
+// -- Operator enums ------------------------------------------------
+
+impl fmt::Display for MatcherOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            MatcherOp::Eq => "=",
+            MatcherOp::NotEq => "!=",
+            MatcherOp::Match => "=~",
+            MatcherOp::NotMatch => "!~",
+        })
+    }
+}
+
+impl fmt::Display for LineFilterOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LineFilterOp::Eq => "|=",
+            LineFilterOp::NotEq => "!=",
+            LineFilterOp::Match => "|~",
+            LineFilterOp::NotMatch => "!~",
+            LineFilterOp::Pattern => "|>",
+            LineFilterOp::NotPattern => "!>",
+        })
+    }
+}
+
+impl fmt::Display for NumericOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            NumericOp::Eq => "==",
+            NumericOp::NotEq => "!=",
+            NumericOp::Gt => ">",
+            NumericOp::Gte => ">=",
+            NumericOp::Lt => "<",
+            NumericOp::Lte => "<=",
+        })
+    }
+}
+
+impl fmt::Display for IpFilterOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            IpFilterOp::Eq => "=",
+            IpFilterOp::NotEq => "!=",
+        })
+    }
+}
+
+impl fmt::Display for ParserFlag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ParserFlag::Strict => "--strict",
+            ParserFlag::KeepEmpty => "--keep-empty",
+        })
+    }
+}
+
+impl fmt::Display for ConvOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ConvOp::Bytes => "bytes",
+            ConvOp::Duration => "duration",
+            ConvOp::DurationSeconds => "duration_seconds",
+        })
+    }
+}
+
+impl fmt::Display for RangeOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RangeOp::AbsentOverTime => "absent_over_time",
+            RangeOp::AvgOverTime => "avg_over_time",
+            RangeOp::BytesOverTime => "bytes_over_time",
+            RangeOp::BytesRate => "bytes_rate",
+            RangeOp::CountOverTime => "count_over_time",
+            RangeOp::FirstOverTime => "first_over_time",
+            RangeOp::LastOverTime => "last_over_time",
+            RangeOp::MaxOverTime => "max_over_time",
+            RangeOp::MinOverTime => "min_over_time",
+            RangeOp::QuantileOverTime => "quantile_over_time",
+            RangeOp::Rate => "rate",
+            RangeOp::RateCounter => "rate_counter",
+            RangeOp::StddevOverTime => "stddev_over_time",
+            RangeOp::StdvarOverTime => "stdvar_over_time",
+            RangeOp::SumOverTime => "sum_over_time",
+        })
+    }
+}
+
+impl fmt::Display for VectorOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            VectorOp::Sum => "sum",
+            VectorOp::Avg => "avg",
+            VectorOp::Min => "min",
+            VectorOp::Max => "max",
+            VectorOp::Stddev => "stddev",
+            VectorOp::Stdvar => "stdvar",
+            VectorOp::Count => "count",
+            VectorOp::BottomK => "bottomk",
+            VectorOp::TopK => "topk",
+            VectorOp::Sort => "sort",
+            VectorOp::SortDesc => "sort_desc",
+            VectorOp::ApproxTopK => "approx_topk",
+        })
+    }
+}
+
+impl fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            BinaryOp::Or => "or",
+            BinaryOp::And => "and",
+            BinaryOp::Unless => "unless",
+            BinaryOp::Eq => "==",
+            BinaryOp::NotEq => "!=",
+            BinaryOp::Gt => ">",
+            BinaryOp::Gte => ">=",
+            BinaryOp::Lt => "<",
+            BinaryOp::Lte => "<=",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Mod => "%",
+            BinaryOp::Pow => "^",
+        })
+    }
+}
+
+impl fmt::Display for GroupSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            GroupSide::Left => "group_left",
+            GroupSide::Right => "group_right",
+        })
+    }
+}
+
+// -- Helpers -------------------------------------------------------
+
+/// Backtick the value if it contains a `"`, otherwise double-quote it.
+/// Matches Loki's choice for raw strings.
+fn fmt_string(s: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if s.contains('"') && !s.contains('`') {
+        write!(f, "`{s}`")
+    } else {
+        f.write_char('"')?;
+        for c in s.chars() {
+            match c {
+                '\\' => f.write_str("\\\\")?,
+                '"' => f.write_str("\\\"")?,
+                '\n' => f.write_str("\\n")?,
+                '\t' => f.write_str("\\t")?,
+                '\r' => f.write_str("\\r")?,
+                c => f.write_char(c)?,
+            }
+        }
+        f.write_char('"')
+    }
+}
+
+fn fmt_labels(labels: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_char('(')?;
+    for (i, l) in labels.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str(l)?;
+    }
+    f.write_char(')')
+}
+
+// -- Selectors / matchers ------------------------------------------
+
+impl fmt::Display for Matcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.name, self.op)?;
+        fmt_string(&self.value, f)
+    }
+}
+
+impl fmt::Display for StreamSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_char('{')?;
+        for (i, m) in self.matchers.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{m}")?;
+        }
+        f.write_char('}')
+    }
+}
+
+// -- Line filters --------------------------------------------------
+
+impl fmt::Display for LineFilterValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LineFilterValue::Literal(s) => fmt_string(s, f),
+            LineFilterValue::Ip(s) => {
+                f.write_str("ip(")?;
+                fmt_string(s, f)?;
+                f.write_char(')')
+            }
+        }
+    }
+}
+
+impl fmt::Display for LineFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ", self.op)?;
+        for (i, v) in self.values.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" or ")?;
+            }
+            write!(f, "{v}")?;
+        }
+        Ok(())
+    }
+}
+
+// -- Parser stages -------------------------------------------------
+
+impl fmt::Display for LabelExtraction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.expression == self.name {
+            f.write_str(&self.name)
+        } else {
+            write!(f, "{}=", self.name)?;
+            fmt_string(&self.expression, f)
+        }
+    }
+}
+
+fn fmt_extractions(items: &[LabelExtraction], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for (i, e) in items.iter().enumerate() {
+        if i == 0 {
+            f.write_char(' ')?;
+        } else {
+            f.write_str(", ")?;
+        }
+        write!(f, "{e}")?;
+    }
+    Ok(())
+}
+
+impl fmt::Display for ParserStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParserStage::Json { extractions, .. } => {
+                f.write_str("json")?;
+                if !extractions.is_empty() {
+                    fmt_extractions(extractions, f)?;
+                }
+                Ok(())
+            }
+            ParserStage::Logfmt {
+                flags,
+                extractions,
+                ..
+            } => {
+                f.write_str("logfmt")?;
+                for fl in flags {
+                    write!(f, " {fl}")?;
+                }
+                if !extractions.is_empty() {
+                    fmt_extractions(extractions, f)?;
+                }
+                Ok(())
+            }
+            ParserStage::Regexp { pattern, .. } => {
+                f.write_str("regexp ")?;
+                fmt_string(pattern, f)
+            }
+            ParserStage::Pattern { pattern, .. } => {
+                f.write_str("pattern ")?;
+                fmt_string(pattern, f)
+            }
+            ParserStage::Unpack { .. } => f.write_str("unpack"),
+        }
+    }
+}
+
+// -- Label filters -------------------------------------------------
+
+impl fmt::Display for LabelFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LabelFilter::String(m) => write!(f, "{m}"),
+            LabelFilter::Ip {
+                name, op, value, ..
+            } => {
+                write!(f, "{name}{op}ip(")?;
+                fmt_string(value, f)?;
+                f.write_char(')')
+            }
+            LabelFilter::Numeric {
+                name, op, value, ..
+            } => write!(f, "{name}{op}{value}"),
+            LabelFilter::Duration {
+                name, op, value, ..
+            } => write!(f, "{name}{op}{value}ns"),
+            LabelFilter::Bytes {
+                name, op, value, ..
+            } => write!(f, "{name}{op}{value}B"),
+            LabelFilter::And { left, right, .. } => write!(f, "{left} and {right}"),
+            LabelFilter::Or { left, right, .. } => write!(f, "{left} or {right}"),
+        }
+    }
+}
+
+// -- Format / structural stages -----------------------------------
+
+impl fmt::Display for LineFormatStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("line_format ")?;
+        fmt_string(&self.template, f)
+    }
+}
+
+impl fmt::Display for LabelFormatItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LabelFormatItem::Rename { dst, src, .. } => write!(f, "{dst}={src}"),
+            LabelFormatItem::Template { dst, template, .. } => {
+                write!(f, "{dst}=")?;
+                fmt_string(template, f)
+            }
+        }
+    }
+}
+
+impl fmt::Display for LabelFormatStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("label_format ")?;
+        for (i, it) in self.items.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{it}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for DecolorizeStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("decolorize")
+    }
+}
+
+impl fmt::Display for LabelSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LabelSelector::Name { name, .. } => f.write_str(name),
+            LabelSelector::Matched(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+fn fmt_drop_keep_list(
+    kw: &str,
+    list: &LabelSelectorList,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(f, "{kw} ")?;
+    for (i, it) in list.items.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{it}")?;
+    }
+    Ok(())
+}
+
+// -- Pipeline stages -----------------------------------------------
+
+impl fmt::Display for PipelineStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PipelineStage::LineFilter(lf) => write!(f, "{lf}"),
+            PipelineStage::Parser(p) => write!(f, "| {p}"),
+            PipelineStage::LabelFilter(lf) => write!(f, "| {lf}"),
+            PipelineStage::LineFormat(s) => write!(f, "| {s}"),
+            PipelineStage::LabelFormat(s) => write!(f, "| {s}"),
+            PipelineStage::Decolorize(s) => write!(f, "| {s}"),
+            PipelineStage::DropLabels(l) => {
+                f.write_str("| ")?;
+                fmt_drop_keep_list("drop", l, f)
+            }
+            PipelineStage::KeepLabels(l) => {
+                f.write_str("| ")?;
+                fmt_drop_keep_list("keep", l, f)
+            }
+        }
+    }
+}
+
+impl fmt::Display for PipelineExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.selector)?;
+        for s in &self.stages {
+            write!(f, " {s}")?;
+        }
+        Ok(())
+    }
+}
+
+// -- Log range / unwrap -------------------------------------------
+
+impl fmt::Display for UnwrapExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("| unwrap ")?;
+        match &self.conv_op {
+            Some(c) => write!(f, "{c}({})", self.identifier)?,
+            None => f.write_str(&self.identifier)?,
+        }
+        for pf in &self.post_filters {
+            write!(f, " | {pf}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for LogRangeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.selector)?;
+        for s in &self.stages {
+            write!(f, " {s}")?;
+        }
+        if let Some(u) = &self.unwrap {
+            write!(f, " {u}")?;
+        }
+        write!(f, " [{}ns]", self.range_ns)?;
+        if let Some(off) = self.offset_ns {
+            write!(f, " offset {off}ns")?;
+        }
+        Ok(())
+    }
+}
+
+// -- Range / vector aggregations ----------------------------------
+
+impl fmt::Display for Grouping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.without { "without " } else { "by " })?;
+        fmt_labels(&self.labels, f)
+    }
+}
+
+impl fmt::Display for RangeAggregationExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}(", self.op)?;
+        if let Some(p) = self.parameter {
+            write!(f, "{p}, ")?;
+        }
+        write!(f, "{})", self.log_range)?;
+        if let Some(g) = &self.grouping {
+            write!(f, " {g}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for VectorAggregationExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}(", self.op)?;
+        if let Some(p) = self.parameter {
+            write!(f, "{p}, ")?;
+        }
+        write!(f, "{})", self.expr)?;
+        if let Some(g) = &self.grouping {
+            write!(f, " {g}")?;
+        }
+        Ok(())
+    }
+}
+
+// -- Binary ops ---------------------------------------------------
+
+impl fmt::Display for VectorMatching {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.on { "on" } else { "ignoring" })?;
+        fmt_labels(&self.labels, f)
+    }
+}
+
+impl fmt::Display for BinaryModifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        if self.return_bool {
+            f.write_str("bool")?;
+            first = false;
+        }
+        if let Some(m) = &self.matching {
+            if !first {
+                f.write_char(' ')?;
+            }
+            write!(f, "{m}")?;
+            first = false;
+        }
+        if let Some(g) = &self.group {
+            if !first {
+                f.write_char(' ')?;
+            }
+            write!(f, "{g}")?;
+            if !self.include.is_empty() {
+                fmt_labels(&self.include, f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for BinaryExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.lhs, self.op)?;
+        let mod_str = self.modifier.to_string();
+        if !mod_str.is_empty() {
+            write!(f, " {mod_str}")?;
+        }
+        write!(f, " {}", self.rhs)
+    }
+}
+
+// -- Literal / label_replace / vector -----------------------------
+
+impl fmt::Display for LiteralExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+impl fmt::Display for LabelReplaceExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "label_replace({}, ", self.expr)?;
+        fmt_string(&self.dst_label, f)?;
+        f.write_str(", ")?;
+        fmt_string(&self.replacement, f)?;
+        f.write_str(", ")?;
+        fmt_string(&self.src_label, f)?;
+        f.write_str(", ")?;
+        fmt_string(&self.regex, f)?;
+        f.write_char(')')
+    }
+}
+
+impl fmt::Display for VectorExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "vector({})", self.value)
+    }
+}
+
+// -- Top-level Expr -----------------------------------------------
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Selector(s) => write!(f, "{s}"),
+            Expr::Pipeline(p) => write!(f, "{p}"),
+            Expr::RangeAggregation(r) => write!(f, "{r}"),
+            Expr::VectorAggregation(v) => write!(f, "{v}"),
+            Expr::Binary(b) => write!(f, "{b}"),
+            Expr::Literal(l) => write!(f, "{l}"),
+            Expr::LabelReplace(lr) => write!(f, "{lr}"),
+            Expr::Vector(v) => write!(f, "{v}"),
+        }
+    }
 }

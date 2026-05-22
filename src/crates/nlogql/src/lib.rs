@@ -1,10 +1,25 @@
-//! Netdata's LogQL parser and evaluator.
+//! Netdata's LogQL parser.
 //!
-//! The reference grammar is Loki's `syntax.y`
-//! (`~/repos/loki/pkg/logql/syntax/syntax.y`). We do not vendor or
-//! copy Loki source; the yacc file is treated as a specification
-//! oracle. A vendored reference of the (incomplete) third-party
-//! `logql` crate lives at `~/repos/crates/logql/` for comparison.
+//! ## Quick start
+//!
+//! ```
+//! use nlogql::{parse, ast::Expr};
+//!
+//! let expr = parse(r#"sum(rate({app="foo"}[5m])) by (job)"#).unwrap();
+//! assert!(matches!(expr, Expr::VectorAggregation(_)));
+//!
+//! // Every AST node implements Display, producing canonical LogQL:
+//! let canonical = expr.to_string();
+//! assert!(parse(&canonical).is_ok());
+//! ```
+//!
+//! ## Reference
+//!
+//! The grammar mirrors Loki's `syntax.y` (kept locally at
+//! `~/.cache/nlogql-loki-reference/`). Loki is AGPL-3.0; we read it
+//! as a spec but vendor no code. A cleaned copy of the third-party
+//! MIT `logql` crate lives at `~/repos/crates/logql/` for AST-shape
+//! comparison only.
 //!
 //! ## Design goals
 //!

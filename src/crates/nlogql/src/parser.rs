@@ -2437,6 +2437,74 @@ mod tests {
         assert_eq!(b.span.end, input.len());
     }
 
+    // ============= SOW-17 round-trip property ========================
+
+    /// `parse(display(parse(input)?)?) == parse(input)?` — the
+    /// canonical-display round-trip must be idempotent. We don't
+    /// require the displayed form to byte-equal the input (Loki's
+    /// surface syntax has many equivalent renderings); we require
+    /// that parsing the displayed form yields the same AST as
+    /// parsing the original.
+    #[test]
+    fn roundtrip_corpus() {
+        let queries: &[&str] = &[
+            r#"{foo="bar"}"#,
+            r#"{ foo = "bar" }"#,
+            r#"{namespace="buzz", foo!="bar"}"#,
+            r#"{foo=~"bar"}"#,
+            r#"{foo="bar"} |= "error""#,
+            r#"{foo="bar"} |= "a" or "b" or ip("10/8")"#,
+            r#"{foo="bar"} | json"#,
+            r#"{foo="bar"} | logfmt --strict --keep-empty"#,
+            r#"{foo="bar"} | regexp "(?P<level>\\w+)""#,
+            r#"{foo="bar"} | decolorize"#,
+            r#"{foo="bar"} | drop a, b="c""#,
+            r#"{foo="bar"} | line_format "{{ .ip }}""#,
+            r#"rate({foo="bar"}[5m])"#,
+            r#"count_over_time({foo="bar"}[12h] |= "error")"#,
+            r#"sum(rate({foo="bar"}[5h])) by (job)"#,
+            r#"topk(5, rate({foo="bar"}[5m]))"#,
+            r#"quantile_over_time(0.99, {foo="bar"} | unwrap duration(latency) [5m])"#,
+            r#"1 + 2 * 3"#,
+            r#"rate({foo="bar"}[5m]) > bool 1"#,
+            r#"rate({a="b"}[5m]) / on(job) group_left(env) rate({c="d"}[5m])"#,
+            r#"vector(1) + rate({a="b"}[5m])"#,
+        ];
+
+        let mut failures = Vec::new();
+        for q in queries {
+            let first = match parse(q) {
+                Ok(e) => e,
+                Err(e) => {
+                    failures.push(format!("parse #1 failed for {q:?}: {e}"));
+                    continue;
+                }
+            };
+            let displayed = first.to_string();
+            let second = match parse(&displayed) {
+                Ok(e) => e,
+                Err(e) => {
+                    failures.push(format!(
+                        "parse #2 failed for {displayed:?} (from {q:?}): {e}",
+                    ));
+                    continue;
+                }
+            };
+            // Spans differ (the displayed form has a different
+            // byte layout), so we compare on the re-displayed form
+            // instead — it must be idempotent.
+            let redisplayed = second.to_string();
+            if displayed != redisplayed {
+                failures.push(format!(
+                    "non-idempotent display for {q:?}: {displayed:?} -> {redisplayed:?}",
+                ));
+            }
+        }
+        if !failures.is_empty() {
+            panic!("{} round-trip failure(s):\n{}", failures.len(), failures.join("\n"));
+        }
+    }
+
     // ============= SOW-16 compliance corpus =========================
 
     /// A representative slice of queries from Loki's `parser_test.go`
