@@ -323,3 +323,25 @@ pub enum LabelSelector {
     /// `drop foo="bar"` — drop only when `foo="bar"`.
     Matched(Matcher),
 }
+
+/// A log range expression: `selector pipeline? RANGE offset? pipeline?`.
+///
+/// Used as the argument to range aggregations (`rate(<logRange>)`,
+/// `count_over_time(<logRange>)`, etc.) in SOW-09. Not surfaced at
+/// the top level — `{foo="bar"}[5m]` alone is not a valid LogQL
+/// query (it must be wrapped in a range aggregation).
+///
+/// `syntax.y:128-155`. The grammar permits the pipeline either
+/// before or after the `[...]` RANGE token; we accept stages on
+/// both sides and merge them in the AST (preserving source order).
+/// Unwrap is handled in SOW-10.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogRangeExpr {
+    pub selector: StreamSelector,
+    pub stages: Vec<PipelineStage>,
+    /// Range window length in nanoseconds (always positive).
+    pub range_ns: i64,
+    /// Optional offset; may be negative.
+    pub offset_ns: Option<i64>,
+    pub span: Span,
+}

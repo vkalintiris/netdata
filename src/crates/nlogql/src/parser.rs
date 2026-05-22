@@ -11,8 +11,8 @@ use crate::Extra;
 use crate::ast::{
     DecolorizeStage, Expr, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem,
     LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue,
-    LineFormatStage, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr,
-    PipelineStage, StreamSelector,
+    LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage,
+    PipelineExpr, PipelineStage, StreamSelector,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -228,6 +228,65 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .separated_by(ws().then(just(',')).then(ws()))
         .at_least(1)
         .collect()
+}
+
+// -- Log range expression (SOW-08) ---------------------------------
+
+/// `logRangeExpr` (syntax.y:128). Argument to range aggregations.
+///
+/// Accepts the canonical layout — `selector pipeline? RANGE offset?` —
+/// and also Loki's alternate layout where the pipeline trails the
+/// RANGE/offset. Stages on both sides are merged in source order.
+/// Unwrap (SOW-10) is intentionally not handled yet.
+///
+/// `#[allow(dead_code)]` until SOW-09 wires range aggregations.
+#[allow(dead_code)]
+pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Extra<'a>> + Clone {
+    let pre_stages = ws()
+        .ignore_then(pipeline_stage())
+        .repeated()
+        .collect::<Vec<_>>();
+    let post_stages = ws()
+        .ignore_then(pipeline_stage())
+        .repeated()
+        .collect::<Vec<_>>();
+
+    selector()
+        .then(pre_stages)
+        .then_ignore(ws())
+        .then(range_token())
+        .then(ws().ignore_then(offset_expr()).or_not())
+        .then(post_stages)
+        .map_with(|((((sel, pre), range_ns), offset_ns), post), e| {
+            let mut stages = pre;
+            stages.extend(post);
+            LogRangeExpr {
+                selector: sel,
+                stages,
+                range_ns,
+                offset_ns,
+                span: e.span().into(),
+            }
+        })
+}
+
+/// `RANGE` token: `[<duration>]`. In Loki this is one lexer token;
+/// here we parse the brackets explicitly with internal whitespace
+/// allowed for readability.
+#[allow(dead_code)]
+fn range_token<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
+    just('[')
+        .ignore_then(ws())
+        .ignore_then(duration())
+        .then_ignore(ws())
+        .then_ignore(just(']'))
+}
+
+/// `offsetExpr` (syntax.y:510): `offset <duration>`. The duration
+/// may be negative (Loki returns DURATION with a negative value).
+#[allow(dead_code)]
+fn offset_expr<'a>() -> impl Parser<'a, &'a str, i64, Extra<'a>> + Clone {
+    keyword("offset").ignore_then(ws()).ignore_then(duration())
 }
 
 // -- Structural stages (SOW-07) -----------------------------------
@@ -1514,6 +1573,119 @@ mod tests {
         // Loki would parse decolorize as standalone and then fail on
         // `foo`. Our parser should too.
         assert!(parse(r#"{app="foo"} | decolorize foo"#).is_err());
+    }
+
+    // ============= SOW-08 log range expression tests ================
+
+    fn parse_log_range(input: &str) -> LogRangeExpr {
+        log_range_expr()
+            .then_ignore(end())
+            .parse(input)
+            .into_result()
+            .unwrap_or_else(|e| panic!("log_range_expr failed for {input:?}: {e:?}"))
+    }
+
+    fn parse_log_range_err(input: &str) -> bool {
+        log_range_expr()
+            .then_ignore(end())
+            .parse(input)
+            .into_result()
+            .is_err()
+    }
+
+    const MIN_NS: i64 = 60 * NS;
+
+    #[test]
+    fn log_range_basic() {
+        let r = parse_log_range(r#"{foo="bar"}[5m]"#);
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+        assert!(r.stages.is_empty());
+        assert!(r.offset_ns.is_none());
+    }
+
+    #[test]
+    fn log_range_with_offset() {
+        let r = parse_log_range(r#"{foo="bar"}[5m] offset 10m"#);
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+        assert_eq!(r.offset_ns, Some(10 * MIN_NS));
+    }
+
+    #[test]
+    fn log_range_negative_offset() {
+        let r = parse_log_range(r#"{foo="bar"}[5m] offset -5m"#);
+        assert_eq!(r.offset_ns, Some(-5 * MIN_NS));
+    }
+
+    #[test]
+    fn log_range_pipeline_before_range() {
+        let r = parse_log_range(r#"{foo="bar"} |= "error" [5m]"#);
+        assert_eq!(r.stages.len(), 1);
+        assert!(matches!(&r.stages[0], PipelineStage::LineFilter(_)));
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+    }
+
+    #[test]
+    fn log_range_pipeline_after_range() {
+        // Loki's alternate ordering: stages after [RANGE].
+        let r = parse_log_range(r#"{foo="bar"} [5m] |= "error""#);
+        assert_eq!(r.stages.len(), 1);
+        assert!(matches!(&r.stages[0], PipelineStage::LineFilter(_)));
+    }
+
+    #[test]
+    fn log_range_multi_stage_pipeline() {
+        let r = parse_log_range(r#"{foo="bar"} |= "x" | logfmt | latency > 1s [5m]"#);
+        assert_eq!(r.stages.len(), 3);
+        assert!(matches!(&r.stages[0], PipelineStage::LineFilter(_)));
+        assert!(matches!(&r.stages[1], PipelineStage::Parser(_)));
+        assert!(matches!(&r.stages[2], PipelineStage::LabelFilter(_)));
+    }
+
+    #[test]
+    fn log_range_pipeline_with_offset() {
+        // Pipeline + RANGE + offset is the canonical layout.
+        let r = parse_log_range(r#"{foo="bar"} |= "x" [5m] offset 30s"#);
+        assert_eq!(r.stages.len(), 1);
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+        assert_eq!(r.offset_ns, Some(30 * NS));
+    }
+
+    #[test]
+    fn log_range_various_units() {
+        assert_eq!(parse_log_range(r#"{foo="bar"}[1h]"#).range_ns, 60 * MIN_NS);
+        assert_eq!(parse_log_range(r#"{foo="bar"}[12h]"#).range_ns, 12 * 60 * MIN_NS);
+        assert_eq!(parse_log_range(r#"{foo="bar"}[1d]"#).range_ns, 24 * 60 * MIN_NS);
+        assert_eq!(parse_log_range(r#"{foo="bar"}[1w]"#).range_ns, 7 * 24 * 60 * MIN_NS);
+    }
+
+    #[test]
+    fn log_range_whitespace_in_brackets() {
+        let r = parse_log_range(r#"{foo="bar"}[ 5m ]"#);
+        assert_eq!(r.range_ns, 5 * MIN_NS);
+    }
+
+    #[test]
+    fn log_range_missing_range_token() {
+        // Selector alone isn't a log_range — needs [...].
+        assert!(parse_log_range_err(r#"{foo="bar"}"#));
+    }
+
+    #[test]
+    fn log_range_unclosed_bracket() {
+        assert!(parse_log_range_err(r#"{foo="bar"}[5m"#));
+    }
+
+    #[test]
+    fn log_range_offset_missing_duration() {
+        assert!(parse_log_range_err(r#"{foo="bar"}[5m] offset"#));
+    }
+
+    #[test]
+    fn log_range_span_covers_whole() {
+        let input = r#"{foo="bar"} |= "x" [5m] offset 10s"#;
+        let r = parse_log_range(input);
+        assert_eq!(r.span.start, 0);
+        assert_eq!(r.span.end, input.len());
     }
 
     #[test]
