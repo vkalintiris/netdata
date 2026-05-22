@@ -22,6 +22,8 @@
 //! ## Crate layout
 //!
 //! - [`ast`]    — typed AST nodes (post-parse).
+//! - [`lex`]    — leaf parsers for primitives (identifiers, strings,
+//!   numbers, durations, bytes, whitespace).
 //! - [`parser`] — query string → AST.
 //! - [`span`]   — source-position primitives shared by AST + errors.
 //! - [`error`]  — parse error type.
@@ -31,8 +33,13 @@
 
 pub mod ast;
 pub mod error;
+pub mod lex;
 pub mod parser;
 pub mod span;
 
 pub use error::ParseError;
 pub use parser::parse;
+
+/// Shared chumsky extra-config: rich per-character errors, no
+/// state, no context. Used by every parser in the crate.
+pub(crate) type Extra<'a> = chumsky::extra::Err<chumsky::error::Rich<'a, char>>;

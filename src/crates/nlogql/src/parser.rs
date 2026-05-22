@@ -6,15 +6,11 @@
 //! whitespace-only input.
 
 use chumsky::error::Rich;
-use chumsky::extra;
 use chumsky::prelude::*;
 
+use crate::Extra;
 use crate::error::{ParseError, ParseErrorKind};
 use crate::span::Span;
-
-/// Extra config carried by every parser in this module: rich
-/// per-character errors, no state, no context.
-type Extra<'a> = extra::Err<Rich<'a, char>>;
 
 /// Parse a LogQL query string into an AST.
 ///
