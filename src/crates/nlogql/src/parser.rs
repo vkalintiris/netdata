@@ -9,8 +9,8 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    Expr, LineFilter, LineFilterOp, LineFilterValue, Matcher, MatcherOp, PipelineExpr,
-    PipelineStage, StreamSelector,
+    Expr, LabelExtraction, LineFilter, LineFilterOp, LineFilterValue, Matcher, MatcherOp,
+    ParserFlag, ParserStage, PipelineExpr, PipelineStage, StreamSelector,
 };
 use crate::error::{ParseError, ParseErrorKind};
 use crate::lex::{identifier, string_literal, ws};
@@ -97,10 +97,142 @@ fn matcher_op<'a>() -> impl Parser<'a, &'a str, MatcherOp, Extra<'a>> + Clone {
 
 // -- Pipeline stages -----------------------------------------------
 
-/// `pipelineStage` (syntax.y:215). Today: line filters only. Other
-/// stages join in SOW-04+.
+/// `pipelineStage` (syntax.y:215). Line filters have their op as
+/// the first token (`|=`, `!~`, etc.) — no separate `|`. All other
+/// stages start with a literal `|` then a stage-kind keyword.
 fn pipeline_stage<'a>() -> impl Parser<'a, &'a str, PipelineStage, Extra<'a>> + Clone {
-    line_filter().map(PipelineStage::LineFilter)
+    let line = line_filter().map(PipelineStage::LineFilter);
+    let pipe_prefixed = just('|')
+        .ignore_then(ws())
+        .ignore_then(parser_stage())
+        .map(PipelineStage::Parser);
+    // Line filters tried first because `|=`, `|~`, `|>` share a
+    // first byte with the bare `|`. chumsky backtracks zero-cost
+    // when `line_filter_op()` fails to match.
+    choice((line, pipe_prefixed))
+}
+
+/// `labelParser | logfmtParser | jsonExpressionParser | logfmtExpressionParser`
+/// from syntax.y:218-220, collapsed into a single chumsky choice.
+fn parser_stage<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    choice((
+        json_parser(),
+        logfmt_parser(),
+        regexp_parser(),
+        pattern_parser(),
+        unpack_parser(),
+    ))
+}
+
+/// `JSON labelExtractionExpressionList?` — plain `json` or with
+/// projections.
+fn json_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    keyword("json")
+        .ignore_then(
+            ws().ignore_then(label_extraction_list())
+                .or_not(),
+        )
+        .map_with(|extractions, e| ParserStage::Json {
+            extractions: extractions.unwrap_or_default(),
+            span: e.span().into(),
+        })
+}
+
+/// `LOGFMT parserFlags? labelExtractionExpressionList?`.
+fn logfmt_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    keyword("logfmt")
+        .ignore_then(
+            ws().ignore_then(parser_flag())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .then(
+            ws().ignore_then(label_extraction_list())
+                .or_not(),
+        )
+        .map_with(|(flags, extractions), e| ParserStage::Logfmt {
+            flags,
+            extractions: extractions.unwrap_or_default(),
+            span: e.span().into(),
+        })
+}
+
+fn regexp_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    keyword("regexp")
+        .ignore_then(ws())
+        .ignore_then(string_literal())
+        .map_with(|pattern, e| ParserStage::Regexp {
+            pattern,
+            span: e.span().into(),
+        })
+}
+
+fn pattern_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    keyword("pattern")
+        .ignore_then(ws())
+        .ignore_then(string_literal())
+        .map_with(|pattern, e| ParserStage::Pattern {
+            pattern,
+            span: e.span().into(),
+        })
+}
+
+fn unpack_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
+    keyword("unpack").map_with(|_, e| ParserStage::Unpack {
+        span: e.span().into(),
+    })
+}
+
+/// A `labelExtractionExpression` (syntax.y:314): `IDENTIFIER` (with
+/// `expression` defaulting to the identifier itself) or
+/// `IDENTIFIER EQ STRING`.
+fn label_extraction<'a>() -> impl Parser<'a, &'a str, LabelExtraction, Extra<'a>> + Clone {
+    identifier()
+        .then(
+            ws()
+                .ignore_then(just('='))
+                .ignore_then(ws())
+                .ignore_then(string_literal())
+                .or_not(),
+        )
+        .map_with(|(name, expr_opt), e| {
+            let name_s = name.to_string();
+            let expression = expr_opt.unwrap_or_else(|| name_s.clone());
+            LabelExtraction {
+                name: name_s,
+                expression,
+                span: e.span().into(),
+            }
+        })
+}
+
+/// Comma-separated, at least one. Trailing comma rejected.
+fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>, Extra<'a>> + Clone
+{
+    label_extraction()
+        .separated_by(ws().then(just(',')).then(ws()))
+        .at_least(1)
+        .collect()
+}
+
+/// `FUNCTION_FLAG` token: `--strict` or `--keep-empty`. The trailing
+/// rewind check rejects `--strictly`-style false positives.
+fn parser_flag<'a>() -> impl Parser<'a, &'a str, ParserFlag, Extra<'a>> + Clone {
+    let after = choice((
+        any()
+            .filter(|c: &char| !c.is_ascii_alphabetic() && *c != '-')
+            .rewind()
+            .ignored(),
+        end(),
+    ));
+    choice((
+        just("--keep-empty")
+            .then_ignore(after)
+            .to(ParserFlag::KeepEmpty),
+        just("--strict")
+            .then_ignore(after)
+            .to(ParserFlag::Strict),
+    ))
 }
 
 /// `lineFilter` (syntax.y:248): `filter STRING` or `filter ip(STRING)`,
@@ -219,6 +351,14 @@ mod tests {
     fn line_filter_of(stage: &PipelineStage) -> &LineFilter {
         match stage {
             PipelineStage::LineFilter(lf) => lf,
+            PipelineStage::Parser(_) => panic!("expected line filter"),
+        }
+    }
+
+    fn parser_of(stage: &PipelineStage) -> &ParserStage {
+        match stage {
+            PipelineStage::Parser(p) => p,
+            PipelineStage::LineFilter(_) => panic!("expected parser stage"),
         }
     }
 
@@ -448,5 +588,197 @@ mod tests {
     #[test]
     fn ip_missing_close_paren_rejected() {
         assert!(parse(r#"{app="foo"} |= ip("1.2.3.4""#).is_err());
+    }
+
+    // ============= SOW-04 parser stage tests ========================
+
+    #[test]
+    fn json_plain() {
+        let p = expect_pipeline(r#"{app="foo"} | json"#);
+        assert_eq!(p.stages.len(), 1);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Json { extractions, .. } => assert!(extractions.is_empty()),
+            other => panic!("expected json, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_with_expression() {
+        // From lex_test.go: `{foo="bar"} | json code="response.code", param="request.params[0]"`
+        let p = expect_pipeline(r#"{app="foo"} | json code="response.code", param="x.y[0]""#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Json { extractions, .. } => {
+                assert_eq!(extractions.len(), 2);
+                assert_eq!(extractions[0].name, "code");
+                assert_eq!(extractions[0].expression, "response.code");
+                assert_eq!(extractions[1].name, "param");
+                assert_eq!(extractions[1].expression, "x.y[0]");
+            }
+            other => panic!("expected json, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_bare_name_extraction() {
+        // syntax.y:316 — IDENTIFIER alone defaults expression to the name.
+        let p = expect_pipeline(r#"{app="foo"} | json a, b"#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Json { extractions, .. } => {
+                assert_eq!(extractions.len(), 2);
+                assert_eq!(extractions[0].name, "a");
+                assert_eq!(extractions[0].expression, "a");
+                assert_eq!(extractions[1].name, "b");
+                assert_eq!(extractions[1].expression, "b");
+            }
+            other => panic!("expected json, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logfmt_plain() {
+        let p = expect_pipeline(r#"{app="foo"} | logfmt"#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Logfmt { flags, extractions, .. } => {
+                assert!(flags.is_empty());
+                assert!(extractions.is_empty());
+            }
+            other => panic!("expected logfmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logfmt_strict_flag() {
+        // From parser_test.go: `{ foo = "bar" }|logfmt --strict`
+        let p = expect_pipeline(r#"{app="foo"} | logfmt --strict"#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Logfmt { flags, extractions, .. } => {
+                assert_eq!(flags, &[ParserFlag::Strict]);
+                assert!(extractions.is_empty());
+            }
+            other => panic!("expected logfmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logfmt_both_flags() {
+        // From lex_test.go: `{foo="bar"} | logfmt --strict --keep-empty|=ip("b")`
+        let p = expect_pipeline(r#"{app="foo"} | logfmt --strict --keep-empty"#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Logfmt { flags, .. } => {
+                assert_eq!(flags, &[ParserFlag::Strict, ParserFlag::KeepEmpty]);
+            }
+            other => panic!("expected logfmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logfmt_keep_empty_first_then_strict() {
+        // From lex_test.go: `{foo="bar"} | logfmt --keep-empty --strict code=...`
+        // Order in flags vec matches input order.
+        let p = expect_pipeline(
+            r#"{app="foo"} | logfmt --keep-empty --strict code="response.code""#,
+        );
+        match parser_of(&p.stages[0]) {
+            ParserStage::Logfmt { flags, extractions, .. } => {
+                assert_eq!(flags, &[ParserFlag::KeepEmpty, ParserFlag::Strict]);
+                assert_eq!(extractions.len(), 1);
+                assert_eq!(extractions[0].name, "code");
+            }
+            other => panic!("expected logfmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logfmt_with_extractions_no_flags() {
+        // From lex_test.go: `{foo="bar"} | logfmt code="response.code", IPAddress="host"`
+        let p = expect_pipeline(
+            r#"{app="foo"} | logfmt code="response.code", IPAddress="host""#,
+        );
+        match parser_of(&p.stages[0]) {
+            ParserStage::Logfmt { flags, extractions, .. } => {
+                assert!(flags.is_empty());
+                assert_eq!(extractions.len(), 2);
+                assert_eq!(extractions[1].name, "IPAddress");
+                assert_eq!(extractions[1].expression, "host");
+            }
+            other => panic!("expected logfmt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regexp_with_pattern() {
+        let p = expect_pipeline(r#"{app="foo"} | regexp "(?P<level>\\w+)""#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Regexp { pattern, .. } => {
+                assert_eq!(pattern, r"(?P<level>\w+)");
+            }
+            other => panic!("expected regexp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pattern_stage() {
+        let p = expect_pipeline(r#"{app="foo"} | pattern "<ip> - <_> - <method>""#);
+        match parser_of(&p.stages[0]) {
+            ParserStage::Pattern { pattern, .. } => {
+                assert_eq!(pattern, "<ip> - <_> - <method>");
+            }
+            other => panic!("expected pattern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unpack_stage() {
+        let p = expect_pipeline(r#"{app="foo"} | unpack"#);
+        assert!(matches!(
+            parser_of(&p.stages[0]),
+            ParserStage::Unpack { .. }
+        ));
+    }
+
+    #[test]
+    fn composition_json_then_logfmt() {
+        let p = expect_pipeline(r#"{app="foo"} | json | logfmt"#);
+        assert_eq!(p.stages.len(), 2);
+        assert!(matches!(parser_of(&p.stages[0]), ParserStage::Json { .. }));
+        assert!(matches!(parser_of(&p.stages[1]), ParserStage::Logfmt { .. }));
+    }
+
+    #[test]
+    fn composition_filter_then_parser() {
+        let p = expect_pipeline(r#"{app="foo"} |= "x" | json"#);
+        assert_eq!(p.stages.len(), 2);
+        assert!(matches!(&p.stages[0], PipelineStage::LineFilter(_)));
+        assert!(matches!(parser_of(&p.stages[1]), ParserStage::Json { .. }));
+    }
+
+    #[test]
+    fn no_whitespace_between_pipe_and_keyword() {
+        // From parser_test.go: `{ foo = "bar" }|logfmt --strict`
+        let p = expect_pipeline(r#"{app="foo"}|logfmt"#);
+        assert!(matches!(parser_of(&p.stages[0]), ParserStage::Logfmt { .. }));
+    }
+
+    #[test]
+    fn regexp_missing_pattern_rejected() {
+        assert!(parse(r#"{app="foo"} | regexp"#).is_err());
+    }
+
+    #[test]
+    fn pattern_missing_pattern_rejected() {
+        assert!(parse(r#"{app="foo"} | pattern"#).is_err());
+    }
+
+    #[test]
+    fn unknown_flag_rejected() {
+        // `--frobnicate` isn't a known parser flag, so the parse must fail.
+        assert!(parse(r#"{app="foo"} | logfmt --frobnicate"#).is_err());
+    }
+
+    #[test]
+    fn strictly_is_not_strict() {
+        // The trailing-character check on parser_flag must reject
+        // `--strictly` as a misspelled `--strict`.
+        assert!(parse(r#"{app="foo"} | logfmt --strictly"#).is_err());
     }
 }

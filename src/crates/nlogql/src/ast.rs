@@ -39,6 +39,8 @@ pub struct PipelineExpr {
 pub enum PipelineStage {
     /// `|= "x"`, `!~ "y"`, etc. (SOW-03).
     LineFilter(LineFilter),
+    /// `| json`, `| logfmt --strict`, `| regexp "..."`, etc. (SOW-04).
+    Parser(ParserStage),
 }
 
 /// A LogQL stream selector: `{name1 op "val1", name2 op "val2", ...}`.
@@ -110,4 +112,50 @@ pub enum LineFilterOp {
     Pattern,
     /// `!>` — pattern non-match (Loki 2.9+).
     NotPattern,
+}
+
+/// A parser stage: `| json`, `| logfmt`, `| regexp "..."`, etc.
+///
+/// `json` and `logfmt` accept an optional `labelExtractionExpressionList`
+/// to project specific fields. `logfmt` additionally accepts
+/// `--strict` and `--keep-empty` flags before the extractions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParserStage {
+    /// `| json` (plain) or `| json a="b.c", c, ...` (with projections).
+    Json {
+        extractions: Vec<LabelExtraction>,
+        span: Span,
+    },
+    /// `| logfmt`, `| logfmt --strict`, `| logfmt a="b"`, or any combination.
+    Logfmt {
+        flags: Vec<ParserFlag>,
+        extractions: Vec<LabelExtraction>,
+        span: Span,
+    },
+    /// `| regexp "pattern"` — extracts named capture groups.
+    Regexp { pattern: String, span: Span },
+    /// `| pattern "<ip> - <_> - <method>"` — extracts via Loki pattern syntax.
+    Pattern { pattern: String, span: Span },
+    /// `| unpack` — unpacks a JSON-encoded log line shipped by promtail.
+    Unpack { span: Span },
+}
+
+/// A `name [= "<expression>"]` projection in a json or logfmt parser.
+///
+/// When the input is bare `name` (no `=`), `expression` defaults to
+/// `name` itself (syntax.y:316).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelExtraction {
+    pub name: String,
+    pub expression: String,
+    pub span: Span,
+}
+
+/// `--strict` and `--keep-empty` flags for the logfmt parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParserFlag {
+    /// `--strict` — fail the stage when any field can't be parsed.
+    Strict,
+    /// `--keep-empty` — emit labels even when the value is empty.
+    KeepEmpty,
 }
