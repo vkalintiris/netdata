@@ -22,6 +22,11 @@ pub enum Expr {
     RangeAggregation(RangeAggregationExpr),
     /// `sum(...)`, `avg by (job) (...)`, `topk(5, ...)`, etc. (SOW-11)
     VectorAggregation(VectorAggregationExpr),
+    /// `<lhs> <op> <modifier>? <rhs>` — arithmetic, comparison, or
+    /// logical binary operator. (SOW-12)
+    Binary(BinaryExpr),
+    /// Bare numeric literal (`1`, `2.5`, `-3`). (SOW-12)
+    Literal(LiteralExpr),
 }
 
 impl Expr {
@@ -31,6 +36,8 @@ impl Expr {
             Expr::Pipeline(p) => p.span,
             Expr::RangeAggregation(r) => r.span,
             Expr::VectorAggregation(v) => v.span,
+            Expr::Binary(b) => b.span,
+            Expr::Literal(l) => l.span,
         }
     }
 }
@@ -378,6 +385,82 @@ pub enum VectorOp {
     Sort,
     SortDesc,
     ApproxTopK,
+}
+
+/// A binary operator expression. (`syntax.y:376`)
+///
+/// Loki's grammar attaches the same optional `binOpModifier` to
+/// every binary op (including arithmetic), so we carry it here
+/// even when it's only meaningful for comparison / set operators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryExpr {
+    pub op: BinaryOp,
+    pub lhs: Box<Expr>,
+    pub rhs: Box<Expr>,
+    pub modifier: BinaryModifier,
+    pub span: Span,
+}
+
+/// 15 binary operators across 6 precedence levels (`syntax.y:90-95`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryOp {
+    // Precedence 1, left
+    Or,
+    // Precedence 2, left
+    And,
+    Unless,
+    // Precedence 3, left
+    Eq,
+    NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    // Precedence 4, left
+    Add,
+    Sub,
+    // Precedence 5, left
+    Mul,
+    Div,
+    Mod,
+    // Precedence 6, right
+    Pow,
+}
+
+/// Modifier attached to a binary op (`syntax.y:394-462`):
+/// - `bool` makes comparison ops return 0/1 instead of filtering.
+/// - `on(...)` / `ignoring(...)` controls vector matching.
+/// - `group_left` / `group_right` declares many-to-one cardinality.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BinaryModifier {
+    pub return_bool: bool,
+    pub matching: Option<VectorMatching>,
+    pub group: Option<GroupSide>,
+    pub include: Vec<String>,
+}
+
+/// `on(labels)` vs `ignoring(labels)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorMatching {
+    /// `true` for `on`, `false` for `ignoring`.
+    pub on: bool,
+    /// May be empty for `on()` / `ignoring()`.
+    pub labels: Vec<String>,
+}
+
+/// `group_left` vs `group_right`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GroupSide {
+    Left,
+    Right,
+}
+
+/// Numeric literal expression (`syntax.y:464`). The value carries
+/// any leading sign.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiteralExpr {
+    pub value: f64,
+    pub span: Span,
 }
 
 /// One of 15 range operators (`syntax.y:492`).

@@ -5,15 +5,17 @@
 //! `src/crates/docs/nlogql-implementation-plan.md`.
 
 use chumsky::error::Rich;
+use chumsky::pratt::{infix, left, right};
 use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    ConvOp, DecolorizeStage, Expr, Grouping, IpFilterOp, LabelExtraction, LabelFilter,
-    LabelFormatItem, LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp,
-    LineFilterValue, LineFormatStage, LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag,
-    ParserStage, PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector,
-    UnwrapExpr, VectorAggregationExpr, VectorOp,
+    BinaryExpr, BinaryModifier, BinaryOp, ConvOp, DecolorizeStage, Expr, GroupSide, Grouping,
+    IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem, LabelFormatStage, LabelSelector,
+    LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue, LineFormatStage, LiteralExpr,
+    LogRangeExpr, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr,
+    PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector, UnwrapExpr,
+    VectorAggregationExpr, VectorMatching, VectorOp,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -41,16 +43,11 @@ fn root<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> {
         .then_ignore(end())
 }
 
-/// `expr` (syntax.y:102): log or metric. The variants-of expression
-/// is out of scope per the plan. Keyword-led metric forms (vector
-/// then range aggregations) are tried before the `{`-led log
-/// expression.
+/// `expr` (syntax.y:102): log or metric. Metric expressions
+/// include binary ops with full operator precedence; log
+/// expressions are `{`-led.
 fn top_level_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
-    choice((
-        vector_aggregation_expr().map(Expr::VectorAggregation),
-        range_aggregation_expr().map(Expr::RangeAggregation),
-        log_expr(),
-    ))
+    choice((metric_expr(), log_expr()))
 }
 
 /// `logExpr` (syntax.y:108).
@@ -243,62 +240,212 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .collect()
 }
 
-// -- Vector aggregations (SOW-11) ----------------------------------
+// -- Metric expression (SOW-11 + SOW-12) ---------------------------
 
-/// `vectorAggregationExpr` (syntax.y:176).
+/// `metricExpr` with full operator precedence. Single recursive
+/// parser that handles vector and range aggregations, binary ops,
+/// parenthesized sub-expressions, and bare numeric literals.
 ///
-/// Recursive: a vector aggregation's argument is a `metricExpr`,
-/// which itself can be another vector aggregation. We accept
-/// vector and range aggregations as arguments here; binary ops,
-/// label_replace, and vector(N) join in SOW-12+.
-fn vector_aggregation_expr<'a>()
--> impl Parser<'a, &'a str, VectorAggregationExpr, Extra<'a>> + Clone {
-    recursive(|vec_agg| {
-        // The inner argument can be either another vector aggregation
-        // (recursive) or a range aggregation. Vector tried first so
-        // nested forms like `sum(max(rate(...)))` work; range backs up
-        // when the input doesn't start with a vector op.
-        let metric_expr = choice((
-            vec_agg.clone().map(Expr::VectorAggregation),
+/// Precedence table (syntax.y:90-95, lowest-to-highest):
+///   1. `or`                    (left)
+///   2. `and`, `unless`         (left)
+///   3. `== != > >= < <=`       (left)
+///   4. `+ -`                   (left)
+///   5. `* / %`                 (left)
+///   6. `^`                     (right)
+fn metric_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
+    recursive(|me| {
+        let vec_agg = vector_aggregation_expr_inner(me.clone());
+
+        let atom = choice((
+            me.clone()
+                .delimited_by(just('(').then(ws()), ws().then(just(')'))),
+            vec_agg.map(Expr::VectorAggregation),
             range_aggregation_expr().map(Expr::RangeAggregation),
+            literal_expr().map(Expr::Literal),
         ));
 
-        let arg_with_param = number()
-            .then_ignore(ws())
-            .then_ignore(just(','))
-            .then_ignore(ws())
-            .then(metric_expr.clone())
-            .map(|(n, e)| (Some(n), Box::new(e)));
-        let arg_no_param = metric_expr.map(|e| (None, Box::new(e)));
-        let arg = choice((arg_with_param, arg_no_param));
-
-        vector_op()
-            .then_ignore(ws())
-            .then(grouping().or_not())
-            .then_ignore(ws())
-            .then_ignore(just('('))
-            .then_ignore(ws())
-            .then(arg)
-            .then_ignore(ws())
-            .then_ignore(just(')'))
-            .then(ws().ignore_then(grouping()).or_not())
-            .try_map(|(((op, before_grp), (parameter, expr)), after_grp), span| {
-                if before_grp.is_some() && after_grp.is_some() {
-                    return Err(Rich::custom(
-                        span,
-                        "vector aggregation cannot have grouping on both sides \
-                         of the argument list",
-                    ));
-                }
-                Ok(VectorAggregationExpr {
-                    op,
-                    expr,
-                    parameter,
-                    grouping: before_grp.or(after_grp),
-                    span: Span::new(span.start, span.end),
-                })
-            })
+        atom.pratt((
+            infix(left(1), op_with_modifier(keyword("or").to(BinaryOp::Or)), make_binop),
+            infix(
+                left(2),
+                op_with_modifier(choice((
+                    keyword("and").to(BinaryOp::And),
+                    keyword("unless").to(BinaryOp::Unless),
+                ))),
+                make_binop,
+            ),
+            infix(
+                left(3),
+                op_with_modifier(choice((
+                    just("==").to(BinaryOp::Eq),
+                    just("!=").to(BinaryOp::NotEq),
+                    just(">=").to(BinaryOp::Gte),
+                    just("<=").to(BinaryOp::Lte),
+                    just(">").to(BinaryOp::Gt),
+                    just("<").to(BinaryOp::Lt),
+                ))),
+                make_binop,
+            ),
+            infix(
+                left(4),
+                op_with_modifier(choice((
+                    just('+').to(BinaryOp::Add),
+                    just('-').to(BinaryOp::Sub),
+                ))),
+                make_binop,
+            ),
+            infix(
+                left(5),
+                op_with_modifier(choice((
+                    just('*').to(BinaryOp::Mul),
+                    just('/').to(BinaryOp::Div),
+                    just('%').to(BinaryOp::Mod),
+                ))),
+                make_binop,
+            ),
+            infix(right(6), op_with_modifier(just('^').to(BinaryOp::Pow)), make_binop),
+        ))
     })
+}
+
+/// Wrap an operator-token parser with surrounding whitespace and
+/// the optional `binOpModifier` that LogQL's grammar allows between
+/// every operator and its right-hand operand.
+fn op_with_modifier<'a, P>(
+    op_kw: P,
+) -> impl Parser<'a, &'a str, (BinaryOp, BinaryModifier), Extra<'a>> + Clone
+where
+    P: Parser<'a, &'a str, BinaryOp, Extra<'a>> + Clone + 'a,
+{
+    ws()
+        .ignore_then(op_kw)
+        .then_ignore(ws())
+        .then(binary_modifier())
+        .then_ignore(ws())
+}
+
+/// Builder closure used by every Pratt level. Pulls the span from
+/// chumsky's `MapExtra` so the resulting `BinaryExpr` covers the
+/// whole `lhs OP modifier rhs` source range.
+fn make_binop<'a>(
+    lhs: Expr,
+    (op, modifier): (BinaryOp, BinaryModifier),
+    rhs: Expr,
+    e: &mut chumsky::input::MapExtra<'a, '_, &'a str, Extra<'a>>,
+) -> Expr {
+    let s = e.span();
+    Expr::Binary(BinaryExpr {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        modifier,
+        span: Span::new(s.start, s.end),
+    })
+}
+
+/// `binOpModifier` (syntax.y:427) — empty / `bool` / `on(...)` /
+/// `ignoring(...)` / `... group_left[(...)]` / `... group_right[(...)]`.
+fn binary_modifier<'a>() -> impl Parser<'a, &'a str, BinaryModifier, Extra<'a>> + Clone {
+    let labels_paren = identifier()
+        .map(|s: &str| s.to_string())
+        .separated_by(ws().then(just(',')).then(ws()))
+        .collect::<Vec<_>>()
+        .delimited_by(just('(').then(ws()), ws().then(just(')')));
+
+    let matching = choice((
+        keyword("on").to(true),
+        keyword("ignoring").to(false),
+    ))
+    .then_ignore(ws())
+    .then(labels_paren.clone())
+    .map(|(on, labels)| VectorMatching { on, labels });
+
+    let group = choice((
+        keyword("group_left").to(GroupSide::Left),
+        keyword("group_right").to(GroupSide::Right),
+    ))
+    .then(
+        ws().ignore_then(labels_paren)
+            .or_not()
+            .map(|opt| opt.unwrap_or_default()),
+    );
+
+    let bool_kw = keyword("bool")
+        .or_not()
+        .map(|opt: Option<()>| opt.is_some());
+
+    bool_kw
+        .then(ws().ignore_then(matching).or_not())
+        .then(ws().ignore_then(group).or_not())
+        .map(|((return_bool, matching), grp_opt)| {
+            let (group, include) = match grp_opt {
+                Some((side, labels)) => (Some(side), labels),
+                None => (None, Vec::new()),
+            };
+            BinaryModifier {
+                return_bool,
+                matching,
+                group,
+                include,
+            }
+        })
+}
+
+/// `literalExpr` (syntax.y:464): optional sign + NUMBER.
+fn literal_expr<'a>() -> impl Parser<'a, &'a str, LiteralExpr, Extra<'a>> + Clone {
+    let signed = choice((
+        just('-').ignore_then(number()).map(|n: f64| -n),
+        just('+').ignore_then(number()),
+        number(),
+    ));
+    signed.map_with(|value, e| LiteralExpr {
+        value,
+        span: e.span().into(),
+    })
+}
+
+/// Pull-apart of vector_aggregation_expr into a form that accepts
+/// the outer metric-expr parser as its inner argument. Mirrors
+/// `syntax.y:176`.
+fn vector_aggregation_expr_inner<'a>(
+    me: impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone + 'a,
+) -> impl Parser<'a, &'a str, VectorAggregationExpr, Extra<'a>> + Clone + 'a {
+    let arg_with_param = number()
+        .then_ignore(ws())
+        .then_ignore(just(','))
+        .then_ignore(ws())
+        .then(me.clone())
+        .map(|(n, e)| (Some(n), Box::new(e)));
+    let arg_no_param = me.map(|e| (None, Box::new(e)));
+    let arg = choice((arg_with_param, arg_no_param));
+
+    vector_op()
+        .then_ignore(ws())
+        .then(grouping().or_not())
+        .then_ignore(ws())
+        .then_ignore(just('('))
+        .then_ignore(ws())
+        .then(arg)
+        .then_ignore(ws())
+        .then_ignore(just(')'))
+        .then(ws().ignore_then(grouping()).or_not())
+        .try_map(|(((op, before_grp), (parameter, expr)), after_grp), span| {
+            if before_grp.is_some() && after_grp.is_some() {
+                return Err(Rich::custom(
+                    span,
+                    "vector aggregation cannot have grouping on both sides \
+                     of the argument list",
+                ));
+            }
+            Ok(VectorAggregationExpr {
+                op,
+                expr,
+                parameter,
+                grouping: before_grp.or(after_grp),
+                span: Span::new(span.start, span.end),
+            })
+        })
 }
 
 /// The 12 vector operators. `keyword()` makes prefix collisions safe
@@ -1931,6 +2078,243 @@ mod tests {
     }
 
     // ============= SOW-09 range aggregation tests ===================
+
+    // ============= SOW-12 binary op tests ===========================
+
+    fn expect_binary(input: &str) -> BinaryExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::Binary(b) => b,
+            other => panic!("expected binary for {input:?}, got {other:?}"),
+        }
+    }
+
+    fn expect_literal(input: &str) -> LiteralExpr {
+        match parse(input).unwrap_or_else(|e| panic!("parse failed for {input:?}: {e}")) {
+            Expr::Literal(l) => l,
+            other => panic!("expected literal for {input:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_int() {
+        assert_eq!(expect_literal("42").value, 42.0);
+    }
+
+    #[test]
+    fn literal_neg() {
+        assert_eq!(expect_literal("-42").value, -42.0);
+    }
+
+    #[test]
+    fn literal_float() {
+        assert_eq!(expect_literal("1.5").value, 1.5);
+    }
+
+    #[test]
+    fn binop_add() {
+        let b = expect_binary("1 + 2");
+        assert_eq!(b.op, BinaryOp::Add);
+    }
+
+    #[test]
+    fn binop_precedence_mul_over_add() {
+        // `1 + 2 * 3` -> `1 + (2 * 3)`. The root must be Add with a
+        // Mul on the right.
+        let b = expect_binary("1 + 2 * 3");
+        assert_eq!(b.op, BinaryOp::Add);
+        match &*b.rhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::Mul),
+            other => panic!("expected Mul on rhs, got {other:?}"),
+        }
+        match &*b.lhs {
+            Expr::Literal(l) => assert_eq!(l.value, 1.0),
+            other => panic!("expected literal 1 on lhs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_precedence_mul_before_add() {
+        // `2 * 3 + 1` -> `(2 * 3) + 1`.
+        let b = expect_binary("2 * 3 + 1");
+        assert_eq!(b.op, BinaryOp::Add);
+        match &*b.lhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::Mul),
+            other => panic!("expected Mul on lhs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_pow_right_assoc() {
+        // `2 ^ 3 ^ 2` -> `2 ^ (3 ^ 2)`. Right-associative.
+        let b = expect_binary("2 ^ 3 ^ 2");
+        assert_eq!(b.op, BinaryOp::Pow);
+        match &*b.rhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::Pow),
+            other => panic!("expected Pow on rhs, got {other:?}"),
+        }
+        match &*b.lhs {
+            Expr::Literal(l) => assert_eq!(l.value, 2.0),
+            other => panic!("expected literal 2 on lhs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_add_left_assoc() {
+        // `1 + 2 + 3` -> `(1 + 2) + 3`. Left-associative.
+        let b = expect_binary("1 + 2 + 3");
+        match &*b.lhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::Add),
+            other => panic!("expected Add on lhs, got {other:?}"),
+        }
+        match &*b.rhs {
+            Expr::Literal(l) => assert_eq!(l.value, 3.0),
+            other => panic!("expected literal 3 on rhs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_parens_override_precedence() {
+        // `(1 + 2) * 3` -> Mul at root.
+        let b = expect_binary("(1 + 2) * 3");
+        assert_eq!(b.op, BinaryOp::Mul);
+        match &*b.lhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::Add),
+            other => panic!("expected Add inside parens, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_all_arithmetic_ops() {
+        for (text, op) in [
+            ("1 + 2", BinaryOp::Add),
+            ("1 - 2", BinaryOp::Sub),
+            ("1 * 2", BinaryOp::Mul),
+            ("1 / 2", BinaryOp::Div),
+            ("1 % 2", BinaryOp::Mod),
+            ("1 ^ 2", BinaryOp::Pow),
+        ] {
+            let b = expect_binary(text);
+            assert_eq!(b.op, op, "op for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binop_all_comparison_ops() {
+        for (text, op) in [
+            ("1 == 2", BinaryOp::Eq),
+            ("1 != 2", BinaryOp::NotEq),
+            ("1 > 2", BinaryOp::Gt),
+            ("1 >= 2", BinaryOp::Gte),
+            ("1 < 2", BinaryOp::Lt),
+            ("1 <= 2", BinaryOp::Lte),
+        ] {
+            let b = expect_binary(text);
+            assert_eq!(b.op, op, "op for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binop_logical_ops() {
+        for (text, op) in [
+            (r#"rate({a="b"}[5m]) or rate({c="d"}[5m])"#, BinaryOp::Or),
+            (r#"rate({a="b"}[5m]) and rate({c="d"}[5m])"#, BinaryOp::And),
+            (
+                r#"rate({a="b"}[5m]) unless rate({c="d"}[5m])"#,
+                BinaryOp::Unless,
+            ),
+        ] {
+            let b = expect_binary(text);
+            assert_eq!(b.op, op, "op for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binop_or_lowest_precedence() {
+        // `1 > 0 or 1 > 0 and 1 > 0` -> `(1>0) or ((1>0) and (1>0))`.
+        // OR is precedence 1, AND is 2, comparison is 3.
+        let b = expect_binary("1 > 0 or 1 > 0 and 1 > 0");
+        assert_eq!(b.op, BinaryOp::Or);
+        match &*b.rhs {
+            Expr::Binary(inner) => assert_eq!(inner.op, BinaryOp::And),
+            other => panic!("expected And on rhs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binop_with_bool_modifier() {
+        // Comparison with `bool` modifier makes the comparison
+        // return 0/1 instead of filtering.
+        let b = expect_binary(r#"rate({a="b"}[5m]) > bool 1"#);
+        assert_eq!(b.op, BinaryOp::Gt);
+        assert!(b.modifier.return_bool);
+    }
+
+    #[test]
+    fn binop_with_on_matching() {
+        let b = expect_binary(
+            r#"rate({a="b"}[5m]) / on(job) rate({c="d"}[5m])"#,
+        );
+        assert_eq!(b.op, BinaryOp::Div);
+        let m = b.modifier.matching.as_ref().unwrap();
+        assert!(m.on);
+        assert_eq!(m.labels, vec!["job".to_string()]);
+    }
+
+    #[test]
+    fn binop_with_ignoring_matching() {
+        let b = expect_binary(
+            r#"rate({a="b"}[5m]) + ignoring(env) rate({c="d"}[5m])"#,
+        );
+        let m = b.modifier.matching.as_ref().unwrap();
+        assert!(!m.on);
+        assert_eq!(m.labels, vec!["env".to_string()]);
+    }
+
+    #[test]
+    fn binop_with_group_left() {
+        let b = expect_binary(
+            r#"rate({a="b"}[5m]) * on(job) group_left(env) rate({c="d"}[5m])"#,
+        );
+        assert_eq!(b.modifier.group, Some(GroupSide::Left));
+        assert_eq!(b.modifier.include, vec!["env".to_string()]);
+    }
+
+    #[test]
+    fn binop_with_group_right() {
+        let b = expect_binary(
+            r#"rate({a="b"}[5m]) * on(job) group_right rate({c="d"}[5m])"#,
+        );
+        assert_eq!(b.modifier.group, Some(GroupSide::Right));
+        assert!(b.modifier.include.is_empty());
+    }
+
+    #[test]
+    fn binop_scalar_with_range_agg() {
+        // From parser_test.go-style: arithmetic between range agg
+        // and scalar.
+        let b = expect_binary(r#"2 * rate({a="b"}[5m])"#);
+        assert_eq!(b.op, BinaryOp::Mul);
+        assert!(matches!(&*b.lhs, Expr::Literal(_)));
+        assert!(matches!(&*b.rhs, Expr::RangeAggregation(_)));
+    }
+
+    #[test]
+    fn binop_inside_vector_aggregation() {
+        // `sum(rate(...) + rate(...))` — the inner arg is a binop.
+        let v = expect_vector_agg(
+            r#"sum(rate({a="b"}[5m]) + rate({c="d"}[5m]))"#,
+        );
+        assert_eq!(v.op, VectorOp::Sum);
+        assert!(matches!(&*v.expr, Expr::Binary(_)));
+    }
+
+    #[test]
+    fn binop_span_covers_whole() {
+        let input = "1 + 2";
+        let b = expect_binary(input);
+        assert_eq!(b.span.start, 0);
+        assert_eq!(b.span.end, input.len());
+    }
 
     // ============= SOW-11 vector aggregation tests ==================
 
