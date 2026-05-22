@@ -9,9 +9,10 @@ use chumsky::prelude::*;
 
 use crate::Extra;
 use crate::ast::{
-    Expr, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem, LabelFormatStage, LineFilter,
-    LineFilterOp, LineFilterValue, LineFormatStage, Matcher, MatcherOp, NumericOp, ParserFlag,
-    ParserStage, PipelineExpr, PipelineStage, StreamSelector,
+    DecolorizeStage, Expr, IpFilterOp, LabelExtraction, LabelFilter, LabelFormatItem,
+    LabelFormatStage, LabelSelector, LabelSelectorList, LineFilter, LineFilterOp, LineFilterValue,
+    LineFormatStage, Matcher, MatcherOp, NumericOp, ParserFlag, ParserStage, PipelineExpr,
+    PipelineStage, StreamSelector,
 };
 use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
@@ -113,6 +114,9 @@ fn pipeline_stage<'a>() -> impl Parser<'a, &'a str, PipelineStage, Extra<'a>> + 
         parser_stage().map(PipelineStage::Parser),
         line_format_stage().map(PipelineStage::LineFormat),
         label_format_stage().map(PipelineStage::LabelFormat),
+        decolorize_stage().map(PipelineStage::Decolorize),
+        drop_labels_stage().map(PipelineStage::DropLabels),
+        keep_labels_stage().map(PipelineStage::KeepLabels),
         // Identifier-led: tried last because it commits to whatever
         // identifier appears first.
         label_filter().map(PipelineStage::LabelFilter),
@@ -224,6 +228,73 @@ fn label_extraction_list<'a>() -> impl Parser<'a, &'a str, Vec<LabelExtraction>,
         .separated_by(ws().then(just(',')).then(ws()))
         .at_least(1)
         .collect()
+}
+
+// -- Structural stages (SOW-07) -----------------------------------
+
+/// `decolorizeExpr` (syntax.y:286): bare `decolorize` keyword.
+fn decolorize_stage<'a>() -> impl Parser<'a, &'a str, DecolorizeStage, Extra<'a>> + Clone {
+    keyword("decolorize").map_with(|_, e| DecolorizeStage {
+        span: e.span().into(),
+    })
+}
+
+/// `dropLabelsExpr` (syntax.y:371): `drop namedMatchers`.
+fn drop_labels_stage<'a>() -> impl Parser<'a, &'a str, LabelSelectorList, Extra<'a>> + Clone {
+    keyword("drop")
+        .ignore_then(ws())
+        .ignore_then(named_matchers())
+        .map_with(|items, e| LabelSelectorList {
+            items,
+            span: e.span().into(),
+        })
+}
+
+/// `keepLabelsExpr` (syntax.y:373): `keep namedMatchers`.
+fn keep_labels_stage<'a>() -> impl Parser<'a, &'a str, LabelSelectorList, Extra<'a>> + Clone {
+    keyword("keep")
+        .ignore_then(ws())
+        .ignore_then(named_matchers())
+        .map_with(|items, e| LabelSelectorList {
+            items,
+            span: e.span().into(),
+        })
+}
+
+/// `namedMatchers` (syntax.y:366): one-or-more `namedMatcher`s
+/// separated by commas.
+fn named_matchers<'a>() -> impl Parser<'a, &'a str, Vec<LabelSelector>, Extra<'a>> + Clone {
+    named_matcher()
+        .separated_by(ws().then(just(',')).then(ws()))
+        .at_least(1)
+        .collect()
+}
+
+/// `namedMatcher` (syntax.y:362): either a bare `IDENTIFIER`
+/// (label name) or a full `matcher` (label = "value" with any of
+/// the four matcher ops).
+fn named_matcher<'a>() -> impl Parser<'a, &'a str, LabelSelector, Extra<'a>> + Clone {
+    identifier()
+        .then(
+            ws()
+                .ignore_then(matcher_op())
+                .then_ignore(ws())
+                .then(string_literal())
+                .or_not(),
+        )
+        .map_with(|(name, m_opt), e| {
+            let name = name.to_string();
+            let span: Span = e.span().into();
+            match m_opt {
+                None => LabelSelector::Name { name, span },
+                Some((op, value)) => LabelSelector::Matched(Matcher {
+                    name,
+                    op,
+                    value,
+                    span,
+                }),
+            }
+        })
 }
 
 // -- Format stages (SOW-06) ----------------------------------------
@@ -1334,6 +1405,115 @@ mod tests {
     #[test]
     fn label_format_missing_rhs_rejected() {
         assert!(parse(r#"{app="foo"} | label_format new="#).is_err());
+    }
+
+    // ============= SOW-07 structural stage tests ====================
+
+    fn decolorize_of(stage: &PipelineStage) -> &DecolorizeStage {
+        match stage {
+            PipelineStage::Decolorize(d) => d,
+            other => panic!("expected decolorize, got {other:?}"),
+        }
+    }
+
+    fn drop_of(stage: &PipelineStage) -> &LabelSelectorList {
+        match stage {
+            PipelineStage::DropLabels(d) => d,
+            other => panic!("expected drop, got {other:?}"),
+        }
+    }
+
+    fn keep_of(stage: &PipelineStage) -> &LabelSelectorList {
+        match stage {
+            PipelineStage::KeepLabels(d) => d,
+            other => panic!("expected keep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decolorize_alone() {
+        let p = expect_pipeline(r#"{app="foo"} | decolorize"#);
+        assert_eq!(p.stages.len(), 1);
+        let _ = decolorize_of(&p.stages[0]);
+    }
+
+    #[test]
+    fn drop_single_label() {
+        let p = expect_pipeline(r#"{app="foo"} | drop foo"#);
+        let d = drop_of(&p.stages[0]);
+        assert_eq!(d.items.len(), 1);
+        match &d.items[0] {
+            LabelSelector::Name { name, .. } => assert_eq!(name, "foo"),
+            other => panic!("expected Name, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_multiple_labels() {
+        let p = expect_pipeline(r#"{app="foo"} | drop foo, bar, baz"#);
+        let d = drop_of(&p.stages[0]);
+        assert_eq!(d.items.len(), 3);
+        for item in &d.items {
+            assert!(matches!(item, LabelSelector::Name { .. }));
+        }
+    }
+
+    #[test]
+    fn drop_with_matcher() {
+        // `drop foo="bar"` — conditional drop.
+        let p = expect_pipeline(r#"{app="foo"} | drop foo="bar""#);
+        let d = drop_of(&p.stages[0]);
+        match &d.items[0] {
+            LabelSelector::Matched(m) => {
+                assert_eq!(m.name, "foo");
+                assert_eq!(m.op, MatcherOp::Eq);
+                assert_eq!(m.value, "bar");
+            }
+            other => panic!("expected Matched, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_mixed_names_and_matchers() {
+        let p = expect_pipeline(r#"{app="foo"} | drop foo, bar="x", baz"#);
+        let d = drop_of(&p.stages[0]);
+        assert_eq!(d.items.len(), 3);
+        assert!(matches!(d.items[0], LabelSelector::Name { .. }));
+        assert!(matches!(d.items[1], LabelSelector::Matched(_)));
+        assert!(matches!(d.items[2], LabelSelector::Name { .. }));
+    }
+
+    #[test]
+    fn keep_single_label() {
+        let p = expect_pipeline(r#"{app="foo"} | keep foo"#);
+        let k = keep_of(&p.stages[0]);
+        assert_eq!(k.items.len(), 1);
+    }
+
+    #[test]
+    fn keep_multiple_labels() {
+        let p = expect_pipeline(r#"{app="foo"} | keep foo, bar"#);
+        let k = keep_of(&p.stages[0]);
+        assert_eq!(k.items.len(), 2);
+    }
+
+    #[test]
+    fn drop_missing_labels_rejected() {
+        assert!(parse(r#"{app="foo"} | drop"#).is_err());
+    }
+
+    #[test]
+    fn keep_missing_labels_rejected() {
+        assert!(parse(r#"{app="foo"} | keep"#).is_err());
+    }
+
+    #[test]
+    fn decolorize_does_not_consume_arguments() {
+        // `| decolorize foo` — `foo` becomes a stray identifier that
+        // can't continue the pipeline (decolorize takes no args).
+        // Loki would parse decolorize as standalone and then fail on
+        // `foo`. Our parser should too.
+        assert!(parse(r#"{app="foo"} | decolorize foo"#).is_err());
     }
 
     #[test]

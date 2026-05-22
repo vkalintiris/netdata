@@ -52,6 +52,13 @@ pub enum PipelineStage {
     /// `| label_format new=old, x="{{ .y }}"` — rename or template
     /// labels. (SOW-06)
     LabelFormat(LabelFormatStage),
+    /// `| decolorize` — strip ANSI color codes from the log line. (SOW-07)
+    Decolorize(DecolorizeStage),
+    /// `| drop label, label2, foo="bar"` — drop labels (or label-value
+    /// conditional drop). (SOW-07)
+    DropLabels(LabelSelectorList),
+    /// `| keep label, label2` — opposite of drop. (SOW-07)
+    KeepLabels(LabelSelectorList),
 }
 
 /// A LogQL stream selector: `{name1 op "val1", name2 op "val2", ...}`.
@@ -289,4 +296,30 @@ pub enum LabelFormatItem {
         template: String,
         span: Span,
     },
+}
+
+/// `| decolorize`. (`syntax.y:286`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DecolorizeStage {
+    pub span: Span,
+}
+
+/// Comma-separated list of `namedMatcher`s used by `drop` and
+/// `keep` stages. (`syntax.y:366`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelSelectorList {
+    /// Non-empty.
+    pub items: Vec<LabelSelector>,
+    pub span: Span,
+}
+
+/// One entry in a `drop`/`keep` list — either a bare label name
+/// (drop the label unconditionally) or a full matcher (drop only
+/// when the condition holds). (`syntax.y:362`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelSelector {
+    /// `drop foo` — bare label name.
+    Name { name: String, span: Span },
+    /// `drop foo="bar"` — drop only when `foo="bar"`.
+    Matched(Matcher),
 }
