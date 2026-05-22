@@ -222,19 +222,25 @@ The leftovers: `label_replace(...)`, `vector(N)`, bare literal expressions.
 
 Reference: `syntax.y:labelReplaceExpr,vectorExpr,literalExpr`, `ast.go:LabelReplaceExpr,VectorExpr,LiteralExpr`.
 
-### SOW-14 — Subqueries
+### SOW-14 — Subqueries — **dropped**
 
-The `[range:step]` form: `rate({app="foo"}[5m])[10m:1m]`.
+**Amended 2026-05-22:** Loki LogQL has no PromQL-style `[range:step]`
+subquery form. The original audit said "Loki has limited support —
+check," but a closer read shows no production in `syntax.y` and no
+related types in `ast.go`. The two `subquery` references in
+`rangemapper.go` are about an internal range-mapping optimization
+for shard-aware queries, not user-facing syntax.
 
-- AST: `SubqueryExpr { expr, range, step, offset, span }`.
-- Step is optional: `[10m:]` defaults step to the global resolution.
-
-Reference: `syntax.y:logRangeExpr` (subquery rule), `ast.go:RangeAggregationExpr` (Loki overloads — read carefully).
+Subquery support could land later as a Netdata-specific LogQL
+extension if needed, but it is not required for Loki conformance.
+SOW-14 is therefore dropped from this plan; Phase B exits with 6
+SOWs instead of 7.
 
 **Exit criterion for Phase B:** any well-formed LogQL query
 parses, including metric queries with full operator precedence.
 Feature parity with Loki's grammar (modulo `variants(...)` which is
-Loki-experimental and out of scope).
+Loki-experimental and out of scope; and SOW-14 subqueries, which
+turned out not to exist in Loki — see the dropped section above).
 
 ## Phase C — Quality
 
