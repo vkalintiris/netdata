@@ -5,21 +5,40 @@
 
 use crate::span::Span;
 
-/// Top-level expression. Grows as we add productions; today it's
-/// just a bare stream selector.
+/// Top-level expression. Grows as we add productions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// `{label="value", ...}` — log stream selector standing alone,
-    /// no pipeline. Pipeline composition lands in SOW-03.
+    /// no pipeline.
     Selector(StreamSelector),
+    /// `{...} <stage> <stage> ...` — selector followed by one or
+    /// more pipeline stages. Mirrors Loki's `PipelineExpr`.
+    Pipeline(PipelineExpr),
 }
 
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Selector(s) => s.span,
+            Expr::Pipeline(p) => p.span,
         }
     }
+}
+
+/// Selector composed with one or more pipeline stages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineExpr {
+    pub selector: StreamSelector,
+    /// Non-empty; an empty pipeline collapses to `Expr::Selector`.
+    pub stages: Vec<PipelineStage>,
+    pub span: Span,
+}
+
+/// One pipeline stage. Variants land progressively across SOW-03+.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineStage {
+    /// `|= "x"`, `!~ "y"`, etc. (SOW-03).
+    LineFilter(LineFilter),
 }
 
 /// A LogQL stream selector: `{name1 op "val1", name2 op "val2", ...}`.
@@ -52,4 +71,43 @@ pub enum MatcherOp {
     Match,
     /// `!~` — regex non-match.
     NotMatch,
+}
+
+/// A line filter: `<op> <value> [or <value>]*`.
+///
+/// `values` is non-empty. Multiple values are an `or`-chain — all
+/// share the parent's `op`. E.g. `|= "a" or "b"` becomes
+/// `LineFilter { op: Eq, values: [Literal("a"), Literal("b")] }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineFilter {
+    pub op: LineFilterOp,
+    pub values: Vec<LineFilterValue>,
+    pub span: Span,
+}
+
+/// Operand of a line filter — either a literal string or a CIDR
+/// passed to `ip(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineFilterValue {
+    /// `|= "literal"`
+    Literal(String),
+    /// `|= ip("10.0.0.0/8")`
+    Ip(String),
+}
+
+/// Line-filter comparison operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineFilterOp {
+    /// `|=` — contains exact substring.
+    Eq,
+    /// `!=` — does not contain.
+    NotEq,
+    /// `|~` — regex match.
+    Match,
+    /// `!~` — regex non-match.
+    NotMatch,
+    /// `|>` — pattern match (Loki 2.9+).
+    Pattern,
+    /// `!>` — pattern non-match (Loki 2.9+).
+    NotPattern,
 }
