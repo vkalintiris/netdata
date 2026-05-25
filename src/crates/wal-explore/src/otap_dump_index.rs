@@ -20,13 +20,14 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
 
     let num_field_chunks = fields
         .iter()
-        .filter(|f| f.tier != log_index::fst_builder::FieldTier::Low)
+        .filter(|f| f.tier != sfst::FieldTier::Low)
         .count();
 
     let mut total_printed = 0u32;
     let stream = reader.stream();
     let t = Instant::now();
-    let entries = reader.load_stream_entries(num_field_chunks)?;
+    let _ = num_field_chunks; // sfst now resolves the stream-entries position itself
+    let entries = reader.load_stream_entries()?;
     eprintln!(
         "stream {}/{}: {} entries ({:.0}ms)",
         stream.namespace,
@@ -48,7 +49,7 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
             if idx < string_table.len() {
                 println!("  {}", string_table[idx]);
             } else {
-                println!("  <unknown FileId({})>", id.0);
+                println!("  <unknown KvId({})>", id.0);
             }
         }
 

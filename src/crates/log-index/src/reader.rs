@@ -11,9 +11,11 @@
 //! Field structure (names, cardinalities, tiers) lives in a separate FLDS
 //! chunk, loaded on demand via [`IndexReader::field_table`].
 
-use crate::fst_builder::{BitmapValue, FieldEntry, FieldTier, FileId, IdRanges, IndexMetadata};
 use fst_index::FstIndex;
-use sfst::{FileSummary, StreamEntry};
+use sfst::{
+    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId, SparseHistogram,
+    StreamEntry,
+};
 
 /// A successfully opened split-FST index.
 ///
@@ -32,9 +34,9 @@ impl<'a> IndexReader<'a> {
     /// Immediately deserializes the summary, metadata, and primary FST.
     pub fn open(data: &'a [u8]) -> Result<Self, sfst::Error> {
         let sfst = sfst::Reader::open(data)?;
-        let summary: FileSummary = sfst.summary()?;
-        let metadata: IndexMetadata = sfst.metadata()?;
-        let primary: FstIndex<BitmapValue> = sfst.primary()?;
+        let summary = sfst.summary()?;
+        let metadata = sfst.metadata()?;
+        let primary = sfst.primary()?;
         Ok(Self {
             sfst,
             summary,
@@ -64,7 +66,7 @@ impl<'a> IndexReader<'a> {
     }
 
     /// The sparse histogram for time-range estimation.
-    pub fn histogram(&self) -> &crate::wal_index::SparseHistogram {
+    pub fn histogram(&self) -> &SparseHistogram {
         &self.metadata.histogram
     }
 
@@ -76,7 +78,9 @@ impl<'a> IndexReader<'a> {
     // ── Field table (FLDS chunk, loaded on demand) ──────────────────
 
     /// Load and deserialize the field table from the FLDS chunk.
-    pub fn field_table(&self) -> Result<Vec<FieldEntry>, sfst::Error> {
+    ///
+    /// Cached on the underlying [`sfst::Reader`] after first call.
+    pub fn field_table(&self) -> Result<&[FieldEntry], sfst::Error> {
         self.sfst.fields()
     }
 
@@ -99,48 +103,35 @@ impl<'a> IndexReader<'a> {
 
     // ── Secondary chunk loading ─────────────────────────────────────
 
-    /// Load a mid-cardinality field's FST by secondary chunk index.
-    pub fn load_mid_field(&self, chunk_index: u16) -> Result<FstIndex<BitmapValue>, sfst::Error> {
-        self.sfst.chunk(chunk_index)
+    /// Load a mid-cardinality field's FST. `mid_index` is `0..num_mid`.
+    pub fn load_mid_field(&self, mid_index: u16) -> Result<FstIndex<BitmapValue>, sfst::Error> {
+        self.sfst.mid_field(mid_index)
     }
 
-    /// Load a high-cardinality field's entries by secondary chunk index.
+    /// Load a high-cardinality field's entries. `high_index` is `0..num_high`.
     ///
     /// Returns the decompressed list of `(key_value, bitmap)` pairs.
     pub fn load_high_field(
         &self,
-        chunk_index: u16,
+        high_index: u16,
     ) -> Result<Vec<(String, BitmapValue)>, sfst::Error> {
-        let raw = self.sfst.chunk_raw(chunk_index)?;
-        let decompressed = zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
-        let (entries, _): (Vec<(String, BitmapValue)>, _) =
-            bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
-        Ok(entries)
+        self.sfst.high_field(high_index)
     }
 
     // ── Stream log entries ──────────────────────────────────────────
 
-    /// Load the file's log entries.
+    /// Load the file's stream log entries.
     ///
     /// Each SFST has exactly one stream (see [`sfst::StreamEntry`]); its
-    /// log entries chunk sits immediately after the field chunks.
-    /// `num_field_chunks` is the number of mid + high field chunks (i.e.,
-    /// the count of non-low fields).
-    pub fn load_stream_entries(
-        &self,
-        num_field_chunks: usize,
-    ) -> Result<Vec<Vec<FileId>>, sfst::Error> {
-        let raw = self.sfst.chunk_raw(num_field_chunks as u16)?;
-        let decompressed = zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
-        let (entries, _): (Vec<Vec<FileId>>, _) =
-            bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
-        Ok(entries)
+    /// log entries chunk is the trailing secondary chunk.
+    pub fn load_stream_entries(&self) -> Result<Vec<Vec<KvId>>, sfst::Error> {
+        self.sfst.stream_entries()
     }
 
-    // ── FileId resolution ───────────────────────────────────────────
+    // ── KvId resolution ───────────────────────────────────────────
 
-    /// Determine which cardinality tier a FileId belongs to.
-    pub fn file_id_tier(&self, id: FileId) -> FieldTier {
+    /// Determine which cardinality tier a [`KvId`] belongs to.
+    pub fn kv_id_tier(&self, id: KvId) -> FieldTier {
         let ranges = &self.metadata.id_ranges;
         if id.0 < ranges.low_end.0 {
             FieldTier::Low
@@ -151,57 +142,52 @@ impl<'a> IndexReader<'a> {
         }
     }
 
-    /// Build a reverse lookup table: `FileId → key=value` string.
+    /// Build a reverse lookup table: `KvId → key=value` string.
     ///
-    /// Requires the field table to determine chunk types. Loads and
-    /// decompresses all FSTs and high-card chunks.
+    /// Walks the primary FST and every secondary chunk, decompressing as
+    /// it goes. Returns one entry per `key=value` pair in the file.
     pub fn build_string_table(
         &self,
         field_table: &[FieldEntry],
     ) -> Result<Vec<String>, sfst::Error> {
         let total = self.metadata.id_ranges.high_end.0 as usize;
         let mut table = vec![String::new(); total];
-        let mut file_id = 0usize;
+        let mut kv_id = 0usize;
 
         // Low-card: iterate primary FST.
         self.primary.for_each(|key, _| {
-            if file_id < table.len() {
-                table[file_id] = String::from_utf8_lossy(key).into_owned();
+            if kv_id < table.len() {
+                table[kv_id] = String::from_utf8_lossy(key).into_owned();
             }
-            file_id += 1;
+            kv_id += 1;
         });
 
-        // Mid/high-card: iterate secondary chunks in field_table order.
-        let mut chunk_idx = 0u16;
+        // Mid/high-card: iterate secondary chunks in field_table order,
+        // tracking mid- and high-relative positions independently.
+        let mut mid_index: u16 = 0;
+        let mut high_index: u16 = 0;
         for field in field_table {
             match field.tier {
                 FieldTier::Low => continue,
                 FieldTier::Mid => {
-                    let fst: FstIndex<BitmapValue> = self.sfst.chunk(chunk_idx)?;
+                    let fst = self.sfst.mid_field(mid_index)?;
                     fst.for_each(|key, _| {
-                        if file_id < table.len() {
-                            table[file_id] = String::from_utf8_lossy(key).into_owned();
+                        if kv_id < table.len() {
+                            table[kv_id] = String::from_utf8_lossy(key).into_owned();
                         }
-                        file_id += 1;
+                        kv_id += 1;
                     });
-                    chunk_idx += 1;
+                    mid_index += 1;
                 }
                 FieldTier::High => {
-                    let raw = self.sfst.chunk_raw(chunk_idx)?;
-                    let decompressed =
-                        zstd::decode_all(raw).map_err(|e| sfst::Error::Zstd(e.to_string()))?;
-                    let (entries, _): (Vec<(String, BitmapValue)>, _) =
-                        bincode::serde::decode_from_slice(
-                            &decompressed,
-                            bincode::config::standard(),
-                        )?;
+                    let entries = self.sfst.high_field(high_index)?;
                     for (key, _) in entries {
-                        if file_id < table.len() {
-                            table[file_id] = key;
+                        if kv_id < table.len() {
+                            table[kv_id] = key;
                         }
-                        file_id += 1;
+                        kv_id += 1;
                     }
-                    chunk_idx += 1;
+                    high_index += 1;
                 }
             }
         }

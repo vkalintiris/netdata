@@ -1,12 +1,11 @@
 [workspace]
 resolver = "2"
-exclude = ["jf"]
+exclude = ["jf", "journal-file-index"]
 members = [
     # Individual crates
     "journal-common",
     "journal-core",
     "journal-index",
-    "journal-file-index",
     "journal-chunk",
     "journal-ts",
     "fst-index",

@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use log_index::fst_builder::{FieldTier, FileId};
 use log_index::reader::IndexReader;
+use sfst::KvId;
 
 const BATCH_SIZE: usize = 10_000;
 
@@ -20,19 +20,18 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sfst = sfst::Reader::open(&data)?;
     let stream = reader.stream();
 
-    let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
+    let _ = fields; // field table not needed; stream chunk has its own id
 
     let mut total_original = 0usize;
     let mut total_batched = 0usize;
 
     {
-        let chunk_idx = num_field_chunks as u16;
-        let compressed_raw = sfst.chunk_raw(chunk_idx)?;
+        let compressed_raw = sfst.stream_entries_raw()?;
         let original_size = compressed_raw.len();
 
         // Decode the original entries.
         let decompressed = zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
-        let (entries, _): (Vec<Vec<FileId>>, _) =
+        let (entries, _): (Vec<Vec<KvId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
         // Split into batches and compress each independently.

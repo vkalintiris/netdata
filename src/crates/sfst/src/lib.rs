@@ -16,25 +16,29 @@
 //!
 //! ```no_run
 //! use fst_index::FstIndex;
+//! use sfst::BitmapValue;
+//! use treight::Bitmap;
 //!
-//! // Build and pack
-//! let fst: FstIndex<u64> = FstIndex::build([("key", 42u64)]).unwrap();
-//! let packed = sfst::pack(&fst, 1).unwrap();
+//! // Build a minimal primary FST with one `key=value` entry.
+//! let bm = BitmapValue { desc: Bitmap::empty(0), data: Vec::new() };
+//! let primary: FstIndex<BitmapValue> =
+//!     FstIndex::build([("level=info", bm)]).unwrap();
 //!
 //! // Write
 //! let mut writer = sfst::Writer::new();
-//! writer.set_primary(packed);
+//! writer.set_primary(sfst::pack(&primary, 1).unwrap());
 //! let mut buf = Vec::new();
 //! writer.write_to(&mut buf).unwrap();
 //!
 //! // Read back
 //! let reader = sfst::Reader::open(&buf).unwrap();
-//! let fst_read: FstIndex<u64> = reader.primary().unwrap();
-//! assert_eq!(fst_read.get(b"key"), Some(&42));
+//! let primary = reader.primary().unwrap();
+//! assert!(primary.get(b"level=info").is_some());
 //! ```
 
 mod error;
 mod reader;
+mod schema;
 mod writer;
 
 pub mod registry;
@@ -43,9 +47,11 @@ pub use error::Error;
 pub use file_registry::StreamEntry;
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
+pub use schema::{
+    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId,
+    SparseHistogram,
+};
 pub use writer::{Writer, pack};
-
-use serde::{Deserialize, Serialize};
 
 // ── Format constants ─────────────────────────────────────────────
 
@@ -57,173 +63,93 @@ const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
 const CHUNK_META: gix_chunk::Id = *b"META";
 const CHUNK_FLDS: gix_chunk::Id = *b"FLDS";
 const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
+const CHUNK_STREAM: gix_chunk::Id = *b"STRM";
 
-fn hc_chunk_id(index: u16) -> gix_chunk::Id {
-    [b'H', b'C', (index >> 8) as u8, (index & 0xff) as u8]
+/// Chunk id for the mid-card field FST at `index`. The id encodes the
+/// index in its trailing two bytes, big-endian, so each mid-card chunk
+/// has a unique 4-byte id of the form `b"MF{hi}{lo}"`.
+fn mid_field_id(index: u16) -> gix_chunk::Id {
+    [b'M', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
-// ── FileSummary ──────────────────────────────────────────────────
-
-/// Cheap-to-read summary of an SFST file.
-///
-/// Stored in its own `SUMR` chunk so the registry can rebuild itself from
-/// the file without decompressing the heavier `META` chunk (histogram +
-/// id_ranges). All four fields are also held inline on [`File`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileSummary {
-    pub min_timestamp_s: u32,
-    pub max_timestamp_s: u32,
-    pub total_logs: u32,
-    pub stream: StreamEntry,
+/// Chunk id for the high-card field sorted list at `index`. Same shape
+/// as [`mid_field_id`] but with prefix `b"HF"`.
+fn high_field_id(index: u16) -> gix_chunk::Id {
+    [b'H', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fst_index::FstIndex;
+    use treight::Bitmap;
 
-    #[test]
-    fn round_trip_primary_only() {
-        let fst: FstIndex<u64> =
-            FstIndex::build([("alpha", 1u64), ("beta", 2), ("gamma", 3)]).unwrap();
-
-        let packed = pack(&fst, 1).unwrap();
-        let mut writer = Writer::new();
-        writer.set_primary(packed);
-
-        let mut buf = Vec::new();
-        writer.write_to(&mut buf).unwrap();
-
-        let reader = Reader::open(&buf).unwrap();
-        assert_eq!(reader.chunk_count(), 0);
-
-        let read: FstIndex<u64> = reader.primary().unwrap();
-        assert_eq!(read.get(b"alpha"), Some(&1));
-        assert_eq!(read.get(b"beta"), Some(&2));
-        assert_eq!(read.get(b"gamma"), Some(&3));
-        assert_eq!(read.get(b"missing"), None);
-    }
-
-    #[test]
-    fn round_trip_with_chunks() {
-        let primary: FstIndex<String> = FstIndex::build([
-            ("field_a", "low".to_string()),
-            ("field_b", "high".to_string()),
-        ])
-        .unwrap();
-
-        let chunk0: FstIndex<u64> = FstIndex::build([("val1", 100u64), ("val2", 200)]).unwrap();
-        let chunk1: FstIndex<u64> = FstIndex::build([("x", 10u64), ("y", 20), ("z", 30)]).unwrap();
-
-        let mut writer = Writer::new();
-        writer.set_primary(pack(&primary, 1).unwrap());
-        let i0 = writer.add_chunk(pack(&chunk0, 1).unwrap());
-        let i1 = writer.add_chunk(pack(&chunk1, 1).unwrap());
-        assert_eq!(i0, 0);
-        assert_eq!(i1, 1);
-
-        let mut buf = Vec::new();
-        writer.write_to(&mut buf).unwrap();
-
-        let reader = Reader::open(&buf).unwrap();
-        assert_eq!(reader.chunk_count(), 2);
-
-        let p: FstIndex<String> = reader.primary().unwrap();
-        assert_eq!(p.get(b"field_a"), Some(&"low".to_string()));
-
-        let c0: FstIndex<u64> = reader.chunk(0).unwrap();
-        assert_eq!(c0.get(b"val1"), Some(&100));
-
-        let c1: FstIndex<u64> = reader.chunk(1).unwrap();
-        assert_eq!(c1.get(b"z"), Some(&30));
-    }
-
-    #[test]
-    fn round_trip_with_metadata() {
-        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-        struct TestMeta {
-            name: String,
-            count: u32,
+    fn empty_bitmap() -> BitmapValue {
+        BitmapValue {
+            desc: Bitmap::empty(0),
+            data: Vec::new(),
         }
-
-        let meta = TestMeta {
-            name: "test-file".to_string(),
-            count: 42,
-        };
-        let meta_packed = pack(&meta, 1).unwrap();
-
-        let fst: FstIndex<u64> = FstIndex::build([("a", 1u64), ("b", 2)]).unwrap();
-        let fst_packed = pack(&fst, 1).unwrap();
-
-        let mut writer = Writer::new();
-        writer.set_metadata(meta_packed);
-        writer.set_primary(fst_packed);
-
-        let mut buf = Vec::new();
-        writer.write_to(&mut buf).unwrap();
-
-        let reader = Reader::open(&buf).unwrap();
-        assert!(reader.has_metadata());
-        assert_eq!(reader.chunk_count(), 0);
-
-        let meta_read: TestMeta = reader.metadata().unwrap();
-        assert_eq!(meta_read, meta);
-
-        let fst_read: FstIndex<u64> = reader.primary().unwrap();
-        assert_eq!(fst_read.get(b"a"), Some(&1));
-        assert_eq!(fst_read.get(b"b"), Some(&2));
     }
 
-    #[test]
-    fn round_trip_metadata_with_chunks() {
-        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-        struct TestMeta {
-            fields: Vec<String>,
-        }
-
-        let meta = TestMeta {
-            fields: vec!["MESSAGE".to_string(), "PRIORITY".to_string()],
-        };
-
-        let primary: FstIndex<u64> = FstIndex::build([("low=a", 1u64), ("low=b", 2)]).unwrap();
-        let hc0: FstIndex<u64> = FstIndex::build([("val1", 10u64), ("val2", 20)]).unwrap();
-
-        let mut writer = Writer::new();
-        writer.set_metadata(pack(&meta, 1).unwrap());
-        writer.set_primary(pack(&primary, 1).unwrap());
-        let idx = writer.add_chunk(pack(&hc0, 1).unwrap());
-        assert_eq!(idx, 0);
-
-        let mut buf = Vec::new();
-        writer.write_to(&mut buf).unwrap();
-
-        let reader = Reader::open(&buf).unwrap();
-        assert!(reader.has_metadata());
-        assert_eq!(reader.chunk_count(), 1);
-
-        let meta_read: TestMeta = reader.metadata().unwrap();
-        assert_eq!(meta_read, meta);
-
-        let p: FstIndex<u64> = reader.primary().unwrap();
-        assert_eq!(p.get(b"low=a"), Some(&1));
-
-        let c0: FstIndex<u64> = reader.chunk(0).unwrap();
-        assert_eq!(c0.get(b"val1"), Some(&10));
+    fn build_primary(keys: &[&str]) -> FstIndex<BitmapValue> {
+        let entries: Vec<(&str, BitmapValue)> =
+            keys.iter().map(|k| (*k, empty_bitmap())).collect();
+        FstIndex::build(entries).unwrap()
     }
 
-    #[test]
-    fn round_trip_summary() {
-        let summary = FileSummary {
+    fn sample_summary() -> FileSummary {
+        FileSummary {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
             stream: StreamEntry::new("prod", "api"),
-        };
+        }
+    }
 
-        let fst: FstIndex<u64> = FstIndex::build([("a", 1u64)]).unwrap();
+    fn sample_metadata() -> IndexMetadata {
+        IndexMetadata {
+            histogram: SparseHistogram {
+                timestamps: vec![100, 200, 300],
+                counts: vec![10, 25, 50],
+            },
+            id_ranges: IdRanges {
+                low_end: KvId(3),
+                mid_end: KvId(5),
+                high_end: KvId(8),
+            },
+        }
+    }
+
+    #[test]
+    fn round_trip_primary_only() {
+        let primary = build_primary(&["alpha", "beta", "gamma"]);
+
+        let mut writer = Writer::new();
+        writer.set_primary(pack(&primary, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(!reader.has_summary());
+        assert!(!reader.has_metadata());
+        assert!(!reader.has_fields());
+
+        let p = reader.primary().unwrap();
+        assert!(p.get(b"alpha").is_some());
+        assert!(p.get(b"beta").is_some());
+        assert!(p.get(b"gamma").is_some());
+        assert!(p.get(b"missing").is_none());
+    }
+
+    #[test]
+    fn round_trip_summary() {
+        let summary = sample_summary();
+        let primary = build_primary(&["a"]);
+
         let mut writer = Writer::new();
         writer.set_summary(pack(&summary, 1).unwrap());
-        writer.set_primary(pack(&fst, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
@@ -231,47 +157,151 @@ mod tests {
         let reader = Reader::open(&buf).unwrap();
         assert!(reader.has_summary());
         assert!(!reader.has_metadata());
-        assert_eq!(reader.chunk_count(), 0);
-
-        let read: FileSummary = reader.summary().unwrap();
-        assert_eq!(read, summary);
+        assert_eq!(reader.summary().unwrap(), summary);
     }
 
     #[test]
-    fn round_trip_summary_alongside_metadata() {
-        // Mixed file with both SUMR and META plus PRIM.
-        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-        struct HeavyMeta {
-            histogram: Vec<u32>,
-        }
-
-        let summary = FileSummary {
-            min_timestamp_s: 100,
-            max_timestamp_s: 200,
-            total_logs: 50,
-            stream: StreamEntry::new("a", "b"),
-        };
-        let heavy = HeavyMeta {
-            histogram: vec![100, 150, 200],
-        };
-
-        let primary: FstIndex<u64> = FstIndex::build([("k", 1u64)]).unwrap();
+    fn round_trip_metadata() {
+        let metadata = sample_metadata();
+        let primary = build_primary(&["a", "b"]);
 
         let mut writer = Writer::new();
-        writer.set_summary(pack(&summary, 1).unwrap());
-        writer.set_metadata(pack(&heavy, 1).unwrap());
+        writer.set_metadata(pack(&metadata, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
 
         let reader = Reader::open(&buf).unwrap();
-        assert!(reader.has_summary());
         assert!(reader.has_metadata());
-        assert_eq!(reader.chunk_count(), 0);
 
+        let read = reader.metadata().unwrap();
+        assert_eq!(read.id_ranges.low_end, metadata.id_ranges.low_end);
+        assert_eq!(read.id_ranges.mid_end, metadata.id_ranges.mid_end);
+        assert_eq!(read.id_ranges.high_end, metadata.id_ranges.high_end);
+        assert_eq!(read.histogram.timestamps, metadata.histogram.timestamps);
+        assert_eq!(read.histogram.counts, metadata.histogram.counts);
+    }
+
+    #[test]
+    fn round_trip_fields_and_secondary_chunks() {
+        // Field table: 1 low, 2 mid, 1 high. Secondary chunks: 2 mid +
+        // 1 high + 1 stream-entries.
+        let fields = vec![
+            FieldEntry {
+                name: "level".into(),
+                cardinality: 3,
+                tier: FieldTier::Low,
+            },
+            FieldEntry {
+                name: "host".into(),
+                cardinality: 200,
+                tier: FieldTier::Mid,
+            },
+            FieldEntry {
+                name: "pod".into(),
+                cardinality: 300,
+                tier: FieldTier::Mid,
+            },
+            FieldEntry {
+                name: "trace_id".into(),
+                cardinality: 50_000,
+                tier: FieldTier::High,
+            },
+        ];
+
+        let primary = build_primary(&["level=info"]);
+        let mid_host = build_primary(&["host=h1", "host=h2"]);
+        let mid_pod = build_primary(&["pod=p1", "pod=p2", "pod=p3"]);
+        let high_trace: Vec<(String, BitmapValue)> =
+            vec![("trace_id=abc".into(), empty_bitmap())];
+        let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0), KvId(1)], vec![KvId(2)]];
+
+        let mut writer = Writer::new();
+        writer.set_fields(pack(&fields, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
+        assert_eq!(writer.add_mid_field(pack(&mid_host, 1).unwrap()), 0);
+        assert_eq!(writer.add_mid_field(pack(&mid_pod, 1).unwrap()), 1);
+        assert_eq!(writer.add_high_field(pack(&high_trace, 1).unwrap()), 0);
+        writer.set_stream_entries(pack(&stream_entries, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.has_fields());
+        assert_eq!(reader.num_mid().unwrap(), 2);
+        assert_eq!(reader.num_high().unwrap(), 1);
+
+        assert_eq!(reader.fields().unwrap().len(), 4);
+
+        // Mid-card chunks.
+        let m0 = reader.mid_field(0).unwrap();
+        assert!(m0.get(b"host=h1").is_some());
+        let m1 = reader.mid_field(1).unwrap();
+        assert!(m1.get(b"pod=p2").is_some());
+
+        // High-card chunk.
+        let h0 = reader.high_field(0).unwrap();
+        assert_eq!(h0.len(), 1);
+        assert_eq!(h0[0].0, "trace_id=abc");
+
+        // Stream-log-entries chunk.
+        let entries = reader.stream_entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], vec![KvId(0), KvId(1)]);
+    }
+
+    #[test]
+    fn mid_field_out_of_range_errors() {
+        let fields = vec![FieldEntry {
+            name: "host".into(),
+            cardinality: 200,
+            tier: FieldTier::Mid,
+        }];
+        let primary = build_primary(&["k"]);
+        let mid = build_primary(&["host=h"]);
+
+        let mut writer = Writer::new();
+        writer.set_fields(pack(&fields, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
+        writer.add_mid_field(pack(&mid, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
+        assert!(reader.mid_field(0).is_ok());
+        assert!(matches!(reader.mid_field(1), Err(Error::ChunkNotFound(1))));
+    }
+
+    #[test]
+    fn full_file_round_trip() {
+        let summary = sample_summary();
+        let metadata = sample_metadata();
+        let fields = vec![FieldEntry {
+            name: "level".into(),
+            cardinality: 3,
+            tier: FieldTier::Low,
+        }];
+        let primary = build_primary(&["level=info"]);
+        let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0)]];
+
+        let mut writer = Writer::new();
+        writer.set_summary(pack(&summary, 1).unwrap());
+        writer.set_metadata(pack(&metadata, 1).unwrap());
+        writer.set_fields(pack(&fields, 1).unwrap());
+        writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_stream_entries(pack(&stream_entries, 1).unwrap());
+
+        let mut buf = Vec::new();
+        writer.write_to(&mut buf).unwrap();
+
+        let reader = Reader::open(&buf).unwrap();
         assert_eq!(reader.summary().unwrap(), summary);
-        let h: HeavyMeta = reader.metadata().unwrap();
-        assert_eq!(h, heavy);
+        assert_eq!(reader.fields().unwrap().len(), 1);
+        assert_eq!(reader.num_mid().unwrap(), 0);
+        assert_eq!(reader.num_high().unwrap(), 0);
+        assert_eq!(reader.stream_entries().unwrap(), stream_entries);
     }
 }

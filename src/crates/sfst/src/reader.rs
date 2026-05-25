@@ -1,15 +1,20 @@
 //! SFST format reader.
 //!
-//! [`Reader`] opens a byte slice (typically an mmap) and exposes chunks
-//! by id. Decompression and deserialization are lazy — `open` only parses
-//! the header and TOC.
+//! [`Reader`] opens a byte slice (typically an mmap) and exposes the
+//! log-index file's chunks as typed values. Decompression and
+//! deserialization happen lazily — `open` only parses the header and
+//! TOC. The field table is cached on first access since the bucketing
+//! of secondary chunks into mid/high subtypes needs it.
+
+use std::cell::OnceCell;
 
 use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, Error, FileSummary, HEADER_SIZE, MAGIC,
-    VERSION, hc_chunk_id,
+    BitmapValue, CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, Error,
+    FieldEntry, FieldTier, FileSummary, HEADER_SIZE, IndexMetadata, KvId, MAGIC, VERSION,
+    high_field_id, mid_field_id,
 };
 
 /// Decompress zstd, then deserialize with bincode.
@@ -20,18 +25,23 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
     Ok(val)
 }
 
-/// Zero-copy reader over a memory-mapped (or in-memory) split-FST file.
+/// Zero-copy reader over a memory-mapped (or in-memory) SFST file.
 ///
-/// Decompression happens lazily when [`Reader::primary`], [`Reader::chunk`],
-/// or their `_raw` variants are called.
+/// `open` parses only the header and TOC. Typed accessors decode their
+/// chunks on demand. The field table is cached after first access so
+/// `num_mid` / `num_high` / `mid_field` / `high_field` / `stream_entries`
+/// don't repeatedly decompress FLDS.
 pub struct Reader<'a> {
     data: &'a [u8],
     toc: gix_chunk::file::Index,
-    num_secondary: u16,
+    /// Lazily-decoded FLDS payload. Populated on first call to any
+    /// method that needs to bucket secondary chunks (`num_mid`,
+    /// `num_high`, `mid_field`, `high_field`, `stream_entries`).
+    fields: OnceCell<Vec<FieldEntry>>,
 }
 
 impl<'a> Reader<'a> {
-    /// Open a split-FST file from a byte slice (typically an mmap).
+    /// Open an SFST file from a byte slice (typically an mmap).
     pub fn open(data: &'a [u8]) -> Result<Self, Error> {
         if data.len() < HEADER_SIZE {
             return Err(Error::FileTooShort(data.len(), HEADER_SIZE));
@@ -50,19 +60,14 @@ impl<'a> Reader<'a> {
         let toc = gix_chunk::file::Index::from_bytes(data, HEADER_SIZE, num_chunks)
             .map_err(|e| Error::Toc(format!("{e}")))?;
 
-        // Determine how many non-secondary chunks exist (SUMR? + META? + FLDS? + PRIM)
-        let has_summary = toc.data_by_id(data, CHUNK_SUMMARY).is_ok();
-        let has_meta = toc.data_by_id(data, CHUNK_META).is_ok();
-        let has_flds = toc.data_by_id(data, CHUNK_FLDS).is_ok();
-        let non_secondary = has_summary as u32 + has_meta as u32 + has_flds as u32 + 1;
-        let num_secondary = num_chunks.saturating_sub(non_secondary) as u16;
-
         Ok(Self {
             data,
             toc,
-            num_secondary,
+            fields: OnceCell::new(),
         })
     }
+
+    // ── SUMR ─────────────────────────────────────────────────────────
 
     /// Decompress and deserialize the summary chunk.
     pub fn summary(&self) -> Result<FileSummary, Error> {
@@ -71,9 +76,7 @@ impl<'a> Reader<'a> {
 
     /// Raw compressed bytes of the summary chunk.
     pub fn summary_raw(&self) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, CHUNK_SUMMARY)
-            .map_err(|e| Error::Toc(format!("{e}")))
+        self.chunk_raw_by_id(CHUNK_SUMMARY)
     }
 
     /// Whether a summary chunk is present.
@@ -81,16 +84,16 @@ impl<'a> Reader<'a> {
         self.toc.data_by_id(self.data, CHUNK_SUMMARY).is_ok()
     }
 
+    // ── META ─────────────────────────────────────────────────────────
+
     /// Decompress and deserialize the metadata chunk.
-    pub fn metadata<T: DeserializeOwned>(&self) -> Result<T, Error> {
+    pub fn metadata(&self) -> Result<IndexMetadata, Error> {
         unpack(self.metadata_raw()?)
     }
 
     /// Raw compressed bytes of the metadata chunk.
     pub fn metadata_raw(&self) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, CHUNK_META)
-            .map_err(|e| Error::Toc(format!("{e}")))
+        self.chunk_raw_by_id(CHUNK_META)
     }
 
     /// Whether a metadata chunk is present.
@@ -98,16 +101,24 @@ impl<'a> Reader<'a> {
         self.toc.data_by_id(self.data, CHUNK_META).is_ok()
     }
 
-    /// Decompress and deserialize the fields chunk.
-    pub fn fields<T: DeserializeOwned>(&self) -> Result<T, Error> {
-        unpack(self.fields_raw()?)
+    // ── FLDS ─────────────────────────────────────────────────────────
+
+    /// Field table. Decoded on first access; cached for the lifetime
+    /// of this `Reader`.
+    pub fn fields(&self) -> Result<&[FieldEntry], Error> {
+        if self.fields.get().is_none() {
+            let decoded = unpack::<Vec<FieldEntry>>(self.fields_raw()?)?;
+            // `set` only fails if the cell is already initialized, which
+            // is impossible here in a single-threaded context (the only
+            // mode `std::cell::OnceCell` supports).
+            let _ = self.fields.set(decoded);
+        }
+        Ok(self.fields.get().expect("fields just initialized").as_slice())
     }
 
     /// Raw compressed bytes of the fields chunk.
     pub fn fields_raw(&self) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, CHUNK_FLDS)
-            .map_err(|e| Error::Toc(format!("{e}")))
+        self.chunk_raw_by_id(CHUNK_FLDS)
     }
 
     /// Whether a fields chunk is present.
@@ -115,33 +126,85 @@ impl<'a> Reader<'a> {
         self.toc.data_by_id(self.data, CHUNK_FLDS).is_ok()
     }
 
-    /// Decompress and deserialize the primary chunk.
-    pub fn primary<P: DeserializeOwned>(&self) -> Result<FstIndex<P>, Error> {
-        unpack(self.primary_raw()?)
+    /// Number of mid-cardinality fields (one secondary chunk per mid
+    /// field, sitting at positions `0..num_mid`).
+    pub fn num_mid(&self) -> Result<u16, Error> {
+        Ok(self
+            .fields()?
+            .iter()
+            .filter(|f| f.tier == FieldTier::Mid)
+            .count() as u16)
     }
 
-    /// Decompress and deserialize a secondary chunk by index.
-    pub fn chunk<S: DeserializeOwned>(&self, index: u16) -> Result<FstIndex<S>, Error> {
-        unpack(self.chunk_raw(index)?)
+    /// Number of high-cardinality fields (one secondary chunk per high
+    /// field, sitting at positions `num_mid..num_mid + num_high`).
+    pub fn num_high(&self) -> Result<u16, Error> {
+        Ok(self
+            .fields()?
+            .iter()
+            .filter(|f| f.tier == FieldTier::High)
+            .count() as u16)
+    }
+
+    // ── PRIM ─────────────────────────────────────────────────────────
+
+    /// Decompress and deserialize the primary FST.
+    pub fn primary(&self) -> Result<FstIndex<BitmapValue>, Error> {
+        unpack(self.primary_raw()?)
     }
 
     /// Raw compressed bytes of the primary chunk.
     pub fn primary_raw(&self) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, CHUNK_PRIMARY)
-            .map_err(|e| Error::Toc(format!("{e}")))
+        self.chunk_raw_by_id(CHUNK_PRIMARY)
     }
 
-    /// Raw compressed bytes of a secondary chunk.
-    pub fn chunk_raw(&self, index: u16) -> Result<&'a [u8], Error> {
+    // ── Mid-card per-field FSTs ──────────────────────────────────────
+
+    /// Decompress and deserialize a mid-card field FST by index.
+    pub fn mid_field(&self, index: u16) -> Result<FstIndex<BitmapValue>, Error> {
+        unpack(self.mid_field_raw(index)?)
+    }
+
+    /// Raw compressed bytes of a mid-card field chunk.
+    pub fn mid_field_raw(&self, index: u16) -> Result<&'a [u8], Error> {
         self.toc
-            .data_by_id(self.data, hc_chunk_id(index))
+            .data_by_id(self.data, mid_field_id(index))
             .map_err(|_| Error::ChunkNotFound(index))
     }
 
-    /// Number of secondary (high-cardinality) chunks.
-    pub fn chunk_count(&self) -> u16 {
-        self.num_secondary
+    // ── High-card per-field sorted lists ─────────────────────────────
+
+    /// Decompress and deserialize a high-card field's sorted list of
+    /// `(key=value, bitmap)` pairs.
+    pub fn high_field(&self, index: u16) -> Result<Vec<(String, BitmapValue)>, Error> {
+        unpack(self.high_field_raw(index)?)
+    }
+
+    /// Raw compressed bytes of a high-card field chunk.
+    pub fn high_field_raw(&self, index: u16) -> Result<&'a [u8], Error> {
+        self.toc
+            .data_by_id(self.data, high_field_id(index))
+            .map_err(|_| Error::ChunkNotFound(index))
+    }
+
+    // ── Stream-log-entries chunk ─────────────────────────────────────
+
+    /// Decompress and deserialize the stream-log-entries chunk.
+    pub fn stream_entries(&self) -> Result<Vec<Vec<KvId>>, Error> {
+        unpack(self.stream_entries_raw()?)
+    }
+
+    /// Raw compressed bytes of the stream-log-entries chunk.
+    pub fn stream_entries_raw(&self) -> Result<&'a [u8], Error> {
+        self.chunk_raw_by_id(CHUNK_STREAM)
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────
+
+    fn chunk_raw_by_id(&self, id: gix_chunk::Id) -> Result<&'a [u8], Error> {
+        self.toc
+            .data_by_id(self.data, id)
+            .map_err(|e| Error::Toc(format!("{e}")))
     }
 }
 

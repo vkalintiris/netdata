@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use log_index::fst_builder::{BitmapValue, FieldTier};
+use sfst::{BitmapValue, FieldTier};
 use log_index::reader::IndexReader;
 use serde::{Deserialize, Serialize};
 
@@ -52,15 +52,16 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     total_singleton_bitmaps += singletons;
 
     // Secondary chunks: mid and high.
-    let mut chunk_idx = 0u16;
-    for field in &fields {
+    let mut mid_idx = 0u16;
+    let mut high_idx = 0u16;
+    for field in fields {
         match field.tier {
             FieldTier::Low => continue,
             FieldTier::Mid => {
-                let raw = sfst.chunk_raw(chunk_idx)?;
+                let raw = sfst.mid_field_raw(mid_idx)?;
                 let (orig, compact, bitmaps, singletons) = repack_fst_chunk(raw)?;
                 print_chunk(
-                    &format!("HC[{chunk_idx}] mid: {}", field.name),
+                    &format!("MF[{mid_idx}] mid: {}", field.name),
                     orig,
                     compact,
                     bitmaps,
@@ -70,13 +71,13 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 total_compact += compact;
                 total_bitmaps += bitmaps;
                 total_singleton_bitmaps += singletons;
-                chunk_idx += 1;
+                mid_idx += 1;
             }
             FieldTier::High => {
-                let raw = sfst.chunk_raw(chunk_idx)?;
+                let raw = sfst.high_field_raw(high_idx)?;
                 let (orig, compact, bitmaps, singletons) = repack_high_chunk(raw)?;
                 print_chunk(
-                    &format!("HC[{chunk_idx}] high: {}", field.name),
+                    &format!("HF[{high_idx}] high: {}", field.name),
                     orig,
                     compact,
                     bitmaps,
@@ -86,7 +87,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 total_compact += compact;
                 total_bitmaps += bitmaps;
                 total_singleton_bitmaps += singletons;
-                chunk_idx += 1;
+                high_idx += 1;
             }
         }
     }

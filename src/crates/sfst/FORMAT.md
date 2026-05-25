@@ -1,12 +1,16 @@
 # SFST File Format
 
-SFST is a chunked binary container. A file has a fixed-size header, a
-`gix-chunk` table of contents, and a sequence of chunk bodies. Each
-chunk is identified by a 4-byte id and carries an opaque payload —
-typically `bincode` + `zstd`, but the container does not require that.
+SFST is the on-disk format for one log-index file. Each file holds the
+indexed contents of one log stream (one
+`(service.namespace, service.name)` pair) and is built from one WAL
+file by the indexer in `log-index`. The container is chunk-based with
+a `gix-chunk` table of contents; every chunk has a 4-byte id naming
+its role.
 
-This document defines the format. Producers and consumers (indexers,
-readers, registries) are out of scope; see their respective crates.
+This document defines the on-disk shape — the bytes, the chunk ids,
+and the schema of each chunk's payload. Producers (the indexer) and
+consumers (the query reader) sit on top of this format and are out of
+scope here.
 
 ---
 
@@ -23,8 +27,8 @@ readers, registries) are out of scope; see their respective crates.
     └───────────────────────────────────────────────┘
 
 The TOC immediately follows the header. Chunk bodies follow the TOC in
-the same order their entries appear in it. A reader locates any chunk
-by id via the TOC and must not assume a positional layout.
+the same order their entries appear in it. Readers look chunks up by
+id through the TOC and must not assume a positional layout.
 
 ---
 
@@ -60,47 +64,55 @@ The TOC has `num_chunks + 1` entries. The final entry is a sentinel
 (`id = [0; 4]`) whose offset is EOF; chunk sizes are computed as the
 delta between an entry's offset and the next entry's offset.
 
-Chunk ids are 4 bytes of arbitrary content. There is no provision for
-duplicate ids: a producer must not emit the same id twice.
+Chunk ids are 4 bytes. A producer must not emit the same id twice.
 
 ---
 
 ## Chunk Ids
 
-The format reserves four ids for named slots and one id namespace for
-indexed slots. All slots are optional except `PRIM`.
+Every chunk in the file uses one of the ids below. Singleton ids
+identify a single chunk; indexed ids encode the chunk's position
+within its tier in the trailing two bytes.
 
-    Id        Slot                       Required?
-    ────────  ─────────────────────────  ──────────
-    "SUMR"    Typed summary              No
-    "META"    Opaque metadata            No
-    "FLDS"    Opaque fields table        No
-    "PRIM"    Primary FST                Yes
-    "HC{i}"   Indexed secondary chunk    No
+    Id          Payload                                  Required?
+    ──────────  ───────────────────────────────────────  ──────────
+    "SUMR"      FileSummary                              No (always emitted)
+    "META"      IndexMetadata                            No (always emitted)
+    "FLDS"      Vec<FieldEntry>                          No (always emitted)
+    "PRIM"      FstIndex<BitmapValue>                    Yes
+    "MF{hi}{lo}" FstIndex<BitmapValue>  (mid-card field) No
+    "HF{hi}{lo}" Vec<(String, BitmapValue)>  (high-card) No
+    "STRM"      Vec<Vec<KvId>>  (stream log entries)     No (always emitted)
 
-`"HC{i}"` denotes a chunk whose id is the 4 bytes `[b'H', b'C', hi, lo]`
-where `hi:lo` is the chunk's u16 index. Indices start at 0 and are
-contiguous; a producer that emits `N` secondary chunks uses ids
-`HC{0}` through `HC{N-1}`.
+Indexed ids:
 
-The container does not assign meaning to `META`, `FLDS`, or any `HC{i}`
-payload. Callers serialize their own types into these slots and
-deserialize them on read; the container only stores and retrieves the
-bytes.
+- `"MF{hi}{lo}"` is the 4 bytes `[b'M', b'F', hi, lo]` where
+  `index = (hi << 8) | lo`. The chunk holds the FST for the
+  mid-cardinality field at that position in the file's tier-sorted
+  field list.
+- `"HF{hi}{lo}"` is the analogous 4 bytes `[b'H', b'F', hi, lo]` for
+  the high-cardinality field at that position. The payload is a
+  sorted list of `(key=value, bitmap)` pairs — *not* an FST, because
+  FSTs compress poorly at high cardinality.
 
-`SUMR` is the one slot whose payload type is owned by this crate
-(see [§ SUMR Payload](#sumr-payload)).
+Indices start at 0 and are contiguous within each tier. A producer
+emitting `M` mid-card chunks uses ids `MF{0}` through `MF{M-1}`;
+similarly for `HF{i}`.
 
-`PRIM`'s payload must deserialize as `fst_index::FstIndex<T>` for a
-caller-chosen `T`. A file without `PRIM` is malformed; the writer
-fails to produce one and the reader exposes a typed `primary()`
-accessor.
+`PRIM` is the only required chunk; a writer fails if it isn't set.
+The others are technically optional at the container level, but the
+canonical producer always emits all of them.
 
 ---
 
-## SUMR Payload
+## Chunk Payloads
 
-When `SUMR` is present, its payload bytes decompress and deserialize as:
+All payloads are `bincode + zstd` (see [§ Encoding](#encoding)). The
+decoded type of each chunk is given below.
+
+### `SUMR` — FileSummary
+
+The cheap recovery summary. Decodes to:
 
     pub struct FileSummary {
         pub min_timestamp_s: u32,
@@ -114,30 +126,129 @@ When `SUMR` is present, its payload bytes decompress and deserialize as:
         pub name:      String,
     }
 
-Field semantics are the producer's responsibility; the format only
-guarantees the shape on the wire. A reader that decodes `SUMR` gets
-this struct back.
+`min_timestamp_s` and `max_timestamp_s` are the earliest and latest
+log seconds (Unix epoch) in the file. `total_logs` is the count of
+log records. `stream` carries the file's single
+`(service.namespace, service.name)` identity.
+
+### `META` — IndexMetadata
+
+Heavy query-time metadata:
+
+    pub struct IndexMetadata {
+        pub histogram: SparseHistogram,
+        pub id_ranges: IdRanges,
+    }
+
+    pub struct SparseHistogram {
+        pub timestamps: Vec<u32>,   // second-boundary timestamps
+        pub counts:     Vec<u32>,   // cumulative log count at each boundary
+    }
+
+    pub struct IdRanges {
+        pub low_end:  KvId,
+        pub mid_end:  KvId,
+        pub high_end: KvId,
+    }
+
+The histogram supports time-range narrowing: binary-search
+`timestamps` for the position bounds covering a window, then clip
+bitmaps to that range. `id_ranges` tells a reader which cardinality
+tier a `KvId` belongs to (see [§ Tier-Aligned IDs](#tier-aligned-ids)).
+
+### `FLDS` — Field table
+
+`Vec<FieldEntry>`, ordered low → mid → high, with each tier
+internally sorted by field name:
+
+    pub struct FieldEntry {
+        pub name:        String,
+        pub cardinality: u32,
+        pub tier:        FieldTier,    // Low | Mid | High
+    }
+
+Walking FLDS yields the count of mid-card and high-card fields, which
+in turn determines how many `MF{i}` and `HF{i}` chunks are present.
+
+### `PRIM` — Primary FST
+
+`fst_index::FstIndex<BitmapValue>` containing every low-cardinality
+`key=value` entry across all low-card fields.
+
+    pub struct BitmapValue {
+        pub desc: treight::Bitmap,
+        pub data: Vec<u8>,
+    }
+
+The bitmap records the time-sorted log positions where the
+`key=value` pair appears. Always present.
+
+### `MF{i}` — Mid-card field FSTs
+
+One chunk per mid-cardinality field, in the order those fields appear
+in `FLDS`. Same payload schema as `PRIM` — an
+`FstIndex<BitmapValue>` whose keys are full `key=value` strings.
+
+### `HF{i}` — High-card field sorted lists
+
+One chunk per high-cardinality field. Payload is
+`Vec<(String, BitmapValue)>` sorted by key. Not an FST.
+
+### `STRM` — Stream-log-entries
+
+`Vec<Vec<KvId>>` indexed by chronological log position:
+
+    entries[time_sorted_pos] = [kv_id_1, kv_id_2, ...]
+
+Each `KvId` references a `key=value` pair via the tier-aligned id
+space below. The reader walks this chunk to materialize a log's
+attributes after time-range filtering has selected positions.
+
+---
+
+## Tier-Aligned IDs
+
+A `KvId` is a `u32` identifying a `key=value` pair within the file:
+
+    pub struct KvId(pub u32);
+
+IDs are assigned during writing by walking the tiers in order:
+
+    KvId 0          .. low_end       Low-card pairs   (primary FST iteration order)
+    KvId low_end    .. mid_end       Mid-card pairs   (per-field FST iteration order)
+    KvId mid_end    .. high_end      High-card pairs  (per-field chunk order)
+
+`low_end`, `mid_end`, `high_end` are carried in `IndexMetadata::id_ranges`.
+
+The `STRM` chunk stores `KvId`s, not strings; resolving a `KvId` back
+to its `key=value` requires checking which range it falls in and
+looking up the corresponding entry in `PRIM`, an `MF{i}` chunk, or an
+`HF{i}` chunk.
+
+Tier assignment is stable for a given input: fields are sorted by
+name within each tier, and entries within each per-field structure
+follow the underlying serialized order. Two indexers given the same
+WAL produce identical id assignments.
 
 ---
 
 ## Encoding
 
-The container itself imposes no encoding on chunk payloads — they are
-opaque byte sequences indexed by the TOC.
-
-This crate's `pack` / `pack_metadata` helpers, and the `unpack` /
-`unpack_metadata` inverses, implement the canonical encoding used by
-existing producers and consumers:
+All chunk payloads go through:
 
     serialized = bincode::serde::encode(value, bincode::config::standard())
     payload    = zstd::encode(serialized, level)
 
-The zstd compression level is a caller parameter; the format does not
+The crate exposes [`pack`] and [`unpack`] helpers around this. The
+zstd compression level is a caller parameter; the format does not
 fix it.
 
 There is no container-level integrity check. The zstd frame format
-includes a content checksum that catches corruption within an
-individual chunk's payload, but the header and TOC are unprotected.
+includes a content checksum that catches corruption within a chunk's
+payload, but the header and TOC are unprotected.
+
+[`pack`]: https://docs.rs/sfst/latest/sfst/fn.pack.html
+[`unpack`]: https://docs.rs/sfst/latest/sfst/fn.unpack.html
 
 ---
 
@@ -149,10 +260,9 @@ A bump is required for any change that breaks the on-disk contract:
 
 - adding a required chunk id,
 - removing an existing chunk id,
-- changing the `FileSummary` schema in a non-backwards-compatible way,
-- changing how the TOC is laid out,
-- redefining what `PRIM` decodes as.
+- changing any chunk's payload schema in a non-backwards-compatible way,
+- changing how the TOC is laid out.
 
-Adding a new optional chunk id, or extending `FileSummary` with a
-field whose default decodes from absent bytes, does not require a
+Adding a new optional chunk id, or extending an existing payload with
+a field whose default decodes from absent bytes, does not require a
 bump.

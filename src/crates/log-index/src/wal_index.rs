@@ -12,6 +12,7 @@
 
 use bumpalo::Bump;
 use roaring::RoaringBitmap;
+use sfst::SparseHistogram;
 
 use crate::kv_interner::{KeyValueId, KeyValueInterner};
 
@@ -219,14 +220,6 @@ impl TimeOrder {
     pub fn len(&self) -> u32 {
         self.sorted_position.len() as u32
     }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SparseHistogram {
-    /// Second-boundary timestamps as u32 seconds since Unix epoch.
-    pub timestamps: Vec<u32>,
-    /// Cumulative log count at each second boundary.
-    pub counts: Vec<u32>,
 }
 
 /// Build a permutation table that maps insertion-order positions to

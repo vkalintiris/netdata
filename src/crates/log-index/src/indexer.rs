@@ -9,7 +9,8 @@ use std::path::Path;
 
 use bumpalo::Bump;
 
-use crate::fst_builder::IndexMetadata;
+use sfst::IndexMetadata;
+
 use crate::process_frame::process_frame;
 use crate::wal_index::WalIndex;
 

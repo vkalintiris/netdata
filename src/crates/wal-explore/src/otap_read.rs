@@ -4,7 +4,7 @@ use std::mem;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use log_index::fst_builder::FieldTier;
+use sfst::FieldTier;
 use log_index::reader::IndexReader;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +21,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     print_histogram(&reader);
 
     let t = Instant::now();
-    let mut fields = reader.field_table()?;
+    let mut fields = reader.field_table()?.to_vec();
     println!(
         "field table: {} fields ({:.0}ms)",
         fields.len(),

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use log_index::fst_builder::FieldTier;
+use sfst::FieldTier;
 use log_index::reader::IndexReader;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -24,7 +24,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(raw) = sfst.fields_raw() {
         print_section("FLDS", raw.len(), file_size);
         total_sections += raw.len();
-        let mut sorted_fields = fields.clone();
+        let mut sorted_fields = fields.to_vec();
         sorted_fields.sort_by(|a, b| a.cardinality.cmp(&b.cardinality));
         let max_name = sorted_fields
             .iter()
@@ -55,35 +55,37 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Secondary chunks: field chunks (mid/high), then stream chunks
-    let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
-
     let mut field_total = 0usize;
     let mut mid_total = 0usize;
     let mut high_total = 0usize;
-    let mut chunk_idx = 0u16;
-    for field in &fields {
+    let mut mid_idx = 0u16;
+    let mut high_idx = 0u16;
+    for field in fields {
         match field.tier {
             FieldTier::Low => continue,
-            FieldTier::Mid | FieldTier::High => {
-                if let Ok(raw) = sfst.chunk_raw(chunk_idx) {
-                    let tier = match field.tier {
-                        FieldTier::Mid => "mid",
-                        FieldTier::High => "high",
-                        _ => unreachable!(),
-                    };
+            FieldTier::Mid => {
+                if let Ok(raw) = sfst.mid_field_raw(mid_idx) {
                     print_section(
-                        &format!("HC[{chunk_idx}] {tier}: {}", field.name),
+                        &format!("MF[{mid_idx}] mid: {}", field.name),
                         raw.len(),
                         file_size,
                     );
-                    match field.tier {
-                        FieldTier::Mid => mid_total += raw.len(),
-                        FieldTier::High => high_total += raw.len(),
-                        _ => unreachable!(),
-                    }
+                    mid_total += raw.len();
                     field_total += raw.len();
                 }
-                chunk_idx += 1;
+                mid_idx += 1;
+            }
+            FieldTier::High => {
+                if let Ok(raw) = sfst.high_field_raw(high_idx) {
+                    print_section(
+                        &format!("HF[{high_idx}] high: {}", field.name),
+                        raw.len(),
+                        file_size,
+                    );
+                    high_total += raw.len();
+                    field_total += raw.len();
+                }
+                high_idx += 1;
             }
         }
     }
@@ -91,8 +93,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // The single stream chunk.
     let stream = reader.stream();
     let mut stream_total = 0usize;
-    let sc_idx = num_field_chunks as u16;
-    if let Ok(raw) = sfst.chunk_raw(sc_idx) {
+    if let Ok(raw) = sfst.stream_entries_raw() {
         print_section(
             &format!("STREAM {}/{}", stream.namespace, stream.name),
             raw.len(),

@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use log_index::fst_builder::{BitmapValue, FieldTier};
+use sfst::{BitmapValue, FieldTier};
 use log_index::reader::IndexReader;
 use serde::{Deserialize, Serialize};
 
@@ -44,17 +44,12 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut total_entries = 0usize;
     let mut total_single_batch = 0usize;
 
-    let mut chunk_idx = 0u16;
-    for field in &fields {
+    let mut high_idx = 0u16;
+    for field in fields {
         match field.tier {
-            FieldTier::Low | FieldTier::Mid => {
-                if field.tier != FieldTier::Low {
-                    chunk_idx += 1;
-                }
-                continue;
-            }
+            FieldTier::Low | FieldTier::Mid => continue,
             FieldTier::High => {
-                let raw = sfst.chunk_raw(chunk_idx)?;
+                let raw = sfst.high_field_raw(high_idx)?;
                 let original_size = raw.len();
 
                 let decompressed = zstd::decode_all(raw).map_err(|e| format!("zstd: {e}"))?;
@@ -111,7 +106,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
                 if new_size <= original_size {
                     println!(
-                        "HC[{chunk_idx}] {:<45} {:>10} → {:>10}  saved {:>10} ({:5.1}%)  entries: {}  single-batch: {:.0}%",
+                        "HF[{high_idx}] {:<45} {:>10} → {:>10}  saved {:>10} ({:5.1}%)  entries: {}  single-batch: {:.0}%",
                         field.name,
                         format_size(original_size),
                         format_size(new_size),
@@ -123,7 +118,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     let overhead = new_size - original_size;
                     println!(
-                        "HC[{chunk_idx}] {:<45} {:>10} → {:>10}  LARGER {:>9} (+{:.1}%)  entries: {}  single-batch: {:.0}%",
+                        "HF[{high_idx}] {:<45} {:>10} → {:>10}  LARGER {:>9} (+{:.1}%)  entries: {}  single-batch: {:.0}%",
                         field.name,
                         format_size(original_size),
                         format_size(new_size),
@@ -138,7 +133,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 total_new += new_size;
                 total_entries += entries.len();
                 total_single_batch += single_batch_count;
-                chunk_idx += 1;
+                high_idx += 1;
             }
         }
     }

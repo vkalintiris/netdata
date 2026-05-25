@@ -1,13 +1,13 @@
 //! The `pcodec-estimate` subcommand — compares stream entry compression
 //! between the current zstd approach and pcodec.
 //!
-//! Reads an .sfst file, decodes each stream's `Vec<Vec<FileId>>` entries,
-//! flattens the FileIds, and compresses with pcodec to compare sizes.
+//! Reads an .sfst file, decodes each stream's `Vec<Vec<KvId>>` entries,
+//! flattens the KvIds, and compresses with pcodec to compare sizes.
 
 use std::path::PathBuf;
 
-use log_index::fst_builder::{FieldTier, FileId};
 use log_index::reader::IndexReader;
+use sfst::KvId;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;
@@ -17,7 +17,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sfst = sfst::Reader::open(&data)?;
     let stream = reader.stream();
 
-    let num_field_chunks = fields.iter().filter(|f| f.tier != FieldTier::Low).count();
+    let _ = fields; // field table not needed; stream chunk has its own id
 
     let mut total_zstd = 0usize;
     let mut total_pcodec = 0usize;
@@ -25,13 +25,12 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut total_ids = 0usize;
 
     {
-        let chunk_idx = num_field_chunks as u16;
-        let compressed_raw = sfst.chunk_raw(chunk_idx)?;
+        let compressed_raw = sfst.stream_entries_raw()?;
         let zstd_size = compressed_raw.len();
 
         // Decode the original entries.
         let decompressed = zstd::decode_all(compressed_raw).map_err(|e| format!("zstd: {e}"))?;
-        let (entries, _): (Vec<Vec<FileId>>, _) =
+        let (entries, _): (Vec<Vec<KvId>>, _) =
             bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;
 
         let num_logs = entries.len();

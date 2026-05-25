@@ -23,104 +23,39 @@ use std::path::Path;
 use std::time::Instant;
 
 use roaring::RoaringBitmap;
-use serde::{Deserialize, Serialize};
+use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, IndexMetadata, KvId};
 use treight::Bitmap;
 
 use crate::bitset::Bitset;
 use crate::kv_interner::KeyValueId;
-use crate::wal_index::{ServiceStream, SparseHistogram, TimeOrder, WalIndex};
+use crate::wal_index::{ServiceStream, TimeOrder, WalIndex};
 
-/// A tier-aligned ID assigned during writing. Sequential within each
-/// cardinality tier, ordered by FST key. Stored on disk in log entries.
-///
-/// Not to be confused with [`KeyValueId`] (assigned during reading by the
-/// string interner, in insertion order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileId(pub u32);
-
-impl FileId {
-    #[inline]
-    pub fn idx(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// Value type for FST entries (primary and mid-card secondary FSTs).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BitmapValue {
-    pub desc: Bitmap,
-    pub data: Vec<u8>,
-}
-
-/// Cardinality tier for a field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FieldTier {
-    Low,
-    Mid,
-    High,
-}
-
-/// An entry in the field table: field name, cardinality, and tier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldEntry {
-    pub name: String,
-    pub cardinality: u32,
-    pub tier: FieldTier,
-}
-
-/// Heavy query-time metadata stored in the META chunk.
-///
-/// Holds the data the query engine needs once it has decided to scan a file:
-/// the sparse timestamp histogram and the cardinality-tier ID ranges. The
-/// cheap-to-read summary fields (min/max timestamp, total log count, stream
-/// list) live in their own [`sfst::FileSummary`] in the SUMR chunk and on
-/// the registry entry; readers that only need those fields should call
-/// [`sfst::Reader::summary`] instead of opening this chunk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexMetadata {
-    pub histogram: SparseHistogram,
-    pub id_ranges: IdRanges,
-}
-
-/// Contiguous ID ranges for the three cardinality tiers.
-///
-/// File IDs are assigned sequentially: `0..low_end` for low-card,
-/// `low_end..mid_end` for mid-card, `mid_end..high_end` for high-card.
-/// The reader uses these ranges to determine which section (primary FST,
-/// secondary FST, or HC chunk) to consult for a given ID.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdRanges {
-    pub low_end: FileId,
-    pub mid_end: FileId,
-    pub high_end: FileId,
-}
-
-/// Build tier-aligned file ID translation table.
+/// Build tier-aligned key=value ID translation table.
 ///
 /// Uses [`WalIndex::tier_assignment`] to get the canonical ordering,
-/// then maps each [`KeyValueId`] to its sequential [`FileId`].
-fn build_id_translation(wal_index: &WalIndex) -> (Vec<FileId>, IdRanges) {
+/// then maps each [`KeyValueId`] to its sequential [`KvId`].
+fn build_id_translation(wal_index: &WalIndex) -> (Vec<KvId>, IdRanges) {
     let [low_kv_ids, mid_kv_ids, high_kv_ids] = wal_index.tier_assignment();
 
     let total_kv_ids = low_kv_ids.len() + mid_kv_ids.len() + high_kv_ids.len();
-    let mut table = vec![FileId(0); total_kv_ids];
+    let mut table = vec![KvId(0); total_kv_ids];
 
-    let mut curr_file_id = 0u32;
+    let mut curr_id = 0u32;
     for &kv_id in low_kv_ids
         .iter()
         .chain(mid_kv_ids.iter())
         .chain(high_kv_ids.iter())
     {
-        table[kv_id.idx()] = FileId(curr_file_id);
-        curr_file_id += 1;
+        table[kv_id.idx()] = KvId(curr_id);
+        curr_id += 1;
     }
 
-    let low_end = FileId(low_kv_ids.len() as u32);
-    let mid_end = FileId(low_end.0 + mid_kv_ids.len() as u32);
-    let high_end = FileId(mid_end.0 + high_kv_ids.len() as u32);
+    let low_end = KvId(low_kv_ids.len() as u32);
+    let mid_end = KvId(low_end.0 + mid_kv_ids.len() as u32);
+    let high_end = KvId(mid_end.0 + high_kv_ids.len() as u32);
 
     tracing::debug!(
-        "file ID ranges: {} total (low 0..{}, mid {}..{}, high {}..{})",
+        "kv id ranges: {} total (low 0..{}, mid {}..{}, high {}..{})",
         high_end.0,
         low_end.0,
         low_end.0,
@@ -143,14 +78,14 @@ fn build_id_translation(wal_index: &WalIndex) -> (Vec<FileId>, IdRanges) {
 ///
 /// Iterates [`TimeOrder::iter_by_time`] to walk insertion-order positions
 /// in chronological order, translates each log's [`KeyValueId`]s to
-/// [`FileId`]s, and serializes the result with bincode + zstd.
+/// [`KvId`]s, and serializes the result with bincode + zstd.
 fn build_stream_entries(
     log_entries: &[Vec<KeyValueId>],
     time_order: &TimeOrder,
-    kv_to_file: &[FileId],
+    kv_to_file: &[KvId],
     writer: &mut sfst::Writer,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let entries: Vec<Vec<FileId>> = time_order
+    let entries: Vec<Vec<KvId>> = time_order
         .iter_by_time()
         .map(|ins| {
             log_entries[ins as usize]
@@ -160,10 +95,9 @@ fn build_stream_entries(
         })
         .collect();
 
-    let raw = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
-    let packed = zstd::encode_all(&raw[..], 1)?;
+    let packed = sfst::pack(&entries, 1)?;
     let len = packed.len();
-    writer.add_chunk(packed);
+    writer.set_stream_entries(packed);
 
     Ok(len)
 }
@@ -224,7 +158,7 @@ fn build_mid_card_chunks(
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
         let packed = sfst::pack(&fst, 3)?;
         total_kb += packed.len() / 1024;
-        writer.add_chunk(packed);
+        writer.add_mid_field(packed);
     }
 
     tracing::debug!(
@@ -260,10 +194,9 @@ fn build_high_card_chunks(
 
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
-        let raw = bincode::serde::encode_to_vec(&entries, bincode::config::standard())?;
-        let packed = zstd::encode_all(&raw[..], 1)?;
+        let packed = sfst::pack(&entries, 1)?;
         total_kb += packed.len() / 1024;
-        writer.add_chunk(packed);
+        writer.add_high_field(packed);
     }
 
     tracing::debug!(
@@ -287,7 +220,7 @@ fn build_high_card_chunks(
 fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    kv_to_file: &[FileId],
+    kv_to_file: &[KvId],
     writer: &mut sfst::Writer,
 ) -> Result<ServiceStream, Box<dyn std::error::Error>> {
     let stream = wal_index.service_stream()?;

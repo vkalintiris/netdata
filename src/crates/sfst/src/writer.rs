@@ -9,8 +9,8 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, Error, HEADER_SIZE, MAGIC, VERSION,
-    hc_chunk_id,
+    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, Error, HEADER_SIZE, MAGIC,
+    VERSION, high_field_id, mid_field_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
@@ -19,17 +19,25 @@ pub fn pack<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> 
     zstd::encode_all(&serialized[..], zstd_level).map_err(|e| Error::Zstd(e.to_string()))
 }
 
-/// Builds a split-FST file from pre-packed (bincode + zstd) byte blobs.
+/// Builds an SFST file from pre-packed (bincode + zstd) byte blobs.
 ///
-/// Call [`pack`] to produce the blobs, then feed them here. Because `pack`
-/// is a standalone function, callers can run it in parallel with rayon
-/// before collecting results into the writer.
+/// Callers supply already-compressed bytes — typically produced via
+/// [`pack`] — and the writer concatenates them into the on-disk
+/// container with the right TOC. Pre-packing means callers can build
+/// chunk payloads in parallel (e.g., one per field) before collecting
+/// results into a single sequential writer.
+///
+/// On-disk ordering is fixed regardless of the order setters are
+/// called: SUMR → META → FLDS → PRIM → mid-card fields →
+/// high-card fields → stream-log-entries.
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
     fields: Option<Vec<u8>>,
     primary: Option<Vec<u8>>,
-    chunks: Vec<Vec<u8>>,
+    mid_fields: Vec<Vec<u8>>,
+    high_fields: Vec<Vec<u8>>,
+    stream_entries: Option<Vec<u8>>,
 }
 
 impl Writer {
@@ -39,7 +47,9 @@ impl Writer {
             metadata: None,
             fields: None,
             primary: None,
-            chunks: Vec::new(),
+            mid_fields: Vec::new(),
+            high_fields: Vec::new(),
+            stream_entries: None,
         }
     }
 
@@ -58,34 +68,53 @@ impl Writer {
         self.fields = Some(packed);
     }
 
-    /// Set the primary chunk (packed bytes).
+    /// Set the primary chunk (pre-compressed bytes, e.g. bincode + zstd).
     pub fn set_primary(&mut self, packed: Vec<u8>) {
         self.primary = Some(packed);
     }
 
-    /// Append a secondary chunk and return its assigned index.
-    pub fn add_chunk(&mut self, packed: Vec<u8>) -> u16 {
-        let idx = self.chunks.len() as u16;
-        self.chunks.push(packed);
+    /// Append a mid-cardinality field FST chunk and return its index.
+    pub fn add_mid_field(&mut self, packed: Vec<u8>) -> u16 {
+        let idx = self.mid_fields.len() as u16;
+        self.mid_fields.push(packed);
         idx
     }
 
-    /// Serialize the entire split-FST file to `w`.
+    /// Append a high-cardinality field chunk and return its index.
+    pub fn add_high_field(&mut self, packed: Vec<u8>) -> u16 {
+        let idx = self.high_fields.len() as u16;
+        self.high_fields.push(packed);
+        idx
+    }
+
+    /// Set the stream-log-entries chunk (pre-compressed bytes).
+    pub fn set_stream_entries(&mut self, packed: Vec<u8>) {
+        self.stream_entries = Some(packed);
+    }
+
+    /// Serialize the entire SFST file to `w`.
+    ///
+    /// Fixed on-disk order: SUMR (if present), META (if present),
+    /// FLDS (if present), PRIM, mid-card field chunks in append order,
+    /// high-card field chunks in append order, stream-log-entries
+    /// (if present).
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
         let num_chunks = self.summary.is_some() as usize
             + self.metadata.is_some() as usize
             + self.fields.is_some() as usize
             + 1 // primary
-            + self.chunks.len();
+            + self.mid_fields.len()
+            + self.high_fields.len()
+            + self.stream_entries.is_some() as usize;
 
         // Header
         w.write_all(MAGIC)?;
         w.write_all(&VERSION.to_le_bytes())?;
         w.write_all(&(num_chunks as u32).to_le_bytes())?;
 
-        // Plan chunks. Order matters: SUMR first so a recovery-only reader
-        // can stop after the summary without paging through META/PRIM.
+        // Plan chunks. SUMR first so a recovery-only reader can stop
+        // after the summary without paging through META/PRIM.
         let mut index = gix_chunk::file::Index::for_writing();
         if let Some(sum) = &self.summary {
             index.plan_chunk(CHUNK_SUMMARY, sum.len() as u64);
@@ -97,8 +126,14 @@ impl Writer {
             index.plan_chunk(CHUNK_FLDS, flds.len() as u64);
         }
         index.plan_chunk(CHUNK_PRIMARY, primary.len() as u64);
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            index.plan_chunk(hc_chunk_id(i as u16), chunk.len() as u64);
+        for (i, chunk) in self.mid_fields.iter().enumerate() {
+            index.plan_chunk(mid_field_id(i as u16), chunk.len() as u64);
+        }
+        for (i, chunk) in self.high_fields.iter().enumerate() {
+            index.plan_chunk(high_field_id(i as u16), chunk.len() as u64);
+        }
+        if let Some(stream) = &self.stream_entries {
+            index.plan_chunk(CHUNK_STREAM, stream.len() as u64);
         }
 
         // Write TOC + data
@@ -128,10 +163,22 @@ impl Writer {
         assert_eq!(id, CHUNK_PRIMARY);
         chunk_writer.write_all(primary)?;
 
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            let id = chunk_writer.next_chunk().expect("expected HC chunk");
-            assert_eq!(id, hc_chunk_id(i as u16));
+        for (i, chunk) in self.mid_fields.iter().enumerate() {
+            let id = chunk_writer.next_chunk().expect("expected mid-field chunk");
+            assert_eq!(id, mid_field_id(i as u16));
             chunk_writer.write_all(chunk)?;
+        }
+        for (i, chunk) in self.high_fields.iter().enumerate() {
+            let id = chunk_writer.next_chunk().expect("expected high-field chunk");
+            assert_eq!(id, high_field_id(i as u16));
+            chunk_writer.write_all(chunk)?;
+        }
+        if let Some(stream) = &self.stream_entries {
+            let id = chunk_writer
+                .next_chunk()
+                .expect("expected stream-entries chunk");
+            assert_eq!(id, CHUNK_STREAM);
+            chunk_writer.write_all(stream)?;
         }
 
         assert!(
