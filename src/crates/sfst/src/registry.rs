@@ -128,7 +128,7 @@ impl Registry {
     ///
     /// Stream filter, when present, is exact equality on
     /// `(namespace, name)` — there is no partial / prefix matching, by
-    /// design (each SFST holds exactly one stream; see [`StreamEntry`]).
+    /// design (each SFST holds exactly one stream; see [`crate::StreamEntry`]).
     pub fn candidates<'a>(&'a self, q: &Query) -> impl Iterator<Item = &'a File> + 'a {
         // Extract q's contents upfront so the filter closures don't borrow
         // q. This decouples the iterator's lifetime from q's, letting
