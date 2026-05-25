@@ -19,6 +19,9 @@ path = "src/lib.rs"
 
 [dependencies]
 sfst = { workspace = true }
+log-index = { workspace = true }
+treight = { workspace = true }
+fst-index = { workspace = true }
 clap = { workspace = true }
 memmap2 = { workspace = true }
 anyhow = { workspace = true }
@@ -28,4 +31,3 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-fst-index = { workspace = true }
