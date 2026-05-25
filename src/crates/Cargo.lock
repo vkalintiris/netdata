@@ -4290,23 +4290,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sfsq"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "clap",
- "fst-index",
- "log-index",
- "memmap2",
- "serde",
- "serde_json",
- "sfst",
- "tempfile",
- "thiserror 2.0.18",
- "treight",
-]
-
-[[package]]
 name = "sfst"
 version = "0.1.0"
 dependencies = [

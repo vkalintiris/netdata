@@ -57,9 +57,6 @@ members = [
     # LogQL
     "nlogql",
     "nlogql-eval",
-
-    # SFST tools
-    "sfsq",
 ]
 
 [workspace.package]

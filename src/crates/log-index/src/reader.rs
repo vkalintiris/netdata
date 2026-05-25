@@ -1,7 +1,7 @@
 //! Reader for the split-FST index format.
 //!
 //! Opens an `.sfst` file (typically via mmap) and provides query methods
-//! that follow the access pattern described in `INDEX-FORMAT.md`:
+//! that follow the access pattern described in `sfst/FORMAT.md`:
 //!
 //! 1. Load metadata + primary FST (always, on open).
 //! 2. Look up low-card `key=value` pairs in the primary FST → bitmap.

@@ -351,7 +351,7 @@ impl FileIndexBuilder {
 
         // Pack everything with sfst::Writer
         let zstd_level = 1;
-        let meta_packed = sfst::pack_metadata(&metadata, zstd_level)?;
+        let meta_packed = sfst::pack(&metadata, zstd_level)?;
         let primary_packed = sfst::pack(&low_card_fst, zstd_level)?;
 
         let mut writer = sfst::Writer::new();

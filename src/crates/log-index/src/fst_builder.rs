@@ -1,7 +1,7 @@
 //! Phase 2 (Writing) of the split-FST indexing pipeline.
 //!
 //! Transforms the in-memory data structures built during Phase 1 into the
-//! on-disk split-FST format described in `INDEX-FORMAT.md`.
+//! on-disk split-FST format described in `sfst/FORMAT.md`.
 //!
 //! The pipeline steps are:
 //!
@@ -372,7 +372,7 @@ pub fn build_and_write(
                 }),
         )
         .collect();
-    writer.set_fields(sfst::pack_metadata(&field_table, 1)?);
+    writer.set_fields(sfst::pack(&field_table, 1)?);
 
     // Compute histogram once; reused by both the summary (for min/max
     // derivation) and the heavy metadata.
@@ -387,13 +387,13 @@ pub fn build_and_write(
             name: stream.name.clone(),
         },
     };
-    writer.set_summary(sfst::pack_metadata(&summary, 1)?);
+    writer.set_summary(sfst::pack(&summary, 1)?);
 
     let metadata = IndexMetadata {
         histogram,
         id_ranges,
     };
-    writer.set_metadata(sfst::pack_metadata(&metadata, 1)?);
+    writer.set_metadata(sfst::pack(&metadata, 1)?);
 
     let t = Instant::now();
     let tmp_path = out_path.with_extension("sfst.tmp");

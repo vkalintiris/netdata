@@ -236,13 +236,13 @@ fn read_summary(path: &Path) -> Result<FileSummary, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StreamEntry, Writer, pack, pack_metadata};
+    use crate::{StreamEntry, Writer, pack};
     use fst_index::FstIndex;
 
     fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &FileSummary) {
         let primary: FstIndex<u64> = FstIndex::build([("k", 1u64)]).unwrap();
         let mut writer = Writer::new();
-        writer.set_summary(pack_metadata(summary, 1).unwrap());
+        writer.set_summary(pack(summary, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
