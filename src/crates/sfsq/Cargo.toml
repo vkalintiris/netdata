@@ -1,0 +1,31 @@
+[package]
+name = "sfsq"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Single-file SFST query tool (library + thin CLI)."
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sfsq"
+path = "src/main.rs"
+
+[lib]
+name = "sfsq"
+path = "src/lib.rs"
+
+[dependencies]
+sfst = { workspace = true }
+clap = { workspace = true }
+memmap2 = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+fst-index = { workspace = true }
