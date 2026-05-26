@@ -35,7 +35,7 @@ use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use hashbrown::HashMap;
 
-use super::KeyValueId;
+use super::KvSlot;
 use super::kv_interner::KeyValueInterner;
 
 /// Name of the synthetic attribute holding pre-computed key=value hashes.
@@ -308,7 +308,7 @@ impl<'a> AttrsColumns<'a> {
 /// frame's attribute batch.
 #[derive(Default)]
 pub struct AttrsMap {
-    map: HashMap<u16, Vec<KeyValueId>>,
+    map: HashMap<u16, Vec<KvSlot>>,
 }
 
 impl AttrsMap {
@@ -328,7 +328,7 @@ impl AttrsMap {
             return AttrsMap::default();
         };
 
-        let mut map: HashMap<u16, Vec<KeyValueId>> = HashMap::new();
+        let mut map: HashMap<u16, Vec<KvSlot>> = HashMap::new();
         let mut buf = String::new();
 
         let mut group_start = 0;
@@ -370,7 +370,7 @@ impl AttrsMap {
                         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
                 });
 
-                let id = hash
+                let slot = hash
                     .and_then(|h| interner.lookup_hash(h))
                     .unwrap_or_else(|| {
                         buf.clear();
@@ -387,7 +387,7 @@ impl AttrsMap {
                         }
                     });
 
-                map.entry(pid).or_default().push(id);
+                map.entry(pid).or_default().push(slot);
             }
 
             group_start = group_end;
@@ -397,7 +397,7 @@ impl AttrsMap {
     }
 
     /// Get the interned attribute IDs for a given `parent_id`.
-    pub fn get(&self, parent_id: u16) -> &[KeyValueId] {
+    pub fn get(&self, parent_id: u16) -> &[KvSlot] {
         self.map
             .get(&parent_id)
             .map(|v| v.as_slice())

@@ -53,12 +53,12 @@ use twox_hash::XxHash64;
 /// string. Used as the index into the per-value bitmap array and as the
 /// elements in the per-log entries.
 ///
-/// Not to be confused with [`crate::KvId`] (tier-aligned IDs written to disk)
-/// or raw log positions (array indices into the log list).
+/// Not to be confused with raw log positions (array indices into the
+/// log list), which are also `u32`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyValueId(pub u32);
+pub struct KvSlot(pub u32);
 
-impl KeyValueId {
+impl KvSlot {
     /// Convert to `usize` for array indexing.
     #[inline]
     pub fn idx(self) -> usize {
@@ -66,10 +66,10 @@ impl KeyValueId {
     }
 }
 
-impl From<usize> for KeyValueId {
+impl From<usize> for KvSlot {
     #[inline]
     fn from(id: usize) -> Self {
-        KeyValueId(id as u32)
+        KvSlot(id as u32)
     }
 }
 
@@ -117,7 +117,7 @@ pub struct KeyValueInterner<'a> {
     strings: Vec<&'a str>,
     /// field name → list of key=value IDs with that field.
     /// Built incrementally on each new interning (miss only).
-    field_ids: HashMap<&'a str, Vec<KeyValueId>>,
+    field_slots: HashMap<&'a str, Vec<KvSlot>>,
     /// Fields with fewer unique values than this go into the primary FST.
     cardinality_threshold: u32,
 }
@@ -129,32 +129,32 @@ impl<'a> KeyValueInterner<'a> {
             map: HashbrownMap::with_hasher(BuildIdentityHasher),
             collisions: HashbrownMap::with_hasher(BuildIdentityHasher),
             strings: Vec::new(),
-            field_ids: HashMap::new(),
+            field_slots: HashMap::new(),
             cardinality_threshold,
         }
     }
 
     /// Compute xxhash64 of `s` and intern it.
-    pub fn intern(&mut self, s: &str) -> KeyValueId {
+    pub fn intern(&mut self, s: &str) -> KvSlot {
         let hash = xxhash64(s.as_bytes());
         self.intern_with_hash(hash, s)
     }
 
     /// Intern a string with a pre-computed xxhash64 value.
-    pub fn intern_with_hash(&mut self, hash: u64, s: &str) -> KeyValueId {
-        let kv_id = match self.map.raw_entry_mut().from_hash(hash, |&k| k == hash) {
+    pub fn intern_with_hash(&mut self, hash: u64, s: &str) -> KvSlot {
+        let kv_slot = match self.map.raw_entry_mut().from_hash(hash, |&k| k == hash) {
             RawEntryMut::Occupied(entry) => {
                 let &existing_id = entry.get();
 
                 if self.strings[existing_id as usize] == s {
-                    return KeyValueId(existing_id);
+                    return KvSlot(existing_id);
                 }
 
                 // Primary doesn't match — check collision overflow.
                 if let Some(ids) = self.collisions.get(&hash) {
                     for &cid in ids {
                         if self.strings[cid as usize] == s {
-                            return KeyValueId(cid);
+                            return KvSlot(cid);
                         }
                     }
                 }
@@ -164,48 +164,48 @@ impl<'a> KeyValueInterner<'a> {
                 let interned = self.arena.alloc_str(s);
                 self.strings.push(interned);
                 self.collisions.entry(hash).or_default().push(id);
-                KeyValueId(id)
+                KvSlot(id)
             }
             RawEntryMut::Vacant(entry) => {
                 let id = self.strings.len() as u32;
                 let interned = self.arena.alloc_str(s);
                 self.strings.push(interned);
                 entry.insert_hashed_nocheck(hash, hash, id);
-                KeyValueId(id)
+                KvSlot(id)
             }
         };
 
-        self.track_field(kv_id);
-        kv_id
+        self.track_field(kv_slot);
+        kv_slot
     }
 
     /// Fast path: look up by hash alone, without needing the string.
     ///
-    /// Returns `Some(id)` only if exactly one string maps to this hash
+    /// Returns `Some(slot)` only if exactly one string maps to this hash
     /// (no collision ambiguity). Returns `None` if the hash is unknown or
     /// if there are collisions requiring string disambiguation.
     #[inline]
-    pub fn lookup_hash(&mut self, hash: u64) -> Option<KeyValueId> {
+    pub fn lookup_hash(&mut self, hash: u64) -> Option<KvSlot> {
         let &id = self.map.get(&hash)?;
         if self.collisions.contains_key(&hash) {
             None
         } else {
-            Some(KeyValueId(id))
+            Some(KvSlot(id))
         }
     }
 
-    /// Register a newly interned string in the field_ids map.
-    fn track_field(&mut self, id: KeyValueId) {
-        let s = self.strings[id.idx()];
+    /// Register a newly interned string in the field_slots map.
+    fn track_field(&mut self, slot: KvSlot) {
+        let s = self.strings[slot.idx()];
         let field = match s.find('=') {
             Some(pos) => &s[..pos],
             None => s,
         };
-        self.field_ids.entry(field).or_default().push(id);
+        self.field_slots.entry(field).or_default().push(slot);
     }
 
-    pub fn resolve(&self, id: KeyValueId) -> &str {
-        self.strings[id.idx()]
+    pub fn resolve(&self, slot: KvSlot) -> &str {
+        self.strings[slot.idx()]
     }
 
     pub fn len(&self) -> usize {
@@ -221,18 +221,18 @@ impl<'a> KeyValueInterner<'a> {
     }
 
     /// Low-cardinality fields (< threshold), sorted by field name.
-    pub fn low_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn low_fields(&self) -> Vec<(&str, &[KvSlot])> {
         self.fields_in_range(0, self.cardinality_threshold as usize)
     }
 
     /// Mid-cardinality fields ([threshold, 10*threshold)), sorted by field name.
-    pub fn mid_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn mid_fields(&self) -> Vec<(&str, &[KvSlot])> {
         let t = self.cardinality_threshold as usize;
         self.fields_in_range(t, t * 10)
     }
 
     /// High-cardinality fields (>= 10*threshold), sorted by field name.
-    pub fn high_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn high_fields(&self) -> Vec<(&str, &[KvSlot])> {
         let t = self.cardinality_threshold as usize;
         self.fields_in_range(t * 10, usize::MAX)
     }
@@ -241,11 +241,11 @@ impl<'a> KeyValueInterner<'a> {
     ///
     /// Walks low → mid → high tiers. Within each tier, fields are sorted by
     /// name; within each field, values are sorted by their resolved string.
-    /// Returns three vectors of [`KeyValueId`]s, one per tier.
-    pub fn tier_assignment(&self) -> [Vec<KeyValueId>; 3] {
-        let mut sorted: Vec<KeyValueId> = Vec::new();
+    /// Returns three vectors of [`KvSlot`]s, one per tier.
+    pub fn tier_assignment(&self) -> [Vec<KvSlot>; 3] {
+        let mut sorted: Vec<KvSlot> = Vec::new();
 
-        let mut collect_tier = |tier: &[(&str, &[KeyValueId])]| -> Vec<KeyValueId> {
+        let mut collect_tier = |tier: &[(&str, &[KvSlot])]| -> Vec<KvSlot> {
             let mut order = Vec::new();
             for &(_, ids) in tier {
                 sorted.clear();
@@ -264,9 +264,9 @@ impl<'a> KeyValueInterner<'a> {
     }
 
     /// Collect fields whose value count is in [lo, hi), sorted by name.
-    fn fields_in_range(&self, lo: usize, hi: usize) -> Vec<(&str, &[KeyValueId])> {
-        let mut result: Vec<(&str, &[KeyValueId])> = self
-            .field_ids
+    fn fields_in_range(&self, lo: usize, hi: usize) -> Vec<(&str, &[KvSlot])> {
+        let mut result: Vec<(&str, &[KvSlot])> = self
+            .field_slots
             .iter()
             .filter(|(_, ids)| ids.len() >= lo && ids.len() < hi)
             .map(|(&field, ids)| (field, ids.as_slice()))

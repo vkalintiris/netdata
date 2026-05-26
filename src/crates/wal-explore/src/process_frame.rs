@@ -7,7 +7,7 @@ use arrow::array::*;
 use arrow::record_batch::RecordBatch;
 
 use crate::otap_frame::OtapFrame;
-use sfst::KeyValueId;
+use sfst::indexer::KvSlot;
 use sfst::indexer::wal_index::WalIndex;
 use wal_explore::arrow_columns::{AttrsMap, DictUtf8};
 
@@ -17,8 +17,8 @@ use wal_explore::arrow_columns::{AttrsMap, DictUtf8};
 /// For each log row in the frame:
 /// 1. Records its timestamp.
 /// 2. Interns all resource/scope/log attributes as `key=value` pairs.
-/// 3. Updates forward bitmaps (`kv_id → {log_positions}`).
-/// 4. Appends to the log entries (`log_position → [kv_ids]`).
+/// 3. Updates forward bitmaps (`kv_slot → {log_positions}`).
+/// 4. Appends to the log entries (`log_position → [kv_slots]`).
 ///
 /// Returns the number of log rows processed.
 pub fn process_frame(
@@ -57,11 +57,11 @@ pub fn process_frame(
     let mut scope_buf = String::new();
 
     // Inner loop: for each log row, collect all its key=value IDs,
-    // record them in the forward bitmaps (kv_id → {log_positions})
-    // and the log entries (log_position → [kv_ids]).
+    // record them in the forward bitmaps (kv_slot → {log_positions})
+    // and the log entries (log_position → [kv_slots]).
     for row in 0..logs_batch.num_rows() {
         let log_pos = (global_log_offset + row) as u32;
-        let mut log_kv_ids: Vec<KeyValueId> = Vec::new();
+        let mut log_kv_slots: Vec<KvSlot> = Vec::new();
 
         // Look up resource, scope, and log-level attributes via parent_id.
         for (id_col, attrs) in [
@@ -75,10 +75,10 @@ pub fn process_frame(
                 continue;
             }
 
-            for &kv_id in attrs.get(col.value(row)) {
-                wal_index.ensure_bitmap(kv_id);
-                wal_index.kv_bitmaps[kv_id.idx()].insert(log_pos);
-                log_kv_ids.push(kv_id);
+            for &kv_slot in attrs.get(col.value(row)) {
+                wal_index.ensure_bitmap(kv_slot);
+                wal_index.kv_bitmaps[kv_slot.idx()].insert(log_pos);
+                log_kv_slots.push(kv_slot);
             }
         }
 
@@ -93,15 +93,15 @@ pub fn process_frame(
                     scope_buf.push_str(prefix);
                     scope_buf.push_str(val);
 
-                    let kv_id = wal_index.kv_interner.intern(&scope_buf);
-                    wal_index.ensure_bitmap(kv_id);
-                    wal_index.kv_bitmaps[kv_id.idx()].insert(log_pos);
-                    log_kv_ids.push(kv_id);
+                    let kv_slot = wal_index.kv_interner.intern(&scope_buf);
+                    wal_index.ensure_bitmap(kv_slot);
+                    wal_index.kv_bitmaps[kv_slot.idx()].insert(log_pos);
+                    log_kv_slots.push(kv_slot);
                 }
             }
         }
 
-        wal_index.log_entries.push(log_kv_ids);
+        wal_index.log_entries.push(log_kv_slots);
     }
 
     Ok(logs_batch.num_rows())

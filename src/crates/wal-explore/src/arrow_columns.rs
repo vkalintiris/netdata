@@ -85,7 +85,7 @@ use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use hashbrown::HashMap;
 
-use crate::KeyValueId;
+use crate::KvSlot;
 use crate::kv_interner::KeyValueInterner;
 
 /// Name of the synthetic attribute holding pre-computed key=value hashes.
@@ -430,7 +430,7 @@ impl<'a> AttrsColumns<'a> {
 ///    for the preceding rows (skipping string formatting on cache hits).
 #[derive(Default)]
 pub struct AttrsMap {
-    map: HashMap<u16, Vec<KeyValueId>>,
+    map: HashMap<u16, Vec<KvSlot>>,
 }
 
 impl AttrsMap {
@@ -454,7 +454,7 @@ impl AttrsMap {
             return AttrsMap::default();
         };
 
-        let mut map: HashMap<u16, Vec<KeyValueId>> = HashMap::new();
+        let mut map: HashMap<u16, Vec<KvSlot>> = HashMap::new();
         let mut buf = String::new();
 
         // Process each contiguous parent_id group.
@@ -533,7 +533,7 @@ impl AttrsMap {
     /// Get the interned attribute IDs for a given `parent_id`.
     ///
     /// Returns an empty slice if no attributes exist for this parent.
-    pub fn get(&self, parent_id: u16) -> &[KeyValueId] {
+    pub fn get(&self, parent_id: u16) -> &[KvSlot] {
         self.map
             .get(&parent_id)
             .map(|v| v.as_slice())
@@ -541,7 +541,7 @@ impl AttrsMap {
     }
 
     /// Iterate over all (parent_id, attribute_ids) pairs.
-    pub fn iter(&self) -> impl Iterator<Item = (&u16, &Vec<KeyValueId>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&u16, &Vec<KvSlot>)> {
         self.map.iter()
     }
 }

@@ -113,9 +113,8 @@ pub struct BitmapValue {
 /// cardinality tiers; the stream-log-entries chunk stores sequences of
 /// these instead of duplicating the strings.
 ///
-/// Not to be confused with [`file_registry::FileId`] (which identifies
-/// a file on disk) or with the build-time `KeyValueId` (which is in
-/// insertion order, not iteration order).
+/// Not to be confused with [`file_registry::FileId`], which identifies
+/// an SFST file on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvId(pub u32);
 

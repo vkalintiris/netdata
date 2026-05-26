@@ -2,11 +2,11 @@
 //!
 //! Holds four data structures:
 //!
-//! 1. **KeyValueInterner** — assigns a [`KeyValueId`] to each unique `key=value` string.
-//! 2. **Vec\<RoaringBitmap\>** — indexed by [`KeyValueId`]; each bitmap tracks which
+//! 1. **KeyValueInterner** — assigns a [`KvSlot`] to each unique `key=value` string.
+//! 2. **Vec\<RoaringBitmap\>** — indexed by [`KvSlot`]; each bitmap tracks which
 //!    log positions contain that `key=value` pair (insertion order).
-//! 3. **Vec\<Vec\<KeyValueId\>\>** — log entries: for each log position, the list
-//!    of key=value IDs it contains (needed for per-stream serialization in Phase 2).
+//! 3. **Vec\<Vec\<KvSlot\>\>** — log entries: for each log position, the list
+//!    of key=value slots it contains (needed for per-stream serialization in Phase 2).
 //! 4. **Vec\<i64\>** — nanosecond timestamp per log position, used to build the
 //!    time-sort remap and sparse histogram.
 
@@ -15,7 +15,7 @@ use bumpalo::Bump;
 use file_registry::ServiceStream;
 use roaring::RoaringBitmap;
 
-use super::kv_interner::{KeyValueId, KeyValueInterner};
+use super::kv_interner::{KvSlot, KeyValueInterner};
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
 ///
@@ -23,12 +23,12 @@ use super::kv_interner::{KeyValueId, KeyValueInterner};
 /// value, making the Phase 1 → Phase 2 handoff explicit.
 pub struct WalIndex<'a> {
     pub kv_interner: KeyValueInterner<'a>,
-    /// One bitmap per key=value ID. `kv_bitmaps[id.idx()]` tracks which log
+    /// One bitmap per key=value slot. `kv_bitmaps[slot.idx()]` tracks which log
     /// positions (insertion order) contain that `key=value` pair.
     pub kv_bitmaps: Vec<RoaringBitmap>,
-    /// Per-log key=value IDs: `log_entries[log_pos]` lists all key=value IDs
+    /// Per-log key=value slots: `log_entries[log_pos]` lists all key=value slots
     /// for that log's attributes. Used for per-stream serialization in Phase 2.
-    pub log_entries: Vec<Vec<KeyValueId>>,
+    pub log_entries: Vec<Vec<KvSlot>>,
     /// Nanosecond timestamp per log position (insertion order).
     pub timestamps: Vec<i64>,
 }
@@ -62,33 +62,33 @@ impl<'a> WalIndex<'a> {
         build_sparse_histogram(&self.timestamps, time_order)
     }
 
-    /// Resolve a key=value ID to its string.
-    pub fn resolve(&self, id: KeyValueId) -> &str {
-        self.kv_interner.resolve(id)
+    /// Resolve a key=value slot to its string.
+    pub fn resolve(&self, slot: KvSlot) -> &str {
+        self.kv_interner.resolve(slot)
     }
 
-    /// Get the roaring bitmap for a key=value ID.
-    pub fn bitmap(&self, id: KeyValueId) -> &RoaringBitmap {
-        &self.kv_bitmaps[id.idx()]
+    /// Get the roaring bitmap for a key=value slot.
+    pub fn bitmap(&self, slot: KvSlot) -> &RoaringBitmap {
+        &self.kv_bitmaps[slot.idx()]
     }
 
     /// Low-cardinality fields (< threshold), sorted by field name.
-    pub fn low_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn low_fields(&self) -> Vec<(&str, &[KvSlot])> {
         self.kv_interner.low_fields()
     }
 
     /// Mid-cardinality fields ([threshold, 10*threshold)), sorted by field name.
-    pub fn mid_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn mid_fields(&self) -> Vec<(&str, &[KvSlot])> {
         self.kv_interner.mid_fields()
     }
 
     /// High-cardinality fields (>= 10*threshold), sorted by field name.
-    pub fn high_fields(&self) -> Vec<(&str, &[KeyValueId])> {
+    pub fn high_fields(&self) -> Vec<(&str, &[KvSlot])> {
         self.kv_interner.high_fields()
     }
 
     /// Tier-aligned assignment of key=value IDs.
-    pub fn tier_assignment(&self) -> [Vec<KeyValueId>; 3] {
+    pub fn tier_assignment(&self) -> [Vec<KvSlot>; 3] {
         self.kv_interner.tier_assignment()
     }
 
@@ -97,16 +97,16 @@ impl<'a> WalIndex<'a> {
         self.kv_interner.cardinality_threshold()
     }
 
-    /// All interned strings, ordered by KeyValueId.
+    /// All interned strings, ordered by KvSlot.
     pub fn strings(&self) -> &[&str] {
         self.kv_interner.strings()
     }
 
     /// Ensure kv_bitmaps vec has an entry for the given key=value ID.
-    pub fn ensure_bitmap(&mut self, kv_id: KeyValueId) {
-        if kv_id.idx() >= self.kv_bitmaps.len() {
+    pub fn ensure_bitmap(&mut self, kv_slot: KvSlot) {
+        if kv_slot.idx() >= self.kv_bitmaps.len() {
             self.kv_bitmaps
-                .resize_with(kv_id.idx() + 1, RoaringBitmap::new);
+                .resize_with(kv_slot.idx() + 1, RoaringBitmap::new);
         }
     }
 

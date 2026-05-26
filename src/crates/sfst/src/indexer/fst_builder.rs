@@ -26,7 +26,7 @@ use roaring::RoaringBitmap;
 use treight::Bitmap;
 
 use super::bitset::Bitset;
-use super::kv_interner::KeyValueId;
+use super::kv_interner::KvSlot;
 use super::wal_index::{TimeOrder, WalIndex};
 use crate::{
     BitmapValue, FieldEntry, FieldTier, IdRanges, IndexError, KvId, Metadata, ServiceStream,
@@ -35,26 +35,26 @@ use crate::{
 /// Build tier-aligned key=value ID translation table.
 ///
 /// Uses [`WalIndex::tier_assignment`] to get the canonical ordering,
-/// then maps each [`KeyValueId`] to its sequential [`KvId`].
+/// then maps each [`KvSlot`] to its sequential [`KvId`].
 fn build_id_translation(wal_index: &WalIndex) -> (Vec<KvId>, IdRanges) {
-    let [low_kv_ids, mid_kv_ids, high_kv_ids] = wal_index.tier_assignment();
+    let [low_kv_slots, mid_kv_slots, high_kv_slots] = wal_index.tier_assignment();
 
-    let total_kv_ids = low_kv_ids.len() + mid_kv_ids.len() + high_kv_ids.len();
-    let mut table = vec![KvId(0); total_kv_ids];
+    let total_kv_slots = low_kv_slots.len() + mid_kv_slots.len() + high_kv_slots.len();
+    let mut table = vec![KvId(0); total_kv_slots];
 
     let mut curr_id = 0u32;
-    for &kv_id in low_kv_ids
+    for &kv_slot in low_kv_slots
         .iter()
-        .chain(mid_kv_ids.iter())
-        .chain(high_kv_ids.iter())
+        .chain(mid_kv_slots.iter())
+        .chain(high_kv_slots.iter())
     {
-        table[kv_id.idx()] = KvId(curr_id);
+        table[kv_slot.idx()] = KvId(curr_id);
         curr_id += 1;
     }
 
-    let low_end = KvId(low_kv_ids.len() as u32);
-    let mid_end = KvId(low_end.0 + mid_kv_ids.len() as u32);
-    let high_end = KvId(mid_end.0 + high_kv_ids.len() as u32);
+    let low_end = KvId(low_kv_slots.len() as u32);
+    let mid_end = KvId(low_end.0 + mid_kv_slots.len() as u32);
+    let high_end = KvId(mid_end.0 + high_kv_slots.len() as u32);
 
     tracing::debug!(
         "kv id ranges: {} total (low 0..{}, mid {}..{}, high {}..{})",
@@ -79,10 +79,10 @@ fn build_id_translation(wal_index: &WalIndex) -> (Vec<KvId>, IdRanges) {
 /// Build the file's single log-entries chunk in chronological order.
 ///
 /// Iterates [`TimeOrder::iter_by_time`] to walk insertion-order positions
-/// in chronological order, translates each log's [`KeyValueId`]s to
+/// in chronological order, translates each log's [`KvSlot`]s to
 /// [`KvId`]s, and serializes the result with bincode + zstd.
 fn build_stream_entries(
-    log_entries: &[Vec<KeyValueId>],
+    log_entries: &[Vec<KvSlot>],
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
     writer: &mut crate::Writer,
@@ -92,7 +92,7 @@ fn build_stream_entries(
         .map(|ins| {
             log_entries[ins as usize]
                 .iter()
-                .map(|&kv_id| kv_to_file[kv_id.idx()])
+                .map(|&kv_slot| kv_to_file[kv_slot.idx()])
                 .collect()
         })
         .collect();
@@ -114,12 +114,12 @@ fn build_primary_fst(
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
     let low = wal_index.low_fields();
-    for (_, kv_ids) in &low {
-        entries.reserve(kv_ids.len());
+    for (_, kv_slots) in &low {
+        entries.reserve(kv_slots.len());
 
-        for &kv_id in *kv_ids {
-            let kv_pair = wal_index.resolve(kv_id);
-            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_id), time_order);
+        for &kv_slot in *kv_slots {
+            let kv_pair = wal_index.resolve(kv_slot);
+            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_slot), time_order);
             entries.push((kv_pair, BitmapValue { desc, data }));
         }
     }
@@ -148,12 +148,12 @@ fn build_mid_card_chunks(
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
     let mid = wal_index.mid_fields();
-    for &(_, kv_ids) in &mid {
+    for &(_, kv_slots) in &mid {
         entries.clear();
 
-        for &kv_id in kv_ids {
-            let kv_pair = wal_index.resolve(kv_id);
-            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_id), time_order);
+        for &kv_slot in kv_slots {
+            let kv_pair = wal_index.resolve(kv_slot);
+            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_slot), time_order);
             entries.push((kv_pair, BitmapValue { desc, data }));
         }
 
