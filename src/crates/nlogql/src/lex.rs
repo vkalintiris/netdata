@@ -54,25 +54,23 @@ pub fn identifier<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> + Clone 
 /// `text/scanner` which recognizes only `scanner.String` and
 /// `scanner.RawString`).
 pub fn string_literal<'a>() -> impl Parser<'a, &'a str, String, Extra<'a>> + Clone {
-    let escape = just('\\')
-        .ignore_then(any())
-        .map(|c: char| match c {
-            'n' => '\n',
-            't' => '\t',
-            'r' => '\r',
-            '"' => '"',
-            '\\' => '\\',
-            '\'' => '\'',
-            '0' => '\0',
-            'a' => '\x07',
-            'b' => '\x08',
-            'f' => '\x0c',
-            'v' => '\x0b',
-            // Unknown escape: pass through. Loki's strconv.Unquote
-            // would error here; we're lenient for now and will
-            // tighten when wiring error messages in SOW-15.
-            other => other,
-        });
+    let escape = just('\\').ignore_then(any()).map(|c: char| match c {
+        'n' => '\n',
+        't' => '\t',
+        'r' => '\r',
+        '"' => '"',
+        '\\' => '\\',
+        '\'' => '\'',
+        '0' => '\0',
+        'a' => '\x07',
+        'b' => '\x08',
+        'f' => '\x0c',
+        'v' => '\x0b',
+        // Unknown escape: pass through. Loki's strconv.Unquote
+        // would error here; we're lenient for now and will
+        // tighten when wiring error messages in SOW-15.
+        other => other,
+    });
     let normal = any().filter(|c: &char| *c != '"' && *c != '\\');
     let double_quoted = choice((escape, normal))
         .repeated()
@@ -301,7 +299,10 @@ mod tests {
 
     #[test]
     fn string_double_quoted() {
-        assert_eq!(run(string_literal(), r#""hello""#), Some("hello".to_string()));
+        assert_eq!(
+            run(string_literal(), r#""hello""#),
+            Some("hello".to_string())
+        );
         assert_eq!(run(string_literal(), r#""""#), Some(String::new()));
     }
 
@@ -324,8 +325,14 @@ mod tests {
 
     #[test]
     fn string_raw() {
-        assert_eq!(run(string_literal(), r"`raw \w+`"), Some(r"raw \w+".to_string()));
-        assert_eq!(run(string_literal(), "`with\nnewline`"), Some("with\nnewline".to_string()));
+        assert_eq!(
+            run(string_literal(), r"`raw \w+`"),
+            Some(r"raw \w+".to_string())
+        );
+        assert_eq!(
+            run(string_literal(), "`with\nnewline`"),
+            Some("with\nnewline".to_string())
+        );
     }
 
     #[test]
@@ -452,13 +459,23 @@ mod tests {
 
     #[test]
     fn ws_spaces_and_tabs() {
-        assert!(ws().then_ignore(end()).parse("   \t\n  ").into_result().is_ok());
+        assert!(
+            ws().then_ignore(end())
+                .parse("   \t\n  ")
+                .into_result()
+                .is_ok()
+        );
     }
 
     #[test]
     fn ws_comment() {
         // Comment runs to EOL.
-        assert!(ws().then_ignore(end()).parse("# a comment").into_result().is_ok());
+        assert!(
+            ws().then_ignore(end())
+                .parse("# a comment")
+                .into_result()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -466,8 +483,7 @@ mod tests {
         // From lex_test.go: "{foo=\"bar\"} #|~ \"\\w+\"" — comment
         // tail discarded.
         assert!(
-            ws()
-                .then_ignore(end())
+            ws().then_ignore(end())
                 .parse("  # comment 1\n# comment 2\n   ")
                 .into_result()
                 .is_ok()

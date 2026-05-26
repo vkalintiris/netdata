@@ -58,6 +58,8 @@ use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
+use crate::IndexError;
+
 /// The decoded Arrow RecordBatches from a single WAL frame.
 ///
 /// Each field corresponds to one of the OTAP batch types. Fields are `None`
@@ -90,7 +92,7 @@ impl OtapFrame {
     ///
     /// Batch types not relevant to logs (e.g., spans, metrics) are silently
     /// ignored.
-    pub fn decode(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn decode(data: &[u8]) -> Result<Self, IndexError> {
         let mut frame = Self {
             logs: None,
             log_attrs: None,
@@ -102,19 +104,20 @@ impl OtapFrame {
         while pos < data.len() {
             // Each sub-stream is prefixed with a 1-byte tag and a 4-byte LE length.
             if pos + 5 > data.len() {
-                return Err("truncated tag+length".into());
+                return Err(IndexError::TruncatedOtapFrame);
             }
             let tag = data[pos] as i32;
             pos += 1;
             let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + len > data.len() {
-                return Err("truncated IPC stream".into());
+                return Err(IndexError::TruncatedOtapFrame);
             }
 
             // Map the tag to an ArrowPayloadType enum variant. Unknown tags
             // (e.g., from a newer protocol version) are rejected.
-            let pt = ArrowPayloadType::try_from(tag).map_err(|_| format!("unknown tag: {tag}"))?;
+            let pt =
+                ArrowPayloadType::try_from(tag).map_err(|_| IndexError::UnknownOtapTag(tag))?;
 
             // Parse the Arrow IPC stream. StreamReader handles the schema
             // message and yields RecordBatches. OTAP sends exactly one batch

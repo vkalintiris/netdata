@@ -6,9 +6,9 @@
 
 use std::path::PathBuf;
 
-use sfst::{BitmapValue, FieldTier};
-use sfst::IndexReader;
 use serde::{Deserialize, Serialize};
+use sfst::IndexReader;
+use sfst::{BitmapValue, FieldTier};
 
 /// Compact bitmap descriptor: packs `universe_size` (31 bits) and `inverted`
 /// (1 bit) into a single `u32`. `levels` is derived from `universe_size`.

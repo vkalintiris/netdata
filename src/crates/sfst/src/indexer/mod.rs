@@ -30,7 +30,7 @@ use std::path::Path;
 
 use bumpalo::Bump;
 
-use crate::{Metadata, Summary};
+use crate::{IndexError, Metadata, Summary};
 use process_frame::process_frame;
 use wal_index::WalIndex;
 
@@ -55,10 +55,7 @@ pub struct IndexResult {
 /// Build a split-FST index from a WAL file using default settings.
 ///
 /// Reads the WAL file at `wal_path` and writes the index to `sfst_path`.
-pub fn index(
-    wal_path: &Path,
-    sfst_path: &Path,
-) -> Result<IndexResult, Box<dyn std::error::Error>> {
+pub fn index(wal_path: &Path, sfst_path: &Path) -> Result<IndexResult, IndexError> {
     index_with_options(wal_path, sfst_path, DEFAULT_CARDINALITY_THRESHOLD)
 }
 
@@ -71,7 +68,7 @@ pub fn index_with_options(
     wal_path: &Path,
     sfst_path: &Path,
     cardinality_threshold: u32,
-) -> Result<IndexResult, Box<dyn std::error::Error>> {
+) -> Result<IndexResult, IndexError> {
     let mut reader = wal::Reader::open(wal_path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);

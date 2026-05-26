@@ -7,9 +7,9 @@
 
 use std::path::PathBuf;
 
-use sfst::{BitmapValue, FieldTier};
-use sfst::IndexReader;
 use serde::{Deserialize, Serialize};
+use sfst::IndexReader;
+use sfst::{BitmapValue, FieldTier};
 
 const BATCH_SIZE: u32 = 12_500;
 

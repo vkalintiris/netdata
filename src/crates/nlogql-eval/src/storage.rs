@@ -108,10 +108,7 @@ pub trait Backend {
     /// Resolve a selector to its matching streams. Returns the
     /// streams in a backend-defined order; callers that need
     /// determinism should sort by `signature` themselves.
-    fn matching_streams(
-        &self,
-        matchers: &[Matcher],
-    ) -> Result<Vec<StreamMeta>, BackendError>;
+    fn matching_streams(&self, matchers: &[Matcher]) -> Result<Vec<StreamMeta>, BackendError>;
 
     /// Yield lines from `stream` whose timestamps fall in `range`.
     /// The order within a stream is the backend's natural one —
@@ -120,10 +117,7 @@ pub trait Backend {
         &'a self,
         stream: &StreamMeta,
         range: TimeRange,
-    ) -> Result<
-        Box<dyn Iterator<Item = Result<RawLine, BackendError>> + 'a>,
-        BackendError,
-    >;
+    ) -> Result<Box<dyn Iterator<Item = Result<RawLine, BackendError>> + 'a>, BackendError>;
 }
 
 // ===========================================================
@@ -256,16 +250,17 @@ fn matcher_satisfied(m: &CompiledMatcher, meta: &StreamMeta) -> bool {
     match m {
         CompiledMatcher::Eq { name, value } => lookup_label(meta, name).unwrap_or("") == value,
         CompiledMatcher::NotEq { name, value } => lookup_label(meta, name).unwrap_or("") != value,
-        CompiledMatcher::Match { name, regex } => regex.is_match(lookup_label(meta, name).unwrap_or("")),
-        CompiledMatcher::NotMatch { name, regex } => !regex.is_match(lookup_label(meta, name).unwrap_or("")),
+        CompiledMatcher::Match { name, regex } => {
+            regex.is_match(lookup_label(meta, name).unwrap_or(""))
+        }
+        CompiledMatcher::NotMatch { name, regex } => {
+            !regex.is_match(lookup_label(meta, name).unwrap_or(""))
+        }
     }
 }
 
 impl Backend for MemBackend {
-    fn matching_streams(
-        &self,
-        matchers: &[Matcher],
-    ) -> Result<Vec<StreamMeta>, BackendError> {
+    fn matching_streams(&self, matchers: &[Matcher]) -> Result<Vec<StreamMeta>, BackendError> {
         let compiled: Vec<CompiledMatcher> = matchers
             .iter()
             .map(compile_matcher)
@@ -283,10 +278,7 @@ impl Backend for MemBackend {
         &'a self,
         stream: &StreamMeta,
         range: TimeRange,
-    ) -> Result<
-        Box<dyn Iterator<Item = Result<RawLine, BackendError>> + 'a>,
-        BackendError,
-    > {
+    ) -> Result<Box<dyn Iterator<Item = Result<RawLine, BackendError>> + 'a>, BackendError> {
         let lines: Box<dyn Iterator<Item = Result<RawLine, BackendError>> + 'a> = match self
             .streams
             .iter()
@@ -366,7 +358,10 @@ mod tests {
 
     #[test]
     fn time_range_contains_half_open() {
-        let r = TimeRange { start_ns: 100, end_ns: 200 };
+        let r = TimeRange {
+            start_ns: 100,
+            end_ns: 200,
+        };
         assert!(r.contains(100));
         assert!(r.contains(199));
         assert!(!r.contains(200));
@@ -396,14 +391,14 @@ mod tests {
     fn three_stream_backend() -> MemBackend {
         MemBackend::builder()
             .stream([("app", "foo"), ("env", "prod")])
-                .line(1_000, "alpha")
-                .line(2_000, "bravo")
-                .line(3_000, "charlie")
+            .line(1_000, "alpha")
+            .line(2_000, "bravo")
+            .line(3_000, "charlie")
             .stream([("app", "foo"), ("env", "dev")])
-                .line(1_500, "delta")
+            .line(1_500, "delta")
             .stream([("app", "bar")])
-                .line(1_000, "echo")
-                .line(4_000, "foxtrot")
+            .line(1_000, "echo")
+            .line(4_000, "foxtrot")
             .build()
     }
 
@@ -510,7 +505,13 @@ mod tests {
             ("env".into(), "prod".into()),
         ]);
         let lines: Vec<RawLine> = b
-            .lines_for(&stream, TimeRange { start_ns: 1_500, end_ns: 3_000 })
+            .lines_for(
+                &stream,
+                TimeRange {
+                    start_ns: 1_500,
+                    end_ns: 3_000,
+                },
+            )
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
@@ -524,7 +525,13 @@ mod tests {
         let b = three_stream_backend();
         let phantom = StreamMeta::new(vec![("does".into(), "not_exist".into())]);
         let lines: Vec<_> = b
-            .lines_for(&phantom, TimeRange { start_ns: 0, end_ns: i64::MAX })
+            .lines_for(
+                &phantom,
+                TimeRange {
+                    start_ns: 0,
+                    end_ns: i64::MAX,
+                },
+            )
             .unwrap()
             .collect();
         assert!(lines.is_empty());
@@ -535,7 +542,13 @@ mod tests {
         let b = three_stream_backend();
         let stream = StreamMeta::new(vec![("app".into(), "bar".into())]);
         let lines: Vec<RawLine> = b
-            .lines_for(&stream, TimeRange { start_ns: 0, end_ns: i64::MAX })
+            .lines_for(
+                &stream,
+                TimeRange {
+                    start_ns: 0,
+                    end_ns: i64::MAX,
+                },
+            )
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
@@ -548,10 +561,7 @@ mod tests {
     fn lines_for_empty_range() {
         let b = three_stream_backend();
         let stream = StreamMeta::new(vec![("app".into(), "bar".into())]);
-        let lines: Vec<_> = b
-            .lines_for(&stream, TimeRange::EMPTY)
-            .unwrap()
-            .collect();
+        let lines: Vec<_> = b.lines_for(&stream, TimeRange::EMPTY).unwrap().collect();
         assert!(lines.is_empty());
     }
 

@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error,
-    FieldEntry, FieldTier, Summary, HEADER_SIZE, Metadata, KvId, MAGIC, VERSION,
-    high_field_id, mid_field_id,
+    FieldEntry, FieldTier, HEADER_SIZE, KvId, MAGIC, Metadata, Summary, VERSION, high_field_id,
+    mid_field_id,
 };
 
 /// Decompress zstd, then deserialize with bincode.

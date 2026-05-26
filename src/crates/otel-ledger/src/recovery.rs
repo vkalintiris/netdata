@@ -833,8 +833,8 @@ mod tests {
             &TenantId::from("tenant1"),
             &evict_all_retention(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         // Drain the one queued upload.
         let resp = uploader.recv().await.unwrap();
@@ -893,8 +893,8 @@ mod tests {
             &TenantId::from("tenant1"),
             &evict_all_retention(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         // No UploadCatalog was enqueued.
         assert_eq!(uploader.pending(), 0);
@@ -970,8 +970,8 @@ mod tests {
             &TenantId::from("tenant1"),
             &evict_all_retention(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         // Pending-deletion files are skipped: nothing was uploaded.
         assert_eq!(uploader.pending(), 0);

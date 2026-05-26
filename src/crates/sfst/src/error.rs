@@ -1,4 +1,5 @@
-//! Error type for SFST format operations.
+//! Error types for SFST format operations ([`Error`]) and for building an
+//! SFST file from a WAL ([`IndexError`]).
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -63,4 +64,66 @@ pub enum Error {
     /// actual length, second is the required minimum.
     #[error("file too short ({0} bytes, need at least {1})")]
     FileTooShort(usize, usize),
+}
+
+/// Error type for the WAL → SFST indexing pipeline
+/// ([`crate::index`], [`crate::build_and_write`]).
+///
+/// Wraps the failure modes of every layer the pipeline touches: the WAL
+/// reader, the OTAP/Arrow frame decoder, FST construction, and the SFST
+/// format writer (via [`Format`](IndexError::Format)).
+#[derive(Debug, thiserror::Error)]
+pub enum IndexError {
+    /// Underlying I/O failed while reading the WAL, writing the SFST
+    /// output, or renaming the temp file into place.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// The SFST format layer (writer / `pack`) failed while emitting a
+    /// chunk or assembling the on-disk container.
+    #[error("SFST format error: {0}")]
+    Format(#[from] Error),
+
+    /// The WAL reader rejected the input — bad header, CRC mismatch,
+    /// unsupported version, or a frame that failed to deserialize.
+    #[error("WAL error: {0}")]
+    Wal(#[from] wal::Error),
+
+    /// Arrow IPC parsing failed while decoding an OTAP sub-stream
+    /// (schema message, record batch, or column data).
+    #[error("Arrow IPC error: {0}")]
+    Arrow(#[from] arrow::error::ArrowError),
+
+    /// FST construction failed — almost always because the key set
+    /// wasn't sortable into the FST's required lexicographic order.
+    #[error("FST build error: {0}")]
+    FstBuild(#[from] fst_index::BuildError),
+
+    /// An OTAP sub-stream ran out of bytes mid-header or mid-payload:
+    /// the 1-byte tag + 4-byte length prefix was incomplete, or the
+    /// declared length pointed past the end of the frame.
+    #[error("truncated OTAP frame")]
+    TruncatedOtapFrame,
+
+    /// An OTAP sub-stream's 1-byte tag didn't map to any known
+    /// [`ArrowPayloadType`](otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType).
+    /// Usually means a newer protocol version produced a payload this
+    /// build doesn't recognize.
+    #[error("unknown OTAP payload type tag: {0}")]
+    UnknownOtapTag(i32),
+
+    /// The WAL contains records that resolve to more than one
+    /// `(service.namespace, service.name)` pair. Each SFST file is
+    /// required to hold exactly one stream identity, so this fails the
+    /// build. Almost always indicates an `ns_hash` collision that
+    /// slipped past the ingestor's canonical-stream table, or an
+    /// ingestor bug that routed mismatched writes into the same file.
+    #[error(
+        "WAL contains multiple stream identities (ns_hash collision or ingestor bug): \
+         namespaces={namespaces:?}, names={names:?}"
+    )]
+    MultipleStreams {
+        namespaces: Vec<String>,
+        names: Vec<String>,
+    },
 }

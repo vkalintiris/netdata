@@ -85,9 +85,9 @@ fn lower_metric(expr: &Expr) -> Result<MetricPlan, LowerError> {
             src_label: lr.src_label.clone(),
             regex: lr.regex.clone(),
         })),
-        Expr::Selector(_) | Expr::Pipeline(_) => Err(LowerError::LogInMetricPosition {
-            span: expr.span(),
-        }),
+        Expr::Selector(_) | Expr::Pipeline(_) => {
+            Err(LowerError::LogInMetricPosition { span: expr.span() })
+        }
     }
 }
 
@@ -257,7 +257,13 @@ mod tests {
     #[test]
     fn line_format_is_deferred() {
         let err = lower_str(r#"{app="foo"} | line_format "{{.x}}""#).unwrap_err();
-        assert!(matches!(err, LowerError::DeferredStage { stage: "line_format", .. }));
+        assert!(matches!(
+            err,
+            LowerError::DeferredStage {
+                stage: "line_format",
+                ..
+            }
+        ));
     }
 
     // ---- metric path -----------------------------------------------
@@ -306,7 +312,10 @@ mod tests {
         let err = lower_str(r#"quantile_over_time({app="foo"}[5m])"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::MissingParameter { op: "quantile_over_time", .. },
+            LowerError::MissingParameter {
+                op: "quantile_over_time",
+                ..
+            },
         ));
     }
 
@@ -333,7 +342,10 @@ mod tests {
         let err = lower_str(r#"count_over_time(5, {app="foo"}[5m])"#).unwrap_err();
         assert!(matches!(
             err,
-            LowerError::UnexpectedParameter { op: "count_over_time", .. },
+            LowerError::UnexpectedParameter {
+                op: "count_over_time",
+                ..
+            },
         ));
     }
 
@@ -416,9 +428,8 @@ mod tests {
 
     #[test]
     fn label_replace_lowers() {
-        let m = expect_metric(
-            r#"label_replace(rate({app="foo"}[5m]), "dst", "$1", "src", "(.+)")"#,
-        );
+        let m =
+            expect_metric(r#"label_replace(rate({app="foo"}[5m]), "dst", "$1", "src", "(.+)")"#);
         match m {
             MetricPlan::LabelReplace(lr) => {
                 assert_eq!(lr.dst_label, "dst");
@@ -512,10 +523,10 @@ mod tests {
         // Exercise every variant's Display arm so changes there
         // don't break the format silently.
         let cases: &[&str] = &[
-            r#"{a="b"} | line_format "x""#,                  // DeferredStage
-            r#"quantile_over_time({a="b"}[5m])"#,            // MissingParameter
-            r#"sum(3, rate({a="b"}[5m]))"#,                  // UnexpectedParameter
-            r#"quantile_over_time(2, {a="b"}[5m])"#,         // QuantileOutOfRange
+            r#"{a="b"} | line_format "x""#,          // DeferredStage
+            r#"quantile_over_time({a="b"}[5m])"#,    // MissingParameter
+            r#"sum(3, rate({a="b"}[5m]))"#,          // UnexpectedParameter
+            r#"quantile_over_time(2, {a="b"}[5m])"#, // QuantileOutOfRange
         ];
         for q in cases {
             let err = lower_str(q).unwrap_err();

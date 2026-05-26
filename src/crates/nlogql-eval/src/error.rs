@@ -18,38 +18,24 @@ pub enum LowerError {
     /// don't lower yet — the evaluator can't execute it. Today
     /// this is `line_format` and `label_format`, both deferred to
     /// a follow-up plan that introduces a Go-template engine.
-    DeferredStage {
-        stage: &'static str,
-        span: Span,
-    },
+    DeferredStage { stage: &'static str, span: Span },
     /// An aggregation operator was called with a missing first
     /// argument (`topk(rate(...))` instead of `topk(5, rate(...))`,
     /// or `quantile_over_time({...}[5m])` instead of
     /// `quantile_over_time(0.95, {...}[5m])`).
-    MissingParameter {
-        op: &'static str,
-        span: Span,
-    },
+    MissingParameter { op: &'static str, span: Span },
     /// An aggregation operator was called with a numeric first
     /// argument it doesn't accept (e.g. `sum(3, rate(...))`).
     /// Closes the leniency documented in `nlogql/EXPECTED_FAILS.md`.
-    UnexpectedParameter {
-        op: &'static str,
-        span: Span,
-    },
+    UnexpectedParameter { op: &'static str, span: Span },
     /// `quantile_over_time` called with a quantile outside `[0, 1]`.
-    QuantileOutOfRange {
-        value: f64,
-        span: Span,
-    },
+    QuantileOutOfRange { value: f64, span: Span },
     /// A log-shaped expression (`Selector` / `Pipeline`) appeared
     /// where a metric expression was expected. This can't happen
     /// via the parser's top-level entry — log queries don't compose
     /// with binops — but the error exists so the pattern match in
     /// `lower_metric` stays total against hand-constructed ASTs.
-    LogInMetricPosition {
-        span: Span,
-    },
+    LogInMetricPosition { span: Span },
 }
 
 impl LowerError {

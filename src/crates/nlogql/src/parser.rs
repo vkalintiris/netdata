@@ -17,8 +17,8 @@ use crate::ast::{
     PipelineExpr, PipelineStage, RangeAggregationExpr, RangeOp, StreamSelector, UnwrapExpr,
     VectorAggregationExpr, VectorExpr, VectorMatching, VectorOp,
 };
-use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::error::{ParseError, ParseErrorKind};
+use crate::lex::{bytes, duration, identifier, number, string_literal, ws};
 use crate::span::Span;
 
 /// Parse a LogQL query string into an AST.
@@ -57,7 +57,11 @@ fn top_level_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
 /// available in Loki but lands with the metric path in Phase B.)
 fn log_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
     selector()
-        .then(ws().ignore_then(pipeline_stage()).repeated().collect::<Vec<_>>())
+        .then(
+            ws().ignore_then(pipeline_stage())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
         .map_with(|(sel, stages), e| {
             if stages.is_empty() {
                 Expr::Selector(sel)
@@ -155,10 +159,7 @@ fn parser_stage<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clon
 /// projections.
 fn json_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clone {
     keyword("json")
-        .ignore_then(
-            ws().ignore_then(label_extraction_list())
-                .or_not(),
-        )
+        .ignore_then(ws().ignore_then(label_extraction_list()).or_not())
         .map_with(|extractions, e| ParserStage::Json {
             extractions: extractions.unwrap_or_default(),
             span: e.span().into(),
@@ -173,10 +174,7 @@ fn logfmt_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clo
                 .repeated()
                 .collect::<Vec<_>>(),
         )
-        .then(
-            ws().ignore_then(label_extraction_list())
-                .or_not(),
-        )
+        .then(ws().ignore_then(label_extraction_list()).or_not())
         .map_with(|(flags, extractions), e| ParserStage::Logfmt {
             flags,
             extractions: extractions.unwrap_or_default(),
@@ -216,8 +214,7 @@ fn unpack_parser<'a>() -> impl Parser<'a, &'a str, ParserStage, Extra<'a>> + Clo
 fn label_extraction<'a>() -> impl Parser<'a, &'a str, LabelExtraction, Extra<'a>> + Clone {
     identifier()
         .then(
-            ws()
-                .ignore_then(just('='))
+            ws().ignore_then(just('='))
                 .ignore_then(ws())
                 .ignore_then(string_literal())
                 .or_not(),
@@ -271,7 +268,11 @@ fn metric_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
         ));
 
         atom.pratt((
-            infix(left(1), op_with_modifier(keyword("or").to(BinaryOp::Or)), make_binop),
+            infix(
+                left(1),
+                op_with_modifier(keyword("or").to(BinaryOp::Or)),
+                make_binop,
+            ),
             infix(
                 left(2),
                 op_with_modifier(choice((
@@ -309,7 +310,11 @@ fn metric_expr<'a>() -> impl Parser<'a, &'a str, Expr, Extra<'a>> + Clone {
                 ))),
                 make_binop,
             ),
-            infix(right(6), op_with_modifier(just('^').to(BinaryOp::Pow)), make_binop),
+            infix(
+                right(6),
+                op_with_modifier(just('^').to(BinaryOp::Pow)),
+                make_binop,
+            ),
         ))
     })
 }
@@ -323,8 +328,7 @@ fn op_with_modifier<'a, P>(
 where
     P: Parser<'a, &'a str, BinaryOp, Extra<'a>> + Clone + 'a,
 {
-    ws()
-        .ignore_then(op_kw)
+    ws().ignore_then(op_kw)
         .then_ignore(ws())
         .then(binary_modifier())
         .then_ignore(ws())
@@ -358,13 +362,10 @@ fn binary_modifier<'a>() -> impl Parser<'a, &'a str, BinaryModifier, Extra<'a>> 
         .collect::<Vec<_>>()
         .delimited_by(just('(').then(ws()), ws().then(just(')')));
 
-    let matching = choice((
-        keyword("on").to(true),
-        keyword("ignoring").to(false),
-    ))
-    .then_ignore(ws())
-    .then(labels_paren.clone())
-    .map(|(on, labels)| VectorMatching { on, labels });
+    let matching = choice((keyword("on").to(true), keyword("ignoring").to(false)))
+        .then_ignore(ws())
+        .then(labels_paren.clone())
+        .map(|(on, labels)| VectorMatching { on, labels });
 
     let group = choice((
         keyword("group_left").to(GroupSide::Left),
@@ -530,8 +531,8 @@ fn vector_op<'a>() -> impl Parser<'a, &'a str, VectorOp, Extra<'a>> + Clone {
 /// call, with optional first-positional parameter (for
 /// `quantile_over_time`) and optional trailing `by`/`without`
 /// grouping.
-fn range_aggregation_expr<'a>()
--> impl Parser<'a, &'a str, RangeAggregationExpr, Extra<'a>> + Clone {
+fn range_aggregation_expr<'a>() -> impl Parser<'a, &'a str, RangeAggregationExpr, Extra<'a>> + Clone
+{
     let arg_with_param = number()
         .then_ignore(ws())
         .then_ignore(just(','))
@@ -640,30 +641,28 @@ pub(crate) fn log_range_expr<'a>() -> impl Parser<'a, &'a str, LogRangeExpr, Ext
         .then(range_token())
         .then(ws().ignore_then(offset_expr()).or_not())
         .then(body)
-        .map_with(
-            |((((sel, pre), range_ns), offset_ns), post), e| {
-                let mut stages = Vec::new();
-                let mut unwrap = None;
-                for el in pre.into_iter().chain(post) {
-                    match el {
-                        BodyElement::Stage(s) => stages.push(s),
-                        // Loki's grammar permits at most one unwrap;
-                        // if the user writes more than one we take
-                        // the last (last-write-wins). Semantic
-                        // validation happens in a later pass.
-                        BodyElement::Unwrap(u) => unwrap = Some(u),
-                    }
+        .map_with(|((((sel, pre), range_ns), offset_ns), post), e| {
+            let mut stages = Vec::new();
+            let mut unwrap = None;
+            for el in pre.into_iter().chain(post) {
+                match el {
+                    BodyElement::Stage(s) => stages.push(s),
+                    // Loki's grammar permits at most one unwrap;
+                    // if the user writes more than one we take
+                    // the last (last-write-wins). Semantic
+                    // validation happens in a later pass.
+                    BodyElement::Unwrap(u) => unwrap = Some(u),
                 }
-                LogRangeExpr {
-                    selector: sel,
-                    stages,
-                    unwrap,
-                    range_ns,
-                    offset_ns,
-                    span: e.span().into(),
-                }
-            },
-        )
+            }
+            LogRangeExpr {
+                selector: sel,
+                stages,
+                unwrap,
+                range_ns,
+                offset_ns,
+                span: e.span().into(),
+            }
+        })
 }
 
 enum BodyElement {
@@ -702,8 +701,7 @@ fn unwrap_expr<'a>() -> impl Parser<'a, &'a str, UnwrapExpr, Extra<'a>> + Clone 
         .then_ignore(ws())
         .ignore_then(unwrap_body)
         .then(
-            ws()
-                .ignore_then(just('|'))
+            ws().ignore_then(just('|'))
                 .ignore_then(ws())
                 .ignore_then(label_filter())
                 .repeated()
@@ -781,8 +779,7 @@ fn named_matchers<'a>() -> impl Parser<'a, &'a str, Vec<LabelSelector>, Extra<'a
 fn named_matcher<'a>() -> impl Parser<'a, &'a str, LabelSelector, Extra<'a>> + Clone {
     identifier()
         .then(
-            ws()
-                .ignore_then(matcher_op())
+            ws().ignore_then(matcher_op())
                 .then_ignore(ws())
                 .then(string_literal())
                 .or_not(),
@@ -1040,9 +1037,7 @@ fn parser_flag<'a>() -> impl Parser<'a, &'a str, ParserFlag, Extra<'a>> + Clone 
         just("--keep-empty")
             .then_ignore(after)
             .to(ParserFlag::KeepEmpty),
-        just("--strict")
-            .then_ignore(after)
-            .to(ParserFlag::Strict),
+        just("--strict").then_ignore(after).to(ParserFlag::Strict),
     ))
 }
 
@@ -1541,7 +1536,9 @@ mod tests {
     fn logfmt_plain() {
         let p = expect_pipeline(r#"{app="foo"} | logfmt"#);
         match parser_of(&p.stages[0]) {
-            ParserStage::Logfmt { flags, extractions, .. } => {
+            ParserStage::Logfmt {
+                flags, extractions, ..
+            } => {
                 assert!(flags.is_empty());
                 assert!(extractions.is_empty());
             }
@@ -1554,7 +1551,9 @@ mod tests {
         // From parser_test.go: `{ foo = "bar" }|logfmt --strict`
         let p = expect_pipeline(r#"{app="foo"} | logfmt --strict"#);
         match parser_of(&p.stages[0]) {
-            ParserStage::Logfmt { flags, extractions, .. } => {
+            ParserStage::Logfmt {
+                flags, extractions, ..
+            } => {
                 assert_eq!(flags, &[ParserFlag::Strict]);
                 assert!(extractions.is_empty());
             }
@@ -1578,11 +1577,12 @@ mod tests {
     fn logfmt_keep_empty_first_then_strict() {
         // From lex_test.go: `{foo="bar"} | logfmt --keep-empty --strict code=...`
         // Order in flags vec matches input order.
-        let p = expect_pipeline(
-            r#"{app="foo"} | logfmt --keep-empty --strict code="response.code""#,
-        );
+        let p =
+            expect_pipeline(r#"{app="foo"} | logfmt --keep-empty --strict code="response.code""#);
         match parser_of(&p.stages[0]) {
-            ParserStage::Logfmt { flags, extractions, .. } => {
+            ParserStage::Logfmt {
+                flags, extractions, ..
+            } => {
                 assert_eq!(flags, &[ParserFlag::KeepEmpty, ParserFlag::Strict]);
                 assert_eq!(extractions.len(), 1);
                 assert_eq!(extractions[0].name, "code");
@@ -1594,11 +1594,11 @@ mod tests {
     #[test]
     fn logfmt_with_extractions_no_flags() {
         // From lex_test.go: `{foo="bar"} | logfmt code="response.code", IPAddress="host"`
-        let p = expect_pipeline(
-            r#"{app="foo"} | logfmt code="response.code", IPAddress="host""#,
-        );
+        let p = expect_pipeline(r#"{app="foo"} | logfmt code="response.code", IPAddress="host""#);
         match parser_of(&p.stages[0]) {
-            ParserStage::Logfmt { flags, extractions, .. } => {
+            ParserStage::Logfmt {
+                flags, extractions, ..
+            } => {
                 assert!(flags.is_empty());
                 assert_eq!(extractions.len(), 2);
                 assert_eq!(extractions[1].name, "IPAddress");
@@ -1644,7 +1644,10 @@ mod tests {
         let p = expect_pipeline(r#"{app="foo"} | json | logfmt"#);
         assert_eq!(p.stages.len(), 2);
         assert!(matches!(parser_of(&p.stages[0]), ParserStage::Json { .. }));
-        assert!(matches!(parser_of(&p.stages[1]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            parser_of(&p.stages[1]),
+            ParserStage::Logfmt { .. }
+        ));
     }
 
     #[test]
@@ -1659,7 +1662,10 @@ mod tests {
     fn no_whitespace_between_pipe_and_keyword() {
         // From parser_test.go: `{ foo = "bar" }|logfmt --strict`
         let p = expect_pipeline(r#"{app="foo"}|logfmt"#);
-        assert!(matches!(parser_of(&p.stages[0]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            parser_of(&p.stages[0]),
+            ParserStage::Logfmt { .. }
+        ));
     }
 
     #[test]
@@ -1749,7 +1755,9 @@ mod tests {
         // From parser_test.go: `length>5d` and `latency >= 250ms`.
         let p = expect_pipeline(r#"{app="foo"} | latency >= 250ms"#);
         match label_filter_of(&p.stages[0]) {
-            LabelFilter::Duration { name, op, value, .. } => {
+            LabelFilter::Duration {
+                name, op, value, ..
+            } => {
                 assert_eq!(name, "latency");
                 assert_eq!(*op, NumericOp::Gte);
                 assert_eq!(*value, 250 * 1_000_000); // 250ms in ns
@@ -1763,7 +1771,9 @@ mod tests {
         // From lex_test.go: `size > 250kB`, `size > 200MiB`.
         let p = expect_pipeline(r#"{app="foo"} | size > 250kB"#);
         match label_filter_of(&p.stages[0]) {
-            LabelFilter::Bytes { name, op, value, .. } => {
+            LabelFilter::Bytes {
+                name, op, value, ..
+            } => {
                 assert_eq!(name, "size");
                 assert_eq!(*op, NumericOp::Gt);
                 assert_eq!(*value, 250_000);
@@ -1776,7 +1786,9 @@ mod tests {
     fn label_filter_ip_eq() {
         let p = expect_pipeline(r#"{app="foo"} | host = ip("10.0.0.0/8")"#);
         match label_filter_of(&p.stages[0]) {
-            LabelFilter::Ip { name, op, value, .. } => {
+            LabelFilter::Ip {
+                name, op, value, ..
+            } => {
                 assert_eq!(name, "host");
                 assert_eq!(*op, IpFilterOp::Eq);
                 assert_eq!(value, "10.0.0.0/8");
@@ -1886,7 +1898,10 @@ mod tests {
         // From parser_test.go-style: `| logfmt | latency >= 250ms`.
         let p = expect_pipeline(r#"{app="foo"} | logfmt | latency >= 250ms"#);
         assert_eq!(p.stages.len(), 2);
-        assert!(matches!(parser_of(&p.stages[0]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            parser_of(&p.stages[0]),
+            ParserStage::Logfmt { .. }
+        ));
         assert!(matches!(
             label_filter_of(&p.stages[1]),
             LabelFilter::Duration { .. }
@@ -2171,9 +2186,18 @@ mod tests {
     #[test]
     fn log_range_various_units() {
         assert_eq!(parse_log_range(r#"{foo="bar"}[1h]"#).range_ns, 60 * MIN_NS);
-        assert_eq!(parse_log_range(r#"{foo="bar"}[12h]"#).range_ns, 12 * 60 * MIN_NS);
-        assert_eq!(parse_log_range(r#"{foo="bar"}[1d]"#).range_ns, 24 * 60 * MIN_NS);
-        assert_eq!(parse_log_range(r#"{foo="bar"}[1w]"#).range_ns, 7 * 24 * 60 * MIN_NS);
+        assert_eq!(
+            parse_log_range(r#"{foo="bar"}[12h]"#).range_ns,
+            12 * 60 * MIN_NS
+        );
+        assert_eq!(
+            parse_log_range(r#"{foo="bar"}[1d]"#).range_ns,
+            24 * 60 * MIN_NS
+        );
+        assert_eq!(
+            parse_log_range(r#"{foo="bar"}[1w]"#).range_ns,
+            7 * 24 * 60 * MIN_NS
+        );
     }
 
     #[test]
@@ -2372,9 +2396,7 @@ mod tests {
 
     #[test]
     fn binop_with_on_matching() {
-        let b = expect_binary(
-            r#"rate({a="b"}[5m]) / on(job) rate({c="d"}[5m])"#,
-        );
+        let b = expect_binary(r#"rate({a="b"}[5m]) / on(job) rate({c="d"}[5m])"#);
         assert_eq!(b.op, BinaryOp::Div);
         let m = b.modifier.matching.as_ref().unwrap();
         assert!(m.on);
@@ -2383,9 +2405,7 @@ mod tests {
 
     #[test]
     fn binop_with_ignoring_matching() {
-        let b = expect_binary(
-            r#"rate({a="b"}[5m]) + ignoring(env) rate({c="d"}[5m])"#,
-        );
+        let b = expect_binary(r#"rate({a="b"}[5m]) + ignoring(env) rate({c="d"}[5m])"#);
         let m = b.modifier.matching.as_ref().unwrap();
         assert!(!m.on);
         assert_eq!(m.labels, vec!["env".to_string()]);
@@ -2393,18 +2413,14 @@ mod tests {
 
     #[test]
     fn binop_with_group_left() {
-        let b = expect_binary(
-            r#"rate({a="b"}[5m]) * on(job) group_left(env) rate({c="d"}[5m])"#,
-        );
+        let b = expect_binary(r#"rate({a="b"}[5m]) * on(job) group_left(env) rate({c="d"}[5m])"#);
         assert_eq!(b.modifier.group, Some(GroupSide::Left));
         assert_eq!(b.modifier.include, vec!["env".to_string()]);
     }
 
     #[test]
     fn binop_with_group_right() {
-        let b = expect_binary(
-            r#"rate({a="b"}[5m]) * on(job) group_right rate({c="d"}[5m])"#,
-        );
+        let b = expect_binary(r#"rate({a="b"}[5m]) * on(job) group_right rate({c="d"}[5m])"#);
         assert_eq!(b.modifier.group, Some(GroupSide::Right));
         assert!(b.modifier.include.is_empty());
     }
@@ -2422,9 +2438,7 @@ mod tests {
     #[test]
     fn binop_inside_vector_aggregation() {
         // `sum(rate(...) + rate(...))` — the inner arg is a binop.
-        let v = expect_vector_agg(
-            r#"sum(rate({a="b"}[5m]) + rate({c="d"}[5m]))"#,
-        );
+        let v = expect_vector_agg(r#"sum(rate({a="b"}[5m]) + rate({c="d"}[5m]))"#);
         assert_eq!(v.op, VectorOp::Sum);
         assert!(matches!(&*v.expr, Expr::Binary(_)));
     }
@@ -2467,8 +2481,8 @@ mod tests {
             "0b101010101010101010101010101010101010101010101010101010101010101",
             "{foo=\"\\\"\\\\\\n\\t\\r\\0\"}",
             "{foo=`backtick raw`}",
-            "{foo=\"\u{1f600}\"}",      // emoji in value
-            "{é=\"value\"}",            // unicode identifier
+            "{foo=\"\u{1f600}\"}",          // emoji in value
+            "{é=\"value\"}",                // unicode identifier
             "rate({a=\"b\"}[9999999999d])", // huge duration
             "rate({a=\"b\"}[0s])",
             "rate({a=\"b\"}[1ns])",
@@ -2554,7 +2568,11 @@ mod tests {
             }
         }
         if !failures.is_empty() {
-            panic!("{} round-trip failure(s):\n{}", failures.len(), failures.join("\n"));
+            panic!(
+                "{} round-trip failure(s):\n{}",
+                failures.len(),
+                failures.join("\n")
+            );
         }
     }
 
@@ -2735,22 +2753,14 @@ mod tests {
     fn error_no_internal_pattern_leakage() {
         // Make sure `any` / `something else` / `#` don't appear in
         // user-facing error output for common failures.
-        for input in [
-            r#"{foo}"#,
-            r#"{foo=}"#,
-            "rate(",
-            "garbage",
-        ] {
+        for input in [r#"{foo}"#, r#"{foo=}"#, "rate(", "garbage"] {
             let msg = parse(input).unwrap_err().to_string();
             assert!(!msg.contains("any,"), "`any,` leaked in: {msg}");
             assert!(
                 !msg.contains("something else"),
                 "`something else` leaked in: {msg}",
             );
-            assert!(
-                !msg.contains("'#'"),
-                "`'#'` leaked in: {msg}",
-            );
+            assert!(!msg.contains("'#'"), "`'#'` leaked in: {msg}",);
         }
     }
 
@@ -2795,9 +2805,8 @@ mod tests {
 
     #[test]
     fn label_replace_basic() {
-        let lr = expect_label_replace(
-            r#"label_replace(rate({a="b"}[5m]), "dst", "$1", "src", "(.+)")"#,
-        );
+        let lr =
+            expect_label_replace(r#"label_replace(rate({a="b"}[5m]), "dst", "$1", "src", "(.+)")"#);
         assert_eq!(lr.dst_label, "dst");
         assert_eq!(lr.replacement, "$1");
         assert_eq!(lr.src_label, "src");
@@ -2900,9 +2909,7 @@ mod tests {
     #[test]
     fn sum_by_after_parens() {
         // From parser_test.go: `sum(count_over_time({foo="bar"}[5m])) by (foo,bar)`
-        let v = expect_vector_agg(
-            r#"sum(count_over_time({foo="bar"}[5m])) by (foo, bar)"#,
-        );
+        let v = expect_vector_agg(r#"sum(count_over_time({foo="bar"}[5m])) by (foo, bar)"#);
         let g = v.grouping.as_ref().unwrap();
         assert!(!g.without);
         assert_eq!(g.labels, vec!["foo".to_string(), "bar".to_string()]);
@@ -2913,18 +2920,14 @@ mod tests {
         // From parser_test.go: `SUM BY (foo, bar) (Count_Over_Time({foo="bar"}[5m]))`
         // (Case-sensitive though — Loki is mixed-case; we mirror the
         // documented lowercase keywords.)
-        let v = expect_vector_agg(
-            r#"sum by (foo, bar) (count_over_time({foo="bar"}[5m]))"#,
-        );
+        let v = expect_vector_agg(r#"sum by (foo, bar) (count_over_time({foo="bar"}[5m]))"#);
         let g = v.grouping.as_ref().unwrap();
         assert_eq!(g.labels, vec!["foo".to_string(), "bar".to_string()]);
     }
 
     #[test]
     fn sum_without_grouping() {
-        let v = expect_vector_agg(
-            r#"sum(rate({foo="bar"}[5m])) without (instance)"#,
-        );
+        let v = expect_vector_agg(r#"sum(rate({foo="bar"}[5m])) without (instance)"#);
         let g = v.grouping.as_ref().unwrap();
         assert!(g.without);
     }
@@ -2932,9 +2935,7 @@ mod tests {
     #[test]
     fn nested_vector_aggregations() {
         // From parser_test.go: `sum(max(rate({foo="bar"}[5m])) by (foo,bar)) by (foo)`
-        let v = expect_vector_agg(
-            r#"sum(max(rate({foo="bar"}[5m])) by (foo, bar)) by (foo)"#,
-        );
+        let v = expect_vector_agg(r#"sum(max(rate({foo="bar"}[5m])) by (foo, bar)) by (foo)"#);
         assert_eq!(v.op, VectorOp::Sum);
         // Inner: max(rate(...)) by (foo, bar)
         match &*v.expr {
@@ -2950,9 +2951,7 @@ mod tests {
     #[test]
     fn topk_with_param_and_grouping() {
         // From parser_test.go: `topk(3,count_over_time({foo="bar"}[5m])) by (foo,bar)`
-        let v = expect_vector_agg(
-            r#"topk(3, count_over_time({foo="bar"}[5m])) by (foo, bar)"#,
-        );
+        let v = expect_vector_agg(r#"topk(3, count_over_time({foo="bar"}[5m])) by (foo, bar)"#);
         assert_eq!(v.parameter, Some(3.0));
         assert!(v.grouping.is_some());
     }
@@ -3095,9 +3094,7 @@ mod tests {
 
     #[test]
     fn quantile_over_time_with_param_and_grouping() {
-        let r = expect_range_agg(
-            r#"quantile_over_time(0.95, {foo="bar"}[5m]) by (job)"#,
-        );
+        let r = expect_range_agg(r#"quantile_over_time(0.95, {foo="bar"}[5m]) by (job)"#);
         assert_eq!(r.parameter, Some(0.95));
         assert!(r.grouping.is_some());
     }
@@ -3138,9 +3135,8 @@ mod tests {
 
     #[test]
     fn rate_inner_pipeline_multi_stage() {
-        let r = expect_range_agg(
-            r#"count_over_time({foo="bar"} |= "x" | logfmt | latency > 1s [5m])"#,
-        );
+        let r =
+            expect_range_agg(r#"count_over_time({foo="bar"} |= "x" | logfmt | latency > 1s [5m])"#);
         assert_eq!(r.log_range.stages.len(), 3);
     }
 
@@ -3218,9 +3214,7 @@ mod tests {
 
     #[test]
     fn unwrap_with_post_filter() {
-        let r = parse_log_range(
-            r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#,
-        );
+        let r = parse_log_range(r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#);
         let u = r.unwrap.as_ref().unwrap();
         assert_eq!(u.post_filters.len(), 1);
         assert!(matches!(u.post_filters[0], LabelFilter::String(_)));
@@ -3228,9 +3222,7 @@ mod tests {
 
     #[test]
     fn unwrap_with_multiple_post_filters() {
-        let r = parse_log_range(
-            r#"{foo="bar"} | unwrap latency | level="warn" | n > 5 [5m]"#,
-        );
+        let r = parse_log_range(r#"{foo="bar"} | unwrap latency | level="warn" | n > 5 [5m]"#);
         assert_eq!(r.unwrap.as_ref().unwrap().post_filters.len(), 2);
     }
 
@@ -3238,9 +3230,7 @@ mod tests {
     fn unwrap_before_pipeline_then_range() {
         // `{...} | unwrap x | level="warn" [5m]` — unwrap with post
         // filter, then RANGE.
-        let r = parse_log_range(
-            r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#,
-        );
+        let r = parse_log_range(r#"{foo="bar"} | unwrap latency | level="warn" [5m]"#);
         assert!(r.unwrap.is_some());
         assert_eq!(r.range_ns, 5 * MIN_NS);
     }
@@ -3255,9 +3245,7 @@ mod tests {
     #[test]
     fn unwrap_with_filter_stage_before() {
         // Pipeline stages can precede the unwrap.
-        let r = parse_log_range(
-            r#"{foo="bar"} | logfmt | unwrap latency [5m]"#,
-        );
+        let r = parse_log_range(r#"{foo="bar"} | logfmt | unwrap latency [5m]"#);
         assert_eq!(r.stages.len(), 1);
         assert!(matches!(&r.stages[0], PipelineStage::Parser(_)));
         assert!(r.unwrap.is_some());
@@ -3278,9 +3266,7 @@ mod tests {
 
     #[test]
     fn unwrap_inside_sum_over_time() {
-        let r = expect_range_agg(
-            r#"sum_over_time({foo="bar"} | unwrap bytes(size) [5m])"#,
-        );
+        let r = expect_range_agg(r#"sum_over_time({foo="bar"} | unwrap bytes(size) [5m])"#);
         assert_eq!(r.op, RangeOp::SumOverTime);
         assert_eq!(
             r.log_range.unwrap.as_ref().unwrap().conv_op,
@@ -3315,7 +3301,10 @@ mod tests {
         );
         assert_eq!(p.stages.len(), 4);
         assert!(matches!(&p.stages[0], PipelineStage::LineFilter(_)));
-        assert!(matches!(parser_of(&p.stages[1]), ParserStage::Logfmt { .. }));
+        assert!(matches!(
+            parser_of(&p.stages[1]),
+            ParserStage::Logfmt { .. }
+        ));
         assert!(matches!(
             label_filter_of(&p.stages[2]),
             LabelFilter::Duration { .. }

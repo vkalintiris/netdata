@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use sfst::{BitmapValue, FieldTier};
 use sfst::IndexReader;
+use sfst::{BitmapValue, FieldTier};
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;

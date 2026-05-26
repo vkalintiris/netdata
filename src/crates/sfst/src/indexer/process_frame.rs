@@ -10,6 +10,7 @@ use super::KeyValueId;
 use super::arrow_columns::{AttrsMap, DictUtf8};
 use super::otap_frame::OtapFrame;
 use super::wal_index::WalIndex;
+use crate::IndexError;
 
 /// Decode and process a single WAL frame, updating all four data structures
 /// in the [`WalIndex`].
@@ -24,7 +25,7 @@ use super::wal_index::WalIndex;
 pub(crate) fn process_frame(
     wal_index: &mut WalIndex,
     wal_frame: &wal::Frame,
-) -> Result<usize, Box<dyn std::error::Error>> {
+) -> Result<usize, IndexError> {
     let otap_frame = OtapFrame::decode(wal_frame.data)?;
     let Some(logs_batch) = otap_frame.logs.as_ref() else {
         return Ok(0);

@@ -25,10 +25,12 @@ use std::time::Instant;
 use roaring::RoaringBitmap;
 use treight::Bitmap;
 
-use crate::{BitmapValue, FieldEntry, FieldTier, IdRanges, KvId, Metadata, ServiceStream};
 use super::bitset::Bitset;
 use super::kv_interner::KeyValueId;
 use super::wal_index::{TimeOrder, WalIndex};
+use crate::{
+    BitmapValue, FieldEntry, FieldTier, IdRanges, IndexError, KvId, Metadata, ServiceStream,
+};
 
 /// Build tier-aligned key=value ID translation table.
 ///
@@ -84,7 +86,7 @@ fn build_stream_entries(
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
     writer: &mut crate::Writer,
-) -> Result<usize, Box<dyn std::error::Error>> {
+) -> Result<usize, IndexError> {
     let entries: Vec<Vec<KvId>> = time_order
         .iter_by_time()
         .map(|ins| {
@@ -107,7 +109,7 @@ fn build_primary_fst(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     writer: &mut crate::Writer,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
@@ -139,7 +141,7 @@ fn build_mid_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     writer: &mut crate::Writer,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut total_kb = 0usize;
 
@@ -176,7 +178,7 @@ fn build_high_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     writer: &mut crate::Writer,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut total_kb = 0usize;
 
@@ -216,13 +218,13 @@ fn build_high_card_chunks(
 /// rejects writes whose `(namespace, name)` doesn't match the canonical
 /// pair for an `ns_hash`. If multiple distinct values are seen for either
 /// key, [`WalIndex::service_stream`] surfaces the offenders via
-/// [`MultipleStreamsError`] and we fail the index build.
+/// [`IndexError::MultipleStreams`] and we fail the index build.
 fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
     writer: &mut crate::Writer,
-) -> Result<ServiceStream, Box<dyn std::error::Error>> {
+) -> Result<ServiceStream, IndexError> {
     let stream = wal_index.service_stream()?;
 
     let namespace = if stream.namespace.is_empty() {
@@ -261,7 +263,7 @@ fn build_streams(
 pub fn build_and_write(
     wal_index: &WalIndex,
     out_path: &Path,
-) -> Result<(crate::Summary, Metadata), Box<dyn std::error::Error>> {
+) -> Result<(crate::Summary, Metadata), IndexError> {
     let t_start = Instant::now();
 
     let mut writer = crate::Writer::new();
@@ -341,7 +343,7 @@ pub fn build_and_write(
     let file = std::fs::File::create(&tmp_path)?;
     let mut buf = std::io::BufWriter::new(file);
     writer.write_to(&mut buf)?;
-    let file = buf.into_inner()?;
+    let file = buf.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     let file_size = file.metadata()?.len();
     drop(file);

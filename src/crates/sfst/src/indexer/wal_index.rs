@@ -10,34 +10,12 @@
 //! 4. **Vec\<i64\>** — nanosecond timestamp per log position, used to build the
 //!    time-sort remap and sparse histogram.
 
+use crate::{Histogram, IndexError};
 use bumpalo::Bump;
 use file_registry::ServiceStream;
 use roaring::RoaringBitmap;
-use crate::Histogram;
 
 use super::kv_interner::{KeyValueId, KeyValueInterner};
-
-/// The WAL contains multiple distinct `(namespace, name)` identities — an
-/// `ns_hash` collision slipped past the ingestor's canonical-stream
-/// table. The file cannot be safely indexed.
-#[derive(Debug)]
-pub struct MultipleStreamsError {
-    pub namespaces: Vec<String>,
-    pub names: Vec<String>,
-}
-
-impl std::fmt::Display for MultipleStreamsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "WAL contains multiple stream identities (ns_hash collision?): \
-             namespaces={:?}, names={:?}",
-            self.namespaces, self.names,
-        )
-    }
-}
-
-impl std::error::Error for MultipleStreamsError {}
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
 ///
@@ -140,11 +118,11 @@ impl<'a> WalIndex<'a> {
     /// for that hash, so every WAL file should expose at most one of each.
     /// Missing values default to the empty string (the catch-all stream).
     ///
-    /// Returns [`MultipleStreamsError`] if more than one distinct value is
-    /// found for either key — that means an `ns_hash` collision slipped
-    /// past the ingestor's check and the file has no single stream
-    /// identity to attach to the SFST.
-    pub fn service_stream(&self) -> Result<ServiceStream, MultipleStreamsError> {
+    /// Returns [`IndexError::MultipleStreams`] if more than one distinct
+    /// value is found for either key — that means an `ns_hash` collision
+    /// slipped past the ingestor's check and the file has no single
+    /// stream identity to attach to the SFST.
+    pub fn service_stream(&self) -> Result<ServiceStream, IndexError> {
         let mut namespaces: Vec<&str> = Vec::new();
         let mut names: Vec<&str> = Vec::new();
 
@@ -157,7 +135,7 @@ impl<'a> WalIndex<'a> {
         }
 
         if namespaces.len() > 1 || names.len() > 1 {
-            return Err(MultipleStreamsError {
+            return Err(IndexError::MultipleStreams {
                 namespaces: namespaces.into_iter().map(String::from).collect(),
                 names: names.into_iter().map(String::from).collect(),
             });
@@ -326,11 +304,14 @@ mod service_stream_tests {
         w.kv_interner.intern("service.namespace=prod");
         w.kv_interner.intern("service.name=api");
         w.kv_interner.intern("service.name=worker");
-        let err = w.service_stream().unwrap_err();
-        assert_eq!(err.namespaces, vec!["prod"]);
-        assert_eq!(err.names.len(), 2);
-        assert!(err.names.contains(&"api".to_string()));
-        assert!(err.names.contains(&"worker".to_string()));
+        let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err()
+        else {
+            panic!("expected MultipleStreams");
+        };
+        assert_eq!(namespaces, vec!["prod"]);
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"api".to_string()));
+        assert!(names.contains(&"worker".to_string()));
     }
 
     #[test]
@@ -340,11 +321,14 @@ mod service_stream_tests {
         w.kv_interner.intern("service.namespace=prod");
         w.kv_interner.intern("service.namespace=staging");
         w.kv_interner.intern("service.name=api");
-        let err = w.service_stream().unwrap_err();
-        assert_eq!(err.names, vec!["api"]);
-        assert_eq!(err.namespaces.len(), 2);
-        assert!(err.namespaces.contains(&"prod".to_string()));
-        assert!(err.namespaces.contains(&"staging".to_string()));
+        let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err()
+        else {
+            panic!("expected MultipleStreams");
+        };
+        assert_eq!(names, vec!["api"]);
+        assert_eq!(namespaces.len(), 2);
+        assert!(namespaces.contains(&"prod".to_string()));
+        assert!(namespaces.contains(&"staging".to_string()));
     }
 
     #[test]

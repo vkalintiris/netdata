@@ -845,9 +845,7 @@ impl fmt::Display for ParserStage {
                 Ok(())
             }
             ParserStage::Logfmt {
-                flags,
-                extractions,
-                ..
+                flags, extractions, ..
             } => {
                 f.write_str("logfmt")?;
                 for fl in flags {

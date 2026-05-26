@@ -44,13 +44,15 @@ mod writer;
 
 pub mod registry;
 
-pub use error::Error;
+pub use error::{Error, IndexError};
 pub use file_registry::ServiceStream;
-pub use indexer::{IndexReader, IndexResult, KeyValueId, build_and_write, index, index_with_options};
+pub use indexer::{
+    IndexReader, IndexResult, KeyValueId, build_and_write, index, index_with_options,
+};
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, Histogram,
+    BitmapValue, FieldEntry, FieldTier, Histogram, IdRanges, KvId, Metadata, Summary,
 };
 pub use writer::{Writer, pack};
 
