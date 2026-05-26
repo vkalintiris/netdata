@@ -51,6 +51,9 @@ members = [
     "file-registry",
     "wal",
 
+    # SFST query
+    "sfsq",
+
     # LogQL
     "nlogql",
     "nlogql-eval",

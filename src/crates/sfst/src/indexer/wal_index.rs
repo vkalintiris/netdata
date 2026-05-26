@@ -15,7 +15,7 @@ use bumpalo::Bump;
 use file_registry::ServiceStream;
 use roaring::RoaringBitmap;
 
-use super::kv_interner::{KvSlot, KeyValueInterner};
+use super::kv_interner::{KeyValueInterner, KvSlot};
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
 ///

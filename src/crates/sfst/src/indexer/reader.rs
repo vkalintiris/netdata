@@ -9,10 +9,11 @@
 //! 4. Load per-stream log entries for attribute resolution.
 
 use fst_index::FstIndex;
+use roaring::RoaringBitmap;
 
 use crate::{
-    BitmapValue, FieldEntry, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata,
-    ServiceStream, Summary,
+    BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, HighField, Histogram, IdRanges, KvId,
+    Metadata, ServiceStream, Summary, Timeline, bitmap_value_to_roaring,
 };
 
 /// A successfully opened split-FST index.
@@ -225,4 +226,336 @@ impl<'a> IndexReader<'a> {
 
         Ok(table)
     }
+
+    // ── Query API ────────────────────────────────────────────────────
+
+    /// Apply a [`Filter`] (OR within field, AND across fields) and return
+    /// the position bitmap of matching logs.
+    ///
+    /// An empty filter returns the full position range `0..total_logs`.
+    /// Fields mentioned in the filter that don't exist in this file
+    /// contribute an empty set (no logs match), which collapses the
+    /// overall result to empty — single-file SFSTs with disjoint field
+    /// sets fall out of the query naturally.
+    pub fn evaluate(&self, filter: &Filter) -> Result<RoaringBitmap, crate::Error> {
+        if filter.is_empty() {
+            let mut all = RoaringBitmap::new();
+            all.insert_range(0..self.summary.total_logs);
+            return Ok(all);
+        }
+
+        let mut result: Option<RoaringBitmap> = None;
+        for (field, values) in &filter.selections {
+            let field_bm = self.field_values_or(field, values)?;
+            result = Some(match result {
+                None => field_bm,
+                Some(mut prev) => {
+                    prev &= &field_bm;
+                    prev
+                }
+            });
+            if result.as_ref().is_some_and(|b| b.is_empty()) {
+                return Ok(RoaringBitmap::new());
+            }
+        }
+        Ok(result.unwrap_or_default())
+    }
+
+    /// Compute per-field value counts for the UI's facet sidebar.
+    ///
+    /// For each facet field, the filter is evaluated **with that field's
+    /// own selections removed** — so selecting `level=error` doesn't
+    /// reduce the `level` facet to a single bar. Facets not present in
+    /// the filter share a single evaluation of the full filter.
+    ///
+    /// Returns [`crate::Error::UnknownField`] for fields not in this
+    /// file, or [`crate::Error::HighCardFacet`] for high-cardinality
+    /// facets (where exact counts would require scanning stream batches).
+    pub fn facets<S: AsRef<str>>(
+        &self,
+        fields: &[S],
+        filter: &Filter,
+    ) -> Result<Vec<FacetResult>, crate::Error> {
+        // Computed once; reused by every facet whose field is not in
+        // the filter's selections.
+        let full_bm = self.evaluate(filter)?;
+
+        let mut results = Vec::with_capacity(fields.len());
+        for field in fields {
+            let field = field.as_ref();
+            let scoped = if filter.has_field(field) {
+                Some(self.evaluate(&filter.without(field))?)
+            } else {
+                None
+            };
+            let bm: &RoaringBitmap = scoped.as_ref().unwrap_or(&full_bm);
+            let values = self.value_counts_under(field, bm)?;
+            results.push(FacetResult {
+                field: field.to_string(),
+                values,
+            });
+        }
+        Ok(results)
+    }
+
+    /// Compute a 2D time × value-of-`field` count grid for chart rendering.
+    ///
+    /// Bucket boundaries are derived from the file's `summary.min/
+    /// max_timestamp_s`. Bucket count = `ceil((max_ns - min_ns) /
+    /// bucket_width_ns)`; the last bucket may be partial. `field`'s own
+    /// selections are excluded from the filter (same reason as in
+    /// [`facets`](Self::facets)).
+    ///
+    /// Errors:
+    /// - [`crate::Error::InvalidBucketWidth`] if `bucket_width_ns <= 0`.
+    /// - [`crate::Error::UnknownField`] if `field` is not in this file.
+    /// - [`crate::Error::HighCardFacet`] if `field` is high-cardinality.
+    pub fn timeline(
+        &self,
+        field: &str,
+        filter: &Filter,
+        bucket_width_ns: i64,
+    ) -> Result<Timeline, crate::Error> {
+        if bucket_width_ns <= 0 {
+            return Err(crate::Error::InvalidBucketWidth(bucket_width_ns));
+        }
+
+        let min_ns = i64::from(self.summary.min_timestamp_s) * 1_000_000_000;
+        // `max_timestamp_s` is the last second any log was seen in; treat
+        // the upper bound as exclusive at the end of that second.
+        let max_ns = (i64::from(self.summary.max_timestamp_s) + 1) * 1_000_000_000;
+        let span = (max_ns - min_ns).max(1);
+        // `i64::div_ceil` is still unstable; both operands are positive
+        // here so casting to u64 is safe and lets us use the stable form.
+        let num_buckets = (span as u64).div_ceil(bucket_width_ns as u64) as usize;
+
+        // Filter with `field`'s own selections removed.
+        let excluded = filter.without(field);
+        let filter_bm = self.evaluate(&excluded)?;
+
+        // Enumerate the field's values and pre-intersect each with the
+        // filter bitmap. Each dimension's bitmap is then queried per
+        // bucket via range_cardinality.
+        let location = self
+            .locate_field(field)
+            .ok_or_else(|| crate::Error::UnknownField(field.to_string()))?;
+        let prefix = format!("{field}=");
+        let prefix_len = prefix.len();
+        let mut dimensions: Vec<String> = Vec::new();
+        let mut intersections: Vec<RoaringBitmap> = Vec::new();
+
+        match location {
+            FieldLocation::Low => {
+                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
+                    let mut value_bm = bitmap_value_to_roaring(bv);
+                    value_bm &= &filter_bm;
+                    dimensions.push(value);
+                    intersections.push(value_bm);
+                }
+            }
+            FieldLocation::Mid(idx) => {
+                let chunk = self.sfst.mid_field(idx)?;
+                chunk.for_each(|kv_bytes, bv| {
+                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
+                    let mut value_bm = bitmap_value_to_roaring(bv);
+                    value_bm &= &filter_bm;
+                    dimensions.push(value);
+                    intersections.push(value_bm);
+                });
+            }
+            FieldLocation::High(_) => {
+                return Err(crate::Error::HighCardFacet(field.to_string()));
+            }
+        }
+
+        let timestamps = self.sfst.timestamps()?;
+        let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
+        for bucket_i in 0..num_buckets {
+            let bucket_start = min_ns + (bucket_i as i64) * bucket_width_ns;
+            let bucket_end = (bucket_start + bucket_width_ns).min(max_ns);
+            let pos_lo = timestamps.partition_point(|&t| t < bucket_start) as u32;
+            let pos_hi = timestamps.partition_point(|&t| t < bucket_end) as u32;
+            for (dim_i, intersection) in intersections.iter().enumerate() {
+                buckets[bucket_i][dim_i] = intersection.range_cardinality(pos_lo..pos_hi);
+            }
+        }
+
+        Ok(Timeline {
+            bucket_start_ns: min_ns,
+            bucket_width_ns,
+            dimensions,
+            buckets,
+        })
+    }
+
+    // ── Query helpers (private) ──────────────────────────────────────
+
+    /// Locate a field by name and return its tier + tier-relative chunk
+    /// index. Returns `None` if the field is absent from this file.
+    fn locate_field(&self, field_name: &str) -> Option<FieldLocation> {
+        let mut mid_idx = 0u16;
+        let mut high_idx = 0u16;
+        for f in &self.metadata().fields {
+            if f.name == field_name {
+                return Some(match f.tier {
+                    FieldTier::Low => FieldLocation::Low,
+                    FieldTier::Mid => FieldLocation::Mid(mid_idx),
+                    FieldTier::High => FieldLocation::High(high_idx),
+                });
+            }
+            match f.tier {
+                FieldTier::Mid => mid_idx += 1,
+                FieldTier::High => high_idx += 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Compute the on-disk `KvId` for the `local`-th value of high-card
+    /// chunk `high_idx`. High-card KvIds are `mid_end + (cumulative
+    /// high-card cardinalities before this field) + local`.
+    fn high_kv_id(&self, high_idx: u16, local: usize) -> KvId {
+        let id_ranges = &self.metadata().id_ranges;
+        let mut kv = id_ranges.mid_end.0;
+        let mut current = 0u16;
+        for f in &self.metadata().fields {
+            if let FieldTier::High = f.tier {
+                if current == high_idx {
+                    return KvId(kv + local as u32);
+                }
+                kv += f.cardinality;
+                current += 1;
+            }
+        }
+        panic!("high_kv_id: high_idx {high_idx} out of range");
+    }
+
+    /// Position bitmap matching `field=v` for any `v` in `values` (OR
+    /// within field). Returns an empty bitmap if the field is absent
+    /// from this file.
+    fn field_values_or(
+        &self,
+        field: &str,
+        values: &[String],
+    ) -> Result<RoaringBitmap, crate::Error> {
+        let location = match self.locate_field(field) {
+            Some(loc) => loc,
+            None => return Ok(RoaringBitmap::new()),
+        };
+        let mut result = RoaringBitmap::new();
+
+        match location {
+            FieldLocation::Low => {
+                for value in values {
+                    let kv = format!("{field}={value}");
+                    if let Some(bv) = self.primary.get(kv.as_bytes()) {
+                        result |= bitmap_value_to_roaring(bv);
+                    }
+                }
+            }
+            FieldLocation::Mid(idx) => {
+                let chunk = self.sfst.mid_field(idx)?;
+                for value in values {
+                    let kv = format!("{field}={value}");
+                    if let Some(bv) = chunk.get(kv.as_bytes()) {
+                        result |= bitmap_value_to_roaring(bv);
+                    }
+                }
+            }
+            FieldLocation::High(idx) => {
+                // High-card values are addressed by KvId; the filter
+                // bitmap is built by scanning the SB batches indicated
+                // by the union of the values' batch masks.
+                let hf = self.sfst.high_field(idx)?;
+                let mut targets: Vec<KvId> = Vec::new();
+                let mut combined_mask: u8 = 0;
+                for value in values {
+                    let kv = format!("{field}={value}");
+                    if let Ok(local) = hf.keys.binary_search_by(|k| k.as_str().cmp(&kv)) {
+                        targets.push(self.high_kv_id(idx, local));
+                        combined_mask |= hf.masks[local];
+                    }
+                }
+                if targets.is_empty() {
+                    return Ok(result);
+                }
+                let total_logs = self.summary.total_logs;
+                let batch_size = crate::stream_batch_size(total_logs);
+                let num_batches = crate::num_stream_batches(total_logs);
+                for b in 0..num_batches {
+                    if (combined_mask >> b) & 1 == 0 {
+                        continue;
+                    }
+                    let batch_start = u32::from(b) * batch_size;
+                    let batch = self.sfst.stream_batch(b)?;
+                    for (i, kv_ids) in batch.iter().enumerate() {
+                        if kv_ids.iter().any(|id| targets.contains(id)) {
+                            result.insert(batch_start + i as u32);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Per-value `(value, count)` pairs for `field` restricted to
+    /// `filter_bm`. Walks the field's chunk once. Errors with
+    /// [`crate::Error::UnknownField`] / [`crate::Error::HighCardFacet`]
+    /// as appropriate.
+    fn value_counts_under(
+        &self,
+        field: &str,
+        filter_bm: &RoaringBitmap,
+    ) -> Result<Vec<(String, u32)>, crate::Error> {
+        let location = self
+            .locate_field(field)
+            .ok_or_else(|| crate::Error::UnknownField(field.to_string()))?;
+        let prefix = format!("{field}=");
+        let prefix_len = prefix.len();
+        let mut results = Vec::new();
+
+        match location {
+            FieldLocation::Low => {
+                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
+                    let mut bm = bitmap_value_to_roaring(bv);
+                    bm &= filter_bm;
+                    let count = bm.len() as u32;
+                    if count > 0 {
+                        results.push((value, count));
+                    }
+                }
+            }
+            FieldLocation::Mid(idx) => {
+                let chunk = self.sfst.mid_field(idx)?;
+                chunk.for_each(|kv_bytes, bv| {
+                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
+                    let mut bm = bitmap_value_to_roaring(bv);
+                    bm &= filter_bm;
+                    let count = bm.len() as u32;
+                    if count > 0 {
+                        results.push((value, count));
+                    }
+                });
+            }
+            FieldLocation::High(_) => {
+                return Err(crate::Error::HighCardFacet(field.to_string()));
+            }
+        }
+
+        Ok(results)
+    }
+}
+
+/// Tier + tier-relative chunk index for a single field. Private; used by
+/// the query helpers ([`IndexReader::evaluate`], [`IndexReader::facets`],
+/// [`IndexReader::timeline`]).
+enum FieldLocation {
+    Low,
+    Mid(u16),
+    High(u16),
 }

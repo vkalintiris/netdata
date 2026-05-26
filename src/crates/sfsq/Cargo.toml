@@ -1,0 +1,31 @@
+[package]
+name = "sfsq"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Single-file query over SFST log indexes"
+
+[lints]
+workspace = true
+
+[lib]
+name = "sfsq"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sfsq"
+path = "src/main.rs"
+
+[dependencies]
+sfst = { workspace = true }
+fst-index = { workspace = true, features = ["serde"] }
+treight = { workspace = true, features = ["roaring", "serde"] }
+roaring = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

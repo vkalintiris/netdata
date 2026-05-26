@@ -72,6 +72,26 @@ pub enum Error {
     /// actual length, second is the required minimum.
     #[error("file too short ({0} bytes, need at least {1})")]
     FileTooShort(usize, usize),
+
+    /// A query method ([`IndexReader::evaluate`](crate::IndexReader::evaluate),
+    /// [`IndexReader::facets`](crate::IndexReader::facets), or
+    /// [`IndexReader::timeline`](crate::IndexReader::timeline)) was passed
+    /// a field name that doesn't appear in the file's field table.
+    #[error("unknown field: {0}")]
+    UnknownField(String),
+
+    /// [`IndexReader::facets`](crate::IndexReader::facets) or
+    /// [`IndexReader::timeline`](crate::IndexReader::timeline) was asked
+    /// to aggregate over a high-cardinality field. Per-value counts on
+    /// high-card fields would require scanning stream batches, which is
+    /// out of scope for the facet/timeline API.
+    #[error("facet/timeline not supported for high-cardinality field: {0}")]
+    HighCardFacet(String),
+
+    /// [`IndexReader::timeline`](crate::IndexReader::timeline) was called
+    /// with a non-positive bucket width.
+    #[error("invalid bucket width: {0} (must be > 0)")]
+    InvalidBucketWidth(i64),
 }
 
 /// Error type for the WAL → SFST indexing pipeline

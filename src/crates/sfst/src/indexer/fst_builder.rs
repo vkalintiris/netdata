@@ -216,8 +216,7 @@ mod tests {
 
         let owned_bytes =
             bincode::serde::encode_to_vec(&owned, bincode::config::standard()).unwrap();
-        let view_bytes =
-            bincode::serde::encode_to_vec(&view, bincode::config::standard()).unwrap();
+        let view_bytes = bincode::serde::encode_to_vec(&view, bincode::config::standard()).unwrap();
 
         assert_eq!(
             owned_bytes, view_bytes,
@@ -302,7 +301,10 @@ fn build_high_card_chunks(
 /// `batch_size` to get the batch index, and sets the corresponding bit
 /// in the returned `u8`.
 fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8 {
-    debug_assert!(batch_size > 0, "batch_size must be > 0 when high-card values exist");
+    debug_assert!(
+        batch_size > 0,
+        "batch_size must be > 0 when high-card values exist"
+    );
     let mut mask: u8 = 0;
     for ins_pos in rb.iter() {
         let sorted_pos = time_order.to_sorted(ins_pos);

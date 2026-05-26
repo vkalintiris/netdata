@@ -78,8 +78,8 @@ impl Writer {
     /// the chunk-id encoding only has 2 bytes for the index, so wrap-around
     /// would silently collide with `MF{0,0}`.
     pub fn add_mid_field(&mut self, packed: Vec<u8>) -> u16 {
-        let idx = u16::try_from(self.mid_fields.len())
-            .expect("mid-card field count exceeds u16::MAX");
+        let idx =
+            u16::try_from(self.mid_fields.len()).expect("mid-card field count exceeds u16::MAX");
         self.mid_fields.push(packed);
         idx
     }
@@ -89,8 +89,8 @@ impl Writer {
     /// Panics if more than `u16::MAX` (65,535) high-card chunks are added —
     /// same chunk-id encoding constraint as [`Writer::add_mid_field`].
     pub fn add_high_field(&mut self, packed: Vec<u8>) -> u16 {
-        let idx = u16::try_from(self.high_fields.len())
-            .expect("high-card field count exceeds u16::MAX");
+        let idx =
+            u16::try_from(self.high_fields.len()).expect("high-card field count exceeds u16::MAX");
         self.high_fields.push(packed);
         idx
     }
