@@ -3,8 +3,9 @@
 //! [`Reader`] opens a byte slice (typically an mmap) and exposes the
 //! log-index file's chunks as typed values. Decompression and
 //! deserialization happen lazily — `open` only parses the header and
-//! TOC. The field table is cached on first access since the bucketing
-//! of secondary chunks into mid/high subtypes needs it.
+//! TOC. The metadata chunk is cached on first access since it carries
+//! the field table needed to bucket secondary chunks into mid/high
+//! subtypes.
 
 use std::cell::OnceCell;
 
@@ -12,8 +13,8 @@ use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    BitmapValue, CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS,
-    Error, FieldEntry, FieldTier, FileSummary, HEADER_SIZE, IndexMetadata, KvId, MAGIC, VERSION,
+    BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error,
+    FieldEntry, FieldTier, Summary, HEADER_SIZE, Metadata, KvId, MAGIC, VERSION,
     high_field_id, mid_field_id,
 };
 
@@ -28,16 +29,16 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
 /// Zero-copy reader over a memory-mapped (or in-memory) SFST file.
 ///
 /// `open` parses only the header and TOC. Typed accessors decode their
-/// chunks on demand. The field table is cached after first access so
-/// `num_mid` / `num_high` / `mid_field` / `high_field` / `stream_entries`
-/// don't repeatedly decompress FLDS.
+/// chunks on demand. The [`Metadata`] chunk (histogram, id ranges,
+/// field table) is cached after first access so the bucketing of
+/// secondary chunks doesn't repeatedly decompress META.
 pub struct Reader<'a> {
     data: &'a [u8],
     toc: gix_chunk::file::Index,
-    /// Lazily-decoded FLDS payload. Populated on first call to any
-    /// method that needs to bucket secondary chunks (`num_mid`,
-    /// `num_high`, `mid_field`, `high_field`, `stream_entries`).
-    fields: OnceCell<Vec<FieldEntry>>,
+    /// Lazily-decoded META payload. Populated on first call to any
+    /// method that needs it (`metadata`, `fields`, `num_mid`,
+    /// `num_high`).
+    metadata: OnceCell<Metadata>,
 }
 
 impl<'a> Reader<'a> {
@@ -63,14 +64,14 @@ impl<'a> Reader<'a> {
         Ok(Self {
             data,
             toc,
-            fields: OnceCell::new(),
+            metadata: OnceCell::new(),
         })
     }
 
     // ── SUMR ─────────────────────────────────────────────────────────
 
     /// Decompress and deserialize the summary chunk.
-    pub fn summary(&self) -> Result<FileSummary, Error> {
+    pub fn summary(&self) -> Result<Summary, Error> {
         unpack(self.summary_raw()?)
     }
 
@@ -86,9 +87,17 @@ impl<'a> Reader<'a> {
 
     // ── META ─────────────────────────────────────────────────────────
 
-    /// Decompress and deserialize the metadata chunk.
-    pub fn metadata(&self) -> Result<IndexMetadata, Error> {
-        unpack(self.metadata_raw()?)
+    /// Index metadata (histogram + id ranges + field table). Decoded on
+    /// first access; cached for the lifetime of this `Reader`.
+    pub fn metadata(&self) -> Result<&Metadata, Error> {
+        if self.metadata.get().is_none() {
+            let decoded = unpack::<Metadata>(self.metadata_raw()?)?;
+            // `set` only fails if the cell is already initialized, which
+            // is impossible here in a single-threaded context (the only
+            // mode `std::cell::OnceCell` supports).
+            let _ = self.metadata.set(decoded);
+        }
+        Ok(self.metadata.get().expect("metadata just initialized"))
     }
 
     /// Raw compressed bytes of the metadata chunk.
@@ -101,40 +110,17 @@ impl<'a> Reader<'a> {
         self.toc.data_by_id(self.data, CHUNK_META).is_ok()
     }
 
-    // ── FLDS ─────────────────────────────────────────────────────────
-
-    /// Field table. Decoded on first access; cached for the lifetime
-    /// of this `Reader`.
+    /// Field table — convenience accessor for `metadata().fields`.
     pub fn fields(&self) -> Result<&[FieldEntry], Error> {
-        if self.fields.get().is_none() {
-            let decoded = unpack::<Vec<FieldEntry>>(self.fields_raw()?)?;
-            // `set` only fails if the cell is already initialized, which
-            // is impossible here in a single-threaded context (the only
-            // mode `std::cell::OnceCell` supports).
-            let _ = self.fields.set(decoded);
-        }
-        Ok(self
-            .fields
-            .get()
-            .expect("fields just initialized")
-            .as_slice())
-    }
-
-    /// Raw compressed bytes of the fields chunk.
-    pub fn fields_raw(&self) -> Result<&'a [u8], Error> {
-        self.chunk_raw_by_id(CHUNK_FLDS)
-    }
-
-    /// Whether a fields chunk is present.
-    pub fn has_fields(&self) -> bool {
-        self.toc.data_by_id(self.data, CHUNK_FLDS).is_ok()
+        Ok(self.metadata()?.fields.as_slice())
     }
 
     /// Number of mid-cardinality fields (one secondary chunk per mid
     /// field, sitting at positions `0..num_mid`).
     pub fn num_mid(&self) -> Result<u16, Error> {
         Ok(self
-            .fields()?
+            .metadata()?
+            .fields
             .iter()
             .filter(|f| f.tier == FieldTier::Mid)
             .count() as u16)
@@ -144,7 +130,8 @@ impl<'a> Reader<'a> {
     /// field, sitting at positions `num_mid..num_mid + num_high`).
     pub fn num_high(&self) -> Result<u16, Error> {
         Ok(self
-            .fields()?
+            .metadata()?
+            .fields
             .iter()
             .filter(|f| f.tier == FieldTier::High)
             .count() as u16)
@@ -220,8 +207,15 @@ impl<'a> Reader<'a> {
         self.chunk_raw_by_id(CHUNK_STREAM)
     }
 
-    // ── Internal helpers ─────────────────────────────────────────────
+    // ── Positional secondary-chunk access (escape hatch) ─────────────
 
+    /// Raw compressed bytes of the secondary chunk at absolute
+    /// `position` (0-based). Most callers should prefer the typed
+    /// accessors ([`Reader::mid_field`], [`Reader::high_field`]).
+    /// This method is used by tooling that walks secondary chunks
+    /// position-by-position; the calling convention is to use the
+    /// `(mid_idx)` then `(high_idx)` indices via the typed methods
+    /// instead.
     fn chunk_raw_by_id(&self, id: gix_chunk::Id) -> Result<&'a [u8], Error> {
         self.toc
             .data_by_id(self.data, id)

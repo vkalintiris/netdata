@@ -9,7 +9,7 @@ use file_registry::TimestampNs;
 /// outside the representable chrono range. Callers fall back to the
 /// current date when `None` — encoded once at each call site rather than
 /// hidden inside this helper, so the fallback is visible.
-pub(crate) fn date_from_summary(summary: &sfst::FileSummary) -> Option<chrono::NaiveDate> {
+pub(crate) fn date_from_summary(summary: &sfst::Summary) -> Option<chrono::NaiveDate> {
     if summary.total_logs == 0 {
         return None;
     }

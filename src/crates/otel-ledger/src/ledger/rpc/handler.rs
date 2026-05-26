@@ -178,7 +178,7 @@ mod tests {
         reg.sfst.track(
             id,
             ByteSize(1),
-            sfst::FileSummary {
+            sfst::Summary {
                 min_timestamp_s: min_s,
                 max_timestamp_s: max_s,
                 total_logs: 1,

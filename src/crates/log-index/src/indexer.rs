@@ -9,7 +9,7 @@ use std::path::Path;
 
 use bumpalo::Bump;
 
-use sfst::IndexMetadata;
+use sfst::Metadata;
 
 use crate::process_frame::process_frame;
 use crate::wal_index::WalIndex;
@@ -23,10 +23,10 @@ const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 pub struct IndexResult {
     /// Cheap summary fields written into the SFST SUMR chunk and stored
     /// inline on the registry entry.
-    pub summary: sfst::FileSummary,
+    pub summary: sfst::Summary,
     /// Heavy index metadata (histogram + id_ranges) written into the SFST
     /// META chunk. Used at query time, not by the registry.
-    pub metadata: IndexMetadata,
+    pub metadata: Metadata,
     /// Byte size of the written SFST file.
     pub size: u64,
 }

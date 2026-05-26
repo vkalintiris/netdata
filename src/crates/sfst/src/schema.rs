@@ -17,7 +17,7 @@ use treight::Bitmap;
 /// file without decompressing the heavier `META` chunk (histogram +
 /// id_ranges).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileSummary {
+pub struct Summary {
     pub min_timestamp_s: u32,
     pub max_timestamp_s: u32,
     pub total_logs: u32,
@@ -28,14 +28,16 @@ pub struct FileSummary {
 
 /// Heavy query-time metadata (the `META` chunk payload).
 ///
-/// Holds the sparse timestamp histogram and the cardinality-tier id
-/// ranges. Readers that only need the cheap summary fields (min/max
-/// timestamp, total log count, stream) should decode [`FileSummary`]
-/// from the `SUMR` chunk instead.
+/// Holds the data a reader needs to bootstrap any query against the
+/// file: the sparse timestamp histogram, the cardinality-tier id
+/// ranges, and the field table. Readers that only need the cheap
+/// summary fields (min/max timestamp, total log count, stream) should
+/// decode [`Summary`] from the `SUMR` chunk instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexMetadata {
+pub struct Metadata {
     pub histogram: SparseHistogram,
     pub id_ranges: IdRanges,
+    pub fields: Vec<FieldEntry>,
 }
 
 /// Sparse timestamp histogram: one entry per second that has at least
@@ -64,16 +66,14 @@ pub struct IdRanges {
     pub high_end: KvId,
 }
 
-// ── FLDS ─────────────────────────────────────────────────────────
+// ── Field table (carried inside META) ────────────────────────────
 
-/// One entry in the field table (the `FLDS` chunk's payload is
-/// `Vec<FieldEntry>`).
+/// One entry in the field table carried by [`Metadata::fields`].
 ///
 /// The table is ordered low → mid → high, with each tier internally
-/// sorted by field name. Readers walk it to map secondary-chunk
-/// positions to their subtype: chunks `0..num_mid` are mid-card FSTs,
-/// `num_mid..num_mid+num_high` are high-card sorted lists, and the
-/// trailing chunk holds the stream's log-entry vectors.
+/// sorted by field name. Readers walk it to count mid-card and
+/// high-card fields, to look up a field's tier when resolving a
+/// [`KvId`], and to discover which secondary chunks the file carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldEntry {
     pub name: String,

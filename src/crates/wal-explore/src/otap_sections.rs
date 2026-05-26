@@ -9,20 +9,14 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;
     let file_size = data.len();
     let reader = IndexReader::open(&data)?;
-    let fields = reader.field_table()?;
+    let fields = reader.field_table();
     let sfst = sfst::Reader::open(&data)?;
 
     let mut total_sections = 0usize;
 
-    // META
+    // META (now includes the field table)
     if let Ok(raw) = sfst.metadata_raw() {
         print_section("META", raw.len(), file_size);
-        total_sections += raw.len();
-    }
-
-    // FLDS
-    if let Ok(raw) = sfst.fields_raw() {
-        print_section("FLDS", raw.len(), file_size);
         total_sections += raw.len();
         let mut sorted_fields = fields.to_vec();
         sorted_fields.sort_by(|a, b| a.cardinality.cmp(&b.cardinality));

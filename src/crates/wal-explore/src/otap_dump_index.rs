@@ -10,7 +10,7 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
     let reader = IndexReader::open(&data)?;
 
     let t = Instant::now();
-    let fields = reader.field_table()?;
+    let fields = reader.field_table();
     let string_table = reader.build_string_table(&fields)?;
     eprintln!(
         "string table: {} entries ({:.0}ms)",

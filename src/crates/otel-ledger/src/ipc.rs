@@ -64,7 +64,7 @@ pub enum IndexerResponse {
         /// Stored on the registry entry on `track`; used by the uploader
         /// response handler to build the catalog entry directly from the
         /// registry without a pending-metadata side-channel.
-        summary: sfst::FileSummary,
+        summary: sfst::Summary,
         /// Byte size of the written SFST file.
         size: file_registry::ByteSize,
     },

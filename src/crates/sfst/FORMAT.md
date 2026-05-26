@@ -76,9 +76,8 @@ within its tier in the trailing two bytes.
 
     Id          Payload                                  Required?
     ──────────  ───────────────────────────────────────  ──────────
-    "SUMR"      FileSummary                              No (always emitted)
-    "META"      IndexMetadata                            No (always emitted)
-    "FLDS"      Vec<FieldEntry>                          No (always emitted)
+    "SUMR"      Summary                              No (always emitted)
+    "META"      Metadata                            No (always emitted)
     "PRIM"      FstIndex<BitmapValue>                    Yes
     "MF{hi}{lo}" FstIndex<BitmapValue>  (mid-card field) No
     "HF{hi}{lo}" Vec<(String, BitmapValue)>  (high-card) No
@@ -111,11 +110,11 @@ level, but the canonical producer always emits all of them.
 All payloads are `bincode + zstd` (see [§ Encoding](#encoding)). The
 decoded type of each chunk is given below.
 
-### `SUMR` — FileSummary
+### `SUMR` — Summary
 
 The cheap recovery summary. Decodes to:
 
-    pub struct FileSummary {
+    pub struct Summary {
         pub min_timestamp_s: u32,
         pub max_timestamp_s: u32,
         pub total_logs:      u32,
@@ -132,13 +131,14 @@ log seconds (Unix epoch) in the file. `total_logs` is the count of
 log records. `stream` carries the file's single
 `(service.namespace, service.name)` identity.
 
-### `META` — IndexMetadata
+### `META` — Metadata
 
 Heavy query-time metadata:
 
-    pub struct IndexMetadata {
+    pub struct Metadata {
         pub histogram: SparseHistogram,
         pub id_ranges: IdRanges,
+        pub fields:    Vec<FieldEntry>,
     }
 
     pub struct SparseHistogram {
@@ -152,23 +152,18 @@ Heavy query-time metadata:
         pub high_end: KvId,
     }
 
-The histogram supports time-range narrowing: binary-search
-`timestamps` for the position bounds covering a window, then clip
-bitmaps to that range. `id_ranges` tells a reader which cardinality
-tier a `KvId` belongs to (see [§ Tier-Aligned IDs](#tier-aligned-ids)).
-
-### `FLDS` — Field table
-
-`Vec<FieldEntry>`, ordered low → mid → high, with each tier
-internally sorted by field name:
-
     pub struct FieldEntry {
         pub name:        String,
         pub cardinality: u32,
         pub tier:        FieldTier,    // Low | Mid | High
     }
 
-Walking FLDS yields the count of mid-card and high-card fields, which
+`histogram` supports time-range narrowing: binary-search `timestamps`
+for the position bounds covering a window, then clip bitmaps to that
+range. `id_ranges` tells a reader which cardinality tier a `KvId`
+belongs to (see [§ Tier-Aligned IDs](#tier-aligned-ids)). `fields`
+is ordered low → mid → high (each tier internally sorted by field
+name) and yields the count of mid-card and high-card fields, which
 in turn determines how many `MF{i}` and `HF{i}` chunks are present.
 
 ### `PRIM` — Primary FST
@@ -235,7 +230,7 @@ IDs are assigned during writing by walking the tiers in order:
     KvId low_end    .. mid_end       Mid-card pairs   (per-field FST iteration order)
     KvId mid_end    .. high_end      High-card pairs  (per-field chunk order)
 
-`low_end`, `mid_end`, `high_end` are carried in `IndexMetadata::id_ranges`.
+`low_end`, `mid_end`, `high_end` are carried in `Metadata::id_ranges`.
 
 The `STRM` chunk stores `KvId`s, not strings; resolving a `KvId` back
 to its `key=value` requires checking which range it falls in and

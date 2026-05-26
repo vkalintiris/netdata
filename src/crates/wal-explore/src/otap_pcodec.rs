@@ -13,7 +13,7 @@ pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;
     let file_size = data.len();
     let reader = IndexReader::open(&data)?;
-    let fields = reader.field_table()?;
+    let fields = reader.field_table();
     let sfst = sfst::Reader::open(&data)?;
     let stream = reader.stream();
 

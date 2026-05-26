@@ -9,8 +9,8 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error,
-    HEADER_SIZE, MAGIC, VERSION, high_field_id, mid_field_id,
+    CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error, HEADER_SIZE, MAGIC,
+    VERSION, high_field_id, mid_field_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
@@ -28,12 +28,11 @@ pub fn pack<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> 
 /// results into a single sequential writer.
 ///
 /// On-disk ordering is fixed regardless of the order setters are
-/// called: SUMR → META → FLDS → PRIM → mid-card fields →
+/// called: SUMR → META → PRIM → mid-card fields →
 /// high-card fields → TIMS → stream-log-entries.
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
-    fields: Option<Vec<u8>>,
     primary: Option<Vec<u8>>,
     mid_fields: Vec<Vec<u8>>,
     high_fields: Vec<Vec<u8>>,
@@ -46,7 +45,6 @@ impl Writer {
         Self {
             summary: None,
             metadata: None,
-            fields: None,
             primary: None,
             mid_fields: Vec::new(),
             high_fields: Vec::new(),
@@ -63,11 +61,6 @@ impl Writer {
     /// Set the metadata chunk (pre-compressed bytes, e.g. bincode + zstd).
     pub fn set_metadata(&mut self, packed: Vec<u8>) {
         self.metadata = Some(packed);
-    }
-
-    /// Set the fields chunk (pre-compressed bytes, e.g. bincode + zstd).
-    pub fn set_fields(&mut self, packed: Vec<u8>) {
-        self.fields = Some(packed);
     }
 
     /// Set the primary chunk (pre-compressed bytes, e.g. bincode + zstd).
@@ -104,15 +97,13 @@ impl Writer {
     /// Serialize the entire SFST file to `w`.
     ///
     /// Fixed on-disk order: SUMR (if present), META (if present),
-    /// FLDS (if present), PRIM, mid-card field chunks in append order,
-    /// high-card field chunks in append order, TIMS, stream-log-entries
-    /// (if present).
+    /// PRIM, mid-card field chunks in append order, high-card field
+    /// chunks in append order, TIMS, stream-log-entries (if present).
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
         let timestamps = self.timestamps.as_ref().ok_or(Error::NoTimestamps)?;
         let num_chunks = self.summary.is_some() as usize
             + self.metadata.is_some() as usize
-            + self.fields.is_some() as usize
             + 1 // primary
             + self.mid_fields.len()
             + self.high_fields.len()
@@ -132,9 +123,6 @@ impl Writer {
         }
         if let Some(meta) = &self.metadata {
             index.plan_chunk(CHUNK_META, meta.len() as u64);
-        }
-        if let Some(flds) = &self.fields {
-            index.plan_chunk(CHUNK_FLDS, flds.len() as u64);
         }
         index.plan_chunk(CHUNK_PRIMARY, primary.len() as u64);
         for (i, chunk) in self.mid_fields.iter().enumerate() {
@@ -163,12 +151,6 @@ impl Writer {
             let id = chunk_writer.next_chunk().expect("expected META chunk");
             assert_eq!(id, CHUNK_META);
             chunk_writer.write_all(meta)?;
-        }
-
-        if let Some(flds) = &self.fields {
-            let id = chunk_writer.next_chunk().expect("expected FLDS chunk");
-            assert_eq!(id, CHUNK_FLDS);
-            chunk_writer.write_all(flds)?;
         }
 
         let id = chunk_writer.next_chunk().expect("expected primary chunk");

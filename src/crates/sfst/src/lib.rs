@@ -48,7 +48,7 @@ pub use file_registry::StreamEntry;
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId, SparseHistogram,
+    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, SparseHistogram,
 };
 pub use writer::{Writer, pack};
 
@@ -60,7 +60,6 @@ const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
 
 const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
 const CHUNK_META: gix_chunk::Id = *b"META";
-const CHUNK_FLDS: gix_chunk::Id = *b"FLDS";
 const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
 const CHUNK_TIMS: gix_chunk::Id = *b"TIMS";
 const CHUNK_STREAM: gix_chunk::Id = *b"STRM";
@@ -100,8 +99,8 @@ mod tests {
         pack(&Vec::<i64>::new(), 1).unwrap()
     }
 
-    fn sample_summary() -> FileSummary {
-        FileSummary {
+    fn sample_summary() -> Summary {
+        Summary {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
@@ -109,8 +108,8 @@ mod tests {
         }
     }
 
-    fn sample_metadata() -> IndexMetadata {
-        IndexMetadata {
+    fn sample_metadata() -> Metadata {
+        Metadata {
             histogram: SparseHistogram {
                 timestamps: vec![100, 200, 300],
                 counts: vec![10, 25, 50],
@@ -120,6 +119,7 @@ mod tests {
                 mid_end: KvId(5),
                 high_end: KvId(8),
             },
+            fields: Vec::new(),
         }
     }
 
@@ -137,7 +137,6 @@ mod tests {
         let reader = Reader::open(&buf).unwrap();
         assert!(!reader.has_summary());
         assert!(!reader.has_metadata());
-        assert!(!reader.has_fields());
 
         let p = reader.primary().unwrap();
         assert!(p.get(b"alpha").is_some());
@@ -215,6 +214,18 @@ mod tests {
                 tier: FieldTier::High,
             },
         ];
+        let metadata = Metadata {
+            histogram: SparseHistogram {
+                timestamps: vec![1_700_000_000],
+                counts: vec![2],
+            },
+            id_ranges: IdRanges {
+                low_end: KvId(1),
+                mid_end: KvId(6),
+                high_end: KvId(7),
+            },
+            fields,
+        };
 
         let primary = build_primary(&["level=info"]);
         let mid_host = build_primary(&["host=h1", "host=h2"]);
@@ -224,7 +235,7 @@ mod tests {
         let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000, 1_700_000_000_500_000_000];
 
         let mut writer = Writer::new();
-        writer.set_fields(pack(&fields, 1).unwrap());
+        writer.set_metadata(pack(&metadata, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         assert_eq!(writer.add_mid_field(pack(&mid_host, 1).unwrap()), 0);
         assert_eq!(writer.add_mid_field(pack(&mid_pod, 1).unwrap()), 1);
@@ -236,7 +247,6 @@ mod tests {
         writer.write_to(&mut buf).unwrap();
 
         let reader = Reader::open(&buf).unwrap();
-        assert!(reader.has_fields());
         assert_eq!(reader.num_mid().unwrap(), 2);
         assert_eq!(reader.num_high().unwrap(), 1);
 
@@ -264,16 +274,10 @@ mod tests {
 
     #[test]
     fn mid_field_out_of_range_errors() {
-        let fields = vec![FieldEntry {
-            name: "host".into(),
-            cardinality: 200,
-            tier: FieldTier::Mid,
-        }];
         let primary = build_primary(&["k"]);
         let mid = build_primary(&["host=h"]);
 
         let mut writer = Writer::new();
-        writer.set_fields(pack(&fields, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         writer.add_mid_field(pack(&mid, 1).unwrap());
         writer.set_timestamps(empty_timestamps());
@@ -302,8 +306,8 @@ mod tests {
     #[test]
     fn full_file_round_trip() {
         let summary = sample_summary();
-        let metadata = sample_metadata();
-        let fields = vec![FieldEntry {
+        let mut metadata = sample_metadata();
+        metadata.fields = vec![FieldEntry {
             name: "level".into(),
             cardinality: 3,
             tier: FieldTier::Low,
@@ -315,7 +319,6 @@ mod tests {
         let mut writer = Writer::new();
         writer.set_summary(pack(&summary, 1).unwrap());
         writer.set_metadata(pack(&metadata, 1).unwrap());
-        writer.set_fields(pack(&fields, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         writer.set_timestamps(pack(&timestamps, 1).unwrap());
         writer.set_stream_entries(pack(&stream_entries, 1).unwrap());

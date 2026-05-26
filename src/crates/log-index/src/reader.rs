@@ -3,28 +3,26 @@
 //! Opens an `.sfst` file (typically via mmap) and provides query methods
 //! that follow the access pattern described in `sfst/FORMAT.md`:
 //!
-//! 1. Load metadata + primary FST (always, on open).
+//! 1. Decode SUMR + META + PRIM eagerly on open (always needed).
 //! 2. Look up low-card `key=value` pairs in the primary FST → bitmap.
 //! 3. Load secondary chunks on demand (mid-card FST or high-card blob).
 //! 4. Load per-stream log entries for attribute resolution.
-//!
-//! Field structure (names, cardinalities, tiers) lives in a separate FLDS
-//! chunk, loaded on demand via [`IndexReader::field_table`].
 
 use fst_index::FstIndex;
 use sfst::{
-    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId, SparseHistogram,
+    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, SparseHistogram,
     StreamEntry,
 };
 
 /// A successfully opened split-FST index.
 ///
-/// Holds the mmap'd data, the deserialized summary + metadata, and the
-/// primary FST (always loaded on open since it's needed for every query).
+/// Holds the mmap'd data, the deserialized summary, and the primary
+/// FST (both eagerly loaded on open since every query needs them).
+/// [`Metadata`] is cached on the underlying [`sfst::Reader`] and
+/// surfaced via [`metadata`](Self::metadata).
 pub struct IndexReader<'a> {
     sfst: sfst::Reader<'a>,
-    summary: FileSummary,
-    metadata: IndexMetadata,
+    summary: Summary,
     primary: FstIndex<BitmapValue>,
 }
 
@@ -32,27 +30,30 @@ impl<'a> IndexReader<'a> {
     /// Open a split-FST index from a byte slice (typically an mmap).
     ///
     /// Immediately deserializes the summary, metadata, and primary FST.
+    /// Metadata stays cached on the underlying [`sfst::Reader`].
     pub fn open(data: &'a [u8]) -> Result<Self, sfst::Error> {
         let sfst = sfst::Reader::open(data)?;
         let summary = sfst.summary()?;
-        let metadata = sfst.metadata()?;
+        // Force the metadata cache so subsequent accessors are infallible.
+        sfst.metadata()?;
         let primary = sfst.primary()?;
         Ok(Self {
             sfst,
             summary,
-            metadata,
             primary,
         })
     }
 
-    /// The cheap summary fields (timestamps, total logs, streams).
-    pub fn summary(&self) -> &FileSummary {
+    /// The cheap summary fields (timestamps, total logs, stream).
+    pub fn summary(&self) -> &Summary {
         &self.summary
     }
 
-    /// The heavy index metadata (histogram + id_ranges).
-    pub fn metadata(&self) -> &IndexMetadata {
-        &self.metadata
+    /// The heavy index metadata (histogram + id_ranges + field table).
+    pub fn metadata(&self) -> &Metadata {
+        self.sfst
+            .metadata()
+            .expect("metadata cached at IndexReader::open")
     }
 
     /// Total number of log entries in this index.
@@ -62,12 +63,12 @@ impl<'a> IndexReader<'a> {
 
     /// The ID ranges for the three cardinality tiers.
     pub fn id_ranges(&self) -> &IdRanges {
-        &self.metadata.id_ranges
+        &self.metadata().id_ranges
     }
 
     /// The sparse histogram for time-range estimation.
     pub fn histogram(&self) -> &SparseHistogram {
-        &self.metadata.histogram
+        &self.metadata().histogram
     }
 
     /// The file's single stream.
@@ -75,13 +76,11 @@ impl<'a> IndexReader<'a> {
         &self.summary.stream
     }
 
-    // ── Field table (FLDS chunk, loaded on demand) ──────────────────
+    // ── Field table ─────────────────────────────────────────────────
 
-    /// Load and deserialize the field table from the FLDS chunk.
-    ///
-    /// Cached on the underlying [`sfst::Reader`] after first call.
-    pub fn field_table(&self) -> Result<&[FieldEntry], sfst::Error> {
-        self.sfst.fields()
+    /// The field table (carried inside [`Metadata`]).
+    pub fn field_table(&self) -> &[FieldEntry] {
+        &self.metadata().fields
     }
 
     // ── Primary FST lookups ─────────────────────────────────────────
@@ -140,7 +139,7 @@ impl<'a> IndexReader<'a> {
 
     /// Determine which cardinality tier a [`KvId`] belongs to.
     pub fn kv_id_tier(&self, id: KvId) -> FieldTier {
-        let ranges = &self.metadata.id_ranges;
+        let ranges = self.id_ranges();
         if id.0 < ranges.low_end.0 {
             FieldTier::Low
         } else if id.0 < ranges.mid_end.0 {
@@ -158,7 +157,7 @@ impl<'a> IndexReader<'a> {
         &self,
         field_table: &[FieldEntry],
     ) -> Result<Vec<String>, sfst::Error> {
-        let total = self.metadata.id_ranges.high_end.0 as usize;
+        let total = self.metadata().id_ranges.high_end.0 as usize;
         let mut table = vec![String::new(); total];
         let mut kv_id = 0usize;
 

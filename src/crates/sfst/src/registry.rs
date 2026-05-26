@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use file_registry::{ByteSize, FileDir, FileId, FileRegistry, Query};
 
-use crate::FileSummary;
+use crate::Summary;
 
 const SFST_EXT: &str = "sfst";
 
@@ -14,7 +14,7 @@ pub struct File {
     /// Cheap summary fields lifted off the SFST file's `SUMR` chunk. Stored
     /// inline so the query planner and catalog builder can read them without
     /// opening the file.
-    pub summary: FileSummary,
+    pub summary: Summary,
     pending_deletion: bool,
 }
 
@@ -79,7 +79,7 @@ impl Registry {
         recovered
     }
 
-    pub fn track(&mut self, id: FileId, size: ByteSize, summary: FileSummary) {
+    pub fn track(&mut self, id: FileId, size: ByteSize, summary: Summary) {
         self.inner.insert(
             id.seq,
             File {
@@ -215,7 +215,7 @@ impl Registry {
 ///   query that includes second 0; in practice they're filtered earlier
 ///   by retention.
 /// - A query with `start == end` is empty and matches no file.
-fn range_overlaps(summary: &FileSummary, q: &Range<u32>) -> bool {
+fn range_overlaps(summary: &Summary, q: &Range<u32>) -> bool {
     if q.start >= q.end {
         return false;
     }
@@ -227,7 +227,7 @@ fn range_overlaps(summary: &FileSummary, q: &Range<u32>) -> bool {
 /// Used by [`Registry::recover`] to rebuild summaries on startup. Reads the
 /// whole file into memory, which is fine for the small SFSTs typical for
 /// log indexes; switch to mmap if recovery becomes I/O-bound.
-fn read_summary(path: &Path) -> Result<FileSummary, String> {
+fn read_summary(path: &Path) -> Result<Summary, String> {
     let data = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
     let reader = crate::Reader::open(&data).map_err(|e| format!("open: {e}"))?;
     reader.summary().map_err(|e| format!("summary: {e}"))
@@ -239,7 +239,7 @@ mod tests {
     use crate::{StreamEntry, Writer, pack};
     use fst_index::FstIndex;
 
-    fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &FileSummary) {
+    fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &Summary) {
         let primary: FstIndex<u64> = FstIndex::build([("k", 1u64)]).unwrap();
         let mut writer = Writer::new();
         writer.set_summary(pack(summary, 1).unwrap());
@@ -257,13 +257,13 @@ mod tests {
         let id1 = FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), 1, 7);
         let id2 = FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), 2, 7);
 
-        let s1 = FileSummary {
+        let s1 = Summary {
             min_timestamp_s: 100,
             max_timestamp_s: 200,
             total_logs: 50,
             stream: StreamEntry::new("ns", "a"),
         };
-        let s2 = FileSummary {
+        let s2 = Summary {
             min_timestamp_s: 300,
             max_timestamp_s: 400,
             total_logs: 25,
@@ -285,7 +285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id_good = FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), 1, 7);
         let id_bad = FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), 2, 7);
-        let s = FileSummary {
+        let s = Summary {
             min_timestamp_s: 1,
             max_timestamp_s: 2,
             total_logs: 1,
@@ -307,7 +307,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = Registry::new(dir.path());
         let id = FileId::new(uuid::Uuid::nil(), uuid::Uuid::from_u128(1), 5, 7);
-        let summary = FileSummary {
+        let summary = Summary {
             min_timestamp_s: 1,
             max_timestamp_s: 9,
             total_logs: 7,
@@ -331,7 +331,7 @@ mod tests {
             reg.track(
                 fid(seq),
                 ByteSize(1),
-                FileSummary {
+                Summary {
                     min_timestamp_s: min_s,
                     max_timestamp_s: max_s,
                     total_logs: 1,

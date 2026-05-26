@@ -23,7 +23,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use roaring::RoaringBitmap;
-use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, IndexMetadata, KvId};
+use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, Metadata, KvId};
 use treight::Bitmap;
 
 use crate::bitset::Bitset;
@@ -255,13 +255,13 @@ fn build_streams(
 /// Phase 1 and produces a split-fst file with: summary, metadata, primary FST,
 /// secondary chunks (mid/high-card), and per-stream log entries.
 ///
-/// Returns both the cheap-to-read [`sfst::FileSummary`] (which the registry
-/// stores inline) and the heavier [`IndexMetadata`] (only needed for query
+/// Returns both the cheap-to-read [`sfst::Summary`] (which the registry
+/// stores inline) and the heavier [`Metadata`] (only needed for query
 /// planning and execution).
 pub fn build_and_write(
     wal_index: &WalIndex,
     out_path: &Path,
-) -> Result<(sfst::FileSummary, IndexMetadata), Box<dyn std::error::Error>> {
+) -> Result<(sfst::Summary, Metadata), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
 
     let mut writer = sfst::Writer::new();
@@ -288,8 +288,8 @@ pub fn build_and_write(
         .collect();
     writer.set_timestamps(sfst::pack(&timestamps_chronological, 1)?);
 
-    // Field table (FLDS chunk).
-    let field_table: Vec<FieldEntry> = wal_index
+    // Field table, ordered low → mid → high (each tier sorted by name).
+    let fields: Vec<FieldEntry> = wal_index
         .low_fields()
         .iter()
         .map(|(name, ids)| FieldEntry {
@@ -313,13 +313,12 @@ pub fn build_and_write(
                 }),
         )
         .collect();
-    writer.set_fields(sfst::pack(&field_table, 1)?);
 
     // Compute histogram once; reused by both the summary (for min/max
     // derivation) and the heavy metadata.
     let histogram = wal_index.sparse_histogram(&time_order);
 
-    let summary = sfst::FileSummary {
+    let summary = sfst::Summary {
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
         max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs: wal_index.num_logs() as u32,
@@ -330,9 +329,10 @@ pub fn build_and_write(
     };
     writer.set_summary(sfst::pack(&summary, 1)?);
 
-    let metadata = IndexMetadata {
+    let metadata = Metadata {
         histogram,
         id_ranges,
+        fields,
     };
     writer.set_metadata(sfst::pack(&metadata, 1)?);
 
