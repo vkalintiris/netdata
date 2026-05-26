@@ -280,6 +280,14 @@ pub fn build_and_write(
     let (kv_to_file, id_ranges) = build_id_translation(wal_index);
     let stream = build_streams(wal_index, &time_order, &kv_to_file, &mut writer)?;
 
+    // Per-log timestamps in chronological order, parallel-indexed to
+    // the stream-log-entries chunk.
+    let timestamps_chronological: Vec<i64> = time_order
+        .iter_by_time()
+        .map(|ins| wal_index.timestamps[ins as usize])
+        .collect();
+    writer.set_timestamps(sfst::pack(&timestamps_chronological, 1)?);
+
     // Field table (FLDS chunk).
     let field_table: Vec<FieldEntry> = wal_index
         .low_fields()

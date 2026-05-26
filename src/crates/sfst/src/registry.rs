@@ -244,6 +244,7 @@ mod tests {
         let mut writer = Writer::new();
         writer.set_summary(pack(summary, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_timestamps(pack(&Vec::<i64>::new(), 1).unwrap());
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
         let path = dir.join(id.to_filename(SFST_EXT));

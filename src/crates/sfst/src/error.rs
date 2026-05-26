@@ -47,6 +47,12 @@ pub enum Error {
     #[error("no primary chunk set")]
     NoPrimary,
 
+    /// [`Writer::write_to`](crate::Writer::write_to) was called without
+    /// [`Writer::set_timestamps`](crate::Writer::set_timestamps) having
+    /// been called first. The `TIMS` chunk is mandatory.
+    #[error("no timestamps chunk set")]
+    NoTimestamps,
+
     /// `gix-chunk` failed to parse the TOC (on open) or lay it out
     /// (on write). Carries `gix-chunk`'s own error message.
     #[error("TOC error: {0}")]

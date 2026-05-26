@@ -82,6 +82,7 @@ within its tier in the trailing two bytes.
     "PRIM"      FstIndex<BitmapValue>                    Yes
     "MF{hi}{lo}" FstIndex<BitmapValue>  (mid-card field) No
     "HF{hi}{lo}" Vec<(String, BitmapValue)>  (high-card) No
+    "TIMS"      Vec<i64>  (per-log nanosecond timestamps) Yes
     "STRM"      Vec<Vec<KvId>>  (stream log entries)     No (always emitted)
 
 Indexed ids:
@@ -99,9 +100,9 @@ Indices start at 0 and are contiguous within each tier. A producer
 emitting `M` mid-card chunks uses ids `MF{0}` through `MF{M-1}`;
 similarly for `HF{i}`.
 
-`PRIM` is the only required chunk; a writer fails if it isn't set.
-The others are technically optional at the container level, but the
-canonical producer always emits all of them.
+`PRIM` and `TIMS` are required; a writer fails if either isn't set.
+The other named chunks are technically optional at the container
+level, but the canonical producer always emits all of them.
 
 ---
 
@@ -194,6 +195,22 @@ in `FLDS`. Same payload schema as `PRIM` — an
 One chunk per high-cardinality field. Payload is
 `Vec<(String, BitmapValue)>` sorted by key. Not an FST.
 
+### `TIMS` — Per-log timestamps
+
+`Vec<i64>` of nanosecond timestamps in chronological order,
+parallel-indexed to [`STRM`](#strm--stream-log-entries):
+`timestamps[i]` is the nanosecond timestamp of the log whose attribute
+list lives at `entries[i]`.
+
+Per-log timestamps follow the OTel hierarchy: `time_unix_nano` →
+`observed_time_unix_nano` → `ingestion_ns + row_offset` (the indexer
+synthesizes a fallback if both OTel timestamps are absent so that
+every log has a well-defined timestamp).
+
+Required: a writer that omits this chunk fails with
+`Error::NoTimestamps`. Downstream tooling (display, sub-second
+filtering, time-of-event citation) relies on this chunk.
+
 ### `STRM` — Stream-log-entries
 
 `Vec<Vec<KvId>>` indexed by chronological log position:
@@ -254,7 +271,7 @@ payload, but the header and TOC are unprotected.
 
 ## Format Version
 
-The current version is **2**.
+The current version is **1**.
 
 A bump is required for any change that breaks the on-disk contract:
 

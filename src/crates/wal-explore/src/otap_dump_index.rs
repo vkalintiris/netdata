@@ -18,16 +18,11 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
         t.elapsed().as_secs_f64() * 1000.0,
     );
 
-    let num_field_chunks = fields
-        .iter()
-        .filter(|f| f.tier != sfst::FieldTier::Low)
-        .count();
-
     let mut total_printed = 0u32;
     let stream = reader.stream();
     let t = Instant::now();
-    let _ = num_field_chunks; // sfst now resolves the stream-entries position itself
     let entries = reader.load_stream_entries()?;
+    let timestamps = reader.load_timestamps()?;
     eprintln!(
         "stream {}/{}: {} entries ({:.0}ms)",
         stream.namespace,
@@ -36,15 +31,24 @@ pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error:
         t.elapsed().as_secs_f64() * 1000.0,
     );
 
-    for (pos, file_ids) in entries.iter().enumerate() {
+    if timestamps.len() != entries.len() {
+        eprintln!(
+            "warning: timestamps ({}) and stream-entries ({}) lengths differ",
+            timestamps.len(),
+            entries.len(),
+        );
+    }
+
+    for (pos, kv_ids) in entries.iter().enumerate() {
         if let Some(max) = limit {
             if total_printed >= max {
                 return Ok(());
             }
         }
 
-        println!("--- log {total_printed} (pos {pos})");
-        for id in file_ids {
+        let ts = timestamps.get(pos).copied().unwrap_or(0);
+        println!("--- log {total_printed} (pos {pos}, t={ts}ns)");
+        for id in kv_ids {
             let idx = id.0 as usize;
             if idx < string_table.len() {
                 println!("  {}", string_table[idx]);

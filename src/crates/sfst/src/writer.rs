@@ -9,8 +9,8 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, Error, HEADER_SIZE, MAGIC,
-    VERSION, high_field_id, mid_field_id,
+    CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error,
+    HEADER_SIZE, MAGIC, VERSION, high_field_id, mid_field_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
@@ -29,7 +29,7 @@ pub fn pack<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> 
 ///
 /// On-disk ordering is fixed regardless of the order setters are
 /// called: SUMR → META → FLDS → PRIM → mid-card fields →
-/// high-card fields → stream-log-entries.
+/// high-card fields → TIMS → stream-log-entries.
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
@@ -37,6 +37,7 @@ pub struct Writer {
     primary: Option<Vec<u8>>,
     mid_fields: Vec<Vec<u8>>,
     high_fields: Vec<Vec<u8>>,
+    timestamps: Option<Vec<u8>>,
     stream_entries: Option<Vec<u8>>,
 }
 
@@ -49,6 +50,7 @@ impl Writer {
             primary: None,
             mid_fields: Vec::new(),
             high_fields: Vec::new(),
+            timestamps: None,
             stream_entries: None,
         }
     }
@@ -87,6 +89,13 @@ impl Writer {
         idx
     }
 
+    /// Set the per-log timestamps chunk (pre-compressed bytes). Mandatory:
+    /// every SFST must carry per-log nanosecond timestamps parallel-indexed
+    /// to the stream-log-entries chunk.
+    pub fn set_timestamps(&mut self, packed: Vec<u8>) {
+        self.timestamps = Some(packed);
+    }
+
     /// Set the stream-log-entries chunk (pre-compressed bytes).
     pub fn set_stream_entries(&mut self, packed: Vec<u8>) {
         self.stream_entries = Some(packed);
@@ -96,16 +105,18 @@ impl Writer {
     ///
     /// Fixed on-disk order: SUMR (if present), META (if present),
     /// FLDS (if present), PRIM, mid-card field chunks in append order,
-    /// high-card field chunks in append order, stream-log-entries
+    /// high-card field chunks in append order, TIMS, stream-log-entries
     /// (if present).
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
+        let timestamps = self.timestamps.as_ref().ok_or(Error::NoTimestamps)?;
         let num_chunks = self.summary.is_some() as usize
             + self.metadata.is_some() as usize
             + self.fields.is_some() as usize
             + 1 // primary
             + self.mid_fields.len()
             + self.high_fields.len()
+            + 1 // timestamps
             + self.stream_entries.is_some() as usize;
 
         // Header
@@ -132,6 +143,7 @@ impl Writer {
         for (i, chunk) in self.high_fields.iter().enumerate() {
             index.plan_chunk(high_field_id(i as u16), chunk.len() as u64);
         }
+        index.plan_chunk(CHUNK_TIMS, timestamps.len() as u64);
         if let Some(stream) = &self.stream_entries {
             index.plan_chunk(CHUNK_STREAM, stream.len() as u64);
         }
@@ -169,10 +181,17 @@ impl Writer {
             chunk_writer.write_all(chunk)?;
         }
         for (i, chunk) in self.high_fields.iter().enumerate() {
-            let id = chunk_writer.next_chunk().expect("expected high-field chunk");
+            let id = chunk_writer
+                .next_chunk()
+                .expect("expected high-field chunk");
             assert_eq!(id, high_field_id(i as u16));
             chunk_writer.write_all(chunk)?;
         }
+        let id = chunk_writer
+            .next_chunk()
+            .expect("expected timestamps chunk");
+        assert_eq!(id, CHUNK_TIMS);
+        chunk_writer.write_all(timestamps)?;
         if let Some(stream) = &self.stream_entries {
             let id = chunk_writer
                 .next_chunk()

@@ -118,6 +118,14 @@ impl<'a> IndexReader<'a> {
         self.sfst.high_field(high_index)
     }
 
+    // ── Per-log timestamps ──────────────────────────────────────────
+
+    /// Load the per-log nanosecond timestamps, chronologically ordered
+    /// and parallel-indexed to [`load_stream_entries`](Self::load_stream_entries).
+    pub fn load_timestamps(&self) -> Result<Vec<i64>, sfst::Error> {
+        self.sfst.timestamps()
+    }
+
     // ── Stream log entries ──────────────────────────────────────────
 
     /// Load the file's stream log entries.

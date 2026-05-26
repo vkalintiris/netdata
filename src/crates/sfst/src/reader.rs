@@ -12,8 +12,8 @@ use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    BitmapValue, CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, Error,
-    FieldEntry, FieldTier, FileSummary, HEADER_SIZE, IndexMetadata, KvId, MAGIC, VERSION,
+    BitmapValue, CHUNK_FLDS, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS,
+    Error, FieldEntry, FieldTier, FileSummary, HEADER_SIZE, IndexMetadata, KvId, MAGIC, VERSION,
     high_field_id, mid_field_id,
 };
 
@@ -113,7 +113,11 @@ impl<'a> Reader<'a> {
             // mode `std::cell::OnceCell` supports).
             let _ = self.fields.set(decoded);
         }
-        Ok(self.fields.get().expect("fields just initialized").as_slice())
+        Ok(self
+            .fields
+            .get()
+            .expect("fields just initialized")
+            .as_slice())
     }
 
     /// Raw compressed bytes of the fields chunk.
@@ -185,6 +189,23 @@ impl<'a> Reader<'a> {
         self.toc
             .data_by_id(self.data, high_field_id(index))
             .map_err(|_| Error::ChunkNotFound(index))
+    }
+
+    // ── Per-log timestamps ───────────────────────────────────────────
+
+    /// Decompress and deserialize the per-log timestamps chunk.
+    ///
+    /// Returns a `Vec<i64>` of nanosecond timestamps in chronological
+    /// order, parallel-indexed to [`stream_entries`](Self::stream_entries):
+    /// `timestamps[i]` is the timestamp of the log whose attribute
+    /// list lives at `entries[i]`.
+    pub fn timestamps(&self) -> Result<Vec<i64>, Error> {
+        unpack(self.timestamps_raw()?)
+    }
+
+    /// Raw compressed bytes of the timestamps chunk.
+    pub fn timestamps_raw(&self) -> Result<&'a [u8], Error> {
+        self.chunk_raw_by_id(CHUNK_TIMS)
     }
 
     // ── Stream-log-entries chunk ─────────────────────────────────────

@@ -48,21 +48,21 @@ pub use file_registry::StreamEntry;
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId,
-    SparseHistogram,
+    BitmapValue, FieldEntry, FieldTier, FileSummary, IdRanges, IndexMetadata, KvId, SparseHistogram,
 };
 pub use writer::{Writer, pack};
 
 // ── Format constants ─────────────────────────────────────────────
 
 const MAGIC: &[u8; 4] = b"SFST";
-const VERSION: u32 = 2;
+const VERSION: u32 = 1;
 const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
 
 const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
 const CHUNK_META: gix_chunk::Id = *b"META";
 const CHUNK_FLDS: gix_chunk::Id = *b"FLDS";
 const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
+const CHUNK_TIMS: gix_chunk::Id = *b"TIMS";
 const CHUNK_STREAM: gix_chunk::Id = *b"STRM";
 
 /// Chunk id for the mid-card field FST at `index`. The id encodes the
@@ -92,9 +92,12 @@ mod tests {
     }
 
     fn build_primary(keys: &[&str]) -> FstIndex<BitmapValue> {
-        let entries: Vec<(&str, BitmapValue)> =
-            keys.iter().map(|k| (*k, empty_bitmap())).collect();
+        let entries: Vec<(&str, BitmapValue)> = keys.iter().map(|k| (*k, empty_bitmap())).collect();
         FstIndex::build(entries).unwrap()
+    }
+
+    fn empty_timestamps() -> Vec<u8> {
+        pack(&Vec::<i64>::new(), 1).unwrap()
     }
 
     fn sample_summary() -> FileSummary {
@@ -126,6 +129,7 @@ mod tests {
 
         let mut writer = Writer::new();
         writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_timestamps(empty_timestamps());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
@@ -150,6 +154,7 @@ mod tests {
         let mut writer = Writer::new();
         writer.set_summary(pack(&summary, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_timestamps(empty_timestamps());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
@@ -168,6 +173,7 @@ mod tests {
         let mut writer = Writer::new();
         writer.set_metadata(pack(&metadata, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_timestamps(empty_timestamps());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
@@ -213,9 +219,9 @@ mod tests {
         let primary = build_primary(&["level=info"]);
         let mid_host = build_primary(&["host=h1", "host=h2"]);
         let mid_pod = build_primary(&["pod=p1", "pod=p2", "pod=p3"]);
-        let high_trace: Vec<(String, BitmapValue)> =
-            vec![("trace_id=abc".into(), empty_bitmap())];
+        let high_trace: Vec<(String, BitmapValue)> = vec![("trace_id=abc".into(), empty_bitmap())];
         let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0), KvId(1)], vec![KvId(2)]];
+        let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000, 1_700_000_000_500_000_000];
 
         let mut writer = Writer::new();
         writer.set_fields(pack(&fields, 1).unwrap());
@@ -223,6 +229,7 @@ mod tests {
         assert_eq!(writer.add_mid_field(pack(&mid_host, 1).unwrap()), 0);
         assert_eq!(writer.add_mid_field(pack(&mid_pod, 1).unwrap()), 1);
         assert_eq!(writer.add_high_field(pack(&high_trace, 1).unwrap()), 0);
+        writer.set_timestamps(pack(&timestamps, 1).unwrap());
         writer.set_stream_entries(pack(&stream_entries, 1).unwrap());
 
         let mut buf = Vec::new();
@@ -246,6 +253,9 @@ mod tests {
         assert_eq!(h0.len(), 1);
         assert_eq!(h0[0].0, "trace_id=abc");
 
+        // Timestamps chunk.
+        assert_eq!(reader.timestamps().unwrap(), timestamps);
+
         // Stream-log-entries chunk.
         let entries = reader.stream_entries().unwrap();
         assert_eq!(entries.len(), 2);
@@ -266,6 +276,7 @@ mod tests {
         writer.set_fields(pack(&fields, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         writer.add_mid_field(pack(&mid, 1).unwrap());
+        writer.set_timestamps(empty_timestamps());
 
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
@@ -273,6 +284,19 @@ mod tests {
         let reader = Reader::open(&buf).unwrap();
         assert!(reader.mid_field(0).is_ok());
         assert!(matches!(reader.mid_field(1), Err(Error::ChunkNotFound(1))));
+    }
+
+    #[test]
+    fn error_on_no_timestamps() {
+        let primary = build_primary(&["k"]);
+        let mut writer = Writer::new();
+        writer.set_primary(pack(&primary, 1).unwrap());
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            writer.write_to(&mut buf),
+            Err(Error::NoTimestamps)
+        ));
     }
 
     #[test]
@@ -286,12 +310,14 @@ mod tests {
         }];
         let primary = build_primary(&["level=info"]);
         let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0)]];
+        let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000];
 
         let mut writer = Writer::new();
         writer.set_summary(pack(&summary, 1).unwrap());
         writer.set_metadata(pack(&metadata, 1).unwrap());
         writer.set_fields(pack(&fields, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
+        writer.set_timestamps(pack(&timestamps, 1).unwrap());
         writer.set_stream_entries(pack(&stream_entries, 1).unwrap());
 
         let mut buf = Vec::new();
@@ -302,6 +328,7 @@ mod tests {
         assert_eq!(reader.fields().unwrap().len(), 1);
         assert_eq!(reader.num_mid().unwrap(), 0);
         assert_eq!(reader.num_high().unwrap(), 0);
+        assert_eq!(reader.timestamps().unwrap(), timestamps);
         assert_eq!(reader.stream_entries().unwrap(), stream_entries);
     }
 }
