@@ -44,11 +44,11 @@ mod writer;
 pub mod registry;
 
 pub use error::Error;
-pub use file_registry::StreamEntry;
+pub use file_registry::ServiceStream;
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, SparseHistogram,
+    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, Histogram,
 };
 pub use writer::{Writer, pack};
 
@@ -104,13 +104,13 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
-            stream: StreamEntry::new("prod", "api"),
+            stream: ServiceStream::new("prod", "api"),
         }
     }
 
     fn sample_metadata() -> Metadata {
         Metadata {
-            histogram: SparseHistogram {
+            histogram: Histogram {
                 timestamps: vec![100, 200, 300],
                 counts: vec![10, 25, 50],
             },
@@ -215,7 +215,7 @@ mod tests {
             },
         ];
         let metadata = Metadata {
-            histogram: SparseHistogram {
+            histogram: Histogram {
                 timestamps: vec![1_700_000_000],
                 counts: vec![2],
             },

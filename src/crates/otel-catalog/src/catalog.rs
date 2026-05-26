@@ -120,7 +120,7 @@ struct Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::StreamEntry;
+    use crate::entry::ServiceStream;
     use file_registry::{ByteSize, TimestampNs};
 
     fn test_catalog() -> Catalog {
@@ -132,7 +132,7 @@ mod tests {
         )
     }
 
-    fn entry_at(seq: u64, min_s: u32, max_s: u32, stream: StreamEntry) -> CatalogEntry {
+    fn entry_at(seq: u64, min_s: u32, max_s: u32, stream: ServiceStream) -> CatalogEntry {
         CatalogEntry {
             id: FileId::new(Uuid::nil(), Uuid::from_u128(1), seq, 0),
             remote_key: format!("tenant1/sfst/2026-04-17/{seq}.sfst"),
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn add_then_remove_returns_to_empty() {
         let mut c = test_catalog();
-        let e = entry_at(1, 100, 200, StreamEntry::new("", ""));
+        let e = entry_at(1, 100, 200, ServiceStream::new("", ""));
         c.add(e.clone());
         assert_eq!(c.entries.len(), 1);
 
@@ -166,8 +166,8 @@ mod tests {
     #[test]
     fn roundtrip_json_preserves_entries_and_metadata() {
         let mut c = test_catalog();
-        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")));
-        c.add(entry_at(2, 300, 500, StreamEntry::new("", "")));
+        c.add(entry_at(1, 100, 200, ServiceStream::new("prod", "api")));
+        c.add(entry_at(2, 300, 500, ServiceStream::new("", "")));
 
         let bytes = c.to_json().unwrap();
         let parsed = Catalog::from_json(&bytes).unwrap();
@@ -177,9 +177,9 @@ mod tests {
     #[test]
     fn find_range_overlap_semantics() {
         let mut c = test_catalog();
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
-        c.add(entry_at(2, 300, 400, StreamEntry::new("", "")));
-        c.add(entry_at(3, 150, 350, StreamEntry::new("", "")));
+        c.add(entry_at(1, 100, 200, ServiceStream::new("", "")));
+        c.add(entry_at(2, 300, 400, ServiceStream::new("", "")));
+        c.add(entry_at(3, 150, 350, ServiceStream::new("", "")));
 
         // Window [50, 250) — file 1's max=200 is in range, file 3's
         // min=150 is in range, file 2's min=300 is past the upper bound.
@@ -221,13 +221,13 @@ mod tests {
     fn find_with_stream_filter_matches_by_exact_equality() {
         let mut c = test_catalog();
         // Two entries on the "api" stream, one on "worker".
-        c.add(entry_at(1, 100, 200, StreamEntry::new("prod", "api")));
-        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "worker")));
-        c.add(entry_at(3, 100, 200, StreamEntry::new("prod", "api")));
+        c.add(entry_at(1, 100, 200, ServiceStream::new("prod", "api")));
+        c.add(entry_at(2, 100, 200, ServiceStream::new("prod", "worker")));
+        c.add(entry_at(3, 100, 200, ServiceStream::new("prod", "api")));
 
         let q = Query {
             time_range: 0..1000,
-            stream: Some(StreamEntry::new("prod", "api")),
+            stream: Some(ServiceStream::new("prod", "api")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1, 3]);
@@ -236,12 +236,12 @@ mod tests {
     #[test]
     fn find_empty_string_stream_matches_only_empty_string_entry() {
         let mut c = test_catalog();
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
-        c.add(entry_at(2, 100, 200, StreamEntry::new("prod", "api")));
+        c.add(entry_at(1, 100, 200, ServiceStream::new("", "")));
+        c.add(entry_at(2, 100, 200, ServiceStream::new("prod", "api")));
 
         let q = Query {
             time_range: 0..1000,
-            stream: Some(StreamEntry::new("", "")),
+            stream: Some(ServiceStream::new("", "")),
         };
         let hits: Vec<u64> = c.find(&q).map(|e| e.id.seq).collect();
         assert_eq!(hits, vec![1]);
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn find_empty_query_matches_nothing() {
         let mut c = test_catalog();
-        c.add(entry_at(1, 100, 200, StreamEntry::new("", "")));
+        c.add(entry_at(1, 100, 200, ServiceStream::new("", "")));
 
         // start == end → empty window.
         let q = Query {

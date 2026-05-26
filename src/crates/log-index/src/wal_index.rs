@@ -11,22 +11,11 @@
 //!    time-sort remap and sparse histogram.
 
 use bumpalo::Bump;
+use file_registry::ServiceStream;
 use roaring::RoaringBitmap;
-use sfst::SparseHistogram;
+use sfst::Histogram;
 
 use crate::kv_interner::{KeyValueId, KeyValueInterner};
-
-/// A stream identified by its (service.namespace, service.name) pair.
-///
-/// Each WAL file holds exactly one such stream; the ingestor's collision
-/// table guarantees this. There is no `positions` field because every log
-/// in the file belongs to the stream — callers iterate `time_order` to
-/// reach them in chronological order.
-#[derive(Debug)]
-pub struct ServiceStream {
-    pub namespace: String,
-    pub name: String,
-}
 
 /// The WAL contains multiple distinct `(namespace, name)` identities — an
 /// `ns_hash` collision slipped past the ingestor's canonical-stream
@@ -91,7 +80,7 @@ impl<'a> WalIndex<'a> {
     }
 
     /// Build a sparse histogram from the timestamps in chronological order.
-    pub fn sparse_histogram(&self, time_order: &TimeOrder) -> SparseHistogram {
+    pub fn sparse_histogram(&self, time_order: &TimeOrder) -> Histogram {
         build_sparse_histogram(&self.timestamps, time_order)
     }
 
@@ -376,9 +365,9 @@ mod service_stream_tests {
 /// Each entry records (second, running_count) — the cumulative number of
 /// logs up to and including that second. One entry per second that has at
 /// least one log.
-fn build_sparse_histogram(timestamps: &[i64], time_order: &TimeOrder) -> SparseHistogram {
+fn build_sparse_histogram(timestamps: &[i64], time_order: &TimeOrder) -> Histogram {
     if timestamps.is_empty() {
-        return SparseHistogram {
+        return Histogram {
             timestamps: Vec::new(),
             counts: Vec::new(),
         };
@@ -403,7 +392,7 @@ fn build_sparse_histogram(timestamps: &[i64], time_order: &TimeOrder) -> SparseH
     hist_ts.push(prev_sec);
     hist_counts.push(timestamps.len() as u32);
 
-    SparseHistogram {
+    Histogram {
         timestamps: hist_ts,
         counts: hist_counts,
     }

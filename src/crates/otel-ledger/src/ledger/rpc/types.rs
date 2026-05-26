@@ -209,8 +209,8 @@ pub(super) struct StreamRef {
     name: String,
 }
 
-impl From<&file_registry::StreamEntry> for StreamRef {
-    fn from(s: &file_registry::StreamEntry) -> Self {
+impl From<&file_registry::ServiceStream> for StreamRef {
+    fn from(s: &file_registry::ServiceStream) -> Self {
         Self {
             namespace: s.namespace.clone(),
             name: s.name.clone(),

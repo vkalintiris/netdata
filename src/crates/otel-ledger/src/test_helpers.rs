@@ -11,6 +11,6 @@ pub(crate) fn empty_summary() -> sfst::Summary {
         min_timestamp_s: 0,
         max_timestamp_s: 0,
         total_logs: 0,
-        stream: sfst::StreamEntry::new("", ""),
+        stream: sfst::ServiceStream::new("", ""),
     }
 }

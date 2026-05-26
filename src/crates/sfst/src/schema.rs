@@ -5,7 +5,7 @@
 //! decode them via the typed accessors on [`crate::Reader`]. The
 //! container layout and chunk encoding are specified in `FORMAT.md`.
 
-use file_registry::StreamEntry;
+use file_registry::ServiceStream;
 use serde::{Deserialize, Serialize};
 use treight::Bitmap;
 
@@ -21,7 +21,7 @@ pub struct Summary {
     pub min_timestamp_s: u32,
     pub max_timestamp_s: u32,
     pub total_logs: u32,
-    pub stream: StreamEntry,
+    pub stream: ServiceStream,
 }
 
 // ── META ─────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ pub struct Summary {
 /// decode [`Summary`] from the `SUMR` chunk instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
-    pub histogram: SparseHistogram,
+    pub histogram: Histogram,
     pub id_ranges: IdRanges,
     pub fields: Vec<FieldEntry>,
 }
@@ -46,7 +46,7 @@ pub struct Metadata {
 /// timestamps during indexing; used at query time for time-range
 /// narrowing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SparseHistogram {
+pub struct Histogram {
     /// Second-boundary timestamps as u32 seconds since Unix epoch.
     pub timestamps: Vec<u32>,
     /// Cumulative log count at each second boundary.

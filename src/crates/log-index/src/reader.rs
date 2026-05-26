@@ -10,8 +10,8 @@
 
 use fst_index::FstIndex;
 use sfst::{
-    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, SparseHistogram,
-    StreamEntry,
+    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, Histogram,
+    ServiceStream,
 };
 
 /// A successfully opened split-FST index.
@@ -67,12 +67,12 @@ impl<'a> IndexReader<'a> {
     }
 
     /// The sparse histogram for time-range estimation.
-    pub fn histogram(&self) -> &SparseHistogram {
+    pub fn histogram(&self) -> &Histogram {
         &self.metadata().histogram
     }
 
     /// The file's single stream.
-    pub fn stream(&self) -> &StreamEntry {
+    pub fn stream(&self) -> &ServiceStream {
         &self.summary.stream
     }
 
@@ -129,7 +129,7 @@ impl<'a> IndexReader<'a> {
 
     /// Load the file's stream log entries.
     ///
-    /// Each SFST has exactly one stream (see [`sfst::StreamEntry`]); its
+    /// Each SFST has exactly one stream (see [`sfst::ServiceStream`]); its
     /// log entries chunk is the trailing secondary chunk.
     pub fn load_stream_entries(&self) -> Result<Vec<Vec<KvId>>, sfst::Error> {
         self.sfst.stream_entries()

@@ -128,7 +128,7 @@ impl Registry {
     ///
     /// Stream filter, when present, is exact equality on
     /// `(namespace, name)` — there is no partial / prefix matching, by
-    /// design (each SFST holds exactly one stream; see [`crate::StreamEntry`]).
+    /// design (each SFST holds exactly one stream; see [`crate::ServiceStream`]).
     pub fn candidates<'a>(&'a self, q: &Query) -> impl Iterator<Item = &'a File> + 'a {
         // Extract q's contents upfront so the filter closures don't borrow
         // q. This decouples the iterator's lifetime from q's, letting
@@ -236,7 +236,7 @@ fn read_summary(path: &Path) -> Result<Summary, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StreamEntry, Writer, pack};
+    use crate::{ServiceStream, Writer, pack};
     use fst_index::FstIndex;
 
     fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &Summary) {
@@ -261,13 +261,13 @@ mod tests {
             min_timestamp_s: 100,
             max_timestamp_s: 200,
             total_logs: 50,
-            stream: StreamEntry::new("ns", "a"),
+            stream: ServiceStream::new("ns", "a"),
         };
         let s2 = Summary {
             min_timestamp_s: 300,
             max_timestamp_s: 400,
             total_logs: 25,
-            stream: StreamEntry::new("ns", "b"),
+            stream: ServiceStream::new("ns", "b"),
         };
         write_sfst_with_summary(dir.path(), id1, &s1);
         write_sfst_with_summary(dir.path(), id2, &s2);
@@ -289,7 +289,7 @@ mod tests {
             min_timestamp_s: 1,
             max_timestamp_s: 2,
             total_logs: 1,
-            stream: StreamEntry::new("", ""),
+            stream: ServiceStream::new("", ""),
         };
         write_sfst_with_summary(dir.path(), id_good, &s);
         // Garbage file with the right extension/name shape but invalid contents.
@@ -311,7 +311,7 @@ mod tests {
             min_timestamp_s: 1,
             max_timestamp_s: 9,
             total_logs: 7,
-            stream: StreamEntry::new("a", "b"),
+            stream: ServiceStream::new("a", "b"),
         };
         reg.track(id, ByteSize(1), summary.clone());
         assert_eq!(reg.get(5).unwrap().summary, summary);
@@ -335,7 +335,7 @@ mod tests {
                     min_timestamp_s: min_s,
                     max_timestamp_s: max_s,
                     total_logs: 1,
-                    stream: StreamEntry::new(ns, name),
+                    stream: ServiceStream::new(ns, name),
                 },
             );
         }
@@ -449,7 +449,7 @@ mod tests {
 
         let q = Query {
             time_range: 0..u32::MAX,
-            stream: Some(StreamEntry::new("prod", "api")),
+            stream: Some(ServiceStream::new("prod", "api")),
         };
         assert_eq!(seqs(reg.candidates(&q)), vec![1]);
     }

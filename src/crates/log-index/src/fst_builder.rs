@@ -23,12 +23,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use roaring::RoaringBitmap;
-use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, Metadata, KvId};
+use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, KvId, Metadata, ServiceStream};
 use treight::Bitmap;
 
 use crate::bitset::Bitset;
 use crate::kv_interner::KeyValueId;
-use crate::wal_index::{ServiceStream, TimeOrder, WalIndex};
+use crate::wal_index::{TimeOrder, WalIndex};
 
 /// Build tier-aligned key=value ID translation table.
 ///
@@ -322,7 +322,7 @@ pub fn build_and_write(
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
         max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs: wal_index.num_logs() as u32,
-        stream: sfst::StreamEntry {
+        stream: sfst::ServiceStream {
             namespace: stream.namespace.clone(),
             name: stream.name.clone(),
         },

@@ -1,11 +1,11 @@
-pub use file_registry::StreamEntry;
+pub use file_registry::ServiceStream;
 use file_registry::{ByteSize, FileId, TimestampNs};
 use serde::{Deserialize, Serialize};
 
 /// One uploaded SFST file tracked by the catalog.
 ///
 /// Each entry corresponds to exactly one SFST, which itself contains
-/// exactly one stream — see [`sfst::StreamEntry`].
+/// exactly one stream — see [`sfst::ServiceStream`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub id: FileId,
@@ -13,7 +13,7 @@ pub struct CatalogEntry {
     pub min_timestamp_s: u32,
     pub max_timestamp_s: u32,
     pub total_logs: u32,
-    pub stream: StreamEntry,
+    pub stream: ServiceStream,
     pub size: ByteSize,
     pub uploaded_at_ns: TimestampNs,
 }
@@ -25,17 +25,17 @@ mod tests {
 
     #[test]
     fn stream_entry_roundtrip() {
-        let s = StreamEntry::new("prod", "api");
+        let s = ServiceStream::new("prod", "api");
         let json = serde_json::to_string(&s).unwrap();
-        let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
+        let parsed: ServiceStream = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
     }
 
     #[test]
     fn stream_entry_empty_strings_roundtrip() {
-        let s = StreamEntry::new("", "");
+        let s = ServiceStream::new("", "");
         let json = serde_json::to_string(&s).unwrap();
-        let parsed: StreamEntry = serde_json::from_str(&json).unwrap();
+        let parsed: ServiceStream = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
     }
 
@@ -47,7 +47,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 1234,
-            stream: StreamEntry::new("prod", "api"),
+            stream: ServiceStream::new("prod", "api"),
             size: ByteSize(9876),
             uploaded_at_ns: TimestampNs(1_700_003_700_000_000_000),
         };

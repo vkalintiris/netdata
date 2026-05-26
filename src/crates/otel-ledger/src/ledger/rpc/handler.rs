@@ -123,7 +123,7 @@ fn plan_to_candidates(registries: &TenantRegistries, q: &file_registry::Query) -
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use file_registry::{ByteSize, FileId, StreamEntry, TenantId, TimestampNs};
+    use file_registry::{ByteSize, FileId, ServiceStream, TenantId, TimestampNs};
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -182,7 +182,7 @@ mod tests {
                 min_timestamp_s: min_s,
                 max_timestamp_s: max_s,
                 total_logs: 1,
-                stream: StreamEntry::new("ns", "a"),
+                stream: ServiceStream::new("ns", "a"),
             },
         );
     }
@@ -195,7 +195,7 @@ mod tests {
             min_timestamp_s: min_s,
             max_timestamp_s: max_s,
             total_logs: 1,
-            stream: StreamEntry::new("ns", "a"),
+            stream: ServiceStream::new("ns", "a"),
             size: ByteSize(1),
             uploaded_at_ns: TimestampNs(0),
         };

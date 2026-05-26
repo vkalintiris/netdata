@@ -1,6 +1,6 @@
 //! Catalog data model: what the otel-plugin records about uploaded SFST files.
 //!
-//! This crate defines the types (`Catalog`, `CatalogEntry`, `StreamEntry`)
+//! This crate defines the types (`Catalog`, `CatalogEntry`, `ServiceStream`)
 //! and their JSON serialization. It does not perform I/O — writing,
 //! uploading, and reconciliation live in later phases of the catalog
 //! implementation plan. Query filtering uses [`file_registry::Query`] —
@@ -12,7 +12,7 @@ pub mod entry;
 pub mod registry;
 
 pub use catalog::Catalog;
-pub use entry::{CatalogEntry, StreamEntry};
+pub use entry::{CatalogEntry, ServiceStream};
 pub use registry::{File, Registry, filename};
 
 /// Current on-disk / on-wire catalog format version.

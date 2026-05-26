@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use crate::component::ComponentHandle;
     use file_registry::FileId;
-    use otel_catalog::{CatalogEntry, StreamEntry};
+    use otel_catalog::{CatalogEntry, ServiceStream};
 
     fn machine() -> Uuid {
         Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
@@ -250,7 +250,7 @@ mod tests {
             min_timestamp_s: 1_700_000_000,
             max_timestamp_s: 1_700_003_600,
             total_logs: 100,
-            stream: StreamEntry::new("prod", "api"),
+            stream: ServiceStream::new("prod", "api"),
             size: ByteSize(1024),
             uploaded_at_ns: file_registry::TimestampNs(2_000_000_000),
         }

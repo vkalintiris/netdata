@@ -156,7 +156,7 @@ pub fn compute_ns_hash(namespace: Option<&str>, name: Option<&str>) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// StreamEntry
+// ServiceStream
 // ---------------------------------------------------------------------------
 
 /// `(namespace, name)` pair identifying a log stream.
@@ -171,12 +171,12 @@ pub fn compute_ns_hash(namespace: Option<&str>, name: Option<&str>) -> u64 {
 /// This is the canonical stream identifier across the codebase — the
 /// registry, the catalog, the indexer, and the query planner all use it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct StreamEntry {
+pub struct ServiceStream {
     pub namespace: String,
     pub name: String,
 }
 
-impl StreamEntry {
+impl ServiceStream {
     pub fn new<N: Into<String>, M: Into<String>>(namespace: N, name: M) -> Self {
         Self {
             namespace: namespace.into(),

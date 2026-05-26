@@ -14,5 +14,5 @@ pub use indexer::{IndexResult, index_wal_file};
 pub use kv_interner::KeyValueId;
 // Canonical stream identifier lives in `file_registry`; the file format
 // is owned by `sfst`. Re-export both for caller convenience.
-pub use file_registry::StreamEntry;
+pub use file_registry::ServiceStream;
 pub use sfst::{Summary, Metadata};

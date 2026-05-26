@@ -443,7 +443,7 @@ mod tests {
 
     // ── candidates() tests ───────────────────────────────────────
 
-    use file_registry::StreamEntry;
+    use file_registry::ServiceStream;
 
     fn fid_with(seq: u64, ns_hash: u64) -> FileId {
         let machine_id = uuid::Uuid::try_parse("550e8400e29b41d4a716446655440000").unwrap();
@@ -586,7 +586,7 @@ mod tests {
 
         let q = Query {
             time_range: 0..u32::MAX,
-            stream: Some(StreamEntry::new("prod", "api")),
+            stream: Some(ServiceStream::new("prod", "api")),
         };
         assert_eq!(seqs(reg.candidates(&q)), vec![1, 3]);
     }

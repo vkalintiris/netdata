@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::StreamEntry;
+use crate::ServiceStream;
 
 /// A time-range + optional stream filter, used by `Registry::candidates`
 /// implementations across the file-registry-backed sources (`sfst`,
@@ -22,5 +22,5 @@ pub struct Query {
     /// exact equality with the file's stream identity (or, for sources
     /// that only carry `ns_hash`, equality with
     /// `compute_ns_hash(s.namespace, s.name)`).
-    pub stream: Option<StreamEntry>,
+    pub stream: Option<ServiceStream>,
 }

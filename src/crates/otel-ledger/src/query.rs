@@ -83,7 +83,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use file_registry::{ByteSize, FileId, StreamEntry, TenantId, TimestampNs};
+    use file_registry::{ByteSize, FileId, ServiceStream, TenantId, TimestampNs};
     use uuid::Uuid;
     use wal::FileEvent;
 
@@ -141,7 +141,7 @@ mod tests {
                 min_timestamp_s: min_s,
                 max_timestamp_s: max_s,
                 total_logs: 1,
-                stream: StreamEntry::new("ns", "a"),
+                stream: ServiceStream::new("ns", "a"),
             },
         );
     }
@@ -158,7 +158,7 @@ mod tests {
             min_timestamp_s: min_s,
             max_timestamp_s: max_s,
             total_logs: 1,
-            stream: StreamEntry::new("ns", "a"),
+            stream: ServiceStream::new("ns", "a"),
             size: ByteSize(1),
             uploaded_at_ns: TimestampNs(0),
         };
@@ -344,7 +344,7 @@ mod tests {
 
         let q = Query {
             time_range: 0..u32::MAX,
-            stream: Some(StreamEntry::new("ns", "a")),
+            stream: Some(ServiceStream::new("ns", "a")),
         };
         let plan = reg.plan_candidates(&q);
         assert_eq!(plan.len(), 1);

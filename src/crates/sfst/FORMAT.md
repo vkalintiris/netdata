@@ -118,10 +118,10 @@ The cheap recovery summary. Decodes to:
         pub min_timestamp_s: u32,
         pub max_timestamp_s: u32,
         pub total_logs:      u32,
-        pub stream:          StreamEntry,
+        pub stream:          ServiceStream,
     }
 
-    pub struct StreamEntry {
+    pub struct ServiceStream {
         pub namespace: String,
         pub name:      String,
     }
@@ -136,12 +136,12 @@ log records. `stream` carries the file's single
 Heavy query-time metadata:
 
     pub struct Metadata {
-        pub histogram: SparseHistogram,
+        pub histogram: Histogram,
         pub id_ranges: IdRanges,
         pub fields:    Vec<FieldEntry>,
     }
 
-    pub struct SparseHistogram {
+    pub struct Histogram {
         pub timestamps: Vec<u32>,   // second-boundary timestamps
         pub counts:     Vec<u32>,   // cumulative log count at each boundary
     }
