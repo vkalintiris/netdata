@@ -185,11 +185,7 @@ mod tests {
         assert!(reader.has_metadata());
 
         let read = reader.metadata().unwrap();
-        assert_eq!(read.id_ranges.low_end, metadata.id_ranges.low_end);
-        assert_eq!(read.id_ranges.mid_end, metadata.id_ranges.mid_end);
-        assert_eq!(read.id_ranges.high_end, metadata.id_ranges.high_end);
-        assert_eq!(read.histogram.timestamps, metadata.histogram.timestamps);
-        assert_eq!(read.histogram.counts, metadata.histogram.counts);
+        assert_eq!(read, &metadata);
     }
 
     #[test]

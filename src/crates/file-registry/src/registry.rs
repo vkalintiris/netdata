@@ -49,10 +49,15 @@ impl<M> FileRegistry<M> {
         self.files.contains_key(&seq)
     }
 
+    /// Iterate entries in ascending sequence-number order (oldest first).
+    /// Backed by [`BTreeMap`], so the order is part of the contract — code
+    /// that depends on chronological ordering (retention, scans) can rely on it.
     pub fn values(&self) -> impl Iterator<Item = &M> {
         self.files.values()
     }
 
+    /// Iterate `(seq, entry)` pairs in ascending sequence-number order.
+    /// Same ordering guarantee as [`values`](Self::values).
     pub fn iter(&self) -> impl Iterator<Item = (&u64, &M)> {
         self.files.iter()
     }

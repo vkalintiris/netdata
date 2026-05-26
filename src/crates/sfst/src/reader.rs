@@ -58,6 +58,16 @@ impl<'a> Reader<'a> {
         }
 
         let num_chunks = u32::from_le_bytes(data[8..12].try_into().unwrap());
+        // Defense in depth: a corrupted header claiming u32::MAX chunks
+        // would lead gix-chunk to attempt ~51 GiB of TOC allocation.
+        // Each TOC entry is at least 12 bytes, so the on-disk body
+        // bounds the legal value.
+        let max_chunks = data.len().saturating_sub(HEADER_SIZE) / 12;
+        if num_chunks as usize > max_chunks {
+            return Err(Error::Toc(format!(
+                "num_chunks ({num_chunks}) exceeds plausible maximum ({max_chunks})"
+            )));
+        }
         let toc = gix_chunk::file::Index::from_bytes(data, HEADER_SIZE, num_chunks)
             .map_err(|e| Error::Toc(format!("{e}")))?;
 
@@ -90,14 +100,11 @@ impl<'a> Reader<'a> {
     /// Index metadata (histogram + id ranges + field table). Decoded on
     /// first access; cached for the lifetime of this `Reader`.
     pub fn metadata(&self) -> Result<&Metadata, Error> {
-        if self.metadata.get().is_none() {
-            let decoded = unpack::<Metadata>(self.metadata_raw()?)?;
-            // `set` only fails if the cell is already initialized, which
-            // is impossible here in a single-threaded context (the only
-            // mode `std::cell::OnceCell` supports).
-            let _ = self.metadata.set(decoded);
+        if let Some(m) = self.metadata.get() {
+            return Ok(m);
         }
-        Ok(self.metadata.get().expect("metadata just initialized"))
+        let decoded = unpack::<Metadata>(self.metadata_raw()?)?;
+        Ok(self.metadata.get_or_init(|| decoded))
     }
 
     /// Raw compressed bytes of the metadata chunk.
@@ -118,23 +125,25 @@ impl<'a> Reader<'a> {
     /// Number of mid-cardinality fields (one secondary chunk per mid
     /// field, sitting at positions `0..num_mid`).
     pub fn num_mid(&self) -> Result<u16, Error> {
-        Ok(self
+        let count = self
             .metadata()?
             .fields
             .iter()
             .filter(|f| f.tier == FieldTier::Mid)
-            .count() as u16)
+            .count();
+        Ok(u16::try_from(count).expect("mid-card field count exceeds u16::MAX"))
     }
 
     /// Number of high-cardinality fields (one secondary chunk per high
     /// field, sitting at positions `num_mid..num_mid + num_high`).
     pub fn num_high(&self) -> Result<u16, Error> {
-        Ok(self
+        let count = self
             .metadata()?
             .fields
             .iter()
             .filter(|f| f.tier == FieldTier::High)
-            .count() as u16)
+            .count();
+        Ok(u16::try_from(count).expect("high-card field count exceeds u16::MAX"))
     }
 
     // ── PRIM ─────────────────────────────────────────────────────────

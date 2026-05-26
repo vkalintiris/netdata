@@ -1,7 +1,7 @@
 //! On-disk schema for SFST log indexes.
 //!
 //! These are the typed payloads carried by an SFST file's named chunks.
-//! Producers (the indexer in `log-index`) construct them; consumers
+//! Producers (the [`crate::indexer`] module) construct them; consumers
 //! decode them via the typed accessors on [`crate::Reader`]. The
 //! container layout and chunk encoding are specified in `FORMAT.md`.
 
@@ -33,7 +33,7 @@ pub struct Summary {
 /// ranges, and the field table. Readers that only need the cheap
 /// summary fields (min/max timestamp, total log count, stream) should
 /// decode [`Summary`] from the `SUMR` chunk instead.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
     pub histogram: Histogram,
     pub id_ranges: IdRanges,
@@ -45,7 +45,7 @@ pub struct Metadata {
 /// including that second. Built from chronologically-sorted log
 /// timestamps during indexing; used at query time for time-range
 /// narrowing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Histogram {
     /// Second-boundary timestamps as u32 seconds since Unix epoch.
     pub timestamps: Vec<u32>,
@@ -59,7 +59,7 @@ pub struct Histogram {
 /// `low_end..mid_end` for mid-card, `mid_end..high_end` for high-card.
 /// The reader uses these ranges to decide which section (primary FST,
 /// mid-card FST, or high-card sorted list) to consult for a given id.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdRanges {
     pub low_end: KvId,
     pub mid_end: KvId,
@@ -74,7 +74,7 @@ pub struct IdRanges {
 /// sorted by field name. Readers walk it to count mid-card and
 /// high-card fields, to look up a field's tier when resolving a
 /// [`KvId`], and to discover which secondary chunks the file carries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldEntry {
     pub name: String,
     pub cardinality: u32,

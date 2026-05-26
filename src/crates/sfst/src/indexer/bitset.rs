@@ -22,12 +22,6 @@ impl Bitset {
         self.words[idx / 64] |= 1u64 << (idx % 64);
     }
 
-    #[inline]
-    pub fn clear(&mut self, val: u32) {
-        let idx = val as usize;
-        self.words[idx / 64] &= !(1u64 << (idx % 64));
-    }
-
     /// Iterate set bits in ascending order.
     pub fn iter_ones(&self) -> BitsetOnesIter<'_> {
         BitsetOnesIter {

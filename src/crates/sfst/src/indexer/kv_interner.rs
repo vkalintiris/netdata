@@ -53,7 +53,7 @@ use twox_hash::XxHash64;
 /// string. Used as the index into the per-value bitmap array and as the
 /// elements in the per-log entries.
 ///
-/// Not to be confused with [`sfst::KvId`] (tier-aligned IDs written to disk)
+/// Not to be confused with [`crate::KvId`] (tier-aligned IDs written to disk)
 /// or raw log positions (array indices into the log list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyValueId(pub u32);

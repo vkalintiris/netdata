@@ -13,7 +13,6 @@
 //! [`index_with_options`] (cardinality threshold override).
 
 mod arrow_columns;
-mod bitmap_convert;
 mod bitset;
 mod fst_builder;
 pub mod kv_interner;
