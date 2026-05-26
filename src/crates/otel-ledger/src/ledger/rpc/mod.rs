@@ -7,11 +7,14 @@
 //!   that spawns handler tasks driven by the `bridge::function` engine.
 //! - `handler` — `OtelLogsHandler`, the typed `FunctionHandler` impl,
 //!   its declaration, and the otel-logs–specific args→payload shim.
-//! - `types` — wire-format types: `OtelLogsRequest`, `OtelLogsResponse`,
-//!   `Candidate`, etc.
+//! - `types` — request shape and top-level response enum.
+//! - `wire` — Netdata UI response envelope (facets, histogram, items, …).
+//! - `adapter` — SFST query results → UI envelope conversions.
 
+mod adapter;
 mod dispatch;
 mod handler;
 mod types;
+mod wire;
 
 pub(crate) use handler::OtelLogsHandler;

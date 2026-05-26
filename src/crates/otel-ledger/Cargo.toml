@@ -37,4 +37,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 bytesize = { workspace = true }
+fst-index = { workspace = true, features = ["serde"] }
 tempfile = { workspace = true }
+treight = { workspace = true, features = ["roaring", "serde"] }
