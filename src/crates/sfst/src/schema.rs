@@ -105,6 +105,28 @@ pub struct BitmapValue {
     pub data: Vec<u8>,
 }
 
+// ── High-card field chunk (struct-of-arrays) ─────────────────────
+
+/// Body of a high-card field chunk (the `HF{i}` chunks).
+///
+/// Stored as parallel columns: `keys[j]` is a `key=value` string and
+/// `masks[j]` is its bitmask over the file's stream batches (bit `b`
+/// set iff the value appears in batch `b`; see
+/// [`crate::num_stream_batches`]). The two vectors always have the same
+/// length and are sorted lexicographically by key.
+///
+/// Compared to an interleaved `Vec<(String, u8)>`, the column-major
+/// layout compresses better because the dense, low-cardinality mask
+/// column is contiguous in the byte stream — zstd's entropy coder
+/// captures the redundancy more tightly. The string column is also
+/// uninterrupted, which slightly tightens the prefix back-references
+/// for clustered key sets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HighField {
+    pub keys: Vec<String>,
+    pub masks: Vec<u8>,
+}
+
 // ── Stream-log-entries chunk ─────────────────────────────────────
 
 /// Tier-aligned identifier for a `key=value` pair within one SFST.

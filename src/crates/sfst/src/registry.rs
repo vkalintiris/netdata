@@ -245,6 +245,9 @@ mod tests {
         writer.set_summary(pack(summary, 1).unwrap());
         writer.set_primary(pack(&primary, 1).unwrap());
         writer.set_timestamps(pack(&Vec::<i64>::new(), 1).unwrap());
+        // Writer requires 1..=MAX_STREAM_BATCHES stream batches; emit one
+        // empty batch since this test only exercises the SUMR round-trip.
+        writer.add_stream_batch(pack(&Vec::<Vec<crate::KvId>>::new(), 1).unwrap());
         let mut buf = Vec::new();
         writer.write_to(&mut buf).unwrap();
         let path = dir.join(id.to_filename(SFST_EXT));

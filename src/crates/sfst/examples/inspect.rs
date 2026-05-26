@@ -10,7 +10,7 @@
 //!
 //! Together the three subcommands exercise most of sfst's public reader API:
 //! [`IndexReader::open`], [`IndexReader::field_table`], [`IndexReader::histogram`],
-//! [`IndexReader::build_string_table`], [`IndexReader::load_stream_entries`],
+//! [`IndexReader::build_string_table`], [`IndexReader::load_all_stream_entries`],
 //! [`IndexReader::load_timestamps`], plus the lower-level raw-chunk accessors
 //! on [`sfst::Reader`].
 
@@ -133,13 +133,14 @@ fn dump(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error::Er
     eprintln!("string table: {} entries", string_table.len());
 
     let stream = reader.stream();
-    let entries = reader.load_stream_entries()?;
+    let entries = reader.load_all_stream_entries()?;
     let timestamps = reader.load_timestamps()?;
     eprintln!(
-        "stream {}/{}: {} entries",
+        "stream {}/{}: {} entries across {} batch(es)",
         stream.namespace,
         stream.name,
         entries.len(),
+        reader.num_stream_batches(),
     );
 
     if timestamps.len() != entries.len() {
@@ -243,13 +244,15 @@ fn sections(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
     let stream = reader.stream();
     let mut stream_total = 0usize;
-    if let Ok(raw) = sfst.stream_entries_raw() {
-        print_section(
-            &format!("STREAM {}/{}", stream.namespace, stream.name),
-            raw.len(),
-            file_size,
-        );
-        stream_total += raw.len();
+    for b in 0..reader.num_stream_batches() {
+        if let Ok(raw) = sfst.stream_batch_raw(b) {
+            print_section(
+                &format!("SB{b:02} {}/{}", stream.namespace, stream.name),
+                raw.len(),
+                file_size,
+            );
+            stream_total += raw.len();
+        }
     }
 
     total_sections += mid_total + high_total + stream_total;

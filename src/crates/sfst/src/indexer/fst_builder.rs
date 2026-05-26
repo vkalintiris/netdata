@@ -76,15 +76,20 @@ fn build_id_translation(wal_index: &WalIndex) -> (Vec<KvId>, IdRanges) {
     )
 }
 
-/// Build the file's single log-entries chunk in chronological order.
+/// Build the file's stream-batch chunks in chronological order.
 ///
-/// Iterates [`TimeOrder::iter_by_time`] to walk insertion-order positions
-/// in chronological order, translates each log's [`KvSlot`]s to
-/// [`KvId`]s, and serializes the result with bincode + zstd.
-fn build_stream_entries(
+/// Materialises every log's `KvId` list in chronological order, splits
+/// the result into [`num_stream_batches`](crate::num_stream_batches)
+/// slices of `batch_size` entries each, and packs each slice into its
+/// own zstd blob.
+///
+/// `total_logs == 0` is handled explicitly: a single empty batch is
+/// emitted so the file always carries at least one `SB{i}` chunk.
+fn build_stream_batches(
     log_entries: &[Vec<KvSlot>],
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
+    total_logs: u32,
     writer: &mut crate::Writer,
 ) -> Result<usize, IndexError> {
     let entries: Vec<Vec<KvId>> = time_order
@@ -97,11 +102,23 @@ fn build_stream_entries(
         })
         .collect();
 
-    let packed = crate::pack(&entries, 1)?;
-    let len = packed.len();
-    writer.set_stream_entries(packed);
+    let mut total_packed = 0usize;
+    if entries.is_empty() {
+        // num_stream_batches(0) == 1: emit a single empty batch so the
+        // file's chunk layout is always valid.
+        let packed = crate::pack(&Vec::<Vec<KvId>>::new(), 1)?;
+        total_packed += packed.len();
+        writer.add_stream_batch(packed);
+    } else {
+        let batch_size = crate::stream_batch_size(total_logs) as usize;
+        for batch in entries.chunks(batch_size) {
+            let packed = crate::pack(batch, 1)?;
+            total_packed += packed.len();
+            writer.add_stream_batch(packed);
+        }
+    }
 
-    Ok(len)
+    Ok(total_packed)
 }
 
 /// Build the primary FST: low-card `key=value` entries with bitmaps.
@@ -173,30 +190,97 @@ fn build_mid_card_chunks(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards the cross-shape invariant: bytes produced by [`HighFieldRef`]
+    /// (write side, borrowed columns) must decode back as [`crate::HighField`]
+    /// (read side, owned columns). If the two derives ever diverge — e.g.
+    /// someone adds a serde rename or changes field order on one but not
+    /// the other — this catches it before any file gets written.
+    #[test]
+    fn high_field_ref_wire_format_matches_owned() {
+        let owned_keys: Vec<String> = vec!["alpha".into(), "bravo".into(), "charlie".into()];
+        let owned_masks: Vec<u8> = vec![0b0000_0001, 0b0000_0011, 0b1000_0000];
+        let owned = crate::HighField {
+            keys: owned_keys.clone(),
+            masks: owned_masks.clone(),
+        };
+
+        let keys_ref: Vec<&str> = owned_keys.iter().map(|s| s.as_str()).collect();
+        let view = HighFieldRef {
+            keys: &keys_ref,
+            masks: &owned_masks,
+        };
+
+        let owned_bytes =
+            bincode::serde::encode_to_vec(&owned, bincode::config::standard()).unwrap();
+        let view_bytes =
+            bincode::serde::encode_to_vec(&view, bincode::config::standard()).unwrap();
+
+        assert_eq!(
+            owned_bytes, view_bytes,
+            "HighFieldRef and HighField produce different wire bytes",
+        );
+
+        let (round_trip, _): (crate::HighField, _) =
+            bincode::serde::decode_from_slice(&view_bytes, bincode::config::standard()).unwrap();
+        assert_eq!(round_trip, owned);
+    }
+}
+
+/// Borrowed view of a high-card chunk for write-side serialization.
+///
+/// Mirrors the field layout of [`crate::HighField`] but holds borrowed
+/// `&str` slices to avoid copying out of the interner's arena. Serde's
+/// struct serialization writes the fields in declaration order with no
+/// names on the wire, so this serializes byte-identically to
+/// [`crate::HighField`] — and the reader decodes the bytes as an owned
+/// [`crate::HighField`].
+#[derive(serde::Serialize)]
+struct HighFieldRef<'a> {
+    keys: &'a [&'a str],
+    masks: &'a [u8],
+}
+
 /// Build high-cardinality field chunks (bincode + zstd).
+///
+/// Each chunk is a [`crate::HighField`] — two parallel columns of
+/// `key=value` strings and their `u8` batch-mask. Bit `b` of the mask
+/// is set iff the value appears in stream batch `b`. Batch boundaries
+/// are defined by `batch_size` over time-sorted positions;
+/// `time_order` translates each insertion-order position from the
+/// roaring bitmap into its chronological position before bucketing.
 fn build_high_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
+    batch_size: u32,
     writer: &mut crate::Writer,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut total_kb = 0usize;
 
-    let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
+    let mut paired: Vec<(&str, u8)> = Vec::new();
 
     let high = wal_index.high_fields();
-    for &(_, ids) in &high {
-        entries.clear();
-
-        for &id in ids {
-            let key = wal_index.resolve(id);
-            let (desc, data) = remap_one_bitmap(wal_index.bitmap(id), time_order);
-            entries.push((key, BitmapValue { desc, data }));
+    for &(_, slots) in &high {
+        paired.clear();
+        for &slot in slots {
+            let key = wal_index.resolve(slot);
+            let mask = batch_mask(wal_index.bitmap(slot), time_order, batch_size);
+            paired.push((key, mask));
         }
+        paired.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
-        entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        // Transpose to parallel columns. `unzip` does the work in one pass.
+        let (keys, masks): (Vec<&str>, Vec<u8>) = paired.iter().copied().unzip();
+        let view = HighFieldRef {
+            keys: &keys,
+            masks: &masks,
+        };
 
-        let packed = crate::pack(&entries, 1)?;
+        let packed = crate::pack(&view, 1)?;
         total_kb += packed.len() / 1024;
         writer.add_high_field(packed);
     }
@@ -211,6 +295,24 @@ fn build_high_card_chunks(
     Ok(())
 }
 
+/// Compute the per-value batch-membership mask for a high-card value.
+///
+/// Walks the roaring bitmap's insertion-order positions, remaps each
+/// through `time_order` to its chronological position, divides by
+/// `batch_size` to get the batch index, and sets the corresponding bit
+/// in the returned `u8`.
+fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8 {
+    debug_assert!(batch_size > 0, "batch_size must be > 0 when high-card values exist");
+    let mut mask: u8 = 0;
+    for ins_pos in rb.iter() {
+        let sorted_pos = time_order.to_sorted(ins_pos);
+        let bit = (sorted_pos / batch_size) as u8;
+        debug_assert!(bit < crate::MAX_STREAM_BATCHES, "batch index out of range");
+        mask |= 1u8 << bit;
+    }
+    mask
+}
+
 /// Resolve and write the file's single stream.
 ///
 /// Each SFST file is required to contain exactly one `(namespace, name)`
@@ -223,6 +325,7 @@ fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
+    total_logs: u32,
     writer: &mut crate::Writer,
 ) -> Result<ServiceStream, IndexError> {
     let stream = wal_index.service_stream()?;
@@ -237,13 +340,22 @@ fn build_streams(
     } else {
         &stream.name
     };
-    tracing::debug!("stream {namespace}/{name}: {} logs", wal_index.num_logs(),);
+    tracing::debug!(
+        "stream {namespace}/{name}: {} logs, {} batches",
+        wal_index.num_logs(),
+        crate::num_stream_batches(total_logs),
+    );
 
     let t = Instant::now();
-    let stream_bytes =
-        build_stream_entries(&wal_index.log_entries, time_order, kv_to_file, writer)?;
+    let stream_bytes = build_stream_batches(
+        &wal_index.log_entries,
+        time_order,
+        kv_to_file,
+        total_logs,
+        writer,
+    )?;
     tracing::debug!(
-        "stream log entries built: {} KB, {}ms",
+        "stream batches built: {} KB total, {}ms",
         stream_bytes / 1024,
         t.elapsed().as_millis(),
     );
@@ -274,13 +386,17 @@ pub fn build_and_write(
     let time_order = wal_index.time_order();
     tracing::debug!("time order built: {}ms", t.elapsed().as_millis());
 
+    // Total log count drives the stream-batch partitioning.
+    let total_logs = wal_index.num_logs() as u32;
+    let batch_size = crate::stream_batch_size(total_logs);
+
     // Build low/mid-cardinality FSTs and high-cardinality chunks
     build_primary_fst(wal_index, &time_order, &mut writer)?;
     build_mid_card_chunks(wal_index, &time_order, &mut writer)?;
-    build_high_card_chunks(wal_index, &time_order, &mut writer)?;
+    build_high_card_chunks(wal_index, &time_order, batch_size, &mut writer)?;
 
     let (kv_to_file, id_ranges) = build_id_translation(wal_index);
-    let stream = build_streams(wal_index, &time_order, &kv_to_file, &mut writer)?;
+    let stream = build_streams(wal_index, &time_order, &kv_to_file, total_logs, &mut writer)?;
 
     // Per-log timestamps in chronological order, parallel-indexed to
     // the stream-log-entries chunk.

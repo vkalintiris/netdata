@@ -11,7 +11,8 @@
 use fst_index::FstIndex;
 
 use crate::{
-    BitmapValue, FieldEntry, FieldTier, Histogram, IdRanges, KvId, Metadata, ServiceStream, Summary,
+    BitmapValue, FieldEntry, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata,
+    ServiceStream, Summary,
 };
 
 /// A successfully opened split-FST index.
@@ -107,32 +108,55 @@ impl<'a> IndexReader<'a> {
         self.sfst.mid_field(mid_index)
     }
 
-    /// Load a high-cardinality field's entries. `high_index` is `0..num_high`.
+    /// Load a high-cardinality field's columnar entries. `high_index`
+    /// is `0..num_high`.
     ///
-    /// Returns the decompressed list of `(key_value, bitmap)` pairs.
-    pub fn load_high_field(
-        &self,
-        high_index: u16,
-    ) -> Result<Vec<(String, BitmapValue)>, crate::Error> {
+    /// Returns the decompressed [`HighField`] for that field — parallel
+    /// `keys` (sorted lexicographically) and `masks` vectors. Each
+    /// `masks[j]` is a `u8` bitmask over the file's stream batches; bit
+    /// `b` set iff `keys[j]` appears in batch `b`. Walk the set bits to
+    /// decide which [`load_stream_batch`](Self::load_stream_batch)
+    /// calls to make when resolving positions for the value.
+    pub fn load_high_field(&self, high_index: u16) -> Result<HighField, crate::Error> {
         self.sfst.high_field(high_index)
     }
 
     // ── Per-log timestamps ──────────────────────────────────────────
 
     /// Load the per-log nanosecond timestamps, chronologically ordered
-    /// and parallel-indexed to [`load_stream_entries`](Self::load_stream_entries).
+    /// and parallel-indexed to the concatenation of the stream-batch
+    /// chunks (see [`load_all_stream_entries`](Self::load_all_stream_entries)).
     pub fn load_timestamps(&self) -> Result<Vec<i64>, crate::Error> {
         self.sfst.timestamps()
     }
 
-    // ── Stream log entries ──────────────────────────────────────────
+    // ── Stream-batch chunks ─────────────────────────────────────────
 
-    /// Load the file's stream log entries.
+    /// Number of stream-batch chunks in this file. Derived from
+    /// `summary.total_logs` via [`crate::num_stream_batches`].
+    pub fn num_stream_batches(&self) -> u8 {
+        crate::num_stream_batches(self.summary.total_logs)
+    }
+
+    /// Load one stream-batch chunk by index (`0..num_stream_batches`).
     ///
-    /// Each SFST has exactly one stream (see [`crate::ServiceStream`]); its
-    /// log entries chunk is the trailing secondary chunk.
-    pub fn load_stream_entries(&self) -> Result<Vec<Vec<KvId>>, crate::Error> {
-        self.sfst.stream_entries()
+    /// Returns the attribute lists for the logs in that batch, in
+    /// chronological order. Concatenating batches in order yields the
+    /// full chronological log stream.
+    pub fn load_stream_batch(&self, batch_index: u8) -> Result<Vec<Vec<KvId>>, crate::Error> {
+        self.sfst.stream_batch(batch_index)
+    }
+
+    /// Load and concatenate every stream-batch chunk in chronological
+    /// order. Convenience for tooling and tests that want the full log
+    /// stream rather than walking batches individually.
+    pub fn load_all_stream_entries(&self) -> Result<Vec<Vec<KvId>>, crate::Error> {
+        let n = self.num_stream_batches();
+        let mut out = Vec::with_capacity(self.summary.total_logs as usize);
+        for i in 0..n {
+            out.extend(self.sfst.stream_batch(i)?);
+        }
+        Ok(out)
     }
 
     // ── KvId resolution ───────────────────────────────────────────
@@ -187,8 +211,8 @@ impl<'a> IndexReader<'a> {
                     mid_index += 1;
                 }
                 FieldTier::High => {
-                    let entries = self.sfst.high_field(high_index)?;
-                    for (key, _) in entries {
+                    let hf = self.sfst.high_field(high_index)?;
+                    for key in hf.keys {
                         if kv_id < table.len() {
                             table[kv_id] = key;
                         }

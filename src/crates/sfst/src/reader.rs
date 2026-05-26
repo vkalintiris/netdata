@@ -13,9 +13,9 @@ use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error,
-    FieldEntry, FieldTier, HEADER_SIZE, KvId, MAGIC, Metadata, Summary, VERSION, high_field_id,
-    mid_field_id,
+    BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, FieldEntry,
+    FieldTier, HEADER_SIZE, HighField, KvId, MAGIC, MAX_STREAM_BATCHES, Metadata, Summary,
+    VERSION, high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
 };
 
 /// Decompress zstd, then deserialize with bincode.
@@ -172,11 +172,17 @@ impl<'a> Reader<'a> {
             .map_err(|_| Error::ChunkNotFound(index))
     }
 
-    // ── High-card per-field sorted lists ─────────────────────────────
+    // ── High-card per-field columnar chunks ──────────────────────────
 
-    /// Decompress and deserialize a high-card field's sorted list of
-    /// `(key=value, bitmap)` pairs.
-    pub fn high_field(&self, index: u16) -> Result<Vec<(String, BitmapValue)>, Error> {
+    /// Decompress and deserialize a high-card field's sorted columnar
+    /// data: parallel `keys` and `masks` vectors.
+    ///
+    /// `masks[j]` is a bitmask over the file's stream batches (see
+    /// [`crate::num_stream_batches`]): bit `b` is set iff the value
+    /// `keys[j]` appears in stream batch `b`. Callers walk the set
+    /// bits to decide which [`stream_batch`](Self::stream_batch)
+    /// chunks to decompress when materialising matching log positions.
+    pub fn high_field(&self, index: u16) -> Result<HighField, Error> {
         unpack(self.high_field_raw(index)?)
     }
 
@@ -192,9 +198,10 @@ impl<'a> Reader<'a> {
     /// Decompress and deserialize the per-log timestamps chunk.
     ///
     /// Returns a `Vec<i64>` of nanosecond timestamps in chronological
-    /// order, parallel-indexed to [`stream_entries`](Self::stream_entries):
-    /// `timestamps[i]` is the timestamp of the log whose attribute
-    /// list lives at `entries[i]`.
+    /// order, parallel-indexed to the concatenation of every
+    /// [`stream_batch`](Self::stream_batch) chunk: `timestamps[i]` is
+    /// the timestamp of the log whose attribute list lives at global
+    /// position `i` in the concatenated stream.
     pub fn timestamps(&self) -> Result<Vec<i64>, Error> {
         unpack(self.timestamps_raw()?)
     }
@@ -204,16 +211,36 @@ impl<'a> Reader<'a> {
         self.chunk_raw_by_id(CHUNK_TIMS)
     }
 
-    // ── Stream-log-entries chunk ─────────────────────────────────────
+    // ── Stream-batch chunks ──────────────────────────────────────────
 
-    /// Decompress and deserialize the stream-log-entries chunk.
-    pub fn stream_entries(&self) -> Result<Vec<Vec<KvId>>, Error> {
-        unpack(self.stream_entries_raw()?)
+    /// Decompress and deserialize one stream-batch chunk by index.
+    ///
+    /// `index` must be in `0..num_stream_batches(summary.total_logs)`
+    /// (see [`crate::num_stream_batches`]). The returned
+    /// `Vec<Vec<KvId>>` holds the attribute lists for the logs in that
+    /// batch, in chronological order; concatenating all batches in
+    /// order yields the full chronological log stream.
+    pub fn stream_batch(&self, index: u8) -> Result<Vec<Vec<KvId>>, Error> {
+        unpack(self.stream_batch_raw(index)?)
     }
 
-    /// Raw compressed bytes of the stream-log-entries chunk.
-    pub fn stream_entries_raw(&self) -> Result<&'a [u8], Error> {
-        self.chunk_raw_by_id(CHUNK_STREAM)
+    /// Raw compressed bytes of one stream-batch chunk.
+    pub fn stream_batch_raw(&self, index: u8) -> Result<&'a [u8], Error> {
+        if index >= MAX_STREAM_BATCHES {
+            return Err(Error::ChunkNotFound(index as u16));
+        }
+        self.toc
+            .data_by_id(self.data, stream_batch_id(index))
+            .map_err(|_| Error::ChunkNotFound(index as u16))
+    }
+
+    /// Number of stream-batch chunks in this file, derived from
+    /// `summary.total_logs` via [`crate::num_stream_batches`].
+    ///
+    /// Reads the `SUMR` chunk; callers that already hold a [`Summary`]
+    /// should call [`crate::num_stream_batches`] directly.
+    pub fn num_stream_batches(&self) -> Result<u8, Error> {
+        Ok(num_stream_batches(self.summary()?.total_logs))
     }
 
     // ── Positional secondary-chunk access (escape hatch) ─────────────

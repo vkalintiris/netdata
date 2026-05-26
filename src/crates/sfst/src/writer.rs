@@ -9,12 +9,16 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_META, CHUNK_PRIMARY, CHUNK_STREAM, CHUNK_SUMMARY, CHUNK_TIMS, Error, HEADER_SIZE, MAGIC,
-    VERSION, high_field_id, mid_field_id,
+    CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, HEADER_SIZE, MAGIC,
+    MAX_STREAM_BATCHES, VERSION, high_field_id, mid_field_id, stream_batch_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
-pub fn pack<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> {
+///
+/// The `?Sized` bound lets callers pass slice references directly
+/// (e.g. `pack(batch, 1)` where `batch: &[T]`) instead of materialising
+/// an owned `Vec`.
+pub fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> {
     let serialized = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
     zstd::encode_all(&serialized[..], zstd_level).map_err(|e| Error::Zstd(e.to_string()))
 }
@@ -28,8 +32,8 @@ pub fn pack<T: Serialize>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> 
 /// results into a single sequential writer.
 ///
 /// On-disk ordering is fixed regardless of the order setters are
-/// called: SUMR → META → PRIM → mid-card fields →
-/// high-card fields → TIMS → stream-log-entries.
+/// called: SUMR → META → PRIM → mid-card fields → high-card fields →
+/// TIMS → stream-batch chunks (SB00..SB07) in append order.
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
@@ -37,7 +41,7 @@ pub struct Writer {
     mid_fields: Vec<Vec<u8>>,
     high_fields: Vec<Vec<u8>>,
     timestamps: Option<Vec<u8>>,
-    stream_entries: Option<Vec<u8>>,
+    stream_batches: Vec<Vec<u8>>,
 }
 
 impl Writer {
@@ -49,7 +53,7 @@ impl Writer {
             mid_fields: Vec::new(),
             high_fields: Vec::new(),
             timestamps: None,
-            stream_entries: None,
+            stream_batches: Vec::new(),
         }
     }
 
@@ -93,31 +97,53 @@ impl Writer {
 
     /// Set the per-log timestamps chunk (pre-compressed bytes). Mandatory:
     /// every SFST must carry per-log nanosecond timestamps parallel-indexed
-    /// to the stream-log-entries chunk.
+    /// to the stream-batch chunks.
     pub fn set_timestamps(&mut self, packed: Vec<u8>) {
         self.timestamps = Some(packed);
     }
 
-    /// Set the stream-log-entries chunk (pre-compressed bytes).
-    pub fn set_stream_entries(&mut self, packed: Vec<u8>) {
-        self.stream_entries = Some(packed);
+    /// Append a stream-batch chunk (pre-compressed bytes) and return its
+    /// index. Callers add batches in chronological order; the index ends
+    /// up encoded in the chunk id (`SB00` through `SB07`).
+    ///
+    /// Panics if more than [`MAX_STREAM_BATCHES`] batches are added — the
+    /// chunk-id encoding allows only one ASCII digit and the
+    /// `(String, u8)` mask in each high-card chunk can only address eight
+    /// batches.
+    pub fn add_stream_batch(&mut self, packed: Vec<u8>) -> u8 {
+        assert!(
+            self.stream_batches.len() < MAX_STREAM_BATCHES as usize,
+            "stream-batch count exceeds MAX_STREAM_BATCHES ({MAX_STREAM_BATCHES})",
+        );
+        let idx = self.stream_batches.len() as u8;
+        self.stream_batches.push(packed);
+        idx
     }
 
     /// Serialize the entire SFST file to `w`.
     ///
     /// Fixed on-disk order: SUMR (if present), META (if present),
     /// PRIM, mid-card field chunks in append order, high-card field
-    /// chunks in append order, TIMS, stream-log-entries (if present).
+    /// chunks in append order, TIMS, stream-batch chunks in append
+    /// order (SB00..SB{N-1}).
+    ///
+    /// Returns [`Error::InvalidStreamBatchCount`] if the number of
+    /// stream batches isn't in `1..=`[`MAX_STREAM_BATCHES`].
     pub fn write_to<W: Write>(&self, w: &mut W) -> Result<(), Error> {
         let primary = self.primary.as_ref().ok_or(Error::NoPrimary)?;
         let timestamps = self.timestamps.as_ref().ok_or(Error::NoTimestamps)?;
+        let num_stream_batches = self.stream_batches.len();
+        if num_stream_batches == 0 || num_stream_batches > MAX_STREAM_BATCHES as usize {
+            return Err(Error::InvalidStreamBatchCount(num_stream_batches));
+        }
+
         let num_chunks = self.summary.is_some() as usize
             + self.metadata.is_some() as usize
             + 1 // primary
             + self.mid_fields.len()
             + self.high_fields.len()
             + 1 // timestamps
-            + self.stream_entries.is_some() as usize;
+            + num_stream_batches;
 
         // Header
         w.write_all(MAGIC)?;
@@ -141,8 +167,8 @@ impl Writer {
             index.plan_chunk(high_field_id(i as u16), chunk.len() as u64);
         }
         index.plan_chunk(CHUNK_TIMS, timestamps.len() as u64);
-        if let Some(stream) = &self.stream_entries {
-            index.plan_chunk(CHUNK_STREAM, stream.len() as u64);
+        for (i, batch) in self.stream_batches.iter().enumerate() {
+            index.plan_chunk(stream_batch_id(i as u8), batch.len() as u64);
         }
 
         // Write TOC + data
@@ -183,12 +209,12 @@ impl Writer {
             .expect("expected timestamps chunk");
         assert_eq!(id, CHUNK_TIMS);
         chunk_writer.write_all(timestamps)?;
-        if let Some(stream) = &self.stream_entries {
+        for (i, batch) in self.stream_batches.iter().enumerate() {
             let id = chunk_writer
                 .next_chunk()
-                .expect("expected stream-entries chunk");
-            assert_eq!(id, CHUNK_STREAM);
-            chunk_writer.write_all(stream)?;
+                .expect("expected stream-batch chunk");
+            assert_eq!(id, stream_batch_id(i as u8));
+            chunk_writer.write_all(batch)?;
         }
 
         assert!(
@@ -216,5 +242,17 @@ mod tests {
         let writer = Writer::new();
         let mut buf = Vec::new();
         assert!(matches!(writer.write_to(&mut buf), Err(Error::NoPrimary)));
+    }
+
+    #[test]
+    fn error_on_no_stream_batches() {
+        let mut writer = Writer::new();
+        writer.set_primary(vec![1, 2, 3]);
+        writer.set_timestamps(vec![4, 5, 6]);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            writer.write_to(&mut buf),
+            Err(Error::InvalidStreamBatchCount(0))
+        ));
     }
 }

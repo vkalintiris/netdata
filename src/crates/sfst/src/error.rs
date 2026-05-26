@@ -54,6 +54,14 @@ pub enum Error {
     #[error("no timestamps chunk set")]
     NoTimestamps,
 
+    /// [`Writer::write_to`](crate::Writer::write_to) found the number of
+    /// stream-batch chunks (set via
+    /// [`Writer::add_stream_batch`](crate::Writer::add_stream_batch)) is
+    /// not in `1..=`[`MAX_STREAM_BATCHES`](crate::MAX_STREAM_BATCHES).
+    /// Carries the actual count that was rejected.
+    #[error("invalid stream-batch count: {0} (expected 1..=8)")]
+    InvalidStreamBatchCount(usize),
+
     /// `gix-chunk` failed to parse the TOC (on open) or lay it out
     /// (on write). Carries `gix-chunk`'s own error message.
     #[error("TOC error: {0}")]
