@@ -94,12 +94,20 @@ pub struct FacetResult {
 ///   bucket_start_ns + (i + 1) * bucket_width_ns)`,
 /// except the last bucket which is clamped to the file's max timestamp.
 /// `buckets[i][j]` is the count for dimension `dimensions[j]`.
+///
+/// `unset[i]` is the count of logs in bucket `i` that match the
+/// (without-field) filter but **don't have the histogram field set**.
+/// Computed as `filter_total_in_bucket - sum(buckets[i])`, exact
+/// because OTel attribute keys are unique per LogRecord
+/// (`common.proto §KeyValue`): every matching log either appears in
+/// exactly one dimension or in `unset`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
     pub bucket_start_ns: i64,
     pub bucket_width_ns: i64,
     pub dimensions: Vec<String>,
     pub buckets: Vec<Vec<u64>>,
+    pub unset: Vec<u64>,
 }
 
 /// Convert an on-disk `BitmapValue` to a `RoaringBitmap`. `treight::Bitmap`

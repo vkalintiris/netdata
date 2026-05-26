@@ -56,13 +56,14 @@ pub(super) fn facet_from_sfst(order: usize, sfst_facet: &sfst::FacetResult) -> F
 /// dimension counts become flat `[count, 0, 0]` triples on each
 /// [`DataPoint`].
 ///
-/// "(unset)" — the legacy systemd plugin's catch-all bucket for logs
-/// missing the dimension field — is **not** emitted in this MVP.
-/// `sfst::IndexReader::timeline` doesn't surface that count; computing
-/// it would require an extra per-bucket range scan. Left for a later
-/// pass if the UI calls for it.
+/// Appends an `"(unset)"` trailer dimension counting per-bucket logs
+/// that match the filter but don't carry `field`. Matches the legacy
+/// systemd-journal wire shape — `result.labels` ends with `"(unset)"`,
+/// each `DataPoint.items` carries an extra trailing triple.
 pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
-    let dim_count = timeline.dimensions.len();
+    const UNSET_LABEL: &str = "(unset)";
+
+    let total_dim_count = timeline.dimensions.len() + 1; // value dims + (unset)
     let bucket_start_ms = (timeline.bucket_start_ns / NS_PER_MS).max(0) as u64;
     let bucket_width_ms = (timeline.bucket_width_ns / NS_PER_MS).max(1) as u64;
 
@@ -71,16 +72,20 @@ pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> His
     let before_s = ((timeline.bucket_start_ns + span_ns) / NS_PER_S).max(0) as u32;
     let update_every_s = (timeline.bucket_width_ns / NS_PER_S).max(1) as u32;
 
-    let dimension_ids: Vec<String> = timeline.dimensions.clone();
-    let dimension_names: Vec<String> = timeline.dimensions.clone();
-    let dimension_units: Vec<String> = std::iter::repeat_n("events".to_string(), dim_count).collect();
+    let mut dimension_ids: Vec<String> = timeline.dimensions.clone();
+    dimension_ids.push(UNSET_LABEL.to_string());
+    let dimension_names: Vec<String> = dimension_ids.clone();
+    let dimension_units: Vec<String> =
+        std::iter::repeat_n("events".to_string(), total_dim_count).collect();
 
     // Labels carry a leading "time" entry to match the legacy chart
     // contract: result.labels[0] is the timestamp column header,
-    // result.labels[1..] line up with each DataPoint's items.
-    let mut labels: Vec<String> = Vec::with_capacity(dim_count + 1);
+    // result.labels[1..] line up with each DataPoint's items —
+    // dimension values first, then the trailing "(unset)" entry.
+    let mut labels: Vec<String> = Vec::with_capacity(total_dim_count + 1);
     labels.push("time".to_string());
     labels.extend(timeline.dimensions.iter().cloned());
+    labels.push(UNSET_LABEL.to_string());
 
     let data: Vec<DataPoint> = timeline
         .buckets
@@ -88,7 +93,14 @@ pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> His
         .enumerate()
         .map(|(bucket_i, counts)| {
             let timestamp_ms = bucket_start_ms + (bucket_i as u64) * bucket_width_ms;
-            let items: Vec<[usize; 3]> = counts.iter().map(|&c| [c as usize, 0, 0]).collect();
+            let mut items: Vec<[usize; 3]> =
+                counts.iter().map(|&c| [c as usize, 0, 0]).collect();
+            let unset = timeline
+                .unset
+                .get(bucket_i)
+                .copied()
+                .unwrap_or(0);
+            items.push([unset as usize, 0, 0]);
             DataPoint {
                 timestamp_ms,
                 items,
@@ -182,12 +194,13 @@ mod tests {
 
     #[test]
     fn histogram_emits_one_datapoint_per_bucket() {
-        // 3 buckets × 2 dimensions; bucket width = 2 seconds.
+        // 3 buckets × 2 value dimensions + the "(unset)" trailer.
         let t = sfst::Timeline {
             bucket_start_ns: 1_700_000_000 * NS_PER_S,
             bucket_width_ns: 2 * NS_PER_S,
             dimensions: vec!["error".into(), "info".into()],
             buckets: vec![vec![1, 4], vec![0, 3], vec![2, 2]],
+            unset: vec![2, 1, 0],
         };
 
         let h = histogram_from_sfst("level", &t);
@@ -197,23 +210,27 @@ mod tests {
         assert_eq!(h.chart.view.before, 1_700_000_000 + 6);
         assert_eq!(h.chart.view.update_every, 2);
         assert_eq!(h.chart.view.chart_type, "stackedBar");
-        assert_eq!(h.chart.view.dimensions.ids, vec!["error", "info"]);
-        assert_eq!(h.chart.view.dimensions.units, vec!["events", "events"]);
+        assert_eq!(
+            h.chart.view.dimensions.ids,
+            vec!["error", "info", "(unset)"]
+        );
+        assert_eq!(
+            h.chart.view.dimensions.units,
+            vec!["events", "events", "events"]
+        );
 
-        // labels: ["time", "error", "info"]; no "(unset)" trailer.
-        assert_eq!(h.chart.result.labels, vec!["time", "error", "info"]);
+        // labels: ["time", value dims..., "(unset)"].
+        assert_eq!(
+            h.chart.result.labels,
+            vec!["time", "error", "info", "(unset)"]
+        );
 
-        // 3 buckets — timestamps advance by 2000 ms.
         let dps = &h.chart.result.data;
         assert_eq!(dps.len(), 3);
-        assert_eq!(dps[0].timestamp_ms, 1_700_000_000_000);
-        assert_eq!(dps[1].timestamp_ms, 1_700_000_002_000);
-        assert_eq!(dps[2].timestamp_ms, 1_700_000_004_000);
-
-        // Per-bucket counts pass through, padded to [c, 0, 0].
-        assert_eq!(dps[0].items, vec![[1, 0, 0], [4, 0, 0]]);
-        assert_eq!(dps[1].items, vec![[0, 0, 0], [3, 0, 0]]);
-        assert_eq!(dps[2].items, vec![[2, 0, 0], [2, 0, 0]]);
+        // Each DataPoint carries value dims + "(unset)" as the trailing triple.
+        assert_eq!(dps[0].items, vec![[1, 0, 0], [4, 0, 0], [2, 0, 0]]);
+        assert_eq!(dps[1].items, vec![[0, 0, 0], [3, 0, 0], [1, 0, 0]]);
+        assert_eq!(dps[2].items, vec![[2, 0, 0], [2, 0, 0], [0, 0, 0]]);
     }
 
     #[test]
@@ -223,11 +240,15 @@ mod tests {
             bucket_width_ns: NS_PER_S,
             dimensions: Vec::new(),
             buckets: Vec::new(),
+            unset: Vec::new(),
         };
         let h = histogram_from_sfst("severity_text", &t);
         assert!(h.chart.result.data.is_empty());
-        assert_eq!(h.chart.result.labels, vec!["time"]);
-        assert!(h.chart.view.dimensions.ids.is_empty());
+        // Even with no value dims, the "(unset)" label is part of the
+        // dimension list — that's the legacy wire shape's invariant
+        // (result.labels = ["time"] + value-dims + ["(unset)"]).
+        assert_eq!(h.chart.result.labels, vec!["time", "(unset)"]);
+        assert_eq!(h.chart.view.dimensions.ids, vec!["(unset)"]);
     }
 
     #[test]

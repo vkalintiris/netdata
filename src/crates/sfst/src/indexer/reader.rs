@@ -371,14 +371,24 @@ impl<'a> IndexReader<'a> {
 
         let timestamps = self.sfst.timestamps()?;
         let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
+        let mut unset = vec![0u64; num_buckets];
         for bucket_i in 0..num_buckets {
             let bucket_start = min_ns + (bucket_i as i64) * bucket_width_ns;
             let bucket_end = (bucket_start + bucket_width_ns).min(max_ns);
             let pos_lo = timestamps.partition_point(|&t| t < bucket_start) as u32;
             let pos_hi = timestamps.partition_point(|&t| t < bucket_end) as u32;
+            let mut dim_sum: u64 = 0;
             for (dim_i, intersection) in intersections.iter().enumerate() {
-                buckets[bucket_i][dim_i] = intersection.range_cardinality(pos_lo..pos_hi);
+                let c = intersection.range_cardinality(pos_lo..pos_hi);
+                buckets[bucket_i][dim_i] = c;
+                dim_sum += c;
             }
+            // Logs matching the filter that don't have this field set.
+            // OTel attribute keys are unique per LogRecord, so every
+            // matching log lands in exactly one of `dimensions` or
+            // `unset` — the subtraction is exact.
+            let bucket_total = filter_bm.range_cardinality(pos_lo..pos_hi);
+            unset[bucket_i] = bucket_total.saturating_sub(dim_sum);
         }
 
         Ok(Timeline {
@@ -386,6 +396,7 @@ impl<'a> IndexReader<'a> {
             bucket_width_ns,
             dimensions,
             buckets,
+            unset,
         })
     }
 

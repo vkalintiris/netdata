@@ -704,6 +704,25 @@ mod tests {
     }
 
     #[test]
+    fn timeline_unset_counts_match_logs_missing_the_field() {
+        let data = build_query_fixture();
+        let reader = IndexReader::open(&data).unwrap();
+        // Every log in the fixture has `level` set, so the unset
+        // dimension should be zero across every bucket.
+        let t = reader
+            .timeline("level", &Filter::new(), 2 * 1_000_000_000)
+            .unwrap();
+        assert_eq!(t.unset, vec![0, 0, 0]);
+        // And the per-bucket dim sums equal the bucket totals (no
+        // logs "fall off" the dimensions list — the partition is exact).
+        for (bucket, unset) in t.buckets.iter().zip(t.unset.iter()) {
+            let dim_sum: u64 = bucket.iter().sum();
+            // 2 logs per bucket in this fixture.
+            assert_eq!(dim_sum + unset, 2);
+        }
+    }
+
+    #[test]
     fn timeline_excludes_own_field_from_filter() {
         let data = build_query_fixture();
         let reader = IndexReader::open(&data).unwrap();

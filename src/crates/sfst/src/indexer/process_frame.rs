@@ -54,8 +54,20 @@ pub(crate) fn process_frame(
     let scope_name_col = resolve_scope_utf8(logs_batch, "name");
     let scope_version_col = resolve_scope_utf8(logs_batch, "version");
 
+    // severity_text and severity_number are top-level LogRecord scalar
+    // columns. The OTAP-flattened attrs sidecars never carry them, so the
+    // attrs-loop above misses them; project them into the field table
+    // here so the UI gets a low-cardinality, query-useful facet for
+    // log-level filtering.
+    let severity_text_col = logs_batch
+        .column_by_name("severity_text")
+        .and_then(|c| DictUtf8::try_from(c.as_ref()));
+    let severity_number_col = logs_batch
+        .column_by_name("severity_number")
+        .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
+
     wal_index.log_entries.reserve(logs_batch.num_rows());
-    let mut scope_buf = String::new();
+    let mut kv_buf = String::new();
 
     for row in 0..logs_batch.num_rows() {
         let log_pos = (global_log_offset + row) as u32;
@@ -79,18 +91,40 @@ pub(crate) fn process_frame(
             }
         }
 
-        // Intern scope.name and scope.version from the logs batch columns.
+        // Intern scope.{name,version} and severity_text from the logs
+        // batch columns. Empty values are the proto-default for
+        // unset / "unknown" — skip them so they don't show up as a
+        // single-value facet that's just noise.
         for (col, prefix) in [
             (&scope_name_col, "scope.name="),
             (&scope_version_col, "scope.version="),
+            (&severity_text_col, "severity_text="),
         ] {
             if let Some(val) = col.as_ref().and_then(|c| c.value(row)) {
                 if !val.is_empty() {
-                    scope_buf.clear();
-                    scope_buf.push_str(prefix);
-                    scope_buf.push_str(val);
+                    kv_buf.clear();
+                    kv_buf.push_str(prefix);
+                    kv_buf.push_str(val);
 
-                    let kv_slot = wal_index.kv_interner.intern(&scope_buf);
+                    let kv_slot = wal_index.kv_interner.intern(&kv_buf);
+                    wal_index.ensure_bitmap(kv_slot);
+                    wal_index.kv_bitmaps[kv_slot.idx()].insert(log_pos);
+                    log_kv_slots.push(kv_slot);
+                }
+            }
+        }
+
+        // severity_number is an int32 enum (OTel `SeverityNumber`).
+        // `0` = UNSPECIFIED per the spec — same noise-skip rule as
+        // empty strings.
+        if let Some(col) = severity_number_col {
+            if !col.is_null(row) {
+                let n = col.value(row);
+                if n != 0 {
+                    use std::fmt::Write;
+                    kv_buf.clear();
+                    let _ = write!(kv_buf, "severity_number={n}");
+                    let kv_slot = wal_index.kv_interner.intern(&kv_buf);
                     wal_index.ensure_bitmap(kv_slot);
                     wal_index.kv_bitmaps[kv_slot.idx()].insert(log_pos);
                     log_kv_slots.push(kv_slot);

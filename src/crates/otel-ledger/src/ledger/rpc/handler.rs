@@ -30,11 +30,12 @@ use super::types::{ACCEPTED_PARAMS, InfoResponse, OtelLogsRequest, OtelLogsRespo
 use super::wire::{Items, LogsResponse, Pagination, Version};
 use crate::registry::TenantRegistries;
 
-/// Histogram field defaults, tried in order if the request doesn't
-/// specify one. Matches the OTel canonical names that typical
-/// ingestors populate; falls through to the first eligible field in
-/// the file if none of these are present.
-const DEFAULT_HISTOGRAM_FIELDS: &[&str] = &["severity_text", "severity_number", "level"];
+/// Default histogram dimension when the request doesn't specify one.
+/// Always `severity_text` — it's the OTel canonical log-level field,
+/// and what makes a meaningful chart is the producer's responsibility
+/// (set it, populate it with varied values). The UI exposes the full
+/// `available_histograms` list for users to pick something else.
+const DEFAULT_HISTOGRAM_FIELD: &str = "severity_text";
 
 /// Aim for this many time buckets across the request window. Drives
 /// `bucket_width_ns` when the caller doesn't specify one. At the UI
@@ -151,7 +152,7 @@ fn build_logs_response(
     let field_table: Vec<sfst::FieldEntry> = reader.field_table().to_vec();
 
     let filter = build_filter(&req.selections);
-    let histogram_field = pick_histogram_field(&req.histogram, &field_table);
+    let histogram_field = pick_histogram_field(&req.histogram);
     let facet_fields = pick_facet_fields(&req.facets, &field_table);
     let bucket_width_ns = pick_bucket_width_ns(req.after, req.before);
 
@@ -216,27 +217,19 @@ fn build_filter(selections: &HashMap<String, Vec<String>>) -> sfst::Filter {
     filter
 }
 
-/// Pick the histogram field. Request → known OTel defaults → first
-/// non-high-card field in the file. Returns an empty string only if
-/// the file has no fields at all (which `sfst::timeline` will then
-/// reject as `UnknownField`).
-fn pick_histogram_field(requested: &str, fields: &[sfst::FieldEntry]) -> String {
-    let is_eligible =
-        |name: &str| fields.iter().any(|f| f.name == name && !is_high_card(f));
-
-    if !requested.is_empty() && is_eligible(requested) {
-        return requested.to_string();
+/// Pick the histogram field. Honors the request's `histogram` param
+/// when set; otherwise returns [`DEFAULT_HISTOGRAM_FIELD`]. No
+/// eligibility filtering — if the chosen field isn't in this SFST or
+/// is high-cardinality, `sfst::timeline` will surface that as an
+/// error and the handler falls back to the empty envelope. The UI
+/// can then drive the user toward a different field via
+/// `available_histograms`.
+fn pick_histogram_field(requested: &str) -> String {
+    if requested.is_empty() {
+        DEFAULT_HISTOGRAM_FIELD.to_string()
+    } else {
+        requested.to_string()
     }
-    for &candidate in DEFAULT_HISTOGRAM_FIELDS {
-        if is_eligible(candidate) {
-            return candidate.to_string();
-        }
-    }
-    fields
-        .iter()
-        .find(|f| !is_high_card(f))
-        .map(|f| f.name.clone())
-        .unwrap_or_default()
 }
 
 /// Pick the facet field set. When the caller didn't specify any,
@@ -704,44 +697,18 @@ mod tests {
     }
 
     #[test]
-    fn pick_histogram_field_prefers_requested_when_eligible() {
-        let fields = vec![
-            sfst::FieldEntry {
-                name: "service".into(),
-                cardinality: 2,
-                tier: sfst::FieldTier::Low,
-            },
-            sfst::FieldEntry {
-                name: "severity_text".into(),
-                cardinality: 2,
-                tier: sfst::FieldTier::Low,
-            },
-        ];
-        assert_eq!(pick_histogram_field("service", &fields), "service");
+    fn pick_histogram_field_honors_requested() {
+        // Whatever the request supplies is returned verbatim; the
+        // timeline call decides whether it's actually usable.
+        assert_eq!(pick_histogram_field("service.name"), "service.name");
+        assert_eq!(pick_histogram_field("trace_id"), "trace_id");
     }
 
     #[test]
-    fn pick_histogram_field_falls_back_to_default() {
-        let fields = vec![sfst::FieldEntry {
-            name: "severity_text".into(),
-            cardinality: 2,
-            tier: sfst::FieldTier::Low,
-        }];
-        // Empty request → walk DEFAULT_HISTOGRAM_FIELDS.
-        assert_eq!(pick_histogram_field("", &fields), "severity_text");
-        // Unknown requested field → walk DEFAULT_HISTOGRAM_FIELDS.
-        assert_eq!(pick_histogram_field("nonexistent", &fields), "severity_text");
-    }
-
-    #[test]
-    fn pick_histogram_field_avoids_high_card() {
-        let fields = vec![sfst::FieldEntry {
-            name: "trace_id".into(),
-            cardinality: 50_000,
-            tier: sfst::FieldTier::High,
-        }];
-        // No eligible field → empty string (timeline call will surface UnknownField).
-        assert_eq!(pick_histogram_field("trace_id", &fields), "");
+    fn pick_histogram_field_defaults_to_severity_text() {
+        // Empty `histogram` → OTel canonical default. No file-shape
+        // dependence — producers + UI handle "is this meaningful?"
+        assert_eq!(pick_histogram_field(""), "severity_text");
     }
 
     #[test]
