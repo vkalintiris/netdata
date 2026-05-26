@@ -4252,6 +4252,8 @@ dependencies = [
  "bincode",
  "bridge",
  "bumpalo",
+ "chrono",
+ "clap",
  "file-registry",
  "fst-index",
  "gix-chunk",
@@ -5197,31 +5199,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "wal-explore"
-version = "0.1.3"
-dependencies = [
- "arrow",
- "base64 0.22.1",
- "bincode",
- "bumpalo",
- "chrono",
- "clap",
- "flatten_otel",
- "fst-index",
- "hashbrown 0.15.5",
- "opentelemetry-proto",
- "otap-df-pdata",
- "otel-flatten",
- "pco",
- "roaring 0.11.2",
- "serde",
- "serde_json",
- "sfst",
- "wal",
- "zstd",
 ]
 
 [[package]]

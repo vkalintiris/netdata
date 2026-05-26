@@ -35,3 +35,9 @@ otap-df-pdata = { git = "https://github.com/open-telemetry/otel-arrow.git", tag 
 [dev-dependencies]
 tempfile = { workspace = true }
 uuid = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+
+[[example]]
+name = "inspect"
+path = "examples/inspect.rs"

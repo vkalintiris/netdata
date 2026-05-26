@@ -5,7 +5,7 @@
 //!
 //! # Pre-computed attribute hashes (`_nd_kv_hash`)
 //!
-//! The downstream indexer (`wal-explore`) builds an inverted bitmap index
+//! The downstream indexer (`sfst::indexer`) builds an inverted bitmap index
 //! keyed by `"key=value"` strings. Without optimization, it must format
 //! every attribute as `"key=value"`, compute `xxhash64` over it, and look
 //! the result up in a string interner — for every attribute on every log
@@ -15,7 +15,7 @@
 //! To avoid this, the **producer** (this module) pre-computes
 //! `xxhash64("key=value")` for every attribute while the typed proto
 //! values are still in hand, and stores the hashes as a synthetic
-//! `_nd_kv_hash` attribute. The **consumer** (`wal-explore`) then uses
+//! `_nd_kv_hash` attribute. The **consumer** (`sfst::indexer`) then uses
 //! these hashes for hash-only lookups in its string interner — on a cache
 //! hit (the hash is already interned), it skips string formatting entirely.
 //!
@@ -42,7 +42,7 @@
 //! | None     | empty (zero bytes after `=`)         |                      |
 //!
 //! This contract is implemented by [`hash_value_display`] (producer) and
-//! [`wal_explore::arrow_columns::AttrsColumns::append_value`] (consumer).
+//! `sfst::indexer::arrow_columns::AttrsColumns::append_value` (consumer).
 //! If either side changes formatting, the hashes will silently mismatch
 //! and the consumer will fall back to the slow path (correct but slower).
 

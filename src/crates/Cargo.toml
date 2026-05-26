@@ -50,7 +50,6 @@ members = [
     # WAL
     "file-registry",
     "wal",
-    "wal-explore",
 
     # LogQL
     "nlogql",
