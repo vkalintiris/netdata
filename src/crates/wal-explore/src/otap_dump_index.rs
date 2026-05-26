@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 
 pub fn run(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;

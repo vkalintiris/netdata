@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 use sfst::KvId;
 
 const BATCH_SIZE: usize = 10_000;

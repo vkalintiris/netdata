@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use sfst::{BitmapValue, FieldTier};
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 use serde::{Deserialize, Serialize};
 
 const BATCH_SIZE: u32 = 12_500;

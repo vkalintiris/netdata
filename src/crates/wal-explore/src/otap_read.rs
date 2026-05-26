@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use sfst::FieldTier;
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();

@@ -9,19 +9,19 @@
 //! 4. Load per-stream log entries for attribute resolution.
 
 use fst_index::FstIndex;
-use sfst::{
-    BitmapValue, FieldEntry, FieldTier, Summary, IdRanges, Metadata, KvId, Histogram,
-    ServiceStream,
+
+use crate::{
+    BitmapValue, FieldEntry, FieldTier, Histogram, IdRanges, KvId, Metadata, ServiceStream, Summary,
 };
 
 /// A successfully opened split-FST index.
 ///
 /// Holds the mmap'd data, the deserialized summary, and the primary
 /// FST (both eagerly loaded on open since every query needs them).
-/// [`Metadata`] is cached on the underlying [`sfst::Reader`] and
+/// [`Metadata`] is cached on the underlying [`crate::Reader`] and
 /// surfaced via [`metadata`](Self::metadata).
 pub struct IndexReader<'a> {
-    sfst: sfst::Reader<'a>,
+    sfst: crate::Reader<'a>,
     summary: Summary,
     primary: FstIndex<BitmapValue>,
 }
@@ -30,9 +30,9 @@ impl<'a> IndexReader<'a> {
     /// Open a split-FST index from a byte slice (typically an mmap).
     ///
     /// Immediately deserializes the summary, metadata, and primary FST.
-    /// Metadata stays cached on the underlying [`sfst::Reader`].
-    pub fn open(data: &'a [u8]) -> Result<Self, sfst::Error> {
-        let sfst = sfst::Reader::open(data)?;
+    /// Metadata stays cached on the underlying [`crate::Reader`].
+    pub fn open(data: &'a [u8]) -> Result<Self, crate::Error> {
+        let sfst = crate::Reader::open(data)?;
         let summary = sfst.summary()?;
         // Force the metadata cache so subsequent accessors are infallible.
         sfst.metadata()?;
@@ -103,7 +103,7 @@ impl<'a> IndexReader<'a> {
     // ── Secondary chunk loading ─────────────────────────────────────
 
     /// Load a mid-cardinality field's FST. `mid_index` is `0..num_mid`.
-    pub fn load_mid_field(&self, mid_index: u16) -> Result<FstIndex<BitmapValue>, sfst::Error> {
+    pub fn load_mid_field(&self, mid_index: u16) -> Result<FstIndex<BitmapValue>, crate::Error> {
         self.sfst.mid_field(mid_index)
     }
 
@@ -113,7 +113,7 @@ impl<'a> IndexReader<'a> {
     pub fn load_high_field(
         &self,
         high_index: u16,
-    ) -> Result<Vec<(String, BitmapValue)>, sfst::Error> {
+    ) -> Result<Vec<(String, BitmapValue)>, crate::Error> {
         self.sfst.high_field(high_index)
     }
 
@@ -121,7 +121,7 @@ impl<'a> IndexReader<'a> {
 
     /// Load the per-log nanosecond timestamps, chronologically ordered
     /// and parallel-indexed to [`load_stream_entries`](Self::load_stream_entries).
-    pub fn load_timestamps(&self) -> Result<Vec<i64>, sfst::Error> {
+    pub fn load_timestamps(&self) -> Result<Vec<i64>, crate::Error> {
         self.sfst.timestamps()
     }
 
@@ -129,9 +129,9 @@ impl<'a> IndexReader<'a> {
 
     /// Load the file's stream log entries.
     ///
-    /// Each SFST has exactly one stream (see [`sfst::ServiceStream`]); its
+    /// Each SFST has exactly one stream (see [`crate::ServiceStream`]); its
     /// log entries chunk is the trailing secondary chunk.
-    pub fn load_stream_entries(&self) -> Result<Vec<Vec<KvId>>, sfst::Error> {
+    pub fn load_stream_entries(&self) -> Result<Vec<Vec<KvId>>, crate::Error> {
         self.sfst.stream_entries()
     }
 
@@ -156,7 +156,7 @@ impl<'a> IndexReader<'a> {
     pub fn build_string_table(
         &self,
         field_table: &[FieldEntry],
-    ) -> Result<Vec<String>, sfst::Error> {
+    ) -> Result<Vec<String>, crate::Error> {
         let total = self.metadata().id_ranges.high_end.0 as usize;
         let mut table = vec![String::new(); total];
         let mut kv_id = 0usize;

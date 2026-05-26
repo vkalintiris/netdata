@@ -1,7 +1,7 @@
 use roaring::RoaringBitmap;
 use treight::Bitmap;
 
-use crate::bitset::Bitset;
+use super::bitset::Bitset;
 
 /// Remap roaring bitmaps from insertion order to time-sorted order and
 /// convert directly to treight bitmaps, skipping intermediate roaring

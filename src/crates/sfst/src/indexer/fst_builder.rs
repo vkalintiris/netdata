@@ -23,12 +23,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use roaring::RoaringBitmap;
-use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, KvId, Metadata, ServiceStream};
 use treight::Bitmap;
 
-use crate::bitset::Bitset;
-use crate::kv_interner::KeyValueId;
-use crate::wal_index::{TimeOrder, WalIndex};
+use crate::{BitmapValue, FieldEntry, FieldTier, IdRanges, KvId, Metadata, ServiceStream};
+use super::bitset::Bitset;
+use super::kv_interner::KeyValueId;
+use super::wal_index::{TimeOrder, WalIndex};
 
 /// Build tier-aligned key=value ID translation table.
 ///
@@ -83,7 +83,7 @@ fn build_stream_entries(
     log_entries: &[Vec<KeyValueId>],
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
-    writer: &mut sfst::Writer,
+    writer: &mut crate::Writer,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let entries: Vec<Vec<KvId>> = time_order
         .iter_by_time()
@@ -95,7 +95,7 @@ fn build_stream_entries(
         })
         .collect();
 
-    let packed = sfst::pack(&entries, 1)?;
+    let packed = crate::pack(&entries, 1)?;
     let len = packed.len();
     writer.set_stream_entries(packed);
 
@@ -106,7 +106,7 @@ fn build_stream_entries(
 fn build_primary_fst(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut sfst::Writer,
+    writer: &mut crate::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
@@ -123,7 +123,7 @@ fn build_primary_fst(
     }
 
     let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries)?;
-    let packed = sfst::pack(&fst, 3)?;
+    let packed = crate::pack(&fst, 3)?;
     tracing::debug!(
         "primary FST built: {} fields, {} KB, {}ms",
         low.len(),
@@ -138,7 +138,7 @@ fn build_primary_fst(
 fn build_mid_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut sfst::Writer,
+    writer: &mut crate::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -156,7 +156,7 @@ fn build_mid_card_chunks(
         }
 
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
-        let packed = sfst::pack(&fst, 3)?;
+        let packed = crate::pack(&fst, 3)?;
         total_kb += packed.len() / 1024;
         writer.add_mid_field(packed);
     }
@@ -175,7 +175,7 @@ fn build_mid_card_chunks(
 fn build_high_card_chunks(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
-    writer: &mut sfst::Writer,
+    writer: &mut crate::Writer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -194,7 +194,7 @@ fn build_high_card_chunks(
 
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
-        let packed = sfst::pack(&entries, 1)?;
+        let packed = crate::pack(&entries, 1)?;
         total_kb += packed.len() / 1024;
         writer.add_high_field(packed);
     }
@@ -221,7 +221,7 @@ fn build_streams(
     wal_index: &WalIndex,
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
-    writer: &mut sfst::Writer,
+    writer: &mut crate::Writer,
 ) -> Result<ServiceStream, Box<dyn std::error::Error>> {
     let stream = wal_index.service_stream()?;
 
@@ -255,16 +255,16 @@ fn build_streams(
 /// Phase 1 and produces a split-fst file with: summary, metadata, primary FST,
 /// secondary chunks (mid/high-card), and per-stream log entries.
 ///
-/// Returns both the cheap-to-read [`sfst::Summary`] (which the registry
+/// Returns both the cheap-to-read [`crate::Summary`] (which the registry
 /// stores inline) and the heavier [`Metadata`] (only needed for query
 /// planning and execution).
 pub fn build_and_write(
     wal_index: &WalIndex,
     out_path: &Path,
-) -> Result<(sfst::Summary, Metadata), Box<dyn std::error::Error>> {
+) -> Result<(crate::Summary, Metadata), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
 
-    let mut writer = sfst::Writer::new();
+    let mut writer = crate::Writer::new();
 
     let t = Instant::now();
 
@@ -286,7 +286,7 @@ pub fn build_and_write(
         .iter_by_time()
         .map(|ins| wal_index.timestamps[ins as usize])
         .collect();
-    writer.set_timestamps(sfst::pack(&timestamps_chronological, 1)?);
+    writer.set_timestamps(crate::pack(&timestamps_chronological, 1)?);
 
     // Field table, ordered low → mid → high (each tier sorted by name).
     let fields: Vec<FieldEntry> = wal_index
@@ -318,23 +318,23 @@ pub fn build_and_write(
     // derivation) and the heavy metadata.
     let histogram = wal_index.sparse_histogram(&time_order);
 
-    let summary = sfst::Summary {
+    let summary = crate::Summary {
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
         max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs: wal_index.num_logs() as u32,
-        stream: sfst::ServiceStream {
+        stream: crate::ServiceStream {
             namespace: stream.namespace.clone(),
             name: stream.name.clone(),
         },
     };
-    writer.set_summary(sfst::pack(&summary, 1)?);
+    writer.set_summary(crate::pack(&summary, 1)?);
 
     let metadata = Metadata {
         histogram,
         id_ranges,
         fields,
     };
-    writer.set_metadata(sfst::pack(&metadata, 1)?);
+    writer.set_metadata(crate::pack(&metadata, 1)?);
 
     let t = Instant::now();
     let tmp_path = out_path.with_extension("sfst.tmp");

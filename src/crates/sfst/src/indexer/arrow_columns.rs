@@ -22,7 +22,7 @@
 //!    skip string formatting entirely. On miss (first encounter), format the
 //!    string and intern it with the pre-computed hash so future lookups hit.
 //!
-//! The string interner uses an identity hasher (see [`crate::kv_interner`])
+//! The string interner uses an identity hasher (see [`super::kv_interner`])
 //! so the pre-computed `u64` is used directly as the HashMap bucket key —
 //! no re-hashing.
 //!
@@ -35,8 +35,8 @@ use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use hashbrown::HashMap;
 
-use crate::KeyValueId;
-use crate::kv_interner::KeyValueInterner;
+use super::KeyValueId;
+use super::kv_interner::KeyValueInterner;
 
 /// Name of the synthetic attribute holding pre-computed key=value hashes.
 const KV_HASH_ATTR: &str = "_nd_kv_hash";

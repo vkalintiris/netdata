@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 use sfst::KvId;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {

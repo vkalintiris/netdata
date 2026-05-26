@@ -20,7 +20,6 @@ chrono = { workspace = true }
 clap = { workspace = true }
 fst-index = { workspace = true }
 hashbrown = { workspace = true }
-log-index = { workspace = true }
 pco = { workspace = true }
 sfst = { workspace = true }
 zstd = { workspace = true }

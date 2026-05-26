@@ -9,18 +9,28 @@ description = "Container format for split FST indexes with gix-chunk TOC"
 workspace = true
 
 [dependencies]
+# Format
 fst-index = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 bincode = { workspace = true }
 zstd = { workspace = true }
 gix-chunk = { workspace = true }
 thiserror = { workspace = true }
-treight = { workspace = true, features = ["serde"] }
+treight = { workspace = true, features = ["roaring", "serde"] }
 
-# Registry dependencies
+# Registry
 bridge = { path = "../netdata-plugin/bridge" }
 file-registry = { workspace = true }
 tracing = { workspace = true }
+
+# Indexer (WAL → SFST conversion)
+bumpalo = { workspace = true }
+hashbrown = { workspace = true }
+roaring = { workspace = true }
+twox-hash = { workspace = true, features = ["xxhash64"] }
+wal = { workspace = true }
+arrow = { version = "57" }
+otap-df-pdata = { git = "https://github.com/open-telemetry/otel-arrow.git", tag = "v0.46.0" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

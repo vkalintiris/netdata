@@ -37,6 +37,7 @@
 //! ```
 
 mod error;
+pub mod indexer;
 mod reader;
 mod schema;
 mod writer;
@@ -45,6 +46,7 @@ pub mod registry;
 
 pub use error::Error;
 pub use file_registry::ServiceStream;
+pub use indexer::{IndexReader, IndexResult, KeyValueId, build_and_write, index, index_with_options};
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 pub use schema::{

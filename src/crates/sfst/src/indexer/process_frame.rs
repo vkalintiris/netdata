@@ -6,10 +6,10 @@
 use arrow::array::*;
 use arrow::record_batch::RecordBatch;
 
-use crate::KeyValueId;
-use crate::arrow_columns::{AttrsMap, DictUtf8};
-use crate::otap_frame::OtapFrame;
-use crate::wal_index::WalIndex;
+use super::KeyValueId;
+use super::arrow_columns::{AttrsMap, DictUtf8};
+use super::otap_frame::OtapFrame;
+use super::wal_index::WalIndex;
 
 /// Decode and process a single WAL frame, updating all four data structures
 /// in the [`WalIndex`].

@@ -7,8 +7,8 @@ use arrow::array::*;
 use arrow::record_batch::RecordBatch;
 
 use crate::otap_frame::OtapFrame;
-use log_index::KeyValueId;
-use log_index::wal_index::WalIndex;
+use sfst::KeyValueId;
+use sfst::indexer::wal_index::WalIndex;
 use wal_explore::arrow_columns::{AttrsMap, DictUtf8};
 
 /// Decode and process a single WAL frame, updating all four data structures

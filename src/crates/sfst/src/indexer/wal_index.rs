@@ -13,9 +13,9 @@
 use bumpalo::Bump;
 use file_registry::ServiceStream;
 use roaring::RoaringBitmap;
-use sfst::Histogram;
+use crate::Histogram;
 
-use crate::kv_interner::{KeyValueId, KeyValueInterner};
+use super::kv_interner::{KeyValueId, KeyValueInterner};
 
 /// The WAL contains multiple distinct `(namespace, name)` identities — an
 /// `ns_hash` collision slipped past the ingestor's canonical-stream

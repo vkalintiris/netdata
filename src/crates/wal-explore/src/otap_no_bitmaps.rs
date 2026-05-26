@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use sfst::{BitmapValue, FieldTier};
-use log_index::reader::IndexReader;
+use sfst::IndexReader;
 
 pub fn run(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;

@@ -20,7 +20,6 @@ ferryboat = { workspace = true }
 file-registry = { workspace = true }
 futures = { workspace = true }
 journal-common = { workspace = true }
-log-index = { workspace = true }
 netdata-plugin-error = { path = "../netdata-plugin/error" }
 netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-types = { path = "../netdata-plugin/types" }

@@ -1,7 +1,7 @@
 //! The indexing pipeline — orchestrates Phase 1 (reading) and Phase 2 (writing).
 //!
 //! Phase 1 reads WAL frames into a [`WalIndex`], then Phase 2
-//! ([`log_index::build_and_write`]) transforms the in-memory data into the
+//! ([`sfst::build_and_write`]) transforms the in-memory data into the
 //! on-disk split-FST format.
 
 use std::path::PathBuf;
@@ -9,13 +9,13 @@ use std::time::Instant;
 
 use bumpalo::Bump;
 
-use log_index::wal_index::WalIndex;
+use sfst::indexer::wal_index::WalIndex;
 
 /// Build a split-FST index from a WAL file.
 ///
 /// This is the entry point for the two-phase indexing pipeline:
 /// - **Phase 1**: sequential scan of WAL frames via [`crate::process_frame::process_frame`].
-/// - **Phase 2**: [`log_index::build_and_write`] transforms the
+/// - **Phase 2**: [`sfst::build_and_write`] transforms the
 ///   in-memory data into the on-disk split-FST format.
 pub fn run(
     path: &PathBuf,
@@ -49,7 +49,7 @@ pub fn run(
 
     let out_path = path.with_extension("sfst");
 
-    log_index::build_and_write(&wal_index, &out_path)?;
+    sfst::build_and_write(&wal_index, &out_path)?;
     print_rss();
 
     Ok(())
