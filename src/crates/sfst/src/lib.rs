@@ -77,6 +77,20 @@ pub const MIN_LOGS_PER_BATCH: u32 = 1024;
 /// per-value batch-membership mask fits in a `u8` (one bit per batch).
 pub const MAX_STREAM_BATCHES: u8 = 8;
 
+/// Default zstd compression level used by [`pack`] for most chunk
+/// payloads — high-card values, stream batches, timestamps, summary,
+/// metadata. These payloads either carry random data (string columns,
+/// KvId sequences) or are small enough that higher zstd levels don't
+/// recoup their CPU cost.
+pub const ZSTD_LEVEL_DEFAULT: i32 = 1;
+
+/// Elevated zstd compression level for FST chunks (primary +
+/// mid-card). FSTs share prefix structure across many `key=value`
+/// strings; the higher level lets zstd's longer-range match search
+/// find that redundancy and pay off the extra CPU with a noticeably
+/// smaller payload.
+pub const ZSTD_LEVEL_FST: i32 = 3;
+
 /// Number of stream-batch (`SB{i}`) chunks in a file with `total_logs`
 /// log entries. Both writer and reader call this; the rule is the
 /// format invariant, not stored in the file.

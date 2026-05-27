@@ -106,13 +106,13 @@ fn build_stream_batches(
     if entries.is_empty() {
         // num_stream_batches(0) == 1: emit a single empty batch so the
         // file's chunk layout is always valid.
-        let packed = crate::pack(&Vec::<Vec<KvId>>::new(), 1)?;
+        let packed = crate::pack(&Vec::<Vec<KvId>>::new(), crate::ZSTD_LEVEL_DEFAULT)?;
         total_packed += packed.len();
         writer.add_stream_batch(packed);
     } else {
         let batch_size = crate::stream_batch_size(total_logs) as usize;
         for batch in entries.chunks(batch_size) {
-            let packed = crate::pack(batch, 1)?;
+            let packed = crate::pack(batch, crate::ZSTD_LEVEL_DEFAULT)?;
             total_packed += packed.len();
             writer.add_stream_batch(packed);
         }
@@ -142,7 +142,7 @@ fn build_primary_fst(
     }
 
     let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries)?;
-    let packed = crate::pack(&fst, 3)?;
+    let packed = crate::pack(&fst, crate::ZSTD_LEVEL_FST)?;
     tracing::debug!(
         "primary FST built: {} fields, {} KB, {}ms",
         low.len(),
@@ -175,7 +175,7 @@ fn build_mid_card_chunks(
         }
 
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
-        let packed = crate::pack(&fst, 3)?;
+        let packed = crate::pack(&fst, crate::ZSTD_LEVEL_FST)?;
         total_kb += packed.len() / 1024;
         writer.add_mid_field(packed);
     }
@@ -279,7 +279,7 @@ fn build_high_card_chunks(
             masks: &masks,
         };
 
-        let packed = crate::pack(&view, 1)?;
+        let packed = crate::pack(&view, crate::ZSTD_LEVEL_DEFAULT)?;
         total_kb += packed.len() / 1024;
         writer.add_high_field(packed);
     }
@@ -406,7 +406,7 @@ pub fn build_and_write(
         .iter_by_time()
         .map(|ins| wal_index.timestamps[ins as usize])
         .collect();
-    writer.set_timestamps(crate::pack(&timestamps_chronological, 1)?);
+    writer.set_timestamps(crate::pack(&timestamps_chronological, crate::ZSTD_LEVEL_DEFAULT)?);
 
     // Field table, ordered low → mid → high (each tier sorted by name).
     let fields: Vec<FieldEntry> = wal_index
@@ -447,14 +447,14 @@ pub fn build_and_write(
             name: stream.name.clone(),
         },
     };
-    writer.set_summary(crate::pack(&summary, 1)?);
+    writer.set_summary(crate::pack(&summary, crate::ZSTD_LEVEL_DEFAULT)?);
 
     let metadata = Metadata {
         histogram,
         id_ranges,
         fields,
     };
-    writer.set_metadata(crate::pack(&metadata, 1)?);
+    writer.set_metadata(crate::pack(&metadata, crate::ZSTD_LEVEL_DEFAULT)?);
 
     let t = Instant::now();
     let tmp_path = out_path.with_extension("sfst.tmp");

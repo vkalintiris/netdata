@@ -191,12 +191,22 @@ fn collect_timestamps(logs_rb: &RecordBatch, ingestion_ns: u64, timestamps: &mut
         .column_by_name("observed_time_unix_nano")
         .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>());
 
+    // Cast the WAL ingestion timestamp (u64) once per frame using a
+    // saturating conversion: i64::MAX is ~year 2262 in nanoseconds,
+    // well past any realistic ingestion clock, but a wrapping `as i64`
+    // would silently flip to negative if it ever happened. Same for
+    // the per-row offset that preserves intra-frame ordering.
+    let base_ns = i64::try_from(ingestion_ns).unwrap_or(i64::MAX);
+
     for row in 0..logs_rb.num_rows() {
         let ts = ts_value(time_col, row)
             .filter(|&v| v != 0)
             .or_else(|| ts_value(observed_col, row))
             .filter(|&v| v != 0)
-            .unwrap_or(ingestion_ns as i64 + row as i64);
+            .unwrap_or_else(|| {
+                let offset = i64::try_from(row).unwrap_or(i64::MAX);
+                base_ns.saturating_add(offset)
+            });
 
         timestamps.push(ts);
     }
