@@ -87,13 +87,36 @@ pub struct FacetResult {
     pub values: Vec<(String, u32)>,
 }
 
+/// Bucket grid for a [`Timeline`] — the time geometry shared between
+/// the caller, the reader, and any downstream merger.
+///
+/// `bucket i` covers `[bucket_start_ns + i * bucket_width_ns,
+/// bucket_start_ns + (i + 1) * bucket_width_ns)`. Two `Grid` values
+/// compare equal iff they describe the same buckets at the same
+/// offsets — which is exactly the precondition for bucket-wise
+/// merging of multi-file timelines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grid {
+    pub bucket_start_ns: i64,
+    pub bucket_width_ns: i64,
+    pub num_buckets: usize,
+}
+
+impl Grid {
+    pub fn new(bucket_start_ns: i64, bucket_width_ns: i64, num_buckets: usize) -> Self {
+        Self {
+            bucket_start_ns,
+            bucket_width_ns,
+            num_buckets,
+        }
+    }
+}
+
 /// 2D time × dimension count grid for chart rendering.
 ///
-/// `buckets[i]` corresponds to the time window
-/// `[bucket_start_ns + i * bucket_width_ns,
-///   bucket_start_ns + (i + 1) * bucket_width_ns)`,
-/// except the last bucket which is clamped to the file's max timestamp.
-/// `buckets[i][j]` is the count for dimension `dimensions[j]`.
+/// `buckets[i]` corresponds to the time window described by
+/// `grid` (see [`Grid`]). `buckets[i][j]` is the count for
+/// dimension `dimensions[j]`.
 ///
 /// `unset[i]` is the count of logs in bucket `i` that match the
 /// (without-field) filter but **don't have the histogram field set**.
@@ -103,8 +126,7 @@ pub struct FacetResult {
 /// exactly one dimension or in `unset`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
-    pub bucket_start_ns: i64,
-    pub bucket_width_ns: i64,
+    pub grid: Grid,
     pub dimensions: Vec<String>,
     pub buckets: Vec<Vec<u64>>,
     pub unset: Vec<u64>,

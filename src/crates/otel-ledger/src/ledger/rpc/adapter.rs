@@ -67,13 +67,14 @@ pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> His
     const UNSET_LABEL: &str = "(unset)";
 
     let total_dim_count = timeline.dimensions.len() + 1; // value dims + (unset)
-    let bucket_start_ms = (timeline.bucket_start_ns / NS_PER_MS).max(0) as u64;
-    let bucket_width_ms = (timeline.bucket_width_ns / NS_PER_MS).max(1) as u64;
+    let grid = timeline.grid;
+    let bucket_start_ms = (grid.bucket_start_ns / NS_PER_MS).max(0) as u64;
+    let bucket_width_ms = (grid.bucket_width_ns / NS_PER_MS).max(1) as u64;
 
-    let after_s = (timeline.bucket_start_ns / NS_PER_S).max(0) as u32;
-    let span_ns = timeline.bucket_width_ns * timeline.buckets.len() as i64;
-    let before_s = ((timeline.bucket_start_ns + span_ns) / NS_PER_S).max(0) as u32;
-    let update_every_s = (timeline.bucket_width_ns / NS_PER_S).max(1) as u32;
+    let after_s = (grid.bucket_start_ns / NS_PER_S).max(0) as u32;
+    let span_ns = grid.bucket_width_ns * grid.num_buckets as i64;
+    let before_s = ((grid.bucket_start_ns + span_ns) / NS_PER_S).max(0) as u32;
+    let update_every_s = (grid.bucket_width_ns / NS_PER_S).max(1) as u32;
 
     let mut dimension_ids: Vec<String> = timeline.dimensions.clone();
     dimension_ids.push(UNSET_LABEL.to_string());
@@ -177,9 +178,10 @@ pub(super) fn merge_facet_results(
 
 /// Merge per-file [`sfst::Timeline`]s into a single combined timeline.
 ///
-/// Precondition: every input must share the same `bucket_start_ns`,
-/// `bucket_width_ns`, and `buckets.len()` — the multi-file caller
-/// builds them off a single request-aligned grid. Dimensions are
+/// Precondition: every input must share the same [`sfst::Grid`] —
+/// the multi-file caller builds them off a single request-aligned
+/// grid, so `grid.bucket_start_ns`, `grid.bucket_width_ns`, and
+/// `grid.num_buckets` all match across inputs. Dimensions are
 /// unioned via [`BTreeSet`] (sorted lexicographically) and each
 /// input's per-bucket counts are reindexed onto the union order
 /// before bucket-wise summation. `unset` sums bucket-wise.
@@ -190,9 +192,7 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
 
     let mut iter = per_file.into_iter();
     let first = iter.next()?;
-    let bucket_start_ns = first.bucket_start_ns;
-    let bucket_width_ns = first.bucket_width_ns;
-    let num_buckets = first.buckets.len();
+    let grid = first.grid;
 
     // Collect into a Vec so we can iterate it twice (union pass +
     // reindex pass).
@@ -213,8 +213,8 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
         .map(|(i, d)| (d.as_str(), i))
         .collect();
 
-    let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
-    let mut unset = vec![0u64; num_buckets];
+    let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
+    let mut unset = vec![0u64; grid.num_buckets];
 
     for t in &all {
         // Hard-assert the precondition: every input must share the
@@ -222,10 +222,9 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
         // produces wrong merged data — better to panic than serve
         // misaligned buckets. The cost is one comparison per file,
         // not per bucket, so the check is free at runtime.
-        assert_eq!(t.bucket_start_ns, bucket_start_ns);
-        assert_eq!(t.bucket_width_ns, bucket_width_ns);
-        assert_eq!(t.buckets.len(), num_buckets);
-        assert_eq!(t.unset.len(), num_buckets);
+        assert_eq!(t.grid, grid);
+        assert_eq!(t.buckets.len(), grid.num_buckets);
+        assert_eq!(t.unset.len(), grid.num_buckets);
 
         // Map this file's local dim index → union dim index.
         let local_to_union: Vec<usize> = t
@@ -243,8 +242,7 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
     }
 
     Some(sfst::Timeline {
-        bucket_start_ns,
-        bucket_width_ns,
+        grid,
         dimensions,
         buckets,
         unset,

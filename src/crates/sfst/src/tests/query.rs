@@ -211,10 +211,14 @@ fn timeline_buckets_match_filter() {
     // Grid anchored at file_min, 3 buckets covering positions {0,1},
     // {2,3}, {4,5}.
     let timeline = reader
-        .timeline("level", &Filter::new(), FILE_MIN_NS, 2 * 1_000_000_000, 3)
+        .timeline(
+            "level",
+            &Filter::new(),
+            Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
+        )
         .unwrap();
-    assert_eq!(timeline.bucket_start_ns, FILE_MIN_NS);
-    assert_eq!(timeline.bucket_width_ns, 2_000_000_000);
+    assert_eq!(timeline.grid.bucket_start_ns, FILE_MIN_NS);
+    assert_eq!(timeline.grid.bucket_width_ns, 2_000_000_000);
     assert_eq!(timeline.buckets.len(), 3);
     // Dimensions are FST-iteration-order: "error", "info".
     assert_eq!(timeline.dimensions, vec!["error", "info"]);
@@ -233,7 +237,11 @@ fn timeline_unset_counts_match_logs_missing_the_field() {
     // Every log in the fixture has `level` set, so the unset
     // dimension should be zero across every bucket.
     let t = reader
-        .timeline("level", &Filter::new(), FILE_MIN_NS, 2 * 1_000_000_000, 3)
+        .timeline(
+            "level",
+            &Filter::new(),
+            Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
+        )
         .unwrap();
     assert_eq!(t.unset, vec![0, 0, 0]);
     // And the per-bucket dim sums equal the bucket totals (no
@@ -253,7 +261,11 @@ fn timeline_excludes_own_field_from_filter() {
     // to a single dimension.
     let filter = Filter::new().select("level", "info");
     let timeline = reader
-        .timeline("level", &filter, FILE_MIN_NS, 6 * 1_000_000_000, 1)
+        .timeline(
+            "level",
+            &filter,
+            Grid::new(FILE_MIN_NS, 6 * 1_000_000_000, 1),
+        )
         .unwrap();
     // One bucket covering everything.
     assert_eq!(timeline.buckets.len(), 1);
@@ -268,7 +280,7 @@ fn timeline_invalid_bucket_width_errors() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     let err = reader
-        .timeline("level", &Filter::new(), FILE_MIN_NS, 0, 1)
+        .timeline("level", &Filter::new(), Grid::new(FILE_MIN_NS, 0, 1))
         .unwrap_err();
     assert!(matches!(err, Error::InvalidBucketWidth(0)));
 }
@@ -283,7 +295,11 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
     // the file's 6 logs one-per-bucket.
     let grid_start = FILE_MIN_NS - 4 * 1_000_000_000;
     let timeline = reader
-        .timeline("level", &Filter::new(), grid_start, 1_000_000_000, 10)
+        .timeline(
+            "level",
+            &Filter::new(),
+            Grid::new(grid_start, 1_000_000_000, 10),
+        )
         .unwrap();
     assert_eq!(timeline.buckets.len(), 10);
     // Leading buckets all zero.

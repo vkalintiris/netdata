@@ -161,9 +161,11 @@ impl FunctionHandler for OtelLogsHandler {
         // `bucket_width_s` divides `(before - after)` exactly by
         // construction, so no `div_ceil` is needed. All per-file
         // timelines share this grid and are directly mergeable.
-        let bucket_width_ns = (bucket_width_s as i64) * NS_PER_S;
-        let bucket_start_ns = (req.after as i64) * NS_PER_S;
-        let num_buckets = ((req.before - req.after) / bucket_width_s) as usize;
+        let grid = sfst::Grid::new(
+            (req.after as i64) * NS_PER_S,
+            (bucket_width_s as i64) * NS_PER_S,
+            ((req.before - req.after) / bucket_width_s) as usize,
+        );
 
         // Capture primitives needed for the error fallback before
         // `req` moves into the blocking task.
@@ -172,13 +174,7 @@ impl FunctionHandler for OtelLogsHandler {
         let req_last = req.last;
 
         let response = tokio::task::spawn_blocking(move || {
-            build_merged_logs_response(
-                candidates,
-                req,
-                bucket_start_ns,
-                bucket_width_ns,
-                num_buckets,
-            )
+            build_merged_logs_response(candidates, req, grid)
         })
         .await
         .unwrap_or_else(|e| {
@@ -211,9 +207,7 @@ impl FunctionHandler for OtelLogsHandler {
 fn build_merged_logs_response(
     candidates: Vec<(sfst::Summary, PathBuf)>,
     req: OtelLogsRequest,
-    bucket_start_ns: i64,
-    bucket_width_ns: i64,
-    num_buckets: usize,
+    grid: sfst::Grid,
 ) -> LogsResponse {
     let filter = build_filter(&req.selections);
     let histogram_field = pick_histogram_field(&req.histogram);
@@ -316,13 +310,7 @@ fn build_merged_logs_response(
             .iter()
             .any(|f| f.name == histogram_field);
         if has_histogram_field {
-            match reader.timeline(
-                &histogram_field,
-                &filter,
-                bucket_start_ns,
-                bucket_width_ns,
-                num_buckets,
-            ) {
+            match reader.timeline(&histogram_field, &filter, grid) {
                 Ok(t) => per_file_timelines.push(t),
                 Err(e) => tracing::warn!(
                     "otel-logs: timeline failed for {}: {e}",
@@ -344,11 +332,10 @@ fn build_merged_logs_response(
     // aligned to the grid so the wire shape stays valid.
     let merged_timeline =
         merge_timelines(per_file_timelines).unwrap_or_else(|| sfst::Timeline {
-            bucket_start_ns,
-            bucket_width_ns,
+            grid,
             dimensions: Vec::new(),
-            buckets: vec![Vec::new(); num_buckets],
-            unset: vec![0u64; num_buckets],
+            buckets: vec![Vec::new(); grid.num_buckets],
+            unset: vec![0u64; grid.num_buckets],
         });
     let wire_histogram = histogram_from_sfst(&histogram_field, &merged_timeline);
     let wire_available = available_histograms_from_fields(&unioned);

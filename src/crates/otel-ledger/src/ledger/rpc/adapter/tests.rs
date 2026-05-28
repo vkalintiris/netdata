@@ -33,8 +33,7 @@ fn facet_with_no_values_yields_empty_options() {
 fn histogram_emits_one_datapoint_per_bucket() {
     // 3 buckets × 2 value dimensions + the "(unset)" trailer.
     let t = sfst::Timeline {
-        bucket_start_ns: 1_700_000_000 * NS_PER_S,
-        bucket_width_ns: 2 * NS_PER_S,
+        grid: sfst::Grid::new(1_700_000_000 * NS_PER_S, 2 * NS_PER_S, 3),
         dimensions: vec!["error".into(), "info".into()],
         buckets: vec![vec![1, 4], vec![0, 3], vec![2, 2]],
         unset: vec![2, 1, 0],
@@ -73,8 +72,7 @@ fn histogram_emits_one_datapoint_per_bucket() {
 #[test]
 fn histogram_with_zero_buckets_still_well_formed() {
     let t = sfst::Timeline {
-        bucket_start_ns: 0,
-        bucket_width_ns: NS_PER_S,
+        grid: sfst::Grid::new(0, NS_PER_S, 0),
         dimensions: Vec::new(),
         buckets: Vec::new(),
         unset: Vec::new(),
@@ -149,24 +147,23 @@ fn merge_timelines_unions_dimensions_and_sums_buckets() {
     let start = 100 * NS_PER_S;
     let width = 2 * NS_PER_S;
 
+    let grid = sfst::Grid::new(start, width, 3);
     let a = sfst::Timeline {
-        bucket_start_ns: start,
-        bucket_width_ns: width,
+        grid,
         dimensions: vec!["error".into(), "info".into()],
         buckets: vec![vec![1, 2], vec![0, 3], vec![4, 0]],
         unset: vec![1, 0, 2],
     };
     let b = sfst::Timeline {
-        bucket_start_ns: start,
-        bucket_width_ns: width,
+        grid,
         dimensions: vec!["debug".into(), "info".into()],
         buckets: vec![vec![5, 0], vec![1, 1], vec![0, 0]],
         unset: vec![0, 3, 0],
     };
 
     let merged = merge_timelines(vec![a, b]).unwrap();
-    assert_eq!(merged.bucket_start_ns, start);
-    assert_eq!(merged.bucket_width_ns, width);
+    assert_eq!(merged.grid.bucket_start_ns, start);
+    assert_eq!(merged.grid.bucket_width_ns, width);
     assert_eq!(merged.dimensions, vec!["debug", "error", "info"]);
 
     // Bucket 0: a[error=1, info=2], b[debug=5, info=0]

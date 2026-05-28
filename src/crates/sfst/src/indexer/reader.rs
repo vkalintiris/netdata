@@ -12,8 +12,8 @@ use fst_index::FstIndex;
 use roaring::RoaringBitmap;
 
 use crate::{
-    BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, HighField, Histogram, IdRanges, KvId,
-    Metadata, ServiceStream, Summary, Timeline, bitmap_value_to_roaring,
+    BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram, IdRanges,
+    KvId, Metadata, ServiceStream, Summary, Timeline, bitmap_value_to_roaring,
 };
 
 /// A successfully opened split-FST index.
@@ -300,27 +300,24 @@ impl<'a> IndexReader<'a> {
 
     /// Compute a 2D time × value-of-`field` count grid for chart rendering.
     ///
-    /// Bucket grid is caller-supplied — anchored at `bucket_start_ns`,
-    /// `num_buckets` buckets each `bucket_width_ns` wide. A grid that
-    /// extends past the file's actual log range produces zero counts
-    /// in the outer buckets (handled naturally by `partition_point`).
-    /// `field`'s own selections are excluded from the filter (same
-    /// reason as in [`facets`](Self::facets)).
+    /// `grid` is caller-supplied. A grid that extends past the file's
+    /// actual log range produces zero counts in the outer buckets
+    /// (handled naturally by `partition_point`). `field`'s own
+    /// selections are excluded from the filter (same reason as in
+    /// [`facets`](Self::facets)).
     ///
     /// Errors:
-    /// - [`crate::Error::InvalidBucketWidth`] if `bucket_width_ns <= 0`.
+    /// - [`crate::Error::InvalidBucketWidth`] if `grid.bucket_width_ns <= 0`.
     /// - [`crate::Error::UnknownField`] if `field` is not in this file.
     /// - [`crate::Error::HighCardFacet`] if `field` is high-cardinality.
     pub fn timeline(
         &self,
         field: &str,
         filter: &Filter,
-        bucket_start_ns: i64,
-        bucket_width_ns: i64,
-        num_buckets: usize,
+        grid: Grid,
     ) -> Result<Timeline, crate::Error> {
-        if bucket_width_ns <= 0 {
-            return Err(crate::Error::InvalidBucketWidth(bucket_width_ns));
+        if grid.bucket_width_ns <= 0 {
+            return Err(crate::Error::InvalidBucketWidth(grid.bucket_width_ns));
         }
 
         // Filter with `field`'s own selections removed.
@@ -364,11 +361,11 @@ impl<'a> IndexReader<'a> {
         }
 
         let timestamps = self.sfst.timestamps()?;
-        let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
-        let mut unset = vec![0u64; num_buckets];
-        for bucket_i in 0..num_buckets {
-            let bucket_start = bucket_start_ns + (bucket_i as i64) * bucket_width_ns;
-            let bucket_end = bucket_start + bucket_width_ns;
+        let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
+        let mut unset = vec![0u64; grid.num_buckets];
+        for bucket_i in 0..grid.num_buckets {
+            let bucket_start = grid.bucket_start_ns + (bucket_i as i64) * grid.bucket_width_ns;
+            let bucket_end = bucket_start + grid.bucket_width_ns;
             // `partition_point` clamps naturally: positions before
             // bucket_start_ns yield pos_lo=0, after the file's last
             // timestamp yield pos_hi=timestamps.len(). Outer buckets of
@@ -391,8 +388,7 @@ impl<'a> IndexReader<'a> {
         }
 
         Ok(Timeline {
-            bucket_start_ns,
-            bucket_width_ns,
+            grid,
             dimensions,
             buckets,
             unset,
