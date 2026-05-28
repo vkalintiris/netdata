@@ -61,8 +61,9 @@ pub(crate) struct OtelLogsRequest {
     pub before: u32,
     #[serde(default)]
     pub anchor: Option<u64>,
-    #[serde(default)]
-    pub last: Option<usize>,
+    /// Maximum number of log entries to return.
+    #[serde(default = "default_last")]
+    pub last: usize,
     #[serde(default)]
     pub facets: Vec<String>,
     #[serde(default)]
@@ -77,6 +78,10 @@ pub(crate) struct OtelLogsRequest {
     pub selections: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub timeout: Option<u32>,
+}
+
+fn default_last() -> usize {
+    200
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]

@@ -84,8 +84,6 @@ impl FunctionHandler for OtelLogsHandler {
             return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        let last = req.last.unwrap_or(200);
-
         // Take the read lock just long enough to find the freshest file.
         // The lock is released before any file I/O happens.
         let target = {
@@ -96,7 +94,7 @@ impl FunctionHandler for OtelLogsHandler {
         let Some((summary, path)) = target else {
             // No SFST files exist yet — honest empty result.
             return Ok(OtelLogsResponse::Logs(LogsResponse::empty_stub(
-                req.after, req.before, last,
+                req.after, req.before, req.last,
             )));
         };
 
@@ -105,18 +103,18 @@ impl FunctionHandler for OtelLogsHandler {
         // an empty chart aligned to the user's selection.
         if !window_overlaps_file(req.after, req.before, &summary) {
             return Ok(OtelLogsResponse::Logs(LogsResponse::empty_stub(
-                req.after, req.before, last,
+                req.after, req.before, req.last,
             )));
         }
 
-        let response = match build_logs_response(&path, &req, last) {
+        let response = match build_logs_response(&path, &req) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
                     "otel-logs query failed for {}: {e}",
                     path.display()
                 );
-                LogsResponse::empty_stub(req.after, req.before, last)
+                LogsResponse::empty_stub(req.after, req.before, req.last)
             }
         };
 
@@ -139,7 +137,6 @@ impl FunctionHandler for OtelLogsHandler {
 fn build_logs_response(
     path: &Path,
     req: &OtelLogsRequest,
-    last: usize,
 ) -> Result<LogsResponse, sfst::Error> {
     let data = std::fs::read(path)?;
     let reader = sfst::IndexReader::open(&data)?;
@@ -187,7 +184,7 @@ fn build_logs_response(
             before: 0,
             after: 0,
             returned: 0,
-            max_to_return: last,
+            max_to_return: req.last,
         },
         show_ids: false,
         has_history: true,
