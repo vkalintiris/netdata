@@ -3124,6 +3124,7 @@ dependencies = [
  "netdata-plugin-types",
  "opendal",
  "otel-catalog",
+ "roaring 0.11.2",
  "serde",
  "serde_json",
  "sfst",

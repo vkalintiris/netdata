@@ -300,11 +300,12 @@ impl<'a> IndexReader<'a> {
 
     /// Compute a 2D time × value-of-`field` count grid for chart rendering.
     ///
-    /// Bucket boundaries are derived from the file's `summary.min/
-    /// max_timestamp_s`. Bucket count = `ceil((max_ns - min_ns) /
-    /// bucket_width_ns)`; the last bucket may be partial. `field`'s own
-    /// selections are excluded from the filter (same reason as in
-    /// [`facets`](Self::facets)).
+    /// Bucket grid is caller-supplied — anchored at `bucket_start_ns`,
+    /// `num_buckets` buckets each `bucket_width_ns` wide. A grid that
+    /// extends past the file's actual log range produces zero counts
+    /// in the outer buckets (handled naturally by `partition_point`).
+    /// `field`'s own selections are excluded from the filter (same
+    /// reason as in [`facets`](Self::facets)).
     ///
     /// Errors:
     /// - [`crate::Error::InvalidBucketWidth`] if `bucket_width_ns <= 0`.
@@ -314,20 +315,13 @@ impl<'a> IndexReader<'a> {
         &self,
         field: &str,
         filter: &Filter,
+        bucket_start_ns: i64,
         bucket_width_ns: i64,
+        num_buckets: usize,
     ) -> Result<Timeline, crate::Error> {
         if bucket_width_ns <= 0 {
             return Err(crate::Error::InvalidBucketWidth(bucket_width_ns));
         }
-
-        let min_ns = i64::from(self.summary.min_timestamp_s) * 1_000_000_000;
-        // `max_timestamp_s` is the last second any log was seen in; treat
-        // the upper bound as exclusive at the end of that second.
-        let max_ns = (i64::from(self.summary.max_timestamp_s) + 1) * 1_000_000_000;
-        let span = (max_ns - min_ns).max(1);
-        // `i64::div_ceil` is still unstable; both operands are positive
-        // here so casting to u64 is safe and lets us use the stable form.
-        let num_buckets = (span as u64).div_ceil(bucket_width_ns as u64) as usize;
 
         // Filter with `field`'s own selections removed.
         let excluded = filter.without(field);
@@ -373,8 +367,13 @@ impl<'a> IndexReader<'a> {
         let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
         let mut unset = vec![0u64; num_buckets];
         for bucket_i in 0..num_buckets {
-            let bucket_start = min_ns + (bucket_i as i64) * bucket_width_ns;
-            let bucket_end = (bucket_start + bucket_width_ns).min(max_ns);
+            let bucket_start = bucket_start_ns + (bucket_i as i64) * bucket_width_ns;
+            let bucket_end = bucket_start + bucket_width_ns;
+            // `partition_point` clamps naturally: positions before
+            // bucket_start_ns yield pos_lo=0, after the file's last
+            // timestamp yield pos_hi=timestamps.len(). Outer buckets of
+            // a request grid that extends past the file's range pick up
+            // no positions and contribute zero counts.
             let pos_lo = timestamps.partition_point(|&t| t < bucket_start) as u32;
             let pos_hi = timestamps.partition_point(|&t| t < bucket_end) as u32;
             let mut dim_sum: u64 = 0;
@@ -392,7 +391,7 @@ impl<'a> IndexReader<'a> {
         }
 
         Ok(Timeline {
-            bucket_start_ns: min_ns,
+            bucket_start_ns,
             bucket_width_ns,
             dimensions,
             buckets,

@@ -138,6 +138,148 @@ pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> His
     }
 }
 
+/// Merge per-file [`sfst::FacetResult`] sets into a single combined
+/// set. Union by field name; per field, sum counts across files for
+/// each value. Output values are emitted in BTreeMap iteration order
+/// (lexicographic by value string), matching the FST iteration-order
+/// contract documented on [`sfst::FacetResult`].
+pub(super) fn merge_facet_results(
+    per_file: Vec<Vec<sfst::FacetResult>>,
+) -> Vec<sfst::FacetResult> {
+    use std::collections::BTreeMap;
+
+    // field_name → (value → summed_count)
+    let mut by_field: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+    for file_facets in per_file {
+        for f in file_facets {
+            let bucket = by_field.entry(f.field).or_default();
+            for (value, count) in f.values {
+                *bucket.entry(value).or_insert(0) += count;
+            }
+        }
+    }
+    by_field
+        .into_iter()
+        .map(|(field, values)| sfst::FacetResult {
+            field,
+            values: values.into_iter().collect(),
+        })
+        .collect()
+}
+
+/// Merge per-file [`sfst::Timeline`]s into a single combined timeline.
+///
+/// Precondition: every input must share the same `bucket_start_ns`,
+/// `bucket_width_ns`, and `buckets.len()` — the multi-file caller
+/// builds them off a single request-aligned grid. Dimensions are
+/// unioned via [`BTreeSet`] (sorted lexicographically) and each
+/// input's per-bucket counts are reindexed onto the union order
+/// before bucket-wise summation. `unset` sums bucket-wise.
+///
+/// Returns `None` if `per_file` is empty.
+pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> {
+    use std::collections::BTreeSet;
+
+    let mut iter = per_file.into_iter();
+    let first = iter.next()?;
+    let bucket_start_ns = first.bucket_start_ns;
+    let bucket_width_ns = first.bucket_width_ns;
+    let num_buckets = first.buckets.len();
+
+    // Collect into a Vec so we can iterate it twice (union pass +
+    // reindex pass).
+    let mut all: Vec<sfst::Timeline> = vec![first];
+    all.extend(iter);
+
+    // Union of dimension labels across all files.
+    let mut dim_set: BTreeSet<String> = BTreeSet::new();
+    for t in &all {
+        for d in &t.dimensions {
+            dim_set.insert(d.clone());
+        }
+    }
+    let dimensions: Vec<String> = dim_set.into_iter().collect();
+    let dim_index: std::collections::HashMap<&str, usize> = dimensions
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.as_str(), i))
+        .collect();
+
+    let mut buckets = vec![vec![0u64; dimensions.len()]; num_buckets];
+    let mut unset = vec![0u64; num_buckets];
+
+    for t in &all {
+        debug_assert_eq!(t.bucket_start_ns, bucket_start_ns);
+        debug_assert_eq!(t.bucket_width_ns, bucket_width_ns);
+        debug_assert_eq!(t.buckets.len(), num_buckets);
+        debug_assert_eq!(t.unset.len(), num_buckets);
+
+        // Map this file's local dim index → union dim index.
+        let local_to_union: Vec<usize> = t
+            .dimensions
+            .iter()
+            .map(|d| dim_index[d.as_str()])
+            .collect();
+
+        for (bucket_i, file_bucket) in t.buckets.iter().enumerate() {
+            for (local_i, count) in file_bucket.iter().enumerate() {
+                buckets[bucket_i][local_to_union[local_i]] += count;
+            }
+            unset[bucket_i] += t.unset[bucket_i];
+        }
+    }
+
+    Some(sfst::Timeline {
+        bucket_start_ns,
+        bucket_width_ns,
+        dimensions,
+        buckets,
+        unset,
+    })
+}
+
+/// Union per-file field tables for `available_histograms` selection.
+/// A field is dropped if it's [`sfst::FieldTier::High`] in **any**
+/// file — both [`sfst::IndexReader::facets`] and
+/// [`sfst::IndexReader::timeline`] reject high-card fields, so
+/// offering one that errors on some files would yield a runtime
+/// failure when the user picks it. Per-file `cardinality` values are
+/// not summed (the concept is per-file, not global); the union keeps
+/// the maximum as a conservative estimate for facet eligibility
+/// gates. Output is sorted by name.
+pub(super) fn union_field_tables(
+    per_file: &[&[sfst::FieldEntry]],
+) -> Vec<sfst::FieldEntry> {
+    use std::collections::BTreeMap;
+
+    // name → (max_cardinality_so_far, tier, ever_high_card)
+    let mut by_name: BTreeMap<String, (u32, sfst::FieldTier, bool)> = BTreeMap::new();
+    for table in per_file {
+        for f in *table {
+            let is_high = matches!(f.tier, sfst::FieldTier::High);
+            by_name
+                .entry(f.name.clone())
+                .and_modify(|(card, tier, ever_high)| {
+                    *card = (*card).max(f.cardinality);
+                    if is_high {
+                        *tier = sfst::FieldTier::High;
+                        *ever_high = true;
+                    }
+                })
+                .or_insert((f.cardinality, f.tier, is_high));
+        }
+    }
+    by_name
+        .into_iter()
+        .filter(|(_, (_, _, ever_high))| !ever_high)
+        .map(|(name, (cardinality, tier, _))| sfst::FieldEntry {
+            name,
+            cardinality,
+            tier,
+        })
+        .collect()
+}
+
 /// Build the `available_histograms` list from a SFST field table.
 ///
 /// High-cardinality fields are excluded — [`sfst::IndexReader::timeline`]

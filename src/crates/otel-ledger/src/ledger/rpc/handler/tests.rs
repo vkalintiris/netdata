@@ -298,9 +298,10 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
 }
 
 #[tokio::test]
-async fn most_recent_wins_when_multiple_files_exist() {
-    // Two files in different tenants; the higher seq's data should
-    // surface. Older file's stream is `ns/old`; freshest is `ns/svc`.
+async fn only_overlapping_file_contributes() {
+    // Two files in different tenants. The window matches only the
+    // newer file's span — the older one's range is filtered out by
+    // the candidate planner.
     let mut tr = make_tenant_registries();
     install_sfst(&mut tr, "tenant-old", 1, 1_600_000_000);
     install_sfst(&mut tr, "tenant-new", 99, 1_700_000_000);
@@ -312,8 +313,67 @@ async fn most_recent_wins_when_multiple_files_exist() {
     .unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
-    // Only the new file (seq=99, 2024-ish) overlaps the window.
+    // Only the new file's 6 logs overlap the window.
     assert_eq!(v["items"]["matched"], 6);
+}
+
+#[tokio::test]
+async fn multiple_overlapping_files_merge_counts_and_facets() {
+    // Two SFSTs in the same tenant whose spans both fall inside the
+    // request window. The planner returns both; the handler should
+    // sum `matched` and union facet counts.
+    //
+    // Each file has 6 logs (3 info, 3 error; 3 api, 3 worker) so
+    // the merged response should show 12 logs total.
+    let mut tr = make_tenant_registries();
+    let earlier = 1_700_000_000u32;
+    let later = earlier + 100; // 6-second spans don't touch each other
+    install_sfst(&mut tr, "tenant-a", 1, earlier);
+    install_sfst(&mut tr, "tenant-a", 2, later);
+    let h = make_handler(tr);
+
+    // Window covers both files' spans.
+    let payload = format!(
+        r#"{{"info": false, "after": {a}, "before": {b}}}"#,
+        a = earlier,
+        b = later + 60
+    );
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+
+    // Both files contribute → 12 matched.
+    assert_eq!(v["items"]["matched"], 12);
+
+    // Facets union across files; per-value counts sum.
+    let facets = v["facets"].as_array().unwrap();
+    let sev = facets
+        .iter()
+        .find(|f| f["id"] == "severity_text")
+        .expect("severity_text facet must be present in both files");
+    // Each file has 3 `info` logs → merged 6.
+    let info_count = sev["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "info")
+        .map(|o| o["count"].as_u64().unwrap())
+        .unwrap_or(0);
+    assert_eq!(info_count, 6);
+
+    let svc = facets
+        .iter()
+        .find(|f| f["id"] == "service")
+        .expect("service facet must be present");
+    let svc_counts: HashMap<&str, u64> = svc["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| (o["id"].as_str().unwrap(), o["count"].as_u64().unwrap()))
+        .collect();
+    // Each file: 3 api, 3 worker → merged 6 each.
+    assert_eq!(svc_counts.get("api"), Some(&6));
+    assert_eq!(svc_counts.get("worker"), Some(&6));
 }
 
 #[test]

@@ -25,6 +25,7 @@ netdata-plugin-protocol = { path = "../netdata-plugin/protocol" }
 netdata-plugin-types = { path = "../netdata-plugin/types" }
 opendal = { workspace = true }
 otel-catalog = { workspace = true }
+roaring = { workspace = true }
 sfst = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

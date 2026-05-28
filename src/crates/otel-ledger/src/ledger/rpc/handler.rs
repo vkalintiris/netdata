@@ -2,29 +2,32 @@
 //!
 //! Holds a shared, read-only handle to the tenant registries. The
 //! run-loop's mutators take brief write locks; this handler takes a
-//! read lock just long enough to identify the most-recent SFST file,
-//! then drops it before doing any I/O.
+//! read lock just long enough to enumerate the SFST candidates whose
+//! time range overlaps the request window, then drops it before doing
+//! any I/O.
 //!
-//! Step 3 of the otel-logs rewrite (MVP integration): non-info requests
-//! open the single most-recent SFST file across all tenants, run
-//! [`sfst::IndexReader::facets`] + [`sfst::IndexReader::timeline`], and
-//! return a populated [`LogsResponse`]. The log-row table (`data` /
-//! `columns`) stays empty — log materialization is a later phase.
-//! Multi-file merging is also a later phase; for now the response
-//! reflects what the freshest file alone has.
+//! Non-info requests open every overlapping SFST across all tenants,
+//! run [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`]
+//! + [`sfst::IndexReader::timeline`] per file with a shared
+//! request-aligned bucket grid, then merge the per-file results into
+//! a single [`LogsResponse`]. WAL and remote-catalog candidates are
+//! out of scope. The log-row table (`data` / `columns`) stays empty —
+//! log materialization is a later phase.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bridge::function::{FunctionCallContext, FunctionHandler};
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
+use roaring::RoaringBitmap;
 use tokio::sync::RwLock;
 
 use super::adapter::{
     available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
+    merge_facet_results, merge_timelines, union_field_tables,
 };
 use super::types::{ACCEPTED_PARAMS, InfoResponse, OtelLogsRequest, OtelLogsResponse};
 use super::wire::{Items, LogsResponse, Pagination, Version};
@@ -45,6 +48,10 @@ const TARGET_BUCKETS: u32 = 60;
 /// Default request window in seconds when the caller doesn't specify
 /// `after`/`before`. Matches the cloud-frontend default time range.
 const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
+
+/// Nanoseconds per second — used for `u32` seconds → `i64` ns
+/// conversions when aligning bucket grids to the request window.
+const NS_PER_S: i64 = 1_000_000_000;
 
 /// Maximum value-cardinality per facet in the default facet set.
 /// Fields with more distinct values than this aren't useful as
@@ -84,39 +91,57 @@ impl FunctionHandler for OtelLogsHandler {
             return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        // Take the read lock just long enough to find the freshest file.
-        // The lock is released before any file I/O happens.
-        let target = {
+        // The candidate planner filters by time-range overlap with
+        // each file's summary. `stream: None` because we don't yet
+        // filter by service identity at the planner level.
+        let query = file_registry::Query {
+            time_range: req.after..req.before,
+            stream: None,
+        };
+
+        // Take the read lock just long enough to enumerate matching
+        // SFSTs; release before any file I/O.
+        let candidates = {
             let guard = self.registries.read().await;
-            guard.most_recent_sfst()
+            guard.sfst_candidates(&query)
         };
 
-        let Some((summary, path)) = target else {
-            // No SFST files exist yet — honest empty result.
-            return Ok(OtelLogsResponse::Logs(LogsResponse::empty_stub(
-                req.after, req.before, req.last,
-            )));
-        };
-
-        // Honest empty result when the request window doesn't overlap
-        // the freshest file (decision (a) from step 0). The UI renders
-        // an empty chart aligned to the user's selection.
-        if !window_overlaps_file(req.after, req.before, &summary) {
+        if candidates.is_empty() {
+            // No overlapping SFSTs (cold start, or window outside
+            // any file) — honest empty envelope aligned to the
+            // request window.
             return Ok(OtelLogsResponse::Logs(LogsResponse::empty_stub(
                 req.after, req.before, req.last,
             )));
         }
 
-        let response = match build_logs_response(&path, &req) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(
-                    "otel-logs query failed for {}: {e}",
-                    path.display()
-                );
-                LogsResponse::empty_stub(req.after, req.before, req.last)
-            }
-        };
+        // Request-aligned bucket grid — anchored at `after`, sized
+        // to span `[after, before)`. All per-file timelines are
+        // computed against this grid so they're directly mergeable.
+        let bucket_width_ns = pick_bucket_width_ns(req.after, req.before);
+        let bucket_start_ns = (req.after as i64) * NS_PER_S;
+        let num_buckets = num_buckets_for_window(req.after, req.before, bucket_width_ns);
+
+        // Capture primitives needed for the error fallback before
+        // `req` moves into the blocking task.
+        let req_after = req.after;
+        let req_before = req.before;
+        let req_last = req.last;
+
+        let response = tokio::task::spawn_blocking(move || {
+            build_merged_logs_response(
+                candidates,
+                req,
+                bucket_start_ns,
+                bucket_width_ns,
+                num_buckets,
+            )
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("otel-logs blocking task failed: {e}");
+            LogsResponse::empty_stub(req_after, req_before, req_last)
+        });
 
         Ok(OtelLogsResponse::Logs(response))
     }
@@ -131,41 +156,163 @@ impl FunctionHandler for OtelLogsHandler {
     }
 }
 
-/// Open the SFST file, run the facets + timeline queries, and assemble
-/// the wire envelope. Pure sync — no awaits — so the caller does the
-/// `tokio` orchestration above.
-fn build_logs_response(
-    path: &Path,
-    req: &OtelLogsRequest,
-) -> Result<LogsResponse, sfst::Error> {
-    let data = std::fs::read(path)?;
-    let reader = sfst::IndexReader::open(&data)?;
-    let field_table: Vec<sfst::FieldEntry> = reader.field_table().to_vec();
-
+/// Open every SFST candidate, run the three queries per file against
+/// a shared request-aligned bucket grid, merge the per-file results,
+/// and assemble the wire envelope. Pure sync — no awaits — so the
+/// caller wraps this in `tokio::task::spawn_blocking`.
+///
+/// Per-file errors (corrupt file, missing field, etc.) are logged
+/// and that file is skipped — other files still contribute to the
+/// response. If *every* file errors we fall through to an empty
+/// stub.
+fn build_merged_logs_response(
+    candidates: Vec<(sfst::Summary, PathBuf)>,
+    req: OtelLogsRequest,
+    bucket_start_ns: i64,
+    bucket_width_ns: i64,
+    num_buckets: usize,
+) -> LogsResponse {
     let filter = build_filter(&req.selections);
     let histogram_field = pick_histogram_field(&req.histogram);
-    let facet_fields = pick_facet_fields(&req.facets, &field_table);
-    let bucket_width_ns = pick_bucket_width_ns(req.after, req.before);
 
-    // `matched` reflects total filter-matching logs — the legacy
-    // semantic. Computed independently of the histogram so it doesn't
-    // depend on whether logs have the histogram dimension field set
-    // (which would under-count when the dimension is sparse in the
-    // stream).
-    let matched: usize = reader.evaluate(&filter)?.len() as usize;
+    // Open every candidate; on per-file error, log + skip. The
+    // `IndexReader` borrows from the file's bytes, so we hold the
+    // owned `Vec<u8>` alongside the reader for the duration of the
+    // per-file work.
+    let mut file_bytes: Vec<Vec<u8>> = Vec::with_capacity(candidates.len());
+    let mut field_tables: Vec<Vec<sfst::FieldEntry>> = Vec::new();
+    let mut readable_indices: Vec<usize> = Vec::new();
 
-    let sfst_facets = reader.facets(&facet_fields, &filter)?;
-    let sfst_timeline = reader.timeline(&histogram_field, &filter, bucket_width_ns)?;
+    for (i, (_summary, path)) in candidates.iter().enumerate() {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                file_bytes.push(bytes);
+                readable_indices.push(i);
+            }
+            Err(e) => {
+                tracing::warn!("otel-logs: failed to read {}: {e}", path.display());
+            }
+        }
+    }
 
-    let wire_facets = sfst_facets
+    // Open readers + collect field tables; skip on open failure.
+    let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
+    let mut reader_paths: Vec<&PathBuf> = Vec::new();
+    for (slot, &cand_i) in readable_indices.iter().enumerate() {
+        match sfst::IndexReader::open(&file_bytes[slot]) {
+            Ok(reader) => {
+                field_tables.push(reader.field_table().to_vec());
+                reader_paths.push(&candidates[cand_i].1);
+                readers.push(reader);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "otel-logs: failed to open {}: {e}",
+                    candidates[cand_i].1.display()
+                );
+            }
+        }
+    }
+
+    if readers.is_empty() {
+        return LogsResponse::empty_stub(req.after, req.before, req.last);
+    }
+
+    // Picked facet field set against the unioned table — gives the
+    // UI a consistent sidebar across files.
+    let table_refs: Vec<&[sfst::FieldEntry]> =
+        field_tables.iter().map(|t| t.as_slice()).collect();
+    let unioned = union_field_tables(&table_refs);
+    let facet_fields = pick_facet_fields(&req.facets, &unioned);
+
+    let mut matched_total: u64 = 0;
+    let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
+    let mut per_file_timelines: Vec<sfst::Timeline> = Vec::new();
+
+    for (reader, path) in readers.iter().zip(reader_paths.iter()) {
+        // matched: filter-matching logs restricted to the request
+        // window. `evaluate` returns positions across the file's
+        // full range; intersect with the per-file range bitmap built
+        // from the file's timestamps.
+        match per_file_matched(reader, &filter, req.after, req.before) {
+            Ok(m) => matched_total += m,
+            Err(e) => tracing::warn!(
+                "otel-logs: matched count failed for {}: {e}",
+                path.display()
+            ),
+        }
+
+        // Facets: filter the picked set to fields that exist in
+        // this file. Unknown fields would make `facets()` error and
+        // cost us the whole file.
+        let file_facet_fields: Vec<String> = facet_fields
+            .iter()
+            .filter(|name| {
+                reader
+                    .field_table()
+                    .iter()
+                    .any(|f| f.name == **name)
+            })
+            .cloned()
+            .collect();
+        match reader.facets(&file_facet_fields, &filter) {
+            Ok(facets) => per_file_facets.push(facets),
+            Err(e) => tracing::warn!(
+                "otel-logs: facets failed for {}: {e}",
+                path.display()
+            ),
+        }
+
+        // Histogram: a file that lacks the histogram field
+        // contributes neither dimensions nor unset. (Minor:
+        // filter-matching logs in this file don't reach `unset` in
+        // the merged timeline. Acceptable for MVP — see the plan's
+        // verification section.)
+        let has_histogram_field = reader
+            .field_table()
+            .iter()
+            .any(|f| f.name == histogram_field);
+        if has_histogram_field {
+            match reader.timeline(
+                &histogram_field,
+                &filter,
+                bucket_start_ns,
+                bucket_width_ns,
+                num_buckets,
+            ) {
+                Ok(t) => per_file_timelines.push(t),
+                Err(e) => tracing::warn!(
+                    "otel-logs: timeline failed for {}: {e}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    let merged_facets = merge_facet_results(per_file_facets);
+    let wire_facets = merged_facets
         .iter()
         .enumerate()
         .map(|(i, f)| facet_from_sfst(i, f))
         .collect();
-    let wire_histogram = histogram_from_sfst(&histogram_field, &sfst_timeline);
-    let wire_available = available_histograms_from_fields(&field_table);
 
-    Ok(LogsResponse {
+    // If no file contributed a timeline (histogram field absent
+    // everywhere, or all timelines errored), synthesize an empty one
+    // aligned to the grid so the wire shape stays valid.
+    let merged_timeline =
+        merge_timelines(per_file_timelines).unwrap_or_else(|| sfst::Timeline {
+            bucket_start_ns,
+            bucket_width_ns,
+            dimensions: Vec::new(),
+            buckets: vec![Vec::new(); num_buckets],
+            unset: vec![0u64; num_buckets],
+        });
+    let wire_histogram = histogram_from_sfst(&histogram_field, &merged_timeline);
+    let wire_available = available_histograms_from_fields(&unioned);
+
+    let matched = matched_total as usize;
+
+    LogsResponse {
         progress: 100,
         version: Version::default(),
         accepted_params: ACCEPTED_PARAMS.to_vec(),
@@ -192,7 +339,46 @@ fn build_logs_response(
         response_type: String::from("table"),
         help: String::from("Query and visualize OpenTelemetry logs."),
         pagination: Pagination::default(),
-    })
+    }
+}
+
+/// Per-file matched count: filter-matching logs restricted to the
+/// request window. `evaluate` returns positions across the file's
+/// full range; intersect with a range bitmap built from the file's
+/// own timestamps to clip outside-window logs.
+fn per_file_matched(
+    reader: &sfst::IndexReader<'_>,
+    filter: &sfst::Filter,
+    after_s: u32,
+    before_s: u32,
+) -> Result<u64, sfst::Error> {
+    let bm = reader.evaluate(filter)?;
+    if after_s == 0 && before_s == 0 {
+        return Ok(bm.len());
+    }
+    let timestamps = reader.load_timestamps()?;
+    let after_ns = (after_s as i64) * NS_PER_S;
+    let before_ns = (before_s as i64) * NS_PER_S;
+    let lo = timestamps.partition_point(|&t| t < after_ns) as u32;
+    let hi = timestamps.partition_point(|&t| t < before_ns) as u32;
+    if lo >= hi {
+        return Ok(0);
+    }
+    let mut range = RoaringBitmap::new();
+    range.insert_range(lo..hi);
+    Ok((bm & range).len())
+}
+
+/// Number of buckets in the request-aligned grid. Picks the smallest
+/// count that covers `[after, before)` at the given width. Falls
+/// back to [`TARGET_BUCKETS`] when `after`/`before` aren't set so a
+/// no-window request still gets a sensible chart.
+fn num_buckets_for_window(after: u32, before: u32, bucket_width_ns: i64) -> usize {
+    if before <= after {
+        return TARGET_BUCKETS as usize;
+    }
+    let span_ns = ((before - after) as i64) * NS_PER_S;
+    ((span_ns as u64).div_ceil(bucket_width_ns as u64)) as usize
 }
 
 /// Translate the request's `selections` map into an [`sfst::Filter`].
@@ -271,21 +457,6 @@ fn pick_bucket_width_ns(after: u32, before: u32) -> i64 {
     };
     let width_s = (span_s / TARGET_BUCKETS).max(1);
     (width_s as i64) * 1_000_000_000
-}
-
-/// True iff the request's `[after, before)` window shares any second
-/// with the file's `[min, max]` second range. An empty window
-/// (`after == 0 && before == 0`, the UI's "no time bound" form) is
-/// treated as "match everything" so first-load requests still see
-/// data.
-fn window_overlaps_file(after: u32, before: u32, summary: &sfst::Summary) -> bool {
-    if after == 0 && before == 0 {
-        return true;
-    }
-    if after >= before {
-        return false;
-    }
-    summary.max_timestamp_s >= after && summary.min_timestamp_s < before
 }
 
 fn is_high_card(f: &sfst::FieldEntry) -> bool {

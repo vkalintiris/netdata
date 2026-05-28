@@ -287,6 +287,26 @@ impl TenantRegistries {
             .max_by_key(|(f, _)| f.id.seq)
             .map(|(f, reg)| (f.summary.clone(), reg.file_path(f.id)))
     }
+
+    /// Every SFST file (across all tenants) whose summary range
+    /// overlaps `q.time_range`, as owned `(Summary, path)` pairs.
+    /// The caller can drop the read lock on `TenantRegistries`
+    /// before doing file I/O. Multi-tenant union by construction —
+    /// matches the implicit tenant-agnostic behavior of
+    /// [`Self::most_recent_sfst`].
+    pub fn sfst_candidates(
+        &self,
+        q: &file_registry::Query,
+    ) -> Vec<(sfst::Summary, std::path::PathBuf)> {
+        self.tenants
+            .values()
+            .flat_map(|r| {
+                r.sfst
+                    .candidates(q)
+                    .map(move |f| (f.summary.clone(), r.sfst.file_path(f.id)))
+            })
+            .collect()
+    }
 }
 
 fn cleanup_temp_files(dir: &Path) {

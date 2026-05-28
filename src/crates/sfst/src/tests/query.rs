@@ -200,16 +200,20 @@ fn facets_unknown_field_errors() {
     assert!(matches!(err, Error::UnknownField(s) if s == "nonexistent"));
 }
 
+/// Fixture's file_min_ns — the first log's timestamp.
+const FILE_MIN_NS: i64 = 1_700_000_000 * 1_000_000_000;
+
 #[test]
 fn timeline_buckets_match_filter() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // 6 logs spread across 6 seconds. Bucket width = 2 seconds.
-    // Total file span = (1_700_000_005 - 1_700_000_000 + 1) seconds = 6s.
-    // → 3 buckets of 2s each (positions {0,1}, {2,3}, {4,5}).
+    // Grid anchored at file_min, 3 buckets covering positions {0,1},
+    // {2,3}, {4,5}.
     let timeline = reader
-        .timeline("level", &Filter::new(), 2 * 1_000_000_000)
+        .timeline("level", &Filter::new(), FILE_MIN_NS, 2 * 1_000_000_000, 3)
         .unwrap();
+    assert_eq!(timeline.bucket_start_ns, FILE_MIN_NS);
     assert_eq!(timeline.bucket_width_ns, 2_000_000_000);
     assert_eq!(timeline.buckets.len(), 3);
     // Dimensions are FST-iteration-order: "error", "info".
@@ -229,7 +233,7 @@ fn timeline_unset_counts_match_logs_missing_the_field() {
     // Every log in the fixture has `level` set, so the unset
     // dimension should be zero across every bucket.
     let t = reader
-        .timeline("level", &Filter::new(), 2 * 1_000_000_000)
+        .timeline("level", &Filter::new(), FILE_MIN_NS, 2 * 1_000_000_000, 3)
         .unwrap();
     assert_eq!(t.unset, vec![0, 0, 0]);
     // And the per-bucket dim sums equal the bucket totals (no
@@ -249,7 +253,7 @@ fn timeline_excludes_own_field_from_filter() {
     // to a single dimension.
     let filter = Filter::new().select("level", "info");
     let timeline = reader
-        .timeline("level", &filter, 6 * 1_000_000_000)
+        .timeline("level", &filter, FILE_MIN_NS, 6 * 1_000_000_000, 1)
         .unwrap();
     // One bucket covering everything.
     assert_eq!(timeline.buckets.len(), 1);
@@ -263,6 +267,42 @@ fn timeline_excludes_own_field_from_filter() {
 fn timeline_invalid_bucket_width_errors() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    let err = reader.timeline("level", &Filter::new(), 0).unwrap_err();
+    let err = reader
+        .timeline("level", &Filter::new(), FILE_MIN_NS, 0, 1)
+        .unwrap_err();
     assert!(matches!(err, Error::InvalidBucketWidth(0)));
+}
+
+#[test]
+fn timeline_grid_before_file_yields_leading_zero_buckets() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Request grid starts 4 seconds before the file's first log and
+    // runs 10 buckets of 1 second — so buckets 0..=3 cover times the
+    // file has no data (expect zero counts), then buckets 4..=9 cover
+    // the file's 6 logs one-per-bucket.
+    let grid_start = FILE_MIN_NS - 4 * 1_000_000_000;
+    let timeline = reader
+        .timeline("level", &Filter::new(), grid_start, 1_000_000_000, 10)
+        .unwrap();
+    assert_eq!(timeline.buckets.len(), 10);
+    // Leading buckets all zero.
+    for i in 0..4 {
+        assert_eq!(timeline.buckets[i], vec![0, 0], "bucket {i} should be empty");
+        assert_eq!(timeline.unset[i], 0);
+    }
+    // Each subsequent bucket holds one log; FST order puts "error"
+    // first, then "info". Positions in the fixture: 0=info, 1=error,
+    // 2=info, 3=error, 4=info, 5=error.
+    let expected = [
+        vec![0, 1], // pos 0: info
+        vec![1, 0], // pos 1: error
+        vec![0, 1], // pos 2: info
+        vec![1, 0], // pos 3: error
+        vec![0, 1], // pos 4: info
+        vec![1, 0], // pos 5: error
+    ];
+    for (i, exp) in expected.iter().enumerate() {
+        assert_eq!(timeline.buckets[i + 4], *exp, "bucket {} mismatch", i + 4);
+    }
 }
