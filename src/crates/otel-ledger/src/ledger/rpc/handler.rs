@@ -26,7 +26,7 @@ use roaring::RoaringBitmap;
 use tokio::sync::RwLock;
 
 use super::adapter::{
-    available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
+    NS_PER_S, available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
     merge_facet_results, merge_timelines, union_field_tables,
 };
 use super::types::{ACCEPTED_PARAMS, InfoResponse, OtelLogsRequest, OtelLogsResponse};
@@ -40,18 +40,29 @@ use crate::registry::TenantRegistries;
 /// `available_histograms` list for users to pick something else.
 const DEFAULT_HISTOGRAM_FIELD: &str = "severity_text";
 
-/// Aim for this many time buckets across the request window. Drives
-/// `bucket_width_ns` when the caller doesn't specify one. At the UI
-/// default 15-minute window this yields 15-second buckets.
+/// Aim for at least this many time buckets across the request
+/// window when picking from [`VALID_BUCKET_WIDTHS_S`]. With the
+/// curated widths and a 15-minute window this yields 15-second
+/// buckets (60 of them).
 const TARGET_BUCKETS: u32 = 60;
+
+/// "Nice" bucket widths in seconds. Ported from the legacy
+/// systemd-journal plugin's `calculate_bucket_duration` to keep
+/// histograms anchored to wall-clock-friendly intervals (1s, 2s,
+/// 5s, 10s, 15s, 30s, 1m, 5m, …). [`bucket_width_for_span_s`] picks
+/// the largest entry that produces at least [`TARGET_BUCKETS`]
+/// buckets across the span, so the chart density is stable as the
+/// requested window scales.
+const VALID_BUCKET_WIDTHS_S: &[u32] = &[
+    1, 2, 5, 10, 15, 30, // seconds
+    60, 120, 180, 300, 600, 900, 1800, // minutes
+    3600, 7200, 21600, 28800, 43200, // hours
+    86400, 172800, 259200, 432000, 604800, 1209600, 2592000, // days
+];
 
 /// Default request window in seconds when the caller doesn't specify
 /// `after`/`before`. Matches the cloud-frontend default time range.
 const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
-
-/// Nanoseconds per second — used for `u32` seconds → `i64` ns
-/// conversions when aligning bucket grids to the request window.
-const NS_PER_S: i64 = 1_000_000_000;
 
 /// Maximum value-cardinality per facet in the default facet set.
 /// Fields with more distinct values than this aren't useful as
@@ -85,42 +96,74 @@ impl FunctionHandler for OtelLogsHandler {
     async fn on_call(
         &self,
         _ctx: FunctionCallContext,
-        req: Self::Request,
+        mut req: Self::Request,
     ) -> netdata_plugin_error::Result<Self::Response> {
         if req.info {
             return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        // The candidate planner filters by time-range overlap with
-        // each file's summary. `stream: None` because we don't yet
-        // filter by service identity at the planner level.
-        let query = file_registry::Query {
-            time_range: req.after..req.before,
-            stream: None,
-        };
+        // Resolve the effective window. `(0, 0)` is the UI's "no
+        // time bound" sentinel; `after >= before` is an inverted or
+        // zero-width window. Both cases get defaulted to the last 15
+        // minutes computed from the system clock — explicit valid
+        // windows pass through unchanged.
+        let request_window_missing =
+            (req.after == 0 && req.before == 0) || req.after >= req.before;
+        let (mut after_eff, mut before_eff) = effective_window(req.after, req.before);
 
-        // Take the read lock just long enough to enumerate matching
-        // SFSTs; release before any file I/O.
         let candidates = {
             let guard = self.registries.read().await;
-            guard.sfst_candidates(&query)
+            let query = file_registry::Query {
+                time_range: after_eff..before_eff,
+                stream: None,
+            };
+            let mut cs = guard.sfst_candidates(&query);
+            // Last-SFST fallback applies *only* when the request had
+            // no usable window. An explicit `[after, before)` with no
+            // overlapping data legitimately returns the empty
+            // envelope — we don't second-guess the caller.
+            if cs.is_empty() && request_window_missing {
+                if let Some((summary, path)) = guard.most_recent_sfst() {
+                    after_eff = summary.min_timestamp_s;
+                    before_eff = summary.max_timestamp_s.saturating_add(1);
+                    cs.push((summary, path));
+                }
+            }
+            cs
         };
 
+        // Snap the effective window outward to multiples of a "nice"
+        // bucket width. This stabilises the histogram x-axis across
+        // the UI's per-second polling: successive polls within the
+        // same bucket-width slot all see identical `[after, before)`,
+        // so the chart only shifts when crossing a real boundary.
+        // The width is chosen from a curated list (1s/2s/5s/10s/15s/
+        // 30s/1m/…) so bars align to wall-clock-friendly intervals.
+        let span_s = before_eff.saturating_sub(after_eff);
+        let bucket_width_s = bucket_width_for_span_s(span_s);
+        let (aligned_after, aligned_before) = align_window(after_eff, before_eff, bucket_width_s);
+
+        // Reflect the aligned window in `req` so downstream code
+        // (range bitmaps, empty_stub fallback, chart axis bounds)
+        // sees the snap-aligned values rather than the raw request.
+        req.after = aligned_after;
+        req.before = aligned_before;
+
         if candidates.is_empty() {
-            // No overlapping SFSTs (cold start, or window outside
-            // any file) — honest empty envelope aligned to the
-            // request window.
+            // No SFST files exist at all — honest empty envelope
+            // aligned to the (effective) window.
             return Ok(OtelLogsResponse::Logs(LogsResponse::empty_stub(
                 req.after, req.before, req.last,
             )));
         }
 
-        // Request-aligned bucket grid — anchored at `after`, sized
-        // to span `[after, before)`. All per-file timelines are
-        // computed against this grid so they're directly mergeable.
-        let bucket_width_ns = pick_bucket_width_ns(req.after, req.before);
+        // Bucket grid derived directly from the aligned window —
+        // `bucket_width_s` divides `(before - after)` exactly by
+        // construction, so no `div_ceil` is needed. All per-file
+        // timelines share this grid and are directly mergeable.
+        let bucket_width_ns = (bucket_width_s as i64) * NS_PER_S;
         let bucket_start_ns = (req.after as i64) * NS_PER_S;
-        let num_buckets = num_buckets_for_window(req.after, req.before, bucket_width_ns);
+        let num_buckets = ((req.before - req.after) / bucket_width_s) as usize;
 
         // Capture primitives needed for the error fallback before
         // `req` moves into the blocking task.
@@ -369,18 +412,6 @@ fn per_file_matched(
     Ok((bm & range).len())
 }
 
-/// Number of buckets in the request-aligned grid. Picks the smallest
-/// count that covers `[after, before)` at the given width. Falls
-/// back to [`TARGET_BUCKETS`] when `after`/`before` aren't set so a
-/// no-window request still gets a sensible chart.
-fn num_buckets_for_window(after: u32, before: u32, bucket_width_ns: i64) -> usize {
-    if before <= after {
-        return TARGET_BUCKETS as usize;
-    }
-    let span_ns = ((before - after) as i64) * NS_PER_S;
-    ((span_ns as u64).div_ceil(bucket_width_ns as u64)) as usize
-}
-
 /// Translate the request's `selections` map into an [`sfst::Filter`].
 /// Same shape, just a constructor walk: OR within field, AND across
 /// fields (matches the UI's selection semantics).
@@ -444,19 +475,50 @@ fn pick_facet_fields(requested: &[String], fields: &[sfst::FieldEntry]) -> Vec<S
         .collect()
 }
 
-/// Bucket width in nanoseconds aimed at [`TARGET_BUCKETS`] buckets
-/// across the request window. Falls back to a 15-minute window if the
-/// caller omits `after`/`before`. Minimum width is 1 second so a
-/// narrow window doesn't produce sub-second buckets that the UI's
-/// chart axis can't render distinctly.
-fn pick_bucket_width_ns(after: u32, before: u32) -> i64 {
-    let span_s = if before > after {
-        before - after
-    } else {
-        DEFAULT_WINDOW_SECS
-    };
-    let width_s = (span_s / TARGET_BUCKETS).max(1);
-    (width_s as i64) * 1_000_000_000
+/// Pick a "nice" bucket width (seconds) for a given span. Walks
+/// [`VALID_BUCKET_WIDTHS_S`] from largest to smallest and returns
+/// the first one that produces at least [`TARGET_BUCKETS`] buckets.
+/// Falls back to `1` for spans too short to satisfy the heuristic.
+fn bucket_width_for_span_s(span_s: u32) -> u32 {
+    VALID_BUCKET_WIDTHS_S
+        .iter()
+        .rev()
+        .find(|&&w| span_s / w >= TARGET_BUCKETS)
+        .copied()
+        .unwrap_or(1)
+}
+
+/// Round `[after, before)` outward to multiples of `width_s`. The
+/// returned bounds are still in `(seconds since epoch)`, but
+/// `after` is floored and `before` is ceiled, so the histogram grid
+/// anchors to absolute wall-clock boundaries (e.g. 15s buckets snap
+/// to `t % 15 == 0`).
+///
+/// This is what keeps the chart x-axis stable across the UI's
+/// per-second polling: requests within the same bucket-width slot
+/// align to the same grid, so the chart only shifts when crossing a
+/// real boundary.
+fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
+    let aligned_after = (after / width_s) * width_s;
+    let aligned_before = before.div_ceil(width_s) * width_s;
+    (aligned_after, aligned_before)
+}
+
+/// Resolve a request's `[after, before)` to a usable time window.
+/// Returns the inputs verbatim when they form a valid non-empty
+/// range; falls back to the last [`DEFAULT_WINDOW_SECS`] computed
+/// from system time otherwise (the legacy "no time bound" form
+/// `(0, 0)` and any inverted / zero-width window).
+fn effective_window(after: u32, before: u32) -> (u32, u32) {
+    let malformed = (after == 0 && before == 0) || after >= before;
+    if !malformed {
+        return (after, before);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(u32::MAX);
+    (now.saturating_sub(DEFAULT_WINDOW_SECS), now)
 }
 
 fn is_high_card(f: &sfst::FieldEntry) -> bool {

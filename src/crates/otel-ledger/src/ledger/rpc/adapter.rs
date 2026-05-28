@@ -7,7 +7,8 @@
 //! exercised against synthetic inputs without touching the filesystem.
 //!
 //! Wired into [`super::handler::OtelLogsHandler::on_call`] after opening
-//! the most-recent SFST and running the queries.
+//! every SFST whose time range overlaps the request window, querying
+//! each, and merging the per-file results.
 
 use super::wire::{
     AvailableHistogram, Chart, ChartDimensions, ChartPoint, ChartResult, ChartView, DataPoint,
@@ -19,8 +20,10 @@ use super::wire::{
 const NS_PER_MS: i64 = 1_000_000;
 
 /// One nanosecond expressed as a second fraction. ChartView `after` /
-/// `before` / `update_every` are u32 seconds (legacy chart contract).
-const NS_PER_S: i64 = 1_000_000_000;
+/// `before` / `update_every` are u32 seconds (legacy chart contract);
+/// also reused by the handler when aligning the request's `[after,
+/// before)` to the per-file bucket grid.
+pub(super) const NS_PER_S: i64 = 1_000_000_000;
 
 /// Convert one [`sfst::FacetResult`] into a [`Facet`].
 ///
@@ -148,13 +151,15 @@ pub(super) fn merge_facet_results(
 ) -> Vec<sfst::FacetResult> {
     use std::collections::BTreeMap;
 
-    // field_name → (value → summed_count)
-    let mut by_field: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+    // Accumulate in `u64` so summing across many files can't wrap
+    // `u32::MAX` mid-merge. Output is saturating-cast back to `u32`
+    // to match `sfst::FacetResult::values`'s on-the-wire type.
+    let mut by_field: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
     for file_facets in per_file {
         for f in file_facets {
             let bucket = by_field.entry(f.field).or_default();
             for (value, count) in f.values {
-                *bucket.entry(value).or_insert(0) += count;
+                *bucket.entry(value).or_insert(0) += u64::from(count);
             }
         }
     }
@@ -162,7 +167,10 @@ pub(super) fn merge_facet_results(
         .into_iter()
         .map(|(field, values)| sfst::FacetResult {
             field,
-            values: values.into_iter().collect(),
+            values: values
+                .into_iter()
+                .map(|(v, c)| (v, c.min(u32::MAX as u64) as u32))
+                .collect(),
         })
         .collect()
 }
@@ -209,10 +217,15 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
     let mut unset = vec![0u64; num_buckets];
 
     for t in &all {
-        debug_assert_eq!(t.bucket_start_ns, bucket_start_ns);
-        debug_assert_eq!(t.bucket_width_ns, bucket_width_ns);
-        debug_assert_eq!(t.buckets.len(), num_buckets);
-        debug_assert_eq!(t.unset.len(), num_buckets);
+        // Hard-assert the precondition: every input must share the
+        // grid established by `first`. A violation silently
+        // produces wrong merged data — better to panic than serve
+        // misaligned buckets. The cost is one comparison per file,
+        // not per bucket, so the check is free at runtime.
+        assert_eq!(t.bucket_start_ns, bucket_start_ns);
+        assert_eq!(t.bucket_width_ns, bucket_width_ns);
+        assert_eq!(t.buckets.len(), num_buckets);
+        assert_eq!(t.unset.len(), num_buckets);
 
         // Map this file's local dim index → union dim index.
         let local_to_union: Vec<usize> = t

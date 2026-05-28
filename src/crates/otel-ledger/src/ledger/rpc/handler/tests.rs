@@ -376,6 +376,50 @@ async fn multiple_overlapping_files_merge_counts_and_facets() {
     assert_eq!(svc_counts.get("worker"), Some(&6));
 }
 
+#[tokio::test]
+async fn no_time_bound_falls_back_to_recent_window() {
+    // `(after=0, before=0)` is the legacy "no time bound" sentinel.
+    // The effective-window helper should fall back to the last 15
+    // minutes, so an SFST installed in that range produces a
+    // populated response (rather than an empty stub).
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+    let recent = now_s.saturating_sub(300); // 5 min ago, inside the 15-min fallback
+
+    let mut tr = make_tenant_registries();
+    install_sfst(&mut tr, "tenant-a", 1, recent);
+    let h = make_handler(tr);
+
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+    // Fixture has 6 logs — all should match (the file's range
+    // [recent, recent+5] sits inside the 15-min fallback window).
+    assert_eq!(v["items"]["matched"], 6);
+}
+
+#[tokio::test]
+async fn no_time_bound_falls_back_to_latest_sfst_when_window_empty() {
+    // No SFST overlaps the last 15 minutes (the file is from 2024).
+    // The handler should fall back to the most-recent SFST and
+    // surface its data, with the chart axis reflecting *that*
+    // file's range rather than the empty 15-min window.
+    let mut tr = make_tenant_registries();
+    let file_min_s = 1_700_000_000u32; // far in the past
+    install_sfst(&mut tr, "tenant-a", 1, file_min_s);
+    let h = make_handler(tr);
+
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["items"]["matched"], 6);
+    // Chart axis tracks the latest-SFST's range.
+    assert_eq!(v["histogram"]["chart"]["view"]["after"], file_min_s);
+    assert_eq!(v["histogram"]["chart"]["view"]["before"], file_min_s + 6);
+}
+
 #[test]
 fn patches_data_request_args_into_payload() {
     // No "info" token — data request. info must be false so the
@@ -472,11 +516,35 @@ fn pick_facet_fields_honors_explicit_request_even_over_cap() {
 }
 
 #[test]
-fn pick_bucket_width_targets_60_buckets() {
-    // 15-minute window → 15-second buckets → 15e9 ns.
-    assert_eq!(pick_bucket_width_ns(0, 900), 15 * 1_000_000_000);
-    // 60-second window → 1-second buckets (minimum).
-    assert_eq!(pick_bucket_width_ns(0, 60), 1_000_000_000);
-    // Inverted window → default 15-minute span.
-    assert_eq!(pick_bucket_width_ns(0, 0), 15 * 1_000_000_000);
+fn bucket_width_picks_from_curated_set() {
+    // 15-minute window → 15s (largest in VALID_BUCKET_WIDTHS_S
+    // with span/w >= TARGET_BUCKETS=60).
+    assert_eq!(bucket_width_for_span_s(900), 15);
+    // 1-minute window → 1s buckets (60 / 1 == 60).
+    assert_eq!(bucket_width_for_span_s(60), 1);
+    // Very small spans (< TARGET_BUCKETS seconds) → 1s fallback.
+    assert_eq!(bucket_width_for_span_s(30), 1);
+    // 1-hour window → 60s buckets (3600 / 60 == 60).
+    assert_eq!(bucket_width_for_span_s(3600), 60);
+    // 1-day window → 1800s (30-min) buckets (86400 / 1800 == 48 < 60,
+    // 86400 / 900 == 96 >= 60 → 900s wins).
+    assert_eq!(bucket_width_for_span_s(86400), 900);
+}
+
+#[test]
+fn align_window_snaps_outward_to_bucket_boundaries() {
+    // Identity when already aligned.
+    assert_eq!(align_window(0, 900, 15), (0, 900));
+    // Floor the `after`, ceil the `before`.
+    assert_eq!(align_window(1, 14, 15), (0, 15));
+    // Larger window — both bounds rounded outward.
+    assert_eq!(align_window(7, 92, 15), (0, 105));
+    // Consecutive 1-second shifts within the same bucket-width slot
+    // produce the same aligned window — this is what kills the chart's
+    // sub-bucket shape jitter across the UI's per-second polling.
+    let a = align_window(1779995982, 1779996882, 15);
+    let b = align_window(1779995983, 1779996883, 15);
+    let c = align_window(1779995984, 1779996884, 15);
+    assert_eq!(a, b);
+    assert_eq!(b, c);
 }
