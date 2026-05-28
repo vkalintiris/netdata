@@ -42,13 +42,8 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         }
     };
 
-    let declarations = vec![ledger::OtelLogsHandler::function_declaration()];
-
-    supervisor
-        .send(LedgerResponse::Ready { declarations })
-        .await?;
-    tracing::info!("signaled ready to supervisor");
-
+    // `Ledger::new` runs the full supervisor handshake; see its docs
+    // for the step order and what `Ready` claims.
     let mut ledger = Ledger::new(supervisor, &config.writer_socket_path, &config.logs)
         .await
         .context("failed to initialize ledger")?;

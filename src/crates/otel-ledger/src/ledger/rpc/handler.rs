@@ -68,17 +68,6 @@ impl OtelLogsHandler {
         Self { registries }
     }
 
-    /// Canonical function declaration. Used both by `FunctionHandler::declaration`
-    /// and by the worker entry point in `lib.rs` to advertise the function
-    /// to the supervisor before the full ledger is initialized.
-    pub(crate) fn function_declaration() -> FunctionDeclaration {
-        let mut d = FunctionDeclaration::new("otel-logs", "Query OpenTelemetry logs");
-        d.global = true;
-        d.tags = Some("logs".to_string());
-        d.access =
-            Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
-        d
-    }
 }
 
 #[async_trait]
@@ -135,7 +124,12 @@ impl FunctionHandler for OtelLogsHandler {
     }
 
     fn declaration(&self) -> FunctionDeclaration {
-        Self::function_declaration()
+        let mut d = FunctionDeclaration::new("otel-logs", "Query OpenTelemetry logs");
+        d.global = true;
+        d.tags = Some("logs".to_string());
+        d.access =
+            Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
+        d
     }
 }
 

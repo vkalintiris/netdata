@@ -20,8 +20,9 @@ pub(crate) use rpc::OtelLogsHandler;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::Context;
 use bridge::config::LogsConfig;
-use bridge::function::HandlerAdapter;
+use bridge::function::{FunctionHandler, HandlerAdapter};
 use bridge::{LedgerRequest, LedgerResponse};
 use ferryboat::Connection;
 use file_registry::TenantId;
@@ -73,8 +74,21 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// Run the supervisor handshake and return a fully-initialized
+    /// ledger.
+    ///
+    /// Order: disk setup → registries → component workers →
+    /// per-tenant recovery → handler state → `Ready` → accept the
+    /// ingestor writer connection. `Ready` is pinned between handler
+    /// setup and the ingestor accept: the supervisor configures
+    /// workers sequentially, so the ingestor (which the ledger then
+    /// waits for on `writer_socket_path`) can't start until the
+    /// supervisor has seen Ready — moving Ready any later
+    /// deadlocks. A failure before Ready leaves the worker
+    /// un-advertised; a failure during `accept_writer` after Ready
+    /// surfaces as a dropped supervisor connection.
     pub async fn new(
-        supervisor: Connection<LedgerResponse, LedgerRequest>,
+        mut supervisor: Connection<LedgerResponse, LedgerRequest>,
         writer_socket_path: &str,
         logs_config: &LogsConfig,
     ) -> anyhow::Result<Self> {
@@ -216,9 +230,6 @@ impl Ledger {
             registries.route_seq_to(seq, tenant_id);
         }
 
-        let ingestor = crate::ipc::accept_writer(writer_socket_path).await?;
-        tracing::info!("ingestor connected");
-
         // Wrap registries for shared access between the run-loop and
         // spawned function-handler tasks. Recovery above ran against
         // the local owned value, so no lock contention happens until
@@ -227,9 +238,20 @@ impl Ledger {
 
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
 
-        let handler = Arc::new(HandlerAdapter::new(OtelLogsHandler::new(
-            registries.clone(),
-        )));
+        let otel_handler = OtelLogsHandler::new(registries.clone());
+
+        // Signal Ready between handler setup and the ingestor accept;
+        // see the method docstring for the full ordering rationale.
+        let declarations = vec![otel_handler.declaration()];
+        let handler = Arc::new(HandlerAdapter::new(otel_handler));
+        supervisor
+            .send(LedgerResponse::Ready { declarations })
+            .await
+            .context("failed to signal ready to supervisor")?;
+        tracing::info!("signaled ready to supervisor");
+
+        let ingestor = crate::ipc::accept_writer(writer_socket_path).await?;
+        tracing::info!("ingestor connected");
 
         Ok(Self {
             supervisor,
