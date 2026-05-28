@@ -22,6 +22,7 @@ file-registry = { workspace = true }
 otel-flatten = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
+sfst = { workspace = true }
 wal = { workspace = true }
 
 # OTAP / Arrow

@@ -6,7 +6,7 @@ use file_registry::{ByteSize, FileDir, FileId, FileRegistry, Query, TimestampNs}
 use crate::format::{FileEvent, HEADER_SIZE};
 use crate::{Error, Result};
 
-const WAL_EXT: &str = "wal";
+pub(crate) const WAL_EXT: &str = "wal";
 
 /// Lifecycle status of a WAL file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

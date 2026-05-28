@@ -251,16 +251,28 @@ fn create_logs_service(
     writer_socket_path: &str,
 ) -> Result<NetdataLogsService> {
     let wal_base_dir = logs_config.wal.dir.clone();
+    let index_base_dir = logs_config.index.dir.clone();
 
-    // Scan all tenant subdirectories for the global max sequence number.
-    let max_seq = wal::scan_max_sequence_recursive(&wal_base_dir)
+    // Seed the seq counter from the highest seq found across every
+    // directory where seq-tagged files persist. Looking at WAL alone
+    // is unsafe: post-restart the cleaner may have pruned every WAL
+    // but SFSTs at higher seqs still sit on disk; starting low would
+    // make new files appear "older" than retained ones and trigger
+    // immediate eviction by the seq-ordered retention loop.
+    let wal_max = wal::scan_max_sequence_recursive(&wal_base_dir)
         .with_context(|| format!("scanning WAL dirs in {:?}", wal_base_dir))?;
+    let sfst_max = sfst::scan_max_sequence_recursive(&index_base_dir)
+        .with_context(|| format!("scanning SFST dirs in {:?}", index_base_dir))?;
+    let max_seq = wal_max.max(sfst_max);
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(max_seq));
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
         wal_dir = %logs_config.wal.dir.display(),
+        index_dir = %logs_config.index.dir.display(),
+        wal_max,
+        sfst_max,
         max_seq,
         "logs ingestion enabled (multi-tenant WAL)"
     );

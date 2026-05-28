@@ -5,7 +5,7 @@ use file_registry::{ByteSize, FileDir, FileId, FileRegistry, Query};
 
 use crate::Summary;
 
-const SFST_EXT: &str = "sfst";
+pub(crate) const SFST_EXT: &str = "sfst";
 
 #[derive(Debug, Clone)]
 pub struct File {

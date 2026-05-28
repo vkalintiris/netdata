@@ -108,6 +108,32 @@ impl FileDir {
     }
 }
 
+/// Scan all immediate subdirectories of `base` for files with the
+/// given extension and return the highest [`FileId::seq`] found.
+///
+/// Used at process startup to recover the seq counter from disk
+/// across restarts. Callers should walk every directory tree where
+/// seq-tagged files might live (WAL, SFST, …) and take the global
+/// max so the counter stays monotonic — even when one tree has been
+/// pruned but another still holds files with higher seqs.
+///
+/// Returns `0` if `base` doesn't exist or contains no matching files.
+pub fn scan_max_sequence_recursive(base: &Path, ext: &'static str) -> io::Result<u64> {
+    let mut max_seq: u64 = 0;
+    let entries = match fs::read_dir(base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+            let dir = FileDir::new(&entry.path(), ext);
+            max_seq = max_seq.max(dir.scan_max_sequence()?);
+        }
+    }
+    Ok(max_seq)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +186,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fd = FileDir::new(dir.path(), "wal");
         assert_eq!(fd.scan_max_sequence().unwrap(), 0);
+    }
+
+    /// Create an empty file named `<machine>-<boot>-<seq:010>-<ns_hash:016x>.<ext>`
+    /// under `dir`. Sentinel for the recursive-scan tests below.
+    fn touch_file(dir: &Path, seq: u64, ext: &str) {
+        let id = FileId::new(test_machine_id(), test_boot_id(), seq, 0);
+        std::fs::File::create(dir.join(id.to_filename(ext))).unwrap();
+    }
+
+    #[test]
+    fn scan_max_sequence_recursive_walks_subdirs() {
+        // base/
+        //   tenant-a/      → seqs 1, 5
+        //   tenant-b/      → seqs 7, 3
+        //   tenant-c/      → (empty)
+        // Expected max across all subdirs: 7.
+        let base = tempfile::tempdir().unwrap();
+        for (sub, seqs) in [("tenant-a", &[1, 5][..]), ("tenant-b", &[7, 3]), ("tenant-c", &[])] {
+            let subdir = base.path().join(sub);
+            std::fs::create_dir(&subdir).unwrap();
+            for &seq in seqs {
+                touch_file(&subdir, seq, "wal");
+            }
+        }
+        assert_eq!(scan_max_sequence_recursive(base.path(), "wal").unwrap(), 7);
+    }
+
+    #[test]
+    fn scan_max_sequence_recursive_missing_base_returns_zero() {
+        let result =
+            scan_max_sequence_recursive(Path::new("/tmp/definitely-not-a-real-dir-xyz123"), "wal")
+                .unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn scan_max_sequence_recursive_ignores_files_directly_in_base() {
+        // Files placed directly in `base` (not under a tenant subdir)
+        // should be ignored — the function only walks one level deep.
+        let base = tempfile::tempdir().unwrap();
+        touch_file(base.path(), 99, "wal");
+        // One subdir with a lower seq — that's what should be returned.
+        let sub = base.path().join("tenant-a");
+        std::fs::create_dir(&sub).unwrap();
+        touch_file(&sub, 4, "wal");
+        assert_eq!(scan_max_sequence_recursive(base.path(), "wal").unwrap(), 4);
     }
 }

@@ -18,7 +18,7 @@ use crate::format::{
     FileEvent, FileHeader, HEADER_SIZE,
 };
 
-const WAL_EXT: &str = "wal";
+use crate::registry::WAL_EXT;
 
 struct ActiveFile {
     file_id: FileId,
@@ -415,27 +415,6 @@ impl Writer {
         }
         Ok(events)
     }
-}
-
-/// Scan all immediate subdirectories of `base` for WAL files and return
-/// the highest sequence number found across all of them.
-///
-/// Returns 0 if the directory doesn't exist or contains no WAL files.
-pub fn scan_max_sequence_recursive(base: &Path) -> Result<u64> {
-    let mut max_seq: u64 = 0;
-    let entries = match std::fs::read_dir(base) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e.into()),
-    };
-    for entry in entries.flatten() {
-        if entry.file_type().map_or(false, |ft| ft.is_dir()) {
-            let dir = FileDir::new(&entry.path(), WAL_EXT);
-            let seq = dir.scan_max_sequence()?;
-            max_seq = max_seq.max(seq);
-        }
-    }
-    Ok(max_seq)
 }
 
 fn fsync_dir(dir: &std::path::Path) -> Result<()> {

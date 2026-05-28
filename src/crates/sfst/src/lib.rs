@@ -51,6 +51,15 @@ pub use indexer::{IndexReader, IndexResult, build_and_write, index, index_with_o
 pub use query::{FacetResult, Filter, Timeline, bitmap_value_to_roaring};
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
+
+/// Highest SFST sequence on disk across every tenant subdir of
+/// `base`. Returns `0` when `base` is missing or empty. Paired with
+/// [`wal::scan_max_sequence_recursive`]; the ingestor takes the max
+/// of both at startup so the seq counter stays monotonic even when
+/// WALs have been cleaned up but SFSTs remain.
+pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u64> {
+    file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
+}
 pub use schema::{
     BitmapValue, FieldEntry, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata, Summary,
 };

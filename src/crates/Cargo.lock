@@ -3096,6 +3096,7 @@ dependencies = [
  "serde_json",
  "serde_regex",
  "serde_yaml",
+ "sfst",
  "tempfile",
  "tokio",
  "tonic",

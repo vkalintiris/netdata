@@ -5,7 +5,7 @@ mod clock;
 pub use clock::MonotonicClock;
 
 mod dir;
-pub use dir::FileDir;
+pub use dir::{FileDir, scan_max_sequence_recursive};
 
 mod query;
 pub use query::Query;
