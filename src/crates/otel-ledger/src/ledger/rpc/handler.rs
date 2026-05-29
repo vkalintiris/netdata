@@ -22,7 +22,6 @@ use async_trait::async_trait;
 use bridge::function::{FunctionCallContext, FunctionHandler};
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
-use roaring::RoaringBitmap;
 use tokio::sync::RwLock;
 
 use super::adapter::{
@@ -64,18 +63,16 @@ const VALID_BUCKET_WIDTHS_S: &[u32] = &[
 /// `after`/`before`. Matches the cloud-frontend default time range.
 const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
 
-/// Maximum value-cardinality per facet in the default facet set.
-/// Fields with more distinct values than this aren't useful as
-/// filter facets (the user can't reasonably pick from them) and
-/// inflate the response. Explicit `req.facets` selections bypass
-/// this cap.
-const MAX_FACET_OPTIONS_PER_FIELD: u32 = 30;
-
-/// Maximum facets in the default facet set. Caps the response when
-/// an ingestor flattens array attributes (e.g. cert SAN arrays as
-/// `log.body.data.leaf_cert.all_domains.{N}` producing one field per
-/// index), which otherwise yields hundreds of facet fields.
-const MAX_FACET_FIELDS: usize = 16;
+/// Default facet field when the request doesn't specify any. The UI
+/// sends an empty facet list on first load, so we can't infer which
+/// fields the user cares about; rather than auto-curate a set (which
+/// can't be done well across multiple SFSTs — a field's cardinality
+/// composes unpredictably across files), we surface only this one.
+/// Always `severity_text` — the OTel canonical log-level field, same
+/// rationale as [`DEFAULT_HISTOGRAM_FIELD`]. Users add more via the
+/// UI's "+ Add Filter Field" control, which sends explicit
+/// `req.facets`.
+const DEFAULT_FACET_FIELD: &str = "severity_text";
 
 pub(crate) struct OtelLogsHandler {
     registries: Arc<RwLock<TenantRegistries>>,
@@ -232,16 +229,19 @@ fn build_merged_logs_response(
     let unioned = union_field_tables(&table_refs);
     let facet_fields = pick_facet_fields(&req.facets, &unioned);
 
+    // The request window in ns. Every per-file query — matched,
+    // facets, and the histogram grid — clips to this same window, so
+    // their counts describe the same set of logs and agree.
+    let window_ns = (req.after as i64) * NS_PER_S..(req.before as i64) * NS_PER_S;
+
     let mut matched_total: u64 = 0;
     let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
     let mut per_file_timelines: Vec<sfst::Timeline> = Vec::new();
 
     for (reader, path) in readers.iter().zip(reader_paths.iter()) {
         // matched: filter-matching logs restricted to the request
-        // window. `evaluate` returns positions across the file's
-        // full range; intersect with the per-file range bitmap built
-        // from the file's timestamps.
-        match per_file_matched(reader, &filter, req.after, req.before) {
+        // window.
+        match per_file_matched(reader, &filter, window_ns.clone()) {
             Ok(m) => matched_total += m,
             Err(e) => tracing::warn!(
                 "otel-logs: matched count failed for {}: {e}",
@@ -262,7 +262,7 @@ fn build_merged_logs_response(
             })
             .cloned()
             .collect();
-        match reader.facets(&file_facet_fields, &filter) {
+        match reader.facets(&file_facet_fields, &filter, window_ns.clone()) {
             Ok(facets) => per_file_facets.push(facets),
             Err(e) => tracing::warn!(
                 "otel-logs: facets failed for {}: {e}",
@@ -344,26 +344,16 @@ fn build_merged_logs_response(
 
 /// Per-file matched count: filter-matching logs restricted to the
 /// request window. `evaluate` returns positions across the file's
-/// full range; intersect with a range bitmap built from the file's
-/// own timestamps to clip outside-window logs.
+/// full range; intersect with the file's window range bitmap (the
+/// same primitive `facets` uses) to clip outside-window logs.
 fn per_file_matched(
     reader: &sfst::IndexReader<'_>,
     filter: &sfst::Filter,
-    after_s: u32,
-    before_s: u32,
+    window_ns: std::ops::Range<i64>,
 ) -> Result<u64, sfst::Error> {
     let bm = reader.evaluate(filter)?;
-    let timestamps = reader.load_timestamps()?;
-    let after_ns = (after_s as i64) * NS_PER_S;
-    let before_ns = (before_s as i64) * NS_PER_S;
-    let lo = timestamps.partition_point(|&t| t < after_ns) as u32;
-    let hi = timestamps.partition_point(|&t| t < before_ns) as u32;
-    if lo >= hi {
-        return Ok(0);
-    }
-    let mut range = RoaringBitmap::new();
-    range.insert_range(lo..hi);
-    Ok((bm & range).len())
+    let range = reader.range_bitmap(window_ns)?;
+    Ok((bm & &range).len())
 }
 
 /// Translate the request's `selections` map into an [`sfst::Filter`].
@@ -394,29 +384,14 @@ fn pick_histogram_field(requested: &str) -> String {
     }
 }
 
-/// Pick the facet field set. When the caller didn't specify any,
-/// default to low/mid-card fields whose cardinality is small enough
-/// to be UI-usable, sorted by ascending cardinality so the most
-/// filter-useful fields surface first; capped at [`MAX_FACET_FIELDS`]
-/// total. Cardinality < 2 (single distinct value) is dropped — such
-/// facets have no filter utility. Explicit `requested` is honored
-/// as-is, modulo high-card / unknown fields (those would error or
-/// surface no options).
+/// Pick the facet field set. With no explicit request — the UI's
+/// first-load behavior — return just [`DEFAULT_FACET_FIELD`]; we don't
+/// try to auto-curate a wider set (see that constant). Explicit
+/// `requested` selections are honored as-is, modulo high-card /
+/// unknown fields (those would error or surface no options).
 fn pick_facet_fields(requested: &[String], fields: &[sfst::FieldEntry]) -> Vec<String> {
     if requested.is_empty() {
-        let mut candidates: Vec<&sfst::FieldEntry> = fields
-            .iter()
-            .filter(|f| !is_high_card(f))
-            .filter(|f| f.cardinality >= 2 && f.cardinality <= MAX_FACET_OPTIONS_PER_FIELD)
-            .collect();
-        // Stable sort by cardinality — ties keep field-table order
-        // (low tier first, then alphabetical within tier).
-        candidates.sort_by_key(|f| f.cardinality);
-        return candidates
-            .into_iter()
-            .take(MAX_FACET_FIELDS)
-            .map(|f| f.name.clone())
-            .collect();
+        return vec![DEFAULT_FACET_FIELD.to_string()];
     }
     requested
         .iter()

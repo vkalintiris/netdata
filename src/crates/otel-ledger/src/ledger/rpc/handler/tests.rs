@@ -210,11 +210,12 @@ async fn populated_response_carries_facets_and_histogram() {
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["status"], 200);
 
-    // Two facets — service + severity_text — both low-card.
+    // Empty request → exactly one default facet, `severity_text`.
+    // `service` is a low-card field too but isn't auto-surfaced; the
+    // user adds it via the UI's "+ Add Filter Field" control.
     let facets = v["facets"].as_array().unwrap();
     let ids: Vec<&str> = facets.iter().map(|f| f["id"].as_str().unwrap()).collect();
-    assert!(ids.contains(&"service"));
-    assert!(ids.contains(&"severity_text"));
+    assert_eq!(ids, vec!["severity_text"]);
 
     // severity_text facet sees both values with count 3 each.
     let sev = facets
@@ -260,9 +261,10 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
     // Filter `service=api` (positions 0,1,2). The `severity_text` facet
     // should reflect that filter: info=2 (pos 0,2), error=1 (pos 1).
     // The `service` facet, by self-exclusion, should still see both
-    // values at their full counts.
+    // values at their full counts. Both facets are requested
+    // explicitly (the default set is just `severity_text`).
     let payload = format!(
-        r#"{{"info": false, "after": {a}, "before": {b}, "selections": {{"service": ["api"]}}}}"#,
+        r#"{{"info": false, "after": {a}, "before": {b}, "facets": ["severity_text", "service"], "selections": {{"service": ["api"]}}}}"#,
         a = min_s,
         b = min_s + 60
     );
@@ -332,9 +334,11 @@ async fn multiple_overlapping_files_merge_counts_and_facets() {
     install_sfst(&mut tr, "tenant-a", 2, later);
     let h = make_handler(tr);
 
-    // Window covers both files' spans.
+    // Window covers both files' spans. Request both facets
+    // explicitly (the default set is just `severity_text`) so the
+    // cross-file union is exercised on both fields.
     let payload = format!(
-        r#"{{"info": false, "after": {a}, "before": {b}}}"#,
+        r#"{{"info": false, "after": {a}, "before": {b}, "facets": ["severity_text", "service"]}}"#,
         a = earlier,
         b = later + 60
     );
@@ -478,32 +482,29 @@ fn pick_histogram_field_defaults_to_severity_text() {
 }
 
 #[test]
-fn pick_facet_fields_caps_default_set() {
-    // 20 low-card fields (cardinality ≤ MAX_FACET_OPTIONS_PER_FIELD)
-    // and 3 mid-card-but-above-cap fields. The defaults should
-    // keep at most MAX_FACET_FIELDS of the eligible ones and drop
-    // the over-cap fields entirely.
-    let mut fields: Vec<sfst::FieldEntry> = (0..20)
-        .map(|i| sfst::FieldEntry {
-            name: format!("low_{i}"),
+fn pick_facet_fields_defaults_to_severity_text() {
+    // Empty request → exactly the single default facet, regardless of
+    // what other low-card fields the file table carries.
+    let fields = vec![
+        sfst::FieldEntry {
+            name: "service".into(),
             cardinality: 5,
             tier: sfst::FieldTier::Low,
-        })
-        .collect();
-    fields.extend((0..3).map(|i| sfst::FieldEntry {
-        name: format!("noisy_{i}"),
-        cardinality: 500,
-        tier: sfst::FieldTier::Mid,
-    }));
-
+        },
+        sfst::FieldEntry {
+            name: "severity_text".into(),
+            cardinality: 2,
+            tier: sfst::FieldTier::Low,
+        },
+    ];
     let picked = pick_facet_fields(&[], &fields);
-    assert_eq!(picked.len(), MAX_FACET_FIELDS);
-    // None of the high-cardinality fields snuck in.
-    assert!(picked.iter().all(|n| n.starts_with("low_")));
+    assert_eq!(picked, vec!["severity_text".to_string()]);
 }
 
 #[test]
-fn pick_facet_fields_honors_explicit_request_even_over_cap() {
+fn pick_facet_fields_honors_explicit_request() {
+    // Explicit selections are returned as-is; no cardinality cap. A
+    // mid-card field the user asked for is kept.
     let fields = vec![sfst::FieldEntry {
         name: "noisy".into(),
         cardinality: 500,
@@ -511,6 +512,33 @@ fn pick_facet_fields_honors_explicit_request_even_over_cap() {
     }];
     let picked = pick_facet_fields(&["noisy".to_string()], &fields);
     assert_eq!(picked, vec!["noisy".to_string()]);
+}
+
+#[test]
+fn pick_facet_fields_drops_explicit_high_card_and_unknown() {
+    // Explicit requests are still filtered: a high-card field would
+    // make facets() error, and an unknown field has no entry.
+    let fields = vec![
+        sfst::FieldEntry {
+            name: "trace_id".into(),
+            cardinality: 50_000,
+            tier: sfst::FieldTier::High,
+        },
+        sfst::FieldEntry {
+            name: "service".into(),
+            cardinality: 5,
+            tier: sfst::FieldTier::Low,
+        },
+    ];
+    let picked = pick_facet_fields(
+        &[
+            "trace_id".to_string(),
+            "service".to_string(),
+            "ghost".to_string(),
+        ],
+        &fields,
+    );
+    assert_eq!(picked, vec!["service".to_string()]);
 }
 
 #[test]

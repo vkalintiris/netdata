@@ -175,7 +175,14 @@ fn facets_show_all_values_with_self_exclusion() {
     // Selecting `level=info` should NOT hide `level=error` from the
     // `level` facet — that's the whole point of self-exclusion.
     let filter = Filter::new().select("level", "info");
-    let results = reader.facets(&["level", "service"], &filter).unwrap();
+    // Window spans all 6 logs, so counts are unaffected by clipping.
+    let results = reader
+        .facets(
+            &["level", "service"],
+            &filter,
+            FILE_MIN_NS..FILE_MIN_NS + 6 * 1_000_000_000,
+        )
+        .unwrap();
 
     // `level` facet sees both values (filter excluding `level` is
     // empty → full bitmap).
@@ -196,8 +203,50 @@ fn facets_show_all_values_with_self_exclusion() {
 fn facets_unknown_field_errors() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    let err = reader.facets(&["nonexistent"], &Filter::new()).unwrap_err();
+    let err = reader
+        .facets(
+            &["nonexistent"],
+            &Filter::new(),
+            FILE_MIN_NS..FILE_MIN_NS + 6 * 1_000_000_000,
+        )
+        .unwrap_err();
     assert!(matches!(err, Error::UnknownField(s) if s == "nonexistent"));
+}
+
+#[test]
+fn facets_clip_to_window() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Window covers only positions 2 and 3 (logs at file_min + 2s and
+    // + 3s). The fixture has level=info at 2 / error at 3, and
+    // service=api at 2 / worker at 3 — so each facet value is counted
+    // exactly once, vs. 3 each over the whole file.
+    let window = (FILE_MIN_NS + 2 * 1_000_000_000)..(FILE_MIN_NS + 4 * 1_000_000_000);
+    let results = reader
+        .facets(&["level", "service"], &Filter::new(), window)
+        .unwrap();
+
+    let level: std::collections::HashMap<_, _> = results
+        .iter()
+        .find(|f| f.field == "level")
+        .unwrap()
+        .values
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(level.get("info"), Some(&1));
+    assert_eq!(level.get("error"), Some(&1));
+
+    let service: std::collections::HashMap<_, _> = results
+        .iter()
+        .find(|f| f.field == "service")
+        .unwrap()
+        .values
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(service.get("api"), Some(&1));
+    assert_eq!(service.get("worker"), Some(&1));
 }
 
 /// Fixture's file_min_ns — the first log's timestamp.

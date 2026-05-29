@@ -261,12 +261,33 @@ impl<'a> IndexReader<'a> {
         Ok(result.unwrap_or_default())
     }
 
+    /// Bitmap of log positions whose timestamp falls in `window_ns`
+    /// (`[start, end)`). Built from the file's chronological
+    /// timestamps via `partition_point`, so it clamps naturally when
+    /// the window extends past the file's range. Shared by the
+    /// windowed query paths ([`facets`](Self::facets) and the
+    /// handler's matched-count) so they all clip to the same set.
+    pub fn range_bitmap(&self, window_ns: std::ops::Range<i64>) -> Result<RoaringBitmap, crate::Error> {
+        let timestamps = self.sfst.timestamps()?;
+        let lo = timestamps.partition_point(|&t| t < window_ns.start) as u32;
+        let hi = timestamps.partition_point(|&t| t < window_ns.end) as u32;
+        let mut bm = RoaringBitmap::new();
+        if lo < hi {
+            bm.insert_range(lo..hi);
+        }
+        Ok(bm)
+    }
+
     /// Compute per-field value counts for the UI's facet sidebar.
     ///
     /// For each facet field, the filter is evaluated **with that field's
     /// own selections removed** — so selecting `level=error` doesn't
     /// reduce the `level` facet to a single bar. Facets not present in
     /// the filter share a single evaluation of the full filter.
+    ///
+    /// Counts are restricted to `window_ns` (`[start, end)`), the same
+    /// request window the histogram and matched-count use — so the
+    /// sidebar reflects only the logs in view, not the whole file.
     ///
     /// Returns [`crate::Error::UnknownField`] for fields not in this
     /// file, or [`crate::Error::HighCardFacet`] for high-cardinality
@@ -275,16 +296,21 @@ impl<'a> IndexReader<'a> {
         &self,
         fields: &[S],
         filter: &Filter,
+        window_ns: std::ops::Range<i64>,
     ) -> Result<Vec<FacetResult>, crate::Error> {
+        // Window mask applied to every counting bitmap so facet totals
+        // match the in-window histogram/matched counts.
+        let range_bm = self.range_bitmap(window_ns)?;
+
         // Computed once; reused by every facet whose field is not in
         // the filter's selections.
-        let full_bm = self.evaluate(filter)?;
+        let full_bm = self.evaluate(filter)? & &range_bm;
 
         let mut results = Vec::with_capacity(fields.len());
         for field in fields {
             let field = field.as_ref();
             let scoped = if filter.has_field(field) {
-                Some(self.evaluate(&filter.without(field))?)
+                Some(self.evaluate(&filter.without(field))? & &range_bm)
             } else {
                 None
             };
