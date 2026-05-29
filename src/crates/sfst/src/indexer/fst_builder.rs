@@ -370,7 +370,10 @@ pub fn build_and_write(
         .iter_by_time()
         .map(|ins| wal_index.timestamps[ins as usize])
         .collect();
-    writer.set_timestamps(crate::pack(&timestamps_chronological, crate::ZSTD_LEVEL_DEFAULT)?);
+    writer.set_timestamps(crate::pack(
+        &timestamps_chronological,
+        crate::ZSTD_LEVEL_DEFAULT,
+    )?);
 
     // Field table, ordered low → mid → high (each tier sorted by name).
     let fields: Vec<FieldEntry> = wal_index

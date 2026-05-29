@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use file_registry::{FileId, TenantId};
+use sfsq::logs::SfstCandidate;
 
 // ---------------------------------------------------------------------------
 // Composition
@@ -286,16 +287,6 @@ impl TenantRegistries {
             })
             .collect()
     }
-}
-
-/// A query candidate: an SFST file whose range overlaps the request
-/// window. Owned so the caller can drop the registry lock before I/O.
-/// `seq` is the file's monotonic per-file id, used as the cross-file
-/// tiebreaker in the pagination cursor's total order.
-pub struct SfstCandidate {
-    pub summary: sfst::Summary,
-    pub seq: u64,
-    pub path: std::path::PathBuf,
 }
 
 fn cleanup_temp_files(dir: &Path) {

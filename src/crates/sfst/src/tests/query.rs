@@ -353,7 +353,11 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
     assert_eq!(timeline.buckets.len(), 10);
     // Leading buckets all zero.
     for i in 0..4 {
-        assert_eq!(timeline.buckets[i], vec![0, 0], "bucket {i} should be empty");
+        assert_eq!(
+            timeline.buckets[i],
+            vec![0, 0],
+            "bucket {i} should be empty"
+        );
         assert_eq!(timeline.unset[i], 0);
     }
     // Each subsequent bucket holds one log; FST order puts "error"
@@ -410,9 +414,15 @@ fn materialize_rows_preserves_position_order_and_skips_out_of_range() {
     assert_eq!(rows.len(), 2);
     // pos 5 = (error, worker), pos 1 = (error, api).
     assert_eq!(rows[0].timestamp_ns, FILE_MIN_NS + 5 * 1_000_000_000);
-    assert_eq!(rows[0].fields[0], ("level".to_string(), "error".to_string()));
+    assert_eq!(
+        rows[0].fields[0],
+        ("level".to_string(), "error".to_string())
+    );
     assert_eq!(rows[1].timestamp_ns, FILE_MIN_NS + 1_000_000_000);
-    assert_eq!(rows[1].fields[1], ("service".to_string(), "api".to_string()));
+    assert_eq!(
+        rows[1].fields[1],
+        ("service".to_string(), "api".to_string())
+    );
 }
 
 #[test]

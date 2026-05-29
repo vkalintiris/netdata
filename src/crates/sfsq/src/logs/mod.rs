@@ -13,5 +13,8 @@
 
 pub mod adapter;
 pub mod cursor;
+pub mod engine;
 pub mod types;
 pub mod wire;
+
+pub use engine::{SfstCandidate, effective_window, run};

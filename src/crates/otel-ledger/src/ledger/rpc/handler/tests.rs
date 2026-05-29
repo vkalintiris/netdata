@@ -3,6 +3,7 @@ use file_registry::{ByteSize, FileId, ServiceStream, TenantId};
 use fst_index::FstIndex;
 use serde_json::Value;
 use sfst::BitmapValue;
+use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -28,8 +29,7 @@ fn make_ctx(transaction: &str) -> FunctionCallContext {
 
 fn bitmap_with(positions: &[u32], universe: u32) -> BitmapValue {
     let mut data = Vec::new();
-    let desc =
-        treight::Bitmap::from_sorted_iter(positions.iter().copied(), universe, &mut data);
+    let desc = treight::Bitmap::from_sorted_iter(positions.iter().copied(), universe, &mut data);
     BitmapValue { desc, data }
 }
 
@@ -104,12 +104,7 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
 
 /// Install a single SFST file under tenant `t`, returning the
 /// machine/boot uuids used so callers can reason about seq.
-fn install_sfst(
-    tr: &mut TenantRegistries,
-    tenant: &str,
-    seq: u64,
-    min_s: u32,
-) -> (Uuid, Uuid) {
+fn install_sfst(tr: &mut TenantRegistries, tenant: &str, seq: u64, min_s: u32) -> (Uuid, Uuid) {
     let machine = Uuid::from_u128(0x11);
     let boot = Uuid::from_u128(0x22);
     let id = FileId::new(machine, boot, seq, 7);
@@ -339,8 +334,7 @@ async fn empty_payload_defaults_to_data_request() {
 async fn no_sfst_yields_empty_envelope() {
     let h = make_handler(make_tenant_registries());
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"info": false, "after": 100, "before": 200}"#)
-            .unwrap();
+        serde_json::from_slice(br#"{"info": false, "after": 100, "before": 200}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["status"], 200);
@@ -356,8 +350,7 @@ async fn non_overlapping_window_yields_empty_envelope() {
 
     // Request window is 1900..2000 — nowhere near the file's 1.7e9 span.
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"info": false, "after": 1900, "before": 2000}"#)
-            .unwrap();
+        serde_json::from_slice(br#"{"info": false, "after": 1900, "before": 2000}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert!(v["facets"].as_array().unwrap().is_empty());
@@ -392,19 +385,11 @@ async fn populated_response_carries_facets_and_histogram() {
     assert_eq!(ids, vec!["severity_text"]);
 
     // severity_text facet sees both values with count 3 each.
-    let sev = facets
-        .iter()
-        .find(|f| f["id"] == "severity_text")
-        .unwrap();
+    let sev = facets.iter().find(|f| f["id"] == "severity_text").unwrap();
     let opts = sev["options"].as_array().unwrap();
     let counts: HashMap<&str, u64> = opts
         .iter()
-        .map(|o| {
-            (
-                o["id"].as_str().unwrap(),
-                o["count"].as_u64().unwrap(),
-            )
-        })
+        .map(|o| (o["id"].as_str().unwrap(), o["count"].as_u64().unwrap()))
         .collect();
     assert_eq!(counts.get("info"), Some(&3));
     assert_eq!(counts.get("error"), Some(&3));
@@ -416,8 +401,7 @@ async fn populated_response_carries_facets_and_histogram() {
 
     // available_histograms drops high-card (none here) but lists both fields.
     let avh = v["available_histograms"].as_array().unwrap();
-    let avh_ids: Vec<&str> =
-        avh.iter().map(|a| a["id"].as_str().unwrap()).collect();
+    let avh_ids: Vec<&str> = avh.iter().map(|a| a["id"].as_str().unwrap()).collect();
     assert!(avh_ids.contains(&"service"));
     assert!(avh_ids.contains(&"severity_text"));
 
@@ -449,7 +433,10 @@ async fn populated_response_carries_facets_and_histogram() {
     assert_eq!(row0[0], (min_s as i64 + 5) * 1_000_000); // µs
     assert_eq!(row0[1], "error");
     // The cursor cell is the opaque "{ts_ns}:{seq}:{pos}" string.
-    assert_eq!(row0[2], format!("{}:1:5", (min_s as i64 + 5) * 1_000_000_000));
+    assert_eq!(
+        row0[2],
+        format!("{}:1:5", (min_s as i64 + 5) * 1_000_000_000)
+    );
 }
 
 #[tokio::test]
@@ -475,10 +462,7 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
 
     let facets = v["facets"].as_array().unwrap();
 
-    let sev = facets
-        .iter()
-        .find(|f| f["id"] == "severity_text")
-        .unwrap();
+    let sev = facets.iter().find(|f| f["id"] == "severity_text").unwrap();
     let sev_counts: HashMap<&str, u64> = sev["options"]
         .as_array()
         .unwrap()
@@ -510,10 +494,9 @@ async fn only_overlapping_file_contributes() {
     install_sfst(&mut tr, "tenant-new", 99, 1_700_000_000);
     let h = make_handler(tr);
 
-    let req: OtelLogsRequest = serde_json::from_slice(
-        br#"{"info": false, "after": 1700000000, "before": 1700000100}"#,
-    )
-    .unwrap();
+    let req: OtelLogsRequest =
+        serde_json::from_slice(br#"{"info": false, "after": 1700000000, "before": 1700000100}"#)
+            .unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     // Only the new file's 6 logs overlap the window.
@@ -788,14 +771,6 @@ async fn histogram_click_numeric_anchor_navigates_to_time() {
 }
 
 #[test]
-fn anchor_param_deserializes_string_and_number() {
-    let s: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":"100:2:3"}"#).unwrap();
-    assert!(matches!(s.anchor, Some(AnchorParam::Cursor(ref c)) if c == "100:2:3"));
-    let n: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":1780056601000000}"#).unwrap();
-    assert!(matches!(n.anchor, Some(AnchorParam::TimestampUs(1780056601000000))));
-}
-
-#[test]
 fn patches_data_request_args_into_payload() {
     // No "info" token — data request. info must be false so the
     // handler runs the query path, not the capability descriptor.
@@ -837,113 +812,4 @@ fn declaration_carries_legacy_flags() {
     assert!(access.contains(HttpAccess::SIGNED_ID));
     assert!(access.contains(HttpAccess::SAME_SPACE));
     assert!(access.contains(HttpAccess::SENSITIVE_DATA));
-}
-
-#[test]
-fn pick_histogram_field_honors_requested() {
-    // Whatever the request supplies is returned verbatim; the
-    // timeline call decides whether it's actually usable.
-    assert_eq!(pick_histogram_field("service.name"), "service.name");
-    assert_eq!(pick_histogram_field("trace_id"), "trace_id");
-}
-
-#[test]
-fn pick_histogram_field_defaults_to_severity_text() {
-    // Empty `histogram` → OTel canonical default. No file-shape
-    // dependence — producers + UI handle "is this meaningful?"
-    assert_eq!(pick_histogram_field(""), "severity_text");
-}
-
-#[test]
-fn pick_facet_fields_defaults_to_severity_text() {
-    // Empty request → exactly the single default facet, regardless of
-    // what other low-card fields the file table carries.
-    let fields = vec![
-        sfst::FieldEntry {
-            name: "service".into(),
-            cardinality: 5,
-            tier: sfst::FieldTier::Low,
-        },
-        sfst::FieldEntry {
-            name: "severity_text".into(),
-            cardinality: 2,
-            tier: sfst::FieldTier::Low,
-        },
-    ];
-    let picked = pick_facet_fields(&[], &fields);
-    assert_eq!(picked, vec!["severity_text".to_string()]);
-}
-
-#[test]
-fn pick_facet_fields_honors_explicit_request() {
-    // Explicit selections are returned as-is; no cardinality cap. A
-    // mid-card field the user asked for is kept.
-    let fields = vec![sfst::FieldEntry {
-        name: "noisy".into(),
-        cardinality: 500,
-        tier: sfst::FieldTier::Mid,
-    }];
-    let picked = pick_facet_fields(&["noisy".to_string()], &fields);
-    assert_eq!(picked, vec!["noisy".to_string()]);
-}
-
-#[test]
-fn pick_facet_fields_drops_explicit_high_card_and_unknown() {
-    // Explicit requests are still filtered: a high-card field would
-    // make facets() error, and an unknown field has no entry.
-    let fields = vec![
-        sfst::FieldEntry {
-            name: "trace_id".into(),
-            cardinality: 50_000,
-            tier: sfst::FieldTier::High,
-        },
-        sfst::FieldEntry {
-            name: "service".into(),
-            cardinality: 5,
-            tier: sfst::FieldTier::Low,
-        },
-    ];
-    let picked = pick_facet_fields(
-        &[
-            "trace_id".to_string(),
-            "service".to_string(),
-            "ghost".to_string(),
-        ],
-        &fields,
-    );
-    assert_eq!(picked, vec!["service".to_string()]);
-}
-
-#[test]
-fn bucket_width_picks_from_curated_set() {
-    // 15-minute window → 15s (largest in VALID_BUCKET_WIDTHS_S
-    // with span/w >= TARGET_BUCKETS=60).
-    assert_eq!(bucket_width_for_span_s(900), 15);
-    // 1-minute window → 1s buckets (60 / 1 == 60).
-    assert_eq!(bucket_width_for_span_s(60), 1);
-    // Very small spans (< TARGET_BUCKETS seconds) → 1s fallback.
-    assert_eq!(bucket_width_for_span_s(30), 1);
-    // 1-hour window → 60s buckets (3600 / 60 == 60).
-    assert_eq!(bucket_width_for_span_s(3600), 60);
-    // 1-day window → 1800s (30-min) buckets (86400 / 1800 == 48 < 60,
-    // 86400 / 900 == 96 >= 60 → 900s wins).
-    assert_eq!(bucket_width_for_span_s(86400), 900);
-}
-
-#[test]
-fn align_window_snaps_outward_to_bucket_boundaries() {
-    // Identity when already aligned.
-    assert_eq!(align_window(0, 900, 15), (0, 900));
-    // Floor the `after`, ceil the `before`.
-    assert_eq!(align_window(1, 14, 15), (0, 15));
-    // Larger window — both bounds rounded outward.
-    assert_eq!(align_window(7, 92, 15), (0, 105));
-    // Consecutive 1-second shifts within the same bucket-width slot
-    // produce the same aligned window — this is what kills the chart's
-    // sub-bucket shape jitter across the UI's per-second polling.
-    let a = align_window(1779995982, 1779996882, 15);
-    let b = align_window(1779995983, 1779996883, 15);
-    let c = align_window(1779995984, 1779996884, 15);
-    assert_eq!(a, b);
-    assert_eq!(b, c);
 }

@@ -97,13 +97,8 @@ pub fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram 
         .enumerate()
         .map(|(bucket_i, counts)| {
             let timestamp_ms = bucket_start_ms + (bucket_i as u64) * bucket_width_ms;
-            let mut items: Vec<[usize; 3]> =
-                counts.iter().map(|&c| [c as usize, 0, 0]).collect();
-            let unset = timeline
-                .unset
-                .get(bucket_i)
-                .copied()
-                .unwrap_or(0);
+            let mut items: Vec<[usize; 3]> = counts.iter().map(|&c| [c as usize, 0, 0]).collect();
+            let unset = timeline.unset.get(bucket_i).copied().unwrap_or(0);
             items.push([unset as usize, 0, 0]);
             DataPoint {
                 timestamp_ms,
@@ -147,9 +142,7 @@ pub fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram 
 /// each value. Output values are emitted in BTreeMap iteration order
 /// (lexicographic by value string), matching the FST iteration-order
 /// contract documented on [`sfst::FacetResult`].
-pub fn merge_facet_results(
-    per_file: Vec<Vec<sfst::FacetResult>>,
-) -> Vec<sfst::FacetResult> {
+pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::FacetResult> {
     use std::collections::BTreeMap;
 
     // Accumulate in `u64` so summing across many files can't wrap
@@ -227,11 +220,8 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
         assert_eq!(t.unset.len(), grid.num_buckets);
 
         // Map this file's local dim index → union dim index.
-        let local_to_union: Vec<usize> = t
-            .dimensions
-            .iter()
-            .map(|d| dim_index[d.as_str()])
-            .collect();
+        let local_to_union: Vec<usize> =
+            t.dimensions.iter().map(|d| dim_index[d.as_str()]).collect();
 
         for (bucket_i, file_bucket) in t.buckets.iter().enumerate() {
             for (local_i, count) in file_bucket.iter().enumerate() {
@@ -258,9 +248,7 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 /// not summed (the concept is per-file, not global); the union keeps
 /// the maximum as a conservative estimate for facet eligibility
 /// gates. Output is sorted by name.
-pub fn union_field_tables(
-    per_file: &[&[sfst::FieldEntry]],
-) -> Vec<sfst::FieldEntry> {
+pub fn union_field_tables(per_file: &[&[sfst::FieldEntry]]) -> Vec<sfst::FieldEntry> {
     use std::collections::BTreeMap;
 
     // name → (max_cardinality_so_far, tier, ever_high_card)
@@ -297,9 +285,7 @@ pub fn union_field_tables(
 /// rejects them with [`sfst::Error::HighCardFacet`], so offering them
 /// in the UI would just produce errors. Low- and mid-cardinality
 /// fields are surfaced in field-table order.
-pub fn available_histograms_from_fields(
-    fields: &[sfst::FieldEntry],
-) -> Vec<AvailableHistogram> {
+pub fn available_histograms_from_fields(fields: &[sfst::FieldEntry]) -> Vec<AvailableHistogram> {
     fields
         .iter()
         .filter(|f| !matches!(f.tier, sfst::FieldTier::High))

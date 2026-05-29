@@ -20,8 +20,7 @@ fn high_field_ref_wire_format_matches_owned() {
         masks: &owned_masks,
     };
 
-    let owned_bytes =
-        bincode::serde::encode_to_vec(&owned, bincode::config::standard()).unwrap();
+    let owned_bytes = bincode::serde::encode_to_vec(&owned, bincode::config::standard()).unwrap();
     let view_bytes = bincode::serde::encode_to_vec(&view, bincode::config::standard()).unwrap();
 
     assert_eq!(

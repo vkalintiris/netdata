@@ -8,8 +8,7 @@ fn make_registry() -> Registry {
     let catalog_dir = tempfile::tempdir().unwrap();
     let wal = wal::Registry::new(wal_dir.path());
     let sfst = sfst::Registry::new(sfst_dir.path());
-    let catalog_files =
-        otel_catalog::Registry::new(catalog_dir.path(), TenantId::from("tenant1"));
+    let catalog_files = otel_catalog::Registry::new(catalog_dir.path(), TenantId::from("tenant1"));
     // Keep tempdirs alive for the test's lifetime.
     std::mem::forget((wal_dir, sfst_dir, catalog_dir));
     Registry::new(wal, sfst, catalog_files)

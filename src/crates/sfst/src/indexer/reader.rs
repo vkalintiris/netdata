@@ -311,7 +311,10 @@ impl<'a> IndexReader<'a> {
     /// the window extends past the file's range. Shared by the
     /// windowed query paths ([`facets`](Self::facets) and the
     /// handler's matched-count) so they all clip to the same set.
-    pub fn range_bitmap(&self, window_ns: std::ops::Range<i64>) -> Result<RoaringBitmap, crate::Error> {
+    pub fn range_bitmap(
+        &self,
+        window_ns: std::ops::Range<i64>,
+    ) -> Result<RoaringBitmap, crate::Error> {
         let timestamps = self.sfst.timestamps()?;
         let lo = timestamps.partition_point(|&t| t < window_ns.start) as u32;
         let hi = timestamps.partition_point(|&t| t < window_ns.end) as u32;

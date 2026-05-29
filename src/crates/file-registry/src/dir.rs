@@ -203,7 +203,11 @@ mod tests {
         //   tenant-c/      → (empty)
         // Expected max across all subdirs: 7.
         let base = tempfile::tempdir().unwrap();
-        for (sub, seqs) in [("tenant-a", &[1, 5][..]), ("tenant-b", &[7, 3]), ("tenant-c", &[])] {
+        for (sub, seqs) in [
+            ("tenant-a", &[1, 5][..]),
+            ("tenant-b", &[7, 3]),
+            ("tenant-c", &[]),
+        ] {
             let subdir = base.path().join(sub);
             std::fs::create_dir(&subdir).unwrap();
             for &seq in seqs {

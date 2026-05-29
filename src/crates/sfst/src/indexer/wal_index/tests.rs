@@ -55,8 +55,7 @@ fn multiple_names_yield_error() {
     w.kv_interner.intern("service.namespace=prod");
     w.kv_interner.intern("service.name=api");
     w.kv_interner.intern("service.name=worker");
-    let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err()
-    else {
+    let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err() else {
         panic!("expected MultipleStreams");
     };
     assert_eq!(namespaces, vec!["prod"]);
@@ -72,8 +71,7 @@ fn multiple_namespaces_yield_error() {
     w.kv_interner.intern("service.namespace=prod");
     w.kv_interner.intern("service.namespace=staging");
     w.kv_interner.intern("service.name=api");
-    let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err()
-    else {
+    let IndexError::MultipleStreams { namespaces, names } = w.service_stream().unwrap_err() else {
         panic!("expected MultipleStreams");
     };
     assert_eq!(names, vec!["api"]);
