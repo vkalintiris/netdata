@@ -7,15 +7,12 @@
 //!   that spawns handler tasks driven by the `bridge::function` engine.
 //! - `handler` — `OtelLogsHandler`, the typed `FunctionHandler` impl,
 //!   its declaration, and the otel-logs–specific args→payload shim.
-//! - `types` — request shape and top-level response enum.
-//! - `wire` — Netdata UI response envelope (facets, histogram, items, …).
-//! - `adapter` — SFST query results → UI envelope conversions.
+//!
+//! The query subsystem it drives (request/response types, the wire
+//! envelope, SFST→UI adapters, the cursor codec, and the multi-file
+//! query engine) lives in the [`sfsq::logs`] crate module.
 
-mod adapter;
-mod cursor;
 mod dispatch;
 mod handler;
-mod types;
-mod wire;
 
 pub(crate) use handler::OtelLogsHandler;

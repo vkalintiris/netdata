@@ -24,15 +24,15 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use super::adapter::{
+use sfsq::logs::adapter::{
     NS_PER_S, available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
     merge_facet_results, merge_timelines, union_field_tables,
 };
-use super::cursor::Cursor;
-use super::types::{
+use sfsq::logs::cursor::Cursor;
+use sfsq::logs::types::{
     ACCEPTED_PARAMS, AnchorParam, Direction, InfoResponse, OtelLogsRequest, OtelLogsResponse,
 };
-use super::wire::{Items, LogsResponse, Pagination, Version};
+use sfsq::logs::wire::{Items, LogsResponse, Pagination, Version};
 use crate::registry::{SfstCandidate, TenantRegistries};
 
 /// Default histogram dimension when the request doesn't specify one.

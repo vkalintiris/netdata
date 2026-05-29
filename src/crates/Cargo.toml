@@ -156,6 +156,7 @@ journal-registry = { path = "journal-registry" }
 fst-index = { path = "fst-index" }
 treight = { path = "treight" }
 sfst = { path = "sfst" }
+sfsq = { path = "sfsq" }
 sd-compat = { path = "sd-compat" }
 
 # Netdata plugin crates

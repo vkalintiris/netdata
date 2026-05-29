@@ -20,7 +20,7 @@ use serde::Serialize;
 // ── Top-level envelope ───────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub(crate) struct LogsResponse {
+pub struct LogsResponse {
     pub progress: u32,
     #[serde(rename = "v")]
     pub version: Version,
@@ -43,7 +43,7 @@ pub(crate) struct LogsResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Version(u32);
+pub struct Version(u32);
 
 impl Default for Version {
     fn default() -> Self {
@@ -54,7 +54,7 @@ impl Default for Version {
 // ── Facets ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Facet {
+pub struct Facet {
     pub id: String,
     pub name: String,
     pub order: usize,
@@ -62,7 +62,7 @@ pub(crate) struct Facet {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct FacetOption {
+pub struct FacetOption {
     pub id: String,
     pub name: String,
     pub order: usize,
@@ -72,27 +72,27 @@ pub(crate) struct FacetOption {
 // ── Histogram ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub(crate) struct AvailableHistogram {
+pub struct AvailableHistogram {
     pub id: String,
     pub name: String,
     pub order: usize,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Histogram {
+pub struct Histogram {
     pub id: String,
     pub name: String,
     pub chart: Chart,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Chart {
+pub struct Chart {
     pub view: ChartView,
     pub result: ChartResult,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct ChartView {
+pub struct ChartView {
     pub title: String,
     pub after: u32,
     pub before: u32,
@@ -103,21 +103,21 @@ pub(crate) struct ChartView {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct ChartDimensions {
+pub struct ChartDimensions {
     pub ids: Vec<String>,
     pub names: Vec<String>,
     pub units: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct ChartResult {
+pub struct ChartResult {
     pub labels: Vec<String>,
     pub point: ChartPoint,
     pub data: Vec<DataPoint>,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct ChartPoint {
+pub struct ChartPoint {
     pub value: u64,
     pub arp: u64,
     pub pa: u64,
@@ -129,7 +129,7 @@ pub(crate) struct ChartPoint {
 /// bucket timestamp followed by one `[value, arp, pa]` triple per
 /// dimension.
 #[derive(Debug)]
-pub(crate) struct DataPoint {
+pub struct DataPoint {
     pub timestamp_ms: u64,
     pub items: Vec<[usize; 3]>,
 }
@@ -186,7 +186,7 @@ impl<'de> serde::Deserialize<'de> for DataPoint {
 // ── Items / pagination ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Items {
+pub struct Items {
     pub evaluated: usize,
     pub unsampled: usize,
     pub estimated: usize,
@@ -198,7 +198,7 @@ pub(crate) struct Items {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Pagination {
+pub struct Pagination {
     pub enabled: bool,
     pub key: &'static str,
     pub column: &'static str,
@@ -226,7 +226,7 @@ impl Default for Pagination {
 /// case a future request mode needs to surface a required selector.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum RequiredParam {
+pub enum RequiredParam {
     // Type shape kept for wire-format parity; no response currently
     // populates it (every emission uses `Vec::new()`).
     #[allow(dead_code)]
@@ -234,7 +234,7 @@ pub(crate) enum RequiredParam {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct MultiSelection {
+pub struct MultiSelection {
     pub id: &'static str,
     pub name: String,
     pub help: String,
@@ -244,7 +244,7 @@ pub(crate) struct MultiSelection {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct MultiSelectionOption {
+pub struct MultiSelectionOption {
     pub id: String,
     pub name: String,
     pub pill: String,
@@ -257,7 +257,7 @@ impl LogsResponse {
     /// Empty envelope used while SFST query plumbing is being wired up
     /// in steps 2–4. The shape is what the cloud-frontend renders as
     /// "no data": valid types throughout, zero rows, zero items.
-    pub(super) fn empty_stub(after: u32, before: u32, last: usize) -> Self {
+    pub fn empty_stub(after: u32, before: u32, last: usize) -> Self {
         Self {
             progress: 100,
             version: Version::default(),

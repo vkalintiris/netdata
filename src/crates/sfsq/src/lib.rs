@@ -35,6 +35,8 @@ use thiserror::Error;
 
 pub use sfst::Filter;
 
+pub mod logs;
+
 // ── Public types ─────────────────────────────────────────────────────────
 
 /// Where in the chronological stream the query starts.

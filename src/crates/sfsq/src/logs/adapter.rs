@@ -23,14 +23,14 @@ const NS_PER_MS: i64 = 1_000_000;
 /// `before` / `update_every` are u32 seconds (legacy chart contract);
 /// also reused by the handler when aligning the request's `[after,
 /// before)` to the per-file bucket grid.
-pub(super) const NS_PER_S: i64 = 1_000_000_000;
+pub const NS_PER_S: i64 = 1_000_000_000;
 
 /// Convert one [`sfst::FacetResult`] into a [`Facet`].
 ///
 /// Option order is preserved from the input — `sfst::IndexReader::facets`
 /// already surfaces values in FST iteration order, which is
 /// lexicographic and stable across runs.
-pub(super) fn facet_from_sfst(order: usize, sfst_facet: &sfst::FacetResult) -> Facet {
+pub fn facet_from_sfst(order: usize, sfst_facet: &sfst::FacetResult) -> Facet {
     let options = sfst_facet
         .values
         .iter()
@@ -63,7 +63,7 @@ pub(super) fn facet_from_sfst(order: usize, sfst_facet: &sfst::FacetResult) -> F
 /// that match the filter but don't carry `field`. Matches the legacy
 /// systemd-journal wire shape — `result.labels` ends with `"(unset)"`,
 /// each `DataPoint.items` carries an extra trailing triple.
-pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
+pub fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
     const UNSET_LABEL: &str = "(unset)";
 
     let total_dim_count = timeline.dimensions.len() + 1; // value dims + (unset)
@@ -147,7 +147,7 @@ pub(super) fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> His
 /// each value. Output values are emitted in BTreeMap iteration order
 /// (lexicographic by value string), matching the FST iteration-order
 /// contract documented on [`sfst::FacetResult`].
-pub(super) fn merge_facet_results(
+pub fn merge_facet_results(
     per_file: Vec<Vec<sfst::FacetResult>>,
 ) -> Vec<sfst::FacetResult> {
     use std::collections::BTreeMap;
@@ -187,7 +187,7 @@ pub(super) fn merge_facet_results(
 /// before bucket-wise summation. `unset` sums bucket-wise.
 ///
 /// Returns `None` if `per_file` is empty.
-pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> {
+pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> {
     use std::collections::BTreeSet;
 
     let mut iter = per_file.into_iter();
@@ -258,7 +258,7 @@ pub(super) fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Tim
 /// not summed (the concept is per-file, not global); the union keeps
 /// the maximum as a conservative estimate for facet eligibility
 /// gates. Output is sorted by name.
-pub(super) fn union_field_tables(
+pub fn union_field_tables(
     per_file: &[&[sfst::FieldEntry]],
 ) -> Vec<sfst::FieldEntry> {
     use std::collections::BTreeMap;
@@ -297,7 +297,7 @@ pub(super) fn union_field_tables(
 /// rejects them with [`sfst::Error::HighCardFacet`], so offering them
 /// in the UI would just produce errors. Low- and mid-cardinality
 /// fields are surfaced in field-table order.
-pub(super) fn available_histograms_from_fields(
+pub fn available_histograms_from_fields(
     fields: &[sfst::FieldEntry],
 ) -> Vec<AvailableHistogram> {
     fields

@@ -27,6 +27,7 @@ opendal = { workspace = true }
 otel-catalog = { workspace = true }
 roaring = { workspace = true }
 sfst = { workspace = true }
+sfsq = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }

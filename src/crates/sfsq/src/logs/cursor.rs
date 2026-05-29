@@ -16,7 +16,7 @@
 /// stable per-file identifier (unique within a tenant; cross-tenant
 /// disambiguation is deferred with the rest of tenant scoping).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Cursor {
+pub struct Cursor {
     pub timestamp_ns: i64,
     pub file_seq: u64,
     pub position: u32,
@@ -24,14 +24,14 @@ pub(super) struct Cursor {
 
 impl Cursor {
     /// Encode as `"{timestamp_ns}:{file_seq}:{position}"`.
-    pub(super) fn encode(&self) -> String {
+    pub fn encode(&self) -> String {
         format!("{}:{}:{}", self.timestamp_ns, self.file_seq, self.position)
     }
 
     /// Decode the string form. Returns `None` for any malformed input
     /// (wrong field count, non-integer field, trailing garbage) so the
     /// handler can treat a bad anchor as "no anchor" rather than error.
-    pub(super) fn decode(s: &str) -> Option<Cursor> {
+    pub fn decode(s: &str) -> Option<Cursor> {
         let mut parts = s.split(':');
         let timestamp_ns: i64 = parts.next()?.parse().ok()?;
         let file_seq: u64 = parts.next()?.parse().ok()?;

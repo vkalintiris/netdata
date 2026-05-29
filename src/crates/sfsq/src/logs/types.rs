@@ -26,7 +26,7 @@ use super::wire::LogsResponse;
 /// still works off `merge` + the row anchors. `if_modified_since`,
 /// `delta`, `tail`, and `sampling` are likewise omitted — they drive
 /// incremental / live-tail / sampling modes we don't implement.
-pub(super) const ACCEPTED_PARAMS: &[&str] = &[
+pub const ACCEPTED_PARAMS: &[&str] = &[
     "info",
     "after",
     "before",
@@ -48,7 +48,7 @@ pub(super) const ACCEPTED_PARAMS: &[&str] = &[
 /// doesn't fail) and will be consumed once the SFST query plumbing
 /// lands in steps 2–4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OtelLogsRequest {
+pub struct OtelLogsRequest {
     /// `info: true` requests a capability descriptor; `info: false`
     /// (the default — matches the legacy `JournalRequest` semantic)
     /// requests a data query. The UI's POST bodies omit this field on
@@ -98,14 +98,14 @@ fn default_last() -> usize {
 /// so they never collide with a bare integer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub(crate) enum AnchorParam {
+pub enum AnchorParam {
     Cursor(String),
     TimestampUs(u64),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Direction {
+pub enum Direction {
     Forward,
     #[default]
     Backward,
@@ -117,13 +117,13 @@ pub(crate) enum Direction {
 /// UI doesn't have to learn a new envelope.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum OtelLogsResponse {
+pub enum OtelLogsResponse {
     Info(InfoResponse),
     Logs(LogsResponse),
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct InfoResponse {
+pub struct InfoResponse {
     version: u32,
     status: u32,
     accepted_params: Vec<&'static str>,
