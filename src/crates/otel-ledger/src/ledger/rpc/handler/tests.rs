@@ -437,6 +437,12 @@ async fn populated_response_carries_facets_and_histogram() {
     assert!(columns.contains_key("cursor"));
     assert_eq!(columns["cursor"]["visible"], false);
     assert_eq!(v["pagination"]["column"], "cursor");
+    // Low-card attribute fields are facetable (drive "+ Add Filter
+    // Field"); the special columns are not.
+    assert_eq!(columns["service"]["filter"], "facet");
+    assert_eq!(columns["severity_text"]["filter"], "facet");
+    assert_eq!(columns["timestamp"]["filter"], "none");
+    assert_eq!(columns["cursor"]["filter"], "none");
     // Each row is a positional array: [ts_us, severity, cursor, …].
     // Rows are newest-first: row 0 is the last log (pos 5, error).
     let row0 = data[0].as_array().unwrap();

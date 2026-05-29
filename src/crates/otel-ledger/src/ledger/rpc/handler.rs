@@ -320,6 +320,11 @@ fn build_merged_logs_response(
         }
     }
     let column_fields: Vec<String> = field_set.into_iter().collect();
+    // Facet-eligible fields (low/mid-card) carry `filter: "facet"` so
+    // the UI's "+ Add Filter Field" picker offers them. High-card
+    // fields remain columns but aren't facetable — `facets()` rejects
+    // them, so offering one would yield an empty/erroring facet.
+    let facetable: BTreeSet<&str> = unioned.iter().map(|f| f.name.as_str()).collect();
 
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(reader_seqs.iter().copied()).collect();
@@ -340,7 +345,7 @@ fn build_merged_logs_response(
             tracing::warn!("otel-logs: page selection failed: {e}");
             Page::default()
         });
-    let (columns, data) = build_table(&page, &column_fields);
+    let (columns, data) = build_table(&page, &column_fields, &facetable);
 
     let matched = matched_total as usize;
 
@@ -492,9 +497,15 @@ fn select_page(
 ///
 /// Columns: a visible µs `timestamp` and `severity`, a hidden string
 /// `cursor` (the `pagination.column` the UI echoes as `anchor`), then
-/// one hidden column per attribute field. Each data row is a positional
+/// one hidden column per attribute field. Fields in `facetable` get
+/// `filter: "facet"` so the UI's "+ Add Filter Field" picker offers
+/// them; everything else is `"none"`. Each data row is a positional
 /// array aligned to the column `index`; absent attributes are `null`.
-fn build_table(page: &Page, fields: &[String]) -> (serde_json::Value, serde_json::Value) {
+fn build_table(
+    page: &Page,
+    fields: &[String],
+    facetable: &BTreeSet<&str>,
+) -> (serde_json::Value, serde_json::Value) {
     use serde_json::{Value, json};
 
     let mut columns = serde_json::Map::new();
@@ -505,24 +516,29 @@ fn build_table(page: &Page, fields: &[String]) -> (serde_json::Value, serde_json
     columns.insert(
         "timestamp".into(),
         json!({ "index": 0, "id": "timestamp", "name": "Timestamp", "type": "timestamp",
-                "visible": true, "sortable": false,
+                "visible": true, "sortable": false, "filter": "none",
                 "valueOptions": { "transform": "datetime_usec", "decimal_points": 0 } }),
     );
     columns.insert(
         "severity".into(),
         json!({ "index": 1, "id": "severity", "name": "Severity",
-                "type": "string", "visible": true, "sortable": false }),
+                "type": "string", "visible": true, "sortable": false, "filter": "none" }),
     );
     columns.insert(
         "cursor".into(),
         json!({ "index": 2, "id": "cursor", "name": "cursor", "type": "string",
-                "visible": false, "sortable": false, "unique_key": true }),
+                "visible": false, "sortable": false, "filter": "none", "unique_key": true }),
     );
     for (i, name) in fields.iter().enumerate() {
+        let filter = if facetable.contains(name.as_str()) {
+            "facet"
+        } else {
+            "none"
+        };
         columns.insert(
             name.clone(),
-            json!({ "index": 3 + i, "id": name, "name": name,
-                    "type": "string", "visible": false, "sortable": false }),
+            json!({ "index": 3 + i, "id": name, "name": name, "type": "string",
+                    "visible": false, "sortable": false, "filter": filter }),
         );
     }
 
