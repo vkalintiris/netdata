@@ -130,6 +130,76 @@ fn install_sfst(
     (machine, boot)
 }
 
+/// Write a 3-log SFST with only a `service` field — no
+/// `severity_text`. Used to exercise the histogram default field
+/// being absent from a file: `service=api` at 0/1, `service=worker`
+/// at 2. Timestamps span 3 seconds starting at `min_s`.
+fn write_service_only_sfst(path: &std::path::Path, min_s: u32) {
+    let primary_entries: Vec<(&str, BitmapValue)> = vec![
+        ("service=api", bitmap_with(&[0, 1], 3)),
+        ("service=worker", bitmap_with(&[2], 3)),
+    ];
+    let primary: FstIndex<BitmapValue> = FstIndex::build(primary_entries).unwrap();
+
+    let summary = sfst::Summary {
+        min_timestamp_s: min_s,
+        max_timestamp_s: min_s + 2,
+        total_logs: 3,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    let metadata = sfst::Metadata {
+        histogram: sfst::Histogram {
+            timestamps: vec![min_s],
+            counts: vec![3],
+        },
+        id_ranges: sfst::IdRanges {
+            low_end: sfst::KvId(2),
+            mid_end: sfst::KvId(2),
+            high_end: sfst::KvId(2),
+        },
+        fields: vec![sfst::FieldEntry {
+            name: "service".into(),
+            cardinality: 2,
+            tier: sfst::FieldTier::Low,
+        }],
+    };
+    let timestamps: Vec<i64> = (0..3)
+        .map(|i| (min_s as i64) * 1_000_000_000 + i * 1_000_000_000)
+        .collect();
+    // KvId 0=service=api, 1=service=worker.
+    let stream_entries: Vec<Vec<sfst::KvId>> = vec![
+        vec![sfst::KvId(0)], // pos 0: api
+        vec![sfst::KvId(0)], // pos 1: api
+        vec![sfst::KvId(1)], // pos 2: worker
+    ];
+
+    let mut writer = sfst::Writer::new();
+    writer.set_summary(sfst::pack(&summary, 1).unwrap());
+    writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
+    writer.set_primary(sfst::pack(&primary, 1).unwrap());
+    writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
+    writer.add_stream_batch(sfst::pack(&stream_entries, 1).unwrap());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    std::fs::write(path, &buf).unwrap();
+}
+
+/// Install a 3-log service-only SFST (see [`write_service_only_sfst`]).
+fn install_service_only_sfst(tr: &mut TenantRegistries, tenant: &str, seq: u64, min_s: u32) {
+    let id = FileId::new(Uuid::from_u128(0x11), Uuid::from_u128(0x22), seq, 7);
+    let reg = tr.get_or_create(&TenantId::from(tenant));
+    let path = reg.sfst.file_path(id);
+    write_service_only_sfst(&path, min_s);
+    let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+    let summary = sfst::Summary {
+        min_timestamp_s: min_s,
+        max_timestamp_s: min_s + 2,
+        total_logs: 3,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    reg.sfst.track(id, size, summary);
+}
+
 #[tokio::test]
 async fn info_request_returns_capability_descriptor() {
     let h = make_handler(make_tenant_registries());
@@ -378,6 +448,56 @@ async fn multiple_overlapping_files_merge_counts_and_facets() {
     // Each file: 3 api, 3 worker → merged 6 each.
     assert_eq!(svc_counts.get("api"), Some(&6));
     assert_eq!(svc_counts.get("worker"), Some(&6));
+}
+
+#[tokio::test]
+async fn file_without_histogram_field_routes_logs_to_unset() {
+    // One file carries `severity_text` (6 logs); another lacks it
+    // entirely (3 logs, only `service`). Both fall in the window. The
+    // field-absent file's logs must all land in the histogram's
+    // `(unset)` row, so the histogram total still equals `matched`
+    // (9) rather than just the 6 logs that carry the field.
+    let mut tr = make_tenant_registries();
+    let earlier = 1_700_000_000u32;
+    let later = earlier + 100; // disjoint spans
+    install_sfst(&mut tr, "tenant-a", 1, earlier);
+    install_service_only_sfst(&mut tr, "tenant-a", 2, later);
+    let h = make_handler(tr);
+
+    let payload = format!(
+        r#"{{"info": false, "after": {a}, "before": {b}}}"#,
+        a = earlier,
+        b = later + 60
+    );
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+
+    assert_eq!(v["items"]["matched"], 9);
+
+    // Sum every histogram count, and separately the trailing
+    // "(unset)" column. `items` align to `labels[1..]`, so the unset
+    // column is the last item in each datapoint.
+    let result = &v["histogram"]["chart"]["result"];
+    let n_items = result["labels"].as_array().unwrap().len() - 1;
+    let unset_idx = n_items - 1;
+    let mut total = 0u64;
+    let mut unset_total = 0u64;
+    for dp in result["data"].as_array().unwrap() {
+        // Each datapoint is a flat array: [timestamp_ms, [v,arp,pa], …].
+        let cols = dp.as_array().unwrap();
+        for (i, it) in cols[1..].iter().enumerate() {
+            let c = it[0].as_u64().unwrap();
+            total += c;
+            if i == unset_idx {
+                unset_total += c;
+            }
+        }
+    }
+    // Histogram total tracks `matched`; the 3 field-absent logs are
+    // all in "(unset)".
+    assert_eq!(total, 9);
+    assert_eq!(unset_total, 3);
 }
 
 #[tokio::test]

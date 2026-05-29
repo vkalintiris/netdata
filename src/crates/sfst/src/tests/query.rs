@@ -371,3 +371,22 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
         assert_eq!(timeline.buckets[i + 4], *exp, "bucket {} mismatch", i + 4);
     }
 }
+
+#[test]
+fn timeline_absent_field_routes_all_logs_to_unset() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // A field not present in this file: no dimensions, and every
+    // matching log falls into `unset`. 6 logs over 3 two-second
+    // buckets → 2 per bucket, all unset.
+    let timeline = reader
+        .timeline(
+            "nonexistent",
+            &Filter::new(),
+            Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
+        )
+        .unwrap();
+    assert!(timeline.dimensions.is_empty());
+    assert_eq!(timeline.buckets, vec![Vec::<u64>::new(); 3]);
+    assert_eq!(timeline.unset, vec![2, 2, 2]);
+}

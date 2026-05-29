@@ -270,23 +270,18 @@ fn build_merged_logs_response(
             ),
         }
 
-        // Histogram: a file that lacks the histogram field
-        // contributes neither dimensions nor unset. (Minor:
-        // filter-matching logs in this file don't reach `unset` in
-        // the merged timeline. Acceptable for MVP — see the plan's
-        // verification section.)
-        let has_histogram_field = reader
-            .field_table()
-            .iter()
-            .any(|f| f.name == histogram_field);
-        if has_histogram_field {
-            match reader.timeline(&histogram_field, &filter, grid) {
-                Ok(t) => per_file_timelines.push(t),
-                Err(e) => tracing::warn!(
-                    "otel-logs: timeline failed for {}: {e}",
-                    path.display()
-                ),
-            }
+        // Histogram: every file contributes a timeline on the shared
+        // grid. A file that lacks the histogram field yields a
+        // dimensionless timeline whose matching logs all land in
+        // `unset`, so the merged histogram total stays equal to
+        // `matched`. (`timeline` only errors here if the picked field
+        // is high-card, which `available_histograms` never offers.)
+        match reader.timeline(&histogram_field, &filter, grid) {
+            Ok(t) => per_file_timelines.push(t),
+            Err(e) => tracing::warn!(
+                "otel-logs: timeline failed for {}: {e}",
+                path.display()
+            ),
         }
     }
 

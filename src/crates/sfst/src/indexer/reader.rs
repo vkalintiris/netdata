@@ -332,9 +332,14 @@ impl<'a> IndexReader<'a> {
     /// selections are excluded from the filter (same reason as in
     /// [`facets`](Self::facets)).
     ///
+    /// A field that isn't present in this file is treated as "every
+    /// matching log lacks it": the result has no dimensions and all
+    /// matching logs land in `unset`. This keeps the histogram total
+    /// equal to the matched count in a multi-file query where some
+    /// files carry the field and others don't.
+    ///
     /// Errors:
     /// - [`crate::Error::InvalidBucketWidth`] if `grid.bucket_width_ns <= 0`.
-    /// - [`crate::Error::UnknownField`] if `field` is not in this file.
     /// - [`crate::Error::HighCardFacet`] if `field` is high-cardinality.
     pub fn timeline(
         &self,
@@ -353,16 +358,17 @@ impl<'a> IndexReader<'a> {
         // Enumerate the field's values and pre-intersect each with the
         // filter bitmap. Each dimension's bitmap is then queried per
         // bucket via range_cardinality.
-        let location = self
-            .locate_field(field)
-            .ok_or_else(|| crate::Error::UnknownField(field.to_string()))?;
         let prefix = format!("{field}=");
         let prefix_len = prefix.len();
         let mut dimensions: Vec<String> = Vec::new();
         let mut intersections: Vec<RoaringBitmap> = Vec::new();
 
-        match location {
-            FieldLocation::Low => {
+        // An absent field leaves `dimensions`/`intersections` empty, so
+        // the bucket loop below routes every matching log into `unset`
+        // (dim_sum == 0 ⇒ unset == bucket_total).
+        match self.locate_field(field) {
+            None => {}
+            Some(FieldLocation::Low) => {
                 for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                     let mut value_bm = bitmap_value_to_roaring(bv);
@@ -371,7 +377,7 @@ impl<'a> IndexReader<'a> {
                     intersections.push(value_bm);
                 }
             }
-            FieldLocation::Mid(idx) => {
+            Some(FieldLocation::Mid(idx)) => {
                 let chunk = self.sfst.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
@@ -381,7 +387,7 @@ impl<'a> IndexReader<'a> {
                     intersections.push(value_bm);
                 });
             }
-            FieldLocation::High(_) => {
+            Some(FieldLocation::High(_)) => {
                 return Err(crate::Error::HighCardFacet(field.to_string()));
             }
         }
