@@ -22,7 +22,7 @@ use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
 use sfsq::logs::{
-    InfoResponse, LogsResponse, OtelLogsRequest, OtelLogsResponse, effective_window, run,
+    InfoResponse, LogsResult, LogsRequest, LogsResponse, effective_window, run,
 };
 
 use crate::registry::TenantRegistries;
@@ -39,8 +39,8 @@ impl OtelLogsHandler {
 
 #[async_trait]
 impl FunctionHandler for OtelLogsHandler {
-    type Request = OtelLogsRequest;
-    type Response = OtelLogsResponse;
+    type Request = LogsRequest;
+    type Response = LogsResponse;
 
     async fn on_call(
         &self,
@@ -48,7 +48,7 @@ impl FunctionHandler for OtelLogsHandler {
         mut req: Self::Request,
     ) -> netdata_plugin_error::Result<Self::Response> {
         if req.info {
-            return Ok(OtelLogsResponse::Info(InfoResponse::default()));
+            return Ok(LogsResponse::Info(InfoResponse::default()));
         }
 
         // Resolve the (possibly defaulted) request window, then
@@ -71,10 +71,10 @@ impl FunctionHandler for OtelLogsHandler {
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("otel-logs blocking task failed: {e}");
-                LogsResponse::empty_stub(after, before, last)
+                LogsResult::empty_stub(after, before, last)
             });
 
-        Ok(OtelLogsResponse::Logs(response))
+        Ok(LogsResponse::Logs(response))
     }
 
     fn declaration(&self) -> FunctionDeclaration {

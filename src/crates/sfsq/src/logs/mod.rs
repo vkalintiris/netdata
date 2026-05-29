@@ -21,5 +21,5 @@ mod wire;
 // the cursor codec, the wire sub-structs) stay module-private; only
 // these are re-exported.
 pub use engine::{SfstCandidate, effective_window, run};
-pub use types::{InfoResponse, OtelLogsRequest, OtelLogsResponse};
-pub use wire::LogsResponse;
+pub use types::{InfoResponse, LogsRequest, LogsResponse};
+pub use wire::LogsResult;

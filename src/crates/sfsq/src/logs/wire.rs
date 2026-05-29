@@ -12,7 +12,7 @@
 //!
 //! Step 1 of the otel-logs rewrite: types only. The SFST → wire
 //! translation and real handler plumbing land in later steps; for now
-//! [`LogsResponse::empty_stub`] produces a valid envelope with no data
+//! [`LogsResult::empty_stub`] produces a valid envelope with no data
 //! so the build stays green.
 
 use serde::Serialize;
@@ -20,7 +20,7 @@ use serde::Serialize;
 // ── Top-level envelope ───────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub struct LogsResponse {
+pub struct LogsResult {
     pub progress: u32,
     #[serde(rename = "v")]
     pub version: Version,
@@ -253,7 +253,7 @@ pub struct MultiSelectionOption {
 
 // ── Empty-stub constructor (step 1 only) ────────────────────────────
 
-impl LogsResponse {
+impl LogsResult {
     /// Empty envelope used while SFST query plumbing is being wired up
     /// in steps 2–4. The shape is what the cloud-frontend renders as
     /// "no data": valid types throughout, zero rows, zero items.

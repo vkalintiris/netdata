@@ -4,7 +4,7 @@
 //! [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`] +
 //! [`sfst::IndexReader::timeline`] per file against a shared
 //! request-aligned bucket grid, paginates + materializes a page of
-//! rows, and merges everything into a single [`LogsResponse`].
+//! rows, and merges everything into a single [`LogsResult`].
 //!
 //! Pure and synchronous — no I/O scheduling, no locks. The caller
 //! (the ledger's `FunctionHandler`) resolves the window via
@@ -19,8 +19,8 @@ use super::adapter::{
     merge_facet_results, merge_timelines, union_field_tables,
 };
 use super::cursor::Cursor;
-use super::types::{ACCEPTED_PARAMS, AnchorParam, Direction, OtelLogsRequest};
-use super::wire::{Items, LogsResponse, Pagination, Version};
+use super::types::{ACCEPTED_PARAMS, AnchorParam, Direction, LogsRequest};
+use super::wire::{Items, LogsResult, Pagination, Version};
 
 /// Default histogram dimension when the request doesn't specify one.
 /// Always `severity_text` — it's the OTel canonical log-level field,
@@ -82,7 +82,7 @@ pub struct SfstCandidate {
 /// empty envelope aligned to that window.
 ///
 /// Pure sync — the caller wraps it in `spawn_blocking`.
-pub fn run(candidates: Vec<SfstCandidate>, mut req: OtelLogsRequest) -> LogsResponse {
+pub fn run(candidates: Vec<SfstCandidate>, mut req: LogsRequest) -> LogsResult {
     // Snap the window outward to multiples of a "nice" bucket width.
     // This stabilises the histogram x-axis across the UI's per-second
     // polling: successive polls within the same bucket-width slot all
@@ -93,7 +93,7 @@ pub fn run(candidates: Vec<SfstCandidate>, mut req: OtelLogsRequest) -> LogsResp
     (req.after, req.before) = align_window(req.after, req.before, bucket_width_s);
 
     if candidates.is_empty() {
-        return LogsResponse::empty_stub(req.after, req.before, req.last);
+        return LogsResult::empty_stub(req.after, req.before, req.last);
     }
 
     // Bucket grid derived directly from the aligned window —
@@ -119,9 +119,9 @@ pub fn run(candidates: Vec<SfstCandidate>, mut req: OtelLogsRequest) -> LogsResp
 /// stub.
 fn build_merged_logs_response(
     candidates: Vec<SfstCandidate>,
-    req: OtelLogsRequest,
+    req: LogsRequest,
     grid: sfst::Grid,
-) -> LogsResponse {
+) -> LogsResult {
     let filter = build_filter(&req.selections);
     let histogram_field = pick_histogram_field(&req.histogram);
 
@@ -160,7 +160,7 @@ fn build_merged_logs_response(
     }
 
     if readers.is_empty() {
-        return LogsResponse::empty_stub(req.after, req.before, req.last);
+        return LogsResult::empty_stub(req.after, req.before, req.last);
     }
 
     // Picked facet field set against the unioned table — gives the
@@ -272,7 +272,7 @@ fn build_merged_logs_response(
 
     let matched = matched_total as usize;
 
-    LogsResponse {
+    LogsResult {
         progress: 100,
         version: Version::default(),
         accepted_params: ACCEPTED_PARAMS.to_vec(),

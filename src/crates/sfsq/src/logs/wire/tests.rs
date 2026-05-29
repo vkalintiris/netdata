@@ -27,7 +27,7 @@ fn data_point_round_trip() {
 
 #[test]
 fn empty_stub_has_expected_shape() {
-    let r = LogsResponse::empty_stub(100, 200, 200);
+    let r = LogsResult::empty_stub(100, 200, 200);
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["status"], 200);
     assert_eq!(v["progress"], 100);

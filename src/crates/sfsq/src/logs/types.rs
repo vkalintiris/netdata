@@ -10,11 +10,11 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::wire::LogsResponse;
+use super::wire::LogsResult;
 
 /// Request param names accepted by this function, advertised to the UI
 /// in [`InfoResponse::accepted_params`] and echoed in the non-info
-/// [`LogsResponse`]'s same field. The UI gates which params it sends on
+/// [`LogsResult`]'s same field. The UI gates which params it sends on
 /// this list.
 ///
 /// We advertise only what we actually honor. Notably `data_only` is
@@ -48,7 +48,7 @@ pub const ACCEPTED_PARAMS: &[&str] = &[
 /// doesn't fail) and will be consumed once the SFST query plumbing
 /// lands in steps 2–4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OtelLogsRequest {
+pub struct LogsRequest {
     /// `info: true` requests a capability descriptor; `info: false`
     /// (the default — matches the legacy `JournalRequest` semantic)
     /// requests a data query. The UI's POST bodies omit this field on
@@ -117,9 +117,9 @@ pub enum Direction {
 /// UI doesn't have to learn a new envelope.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub enum OtelLogsResponse {
+pub enum LogsResponse {
     Info(InfoResponse),
-    Logs(LogsResponse),
+    Logs(LogsResult),
 }
 
 #[derive(Debug, Serialize)]
