@@ -373,6 +373,56 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
 }
 
 #[test]
+fn materialize_rows_resolves_timestamp_and_attributes() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Fixture positions: 0 = (info, api), 3 = (error, worker); 1s apart
+    // starting at FILE_MIN_NS. Stream KvIds resolve via the reverse
+    // string table to "level=…"/"service=…" pairs.
+    let rows = reader.materialize_rows(&[0, 3]).unwrap();
+    assert_eq!(rows.len(), 2);
+
+    assert_eq!(rows[0].timestamp_ns, FILE_MIN_NS);
+    assert_eq!(
+        rows[0].fields,
+        vec![
+            ("level".to_string(), "info".to_string()),
+            ("service".to_string(), "api".to_string()),
+        ]
+    );
+
+    assert_eq!(rows[1].timestamp_ns, FILE_MIN_NS + 3 * 1_000_000_000);
+    assert_eq!(
+        rows[1].fields,
+        vec![
+            ("level".to_string(), "error".to_string()),
+            ("service".to_string(), "worker".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn materialize_rows_preserves_position_order_and_skips_out_of_range() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Requested order is honored; position 99 (>= 6 logs) is skipped.
+    let rows = reader.materialize_rows(&[5, 99, 1]).unwrap();
+    assert_eq!(rows.len(), 2);
+    // pos 5 = (error, worker), pos 1 = (error, api).
+    assert_eq!(rows[0].timestamp_ns, FILE_MIN_NS + 5 * 1_000_000_000);
+    assert_eq!(rows[0].fields[0], ("level".to_string(), "error".to_string()));
+    assert_eq!(rows[1].timestamp_ns, FILE_MIN_NS + 1_000_000_000);
+    assert_eq!(rows[1].fields[1], ("service".to_string(), "api".to_string()));
+}
+
+#[test]
+fn materialize_rows_empty_input_yields_empty() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    assert!(reader.materialize_rows(&[]).unwrap().is_empty());
+}
+
+#[test]
 fn timeline_absent_field_routes_all_logs_to_unset() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();

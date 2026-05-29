@@ -132,6 +132,19 @@ pub struct Timeline {
     pub unset: Vec<u64>,
 }
 
+/// A single materialized log row: its timestamp plus the full set of
+/// `(key, value)` attribute pairs stored for that position.
+///
+/// Produced by [`IndexReader::materialize_rows`](crate::IndexReader::materialize_rows).
+/// Pairs appear in the order the position's `KvId`s were stored; keys
+/// are not deduplicated (OTel attribute keys are unique per LogRecord,
+/// so duplicates don't arise in practice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedRow {
+    pub timestamp_ns: i64,
+    pub fields: Vec<(String, String)>,
+}
+
 /// Convert an on-disk `BitmapValue` to a `RoaringBitmap`. `treight::Bitmap`
 /// iterates set positions in ascending order, so the bulk-load path applies.
 pub fn bitmap_value_to_roaring(bv: &BitmapValue) -> RoaringBitmap {

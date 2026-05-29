@@ -227,6 +227,50 @@ impl<'a> IndexReader<'a> {
         Ok(table)
     }
 
+    /// Materialize full log rows for the given positions.
+    ///
+    /// For each position: its timestamp plus every attribute, resolved
+    /// to a `(key, value)` pair by splitting the stored `key=value`
+    /// string on the first `=`. Rows are returned in the order the
+    /// positions are supplied; positions `>= total_logs` are skipped.
+    ///
+    /// This decompresses the timestamps chunk, all stream batches, and
+    /// the whole reverse string table **once**, regardless of how many
+    /// positions are requested — so callers should batch a page's worth
+    /// of positions into a single call rather than invoking per-row.
+    pub fn materialize_rows(
+        &self,
+        positions: &[u32],
+    ) -> Result<Vec<crate::MaterializedRow>, crate::Error> {
+        let timestamps = self.load_timestamps()?;
+        let entries = self.load_all_stream_entries()?;
+        let strings = self.build_string_table(self.field_table())?;
+
+        let mut rows = Vec::with_capacity(positions.len());
+        for &pos in positions {
+            let p = pos as usize;
+            if p >= entries.len() {
+                continue;
+            }
+            let timestamp_ns = timestamps.get(p).copied().unwrap_or(0);
+            let fields = entries[p]
+                .iter()
+                .map(|kv| {
+                    let s = strings.get(kv.0 as usize).map(String::as_str).unwrap_or("");
+                    match s.split_once('=') {
+                        Some((k, v)) => (k.to_string(), v.to_string()),
+                        None => (s.to_string(), String::new()),
+                    }
+                })
+                .collect();
+            rows.push(crate::MaterializedRow {
+                timestamp_ns,
+                fields,
+            });
+        }
+        Ok(rows)
+    }
+
     // ── Query API ────────────────────────────────────────────────────
 
     /// Apply a [`Filter`] (OR within field, AND across fields) and return
