@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let data = std::fs::read(&cli.file)?;
     let reader = sfst::IndexReader::open(&data)?;
-    let mut query = LogQuery::new(&reader, params);
+    let query = LogQuery::new(&reader, params);
     let logs = query.run()?;
 
     match cli.format {

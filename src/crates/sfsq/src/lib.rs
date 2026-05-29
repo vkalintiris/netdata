@@ -22,15 +22,14 @@
 //!     .build()
 //!     .unwrap();
 //!
-//! let mut query = LogQuery::new(&reader, params);
+//! let query = LogQuery::new(&reader, params);
 //! let logs = query.run().unwrap();
 //! ```
 
-use std::cell::OnceCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use roaring::RoaringBitmap;
-use sfst::{IndexReader, KvId};
+use sfst::IndexReader;
 use thiserror::Error;
 
 pub use sfst::Filter;
@@ -71,7 +70,6 @@ pub struct LogQueryParams {
     filter: Filter,
     after: Option<i64>,
     before: Option<i64>,
-    resume_position: Option<u32>,
 }
 
 impl LogQueryParams {
@@ -93,9 +91,6 @@ impl LogQueryParams {
     pub fn before(&self) -> Option<i64> {
         self.before
     }
-    pub fn resume_position(&self) -> Option<u32> {
-        self.resume_position
-    }
 }
 
 /// Fluent builder for [`LogQueryParams`]. Required (`anchor`, `direction`)
@@ -109,7 +104,6 @@ pub struct LogQueryParamsBuilder {
     filter: Filter,
     after: Option<i64>,
     before: Option<i64>,
-    resume_position: Option<u32>,
 }
 
 impl LogQueryParamsBuilder {
@@ -121,7 +115,6 @@ impl LogQueryParamsBuilder {
             filter: Filter::new(),
             after: None,
             before: None,
-            resume_position: None,
         }
     }
 
@@ -145,11 +138,6 @@ impl LogQueryParamsBuilder {
         self
     }
 
-    pub fn with_resume_position(mut self, pos: u32) -> Self {
-        self.resume_position = Some(pos);
-        self
-    }
-
     pub fn build(self) -> Result<LogQueryParams, BuildError> {
         if let (Some(a), Some(b)) = (self.after, self.before)
             && a >= b
@@ -166,7 +154,6 @@ impl LogQueryParamsBuilder {
             filter: self.filter,
             after: self.after,
             before: self.before,
-            resume_position: self.resume_position,
         })
     }
 }
@@ -198,34 +185,25 @@ pub enum Error {
 
 // ── Executor ─────────────────────────────────────────────────────────────
 
-/// Executes a [`LogQueryParams`] against an [`IndexReader`]. Filter
-/// evaluation is delegated to [`IndexReader::evaluate`]; this type adds
-/// the anchor/direction/limit semantics, time-range narrowing, and
-/// per-position log materialisation.
+/// Executes a [`LogQueryParams`] against an [`IndexReader`].
 ///
-/// Caches `timestamps`, `string_table`, and `stream_batches` so each is
-/// paid for at most once across the executor's lifetime.
+/// Everything heavy is delegated to `sfst` primitives — filter
+/// evaluation to [`IndexReader::evaluate`], time-range narrowing to
+/// [`IndexReader::range_bitmap`], and per-position materialisation to
+/// [`IndexReader::materialize_rows`]. This type only adds the
+/// anchor / direction / limit selection on top.
 pub struct LogQuery<'a> {
     reader: &'a IndexReader<'a>,
     params: LogQueryParams,
-    timestamps: OnceCell<Vec<i64>>,
-    string_table: OnceCell<Vec<String>>,
-    stream_batches: HashMap<u8, Vec<Vec<KvId>>>,
 }
 
 impl<'a> LogQuery<'a> {
     pub fn new(reader: &'a IndexReader<'a>, params: LogQueryParams) -> Self {
-        Self {
-            reader,
-            params,
-            timestamps: OnceCell::new(),
-            string_table: OnceCell::new(),
-            stream_batches: HashMap::new(),
-        }
+        Self { reader, params }
     }
 
     /// Execute the query.
-    pub fn run(&mut self) -> Result<Vec<ResolvedLog>, Error> {
+    pub fn run(&self) -> Result<Vec<ResolvedLog>, Error> {
         let total_logs = self.reader.summary().total_logs;
         if total_logs == 0 {
             return Ok(Vec::new());
@@ -235,47 +213,37 @@ impl<'a> LogQuery<'a> {
         let start = self.resolve_anchor()?;
         let selected = self.select(positions.as_ref(), start, total_logs);
 
-        let mut logs = Vec::with_capacity(selected.len());
-        for pos in selected {
-            logs.push(self.materialize(pos)?);
-        }
-        Ok(logs)
+        // Materialise via the shared sfst primitive (preserves the order
+        // of `selected`), then pair each row with its position.
+        let rows = self.reader.materialize_rows(&selected)?;
+        Ok(selected
+            .into_iter()
+            .zip(rows)
+            .map(|(position, row)| ResolvedLog {
+                position,
+                timestamp_ns: row.timestamp_ns,
+                attrs: row.fields,
+            })
+            .collect())
     }
 
     /// Compose the filter bitmap (from [`IndexReader::evaluate`]) with
-    /// the time-range bitmap, if either is present. `None` means "no
-    /// constraint" — all positions are candidates.
+    /// the time-range bitmap (from [`IndexReader::range_bitmap`]), if
+    /// either is present. `None` means "no constraint" — all positions
+    /// are candidates.
     fn compute_position_set(&self) -> Result<Option<RoaringBitmap>, Error> {
         let mut bm: Option<RoaringBitmap> = None;
         if !self.params.filter.is_empty() {
             bm = Some(self.reader.evaluate(&self.params.filter)?);
         }
         if self.params.after.is_some() || self.params.before.is_some() {
-            let tr = self.time_range_bitmap()?;
+            let lo = self.params.after.unwrap_or(i64::MIN);
+            let hi = self.params.before.unwrap_or(i64::MAX);
+            let tr = self.reader.range_bitmap(lo..hi)?;
             bm = Some(match bm {
                 Some(prev) => prev & tr,
                 None => tr,
             });
-        }
-        Ok(bm)
-    }
-
-    fn time_range_bitmap(&self) -> Result<RoaringBitmap, Error> {
-        let timestamps = self.timestamps()?;
-        let total = timestamps.len() as u32;
-        let lo = self
-            .params
-            .after
-            .map(|a| timestamps.partition_point(|&t| t < a) as u32)
-            .unwrap_or(0);
-        let hi = self
-            .params
-            .before
-            .map(|b| timestamps.partition_point(|&t| t < b) as u32)
-            .unwrap_or(total);
-        let mut bm = RoaringBitmap::new();
-        if lo < hi {
-            bm.insert_range(lo..hi);
         }
         Ok(bm)
     }
@@ -286,7 +254,7 @@ impl<'a> LogQuery<'a> {
             Anchor::Latest => total - 1,
             Anchor::Earliest => 0,
             Anchor::At(ts) => {
-                let timestamps = self.timestamps()?;
+                let timestamps = self.reader.load_timestamps()?;
                 match self.params.direction {
                     Direction::Forward => timestamps.partition_point(|&t| t < ts) as u32,
                     Direction::Backward => {
@@ -323,68 +291,12 @@ impl<'a> LogQuery<'a> {
             },
         }
     }
-
-    fn materialize(&mut self, pos: u32) -> Result<ResolvedLog, Error> {
-        let total_logs = self.reader.summary().total_logs;
-        let batch_size = sfst::stream_batch_size(total_logs);
-        let batch_idx = (pos / batch_size) as u8;
-        let local = (pos % batch_size) as usize;
-
-        let kv_ids: Vec<KvId> = {
-            let batch = self.load_stream_batch(batch_idx)?;
-            batch[local].clone()
-        };
-
-        let timestamp_ns = self.timestamps()?[pos as usize];
-        let string_table = self.string_table()?;
-        let mut attrs = Vec::with_capacity(kv_ids.len());
-        for kv_id in &kv_ids {
-            let s = &string_table[kv_id.idx()];
-            let (key, value) = match s.split_once('=') {
-                Some((k, v)) => (k.to_string(), v.to_string()),
-                None => (s.clone(), String::new()),
-            };
-            attrs.push((key, value));
-        }
-
-        Ok(ResolvedLog {
-            position: pos,
-            timestamp_ns,
-            attrs,
-        })
-    }
-
-    // ── Caches ───────────────────────────────────────────────────────
-
-    fn timestamps(&self) -> Result<&[i64], Error> {
-        if self.timestamps.get().is_none() {
-            let ts = self.reader.load_timestamps()?;
-            let _ = self.timestamps.set(ts);
-        }
-        Ok(self.timestamps.get().expect("just initialized"))
-    }
-
-    fn string_table(&self) -> Result<&[String], Error> {
-        if self.string_table.get().is_none() {
-            let fields = self.reader.field_table().to_vec();
-            let st = self.reader.build_string_table(&fields)?;
-            let _ = self.string_table.set(st);
-        }
-        Ok(self.string_table.get().expect("just initialized"))
-    }
-
-    fn load_stream_batch(&mut self, idx: u8) -> Result<&Vec<Vec<KvId>>, Error> {
-        if !self.stream_batches.contains_key(&idx) {
-            let batch = self.reader.load_stream_batch(idx)?;
-            self.stream_batches.insert(idx, batch);
-        }
-        Ok(self.stream_batches.get(&idx).unwrap())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sfst::KvId;
 
     /// Synthetic SFST: 5 logs at ns 1000..5000, single low-card field
     /// `level` with values `info` at positions 0,2,4 and `error` at 1,3.
@@ -519,6 +431,11 @@ mod tests {
         let logs = LogQuery::new(&reader, params).run().unwrap();
         let positions: Vec<u32> = logs.iter().map(|l| l.position).collect();
         assert_eq!(positions, vec![0, 2, 4]);
+        // Materialised attributes come through sfst::materialize_rows.
+        assert_eq!(
+            logs[0].attrs,
+            vec![("level".to_string(), "info".to_string())]
+        );
     }
 
     #[test]
