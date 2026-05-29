@@ -73,10 +73,13 @@ pub enum Error {
     #[error("file too short ({0} bytes, need at least {1})")]
     FileTooShort(usize, usize),
 
-    /// A query method ([`IndexReader::evaluate`](crate::IndexReader::evaluate),
-    /// [`IndexReader::facets`](crate::IndexReader::facets), or
-    /// [`IndexReader::timeline`](crate::IndexReader::timeline)) was passed
-    /// a field name that doesn't appear in the file's field table.
+    /// [`IndexReader::facets`](crate::IndexReader::facets) was passed a
+    /// field name that doesn't appear in this file's field table.
+    /// [`evaluate`](crate::IndexReader::evaluate) treats an absent
+    /// filter field as matching no logs, and
+    /// [`timeline`](crate::IndexReader::timeline) treats an absent
+    /// field as "every log lacks it" (all `unset`); neither returns
+    /// this error.
     #[error("unknown field: {0}")]
     UnknownField(String),
 

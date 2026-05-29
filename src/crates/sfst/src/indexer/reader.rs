@@ -292,6 +292,13 @@ impl<'a> IndexReader<'a> {
     /// Returns [`crate::Error::UnknownField`] for fields not in this
     /// file, or [`crate::Error::HighCardFacet`] for high-cardinality
     /// facets (where exact counts would require scanning stream batches).
+    ///
+    /// Note the deliberate asymmetry with
+    /// [`timeline`](Self::timeline): `facets` *errors* on an absent
+    /// field (a facet is requested per-field, so absence is a caller
+    /// mistake), whereas `timeline` routes an absent field's logs to
+    /// `unset`. Callers querying a heterogeneous set of files should
+    /// pre-filter the field list to those present in each file.
     pub fn facets<S: AsRef<str>>(
         &self,
         fields: &[S],
