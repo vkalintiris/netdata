@@ -21,9 +21,9 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use sfsq::logs::types::{InfoResponse, OtelLogsRequest, OtelLogsResponse};
-use sfsq::logs::wire::LogsResponse;
-use sfsq::logs::{effective_window, run};
+use sfsq::logs::{
+    InfoResponse, LogsResponse, OtelLogsRequest, OtelLogsResponse, effective_window, run,
+};
 
 use crate::registry::TenantRegistries;
 

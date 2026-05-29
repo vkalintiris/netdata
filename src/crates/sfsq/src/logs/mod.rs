@@ -11,10 +11,15 @@
 //! which this will eventually be unified with (the single-file query
 //! is the natural per-file primitive under the multi-file engine).
 
-pub mod adapter;
-pub mod cursor;
-pub mod engine;
-pub mod types;
-pub mod wire;
+mod adapter;
+mod cursor;
+mod engine;
+mod types;
+mod wire;
 
+// The crate's public log-query API. Internals (the SFST→UI adapters,
+// the cursor codec, the wire sub-structs) stay module-private; only
+// these are re-exported.
 pub use engine::{SfstCandidate, effective_window, run};
+pub use types::{InfoResponse, OtelLogsRequest, OtelLogsResponse};
+pub use wire::LogsResponse;
