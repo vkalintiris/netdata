@@ -12,6 +12,7 @@
 //! - `adapter` — SFST query results → UI envelope conversions.
 
 mod adapter;
+mod cursor;
 mod dispatch;
 mod handler;
 mod types;
