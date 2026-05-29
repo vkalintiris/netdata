@@ -485,10 +485,15 @@ fn build_table(page: &Page, fields: &[String]) -> (serde_json::Value, serde_json
     use serde_json::{Value, json};
 
     let mut columns = serde_json::Map::new();
+    // The UI formats the cell from `valueOptions.transform`, not from
+    // `type` (which only selects the cell component). Match the legacy
+    // journal column: a `timestamp` cell carrying a µs value rendered
+    // via the `datetime_usec` transform.
     columns.insert(
         "timestamp".into(),
-        json!({ "index": 0, "id": "timestamp", "name": "Timestamp",
-                "type": "datetime_usec", "visible": true, "sortable": false }),
+        json!({ "index": 0, "id": "timestamp", "name": "Timestamp", "type": "timestamp",
+                "visible": true, "sortable": false,
+                "valueOptions": { "transform": "datetime_usec", "decimal_points": 0 } }),
     );
     columns.insert(
         "severity".into(),
