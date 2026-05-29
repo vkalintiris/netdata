@@ -14,7 +14,7 @@
 //! out of scope. The log-row table (`data` / `columns`) stays empty —
 //! log materialization is a later phase.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,9 +28,10 @@ use super::adapter::{
     NS_PER_S, available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
     merge_facet_results, merge_timelines, union_field_tables,
 };
-use super::types::{ACCEPTED_PARAMS, InfoResponse, OtelLogsRequest, OtelLogsResponse};
+use super::cursor::Cursor;
+use super::types::{ACCEPTED_PARAMS, Direction, InfoResponse, OtelLogsRequest, OtelLogsResponse};
 use super::wire::{Items, LogsResponse, Pagination, Version};
-use crate::registry::TenantRegistries;
+use crate::registry::{SfstCandidate, TenantRegistries};
 
 /// Default histogram dimension when the request doesn't specify one.
 /// Always `severity_text` — it's the OTel canonical log-level field,
@@ -179,37 +180,39 @@ impl FunctionHandler for OtelLogsHandler {
 /// response. If *every* file errors we fall through to an empty
 /// stub.
 fn build_merged_logs_response(
-    candidates: Vec<(sfst::Summary, PathBuf)>,
+    candidates: Vec<SfstCandidate>,
     req: OtelLogsRequest,
     grid: sfst::Grid,
 ) -> LogsResponse {
     let filter = build_filter(&req.selections);
     let histogram_field = pick_histogram_field(&req.histogram);
 
-    // Read every candidate's bytes, pairing each buffer with its
-    // path. The `IndexReader` borrows from the bytes, so the owned
-    // buffers must outlive the readers — we hold them in `opened` for
-    // the duration of the per-file work. Files that fail to read are
-    // logged and skipped.
-    let mut opened: Vec<(Vec<u8>, &PathBuf)> = Vec::with_capacity(candidates.len());
-    for (_summary, path) in &candidates {
-        match std::fs::read(path) {
-            Ok(bytes) => opened.push((bytes, path)),
-            Err(e) => tracing::warn!("otel-logs: failed to read {}: {e}", path.display()),
+    // Read every candidate's bytes, pairing each buffer with its path
+    // and file `seq`. The `IndexReader` borrows from the bytes, so the
+    // owned buffers must outlive the readers — we hold them in `opened`
+    // for the duration of the per-file work. Files that fail to read
+    // are logged and skipped.
+    let mut opened: Vec<(Vec<u8>, &PathBuf, u64)> = Vec::with_capacity(candidates.len());
+    for c in &candidates {
+        match std::fs::read(&c.path) {
+            Ok(bytes) => opened.push((bytes, &c.path, c.seq)),
+            Err(e) => tracing::warn!("otel-logs: failed to read {}: {e}", c.path.display()),
         }
     }
 
     // Open readers + collect field tables; skip on open failure. The
-    // reader, its path, and its field table travel together by
-    // position across the three vecs.
+    // reader, its path, its `seq`, and its field table travel together
+    // by position across the parallel vecs.
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut reader_paths: Vec<&PathBuf> = Vec::new();
+    let mut reader_seqs: Vec<u64> = Vec::new();
     let mut field_tables: Vec<Vec<sfst::FieldEntry>> = Vec::new();
-    for (bytes, path) in &opened {
+    for (bytes, path, seq) in &opened {
         match sfst::IndexReader::open(bytes) {
             Ok(reader) => {
                 field_tables.push(reader.field_table().to_vec());
                 reader_paths.push(path);
+                reader_seqs.push(*seq);
                 readers.push(reader);
             }
             Err(e) => {
@@ -305,6 +308,27 @@ fn build_merged_logs_response(
     let wire_histogram = histogram_from_sfst(&histogram_field, &merged_timeline);
     let wire_available = available_histograms_from_fields(&unioned);
 
+    // Materialize the page of log rows. The column schema is the union
+    // of every candidate file's field names — all tiers, so high-card
+    // attributes still get a column — sorted for a stable schema.
+    let mut field_set: BTreeSet<String> = BTreeSet::new();
+    for t in &field_tables {
+        for f in t {
+            field_set.insert(f.name.clone());
+        }
+    }
+    let column_fields: Vec<String> = field_set.into_iter().collect();
+
+    let files: Vec<(&sfst::IndexReader<'_>, u64)> =
+        readers.iter().zip(reader_seqs.iter().copied()).collect();
+    let anchor = req.anchor.as_deref().and_then(Cursor::decode);
+    let page = select_page(&files, &filter, window_ns, anchor, req.direction, req.last)
+        .unwrap_or_else(|e| {
+            tracing::warn!("otel-logs: page selection failed: {e}");
+            Page::default()
+        });
+    let (columns, data) = build_table(&page, &column_fields);
+
     let matched = matched_total as usize;
 
     LogsResponse {
@@ -315,17 +339,19 @@ fn build_merged_logs_response(
         facets: wire_facets,
         available_histograms: wire_available,
         histogram: wire_histogram,
-        columns: serde_json::json!({}),
-        data: serde_json::json!([]),
+        columns,
+        data,
         default_charts: Vec::new(),
         items: Items {
             evaluated: matched,
             unsampled: 0,
             estimated: matched,
             matched,
-            before: 0,
-            after: 0,
-            returned: 0,
+            // before ⇒ newer rows exist (UI "scroll up"); after ⇒
+            // older rows exist (UI "scroll down").
+            before: page.has_newer as usize,
+            after: page.has_older as usize,
+            returned: page.rows.len(),
             max_to_return: req.last,
         },
         show_ids: false,
@@ -335,6 +361,176 @@ fn build_merged_logs_response(
         help: String::from("Query and visualize OpenTelemetry logs."),
         pagination: Pagination::default(),
     }
+}
+
+/// A page of materialized log rows plus the has-more flags the UI
+/// uses to gate infinite scroll in each direction.
+#[derive(Default)]
+struct Page {
+    /// Rows newest-first (`rows[0]` is the newest), as the UI expects.
+    rows: Vec<(Cursor, sfst::MaterializedRow)>,
+    /// An older row exists beyond the page (UI `items.after`).
+    has_older: bool,
+    /// A newer row exists beyond the page (UI `items.before`).
+    has_newer: bool,
+}
+
+/// Select one page of log rows across all candidate files.
+///
+/// Gathers every window-matching position from each file, tags it with
+/// its [`Cursor`] `(timestamp_ns, file_seq, position)`, sorts by that
+/// total order, then slices the page relative to `anchor` (exclusive)
+/// and `direction`. Only the page's positions are materialized.
+///
+/// `anchor` is the boundary row from the previous page; `None` starts
+/// at the newest edge (backward) or oldest edge (forward). The page is
+/// returned newest-first regardless of direction.
+///
+/// Correctness-first: this sorts all window matches rather than seeking
+/// per file. The expensive work (row materialization) is bounded to the
+/// page; the sort is O(window-matches), comparable to the facet/matched
+/// scan already performed. A seek-based variant that avoids the full
+/// sort is a later optimization.
+fn select_page(
+    files: &[(&sfst::IndexReader<'_>, u64)],
+    filter: &sfst::Filter,
+    window_ns: std::ops::Range<i64>,
+    anchor: Option<Cursor>,
+    direction: Direction,
+    limit: usize,
+) -> Result<Page, sfst::Error> {
+    // 1. Gather (cursor, file_index, position) for every window match.
+    let mut all: Vec<(Cursor, usize, u32)> = Vec::new();
+    for (file_index, (reader, seq)) in files.iter().enumerate() {
+        let matched = reader.evaluate(filter)? & &reader.range_bitmap(window_ns.clone())?;
+        if matched.is_empty() {
+            continue;
+        }
+        let timestamps = reader.load_timestamps()?;
+        for position in matched.iter() {
+            let timestamp_ns = timestamps.get(position as usize).copied().unwrap_or(0);
+            all.push((
+                Cursor {
+                    timestamp_ns,
+                    file_seq: *seq,
+                    position,
+                },
+                file_index,
+                position,
+            ));
+        }
+    }
+    all.sort_by_key(|(c, _, _)| *c);
+    let len = all.len();
+
+    // 2. Slice the page. `all` is ascending (oldest→newest); the anchor
+    //    comparison is exclusive so the boundary row never repeats.
+    let (lo, hi) = match direction {
+        Direction::Backward => {
+            let hi = match anchor {
+                Some(a) => all.partition_point(|(c, _, _)| *c < a),
+                None => len,
+            };
+            (hi.saturating_sub(limit), hi)
+        }
+        Direction::Forward => {
+            let lo = match anchor {
+                Some(a) => all.partition_point(|(c, _, _)| *c <= a),
+                None => 0,
+            };
+            (lo, (lo + limit).min(len))
+        }
+    };
+    let has_older = lo > 0;
+    let has_newer = hi < len;
+    let page = &all[lo..hi];
+
+    // 3. Materialize, batching positions per file so each file's chunks
+    //    decompress once. Reassemble newest-first.
+    let mut per_file: HashMap<usize, Vec<u32>> = HashMap::new();
+    for (_, file_index, position) in page {
+        per_file.entry(*file_index).or_default().push(*position);
+    }
+    let mut by_pos: HashMap<(usize, u32), sfst::MaterializedRow> = HashMap::new();
+    for (file_index, positions) in &per_file {
+        let rows = files[*file_index].0.materialize_rows(positions)?;
+        for (position, row) in positions.iter().zip(rows) {
+            by_pos.insert((*file_index, *position), row);
+        }
+    }
+    let rows = page
+        .iter()
+        .rev()
+        .filter_map(|(cursor, file_index, position)| {
+            by_pos
+                .remove(&(*file_index, *position))
+                .map(|row| (*cursor, row))
+        })
+        .collect();
+
+    Ok(Page {
+        rows,
+        has_older,
+        has_newer,
+    })
+}
+
+/// Build the wire `columns` schema and `data` rows from a page.
+///
+/// Columns: a visible µs `timestamp` and `severity`, a hidden string
+/// `cursor` (the `pagination.column` the UI echoes as `anchor`), then
+/// one hidden column per attribute field. Each data row is a positional
+/// array aligned to the column `index`; absent attributes are `null`.
+fn build_table(page: &Page, fields: &[String]) -> (serde_json::Value, serde_json::Value) {
+    use serde_json::{Value, json};
+
+    let mut columns = serde_json::Map::new();
+    columns.insert(
+        "timestamp".into(),
+        json!({ "index": 0, "id": "timestamp", "name": "Timestamp",
+                "type": "datetime_usec", "visible": true, "sortable": false }),
+    );
+    columns.insert(
+        "severity".into(),
+        json!({ "index": 1, "id": "severity", "name": "Severity",
+                "type": "string", "visible": true, "sortable": false }),
+    );
+    columns.insert(
+        "cursor".into(),
+        json!({ "index": 2, "id": "cursor", "name": "cursor", "type": "string",
+                "visible": false, "sortable": false, "unique_key": true }),
+    );
+    for (i, name) in fields.iter().enumerate() {
+        columns.insert(
+            name.clone(),
+            json!({ "index": 3 + i, "id": name, "name": name,
+                    "type": "string", "visible": false, "sortable": false }),
+        );
+    }
+
+    let data: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|(cursor, row)| {
+            let lookup: HashMap<&str, &str> = row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            let cell = |name: &str| match lookup.get(name) {
+                Some(v) => json!(v),
+                None => Value::Null,
+            };
+            let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
+            cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
+            cells.push(cell("severity_text"));
+            cells.push(json!(cursor.encode()));
+            cells.extend(fields.iter().map(|f| cell(f)));
+            Value::Array(cells)
+        })
+        .collect();
+
+    (Value::Object(columns), Value::Array(data))
 }
 
 /// Per-file matched count: filter-matching logs restricted to the

@@ -7,9 +7,6 @@
 //! non-numeric, which the cloud-frontend histogram-hover handler
 //! tolerates (it NaN-guards a numeric parse of the pagination column;
 //! a purely numeric anchor would instead coerce to a wrong value).
-//!
-//! Wired into the pagination engine in a following commit.
-#![allow(dead_code)]
 
 /// A decoded pagination cursor.
 ///

@@ -59,8 +59,11 @@ pub(crate) struct OtelLogsRequest {
     pub after: u32,
     #[serde(default)]
     pub before: u32,
+    /// Pagination cursor echoed back by the UI from the boundary row's
+    /// hidden cursor column. Opaque string (`Cursor::encode`); decoded
+    /// by the handler, treated as "no anchor" if malformed.
     #[serde(default)]
-    pub anchor: Option<u64>,
+    pub anchor: Option<String>,
     /// Maximum number of log entries to return.
     #[serde(default = "default_last")]
     pub last: usize,

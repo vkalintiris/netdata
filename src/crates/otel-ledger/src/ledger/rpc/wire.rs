@@ -210,8 +210,10 @@ impl Default for Pagination {
         Self {
             enabled: true,
             key: "anchor",
-            column: "timestamp",
-            units: "timestamp_usec",
+            // The hidden opaque-cursor column (see `cursor.rs`). The UI
+            // echoes this row's value back as the `anchor` param.
+            column: "cursor",
+            units: "",
         }
     }
 }

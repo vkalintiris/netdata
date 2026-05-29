@@ -317,8 +317,29 @@ async fn populated_response_carries_facets_and_histogram() {
     assert!(avh_ids.contains(&"service"));
     assert!(avh_ids.contains(&"severity_text"));
 
-    // Log-row table stays empty in this MVP.
-    assert!(v["data"].as_array().unwrap().is_empty());
+    // Row table: all 6 logs materialized, newest-first, no anchor.
+    let data = v["data"].as_array().unwrap();
+    assert_eq!(data.len(), 6);
+    assert_eq!(v["items"]["returned"], 6);
+    // First page from the newest edge → no newer rows, no older rows
+    // (the whole file fits in one page of 200).
+    assert_eq!(v["items"]["before"], 0);
+    assert_eq!(v["items"]["after"], 0);
+    // Columns: fixed timestamp/severity/cursor plus the attribute
+    // fields; pagination points at the hidden cursor column.
+    let columns = v["columns"].as_object().unwrap();
+    assert!(columns.contains_key("timestamp"));
+    assert!(columns.contains_key("severity"));
+    assert!(columns.contains_key("cursor"));
+    assert_eq!(columns["cursor"]["visible"], false);
+    assert_eq!(v["pagination"]["column"], "cursor");
+    // Each row is a positional array: [ts_us, severity, cursor, …].
+    // Rows are newest-first: row 0 is the last log (pos 5, error).
+    let row0 = data[0].as_array().unwrap();
+    assert_eq!(row0[0], (min_s as i64 + 5) * 1_000_000); // µs
+    assert_eq!(row0[1], "error");
+    // The cursor cell is the opaque "{ts_ns}:{seq}:{pos}" string.
+    assert_eq!(row0[2], format!("{}:1:5", (min_s as i64 + 5) * 1_000_000_000));
 }
 
 #[tokio::test]
@@ -540,6 +561,88 @@ async fn no_time_bound_with_only_stale_data_yields_empty_envelope() {
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["items"]["matched"], 0);
     assert!(v["facets"].as_array().unwrap().is_empty());
+}
+
+/// µs timestamp of the i-th fixture log (`min_s + i` seconds).
+fn ts_us(min_s: u32, i: i64) -> i64 {
+    (min_s as i64 + i) * 1_000_000
+}
+
+/// Pull the timestamp (cell 0) and cursor (cell 2) out of a row.
+fn row_ts_cursor(row: &Value) -> (i64, String) {
+    let cells = row.as_array().unwrap();
+    (
+        cells[0].as_i64().unwrap(),
+        cells[2].as_str().unwrap().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn backward_pagination_pages_without_overlap_or_gap() {
+    let mut tr = make_tenant_registries();
+    let min_s = 1_700_000_000;
+    install_sfst(&mut tr, "tenant-a", 1, min_s); // 6 logs, 1s apart
+    let h = make_handler(tr);
+    let win = format!(r#""after": {}, "before": {}"#, min_s, min_s + 60);
+
+    // Page 1: no anchor, backward → newest 3 (pos 5,4,3), newest-first.
+    let p1: OtelLogsRequest =
+        serde_json::from_slice(format!(r#"{{"info":false,{win},"last":3}}"#).as_bytes()).unwrap();
+    let v1 = serde_json::to_value(&h.on_call(make_ctx("t1"), p1).await.unwrap()).unwrap();
+    let d1 = v1["data"].as_array().unwrap();
+    assert_eq!(d1.len(), 3);
+    assert_eq!(v1["items"]["returned"], 3);
+    assert_eq!(v1["items"]["after"], 1); // older rows remain
+    assert_eq!(v1["items"]["before"], 0); // at the newest edge
+    assert_eq!(row_ts_cursor(&d1[0]).0, ts_us(min_s, 5));
+    assert_eq!(row_ts_cursor(&d1[1]).0, ts_us(min_s, 4));
+    let (oldest_ts, anchor) = row_ts_cursor(&d1[2]);
+    assert_eq!(oldest_ts, ts_us(min_s, 3));
+
+    // Page 2: anchor = page 1's oldest row (pos 3), backward → pos 2,1,0.
+    let p2: OtelLogsRequest = serde_json::from_slice(
+        format!(r#"{{"info":false,{win},"last":3,"direction":"backward","anchor":"{anchor}"}}"#)
+            .as_bytes(),
+    )
+    .unwrap();
+    let v2 = serde_json::to_value(&h.on_call(make_ctx("t1"), p2).await.unwrap()).unwrap();
+    let d2 = v2["data"].as_array().unwrap();
+    assert_eq!(d2.len(), 3);
+    assert_eq!(v2["items"]["after"], 0); // nothing older remains
+    assert_eq!(v2["items"]["before"], 1); // newer rows exist (page 1)
+    assert_eq!(row_ts_cursor(&d2[0]).0, ts_us(min_s, 2));
+    assert_eq!(row_ts_cursor(&d2[1]).0, ts_us(min_s, 1));
+    assert_eq!(row_ts_cursor(&d2[2]).0, ts_us(min_s, 0));
+
+    // The anchor row (pos 3) is excluded from page 2 — no overlap, and
+    // pos 2 immediately follows it — no gap.
+    assert!(!d2.iter().any(|r| row_ts_cursor(r).0 == ts_us(min_s, 3)));
+}
+
+#[tokio::test]
+async fn forward_pagination_returns_newer_rows_newest_first() {
+    let mut tr = make_tenant_registries();
+    let min_s = 1_700_000_000;
+    install_sfst(&mut tr, "tenant-a", 1, min_s);
+    let h = make_handler(tr);
+    let win = format!(r#""after": {}, "before": {}"#, min_s, min_s + 60);
+
+    // Forward from pos 2 (seq 1) → the rows strictly newer: pos 3,4,5,
+    // returned newest-first.
+    let anchor = format!("{}:1:2", (min_s as i64 + 2) * 1_000_000_000);
+    let req: OtelLogsRequest = serde_json::from_slice(
+        format!(r#"{{"info":false,{win},"last":3,"direction":"forward","anchor":"{anchor}"}}"#)
+            .as_bytes(),
+    )
+    .unwrap();
+    let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+    let d = v["data"].as_array().unwrap();
+    assert_eq!(d.len(), 3);
+    assert_eq!(row_ts_cursor(&d[0]).0, ts_us(min_s, 5));
+    assert_eq!(row_ts_cursor(&d[1]).0, ts_us(min_s, 4));
+    assert_eq!(row_ts_cursor(&d[2]).0, ts_us(min_s, 3));
+    assert_eq!(v["items"]["after"], 1); // pos 0,1,2 are older
+    assert_eq!(v["items"]["before"], 0); // pos 5 is the newest row
 }
 
 #[test]

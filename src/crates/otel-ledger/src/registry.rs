@@ -271,22 +271,31 @@ impl TenantRegistries {
     }
 
     /// Every SFST file (across all tenants) whose summary range
-    /// overlaps `q.time_range`, as owned `(Summary, path)` pairs.
-    /// The caller can drop the read lock on `TenantRegistries`
-    /// before doing file I/O. Multi-tenant union by construction.
-    pub fn sfst_candidates(
-        &self,
-        q: &file_registry::Query,
-    ) -> Vec<(sfst::Summary, std::path::PathBuf)> {
+    /// overlaps `q.time_range`. The caller can drop the read lock on
+    /// `TenantRegistries` before doing file I/O. Multi-tenant union by
+    /// construction.
+    pub fn sfst_candidates(&self, q: &file_registry::Query) -> Vec<SfstCandidate> {
         self.tenants
             .values()
             .flat_map(|r| {
-                r.sfst
-                    .candidates(q)
-                    .map(move |f| (f.summary.clone(), r.sfst.file_path(f.id)))
+                r.sfst.candidates(q).map(move |f| SfstCandidate {
+                    summary: f.summary.clone(),
+                    seq: f.id.seq,
+                    path: r.sfst.file_path(f.id),
+                })
             })
             .collect()
     }
+}
+
+/// A query candidate: an SFST file whose range overlaps the request
+/// window. Owned so the caller can drop the registry lock before I/O.
+/// `seq` is the file's monotonic per-file id, used as the cross-file
+/// tiebreaker in the pagination cursor's total order.
+pub struct SfstCandidate {
+    pub summary: sfst::Summary,
+    pub seq: u64,
+    pub path: std::path::PathBuf,
 }
 
 fn cleanup_temp_files(dir: &Path) {
