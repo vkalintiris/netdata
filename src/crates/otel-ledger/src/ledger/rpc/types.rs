@@ -14,10 +14,18 @@ use super::wire::LogsResponse;
 
 /// Request param names accepted by this function, advertised to the UI
 /// in [`InfoResponse::accepted_params`] and echoed in the non-info
-/// [`LogsResponse`]'s same field. The UI uses this list to gate which
-/// params it's allowed to send. Values mirror the legacy
-/// systemd-journal function so the cloud-frontend wiring works without
-/// changes.
+/// [`LogsResponse`]'s same field. The UI gates which params it sends on
+/// this list.
+///
+/// We advertise only what we actually honor. Notably `data_only` is
+/// **omitted**: the UI computes its `dataOnly` flag as
+/// `data_only && accepted_params.includes("data_only")`, so leaving it
+/// out forces `dataOnly=false`. That makes the UI refresh columns /
+/// pagination / facets from each full response (which we recompute
+/// every call) instead of preserving stale prior state; infinite scroll
+/// still works off `merge` + the row anchors. `if_modified_since`,
+/// `delta`, `tail`, and `sampling` are likewise omitted — they drive
+/// incremental / live-tail / sampling modes we don't implement.
 pub(super) const ACCEPTED_PARAMS: &[&str] = &[
     "info",
     "after",
@@ -28,11 +36,6 @@ pub(super) const ACCEPTED_PARAMS: &[&str] = &[
     "query",
     "facets",
     "histogram",
-    "if_modified_since",
-    "data_only",
-    "delta",
-    "tail",
-    "sampling",
     "slice",
 ];
 
