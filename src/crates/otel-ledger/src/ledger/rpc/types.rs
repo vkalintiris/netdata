@@ -62,11 +62,12 @@ pub(crate) struct OtelLogsRequest {
     pub after: u32,
     #[serde(default)]
     pub before: u32,
-    /// Pagination cursor echoed back by the UI from the boundary row's
-    /// hidden cursor column. Opaque string (`Cursor::encode`); decoded
-    /// by the handler, treated as "no anchor" if malformed.
+    /// Pagination anchor, in one of two forms (see [`AnchorParam`]):
+    /// the opaque row cursor string echoed from a boundary row's hidden
+    /// cursor column, or a bare microsecond timestamp the UI sends when
+    /// the user clicks a histogram bar ("jump to this time").
     #[serde(default)]
-    pub anchor: Option<String>,
+    pub anchor: Option<AnchorParam>,
     /// Maximum number of log entries to return.
     #[serde(default = "default_last")]
     pub last: usize,
@@ -88,6 +89,18 @@ pub(crate) struct OtelLogsRequest {
 
 fn default_last() -> usize {
     200
+}
+
+/// The two anchor forms the UI sends. A JSON string is our opaque row
+/// [`Cursor`](super::cursor::Cursor); a JSON number is a microsecond
+/// timestamp from a histogram-bar click. Untagged so the JSON type
+/// alone selects the variant — our cursor strings always contain `:`,
+/// so they never collide with a bare integer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum AnchorParam {
+    Cursor(String),
+    TimestampUs(u64),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]

@@ -29,7 +29,9 @@ use super::adapter::{
     merge_facet_results, merge_timelines, union_field_tables,
 };
 use super::cursor::Cursor;
-use super::types::{ACCEPTED_PARAMS, Direction, InfoResponse, OtelLogsRequest, OtelLogsResponse};
+use super::types::{
+    ACCEPTED_PARAMS, AnchorParam, Direction, InfoResponse, OtelLogsRequest, OtelLogsResponse,
+};
 use super::wire::{Items, LogsResponse, Pagination, Version};
 use crate::registry::{SfstCandidate, TenantRegistries};
 
@@ -321,7 +323,18 @@ fn build_merged_logs_response(
 
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(reader_seqs.iter().copied()).collect();
-    let anchor = req.anchor.as_deref().and_then(Cursor::decode);
+    // Resolve the anchor to a cursor in the global total order. A row
+    // cursor decodes directly; a histogram-click timestamp becomes a
+    // synthetic cursor at the end of that microsecond (file_seq/position
+    // maxed), so a backward page shows the newest rows up to that time.
+    let anchor = req.anchor.as_ref().and_then(|a| match a {
+        AnchorParam::Cursor(s) => Cursor::decode(s),
+        AnchorParam::TimestampUs(us) => Some(Cursor {
+            timestamp_ns: (*us as i64).saturating_mul(1_000),
+            file_seq: u64::MAX,
+            position: u32::MAX,
+        }),
+    });
     let page = select_page(&files, &filter, window_ns, anchor, req.direction, req.last)
         .unwrap_or_else(|e| {
             tracing::warn!("otel-logs: page selection failed: {e}");

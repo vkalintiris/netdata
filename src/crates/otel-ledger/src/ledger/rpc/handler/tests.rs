@@ -749,6 +749,46 @@ async fn forward_pagination_returns_newer_rows_newest_first() {
     assert_eq!(v["items"]["before"], 0); // pos 5 is the newest row
 }
 
+#[tokio::test]
+async fn histogram_click_numeric_anchor_navigates_to_time() {
+    // Clicking a histogram bar sends `anchor` as a bare µs integer
+    // (not a cursor string). It must deserialize and behave as a
+    // "jump to this time" anchor: backward shows the newest rows up to
+    // and including that time.
+    let mut tr = make_tenant_registries();
+    let min_s = 1_700_000_000;
+    install_sfst(&mut tr, "tenant-a", 1, min_s); // 6 logs at +0..+5s
+    let h = make_handler(tr);
+
+    // Anchor at +3s, as microseconds, sent as a JSON integer.
+    let anchor_us = (min_s as i64 + 3) * 1_000_000;
+    let payload = format!(
+        r#"{{"info":false,"after":{a},"before":{b},"last":10,"direction":"backward","anchor":{anchor_us}}}"#,
+        a = min_s,
+        b = min_s + 60
+    );
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+
+    // No deserialize error; rows up to and including +3s (pos 0..3),
+    // newest-first.
+    assert_eq!(v["status"], 200);
+    let d = v["data"].as_array().unwrap();
+    assert_eq!(d.len(), 4);
+    assert_eq!(row_ts_cursor(&d[0]).0, ts_us(min_s, 3));
+    assert_eq!(row_ts_cursor(&d[3]).0, ts_us(min_s, 0));
+    assert_eq!(v["items"]["after"], 0); // nothing older than +0s
+    assert_eq!(v["items"]["before"], 1); // +4s/+5s are newer
+}
+
+#[test]
+fn anchor_param_deserializes_string_and_number() {
+    let s: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":"100:2:3"}"#).unwrap();
+    assert!(matches!(s.anchor, Some(AnchorParam::Cursor(ref c)) if c == "100:2:3"));
+    let n: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":1780056601000000}"#).unwrap();
+    assert!(matches!(n.anchor, Some(AnchorParam::TimestampUs(1780056601000000))));
+}
+
 #[test]
 fn patches_data_request_args_into_payload() {
     // No "info" token — data request. info must be false so the
