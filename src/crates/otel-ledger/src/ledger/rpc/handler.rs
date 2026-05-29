@@ -102,52 +102,29 @@ impl FunctionHandler for OtelLogsHandler {
             return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        // Resolve the effective window. `(0, 0)` is the UI's "no
-        // time bound" sentinel; `after >= before` is an inverted or
-        // zero-width window. Both cases get defaulted to the last 15
-        // minutes computed from the system clock — explicit valid
-        // windows pass through unchanged.
-        let request_window_missing =
-            (req.after == 0 && req.before == 0) || req.after >= req.before;
-        let (mut after_eff, mut before_eff) = effective_window(req.after, req.before);
+        // Patch the request's window in place; everything downstream
+        // reads the resolved window off `req`. See `effective_window`.
+        (req.after, req.before) = effective_window(req.after, req.before);
 
         let candidates = {
             let guard = self.registries.read().await;
             let query = file_registry::Query {
-                time_range: after_eff..before_eff,
+                time_range: req.after..req.before,
                 stream: None,
             };
-            let mut cs = guard.sfst_candidates(&query);
-            // Last-SFST fallback applies *only* when the request had
-            // no usable window. An explicit `[after, before)` with no
-            // overlapping data legitimately returns the empty
-            // envelope — we don't second-guess the caller.
-            if cs.is_empty() && request_window_missing {
-                if let Some((summary, path)) = guard.most_recent_sfst() {
-                    after_eff = summary.min_timestamp_s;
-                    before_eff = summary.max_timestamp_s.saturating_add(1);
-                    cs.push((summary, path));
-                }
-            }
-            cs
+            guard.sfst_candidates(&query)
         };
 
-        // Snap the effective window outward to multiples of a "nice"
-        // bucket width. This stabilises the histogram x-axis across
+        // Snap the window outward to multiples of a "nice" bucket
+        // width, in place. This stabilises the histogram x-axis across
         // the UI's per-second polling: successive polls within the
         // same bucket-width slot all see identical `[after, before)`,
-        // so the chart only shifts when crossing a real boundary.
-        // The width is chosen from a curated list (1s/2s/5s/10s/15s/
-        // 30s/1m/…) so bars align to wall-clock-friendly intervals.
-        let span_s = before_eff.saturating_sub(after_eff);
+        // so the chart only shifts when crossing a real boundary. The
+        // width is chosen from a curated list (1s/2s/5s/10s/15s/30s/
+        // 1m/…) so bars align to wall-clock-friendly intervals.
+        let span_s = req.before.saturating_sub(req.after);
         let bucket_width_s = bucket_width_for_span_s(span_s);
-        let (aligned_after, aligned_before) = align_window(after_eff, before_eff, bucket_width_s);
-
-        // Reflect the aligned window in `req` so downstream code
-        // (range bitmaps, empty_stub fallback, chart axis bounds)
-        // sees the snap-aligned values rather than the raw request.
-        req.after = aligned_after;
-        req.before = aligned_before;
+        (req.after, req.before) = align_window(req.after, req.before, bucket_width_s);
 
         if candidates.is_empty() {
             // No SFST files exist at all — honest empty envelope
@@ -212,41 +189,34 @@ fn build_merged_logs_response(
     let filter = build_filter(&req.selections);
     let histogram_field = pick_histogram_field(&req.histogram);
 
-    // Open every candidate; on per-file error, log + skip. The
-    // `IndexReader` borrows from the file's bytes, so we hold the
-    // owned `Vec<u8>` alongside the reader for the duration of the
-    // per-file work.
-    let mut file_bytes: Vec<Vec<u8>> = Vec::with_capacity(candidates.len());
-    let mut field_tables: Vec<Vec<sfst::FieldEntry>> = Vec::new();
-    let mut readable_indices: Vec<usize> = Vec::new();
-
-    for (i, (_summary, path)) in candidates.iter().enumerate() {
+    // Read every candidate's bytes, pairing each buffer with its
+    // path. The `IndexReader` borrows from the bytes, so the owned
+    // buffers must outlive the readers — we hold them in `opened` for
+    // the duration of the per-file work. Files that fail to read are
+    // logged and skipped.
+    let mut opened: Vec<(Vec<u8>, &PathBuf)> = Vec::with_capacity(candidates.len());
+    for (_summary, path) in &candidates {
         match std::fs::read(path) {
-            Ok(bytes) => {
-                file_bytes.push(bytes);
-                readable_indices.push(i);
-            }
-            Err(e) => {
-                tracing::warn!("otel-logs: failed to read {}: {e}", path.display());
-            }
+            Ok(bytes) => opened.push((bytes, path)),
+            Err(e) => tracing::warn!("otel-logs: failed to read {}: {e}", path.display()),
         }
     }
 
-    // Open readers + collect field tables; skip on open failure.
+    // Open readers + collect field tables; skip on open failure. The
+    // reader, its path, and its field table travel together by
+    // position across the three vecs.
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut reader_paths: Vec<&PathBuf> = Vec::new();
-    for (slot, &cand_i) in readable_indices.iter().enumerate() {
-        match sfst::IndexReader::open(&file_bytes[slot]) {
+    let mut field_tables: Vec<Vec<sfst::FieldEntry>> = Vec::new();
+    for (bytes, path) in &opened {
+        match sfst::IndexReader::open(bytes) {
             Ok(reader) => {
                 field_tables.push(reader.field_table().to_vec());
-                reader_paths.push(&candidates[cand_i].1);
+                reader_paths.push(path);
                 readers.push(reader);
             }
             Err(e) => {
-                tracing::warn!(
-                    "otel-logs: failed to open {}: {e}",
-                    candidates[cand_i].1.display()
-                );
+                tracing::warn!("otel-logs: failed to open {}: {e}", path.display());
             }
         }
     }
@@ -383,9 +353,6 @@ fn per_file_matched(
     before_s: u32,
 ) -> Result<u64, sfst::Error> {
     let bm = reader.evaluate(filter)?;
-    if after_s == 0 && before_s == 0 {
-        return Ok(bm.len());
-    }
     let timestamps = reader.load_timestamps()?;
     let after_ns = (after_s as i64) * NS_PER_S;
     let before_ns = (before_s as i64) * NS_PER_S;
@@ -494,8 +461,12 @@ fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
 /// Resolve a request's `[after, before)` to a usable time window.
 /// Returns the inputs verbatim when they form a valid non-empty
 /// range; falls back to the last [`DEFAULT_WINDOW_SECS`] computed
-/// from system time otherwise (the legacy "no time bound" form
-/// `(0, 0)` and any inverted / zero-width window).
+/// from system time otherwise — the legacy "no time bound" form
+/// `(0, 0)` and any inverted / zero-width window.
+///
+/// A defaulted window with no overlapping data returns the empty
+/// envelope just like an explicit one; the handler does not
+/// second-guess the caller by reaching for the most-recent file.
 fn effective_window(after: u32, before: u32) -> (u32, u32) {
     let malformed = (after == 0 && before == 0) || after >= before;
     if !malformed {

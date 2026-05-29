@@ -401,11 +401,11 @@ async fn no_time_bound_falls_back_to_recent_window() {
 }
 
 #[tokio::test]
-async fn no_time_bound_falls_back_to_latest_sfst_when_window_empty() {
-    // No SFST overlaps the last 15 minutes (the file is from 2024).
-    // The handler should fall back to the most-recent SFST and
-    // surface its data, with the chart axis reflecting *that*
-    // file's range rather than the empty 15-min window.
+async fn no_time_bound_with_only_stale_data_yields_empty_envelope() {
+    // `(after=0, before=0)` defaults to the last 15 minutes. The only
+    // SFST is from 2024, so nothing overlaps the defaulted window. The
+    // handler returns the empty envelope — it does not reach back to a
+    // stale file just because the window came up empty.
     let mut tr = make_tenant_registries();
     let file_min_s = 1_700_000_000u32; // far in the past
     install_sfst(&mut tr, "tenant-a", 1, file_min_s);
@@ -414,10 +414,8 @@ async fn no_time_bound_falls_back_to_latest_sfst_when_window_empty() {
     let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
-    assert_eq!(v["items"]["matched"], 6);
-    // Chart axis tracks the latest-SFST's range.
-    assert_eq!(v["histogram"]["chart"]["view"]["after"], file_min_s);
-    assert_eq!(v["histogram"]["chart"]["view"]["before"], file_min_s + 6);
+    assert_eq!(v["items"]["matched"], 0);
+    assert!(v["facets"].as_array().unwrap().is_empty());
 }
 
 #[test]

@@ -270,30 +270,10 @@ impl TenantRegistries {
         self.tenants.get_mut(tenant_id)
     }
 
-    /// Locate the SFST file with the highest `id.seq` across all tenants
-    /// and return its [`Summary`](sfst::Summary) and on-disk path.
-    ///
-    /// `id.seq` is monotonic at allocation time (see
-    /// [`sfst::Registry`]'s recovery docs), so the highest seq is the
-    /// most recently created file regardless of tenant. The otel-logs
-    /// MVP query path consumes only this most-recent file; multi-file
-    /// merging is a later phase.
-    ///
-    /// Returns `None` when no tenant has any SFST file yet (cold start).
-    pub fn most_recent_sfst(&self) -> Option<(sfst::Summary, std::path::PathBuf)> {
-        self.tenants
-            .values()
-            .flat_map(|r| r.sfst.values().map(move |f| (f, &r.sfst)))
-            .max_by_key(|(f, _)| f.id.seq)
-            .map(|(f, reg)| (f.summary.clone(), reg.file_path(f.id)))
-    }
-
     /// Every SFST file (across all tenants) whose summary range
     /// overlaps `q.time_range`, as owned `(Summary, path)` pairs.
     /// The caller can drop the read lock on `TenantRegistries`
-    /// before doing file I/O. Multi-tenant union by construction —
-    /// matches the implicit tenant-agnostic behavior of
-    /// [`Self::most_recent_sfst`].
+    /// before doing file I/O. Multi-tenant union by construction.
     pub fn sfst_candidates(
         &self,
         q: &file_registry::Query,
