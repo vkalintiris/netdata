@@ -200,6 +200,110 @@ fn install_service_only_sfst(tr: &mut TenantRegistries, tenant: &str, seq: u64, 
     reg.sfst.track(id, size, summary);
 }
 
+/// Write an SFST of `n` logs that all share timestamp `ts_s`, each
+/// carrying `severity_text=info`. Used to exercise the same-timestamp
+/// pagination tiebreaker — rows are distinguishable only by position.
+fn write_same_ts_sfst(path: &std::path::Path, ts_s: u32, n: usize) {
+    let positions: Vec<u32> = (0..n as u32).collect();
+    let primary_entries: Vec<(&str, BitmapValue)> =
+        vec![("severity_text=info", bitmap_with(&positions, n as u32))];
+    let primary: FstIndex<BitmapValue> = FstIndex::build(primary_entries).unwrap();
+
+    let summary = sfst::Summary {
+        min_timestamp_s: ts_s,
+        max_timestamp_s: ts_s,
+        total_logs: n as u32,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    let metadata = sfst::Metadata {
+        histogram: sfst::Histogram {
+            timestamps: vec![ts_s],
+            counts: vec![n as u32],
+        },
+        id_ranges: sfst::IdRanges {
+            low_end: sfst::KvId(1),
+            mid_end: sfst::KvId(1),
+            high_end: sfst::KvId(1),
+        },
+        fields: vec![sfst::FieldEntry {
+            name: "severity_text".into(),
+            cardinality: 1,
+            tier: sfst::FieldTier::Low,
+        }],
+    };
+    let timestamps: Vec<i64> = vec![(ts_s as i64) * 1_000_000_000; n];
+    let stream_entries: Vec<Vec<sfst::KvId>> = (0..n).map(|_| vec![sfst::KvId(0)]).collect();
+
+    let mut writer = sfst::Writer::new();
+    writer.set_summary(sfst::pack(&summary, 1).unwrap());
+    writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
+    writer.set_primary(sfst::pack(&primary, 1).unwrap());
+    writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
+    writer.add_stream_batch(sfst::pack(&stream_entries, 1).unwrap());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    std::fs::write(path, &buf).unwrap();
+}
+
+fn install_same_ts_sfst(tr: &mut TenantRegistries, tenant: &str, seq: u64, ts_s: u32, n: usize) {
+    let id = FileId::new(Uuid::from_u128(0x11), Uuid::from_u128(0x22), seq, 7);
+    let reg = tr.get_or_create(&TenantId::from(tenant));
+    let path = reg.sfst.file_path(id);
+    write_same_ts_sfst(&path, ts_s, n);
+    let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+    let summary = sfst::Summary {
+        min_timestamp_s: ts_s,
+        max_timestamp_s: ts_s,
+        total_logs: n as u32,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    reg.sfst.track(id, size, summary);
+}
+
+#[tokio::test]
+async fn same_timestamp_rows_paginate_without_dup_or_skip() {
+    // 5 logs at one identical timestamp — pagination must rely on the
+    // cursor's position tiebreaker, not the timestamp.
+    let mut tr = make_tenant_registries();
+    let ts_s = 1_700_000_000u32;
+    install_same_ts_sfst(&mut tr, "tenant-a", 1, ts_s, 5);
+    let h = make_handler(tr);
+    let win = format!(r#""after": {}, "before": {}"#, ts_s, ts_s + 1);
+
+    let pos_of = |cursor: &str| cursor.rsplit(':').next().unwrap().parse::<u32>().unwrap();
+
+    // Walk backward in pages of 2, collecting every row's position.
+    let mut anchor: Option<String> = None;
+    let mut seen: Vec<u32> = Vec::new();
+    loop {
+        let anchor_field = anchor
+            .as_ref()
+            .map(|a| format!(r#","anchor":"{a}""#))
+            .unwrap_or_default();
+        let req: OtelLogsRequest = serde_json::from_slice(
+            format!(r#"{{"info":false,{win},"last":2,"direction":"backward"{anchor_field}}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+        let d = v["data"].as_array().unwrap();
+        if d.is_empty() {
+            break;
+        }
+        for row in d {
+            seen.push(pos_of(&row_ts_cursor(row).1));
+        }
+        anchor = Some(row_ts_cursor(d.last().unwrap()).1);
+        if v["items"]["after"] == 0 {
+            break;
+        }
+    }
+
+    // Every position exactly once, newest-first — no duplicate, no skip,
+    // despite all five rows sharing a timestamp.
+    assert_eq!(seen, vec![4, 3, 2, 1, 0]);
+}
+
 #[tokio::test]
 async fn info_request_returns_capability_descriptor() {
     let h = make_handler(make_tenant_registries());
