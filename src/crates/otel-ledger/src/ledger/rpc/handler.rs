@@ -1,17 +1,19 @@
 //! `OtelLogsHandler` — typed `FunctionHandler` implementation.
 //!
-//! A thin adapter over the [`sfsq::logs`] query engine. Holds a
-//! shared, read-only handle to the tenant registries: the run-loop's
-//! mutators take brief write locks; this handler takes a read lock
-//! just long enough to enumerate the SFST candidates whose time range
-//! overlaps the request window, then drops it and runs the (sync)
-//! query off the runtime thread via `spawn_blocking`.
+//! A thin adapter over the [`sfsq::logs`] query engine. Holds a shared,
+//! read-only handle to the tenant registries: the run-loop's mutators
+//! take brief write locks; this handler takes a read lock just long
+//! enough to enumerate the SFST candidates whose time range overlaps the
+//! request window, then drops it and runs the (sync) query off the
+//! runtime thread via `spawn_blocking`.
 //!
-//! All query logic — filter, facets, histogram, pagination, row
-//! materialization, and the wire envelope — lives in [`sfsq::logs`].
-//! What stays here is the netdata-plugin glue: the `FunctionHandler`
-//! impl, the capability declaration, and the rt-level args→payload
-//! shim.
+//! The engine is wire-neutral: it consumes a [`sfsq::logs::LogsQuery`]
+//! and produces a [`sfsq::logs::LogsData`]. The netdata function wire
+//! shape — the request/response types and the response envelope — lives
+//! in [`super::wire`], and the mapping to and from the engine in
+//! [`super::adapter`]. What stays here is the netdata-plugin glue: the
+//! `FunctionHandler` impl, the capability declaration, the rt-level
+//! args→payload shim, and the lock/scheduling dance.
 
 use std::sync::Arc;
 
@@ -21,8 +23,10 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use sfsq::logs::{InfoResponse, LogsRequest, LogsResponse, LogsResult, run};
+use sfsq::logs::run;
 
+use super::adapter::{to_query, to_result};
+use super::wire::{InfoResponse, LogsResult, OtelLogsRequest, OtelLogsResponse};
 use crate::registry::TenantRegistries;
 
 pub(crate) struct OtelLogsHandler {
@@ -37,8 +41,8 @@ impl OtelLogsHandler {
 
 #[async_trait]
 impl FunctionHandler for OtelLogsHandler {
-    type Request = LogsRequest;
-    type Response = LogsResponse;
+    type Request = OtelLogsRequest;
+    type Response = OtelLogsResponse;
 
     async fn on_call(
         &self,
@@ -46,14 +50,15 @@ impl FunctionHandler for OtelLogsHandler {
         req: Self::Request,
     ) -> netdata_plugin_error::Result<Self::Response> {
         if req.info {
-            return Ok(LogsResponse::Info(InfoResponse::default()));
+            return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        // Settle the query window once — defaulting + bucket alignment —
-        // then bundle it with its histogram grid as a `PreparedQuery`.
-        // Candidate selection and the query share this settled window.
+        // Map the wire request onto the neutral query and settle its
+        // window once (defaulting + bucket alignment), then enumerate the
+        // SFST candidates overlapping that window under a brief read lock
+        // — dropped before any I/O.
         let last = req.last;
-        let query = req.prepare();
+        let query = to_query(req).prepare();
         let time_range = query.time_range();
         let candidates = {
             let guard = self.registries.read().await;
@@ -64,17 +69,27 @@ impl FunctionHandler for OtelLogsHandler {
             guard.sfst_candidates(&q)
         };
 
-        // The query is synchronous and CPU/IO-bound (opens + decompresses
-        // SFSTs); run it off the runtime thread.
         let (after, before) = (time_range.start, time_range.end);
-        let response = tokio::task::spawn_blocking(move || run(candidates, query))
+        if candidates.is_empty() {
+            return Ok(OtelLogsResponse::Logs(LogsResult::empty_stub(
+                after, before, last,
+            )));
+        }
+
+        // The query is synchronous and CPU/IO-bound (opens + decompresses
+        // SFSTs); run it and shape the neutral result into the wire
+        // envelope off the runtime thread.
+        let result = match tokio::task::spawn_blocking(move || to_result(run(candidates, query), last))
             .await
-            .unwrap_or_else(|e| {
+        {
+            Ok(result) => result,
+            Err(e) => {
                 tracing::warn!("otel-logs blocking task failed: {e}");
                 LogsResult::empty_stub(after, before, last)
-            });
+            }
+        };
 
-        Ok(LogsResponse::Logs(response))
+        Ok(OtelLogsResponse::Logs(result))
     }
 
     fn declaration(&self) -> FunctionDeclaration {

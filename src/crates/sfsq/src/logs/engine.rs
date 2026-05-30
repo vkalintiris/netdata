@@ -4,9 +4,9 @@
 //! [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`] +
 //! [`sfst::IndexReader::timeline`] per file against a shared
 //! request-aligned bucket grid, paginates and materializes a page of
-//! rows, and merges everything into a single [`LogsResult`].
+//! rows, and merges everything into a single [`LogsData`].
 //!
-//! The caller first calls [`LogsRequest::prepare`] to settle the request
+//! The caller first calls [`LogsQuery::prepare`] to settle the query
 //! window (defaulting + bucket alignment) and bundle it with the shared
 //! grid into a [`PreparedQuery`], selects the candidates whose range
 //! overlaps [`PreparedQuery::time_range`], then hands the prepared query
@@ -17,19 +17,20 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use super::adapter::{
-    NS_PER_S, available_histograms_from_fields, facet_from_sfst, histogram_from_sfst,
-    merge_facet_results, merge_timelines, union_field_tables,
-};
 use super::cursor::Cursor;
-use super::types::{ACCEPTED_PARAMS, AnchorParam, Direction, LogsRequest};
-use super::wire::{Items, LogsResult, Pagination, Version};
+use super::merge::{merge_facet_results, merge_timelines, union_field_tables};
+use super::query::{Anchor, Direction, LogsQuery};
+use super::result::LogsData;
 
-/// Default histogram dimension when the request doesn't specify one.
+/// One nanosecond per second — scales the window (seconds) to the
+/// nanosecond timestamps SFST stores.
+const NS_PER_S: i64 = 1_000_000_000;
+
+/// Default histogram dimension when the query doesn't specify one.
 /// Always `severity_text` — it's the OTel canonical log-level field,
 /// and what makes a meaningful chart is the producer's responsibility
-/// (set it, populate it with varied values). The UI exposes the full
-/// `available_histograms` list for users to pick something else.
+/// (set it, populate it with varied values). The consumer exposes the
+/// full `available_fields` list for users to pick something else.
 const DEFAULT_HISTOGRAM_FIELD: &str = "severity_text";
 
 /// Aim for at least this many time buckets across the request
@@ -56,15 +57,14 @@ const VALID_BUCKET_WIDTHS_S: &[u32] = &[
 /// `after`/`before`. Matches the consuming UI's default time range.
 const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
 
-/// Default facet field when the request doesn't specify any. The UI
-/// sends an empty facet list on first load, so we can't infer which
-/// fields the user cares about; rather than auto-curate a set (which
-/// can't be done well across multiple SFSTs — a field's cardinality
-/// composes unpredictably across files), we surface only this one.
-/// Always `severity_text` — the OTel canonical log-level field, same
-/// rationale as [`DEFAULT_HISTOGRAM_FIELD`]. Users add more via the
-/// UI's "+ Add Filter Field" control, which sends explicit
-/// `req.facets`.
+/// Default facet field when the query doesn't specify any. A consumer's
+/// first-load request typically carries an empty facet list, so we can't
+/// infer which fields the user cares about; rather than auto-curate a
+/// set (which can't be done well across multiple SFSTs — a field's
+/// cardinality composes unpredictably across files), we surface only
+/// this one. Always `severity_text` — the OTel canonical log-level
+/// field, same rationale as [`DEFAULT_HISTOGRAM_FIELD`]. Users add more
+/// via an explicit `facet_fields`.
 const DEFAULT_FACET_FIELD: &str = "severity_text";
 
 /// A query candidate: an SFST file whose range overlaps the request
@@ -80,11 +80,11 @@ pub struct SfstCandidate {
 
 /// A query whose window has been settled and whose histogram grid has
 /// been derived — the only input [`run`] accepts. Produced by
-/// [`LogsRequest::prepare`]. Bundling the request with its grid means the
+/// [`LogsQuery::prepare`]. Bundling the query with its grid means the
 /// two reach [`run`] together: they can't be passed mismatched, and a
-/// raw, unprepared request can't reach `run` at all.
+/// raw, unprepared query can't reach `run` at all.
 pub struct PreparedQuery {
-    request: LogsRequest,
+    query: LogsQuery,
     grid: sfst::Grid,
 }
 
@@ -93,45 +93,27 @@ impl PreparedQuery {
     /// enumerating the SFST candidates whose range overlaps it before
     /// handing this query to [`run`].
     pub fn time_range(&self) -> std::ops::Range<u32> {
-        self.request.after..self.request.before
+        self.query.after..self.query.before
     }
 }
 
-/// Run the merged query over the candidate files.
-///
-/// `query` carries the settled window and its grid (see
-/// [`LogsRequest::prepare`]), keeping the window, the per-file timelines,
-/// and the row clipping all anchored to the same geometry. An empty
-/// candidate set yields the empty envelope aligned to that window.
-///
-/// Pure sync — the caller is expected to run it off any async runtime
-/// thread.
-pub fn run(candidates: Vec<SfstCandidate>, query: PreparedQuery) -> LogsResult {
-    let PreparedQuery { request, grid } = query;
-    if candidates.is_empty() {
-        return LogsResult::empty_stub(request.after, request.before, request.last);
-    }
-
-    build_merged_logs_response(candidates, request, grid)
-}
-
-impl LogsRequest {
-    /// Settle this request's query window and bundle it with the
-    /// histogram grid that window implies into a [`PreparedQuery`] — the
-    /// single place the window is resolved, before candidate selection or
-    /// the query reads it.
+impl LogsQuery {
+    /// Settle this query's window and bundle it with the histogram grid
+    /// that window implies into a [`PreparedQuery`] — the single place
+    /// the window is resolved, before candidate selection or the query
+    /// reads it.
     ///
     /// First fills the default window when `[after, before)` is absent or
-    /// malformed (the legacy `(0, 0)` "no bound" form, or any inverted /
+    /// malformed (the `(0, 0)` "no bound" form, or any inverted /
     /// zero-width range), then snaps the window outward to a "nice" bucket
     /// width. The settled window, the row clipping, and the grid all share
     /// that width, so the grid's buckets tile the window exactly and can
     /// never disagree with it.
     ///
-    /// Snapping outward stabilises the histogram x-axis across the UI's
-    /// per-second polling: successive polls within the same bucket-width
-    /// slot resolve to the same window and grid, so the chart only shifts
-    /// when crossing a real boundary.
+    /// Snapping outward stabilises the histogram x-axis across a
+    /// per-second-polling consumer: successive polls within the same
+    /// bucket-width slot resolve to the same window and grid, so the
+    /// chart only shifts when crossing a real boundary.
     pub fn prepare(mut self) -> PreparedQuery {
         (self.after, self.before) = effective_window(self.after, self.before);
         let span_s = self.before.saturating_sub(self.after);
@@ -146,29 +128,36 @@ impl LogsRequest {
             (bucket_width_s as i64) * NS_PER_S,
             ((self.before - self.after) / bucket_width_s) as usize,
         );
-        PreparedQuery {
-            request: self,
-            grid,
-        }
+        PreparedQuery { query: self, grid }
     }
 }
 
-/// Open every SFST candidate, run the three queries per file against
-/// a shared request-aligned bucket grid, merge the per-file results,
-/// and assemble the wire envelope. Pure sync — no awaits — so it can
-/// run off any async runtime thread.
+/// Run the merged query over the candidate files.
 ///
-/// Per-file errors (corrupt file, missing field, etc.) are logged
-/// and that file is skipped — other files still contribute to the
-/// response. If *every* file errors we fall through to an empty
-/// stub.
-fn build_merged_logs_response(
-    candidates: Vec<SfstCandidate>,
-    req: LogsRequest,
-    grid: sfst::Grid,
-) -> LogsResult {
-    let filter = build_filter(&req.selections);
-    let histogram_field = pick_histogram_field(&req.histogram);
+/// `query` carries the settled window and its grid (see
+/// [`LogsQuery::prepare`]), keeping the window, the per-file timelines,
+/// and the row clipping all anchored to the same geometry. An empty
+/// candidate set (or one where every file fails to open) yields an empty
+/// [`LogsData`] aligned to that grid.
+///
+/// Pure sync — the caller is expected to run it off any async runtime
+/// thread.
+pub fn run(candidates: Vec<SfstCandidate>, query: PreparedQuery) -> LogsData {
+    let PreparedQuery { query, grid } = query;
+    build_logs_data(candidates, query, grid)
+}
+
+/// Open every SFST candidate, run the three queries per file against a
+/// shared request-aligned bucket grid, merge the per-file results, and
+/// assemble the [`LogsData`]. Pure sync — no awaits — so it can run off
+/// any async runtime thread.
+///
+/// Per-file errors (corrupt file, missing field, etc.) are logged and
+/// that file is skipped — other files still contribute. If *every* file
+/// errors we return an empty `LogsData` aligned to the grid.
+fn build_logs_data(candidates: Vec<SfstCandidate>, query: LogsQuery, grid: sfst::Grid) -> LogsData {
+    let filter = build_filter(&query.selections);
+    let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
 
     // Read every candidate's bytes, pairing each buffer with its path
     // and file `seq`. The `IndexReader` borrows from the bytes, so the
@@ -205,19 +194,29 @@ fn build_merged_logs_response(
     }
 
     if readers.is_empty() {
-        return LogsResult::empty_stub(req.after, req.before, req.last);
+        return LogsData {
+            matched: 0,
+            facets: Vec::new(),
+            histogram_field,
+            histogram: empty_timeline(grid),
+            available_fields: Vec::new(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            has_newer: false,
+            has_older: false,
+        };
     }
 
-    // Picked facet field set against the unioned table — gives the
-    // UI a consistent sidebar across files.
+    // Picked facet field set against the unioned table — gives a
+    // consumer a consistent facet sidebar across files.
     let table_refs: Vec<&[sfst::FieldEntry]> = field_tables.iter().map(|t| t.as_slice()).collect();
     let unioned = union_field_tables(&table_refs);
-    let facet_fields = pick_facet_fields(&req.facets, &unioned);
+    let facet_fields = pick_facet_fields(&query.facet_fields, &unioned);
 
-    // The request window in ns. Every per-file query — matched,
-    // facets, and the histogram grid — clips to this same window, so
-    // their counts describe the same set of logs and agree.
-    let window_ns = (req.after as i64) * NS_PER_S..(req.before as i64) * NS_PER_S;
+    // The request window in ns. Every per-file query — matched, facets,
+    // and the histogram grid — clips to this same window, so their
+    // counts describe the same set of logs and agree.
+    let window_ns = (query.after as i64) * NS_PER_S..(query.before as i64) * NS_PER_S;
 
     let mut matched_total: u64 = 0;
     let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
@@ -228,15 +227,12 @@ fn build_merged_logs_response(
         // window.
         match per_file_matched(reader, &filter, window_ns.clone()) {
             Ok(m) => matched_total += m,
-            Err(e) => tracing::warn!(
-                "sfsq: matched count failed for {}: {e}",
-                path.display()
-            ),
+            Err(e) => tracing::warn!("sfsq: matched count failed for {}: {e}", path.display()),
         }
 
-        // Facets: filter the picked set to fields that exist in
-        // this file. Unknown fields would make `facets()` error and
-        // cost us the whole file.
+        // Facets: filter the picked set to fields that exist in this
+        // file. Unknown fields would make `facets()` error and cost us
+        // the whole file.
         let file_facet_fields: Vec<String> = facet_fields
             .iter()
             .filter(|name| reader.field_table().iter().any(|f| f.name == **name))
@@ -252,7 +248,7 @@ fn build_merged_logs_response(
         // dimensionless timeline whose matching logs all land in
         // `unset`, so the merged histogram total stays equal to
         // `matched`. (`timeline` only errors here if the picked field
-        // is high-card, which `available_histograms` never offers.)
+        // is high-card, which `available_fields` never offers.)
         match reader.timeline(&histogram_field, &filter, grid) {
             Ok(t) => per_file_timelines.push(t),
             Err(e) => tracing::warn!("sfsq: timeline failed for {}: {e}", path.display()),
@@ -260,104 +256,75 @@ fn build_merged_logs_response(
     }
 
     let merged_facets = merge_facet_results(per_file_facets);
-    let wire_facets = merged_facets
-        .iter()
-        .enumerate()
-        .map(|(i, f)| facet_from_sfst(i, f))
-        .collect();
 
     // If no file contributed a timeline (histogram field absent
     // everywhere, or all timelines errored), synthesize an empty one
-    // aligned to the grid so the wire shape stays valid.
-    let merged_timeline = merge_timelines(per_file_timelines).unwrap_or_else(|| sfst::Timeline {
-        grid,
-        dimensions: Vec::new(),
-        buckets: vec![Vec::new(); grid.num_buckets],
-        unset: vec![0u64; grid.num_buckets],
-    });
-    let wire_histogram = histogram_from_sfst(&histogram_field, &merged_timeline);
-    let wire_available = available_histograms_from_fields(&unioned);
+    // aligned to the grid so the shape stays valid.
+    let merged_timeline = merge_timelines(per_file_timelines).unwrap_or_else(|| empty_timeline(grid));
 
-    // Materialize the page of log rows. The column schema is the union
-    // of every candidate file's field names — all tiers, so high-card
-    // attributes still get a column — sorted for a stable schema.
+    // The row-table column schema is the union of every candidate file's
+    // field names — all tiers, so high-card attributes still get a
+    // column — sorted for a stable schema.
     let mut field_set: BTreeSet<String> = BTreeSet::new();
     for t in &field_tables {
         for f in t {
             field_set.insert(f.name.clone());
         }
     }
-    let column_fields: Vec<String> = field_set.into_iter().collect();
-    // Facet-eligible fields (low/mid-card) carry `filter: "facet"` so
-    // the UI's "+ Add Filter Field" picker offers them. High-card
-    // fields remain columns but aren't facetable — `facets()` rejects
-    // them, so offering one would yield an empty/erroring facet.
-    let facetable: BTreeSet<&str> = unioned.iter().map(|f| f.name.as_str()).collect();
+    let columns: Vec<String> = field_set.into_iter().collect();
 
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(reader_seqs.iter().copied()).collect();
     // Resolve the anchor to a cursor in the global total order. A row
-    // cursor decodes directly; a histogram-click timestamp becomes a
-    // synthetic cursor at the end of that microsecond (file_seq/position
-    // maxed), so a backward page shows the newest rows up to that time.
-    let anchor = req.anchor.as_ref().and_then(|a| match a {
-        AnchorParam::Cursor(s) => Cursor::decode(s),
-        AnchorParam::TimestampUs(us) => Some(Cursor {
-            timestamp_ns: (*us as i64).saturating_mul(1_000),
+    // cursor is used directly; a timestamp becomes a synthetic cursor at
+    // the end of that instant (file_seq/position maxed), so a backward
+    // page shows the newest rows up to that time.
+    let anchor = query.anchor.map(|a| match a {
+        Anchor::Cursor(c) => c,
+        Anchor::Timestamp(ns) => Cursor {
+            timestamp_ns: ns,
             file_seq: u64::MAX,
             position: u32::MAX,
-        }),
+        },
     });
-    let page = select_page(&files, &filter, window_ns, anchor, req.direction, req.last)
+    let page = select_page(&files, &filter, window_ns, anchor, query.direction, query.limit)
         .unwrap_or_else(|e| {
             tracing::warn!("sfsq: page selection failed: {e}");
             Page::default()
         });
-    let (columns, data) = build_table(&page, &column_fields, &facetable);
 
-    let matched = matched_total as usize;
-
-    LogsResult {
-        progress: 100,
-        version: Version::default(),
-        accepted_params: ACCEPTED_PARAMS.to_vec(),
-        required_params: Vec::new(),
-        facets: wire_facets,
-        available_histograms: wire_available,
-        histogram: wire_histogram,
+    LogsData {
+        matched: matched_total as usize,
+        facets: merged_facets,
+        histogram_field,
+        histogram: merged_timeline,
+        available_fields: unioned,
         columns,
-        data,
-        default_charts: Vec::new(),
-        items: Items {
-            evaluated: matched,
-            unsampled: 0,
-            estimated: matched,
-            matched,
-            // before ⇒ newer rows exist (UI "scroll up"); after ⇒
-            // older rows exist (UI "scroll down").
-            before: page.has_newer as usize,
-            after: page.has_older as usize,
-            returned: page.rows.len(),
-            max_to_return: req.last,
-        },
-        show_ids: false,
-        has_history: true,
-        status: 200,
-        response_type: String::from("table"),
-        help: String::from("Query and visualize OpenTelemetry logs."),
-        pagination: Pagination::default(),
+        rows: page.rows,
+        has_newer: page.has_newer,
+        has_older: page.has_older,
     }
 }
 
-/// A page of materialized log rows plus the has-more flags the UI
+/// An empty timeline aligned to `grid`: no dimensions, all-zero buckets.
+fn empty_timeline(grid: sfst::Grid) -> sfst::Timeline {
+    sfst::Timeline {
+        grid,
+        dimensions: Vec::new(),
+        buckets: vec![Vec::new(); grid.num_buckets],
+        unset: vec![0u64; grid.num_buckets],
+    }
+}
+
+/// A page of materialized log rows plus the has-more flags a consumer
 /// uses to gate infinite scroll in each direction.
 #[derive(Default)]
 struct Page {
-    /// Rows newest-first (`rows[0]` is the newest), as the UI expects.
+    /// Rows newest-first (`rows[0]` is the newest).
     rows: Vec<(Cursor, sfst::MaterializedRow)>,
-    /// An older row exists beyond the page (UI `items.after`).
+    /// An older row exists beyond the page.
     has_older: bool,
-    /// A newer row exists beyond the page (UI `items.before`).
+    /// A newer row exists beyond the page.
     has_newer: bool,
 }
 
@@ -461,80 +428,6 @@ fn select_page(
     })
 }
 
-/// Build the wire `columns` schema and `data` rows from a page.
-///
-/// Columns: a visible µs `timestamp` and `severity`, a hidden string
-/// `cursor` (the `pagination.column` the UI echoes as `anchor`), then
-/// one hidden column per attribute field. Fields in `facetable` get
-/// `filter: "facet"` so the UI's "+ Add Filter Field" picker offers
-/// them; everything else is `"none"`. Each data row is a positional
-/// array aligned to the column `index`; absent attributes are `null`.
-fn build_table(
-    page: &Page,
-    fields: &[String],
-    facetable: &BTreeSet<&str>,
-) -> (serde_json::Value, serde_json::Value) {
-    use serde_json::{Value, json};
-
-    let mut columns = serde_json::Map::new();
-    // The UI formats the cell from `valueOptions.transform`, not from
-    // `type` (which only selects the cell component). Match the legacy
-    // journal column: a `timestamp` cell carrying a µs value rendered
-    // via the `datetime_usec` transform.
-    columns.insert(
-        "timestamp".into(),
-        json!({ "index": 0, "id": "timestamp", "name": "Timestamp", "type": "timestamp",
-                "visible": true, "sortable": false, "filter": "none",
-                "valueOptions": { "transform": "datetime_usec", "decimal_points": 0 } }),
-    );
-    columns.insert(
-        "severity".into(),
-        json!({ "index": 1, "id": "severity", "name": "Severity",
-                "type": "string", "visible": false, "sortable": false, "filter": "none" }),
-    );
-    columns.insert(
-        "cursor".into(),
-        json!({ "index": 2, "id": "cursor", "name": "cursor", "type": "string",
-                "visible": false, "sortable": false, "filter": "none", "unique_key": true }),
-    );
-    for (i, name) in fields.iter().enumerate() {
-        let filter = if facetable.contains(name.as_str()) {
-            "facet"
-        } else {
-            "none"
-        };
-        columns.insert(
-            name.clone(),
-            json!({ "index": 3 + i, "id": name, "name": name, "type": "string",
-                    "visible": false, "sortable": false, "filter": filter }),
-        );
-    }
-
-    let data: Vec<Value> = page
-        .rows
-        .iter()
-        .map(|(cursor, row)| {
-            let lookup: HashMap<&str, &str> = row
-                .fields
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            let cell = |name: &str| match lookup.get(name) {
-                Some(v) => json!(v),
-                None => Value::Null,
-            };
-            let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
-            cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
-            cells.push(cell("severity_text"));
-            cells.push(json!(cursor.encode()));
-            cells.extend(fields.iter().map(|f| cell(f)));
-            Value::Array(cells)
-        })
-        .collect();
-
-    (Value::Object(columns), Value::Array(data))
-}
-
 /// Per-file matched count: filter-matching logs restricted to the
 /// request window. `evaluate` returns positions across the file's
 /// full range; intersect with the file's window range bitmap (the
@@ -549,9 +442,9 @@ fn per_file_matched(
     Ok((bm & &range).len())
 }
 
-/// Translate the request's `selections` map into an [`sfst::Filter`].
+/// Translate the query's `selections` map into an [`sfst::Filter`].
 /// Same shape, just a constructor walk: OR within field, AND across
-/// fields (matches the UI's selection semantics).
+/// fields.
 fn build_filter(selections: &HashMap<String, Vec<String>>) -> sfst::Filter {
     let mut filter = sfst::Filter::new();
     for (field, values) in selections {
@@ -562,26 +455,20 @@ fn build_filter(selections: &HashMap<String, Vec<String>>) -> sfst::Filter {
     filter
 }
 
-/// Pick the histogram field. Honors the request's `histogram` param
-/// when set; otherwise returns [`DEFAULT_HISTOGRAM_FIELD`]. No
-/// eligibility filtering — if the chosen field isn't in this SFST or
-/// is high-cardinality, `sfst::timeline` will surface that as an
-/// error and the handler falls back to the empty envelope. The UI
-/// can then drive the user toward a different field via
-/// `available_histograms`.
-fn pick_histogram_field(requested: &str) -> String {
-    if requested.is_empty() {
-        DEFAULT_HISTOGRAM_FIELD.to_string()
-    } else {
-        requested.to_string()
-    }
+/// Pick the histogram field. Honors the query's `histogram_field` when
+/// set; otherwise returns [`DEFAULT_HISTOGRAM_FIELD`]. No eligibility
+/// filtering — if the chosen field isn't in a given SFST or is
+/// high-cardinality, `sfst::timeline` surfaces that as an error and the
+/// file is skipped. A consumer can steer the user toward a different
+/// field via [`LogsData::available_fields`].
+fn pick_histogram_field(requested: Option<&str>) -> String {
+    requested.unwrap_or(DEFAULT_HISTOGRAM_FIELD).to_string()
 }
 
-/// Pick the facet field set. With no explicit request — the UI's
-/// first-load behavior — return just [`DEFAULT_FACET_FIELD`]; we don't
-/// try to auto-curate a wider set (see that constant). Explicit
-/// `requested` selections are honored as-is, modulo high-card /
-/// unknown fields (those would error or surface no options).
+/// Pick the facet field set. With no explicit request, return just
+/// [`DEFAULT_FACET_FIELD`]; we don't try to auto-curate a wider set (see
+/// that constant). Explicit `requested` fields are honored as-is, modulo
+/// high-card / unknown fields (those would error or surface no options).
 fn pick_facet_fields(requested: &[String], fields: &[sfst::FieldEntry]) -> Vec<String> {
     if requested.is_empty() {
         return vec![DEFAULT_FACET_FIELD.to_string()];
@@ -607,29 +494,28 @@ fn bucket_width_for_span_s(span_s: u32) -> u32 {
 }
 
 /// Round `[after, before)` outward to multiples of `width_s`. The
-/// returned bounds are still in `(seconds since epoch)`, but
-/// `after` is floored and `before` is ceiled, so the histogram grid
-/// anchors to absolute wall-clock boundaries (e.g. 15s buckets snap
-/// to `t % 15 == 0`).
+/// returned bounds are still in `(seconds since epoch)`, but `after` is
+/// floored and `before` is ceiled, so the histogram grid anchors to
+/// absolute wall-clock boundaries (e.g. 15s buckets snap to
+/// `t % 15 == 0`).
 ///
-/// This is what keeps the chart x-axis stable across the UI's
-/// per-second polling: requests within the same bucket-width slot
-/// align to the same grid, so the chart only shifts when crossing a
-/// real boundary.
+/// This is what keeps the chart x-axis stable across a consumer's
+/// per-second polling: requests within the same bucket-width slot align
+/// to the same grid, so the chart only shifts when crossing a real
+/// boundary.
 fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
     let aligned_after = (after / width_s) * width_s;
     let aligned_before = before.div_ceil(width_s) * width_s;
     (aligned_after, aligned_before)
 }
 
-/// Resolve a request's `[after, before)` to a usable time window — the
-/// defaulting step of [`LogsRequest::prepare`]. Returns the inputs
+/// Resolve a query's `[after, before)` to a usable time window — the
+/// defaulting step of [`LogsQuery::prepare`]. Returns the inputs
 /// verbatim when they form a valid non-empty range; falls back to the
 /// last [`DEFAULT_WINDOW_SECS`] computed from system time otherwise — the
-/// legacy "no time bound" form `(0, 0)` and any inverted / zero-width
-/// window.
+/// `(0, 0)` "no time bound" form and any inverted / zero-width window.
 ///
-/// A defaulted window with no overlapping data returns the empty envelope
+/// A defaulted window with no overlapping data returns an empty result
 /// just like an explicit one; the query does not second-guess the caller
 /// by reaching for the most-recent file.
 fn effective_window(after: u32, before: u32) -> (u32, u32) {

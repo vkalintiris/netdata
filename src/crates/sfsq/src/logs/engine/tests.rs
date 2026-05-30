@@ -1,29 +1,18 @@
 use super::*;
 
 #[test]
-fn anchor_param_deserializes_string_and_number() {
-    let s: LogsRequest = serde_json::from_slice(br#"{"anchor":"100:2:3"}"#).unwrap();
-    assert!(matches!(s.anchor, Some(AnchorParam::Cursor(ref c)) if c == "100:2:3"));
-    let n: LogsRequest = serde_json::from_slice(br#"{"anchor":1780056601000000}"#).unwrap();
-    assert!(matches!(
-        n.anchor,
-        Some(AnchorParam::TimestampUs(1780056601000000))
-    ));
-}
-
-#[test]
 fn pick_histogram_field_honors_requested() {
-    // Whatever the request supplies is returned verbatim; the
-    // timeline call decides whether it's actually usable.
-    assert_eq!(pick_histogram_field("service.name"), "service.name");
-    assert_eq!(pick_histogram_field("trace_id"), "trace_id");
+    // Whatever the query supplies is returned verbatim; the timeline
+    // call decides whether it's actually usable.
+    assert_eq!(pick_histogram_field(Some("service.name")), "service.name");
+    assert_eq!(pick_histogram_field(Some("trace_id")), "trace_id");
 }
 
 #[test]
 fn pick_histogram_field_defaults_to_severity_text() {
-    // Empty `histogram` → OTel canonical default. No file-shape
-    // dependence — producers + UI handle "is this meaningful?"
-    assert_eq!(pick_histogram_field(""), "severity_text");
+    // No field → OTel canonical default. No file-shape dependence —
+    // producers + consumer handle "is this meaningful?"
+    assert_eq!(pick_histogram_field(None), "severity_text");
 }
 
 #[test]

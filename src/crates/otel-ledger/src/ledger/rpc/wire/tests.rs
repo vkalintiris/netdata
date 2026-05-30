@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn anchor_param_deserializes_string_and_number() {
+    let s: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":"100:2:3"}"#).unwrap();
+    assert!(matches!(s.anchor, Some(AnchorParam::Cursor(ref c)) if c == "100:2:3"));
+    let n: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":1780056601000000}"#).unwrap();
+    assert!(matches!(
+        n.anchor,
+        Some(AnchorParam::TimestampUs(1780056601000000))
+    ));
+}
+
+#[test]
 fn data_point_serializes_as_flat_array() {
     let dp = DataPoint {
         timestamp_ms: 1_700_000_000_000,

@@ -275,7 +275,7 @@ async fn same_timestamp_rows_paginate_without_dup_or_skip() {
             .as_ref()
             .map(|a| format!(r#","anchor":"{a}""#))
             .unwrap_or_default();
-        let req: LogsRequest = serde_json::from_slice(
+        let req: OtelLogsRequest = serde_json::from_slice(
             format!(r#"{{"info":false,{win},"last":2,"direction":"backward"{anchor_field}}}"#)
                 .as_bytes(),
         )
@@ -302,7 +302,7 @@ async fn same_timestamp_rows_paginate_without_dup_or_skip() {
 #[tokio::test]
 async fn info_request_returns_capability_descriptor() {
     let h = make_handler(make_tenant_registries());
-    let req: LogsRequest = serde_json::from_slice(br#"{"info": true}"#).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": true}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["status"], 200);
@@ -320,7 +320,7 @@ async fn empty_payload_defaults_to_data_request() {
     // Matches the legacy JournalRequest semantic: a POST body
     // without an `info` field is a data request, not capability
     // discovery. The UI's data POSTs rely on this.
-    let req: LogsRequest = serde_json::from_slice(b"{}").unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(b"{}").unwrap();
     assert!(!req.info);
     let h = make_handler(make_tenant_registries());
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
@@ -333,7 +333,7 @@ async fn empty_payload_defaults_to_data_request() {
 #[tokio::test]
 async fn no_sfst_yields_empty_envelope() {
     let h = make_handler(make_tenant_registries());
-    let req: LogsRequest =
+    let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"info": false, "after": 100, "before": 200}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
@@ -349,7 +349,7 @@ async fn non_overlapping_window_yields_empty_envelope() {
     let h = make_handler(tr);
 
     // Request window is 1900..2000 — nowhere near the file's 1.7e9 span.
-    let req: LogsRequest =
+    let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"info": false, "after": 1900, "before": 2000}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
@@ -364,7 +364,7 @@ async fn populated_response_carries_facets_and_histogram() {
     install_sfst(&mut tr, "tenant-a", 1, min_s);
     let h = make_handler(tr);
 
-    let req: LogsRequest = serde_json::from_slice(
+    let req: OtelLogsRequest = serde_json::from_slice(
         format!(
             r#"{{"info": false, "after": {}, "before": {}}}"#,
             min_s,
@@ -456,7 +456,7 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
         a = min_s,
         b = min_s + 60
     );
-    let req: LogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
 
@@ -494,7 +494,7 @@ async fn only_overlapping_file_contributes() {
     install_sfst(&mut tr, "tenant-new", 99, 1_700_000_000);
     let h = make_handler(tr);
 
-    let req: LogsRequest =
+    let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"info": false, "after": 1700000000, "before": 1700000100}"#)
             .unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
@@ -526,7 +526,7 @@ async fn multiple_overlapping_files_merge_counts_and_facets() {
         a = earlier,
         b = later + 60
     );
-    let req: LogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
 
@@ -583,7 +583,7 @@ async fn file_without_histogram_field_routes_logs_to_unset() {
         a = earlier,
         b = later + 60
     );
-    let req: LogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
 
@@ -630,7 +630,7 @@ async fn no_time_bound_falls_back_to_recent_window() {
     install_sfst(&mut tr, "tenant-a", 1, recent);
     let h = make_handler(tr);
 
-    let req: LogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     // Fixture has 6 logs — all should match (the file's range
@@ -649,7 +649,7 @@ async fn no_time_bound_with_only_stale_data_yields_empty_envelope() {
     install_sfst(&mut tr, "tenant-a", 1, file_min_s);
     let h = make_handler(tr);
 
-    let req: LogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["items"]["matched"], 0);
@@ -679,7 +679,7 @@ async fn backward_pagination_pages_without_overlap_or_gap() {
     let win = format!(r#""after": {}, "before": {}"#, min_s, min_s + 60);
 
     // Page 1: no anchor, backward → newest 3 (pos 5,4,3), newest-first.
-    let p1: LogsRequest =
+    let p1: OtelLogsRequest =
         serde_json::from_slice(format!(r#"{{"info":false,{win},"last":3}}"#).as_bytes()).unwrap();
     let v1 = serde_json::to_value(&h.on_call(make_ctx("t1"), p1).await.unwrap()).unwrap();
     let d1 = v1["data"].as_array().unwrap();
@@ -693,7 +693,7 @@ async fn backward_pagination_pages_without_overlap_or_gap() {
     assert_eq!(oldest_ts, ts_us(min_s, 3));
 
     // Page 2: anchor = page 1's oldest row (pos 3), backward → pos 2,1,0.
-    let p2: LogsRequest = serde_json::from_slice(
+    let p2: OtelLogsRequest = serde_json::from_slice(
         format!(r#"{{"info":false,{win},"last":3,"direction":"backward","anchor":"{anchor}"}}"#)
             .as_bytes(),
     )
@@ -723,7 +723,7 @@ async fn forward_pagination_returns_newer_rows_newest_first() {
     // Forward from pos 2 (seq 1) → the rows strictly newer: pos 3,4,5,
     // returned newest-first.
     let anchor = format!("{}:1:2", (min_s as i64 + 2) * 1_000_000_000);
-    let req: LogsRequest = serde_json::from_slice(
+    let req: OtelLogsRequest = serde_json::from_slice(
         format!(r#"{{"info":false,{win},"last":3,"direction":"forward","anchor":"{anchor}"}}"#)
             .as_bytes(),
     )
@@ -756,7 +756,7 @@ async fn histogram_click_numeric_anchor_navigates_to_time() {
         a = min_s,
         b = min_s + 60
     );
-    let req: LogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(payload.as_bytes()).unwrap();
     let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
 
     // No deserialize error; rows up to and including +3s (pos 0..3),
@@ -780,7 +780,7 @@ fn patches_data_request_args_into_payload() {
         "slice:true".to_string(),
     ];
     let bytes = patch_args_into_payload(&args, None).unwrap();
-    let req: LogsRequest = serde_json::from_slice(&bytes).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(req.after, 100);
     assert_eq!(req.before, 200);
     assert!(!req.info);
@@ -795,7 +795,7 @@ fn patches_info_request_args_into_payload() {
         "before:200".to_string(),
     ];
     let bytes = patch_args_into_payload(&args, None).unwrap();
-    let req: LogsRequest = serde_json::from_slice(&bytes).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(&bytes).unwrap();
     assert!(req.info);
     assert_eq!(req.after, 100);
     assert_eq!(req.before, 200);
