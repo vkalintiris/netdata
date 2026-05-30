@@ -14,18 +14,21 @@ use super::cursor::Cursor;
 
 /// A multi-file log query in engine terms.
 ///
-/// `after`/`before` are seconds since the Unix epoch and may be left as
-/// `(0, 0)` (or inverted) to request the default recent window —
-/// [`LogsQuery::prepare`](super::PreparedQuery) settles that. All other
-/// fields are taken as-is: an empty `selections` matches everything, an
-/// empty `facet_fields` requests the engine's default facet, and a
-/// `None` `histogram_field` requests the engine's default dimension.
+/// The caller supplies the histogram [`grid`](LogsQuery::grid) outright:
+/// the engine buckets the histogram on exactly that grid and clips every
+/// count (matched, facets, the page) to its span. Deciding the bucket
+/// geometry — window bounds, bucket width, bucket count, alignment — is a
+/// presentation choice the consumer owns; the engine does not second-guess
+/// it. The remaining fields are taken as-is: an empty `selections` matches
+/// everything, an empty `facet_fields` requests the engine's default
+/// facet, and a `None` `histogram_field` requests the engine's default
+/// dimension.
 #[derive(Debug, Clone)]
 pub struct LogsQuery {
-    /// Window start, seconds since epoch.
-    pub after: u32,
-    /// Window end (exclusive), seconds since epoch.
-    pub before: u32,
+    /// Histogram bucket geometry. Its span (`bucket_start_ns` ..
+    /// `bucket_start_ns + bucket_width_ns * num_buckets`) *is* the query
+    /// window — counts and the materialized page are clipped to it.
+    pub grid: sfst::Grid,
     /// Filter selections: OR within a field, AND across fields.
     pub selections: HashMap<String, Vec<String>>,
     /// Histogram dimension field; `None` requests the default.

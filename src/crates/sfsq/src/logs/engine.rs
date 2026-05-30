@@ -2,17 +2,17 @@
 //!
 //! Opens every SFST in the supplied candidate set, runs
 //! [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`] +
-//! [`sfst::IndexReader::timeline`] per file against a shared
-//! request-aligned bucket grid, paginates and materializes a page of
-//! rows, and merges everything into a single [`LogsData`].
+//! [`sfst::IndexReader::timeline`] per file against the query's bucket
+//! grid, paginates and materializes a page of rows, and merges
+//! everything into a single [`LogsData`].
 //!
-//! The caller first calls [`LogsQuery::prepare`] to settle the query
-//! window (defaulting + bucket alignment) and bundle it with the shared
-//! grid into a [`PreparedQuery`], selects the candidates whose range
-//! overlaps [`PreparedQuery::time_range`], then hands the prepared query
-//! to [`run`]. `run` itself is pure and synchronous — no I/O scheduling,
-//! no locks — but since it reads and decompresses files the caller is
-//! expected to invoke it off any async runtime thread.
+//! The caller supplies a fully-specified [`LogsQuery`] — including the
+//! histogram [`grid`](LogsQuery::grid), whose span is the query window —
+//! selects the candidates whose range overlaps that window, then hands
+//! both to [`run`]. `run` is pure and synchronous — no I/O scheduling, no
+//! locks, and no window/geometry policy (deciding the grid is the
+//! caller's job) — but since it reads and decompresses files the caller
+//! is expected to invoke it off any async runtime thread.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -22,40 +22,12 @@ use super::merge::{merge_facet_results, merge_timelines, union_field_tables};
 use super::query::{Anchor, Direction, LogsQuery};
 use super::result::LogsData;
 
-/// One nanosecond per second — scales the window (seconds) to the
-/// nanosecond timestamps SFST stores.
-const NS_PER_S: i64 = 1_000_000_000;
-
 /// Default histogram dimension when the query doesn't specify one.
 /// Always `severity_text` — it's the OTel canonical log-level field,
 /// and what makes a meaningful chart is the producer's responsibility
 /// (set it, populate it with varied values). The consumer exposes the
 /// full `available_fields` list for users to pick something else.
 const DEFAULT_HISTOGRAM_FIELD: &str = "severity_text";
-
-/// Aim for at least this many time buckets across the request
-/// window when picking from [`VALID_BUCKET_WIDTHS_S`]. With the
-/// curated widths and a 15-minute window this yields 15-second
-/// buckets (60 of them).
-const TARGET_BUCKETS: u32 = 60;
-
-/// "Nice" bucket widths in seconds. Ported from the legacy
-/// systemd-journal plugin's `calculate_bucket_duration` to keep
-/// histograms anchored to wall-clock-friendly intervals (1s, 2s,
-/// 5s, 10s, 15s, 30s, 1m, 5m, …). [`bucket_width_for_span_s`] picks
-/// the largest entry that produces at least [`TARGET_BUCKETS`]
-/// buckets across the span, so the chart density is stable as the
-/// requested window scales.
-const VALID_BUCKET_WIDTHS_S: &[u32] = &[
-    1, 2, 5, 10, 15, 30, // seconds
-    60, 120, 180, 300, 600, 900, 1800, // minutes
-    3600, 7200, 21600, 28800, 43200, // hours
-    86400, 172800, 259200, 432000, 604800, 1209600, 2592000, // days
-];
-
-/// Default request window in seconds when the caller doesn't specify
-/// `after`/`before`. Matches the consuming UI's default time range.
-const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
 
 /// Default facet field when the query doesn't specify any. A consumer's
 /// first-load request typically carries an empty facet list, so we can't
@@ -78,84 +50,23 @@ pub struct SfstCandidate {
     pub path: std::path::PathBuf,
 }
 
-/// A query whose window has been settled and whose histogram grid has
-/// been derived — the only input [`run`] accepts. Produced by
-/// [`LogsQuery::prepare`]. Bundling the query with its grid means the
-/// two reach [`run`] together: they can't be passed mismatched, and a
-/// raw, unprepared query can't reach `run` at all.
-pub struct PreparedQuery {
-    query: LogsQuery,
-    grid: sfst::Grid,
-}
-
-impl PreparedQuery {
-    /// The settled query window `[after, before)` in seconds — for
-    /// enumerating the SFST candidates whose range overlaps it before
-    /// handing this query to [`run`].
-    pub fn time_range(&self) -> std::ops::Range<u32> {
-        self.query.after..self.query.before
-    }
-}
-
-impl LogsQuery {
-    /// Settle this query's window and bundle it with the histogram grid
-    /// that window implies into a [`PreparedQuery`] — the single place
-    /// the window is resolved, before candidate selection or the query
-    /// reads it.
-    ///
-    /// First fills the default window when `[after, before)` is absent or
-    /// malformed (the `(0, 0)` "no bound" form, or any inverted /
-    /// zero-width range), then snaps the window outward to a "nice" bucket
-    /// width. The settled window, the row clipping, and the grid all share
-    /// that width, so the grid's buckets tile the window exactly and can
-    /// never disagree with it.
-    ///
-    /// Snapping outward stabilises the histogram x-axis across a
-    /// per-second-polling consumer: successive polls within the same
-    /// bucket-width slot resolve to the same window and grid, so the
-    /// chart only shifts when crossing a real boundary.
-    pub fn prepare(mut self) -> PreparedQuery {
-        (self.after, self.before) = effective_window(self.after, self.before);
-        let span_s = self.before.saturating_sub(self.after);
-        let bucket_width_s = bucket_width_for_span_s(span_s);
-        (self.after, self.before) = align_window(self.after, self.before, bucket_width_s);
-
-        // `bucket_width_s` divides `(before - after)` exactly after
-        // alignment, so no `div_ceil` is needed. Every per-file timeline
-        // is built on this grid and is therefore directly mergeable.
-        let grid = sfst::Grid::new(
-            (self.after as i64) * NS_PER_S,
-            (bucket_width_s as i64) * NS_PER_S,
-            ((self.before - self.after) / bucket_width_s) as usize,
-        );
-        PreparedQuery { query: self, grid }
-    }
-}
-
 /// Run the merged query over the candidate files.
 ///
-/// `query` carries the settled window and its grid (see
-/// [`LogsQuery::prepare`]), keeping the window, the per-file timelines,
-/// and the row clipping all anchored to the same geometry. An empty
-/// candidate set (or one where every file fails to open) yields an empty
-/// [`LogsData`] aligned to that grid.
-///
-/// Pure sync — the caller is expected to run it off any async runtime
-/// thread.
-pub fn run(candidates: Vec<SfstCandidate>, query: PreparedQuery) -> LogsData {
-    let PreparedQuery { query, grid } = query;
-    build_logs_data(candidates, query, grid)
-}
-
-/// Open every SFST candidate, run the three queries per file against a
-/// shared request-aligned bucket grid, merge the per-file results, and
-/// assemble the [`LogsData`]. Pure sync — no awaits — so it can run off
-/// any async runtime thread.
+/// Opens every SFST candidate, runs the three per-file queries against
+/// the query's [`grid`](LogsQuery::grid), merges the per-file results,
+/// and assembles the [`LogsData`]. The grid's span is the window every
+/// count and the materialized page clip to.
 ///
 /// Per-file errors (corrupt file, missing field, etc.) are logged and
-/// that file is skipped — other files still contribute. If *every* file
-/// errors we return an empty `LogsData` aligned to the grid.
-fn build_logs_data(candidates: Vec<SfstCandidate>, query: LogsQuery, grid: sfst::Grid) -> LogsData {
+/// that file is skipped — other files still contribute. An empty
+/// candidate set (or one where every file fails to open) yields an empty
+/// `LogsData` aligned to the grid.
+///
+/// Pure sync — no I/O scheduling, no locks, no geometry policy — but
+/// since it reads and decompresses files the caller is expected to invoke
+/// it off any async runtime thread.
+pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
+    let grid = query.grid;
     let filter = build_filter(&query.selections);
     let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
 
@@ -213,10 +124,11 @@ fn build_logs_data(candidates: Vec<SfstCandidate>, query: LogsQuery, grid: sfst:
     let unioned = union_field_tables(&table_refs);
     let facet_fields = pick_facet_fields(&query.facet_fields, &unioned);
 
-    // The request window in ns. Every per-file query — matched, facets,
-    // and the histogram grid — clips to this same window, so their
-    // counts describe the same set of logs and agree.
-    let window_ns = (query.after as i64) * NS_PER_S..(query.before as i64) * NS_PER_S;
+    // The request window in ns — the grid's span. Every per-file query —
+    // matched, facets, and the histogram grid — clips to this same
+    // window, so their counts describe the same set of logs and agree.
+    let window_ns =
+        grid.bucket_start_ns..grid.bucket_start_ns + grid.bucket_width_ns * grid.num_buckets as i64;
 
     let mut matched_total: u64 = 0;
     let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
@@ -478,56 +390,6 @@ fn pick_facet_fields(requested: &[String], fields: &[sfst::FieldEntry]) -> Vec<S
         .filter(|name| fields.iter().any(|f| f.name == **name && !is_high_card(f)))
         .cloned()
         .collect()
-}
-
-/// Pick a "nice" bucket width (seconds) for a given span. Walks
-/// [`VALID_BUCKET_WIDTHS_S`] from largest to smallest and returns
-/// the first one that produces at least [`TARGET_BUCKETS`] buckets.
-/// Falls back to `1` for spans too short to satisfy the heuristic.
-fn bucket_width_for_span_s(span_s: u32) -> u32 {
-    VALID_BUCKET_WIDTHS_S
-        .iter()
-        .rev()
-        .find(|&&w| span_s / w >= TARGET_BUCKETS)
-        .copied()
-        .unwrap_or(1)
-}
-
-/// Round `[after, before)` outward to multiples of `width_s`. The
-/// returned bounds are still in `(seconds since epoch)`, but `after` is
-/// floored and `before` is ceiled, so the histogram grid anchors to
-/// absolute wall-clock boundaries (e.g. 15s buckets snap to
-/// `t % 15 == 0`).
-///
-/// This is what keeps the chart x-axis stable across a consumer's
-/// per-second polling: requests within the same bucket-width slot align
-/// to the same grid, so the chart only shifts when crossing a real
-/// boundary.
-fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
-    let aligned_after = (after / width_s) * width_s;
-    let aligned_before = before.div_ceil(width_s) * width_s;
-    (aligned_after, aligned_before)
-}
-
-/// Resolve a query's `[after, before)` to a usable time window — the
-/// defaulting step of [`LogsQuery::prepare`]. Returns the inputs
-/// verbatim when they form a valid non-empty range; falls back to the
-/// last [`DEFAULT_WINDOW_SECS`] computed from system time otherwise — the
-/// `(0, 0)` "no time bound" form and any inverted / zero-width window.
-///
-/// A defaulted window with no overlapping data returns an empty result
-/// just like an explicit one; the query does not second-guess the caller
-/// by reaching for the most-recent file.
-fn effective_window(after: u32, before: u32) -> (u32, u32) {
-    let malformed = (after == 0 && before == 0) || after >= before;
-    if !malformed {
-        return (after, before);
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as u32)
-        .unwrap_or(u32::MAX);
-    (now.saturating_sub(DEFAULT_WINDOW_SECS), now)
 }
 
 fn is_high_card(f: &sfst::FieldEntry) -> bool {

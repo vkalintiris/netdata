@@ -25,7 +25,7 @@ use tokio::sync::RwLock;
 
 use sfsq::logs::run;
 
-use super::adapter::{to_query, to_result};
+use super::adapter::{to_result, window_secs};
 use super::wire::{InfoResponse, LogsResult, OtelLogsRequest, OtelLogsResponse};
 use crate::registry::TenantRegistries;
 
@@ -53,13 +53,13 @@ impl FunctionHandler for OtelLogsHandler {
             return Ok(OtelLogsResponse::Info(InfoResponse::default()));
         }
 
-        // Map the wire request onto the neutral query and settle its
-        // window once (defaulting + bucket alignment), then enumerate the
-        // SFST candidates overlapping that window under a brief read lock
-        // — dropped before any I/O.
+        // Canonicalize the wire request into the neutral query (defaulting
+        // + bucket alignment + grid), then enumerate the SFST candidates
+        // overlapping the grid's window under a brief read lock — dropped
+        // before any I/O.
         let last = req.last;
-        let query = to_query(req).prepare();
-        let time_range = query.time_range();
+        let query = req.into_query();
+        let time_range = window_secs(&query.grid);
         let candidates = {
             let guard = self.registries.read().await;
             let q = file_registry::Query {

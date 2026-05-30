@@ -22,6 +22,6 @@ mod query;
 mod result;
 
 pub use cursor::Cursor;
-pub use engine::{PreparedQuery, SfstCandidate, run};
+pub use engine::{SfstCandidate, run};
 pub use query::{Anchor, Direction, LogsQuery};
 pub use result::LogsData;
