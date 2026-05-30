@@ -124,19 +124,15 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let unioned = union_field_tables(&table_refs);
     let facet_fields = pick_facet_fields(&query.facet_fields, &unioned);
 
-    // The request window in ns — the grid's span. Every per-file query —
-    // matched, facets, and the histogram grid — clips to this same
-    // window, so their counts describe the same set of logs and agree.
-    let window_ns = grid.range_ns();
-
+    // Every per-file query is bounded by the same grid, so matched,
+    // facets, and the histogram describe the same set of logs and agree.
     let mut matched_total: u64 = 0;
     let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
     let mut per_file_timelines: Vec<sfst::Timeline> = Vec::new();
 
     for (reader, path) in readers.iter().zip(reader_paths.iter()) {
-        // matched: filter-matching logs restricted to the request
-        // window.
-        match per_file_matched(reader, &filter, window_ns.clone()) {
+        // matched: filter-matching logs restricted to the grid window.
+        match per_file_matched(reader, &filter, &grid) {
             Ok(m) => matched_total += m,
             Err(e) => tracing::warn!("sfsq: matched count failed for {}: {e}", path.display()),
         }
@@ -149,7 +145,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             .filter(|name| reader.field_table().iter().any(|f| f.name == **name))
             .cloned()
             .collect();
-        match reader.facets(&file_facet_fields, &filter, window_ns.clone()) {
+        match reader.facets(&file_facet_fields, &filter, grid.range_ns()) {
             Ok(facets) => per_file_facets.push(facets),
             Err(e) => tracing::warn!("sfsq: facets failed for {}: {e}", path.display()),
         }
@@ -198,7 +194,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             position: u32::MAX,
         },
     });
-    let page = select_page(&files, &filter, window_ns, anchor, query.direction, query.limit)
+    let page = select_page(&files, &filter, &grid, anchor, query.direction, query.limit)
         .unwrap_or_else(|e| {
             tracing::warn!("sfsq: page selection failed: {e}");
             Page::default()
@@ -258,11 +254,12 @@ struct Page {
 fn select_page(
     files: &[(&sfst::IndexReader<'_>, u64)],
     filter: &sfst::Filter,
-    window_ns: std::ops::Range<i64>,
+    grid: &sfst::Grid,
     anchor: Option<Cursor>,
     direction: Direction,
     limit: usize,
 ) -> Result<Page, sfst::Error> {
+    let window_ns = grid.range_ns();
     // 1. Gather (cursor, file_index, position) for every window match.
     let mut all: Vec<(Cursor, usize, u32)> = Vec::new();
     for (file_index, (reader, seq)) in files.iter().enumerate() {
@@ -339,17 +336,17 @@ fn select_page(
     })
 }
 
-/// Per-file matched count: filter-matching logs restricted to the
-/// request window. `evaluate` returns positions across the file's
-/// full range; intersect with the file's window range bitmap (the
-/// same primitive `facets` uses) to clip outside-window logs.
+/// Per-file matched count: filter-matching logs restricted to the grid's
+/// window. `evaluate` returns positions across the file's full range;
+/// intersect with the window range bitmap (the same primitive `facets`
+/// uses) to clip outside-window logs.
 fn per_file_matched(
     reader: &sfst::IndexReader<'_>,
     filter: &sfst::Filter,
-    window_ns: std::ops::Range<i64>,
+    grid: &sfst::Grid,
 ) -> Result<u64, sfst::Error> {
     let bm = reader.evaluate(filter)?;
-    let range = reader.range_bitmap(window_ns)?;
+    let range = reader.range_bitmap(grid.range_ns())?;
     Ok((bm & &range).len())
 }
 
