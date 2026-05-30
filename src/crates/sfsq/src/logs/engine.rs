@@ -127,8 +127,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     // The request window in ns — the grid's span. Every per-file query —
     // matched, facets, and the histogram grid — clips to this same
     // window, so their counts describe the same set of logs and agree.
-    let window_ns =
-        grid.bucket_start_ns..grid.bucket_start_ns + grid.bucket_width_ns * grid.num_buckets as i64;
+    let window_ns = grid.range_ns();
 
     let mut matched_total: u64 = 0;
     let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();

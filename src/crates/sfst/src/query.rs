@@ -110,6 +110,12 @@ impl Grid {
             num_buckets,
         }
     }
+
+    /// The half-open nanosecond range this grid covers:
+    /// `bucket_start_ns .. bucket_start_ns + bucket_width_ns * num_buckets`.
+    pub fn range_ns(&self) -> std::ops::Range<i64> {
+        self.bucket_start_ns..self.bucket_start_ns + self.bucket_width_ns * self.num_buckets as i64
+    }
 }
 
 /// 2D time × dimension count grid for chart rendering.

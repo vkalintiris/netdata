@@ -97,10 +97,8 @@ impl OtelLogsRequest {
 /// The `[after, before)` window (seconds) a [`sfst::Grid`] covers — the
 /// span the handler uses to enumerate overlapping SFST candidates.
 pub fn window_secs(grid: &sfst::Grid) -> std::ops::Range<u32> {
-    let after = (grid.bucket_start_ns / NS_PER_S) as u32;
-    let span_ns = grid.bucket_width_ns * grid.num_buckets as i64;
-    let before = ((grid.bucket_start_ns + span_ns) / NS_PER_S) as u32;
-    after..before
+    let r = grid.range_ns();
+    (r.start / NS_PER_S) as u32..(r.end / NS_PER_S) as u32
 }
 
 /// Resolve a request's `[after, before)` to a usable window. Returns the
@@ -238,9 +236,9 @@ fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
     let bucket_start_ms = (grid.bucket_start_ns / NS_PER_MS).max(0) as u64;
     let bucket_width_ms = (grid.bucket_width_ns / NS_PER_MS).max(1) as u64;
 
-    let after_s = (grid.bucket_start_ns / NS_PER_S).max(0) as u32;
-    let span_ns = grid.bucket_width_ns * grid.num_buckets as i64;
-    let before_s = ((grid.bucket_start_ns + span_ns) / NS_PER_S).max(0) as u32;
+    let range_ns = grid.range_ns();
+    let after_s = (range_ns.start / NS_PER_S).max(0) as u32;
+    let before_s = (range_ns.end / NS_PER_S).max(0) as u32;
     let update_every_s = (grid.bucket_width_ns / NS_PER_S).max(1) as u32;
 
     let mut dimension_ids: Vec<String> = timeline.dimensions.clone();
