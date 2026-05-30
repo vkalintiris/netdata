@@ -132,7 +132,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
 
     for (reader, path) in readers.iter().zip(reader_paths.iter()) {
         // matched: filter-matching logs restricted to the grid window.
-        match per_file_matched(reader, &filter, &grid) {
+        match per_file_matched(reader, &filter, grid) {
             Ok(m) => matched_total += m,
             Err(e) => tracing::warn!("sfsq: matched count failed for {}: {e}", path.display()),
         }
@@ -194,7 +194,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             position: u32::MAX,
         },
     });
-    let page = select_page(&files, &filter, &grid, anchor, query.direction, query.limit)
+    let page = select_page(&files, &filter, grid, anchor, query.direction, query.limit)
         .unwrap_or_else(|e| {
             tracing::warn!("sfsq: page selection failed: {e}");
             Page::default()
@@ -254,7 +254,7 @@ struct Page {
 fn select_page(
     files: &[(&sfst::IndexReader<'_>, u64)],
     filter: &sfst::Filter,
-    grid: &sfst::Grid,
+    grid: sfst::Grid,
     anchor: Option<Cursor>,
     direction: Direction,
     limit: usize,
@@ -343,7 +343,7 @@ fn select_page(
 fn per_file_matched(
     reader: &sfst::IndexReader<'_>,
     filter: &sfst::Filter,
-    grid: &sfst::Grid,
+    grid: sfst::Grid,
 ) -> Result<u64, sfst::Error> {
     let bm = reader.evaluate(filter)?;
     let range = reader.range_bitmap(grid.range_ns())?;
