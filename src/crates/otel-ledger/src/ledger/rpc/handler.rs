@@ -79,8 +79,10 @@ impl FunctionHandler for OtelLogsHandler {
         // The query is synchronous and CPU/IO-bound (opens + decompresses
         // SFSTs); run it and shape the neutral result into the wire
         // envelope off the runtime thread.
-        let result = match tokio::task::spawn_blocking(move || to_result(run(candidates, query), last))
-            .await
+        let result = match tokio::task::spawn_blocking(move || {
+            to_result(run(candidates, query), last)
+        })
+        .await
         {
             Ok(result) => result,
             Err(e) => {

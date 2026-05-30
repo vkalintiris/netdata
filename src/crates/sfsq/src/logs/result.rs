@@ -49,6 +49,9 @@ impl LogsData {
     ///
     /// [`available_fields`]: LogsData::available_fields
     pub fn facetable(&self) -> BTreeSet<&str> {
-        self.available_fields.iter().map(|f| f.name.as_str()).collect()
+        self.available_fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect()
     }
 }

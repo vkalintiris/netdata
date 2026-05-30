@@ -167,7 +167,8 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     // If no file contributed a timeline (histogram field absent
     // everywhere, or all timelines errored), synthesize an empty one
     // aligned to the grid so the shape stays valid.
-    let merged_timeline = merge_timelines(per_file_timelines).unwrap_or_else(|| empty_timeline(grid));
+    let merged_timeline =
+        merge_timelines(per_file_timelines).unwrap_or_else(|| empty_timeline(grid));
 
     // The row-table column schema is the union of every candidate file's
     // field names — all tiers, so high-card attributes still get a
