@@ -1,15 +1,15 @@
 //! Multi-file log-query subsystem over SFST indexes.
 //!
-//! Extracted from `otel-ledger`'s function handler: the filter →
-//! facets / histogram → pagination → row-materialization → UI-envelope
-//! pipeline that turns a set of overlapping SFST files plus a request
-//! into a single wire response. The ledger keeps only the thin
-//! `FunctionHandler` glue (registry access, async, capability
-//! declaration) and calls into here.
+//! The pipeline that turns a set of overlapping SFST files plus a
+//! request into a single query response: filter → facets / histogram →
+//! pagination → row materialization → response envelope. [`run`] is the
+//! entry point — it takes the candidate files and a [`LogsRequest`] and
+//! returns a [`LogsResult`].
 //!
-//! Distinct from the crate-root single-file [`crate::LogQuery`] API,
-//! which this will eventually be unified with (the single-file query
-//! is the natural per-file primitive under the multi-file engine).
+//! The query itself is pure and synchronous; opening and decompressing
+//! the SFST files is its only I/O. Resolving which files overlap a
+//! request window, and scheduling the work off an async runtime thread,
+//! is left to the caller.
 
 mod adapter;
 mod cursor;

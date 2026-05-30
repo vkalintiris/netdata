@@ -1,19 +1,17 @@
-//! Netdata UI response envelope for the `otel-logs` function.
+//! Response envelope for the log query.
 //!
-//! Mirrors the field shape of the legacy `JournalResponse` so the existing
-//! cloud-frontend wiring (`/api/v3/function?function=otel-logs`) works
-//! without any changes on the UI side. The cloud-frontend transform reads:
+//! Serializes to the wire contract the consumer expects, so its
+//! existing clients work without changes. The consumer reads:
 //!
 //! - `facets` → sidebar filter options (when `data_only:false`).
 //! - `histogram` → main time-series chart.
 //! - `data` + `columns` → log-row table.
 //! - `items` → pagination footer counts.
-//! - `accepted_params` → which request params the UI may send.
+//! - `accepted_params` → which request params the consumer may send.
 //!
-//! Step 1 of the otel-logs rewrite: types only. The SFST → wire
-//! translation and real handler plumbing land in later steps; for now
-//! [`LogsResult::empty_stub`] produces a valid envelope with no data
-//! so the build stays green.
+//! [`LogsResult::empty_stub`] produces a valid envelope with no data —
+//! the shape the consumer renders as "no results" — for windows with no
+//! matching files.
 
 use serde::Serialize;
 
@@ -125,7 +123,7 @@ pub struct ChartPoint {
 
 /// A single histogram bucket. Serializes as a flat array
 /// `[timestamp_ms, [v, arp, pa], [v, arp, pa], …]` — the format the
-/// cloud-frontend chart renderer expects, where the first element is the
+/// consumer's chart renderer expects, where the first element is the
 /// bucket timestamp followed by one `[value, arp, pa]` triple per
 /// dimension.
 #[derive(Debug)]
@@ -218,12 +216,12 @@ impl Default for Pagination {
     }
 }
 
-// ── Required params (always empty for the otel-logs function) ──────
+// ── Required params (always empty) ──────────────────────────────────
 
-/// `required_params` is `Vec::new()` in every response the otel-logs
-/// function emits — the legacy systemd-journal plugin established this
-/// and the UI tolerates it. The enum exists for wire-shape fidelity in
-/// case a future request mode needs to surface a required selector.
+/// `required_params` is `Vec::new()` in every response this crate
+/// emits — the consumer tolerates an empty list. The enum exists for
+/// wire-shape fidelity in case a future request mode needs to surface a
+/// required selector.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum RequiredParam {
@@ -251,12 +249,12 @@ pub struct MultiSelectionOption {
     pub info: String,
 }
 
-// ── Empty-stub constructor (step 1 only) ────────────────────────────
+// ── Empty-stub constructor ──────────────────────────────────────────
 
 impl LogsResult {
-    /// Empty envelope used while SFST query plumbing is being wired up
-    /// in steps 2–4. The shape is what the cloud-frontend renders as
-    /// "no data": valid types throughout, zero rows, zero items.
+    /// Empty envelope for a window with no matching files. The shape is
+    /// what the consumer renders as "no data": valid types throughout,
+    /// zero rows, zero items.
     pub fn empty_stub(after: u32, before: u32, last: usize) -> Self {
         Self {
             progress: 100,

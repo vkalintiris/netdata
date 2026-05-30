@@ -1,14 +1,14 @@
-//! SFST query results → Netdata UI wire envelope.
+//! SFST query results → wire envelope.
 //!
 //! These adapters translate the structured outputs of
 //! [`sfst::IndexReader::facets`] and [`sfst::IndexReader::timeline`] into
-//! the [`super::wire`] envelope shape the cloud-frontend renders. They
-//! are pure transformers — no I/O, no SFST opens — so they can be
-//! exercised against synthetic inputs without touching the filesystem.
+//! the [`super::wire`] envelope shape the consumer renders. They are
+//! pure transformers — no I/O, no SFST opens — so they can be exercised
+//! against synthetic inputs without touching the filesystem.
 //!
-//! Wired into [`super::handler::OtelLogsHandler::on_call`] after opening
-//! every SFST whose time range overlaps the request window, querying
-//! each, and merging the per-file results.
+//! [`super::engine`] drives them: after opening every candidate SFST,
+//! querying each, and merging the per-file results, it feeds the merged
+//! values through these functions to build the response.
 
 use super::wire::{
     AvailableHistogram, Chart, ChartDimensions, ChartPoint, ChartResult, ChartView, DataPoint,

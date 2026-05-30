@@ -1,10 +1,10 @@
-//! Wire types for the `otel-logs` function.
+//! Request and response wire types for the log query.
 //!
-//! Request shape mirrors the legacy `JournalRequest` (so the agent's
-//! existing wiring works unchanged); response is one of two shapes —
-//! `Info` for capability discovery, `Logs` for actual queries —
-//! serialized untagged so the JSON payload looks like a hand-rolled
-//! response of either shape.
+//! The request shape follows the wire contract the consumer speaks, so
+//! its existing clients work unchanged. The response is one of two
+//! shapes — [`InfoResponse`] for capability discovery, [`LogsResult`]
+//! for actual queries — serialized untagged so the JSON payload is just
+//! one shape or the other, with no enclosing tag.
 
 use std::collections::HashMap;
 
@@ -39,30 +39,28 @@ pub const ACCEPTED_PARAMS: &[&str] = &[
     "slice",
 ];
 
-/// Request payload — mirrors the legacy `JournalRequest` field set
-/// (`journal-function/src/netdata/types.rs`) so the agent's wire format
-/// continues to work unchanged.
+/// Request payload. The field set follows the wire contract the
+/// consumer speaks, so its existing clients work unchanged.
 ///
-/// Only `info`, `after`, `before`, and `last` are consumed by the
-/// current handler; the remaining fields are accepted (so deserializing
-/// doesn't fail) and will be consumed once the SFST query plumbing
-/// lands in steps 2–4.
+/// Only `info` selects between the two response modes; every other
+/// field is optional and falls back to its `#[serde(default)]` value
+/// when the consumer omits it. Together those defaults reproduce the
+/// default query — the newest page over the default time window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogsRequest {
     /// `info: true` requests a capability descriptor; `info: false`
-    /// (the default — matches the legacy `JournalRequest` semantic)
-    /// requests a data query. The UI's POST bodies omit this field on
-    /// every data request, so the default must be `false` for them to
-    /// reach the query path. Info discovery is sent either as an
-    /// explicit POST `{"info": true}` or as a GET with the literal
-    /// `info` token in the URL args (translated by the rt-level shim).
+    /// (the default) requests a data query. Consumers omit this field on
+    /// every data request, so the default must be `false` for those
+    /// requests to reach the query path. Capability discovery arrives
+    /// either as an explicit `{"info": true}` body or as a request whose
+    /// transport carries a literal `info` token.
     #[serde(default)]
     pub info: bool,
     #[serde(default)]
     pub after: u32,
     #[serde(default)]
     pub before: u32,
-    /// Pagination anchor, in one of two forms (see [`AnchorParam`]):
+    /// Pagination anchor, in one of two forms (see `AnchorParam`):
     /// the opaque row cursor string echoed from a boundary row's hidden
     /// cursor column, or a bare microsecond timestamp the UI sends when
     /// the user clicks a histogram bar ("jump to this time").
@@ -111,10 +109,10 @@ pub enum Direction {
     Backward,
 }
 
-/// Two response shapes — `Info` for capability discovery, `Logs` for
-/// actual queries. Untagged: the JSON payload is indistinguishable on
-/// the wire from a hand-rolled response of either shape, so the agent /
-/// UI doesn't have to learn a new envelope.
+/// Two response shapes — [`Info`](Self::Info) for capability discovery,
+/// [`Logs`](Self::Logs) for actual queries. Untagged: the JSON payload
+/// is just one shape or the other, so the consumer doesn't have to
+/// learn a new envelope.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum LogsResponse {

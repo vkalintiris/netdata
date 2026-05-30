@@ -1,15 +1,16 @@
-//! Multi-file otel-logs query engine.
+//! Multi-file log-query engine.
 //!
-//! Opens every overlapping SFST across the supplied candidates, runs
+//! Opens every SFST in the supplied candidate set, runs
 //! [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`] +
 //! [`sfst::IndexReader::timeline`] per file against a shared
-//! request-aligned bucket grid, paginates + materializes a page of
+//! request-aligned bucket grid, paginates and materializes a page of
 //! rows, and merges everything into a single [`LogsResult`].
 //!
 //! Pure and synchronous — no I/O scheduling, no locks. The caller
-//! (the ledger's `FunctionHandler`) resolves the window via
-//! [`effective_window`], selects candidates, and wraps [`run`] in
-//! `spawn_blocking`.
+//! resolves the request window via [`effective_window`], selects the
+//! candidates whose range overlaps it, and — since the query reads and
+//! decompresses files — is expected to run [`run`] off any async
+//! runtime thread.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -50,7 +51,7 @@ const VALID_BUCKET_WIDTHS_S: &[u32] = &[
 ];
 
 /// Default request window in seconds when the caller doesn't specify
-/// `after`/`before`. Matches the cloud-frontend default time range.
+/// `after`/`before`. Matches the consuming UI's default time range.
 const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
 
 /// Default facet field when the request doesn't specify any. The UI
@@ -65,9 +66,10 @@ const DEFAULT_WINDOW_SECS: u32 = 15 * 60;
 const DEFAULT_FACET_FIELD: &str = "severity_text";
 
 /// A query candidate: an SFST file whose range overlaps the request
-/// window. Owned so the caller can drop the registry lock before I/O.
-/// `seq` is the file's monotonic per-file id, used as the cross-file
-/// tiebreaker in the pagination cursor's total order.
+/// window. Owned so the caller can release any lock on its file source
+/// before the query does I/O. `seq` is the file's monotonic per-file
+/// id, used as the cross-file tiebreaker in the pagination cursor's
+/// total order.
 pub struct SfstCandidate {
     pub summary: sfst::Summary,
     pub seq: u64,
@@ -78,10 +80,11 @@ pub struct SfstCandidate {
 /// the merged query. `req.after`/`req.before` are assumed already
 /// defaulted by [`effective_window`]; this snaps them outward to a
 /// "nice" bucket width, builds the shared grid, and delegates to
-/// [`build_merged_logs_response`]. An empty candidate set yields the
+/// `build_merged_logs_response`. An empty candidate set yields the
 /// empty envelope aligned to that window.
 ///
-/// Pure sync — the caller wraps it in `spawn_blocking`.
+/// Pure sync — the caller is expected to run it off any async runtime
+/// thread.
 pub fn run(candidates: Vec<SfstCandidate>, mut req: LogsRequest) -> LogsResult {
     // Snap the window outward to multiples of a "nice" bucket width.
     // This stabilises the histogram x-axis across the UI's per-second
@@ -110,8 +113,8 @@ pub fn run(candidates: Vec<SfstCandidate>, mut req: LogsRequest) -> LogsResult {
 
 /// Open every SFST candidate, run the three queries per file against
 /// a shared request-aligned bucket grid, merge the per-file results,
-/// and assemble the wire envelope. Pure sync — no awaits — so the
-/// caller wraps this in `tokio::task::spawn_blocking`.
+/// and assemble the wire envelope. Pure sync — no awaits — so it can
+/// run off any async runtime thread.
 ///
 /// Per-file errors (corrupt file, missing field, etc.) are logged
 /// and that file is skipped — other files still contribute to the
@@ -134,7 +137,7 @@ fn build_merged_logs_response(
     for c in &candidates {
         match std::fs::read(&c.path) {
             Ok(bytes) => opened.push((bytes, &c.path, c.seq)),
-            Err(e) => tracing::warn!("otel-logs: failed to read {}: {e}", c.path.display()),
+            Err(e) => tracing::warn!("sfsq: failed to read {}: {e}", c.path.display()),
         }
     }
 
@@ -154,7 +157,7 @@ fn build_merged_logs_response(
                 readers.push(reader);
             }
             Err(e) => {
-                tracing::warn!("otel-logs: failed to open {}: {e}", path.display());
+                tracing::warn!("sfsq: failed to open {}: {e}", path.display());
             }
         }
     }
@@ -184,7 +187,7 @@ fn build_merged_logs_response(
         match per_file_matched(reader, &filter, window_ns.clone()) {
             Ok(m) => matched_total += m,
             Err(e) => tracing::warn!(
-                "otel-logs: matched count failed for {}: {e}",
+                "sfsq: matched count failed for {}: {e}",
                 path.display()
             ),
         }
@@ -199,7 +202,7 @@ fn build_merged_logs_response(
             .collect();
         match reader.facets(&file_facet_fields, &filter, window_ns.clone()) {
             Ok(facets) => per_file_facets.push(facets),
-            Err(e) => tracing::warn!("otel-logs: facets failed for {}: {e}", path.display()),
+            Err(e) => tracing::warn!("sfsq: facets failed for {}: {e}", path.display()),
         }
 
         // Histogram: every file contributes a timeline on the shared
@@ -210,7 +213,7 @@ fn build_merged_logs_response(
         // is high-card, which `available_histograms` never offers.)
         match reader.timeline(&histogram_field, &filter, grid) {
             Ok(t) => per_file_timelines.push(t),
-            Err(e) => tracing::warn!("otel-logs: timeline failed for {}: {e}", path.display()),
+            Err(e) => tracing::warn!("sfsq: timeline failed for {}: {e}", path.display()),
         }
     }
 
@@ -265,7 +268,7 @@ fn build_merged_logs_response(
     });
     let page = select_page(&files, &filter, window_ns, anchor, req.direction, req.last)
         .unwrap_or_else(|e| {
-            tracing::warn!("otel-logs: page selection failed: {e}");
+            tracing::warn!("sfsq: page selection failed: {e}");
             Page::default()
         });
     let (columns, data) = build_table(&page, &column_fields, &facetable);
@@ -579,7 +582,7 @@ fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
 
 /// Resolve a request's `[after, before)` to a usable time window.
 /// Returns the inputs verbatim when they form a valid non-empty
-/// range; falls back to the last [`DEFAULT_WINDOW_SECS`] computed
+/// range; falls back to the last `DEFAULT_WINDOW_SECS` computed
 /// from system time otherwise — the legacy "no time bound" form
 /// `(0, 0)` and any inverted / zero-width window.
 ///

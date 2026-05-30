@@ -1,12 +1,12 @@
-//! Opaque pagination cursor for the otel-logs row table.
+//! Opaque pagination cursor for the log-row table.
 //!
 //! Encodes the global total order over log rows — `(timestamp_ns,
 //! file_seq, position)` — as a compact colon-delimited string. It rides
-//! in the response's hidden cursor column and the UI echoes it back
-//! verbatim as the `anchor` request param. The `:` separators keep it
-//! non-numeric, which the cloud-frontend histogram-hover handler
-//! tolerates (it NaN-guards a numeric parse of the pagination column;
-//! a purely numeric anchor would instead coerce to a wrong value).
+//! in the response's hidden cursor column and the consumer echoes it
+//! back verbatim as the `anchor` request param. The `:` separators keep
+//! it non-numeric, which the consuming UI relies on: it NaN-guards a
+//! numeric parse of the pagination column, so a purely numeric anchor
+//! would instead coerce to a wrong value.
 
 /// A decoded pagination cursor.
 ///
