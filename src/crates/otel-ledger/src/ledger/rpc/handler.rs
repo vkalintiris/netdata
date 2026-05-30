@@ -21,9 +21,7 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use sfsq::logs::{
-    InfoResponse, LogsResult, LogsRequest, LogsResponse, effective_window, run,
-};
+use sfsq::logs::{InfoResponse, LogsRequest, LogsResponse, LogsResult, run};
 
 use crate::registry::TenantRegistries;
 
@@ -45,29 +43,31 @@ impl FunctionHandler for OtelLogsHandler {
     async fn on_call(
         &self,
         _ctx: FunctionCallContext,
-        mut req: Self::Request,
+        req: Self::Request,
     ) -> netdata_plugin_error::Result<Self::Response> {
         if req.info {
             return Ok(LogsResponse::Info(InfoResponse::default()));
         }
 
-        // Resolve the (possibly defaulted) request window, then
-        // enumerate the SFST candidates overlapping it under a brief
-        // read lock — dropped before any I/O.
-        (req.after, req.before) = effective_window(req.after, req.before);
+        // Settle the query window once — defaulting + bucket alignment —
+        // then bundle it with its histogram grid as a `PreparedQuery`.
+        // Candidate selection and the query share this settled window.
+        let last = req.last;
+        let query = req.prepare();
+        let time_range = query.time_range();
         let candidates = {
             let guard = self.registries.read().await;
-            let query = file_registry::Query {
-                time_range: req.after..req.before,
+            let q = file_registry::Query {
+                time_range: time_range.clone(),
                 stream: None,
             };
-            guard.sfst_candidates(&query)
+            guard.sfst_candidates(&q)
         };
 
         // The query is synchronous and CPU/IO-bound (opens + decompresses
         // SFSTs); run it off the runtime thread.
-        let (after, before, last) = (req.after, req.before, req.last);
-        let response = tokio::task::spawn_blocking(move || run(candidates, req))
+        let (after, before) = (time_range.start, time_range.end);
+        let response = tokio::task::spawn_blocking(move || run(candidates, query))
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("otel-logs blocking task failed: {e}");

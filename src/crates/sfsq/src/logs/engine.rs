@@ -6,11 +6,13 @@
 //! request-aligned bucket grid, paginates and materializes a page of
 //! rows, and merges everything into a single [`LogsResult`].
 //!
-//! Pure and synchronous — no I/O scheduling, no locks. The caller
-//! resolves the request window via [`effective_window`], selects the
-//! candidates whose range overlaps it, and — since the query reads and
-//! decompresses files — is expected to run [`run`] off any async
-//! runtime thread.
+//! The caller first calls [`LogsRequest::prepare`] to settle the request
+//! window (defaulting + bucket alignment) and bundle it with the shared
+//! grid into a [`PreparedQuery`], selects the candidates whose range
+//! overlaps [`PreparedQuery::time_range`], then hands the prepared query
+//! to [`run`]. `run` itself is pure and synchronous — no I/O scheduling,
+//! no locks — but since it reads and decompresses files the caller is
+//! expected to invoke it off any async runtime thread.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -76,39 +78,79 @@ pub struct SfstCandidate {
     pub path: std::path::PathBuf,
 }
 
-/// Resolve the bucket grid for the (effective) request window and run
-/// the merged query. `req.after`/`req.before` are assumed already
-/// defaulted by [`effective_window`]; this snaps them outward to a
-/// "nice" bucket width, builds the shared grid, and delegates to
-/// `build_merged_logs_response`. An empty candidate set yields the
-/// empty envelope aligned to that window.
+/// A query whose window has been settled and whose histogram grid has
+/// been derived — the only input [`run`] accepts. Produced by
+/// [`LogsRequest::prepare`]. Bundling the request with its grid means the
+/// two reach [`run`] together: they can't be passed mismatched, and a
+/// raw, unprepared request can't reach `run` at all.
+pub struct PreparedQuery {
+    request: LogsRequest,
+    grid: sfst::Grid,
+}
+
+impl PreparedQuery {
+    /// The settled query window `[after, before)` in seconds — for
+    /// enumerating the SFST candidates whose range overlaps it before
+    /// handing this query to [`run`].
+    pub fn time_range(&self) -> std::ops::Range<u32> {
+        self.request.after..self.request.before
+    }
+}
+
+/// Run the merged query over the candidate files.
+///
+/// `query` carries the settled window and its grid (see
+/// [`LogsRequest::prepare`]), keeping the window, the per-file timelines,
+/// and the row clipping all anchored to the same geometry. An empty
+/// candidate set yields the empty envelope aligned to that window.
 ///
 /// Pure sync — the caller is expected to run it off any async runtime
 /// thread.
-pub fn run(candidates: Vec<SfstCandidate>, mut req: LogsRequest) -> LogsResult {
-    // Snap the window outward to multiples of a "nice" bucket width.
-    // This stabilises the histogram x-axis across the UI's per-second
-    // polling: successive polls within the same bucket-width slot all
-    // see identical `[after, before)`, so the chart only shifts when
-    // crossing a real boundary.
-    let span_s = req.before.saturating_sub(req.after);
-    let bucket_width_s = bucket_width_for_span_s(span_s);
-    (req.after, req.before) = align_window(req.after, req.before, bucket_width_s);
-
+pub fn run(candidates: Vec<SfstCandidate>, query: PreparedQuery) -> LogsResult {
+    let PreparedQuery { request, grid } = query;
     if candidates.is_empty() {
-        return LogsResult::empty_stub(req.after, req.before, req.last);
+        return LogsResult::empty_stub(request.after, request.before, request.last);
     }
 
-    // Bucket grid derived directly from the aligned window —
-    // `bucket_width_s` divides `(before - after)` exactly by
-    // construction, so no `div_ceil` is needed. All per-file timelines
-    // share this grid and are directly mergeable.
-    let grid = sfst::Grid::new(
-        (req.after as i64) * NS_PER_S,
-        (bucket_width_s as i64) * NS_PER_S,
-        ((req.before - req.after) / bucket_width_s) as usize,
-    );
-    build_merged_logs_response(candidates, req, grid)
+    build_merged_logs_response(candidates, request, grid)
+}
+
+impl LogsRequest {
+    /// Settle this request's query window and bundle it with the
+    /// histogram grid that window implies into a [`PreparedQuery`] — the
+    /// single place the window is resolved, before candidate selection or
+    /// the query reads it.
+    ///
+    /// First fills the default window when `[after, before)` is absent or
+    /// malformed (the legacy `(0, 0)` "no bound" form, or any inverted /
+    /// zero-width range), then snaps the window outward to a "nice" bucket
+    /// width. The settled window, the row clipping, and the grid all share
+    /// that width, so the grid's buckets tile the window exactly and can
+    /// never disagree with it.
+    ///
+    /// Snapping outward stabilises the histogram x-axis across the UI's
+    /// per-second polling: successive polls within the same bucket-width
+    /// slot resolve to the same window and grid, so the chart only shifts
+    /// when crossing a real boundary.
+    pub fn prepare(mut self) -> PreparedQuery {
+        (self.after, self.before) = effective_window(self.after, self.before);
+        let span_s = self.before.saturating_sub(self.after);
+        let bucket_width_s = bucket_width_for_span_s(span_s);
+        (self.after, self.before) = align_window(self.after, self.before, bucket_width_s);
+
+        // `bucket_width_s` divides `(before - after)` exactly after
+        // alignment, so no `div_ceil` is needed. Every per-file timeline
+        // is built on this grid and is therefore directly mergeable.
+        let grid = sfst::Grid::new(
+            (self.after as i64) * NS_PER_S,
+            (bucket_width_s as i64) * NS_PER_S,
+            ((self.before - self.after) / bucket_width_s) as usize,
+        );
+        PreparedQuery {
+            request: self,
+            grid,
+        }
+    }
 }
 
 /// Open every SFST candidate, run the three queries per file against
@@ -580,16 +622,17 @@ fn align_window(after: u32, before: u32, width_s: u32) -> (u32, u32) {
     (aligned_after, aligned_before)
 }
 
-/// Resolve a request's `[after, before)` to a usable time window.
-/// Returns the inputs verbatim when they form a valid non-empty
-/// range; falls back to the last `DEFAULT_WINDOW_SECS` computed
-/// from system time otherwise — the legacy "no time bound" form
-/// `(0, 0)` and any inverted / zero-width window.
+/// Resolve a request's `[after, before)` to a usable time window — the
+/// defaulting step of [`LogsRequest::prepare`]. Returns the inputs
+/// verbatim when they form a valid non-empty range; falls back to the
+/// last [`DEFAULT_WINDOW_SECS`] computed from system time otherwise — the
+/// legacy "no time bound" form `(0, 0)` and any inverted / zero-width
+/// window.
 ///
-/// A defaulted window with no overlapping data returns the empty
-/// envelope just like an explicit one; the handler does not
-/// second-guess the caller by reaching for the most-recent file.
-pub fn effective_window(after: u32, before: u32) -> (u32, u32) {
+/// A defaulted window with no overlapping data returns the empty envelope
+/// just like an explicit one; the query does not second-guess the caller
+/// by reaching for the most-recent file.
+fn effective_window(after: u32, before: u32) -> (u32, u32) {
     let malformed = (after == 0 && before == 0) || after >= before;
     if !malformed {
         return (after, before);

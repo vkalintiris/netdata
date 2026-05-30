@@ -20,6 +20,6 @@ mod wire;
 // The crate's public log-query API. Internals (the SFST→UI adapters,
 // the cursor codec, the wire sub-structs) stay module-private; only
 // these are re-exported.
-pub use engine::{SfstCandidate, effective_window, run};
+pub use engine::{PreparedQuery, SfstCandidate, run};
 pub use types::{InfoResponse, LogsRequest, LogsResponse};
 pub use wire::LogsResult;
