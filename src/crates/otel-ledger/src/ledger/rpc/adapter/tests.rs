@@ -159,7 +159,7 @@ fn histogram_with_zero_buckets_still_well_formed() {
 fn available_histograms_enumerates_fields_in_order() {
     // The engine already excludes high-card fields, so the converter is
     // a straight enumeration in field order.
-    let fields = vec![
+    let fields: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "level".into(),
             cardinality: 3,
@@ -170,7 +170,8 @@ fn available_histograms_enumerates_fields_in_order() {
             cardinality: 200,
             tier: sfst::FieldTier::Mid,
         },
-    ];
+    ]
+    .into();
     let av = available_histograms_from_fields(&fields);
     let names: Vec<&str> = av.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, vec!["level", "host"]);

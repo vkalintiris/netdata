@@ -19,7 +19,7 @@ fn pick_histogram_field_defaults_to_severity_text() {
 fn pick_facet_fields_defaults_to_severity_text() {
     // Empty request → exactly the single default facet, regardless of
     // what other low-card fields the file table carries.
-    let fields = vec![
+    let fields: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "service".into(),
             cardinality: 5,
@@ -30,7 +30,8 @@ fn pick_facet_fields_defaults_to_severity_text() {
             cardinality: 2,
             tier: sfst::FieldTier::Low,
         },
-    ];
+    ]
+    .into();
     let picked = pick_facet_fields(&[], &fields);
     assert_eq!(picked, vec!["severity_text".to_string()]);
 }
@@ -39,11 +40,12 @@ fn pick_facet_fields_defaults_to_severity_text() {
 fn pick_facet_fields_honors_explicit_request() {
     // Explicit selections are returned as-is; no cardinality cap. A
     // mid-card field the user asked for is kept.
-    let fields = vec![sfst::FieldEntry {
+    let fields: sfst::FieldTable = vec![sfst::FieldEntry {
         name: "noisy".into(),
         cardinality: 500,
         tier: sfst::FieldTier::Mid,
-    }];
+    }]
+    .into();
     let picked = pick_facet_fields(&["noisy".to_string()], &fields);
     assert_eq!(picked, vec!["noisy".to_string()]);
 }
@@ -52,7 +54,7 @@ fn pick_facet_fields_honors_explicit_request() {
 fn pick_facet_fields_drops_explicit_high_card_and_unknown() {
     // Explicit requests are still filtered: a high-card field would
     // make facets() error, and an unknown field has no entry.
-    let fields = vec![
+    let fields: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "trace_id".into(),
             cardinality: 50_000,
@@ -63,7 +65,8 @@ fn pick_facet_fields_drops_explicit_high_card_and_unknown() {
             cardinality: 5,
             tier: sfst::FieldTier::Low,
         },
-    ];
+    ]
+    .into();
     let picked = pick_facet_fields(
         &[
             "trace_id".to_string(),

@@ -376,7 +376,7 @@ pub fn build_and_write(
     )?);
 
     // Field table, ordered low → mid → high (each tier sorted by name).
-    let fields: Vec<FieldEntry> = wal_index
+    let fields: crate::FieldTable = wal_index
         .low_fields()
         .iter()
         .map(|(name, ids)| FieldEntry {

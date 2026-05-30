@@ -305,7 +305,7 @@ fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
 /// Build the `available_histograms` list from the engine's available
 /// (low/mid-card) field set. The engine already excludes high-card
 /// fields, so this is a straight enumeration in field order.
-fn available_histograms_from_fields(fields: &[sfst::FieldEntry]) -> Vec<AvailableHistogram> {
+fn available_histograms_from_fields(fields: &sfst::FieldTable) -> Vec<AvailableHistogram> {
     fields
         .iter()
         .enumerate()

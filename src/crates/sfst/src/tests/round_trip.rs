@@ -46,7 +46,7 @@ fn sample_metadata() -> Metadata {
             mid_end: KvId(5),
             high_end: KvId(8),
         },
-        fields: Vec::new(),
+        fields: Default::default(),
     }
 }
 
@@ -150,7 +150,7 @@ fn round_trip_fields_and_secondary_chunks() {
             mid_end: KvId(6),
             high_end: KvId(7),
         },
-        fields,
+        fields: fields.into(),
     };
 
     let primary = build_primary(&["level=info"]);
@@ -250,7 +250,8 @@ fn full_file_round_trip() {
         name: "level".into(),
         cardinality: 3,
         tier: FieldTier::Low,
-    }];
+    }]
+    .into();
     let primary = build_primary(&["level=info"]);
     let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0)]];
     let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000];
@@ -310,7 +311,8 @@ fn round_trip_multi_batch_stream() {
                 cardinality: 50_000,
                 tier: FieldTier::High,
             },
-        ],
+        ]
+        .into(),
     };
 
     let primary = build_primary(&["level=info"]);

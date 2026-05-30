@@ -214,7 +214,7 @@ fn sections(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut high_total = 0usize;
     let mut mid_idx = 0u16;
     let mut high_idx = 0u16;
-    for field in fields {
+    for field in fields.iter() {
         match field.tier {
             FieldTier::Low => continue,
             FieldTier::Mid => {

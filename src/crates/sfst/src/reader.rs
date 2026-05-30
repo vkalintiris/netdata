@@ -119,7 +119,7 @@ impl<'a> Reader<'a> {
 
     /// Field table — convenience accessor for `metadata().fields`.
     pub fn fields(&self) -> Result<&[FieldEntry], Error> {
-        Ok(self.metadata()?.fields.as_slice())
+        Ok(&self.metadata()?.fields)
     }
 
     /// Number of mid-cardinality fields (one secondary chunk per mid

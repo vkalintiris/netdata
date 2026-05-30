@@ -104,7 +104,7 @@ fn union_field_tables_drops_field_high_in_any_file() {
     // File A: `level` is Low (card 3); File B: `level` is High (card 50k).
     // Merged should DROP `level` entirely — it's high-card in B, so
     // facets()/timeline() would error if a consumer picked it.
-    let a = vec![
+    let a: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "level".into(),
             cardinality: 3,
@@ -115,8 +115,9 @@ fn union_field_tables_drops_field_high_in_any_file() {
             cardinality: 5,
             tier: sfst::FieldTier::Low,
         },
-    ];
-    let b = vec![
+    ]
+    .into();
+    let b: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "level".into(),
             cardinality: 50_000,
@@ -127,9 +128,10 @@ fn union_field_tables_drops_field_high_in_any_file() {
             cardinality: 10,
             tier: sfst::FieldTier::Low,
         },
-    ];
+    ]
+    .into();
 
-    let merged = union_field_tables(&[a.as_slice(), b.as_slice()]);
+    let merged = union_field_tables(&[a, b]);
     let names: Vec<&str> = merged.iter().map(|f| f.name.as_str()).collect();
     // `level` dropped; remaining fields sorted by name.
     assert_eq!(names, vec!["host", "service"]);
@@ -139,17 +141,19 @@ fn union_field_tables_drops_field_high_in_any_file() {
 fn union_field_tables_keeps_max_cardinality() {
     // Same field across files with different cardinalities: union keeps
     // the max as a conservative estimate.
-    let a = vec![sfst::FieldEntry {
+    let a: sfst::FieldTable = vec![sfst::FieldEntry {
         name: "level".into(),
         cardinality: 3,
         tier: sfst::FieldTier::Low,
-    }];
-    let b = vec![sfst::FieldEntry {
+    }]
+    .into();
+    let b: sfst::FieldTable = vec![sfst::FieldEntry {
         name: "level".into(),
         cardinality: 20,
         tier: sfst::FieldTier::Mid,
-    }];
-    let merged = union_field_tables(&[a.as_slice(), b.as_slice()]);
+    }]
+    .into();
+    let merged = union_field_tables(&[a, b]);
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].name, "level");
     assert_eq!(merged[0].cardinality, 20);

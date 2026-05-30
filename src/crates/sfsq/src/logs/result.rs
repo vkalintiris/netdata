@@ -28,7 +28,7 @@ pub struct LogsData {
     /// Low/mid-cardinality fields across all candidate files — the
     /// fields usable both as histogram dimensions and as facets (any
     /// field that is high-cardinality in *any* file is excluded).
-    pub available_fields: Vec<sfst::FieldEntry>,
+    pub available_fields: sfst::FieldTable,
     /// The row-table column schema: the union of every candidate file's
     /// field names, all tiers (so high-card attributes still get a
     /// column), sorted.
@@ -49,9 +49,6 @@ impl LogsData {
     ///
     /// [`available_fields`]: LogsData::available_fields
     pub fn facetable(&self) -> BTreeSet<&str> {
-        self.available_fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect()
+        self.available_fields.names().collect()
     }
 }

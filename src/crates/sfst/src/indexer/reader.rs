@@ -81,7 +81,7 @@ impl<'a> IndexReader<'a> {
     // ── Field table ─────────────────────────────────────────────────
 
     /// The field table (carried inside [`Metadata`]).
-    pub fn field_table(&self) -> &[FieldEntry] {
+    pub fn field_table(&self) -> &crate::FieldTable {
         &self.metadata().fields
     }
 
@@ -488,7 +488,7 @@ impl<'a> IndexReader<'a> {
     fn locate_field(&self, field_name: &str) -> Option<FieldLocation> {
         let mut mid_idx = 0u16;
         let mut high_idx = 0u16;
-        for f in &self.metadata().fields {
+        for f in self.metadata().fields.iter() {
             if f.name == field_name {
                 return Some(match f.tier {
                     FieldTier::Low => FieldLocation::Low,
@@ -512,7 +512,7 @@ impl<'a> IndexReader<'a> {
         let id_ranges = &self.metadata().id_ranges;
         let mut kv = id_ranges.mid_end.0;
         let mut current = 0u16;
-        for f in &self.metadata().fields {
+        for f in self.metadata().fields.iter() {
             if let FieldTier::High = f.tier {
                 if current == high_idx {
                     return KvId(kv + local as u32);

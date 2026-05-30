@@ -37,7 +37,7 @@ pub struct Summary {
 pub struct Metadata {
     pub histogram: Histogram,
     pub id_ranges: IdRanges,
-    pub fields: Vec<FieldEntry>,
+    pub fields: FieldTable,
 }
 
 /// Sparse timestamp histogram: one entry per second that has at least
@@ -89,6 +89,62 @@ pub enum FieldTier {
     Low,
     Mid,
     High,
+}
+
+impl FieldEntry {
+    /// High-cardinality — rejected by `facets`/`timeline`, so not
+    /// offerable as a facet or histogram dimension.
+    pub fn is_high_card(&self) -> bool {
+        matches!(self.tier, FieldTier::High)
+    }
+}
+
+/// A file's field table: its fields with cardinality and tier, ordered
+/// low → mid → high then by name (see [`FieldEntry`]).
+///
+/// Readers walk it to count tiers, resolve a field's tier by name, and
+/// discover which secondary chunks a file carries; query layers walk it
+/// to pick facet / histogram fields. Serializes transparently as its
+/// inner `Vec<FieldEntry>`, and derefs to `[FieldEntry]` so slice
+/// operations (`iter`, indexing, `len`) work directly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FieldTable(Vec<FieldEntry>);
+
+impl FieldTable {
+    /// The entry for `name`, or `None` if absent from this table.
+    pub fn get(&self, name: &str) -> Option<&FieldEntry> {
+        self.0.iter().find(|f| f.name == name)
+    }
+
+    /// Whether this table carries a field named `name`.
+    pub fn contains(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// The field names, in table order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|f| f.name.as_str())
+    }
+}
+
+impl std::ops::Deref for FieldTable {
+    type Target = [FieldEntry];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Vec<FieldEntry>> for FieldTable {
+    fn from(entries: Vec<FieldEntry>) -> Self {
+        Self(entries)
+    }
+}
+
+impl FromIterator<FieldEntry> for FieldTable {
+    fn from_iter<I: IntoIterator<Item = FieldEntry>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
 }
 
 // ── PRIM / secondary chunks ──────────────────────────────────────

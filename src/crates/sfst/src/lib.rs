@@ -61,7 +61,8 @@ pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u6
     file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
 }
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata, Summary,
+    BitmapValue, FieldEntry, FieldTable, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata,
+    Summary,
 };
 pub use writer::{Writer, pack};
 

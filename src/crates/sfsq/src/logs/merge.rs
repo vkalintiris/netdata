@@ -117,14 +117,14 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 /// `cardinality` values are not summed (the concept is per-file, not
 /// global); the union keeps the maximum as a conservative estimate.
 /// Output is sorted by name.
-pub fn union_field_tables(per_file: &[&[sfst::FieldEntry]]) -> Vec<sfst::FieldEntry> {
+pub fn union_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
     use std::collections::BTreeMap;
 
     // name → (max_cardinality_so_far, tier, ever_high_card)
     let mut by_name: BTreeMap<String, (u32, sfst::FieldTier, bool)> = BTreeMap::new();
     for table in per_file {
-        for f in *table {
-            let is_high = matches!(f.tier, sfst::FieldTier::High);
+        for f in table.iter() {
+            let is_high = f.is_high_card();
             by_name
                 .entry(f.name.clone())
                 .and_modify(|(card, tier, ever_high)| {

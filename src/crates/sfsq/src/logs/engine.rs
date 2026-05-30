@@ -89,11 +89,11 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut reader_paths: Vec<&PathBuf> = Vec::new();
     let mut reader_seqs: Vec<u64> = Vec::new();
-    let mut field_tables: Vec<Vec<sfst::FieldEntry>> = Vec::new();
+    let mut field_tables: Vec<sfst::FieldTable> = Vec::new();
     for (bytes, path, seq) in &opened {
         match sfst::IndexReader::open(bytes) {
             Ok(reader) => {
-                field_tables.push(reader.field_table().to_vec());
+                field_tables.push(reader.field_table().clone());
                 reader_paths.push(path);
                 reader_seqs.push(*seq);
                 readers.push(reader);
@@ -110,7 +110,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             facets: Vec::new(),
             histogram_field,
             histogram: empty_timeline(grid),
-            available_fields: Vec::new(),
+            available_fields: sfst::FieldTable::default(),
             columns: Vec::new(),
             rows: Vec::new(),
             has_newer: false,
@@ -120,8 +120,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
 
     // Picked facet field set against the unioned table — gives a
     // consumer a consistent facet sidebar across files.
-    let table_refs: Vec<&[sfst::FieldEntry]> = field_tables.iter().map(|t| t.as_slice()).collect();
-    let unioned = union_field_tables(&table_refs);
+    let unioned = union_field_tables(&field_tables);
     let facet_fields = pick_facet_fields(&query.facet_fields, &unioned);
 
     // Every per-file query is bounded by the same grid, so matched,
@@ -142,7 +141,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         // the whole file.
         let file_facet_fields: Vec<String> = facet_fields
             .iter()
-            .filter(|name| reader.field_table().iter().any(|f| f.name == **name))
+            .filter(|name| reader.field_table().contains(name))
             .cloned()
             .collect();
         match reader.facets(&file_facet_fields, &filter, grid.range_ns()) {
@@ -175,9 +174,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     // column — sorted for a stable schema.
     let mut field_set: BTreeSet<String> = BTreeSet::new();
     for t in &field_tables {
-        for f in t {
-            field_set.insert(f.name.clone());
-        }
+        field_set.extend(t.names().map(str::to_owned));
     }
     let columns: Vec<String> = field_set.into_iter().collect();
 
@@ -378,19 +375,15 @@ fn pick_histogram_field(requested: Option<&str>) -> String {
 /// [`DEFAULT_FACET_FIELD`]; we don't try to auto-curate a wider set (see
 /// that constant). Explicit `requested` fields are honored as-is, modulo
 /// high-card / unknown fields (those would error or surface no options).
-fn pick_facet_fields(requested: &[String], fields: &[sfst::FieldEntry]) -> Vec<String> {
+fn pick_facet_fields(requested: &[String], fields: &sfst::FieldTable) -> Vec<String> {
     if requested.is_empty() {
         return vec![DEFAULT_FACET_FIELD.to_string()];
     }
     requested
         .iter()
-        .filter(|name| fields.iter().any(|f| f.name == **name && !is_high_card(f)))
+        .filter(|name| fields.get(name).is_some_and(|f| !f.is_high_card()))
         .cloned()
         .collect()
-}
-
-fn is_high_card(f: &sfst::FieldEntry) -> bool {
-    matches!(f.tier, sfst::FieldTier::High)
 }
 
 #[cfg(test)]

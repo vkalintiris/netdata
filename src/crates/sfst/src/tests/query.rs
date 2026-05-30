@@ -81,7 +81,8 @@ fn build_query_fixture() -> Vec<u8> {
                 cardinality: 2,
                 tier: FieldTier::Low,
             },
-        ],
+        ]
+        .into(),
     };
     let timestamps: Vec<i64> = (0..6)
         .map(|i| 1_700_000_000i64 * 1_000_000_000 + i * 1_000_000_000)
