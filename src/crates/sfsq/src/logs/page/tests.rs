@@ -71,3 +71,34 @@ fn page_merge_forward_orders_oldest_first_and_outputs_newest_first() {
         "has_opposite -> rows older than the anchor"
     );
 }
+
+#[test]
+fn beyond_boundary_backward_skips_strictly_older_files() {
+    // Boundary at t = 100s. Backward looks for cursors *newer* than the
+    // boundary, so a file is skippable only if its whole range is older.
+    let boundary = cursor_at(100 * NS_PER_S);
+    // Ends at 99s → newest possible cursor < 100s → can't beat → skip.
+    assert!(beyond_boundary(Direction::Backward, boundary, 0, 99));
+    // Ends at 100s → could tie within the boundary second → keep.
+    assert!(!beyond_boundary(Direction::Backward, boundary, 0, 100));
+    // Ends at 101s → clearly overlaps → keep.
+    assert!(!beyond_boundary(Direction::Backward, boundary, 0, 101));
+}
+
+#[test]
+fn beyond_boundary_forward_skips_strictly_newer_files() {
+    // Boundary at t = 100s. Forward looks for cursors *older* than the
+    // boundary, so a file is skippable only if its whole range is newer.
+    let boundary = cursor_at(100 * NS_PER_S);
+    // Starts at 101s → oldest possible cursor > 100s → can't beat → skip.
+    assert!(beyond_boundary(Direction::Forward, boundary, 101, u32::MAX));
+    // Starts at 100s → could tie within the boundary second → keep.
+    assert!(!beyond_boundary(
+        Direction::Forward,
+        boundary,
+        100,
+        u32::MAX
+    ));
+    // Starts at 99s → clearly overlaps → keep.
+    assert!(!beyond_boundary(Direction::Forward, boundary, 99, u32::MAX));
+}

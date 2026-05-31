@@ -16,7 +16,6 @@
 //! `file_seq`.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use memmap2::Mmap;
 
@@ -24,6 +23,8 @@ use super::cursor::Cursor;
 use super::engine::SfstCandidate;
 use super::mmap;
 use super::query::{Direction, LogsQuery, build_filter};
+
+const NS_PER_S: i64 = 1_000_000_000;
 
 /// One file's (or one node's) page candidates: the window-matching
 /// cursors on the requested side of the anchor, ordered closest-to-anchor
@@ -225,66 +226,93 @@ pub(super) struct Page {
     pub(super) has_older: bool,
 }
 
-/// Open the candidate files and select + materialize one page across them.
+/// Open the candidate files in time-priority order and materialize one
+/// page, stopping as soon as the remaining files can't contribute.
 ///
-/// This re-maps the files step 1 already touched (see the module docs):
-/// step 1's shards are fully owned and dropped their readers, so the page
-/// path maps the files again. The readers borrow from the mappings, so the
-/// mappings are held alive for the duration. Files that fail to map,
-/// parse, or evaluate are logged and skipped; an empty candidate set
-/// yields an empty page. Each opened file's cold suffix is released from
-/// the page cache once the page is materialized.
+/// Candidates are processed closest-to-anchor first (backward: newest
+/// file first; forward: oldest first). Each file's bounded candidates fold
+/// into a running merge; once the page is full *and* the next file is
+/// entirely beyond the page boundary, the rest are skipped — never opened
+/// or decoded (they pay only the up-front mmap, which reads nothing).
+///
+/// The files are mapped up front so the readers, which borrow the
+/// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
+/// logged and skipped. Each opened file's cold suffix is released from the
+/// page cache once the page is materialized.
 pub(super) fn paginate(
     candidates: &[SfstCandidate],
     query: &LogsQuery,
     anchor: Option<Cursor>,
 ) -> Page {
-    // Map every candidate first; readers borrow the mappings, so the
-    // mappings must be fully in place before any reader opens (a later
-    // push could reallocate and invalidate an earlier borrow).
-    let mut mappings: Vec<(Mmap, &Path, u64)> = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        if let Some(mapping) = mmap::map_file(&candidate.path) {
-            mappings.push((mapping, candidate.path.as_path(), candidate.seq));
+    // Process closest-to-anchor first so we can stop once the page is full:
+    // backward walks newest -> oldest, forward oldest -> newest.
+    let mut order: Vec<&SfstCandidate> = candidates.iter().collect();
+    match query.direction {
+        Direction::Backward => {
+            order.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
         }
+        Direction::Forward => order.sort_by_key(|c| c.summary.min_timestamp_s),
     }
 
-    // Open a reader per mapping, remembering which mapping it borrows so we
-    // can release that mapping's cold suffix afterwards.
+    // Map up front (cheap — no chunk is read until a reader opens) so the
+    // readers borrowing the mappings see a stable Vec.
+    let mappings: Vec<(Mmap, &SfstCandidate)> = order
+        .iter()
+        .filter_map(|candidate| mmap::map_file(&candidate.path).map(|m| (m, *candidate)))
+        .collect();
+
+    // Open + evaluate one file at a time, folding into a running merge, and
+    // stop once the page is full and the next file (hence every later one,
+    // since they're time-sorted) is entirely beyond the page boundary. The
+    // `+1` on the bound lets the root detect a row past the page edge.
+    let bound = Some(query.limit.saturating_add(1));
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut seqs: Vec<u64> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();
-    for (index, (mapping, path, seq)) in mappings.iter().enumerate() {
-        match sfst::IndexReader::open(mapping) {
-            Ok(reader) => {
-                readers.push(reader);
-                seqs.push(*seq);
-                reader_mapping.push(index);
+    let mut merged = PageShard::default();
+    for (index, (mapping, candidate)) in mappings.iter().enumerate() {
+        let reader = match sfst::IndexReader::open(mapping) {
+            Ok(reader) => reader,
+            Err(e) => {
+                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
+                continue;
             }
-            Err(e) => tracing::warn!("sfsq: failed to parse {}: {e}", path.display()),
+        };
+        match evaluate_page(&reader, candidate.seq, query, anchor, bound) {
+            Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
+            Err(e) => {
+                tracing::warn!(
+                    "sfsq: page candidates failed for {}: {e}",
+                    candidate.path.display()
+                );
+                continue;
+            }
+        }
+        readers.push(reader);
+        seqs.push(candidate.seq);
+        reader_mapping.push(index);
+
+        if query.limit > 0 && merged.cursors.len() > query.limit {
+            let boundary = merged.cursors[query.limit - 1];
+            if mappings.get(index + 1).is_some_and(|(_, next)| {
+                let summary = &next.summary;
+                beyond_boundary(
+                    query.direction,
+                    boundary,
+                    summary.min_timestamp_s,
+                    summary.max_timestamp_s,
+                )
+            }) {
+                break;
+            }
         }
     }
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(seqs.iter().copied()).collect();
 
-    // Map: one candidate shard per file, each bounded to the page size.
-    // A page of `limit` rows draws at most `limit` from any one file, so
-    // `limit + 1` candidates per file suffice — the `+1` lets the root
-    // detect a row beyond the page (the has-more flag). This is the
-    // bounded top-K: a node ships only a page-sized candidate set.
-    let bound = Some(query.limit.saturating_add(1));
-    let mut shards: Vec<PageShard> = Vec::with_capacity(files.len());
-    for (reader, seq) in &files {
-        match evaluate_page(reader, *seq, query, anchor, bound) {
-            Ok(shard) => shards.push(shard),
-            Err(e) => tracing::warn!("sfsq: page candidates failed: {e}"),
-        }
-    }
-
-    // Reduce + finalize: choose the page, then materialize its rows. A
-    // materialize failure collapses to an empty page rather than reporting
-    // has-more flags with no rows behind them.
-    let merged = PageShard::merge(shards, query.direction, bound);
+    // Finalize the page, then materialize its rows. A materialize failure
+    // collapses to an empty page rather than reporting has-more flags with
+    // no rows behind them.
     let selected = finalize_page(merged, query.direction, query.limit);
     let page = match materialize(&files, &selected) {
         Ok(rows) => Page {
@@ -298,11 +326,9 @@ pub(super) fn paginate(
         }
     };
 
-    // Release each opened file's cold suffix (the mid/high field chunks
-    // read for the string table and the stream batches read for
-    // materialization), keeping the hot prefix resident across queries.
-    // Compute the regions while the readers are alive, then drop the
-    // borrows before advising the mappings.
+    // Release each opened file's cold suffix (mid/high field chunks + stream
+    // batches), keeping the hot prefix resident. Compute the regions while
+    // the readers are alive, then drop the borrows before advising.
     let cold: Vec<(usize, (usize, usize))> = readers
         .iter()
         .zip(&reader_mapping)
@@ -315,6 +341,28 @@ pub(super) fn paginate(
     }
 
     page
+}
+
+/// Whether a candidate with second-granular range `[min_ts_s, max_ts_s]`
+/// lies entirely beyond the page boundary — so it (and, since candidates
+/// are processed in time-priority order, every one after it) cannot
+/// contribute a cursor nearer the anchor. `boundary` is the page's
+/// farthest-from-anchor cursor (the L-th).
+///
+/// Conservative across the second→nanosecond gap: a file is skipped only
+/// when its *entire* second-range is past the boundary, so a file that
+/// could still hold a contributing cursor is never skipped.
+fn beyond_boundary(direction: Direction, boundary: Cursor, min_ts_s: u32, max_ts_s: u32) -> bool {
+    match direction {
+        // Backward: the file's newest possible cursor is `< (max_ts_s + 1)·s`.
+        // If that's at or below the boundary, no cursor can sit nearer the
+        // anchor (a larger cursor) than the boundary.
+        Direction::Backward => (i64::from(max_ts_s) + 1) * NS_PER_S <= boundary.timestamp_ns,
+        // Forward: the file's oldest possible cursor is `>= min_ts_s·s`. If
+        // that's beyond the boundary, no cursor can sit nearer the anchor (a
+        // smaller cursor) than the boundary.
+        Direction::Forward => i64::from(min_ts_s) * NS_PER_S > boundary.timestamp_ns,
+    }
 }
 
 #[cfg(test)]
