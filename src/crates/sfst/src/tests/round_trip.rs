@@ -208,6 +208,60 @@ fn round_trip_fields_and_secondary_chunks() {
         reader.stream_batch(1),
         Err(Error::ChunkNotFound(1))
     ));
+
+    // `cold_field_region` spans exactly the mid + high field chunks.
+    let (cold_off, cold_len) = reader
+        .cold_field_region()
+        .expect("file has mid/high field chunks");
+    let cold = cold_off..cold_off + cold_len;
+    let span = |raw: &[u8]| {
+        let off = raw.as_ptr() as usize - buf.as_ptr() as usize;
+        off..off + raw.len()
+    };
+    // Each mid/high chunk lies fully inside the cold region.
+    for raw in [
+        reader.mid_field_raw(0).unwrap(),
+        reader.mid_field_raw(1).unwrap(),
+        reader.high_field_raw(0).unwrap(),
+    ] {
+        let s = span(raw);
+        assert!(
+            cold.start <= s.start && s.end <= cold.end,
+            "mid/high chunk {s:?} not inside cold region {cold:?}"
+        );
+    }
+    // The hot prefix (PRIM, TIMS) and the stream batch lie outside it.
+    for raw in [
+        reader.primary_raw().unwrap(),
+        reader.timestamps_raw().unwrap(),
+        reader.stream_batch_raw(0).unwrap(),
+    ] {
+        let s = span(raw);
+        assert!(
+            s.end <= cold.start || cold.end <= s.start,
+            "chunk {s:?} should be outside cold region {cold:?}"
+        );
+    }
+}
+
+#[test]
+fn cold_field_region_is_none_without_mid_or_high_chunks() {
+    // Metadata present (so num_mid/num_high resolve, here to 0) but only a
+    // primary FST — no mid/high field chunks. Regression: computing the
+    // empty cold region must yield None, not underflow.
+    let mut writer = Writer::new();
+    writer.set_metadata(pack(&sample_metadata(), 1).unwrap());
+    writer.set_primary(pack(&build_primary(&["level=info"]), 1).unwrap());
+    writer.set_timestamps(empty_timestamps());
+    writer.add_stream_batch(empty_stream_batch());
+
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+
+    let reader = Reader::open(&buf).unwrap();
+    assert_eq!(reader.num_mid().unwrap(), 0);
+    assert_eq!(reader.num_high().unwrap(), 0);
+    assert!(reader.cold_field_region().is_none());
 }
 
 #[test]

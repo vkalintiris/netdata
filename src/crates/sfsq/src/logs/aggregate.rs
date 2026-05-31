@@ -10,6 +10,8 @@
 //! That's the basis for fanning the query out across nodes without opening
 //! every file in one place.
 
+use memmap2::{Mmap, UncheckedAdvice};
+
 use super::engine::SfstCandidate;
 use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
 use super::query::{LogsQuery, build_filter};
@@ -120,17 +122,27 @@ impl LogsShard {
 /// high-card here is skipped; a field high-card in some *other* file is
 /// dropped later, in [`LogsShard::merge`].
 pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
-    let bytes = match std::fs::read(&candidate.path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(&candidate.path) {
+        Ok(file) => file,
         Err(e) => {
-            tracing::warn!("sfsq: failed to read {}: {e}", candidate.path.display());
+            tracing::warn!("sfsq: failed to open {}: {e}", candidate.path.display());
             return LogsShard::default();
         }
     };
-    let reader = match sfst::IndexReader::open(&bytes) {
+    // SAFETY: SFST files are immutable once the ingestor finalizes them
+    // (it rolls a new file rather than mutating), so a read-only memory
+    // map of one is sound for the reader's lifetime.
+    let mmap = match unsafe { Mmap::map(&file) } {
+        Ok(mmap) => mmap,
+        Err(e) => {
+            tracing::warn!("sfsq: failed to mmap {}: {e}", candidate.path.display());
+            return LogsShard::default();
+        }
+    };
+    let reader = match sfst::IndexReader::open(&mmap) {
         Ok(reader) => reader,
         Err(e) => {
-            tracing::warn!("sfsq: failed to open {}: {e}", candidate.path.display());
+            tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
             return LogsShard::default();
         }
     };
@@ -182,6 +194,16 @@ pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
         }
     };
 
+    // Drop the mid/high field chunks this query touched from the page
+    // cache so they don't evict the hot prefix (summary / metadata /
+    // timestamps / primary) across queries. Release the reader's borrows
+    // of the mapping before advising it.
+    let cold_region = reader.cold_field_region();
+    drop(reader);
+    if let Some(region) = cold_region {
+        release_cold_region(&mmap, region);
+    }
+
     LogsShard {
         matched,
         facets,
@@ -227,6 +249,40 @@ fn pick_facet_fields(requested: &[String], fields: &sfst::FieldTable) -> Vec<Str
         .filter(|name| fields.get(name).is_some_and(|f| !f.is_high_card()))
         .cloned()
         .collect()
+}
+
+/// The process's memory-page size, cached after the first lookup.
+fn page_size() -> usize {
+    use std::sync::OnceLock;
+    static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| {
+        // SAFETY: `sysconf(_SC_PAGESIZE)` takes no pointer arguments and
+        // cannot fail for this query.
+        let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if value > 0 { value as usize } else { 4096 }
+    })
+}
+
+/// Advise the kernel to drop a file's mid/high field-chunk pages from the
+/// page cache. `region` is the raw `(offset, len)` span sfst reports; it
+/// is aligned **inward** to whole pages so the advice never frees a
+/// neighbouring chunk's edge page (e.g. the primary FST's tail), then
+/// released in a single `madvise` call.
+fn release_cold_region(mmap: &Mmap, region: (usize, usize)) {
+    let (offset, len) = region;
+    let page = page_size();
+    let start = offset.next_multiple_of(page);
+    let end = (offset + len) / page * page;
+    if end <= start {
+        return; // span shorter than a page once aligned inward — nothing to drop
+    }
+    // SAFETY: the mapping is a read-only view of an immutable, finalized
+    // SFST file. `MADV_DONTNEED` frees only clean pages, which re-fault to
+    // identical bytes from the file on next access, so the mapping's
+    // contents are unchanged and any later borrow observes the same data.
+    unsafe {
+        let _ = mmap.unchecked_advise_range(UncheckedAdvice::DontNeed, start, end - start);
+    }
 }
 
 #[cfg(test)]

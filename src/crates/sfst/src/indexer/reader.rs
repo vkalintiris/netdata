@@ -85,6 +85,13 @@ impl<'a> IndexReader<'a> {
         &self.metadata().fields
     }
 
+    /// Byte span of the mid/high field chunks — the touch-then-drop region
+    /// a statistics query never retains. See
+    /// [`crate::Reader::cold_field_region`].
+    pub fn cold_field_region(&self) -> Option<(usize, usize)> {
+        self.sfst.cold_field_region()
+    }
+
     // ── Primary FST lookups ─────────────────────────────────────────
 
     /// Look up a low-card `key=value` pair in the primary FST.

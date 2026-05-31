@@ -16,3 +16,5 @@ path = "src/lib.rs"
 sfst = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
+memmap2 = { workspace = true }
+libc = { workspace = true }

@@ -146,6 +146,26 @@ impl<'a> Reader<'a> {
         Ok(u16::try_from(count).expect("high-card field count exceeds u16::MAX"))
     }
 
+    /// Byte span `(offset, len)` within the backing slice covering this
+    /// file's mid/high field chunks — the chunks a statistics query reads
+    /// only to resolve a filtered or faceted field, and never retains.
+    /// Offsets are relative to the start of the slice, so the span is
+    /// usable directly with an mmap's `advise_range`.
+    ///
+    /// The canonical layout places the field chunks contiguously between
+    /// the primary FST (the last hot-prefix chunk) and the first stream
+    /// batch, so the span is `[end of PRIM, start of SB0)`. Returns `None`
+    /// when there are no field chunks (the two boundaries coincide). The
+    /// span is **not** page-aligned — a caller advising the kernel should
+    /// align it inward to avoid touching a neighbouring chunk's edge page.
+    pub fn cold_field_region(&self) -> Option<(usize, usize)> {
+        let base = self.data.as_ptr() as usize;
+        let primary = self.primary_raw().ok()?;
+        let start = (primary.as_ptr() as usize - base) + primary.len();
+        let end = self.stream_batch_raw(0).ok()?.as_ptr() as usize - base;
+        if end > start { Some((start, end - start)) } else { None }
+    }
+
     // ── PRIM ─────────────────────────────────────────────────────────
 
     /// Decompress and deserialize the primary FST.
