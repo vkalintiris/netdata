@@ -209,46 +209,45 @@ fn round_trip_fields_and_secondary_chunks() {
         Err(Error::ChunkNotFound(1))
     ));
 
-    // `cold_field_region` spans exactly the mid + high field chunks.
-    let (cold_off, cold_len) = reader
-        .cold_field_region()
-        .expect("file has mid/high field chunks");
+    // `cold_region` is the suffix after the hot prefix: the mid/high field
+    // chunks and the stream batch fall inside; PRIM and TIMS stay outside.
+    let (cold_off, cold_len) = reader.cold_region().expect("file has chunks after PRIM");
     let cold = cold_off..cold_off + cold_len;
     let span = |raw: &[u8]| {
         let off = raw.as_ptr() as usize - buf.as_ptr() as usize;
         off..off + raw.len()
     };
-    // Each mid/high chunk lies fully inside the cold region.
+    // The cold suffix covers the mid/high field chunks and the stream batch.
     for raw in [
         reader.mid_field_raw(0).unwrap(),
         reader.mid_field_raw(1).unwrap(),
         reader.high_field_raw(0).unwrap(),
-    ] {
-        let s = span(raw);
-        assert!(
-            cold.start <= s.start && s.end <= cold.end,
-            "mid/high chunk {s:?} not inside cold region {cold:?}"
-        );
-    }
-    // The hot prefix (PRIM, TIMS) and the stream batch lie outside it.
-    for raw in [
-        reader.primary_raw().unwrap(),
-        reader.timestamps_raw().unwrap(),
         reader.stream_batch_raw(0).unwrap(),
     ] {
         let s = span(raw);
         assert!(
-            s.end <= cold.start || cold.end <= s.start,
-            "chunk {s:?} should be outside cold region {cold:?}"
+            cold.start <= s.start && s.end <= cold.end,
+            "chunk {s:?} not inside cold region {cold:?}"
+        );
+    }
+    // The hot prefix (PRIM, TIMS) precedes the cold suffix.
+    for raw in [
+        reader.primary_raw().unwrap(),
+        reader.timestamps_raw().unwrap(),
+    ] {
+        let s = span(raw);
+        assert!(
+            s.end <= cold.start,
+            "hot-prefix chunk {s:?} should precede cold region {cold:?}"
         );
     }
 }
 
 #[test]
-fn cold_field_region_is_none_without_mid_or_high_chunks() {
-    // Metadata present (so num_mid/num_high resolve, here to 0) but only a
-    // primary FST — no mid/high field chunks. Regression: computing the
-    // empty cold region must yield None, not underflow.
+fn cold_region_is_the_stream_batch_tail_without_mid_or_high() {
+    // No mid/high field chunks: the cold suffix is just the stream
+    // batch(es) right after PRIM. Regression: computing it must not
+    // underflow.
     let mut writer = Writer::new();
     writer.set_metadata(pack(&sample_metadata(), 1).unwrap());
     writer.set_primary(pack(&build_primary(&["level=info"]), 1).unwrap());
@@ -261,7 +260,11 @@ fn cold_field_region_is_none_without_mid_or_high_chunks() {
     let reader = Reader::open(&buf).unwrap();
     assert_eq!(reader.num_mid().unwrap(), 0);
     assert_eq!(reader.num_high().unwrap(), 0);
-    assert!(reader.cold_field_region().is_none());
+    // [end of PRIM, EOF) — here exactly the stream-batch chunk.
+    let (off, len) = reader.cold_region().expect("there are chunks after PRIM");
+    let sb = reader.stream_batch_raw(0).unwrap();
+    let sb_off = sb.as_ptr() as usize - buf.as_ptr() as usize;
+    assert!(off <= sb_off && sb_off + sb.len() <= off + len);
 }
 
 #[test]

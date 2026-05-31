@@ -85,11 +85,11 @@ impl<'a> IndexReader<'a> {
         &self.metadata().fields
     }
 
-    /// Byte span of the mid/high field chunks — the touch-then-drop region
-    /// a statistics query never retains. See
-    /// [`crate::Reader::cold_field_region`].
-    pub fn cold_field_region(&self) -> Option<(usize, usize)> {
-        self.sfst.cold_field_region()
+    /// Byte span of the cold suffix (mid/high field chunks + stream
+    /// batches) a query releases from the page cache once done. See
+    /// [`crate::Reader::cold_region`].
+    pub fn cold_region(&self) -> Option<(usize, usize)> {
+        self.sfst.cold_region()
     }
 
     // ── Primary FST lookups ─────────────────────────────────────────

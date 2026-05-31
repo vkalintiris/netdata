@@ -27,6 +27,7 @@ mod aggregate;
 mod cursor;
 mod engine;
 mod merge;
+mod mmap;
 mod page;
 mod query;
 mod result;

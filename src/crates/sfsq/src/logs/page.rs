@@ -18,8 +18,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use memmap2::Mmap;
+
 use super::cursor::Cursor;
 use super::engine::SfstCandidate;
+use super::mmap;
 use super::query::{Direction, LogsQuery, build_filter};
 
 /// One file's (or one node's) page candidates: the window-matching
@@ -224,34 +227,41 @@ pub(super) struct Page {
 
 /// Open the candidate files and select + materialize one page across them.
 ///
-/// This re-opens the files step 1 already read (see the module docs):
+/// This re-maps the files step 1 already touched (see the module docs):
 /// step 1's shards are fully owned and dropped their readers, so the page
-/// path opens the files again. The readers borrow from the byte buffers,
-/// so the buffers are held alive for the duration. Files that fail to
-/// read, open, or evaluate are logged and skipped; an empty candidate set
-/// yields an empty page.
+/// path maps the files again. The readers borrow from the mappings, so the
+/// mappings are held alive for the duration. Files that fail to map,
+/// parse, or evaluate are logged and skipped; an empty candidate set
+/// yields an empty page. Each opened file's cold suffix is released from
+/// the page cache once the page is materialized.
 pub(super) fn paginate(
     candidates: &[SfstCandidate],
     query: &LogsQuery,
     anchor: Option<Cursor>,
 ) -> Page {
-    let mut buffers: Vec<(Vec<u8>, &Path, u64)> = Vec::with_capacity(candidates.len());
+    // Map every candidate first; readers borrow the mappings, so the
+    // mappings must be fully in place before any reader opens (a later
+    // push could reallocate and invalidate an earlier borrow).
+    let mut mappings: Vec<(Mmap, &Path, u64)> = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        match std::fs::read(&candidate.path) {
-            Ok(bytes) => buffers.push((bytes, candidate.path.as_path(), candidate.seq)),
-            Err(e) => tracing::warn!("sfsq: failed to read {}: {e}", candidate.path.display()),
+        if let Some(mapping) = mmap::map_file(&candidate.path) {
+            mappings.push((mapping, candidate.path.as_path(), candidate.seq));
         }
     }
 
+    // Open a reader per mapping, remembering which mapping it borrows so we
+    // can release that mapping's cold suffix afterwards.
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut seqs: Vec<u64> = Vec::new();
-    for (bytes, path, seq) in &buffers {
-        match sfst::IndexReader::open(bytes) {
+    let mut reader_mapping: Vec<usize> = Vec::new();
+    for (index, (mapping, path, seq)) in mappings.iter().enumerate() {
+        match sfst::IndexReader::open(mapping) {
             Ok(reader) => {
                 readers.push(reader);
                 seqs.push(*seq);
+                reader_mapping.push(index);
             }
-            Err(e) => tracing::warn!("sfsq: failed to open {}: {e}", path.display()),
+            Err(e) => tracing::warn!("sfsq: failed to parse {}: {e}", path.display()),
         }
     }
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
@@ -276,7 +286,7 @@ pub(super) fn paginate(
     // has-more flags with no rows behind them.
     let merged = PageShard::merge(shards, query.direction, bound);
     let selected = finalize_page(merged, query.direction, query.limit);
-    match materialize(&files, &selected) {
+    let page = match materialize(&files, &selected) {
         Ok(rows) => Page {
             rows,
             has_newer: selected.has_newer,
@@ -286,7 +296,25 @@ pub(super) fn paginate(
             tracing::warn!("sfsq: materialize failed: {e}");
             Page::default()
         }
+    };
+
+    // Release each opened file's cold suffix (the mid/high field chunks
+    // read for the string table and the stream batches read for
+    // materialization), keeping the hot prefix resident across queries.
+    // Compute the regions while the readers are alive, then drop the
+    // borrows before advising the mappings.
+    let cold: Vec<(usize, (usize, usize))> = readers
+        .iter()
+        .zip(&reader_mapping)
+        .filter_map(|(reader, &index)| reader.cold_region().map(|region| (index, region)))
+        .collect();
+    drop(files);
+    drop(readers);
+    for (index, region) in cold {
+        mmap::release_cold_region(&mappings[index].0, region);
     }
+
+    page
 }
 
 #[cfg(test)]
