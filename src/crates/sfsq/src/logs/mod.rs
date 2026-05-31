@@ -30,6 +30,6 @@ mod query;
 mod result;
 
 pub use cursor::Cursor;
-pub use engine::{LogsShard, SfstCandidate, evaluate, run};
+pub use engine::{LogsShard, PageShard, SfstCandidate, evaluate, evaluate_page, run};
 pub use query::{Anchor, Direction, LogsQuery};
 pub use result::LogsData;

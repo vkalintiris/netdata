@@ -260,7 +260,6 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
 
     // Step 2: select and materialize one page across the same files.
-    let filter = build_filter(&query.selections);
     // Resolve the anchor to a cursor in the global total order. A row
     // cursor is used directly; a timestamp becomes a synthetic cursor at
     // the end of that instant (file_seq/position maxed), so a backward
@@ -273,7 +272,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             position: u32::MAX,
         },
     });
-    let page = paginate(&candidates, &filter, grid, anchor, query.direction, query.limit);
+    let page = paginate(&candidates, &query, anchor);
 
     LogsData {
         matched: stats.matched as usize,
@@ -298,36 +297,231 @@ fn empty_timeline(grid: sfst::Grid) -> sfst::Timeline {
     }
 }
 
-/// A page of materialized log rows plus the has-more flags a consumer
-/// uses to gate infinite scroll in each direction.
-#[derive(Default)]
-struct Page {
-    /// Rows newest-first (`rows[0]` is the newest).
-    rows: Vec<(Cursor, sfst::MaterializedRow)>,
-    /// An older row exists beyond the page.
-    has_older: bool,
-    /// A newer row exists beyond the page.
-    has_newer: bool,
+// ── Step 2: pagination + materialization ─────────────────────────────
+//
+// Returning a page is select-then-fetch, not a fold: it needs a global
+// order over cursors `(timestamp_ns, file_seq, position)` across files.
+// It decomposes into seams a cross-node fan-out reuses:
+//
+// - `evaluate_page` (map: one file -> its page candidates),
+// - `PageShard::merge` (reduce: combine candidate sets — associative),
+// - `finalize_page` (root: pick the page + the has-more flags),
+// - `materialize` (fetch: chosen cursors -> row bodies).
+//
+// `paginate` is the local orchestration of all four; a distributed parent
+// would run `merge`/`finalize_page` on candidate sets received from
+// children and route `materialize` back to the file's owning node by
+// `file_seq`.
+
+/// One file's (or one node's) page candidates: the window-matching
+/// cursors on the requested side of the anchor, ordered closest-to-anchor
+/// first, plus whether the file has any match on the *opposite* side
+/// (which becomes the opposite direction's has-more flag).
+///
+/// [`evaluate_page`] produces one per file; [`PageShard::merge`] folds
+/// them. The candidate list may be bounded to the page size (a later
+/// step) — all a fan-out needs to ship — or unbounded.
+#[derive(Debug, Default)]
+pub struct PageShard {
+    /// Candidate cursors, ordered closest-to-anchor first — the order
+    /// [`merge`](PageShard::merge) and `finalize_page` take a prefix of.
+    pub cursors: Vec<Cursor>,
+    /// Whether this shard has any match on the side of the anchor *away*
+    /// from the page direction (the source of the opposite has-more flag).
+    pub has_opposite: bool,
 }
 
-// ── Step 2: pagination + materialization ─────────────────────────────
+impl PageShard {
+    /// Reduce: combine page-candidate shards into one.
+    ///
+    /// Pools the candidates, re-orders them closest-to-anchor first for
+    /// `direction`, optionally keeps only the nearest `bound`, and ORs
+    /// `has_opposite`. Associative, so a node can merge the files it owns
+    /// and a parent can merge the node-shards the same way.
+    pub fn merge(shards: Vec<PageShard>, direction: Direction, bound: Option<usize>) -> PageShard {
+        let mut cursors: Vec<Cursor> = Vec::new();
+        let mut has_opposite = false;
+        for shard in shards {
+            cursors.extend(shard.cursors);
+            has_opposite |= shard.has_opposite;
+        }
+        order_by_closeness(&mut cursors, direction);
+        if let Some(bound) = bound {
+            cursors.truncate(bound);
+        }
+        PageShard {
+            cursors,
+            has_opposite,
+        }
+    }
+}
 
-/// Open the candidate files and select one page of rows across them.
+/// Map: evaluate one file's page candidates against the query.
+///
+/// Intersects the filter with the window, tags each matching position
+/// with its [`Cursor`], and splits at `anchor` (exclusive): the candidates
+/// are the matches on `query.direction`'s side, ordered closest-to-anchor
+/// first and optionally truncated to `bound`; `has_opposite` records
+/// whether any match falls on the other side. `anchor == None` starts at
+/// the edge — every match is a candidate and there is no opposite side.
+pub fn evaluate_page(
+    reader: &sfst::IndexReader<'_>,
+    seq: u64,
+    query: &LogsQuery,
+    anchor: Option<Cursor>,
+    bound: Option<usize>,
+) -> Result<PageShard, sfst::Error> {
+    let filter = build_filter(&query.selections);
+    let matched = reader.evaluate(&filter)? & &reader.range_bitmap(query.grid.range_ns())?;
+    let timestamps = reader.load_timestamps()?;
+
+    // Cursors for every match, ascending — within a file, position order
+    // is cursor order (timestamps are chronological and `seq` is constant).
+    let mut ascending: Vec<Cursor> = matched
+        .iter()
+        .map(|position| Cursor {
+            timestamp_ns: timestamps.get(position as usize).copied().unwrap_or(0),
+            file_seq: seq,
+            position,
+        })
+        .collect();
+
+    // Split at the anchor (exclusive). Backward's page side is `< anchor`
+    // (opposite `>= anchor`); forward's is `> anchor` (opposite `<= anchor`).
+    let (mut cursors, has_opposite) = match (anchor, query.direction) {
+        (None, _) => (std::mem::take(&mut ascending), false),
+        (Some(a), Direction::Backward) => {
+            let split = ascending.partition_point(|c| *c < a);
+            let has_opposite = split < ascending.len();
+            ascending.truncate(split);
+            (ascending, has_opposite)
+        }
+        (Some(a), Direction::Forward) => {
+            let split = ascending.partition_point(|c| *c <= a);
+            let has_opposite = split > 0;
+            (ascending.split_off(split), has_opposite)
+        }
+    };
+
+    order_by_closeness(&mut cursors, query.direction);
+    if let Some(bound) = bound {
+        cursors.truncate(bound);
+    }
+
+    Ok(PageShard {
+        cursors,
+        has_opposite,
+    })
+}
+
+/// Order cursors closest-to-anchor first for `direction`: backward walks
+/// toward older rows, so the largest (newest) cursors come first;
+/// forward walks toward newer rows, so the smallest (oldest) come first.
+fn order_by_closeness(cursors: &mut [Cursor], direction: Direction) {
+    match direction {
+        Direction::Backward => cursors.sort_unstable_by(|a, b| b.cmp(a)),
+        Direction::Forward => cursors.sort_unstable(),
+    }
+}
+
+/// The chosen page: cursors newest-first, plus the has-more flags a
+/// consumer uses to gate infinite scroll in each direction.
+#[derive(Default)]
+struct SelectedPage {
+    /// Cursors newest-first (`cursors[0]` is the newest).
+    cursors: Vec<Cursor>,
+    /// A newer row exists beyond the page (consumer "scroll up").
+    has_newer: bool,
+    /// An older row exists beyond the page (consumer "scroll down").
+    has_older: bool,
+}
+
+/// Root: pick the page from the merged candidates.
+///
+/// The nearest `limit` cursors form the page; one more candidate beyond
+/// them means there are more rows in `direction`, and `merged.has_opposite`
+/// means more on the other side. The page is returned newest-first
+/// regardless of direction.
+fn finalize_page(merged: PageShard, direction: Direction, limit: usize) -> SelectedPage {
+    let has_more_in_direction = merged.cursors.len() > limit;
+    let mut cursors = merged.cursors;
+    cursors.truncate(limit);
+    // `cursors` is closest-to-anchor first: backward (toward older) is
+    // already newest-first; forward (toward newer) is oldest-first, so
+    // reverse it to present newest-first like the other direction.
+    if direction == Direction::Forward {
+        cursors.reverse();
+    }
+    let (has_newer, has_older) = match direction {
+        Direction::Backward => (merged.has_opposite, has_more_in_direction),
+        Direction::Forward => (has_more_in_direction, merged.has_opposite),
+    };
+    SelectedPage {
+        cursors,
+        has_newer,
+        has_older,
+    }
+}
+
+/// Fetch: materialize the chosen cursors into rows.
+///
+/// Routes each cursor to its owning file by `file_seq`, batches positions
+/// per file so each file's chunks decompress once, and reassembles the
+/// rows in the page's newest-first order. Locally the files are the open
+/// readers; a cross-node fetch would route each cursor to its owning node.
+fn materialize(
+    files: &[(&sfst::IndexReader<'_>, u64)],
+    selected: &SelectedPage,
+) -> Result<Vec<(Cursor, sfst::MaterializedRow)>, sfst::Error> {
+    let by_seq: HashMap<u64, &sfst::IndexReader<'_>> =
+        files.iter().map(|(reader, seq)| (*seq, *reader)).collect();
+
+    let mut positions_by_seq: HashMap<u64, Vec<u32>> = HashMap::new();
+    for cursor in &selected.cursors {
+        positions_by_seq
+            .entry(cursor.file_seq)
+            .or_default()
+            .push(cursor.position);
+    }
+    let mut row_by_key: HashMap<(u64, u32), sfst::MaterializedRow> = HashMap::new();
+    for (seq, positions) in &positions_by_seq {
+        let Some(reader) = by_seq.get(seq) else {
+            continue;
+        };
+        for (position, row) in positions.iter().zip(reader.materialize_rows(positions)?) {
+            row_by_key.insert((*seq, *position), row);
+        }
+    }
+
+    let rows = selected
+        .cursors
+        .iter()
+        .filter_map(|cursor| {
+            row_by_key
+                .remove(&(cursor.file_seq, cursor.position))
+                .map(|row| (*cursor, row))
+        })
+        .collect();
+    Ok(rows)
+}
+
+/// A materialized page: rows newest-first plus the has-more flags.
+#[derive(Default)]
+struct Page {
+    rows: Vec<(Cursor, sfst::MaterializedRow)>,
+    has_newer: bool,
+    has_older: bool,
+}
+
+/// Open the candidate files and select + materialize one page across them.
 ///
 /// This re-opens the files step 1 already read (see the module docs):
 /// step 1's shards are fully owned and dropped their readers, so the page
 /// path opens the files again. The readers borrow from the byte buffers,
 /// so the buffers are held alive for the duration. Files that fail to
-/// read or open are logged and skipped; an empty candidate set yields an
-/// empty page.
-fn paginate(
-    candidates: &[SfstCandidate],
-    filter: &sfst::Filter,
-    grid: sfst::Grid,
-    anchor: Option<Cursor>,
-    direction: Direction,
-    limit: usize,
-) -> Page {
+/// read, open, or evaluate are logged and skipped; an empty candidate set
+/// yields an empty page.
+fn paginate(candidates: &[SfstCandidate], query: &LogsQuery, anchor: Option<Cursor>) -> Page {
     let mut buffers: Vec<(Vec<u8>, &Path, u64)> = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         match std::fs::read(&candidate.path) {
@@ -347,114 +541,35 @@ fn paginate(
             Err(e) => tracing::warn!("sfsq: failed to open {}: {e}", path.display()),
         }
     }
-
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(seqs.iter().copied()).collect();
-    select_page(&files, filter, grid, anchor, direction, limit).unwrap_or_else(|e| {
-        tracing::warn!("sfsq: page selection failed: {e}");
-        Page::default()
-    })
-}
 
-/// Select one page of log rows across all candidate files.
-///
-/// Gathers every window-matching position from each file, tags it with
-/// its [`Cursor`] `(timestamp_ns, file_seq, position)`, sorts by that
-/// total order, then slices the page relative to `anchor` (exclusive)
-/// and `direction`. Only the page's positions are materialized.
-///
-/// `anchor` is the boundary row from the previous page; `None` starts
-/// at the newest edge (backward) or oldest edge (forward). The page is
-/// returned newest-first regardless of direction.
-///
-/// Correctness-first: this sorts all window matches rather than seeking
-/// per file. The expensive work (row materialization) is bounded to the
-/// page; the sort is O(window-matches), comparable to the facet/matched
-/// scan already performed. A seek-based variant that avoids the full
-/// sort is a later optimization.
-fn select_page(
-    files: &[(&sfst::IndexReader<'_>, u64)],
-    filter: &sfst::Filter,
-    grid: sfst::Grid,
-    anchor: Option<Cursor>,
-    direction: Direction,
-    limit: usize,
-) -> Result<Page, sfst::Error> {
-    let window_ns = grid.range_ns();
-    // 1. Gather (cursor, file_index, position) for every window match.
-    let mut matches: Vec<(Cursor, usize, u32)> = Vec::new();
-    for (file_index, (reader, seq)) in files.iter().enumerate() {
-        let matched = reader.evaluate(filter)? & &reader.range_bitmap(window_ns.clone())?;
-        if matched.is_empty() {
-            continue;
-        }
-        let timestamps = reader.load_timestamps()?;
-        for position in matched.iter() {
-            let timestamp_ns = timestamps.get(position as usize).copied().unwrap_or(0);
-            matches.push((
-                Cursor {
-                    timestamp_ns,
-                    file_seq: *seq,
-                    position,
-                },
-                file_index,
-                position,
-            ));
+    // Map: one candidate shard per file. Unbounded for now (`None`); a
+    // later step bounds each shard to the page size.
+    let mut shards: Vec<PageShard> = Vec::with_capacity(files.len());
+    for (reader, seq) in &files {
+        match evaluate_page(reader, *seq, query, anchor, None) {
+            Ok(shard) => shards.push(shard),
+            Err(e) => tracing::warn!("sfsq: page candidates failed: {e}"),
         }
     }
-    matches.sort_by_key(|(c, _, _)| *c);
-    let len = matches.len();
 
-    // 2. Slice the page. `matches` is ascending (oldest→newest); the anchor
-    //    comparison is exclusive so the boundary row never repeats.
-    let (lo, hi) = match direction {
-        Direction::Backward => {
-            let hi = match anchor {
-                Some(a) => matches.partition_point(|(c, _, _)| *c < a),
-                None => len,
-            };
-            (hi.saturating_sub(limit), hi)
-        }
-        Direction::Forward => {
-            let lo = match anchor {
-                Some(a) => matches.partition_point(|(c, _, _)| *c <= a),
-                None => 0,
-            };
-            (lo, (lo + limit).min(len))
-        }
-    };
-    let has_older = lo > 0;
-    let has_newer = hi < len;
-    let page = &matches[lo..hi];
-
-    // 3. Materialize, batching positions per file so each file's chunks
-    //    decompress once. Reassemble newest-first.
-    let mut per_file: HashMap<usize, Vec<u32>> = HashMap::new();
-    for (_, file_index, position) in page {
-        per_file.entry(*file_index).or_default().push(*position);
-    }
-    let mut by_pos: HashMap<(usize, u32), sfst::MaterializedRow> = HashMap::new();
-    for (file_index, positions) in &per_file {
-        let rows = files[*file_index].0.materialize_rows(positions)?;
-        for (position, row) in positions.iter().zip(rows) {
-            by_pos.insert((*file_index, *position), row);
+    // Reduce + finalize: choose the page, then materialize its rows. A
+    // materialize failure collapses to an empty page rather than reporting
+    // has-more flags with no rows behind them.
+    let merged = PageShard::merge(shards, query.direction, None);
+    let selected = finalize_page(merged, query.direction, query.limit);
+    match materialize(&files, &selected) {
+        Ok(rows) => Page {
+            rows,
+            has_newer: selected.has_newer,
+            has_older: selected.has_older,
+        },
+        Err(e) => {
+            tracing::warn!("sfsq: materialize failed: {e}");
+            Page::default()
         }
     }
-    let rows = page
-        .iter()
-        .rev()
-        .filter_map(|(cursor, file_index, position)| {
-            by_pos
-                .remove(&(*file_index, *position))
-                .map(|row| (*cursor, row))
-        })
-        .collect();
-
-    Ok(Page {
-        rows,
-        has_older,
-        has_newer,
-    })
 }
 
 /// Per-file matched count: filter-matching logs restricted to the grid's
