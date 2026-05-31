@@ -85,13 +85,13 @@ pub fn evaluate_page(
     bound: Option<usize>,
 ) -> Result<PageShard, sfst::Error> {
     let filter = build_filter(&query.selections);
-    let matched = reader.evaluate(&filter)? & &reader.range_bitmap(query.grid.range_ns())?;
+    let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
     let timestamps = reader.load_timestamps()?;
 
     // Cursors for every match, ascending — within a file, position order
     // is cursor order (timestamps are chronological and `seq` is constant).
     let mut ascending: Vec<Cursor> = matched
-        .iter()
+        .into_iter()
         .map(|position| Cursor {
             timestamp_ns: timestamps.get(position as usize).copied().unwrap_or(0),
             file_seq: seq,

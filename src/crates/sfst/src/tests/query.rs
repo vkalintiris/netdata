@@ -1,5 +1,6 @@
-//! Query API tests for [`IndexReader::evaluate`],
-//! [`IndexReader::facets`], and [`IndexReader::timeline`].
+//! Query API tests for [`IndexReader::matched_count`],
+//! [`IndexReader::matched_positions`], [`IndexReader::facets`], and
+//! [`IndexReader::timeline`].
 
 use crate::*;
 
@@ -108,65 +109,68 @@ fn build_query_fixture() -> Vec<u8> {
     buf
 }
 
+/// Window covering the fixture's whole log range (all 6 logs).
+const FULL_WINDOW: std::ops::Range<i64> = FILE_MIN_NS..(FILE_MIN_NS + 6 * 1_000_000_000);
+
 #[test]
-fn evaluate_empty_filter_matches_all() {
+fn matched_empty_filter_matches_all() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    let bm = reader.evaluate(&Filter::new()).unwrap();
-    assert_eq!(bm.len(), 6);
+    let count = reader.matched_count(&Filter::new(), FULL_WINDOW).unwrap();
+    assert_eq!(count, 6);
 }
 
 #[test]
-fn evaluate_single_selection() {
+fn matched_single_selection() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    let bm = reader
-        .evaluate(&Filter::new().select("level", "info"))
+    let positions = reader
+        .matched_positions(&Filter::new().select("level", "info"), FULL_WINDOW)
         .unwrap();
-    let positions: Vec<u32> = bm.iter().collect();
     assert_eq!(positions, vec![0, 2, 4]);
 }
 
 #[test]
-fn evaluate_or_within_field() {
+fn matched_or_within_field() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // level=info OR level=error → all positions.
-    let bm = reader
-        .evaluate(
+    let count = reader
+        .matched_count(
             &Filter::new()
                 .select("level", "info")
                 .select("level", "error"),
+            FULL_WINDOW,
         )
         .unwrap();
-    assert_eq!(bm.len(), 6);
+    assert_eq!(count, 6);
 }
 
 #[test]
-fn evaluate_and_across_fields() {
+fn matched_and_across_fields() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // level=info AND service=worker → only position 4.
-    let bm = reader
-        .evaluate(
+    let positions = reader
+        .matched_positions(
             &Filter::new()
                 .select("level", "info")
                 .select("service", "worker"),
+            FULL_WINDOW,
         )
         .unwrap();
-    let positions: Vec<u32> = bm.iter().collect();
     assert_eq!(positions, vec![4]);
 }
 
 #[test]
-fn evaluate_unknown_field_yields_empty() {
+fn matched_unknown_field_yields_empty() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // Unknown field → no matches in this file (not an error).
-    let bm = reader
-        .evaluate(&Filter::new().select("nonexistent", "anything"))
+    let positions = reader
+        .matched_positions(&Filter::new().select("nonexistent", "anything"), FULL_WINDOW)
         .unwrap();
-    assert!(bm.is_empty());
+    assert!(positions.is_empty());
 }
 
 #[test]
@@ -450,4 +454,161 @@ fn timeline_absent_field_routes_all_logs_to_unset() {
     assert!(timeline.dimensions.is_empty());
     assert_eq!(timeline.buckets, vec![Vec::<u64>::new(); 3]);
     assert_eq!(timeline.unset, vec![2, 2, 2]);
+}
+
+/// Fixture with a value dense enough to be stored *complemented* (inverted
+/// treight bitmap), mirroring what the writer's `remap_one_bitmap` does for
+/// dense values. 6 logs:
+///
+/// `lvl` (low-card): `hi` at positions 0..=4 (5/6 → stored as the
+/// complement `{5}`, inverted), `lo` at position 5.
+/// `svc` (low-card): `a` at 0,1,2; `b` at 3,4,5.
+fn build_complemented_fixture() -> Vec<u8> {
+    let mut data = Vec::new();
+    // `lvl=hi` covers 5 of 6 → store the complement {5} as an inverted bitmap.
+    let lvl_hi = treight::Bitmap::from_sorted_iter_complemented([5].into_iter(), 6, &mut data);
+    let lvl_hi_data = std::mem::take(&mut data);
+    let lvl_lo = treight::Bitmap::from_sorted_iter([5].into_iter(), 6, &mut data);
+    let lvl_lo_data = std::mem::take(&mut data);
+    let svc_a = treight::Bitmap::from_sorted_iter([0, 1, 2].into_iter(), 6, &mut data);
+    let svc_a_data = std::mem::take(&mut data);
+    let svc_b = treight::Bitmap::from_sorted_iter([3, 4, 5].into_iter(), 6, &mut data);
+    let svc_b_data = data;
+
+    // FST iteration order is lexicographic: lvl=hi(0), lvl=lo(1), svc=a(2), svc=b(3).
+    let primary_entries: Vec<(&str, BitmapValue)> = vec![
+        (
+            "lvl=hi",
+            BitmapValue {
+                desc: lvl_hi,
+                data: lvl_hi_data,
+            },
+        ),
+        (
+            "lvl=lo",
+            BitmapValue {
+                desc: lvl_lo,
+                data: lvl_lo_data,
+            },
+        ),
+        (
+            "svc=a",
+            BitmapValue {
+                desc: svc_a,
+                data: svc_a_data,
+            },
+        ),
+        (
+            "svc=b",
+            BitmapValue {
+                desc: svc_b,
+                data: svc_b_data,
+            },
+        ),
+    ];
+    let primary: fst_index::FstIndex<BitmapValue> =
+        fst_index::FstIndex::build(primary_entries).unwrap();
+
+    let summary = Summary {
+        min_timestamp_s: 1_700_000_000,
+        max_timestamp_s: 1_700_000_005,
+        total_logs: 6,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    let metadata = Metadata {
+        histogram: Histogram {
+            timestamps: vec![1_700_000_000],
+            counts: vec![6],
+        },
+        id_ranges: IdRanges {
+            low_end: KvId(4),
+            mid_end: KvId(4),
+            high_end: KvId(4),
+        },
+        fields: vec![
+            FieldEntry {
+                name: "lvl".into(),
+                cardinality: 2,
+                tier: FieldTier::Low,
+            },
+            FieldEntry {
+                name: "svc".into(),
+                cardinality: 2,
+                tier: FieldTier::Low,
+            },
+        ]
+        .into(),
+    };
+    let timestamps: Vec<i64> = (0..6)
+        .map(|i| 1_700_000_000i64 * 1_000_000_000 + i * 1_000_000_000)
+        .collect();
+    let stream_entries: Vec<Vec<KvId>> = vec![
+        vec![KvId(0), KvId(2)], // pos 0: hi, a
+        vec![KvId(0), KvId(2)], // pos 1: hi, a
+        vec![KvId(0), KvId(2)], // pos 2: hi, a
+        vec![KvId(0), KvId(3)], // pos 3: hi, b
+        vec![KvId(0), KvId(3)], // pos 4: hi, b
+        vec![KvId(1), KvId(3)], // pos 5: lo, b
+    ];
+
+    let mut writer = Writer::new();
+    writer.set_summary(pack(&summary, 1).unwrap());
+    writer.set_metadata(pack(&metadata, 1).unwrap());
+    writer.set_primary(pack(&primary, 1).unwrap());
+    writer.set_timestamps(pack(&timestamps, 1).unwrap());
+    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn complemented_value_bitmap_counts_correctly() {
+    let data = build_complemented_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+
+    // `lvl=hi` is stored complemented (inverted). Exercise it through every
+    // treight path and confirm the inverted representation is transparent.
+
+    // Fast facet path: `range_cardinality` on the inverted bitmap.
+    let facets = reader.facets(&["lvl"], &Filter::new(), FULL_WINDOW).unwrap();
+    let lvl: std::collections::HashMap<_, _> = facets
+        .iter()
+        .find(|f| f.field == "lvl")
+        .unwrap()
+        .values
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(lvl.get("hi"), Some(&5));
+    assert_eq!(lvl.get("lo"), Some(&1));
+
+    // matched_count / matched_positions: `from_value` on the inverted bitmap,
+    // intersected with the (full) window range, then counted / iterated.
+    let hi = Filter::new().select("lvl", "hi");
+    assert_eq!(reader.matched_count(&hi, FULL_WINDOW).unwrap(), 5);
+    assert_eq!(
+        reader.matched_positions(&hi, FULL_WINDOW).unwrap(),
+        vec![0, 1, 2, 3, 4]
+    );
+
+    // Intersection of the inverted bitmap with another field's set.
+    let hi_and_a = Filter::new().select("lvl", "hi").select("svc", "a");
+    assert_eq!(reader.matched_count(&hi_and_a, FULL_WINDOW).unwrap(), 3);
+
+    // Slow facet path: `value_counts_under` intersects the inverted bitmap
+    // with a scope from a *different* filter field.
+    let facets = reader
+        .facets(&["lvl"], &Filter::new().select("svc", "a"), FULL_WINDOW)
+        .unwrap();
+    let lvl: std::collections::HashMap<_, _> = facets
+        .iter()
+        .find(|f| f.field == "lvl")
+        .unwrap()
+        .values
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(lvl.get("hi"), Some(&3));
+    assert_eq!(lvl.get("lo"), None); // lo ∩ {0,1,2} is empty → omitted
 }

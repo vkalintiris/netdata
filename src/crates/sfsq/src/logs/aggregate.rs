@@ -198,17 +198,14 @@ pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
 }
 
 /// Per-file matched count: filter-matching logs restricted to the grid's
-/// window. `evaluate` returns positions across the file's full range;
-/// intersect with the window range bitmap (the same primitive `facets`
-/// uses) to clip outside-window logs.
+/// window. Delegates to [`sfst::IndexReader::matched_count`], which clips to
+/// the window the same way `facets` does.
 fn per_file_matched(
     reader: &sfst::IndexReader<'_>,
     filter: &sfst::Filter,
     grid: sfst::Grid,
 ) -> Result<u64, sfst::Error> {
-    let bm = reader.evaluate(filter)?;
-    let range = reader.range_bitmap(grid.range_ns())?;
-    Ok((bm & &range).len())
+    reader.matched_count(filter, grid.range_ns())
 }
 
 /// Pick the histogram field. Honors the query's `histogram_field` when

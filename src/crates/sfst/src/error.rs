@@ -75,10 +75,11 @@ pub enum Error {
 
     /// [`IndexReader::facets`](crate::IndexReader::facets) was passed a
     /// field name that doesn't appear in this file's field table.
-    /// [`evaluate`](crate::IndexReader::evaluate) treats an absent
-    /// filter field as matching no logs, and
+    /// [`matched_count`](crate::IndexReader::matched_count) /
+    /// [`matched_positions`](crate::IndexReader::matched_positions) treat an
+    /// absent filter field as matching no logs, and
     /// [`timeline`](crate::IndexReader::timeline) treats an absent
-    /// field as "every log lacks it" (all `unset`); neither returns
+    /// field as "every log lacks it" (all `unset`); none return
     /// this error.
     #[error("unknown field: {0}")]
     UnknownField(String),

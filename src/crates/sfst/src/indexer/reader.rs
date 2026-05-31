@@ -9,11 +9,10 @@
 //! 4. Load per-stream log entries for attribute resolution.
 
 use fst_index::FstIndex;
-use roaring::RoaringBitmap;
 
 use crate::{
     BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram, IdRanges,
-    KvId, Metadata, ServiceStream, Summary, Timeline, bitmap_value_to_roaring,
+    KvId, Metadata, ServiceStream, Summary, Timeline,
 };
 
 /// A successfully opened split-FST index.
@@ -280,56 +279,80 @@ impl<'a> IndexReader<'a> {
 
     // ── Query API ────────────────────────────────────────────────────
 
-    /// Apply a [`Filter`] (OR within field, AND across fields) and return
-    /// the position bitmap of matching logs.
+    /// Build the position set matching a [`Filter`] (OR within field, AND
+    /// across fields) over this file's full range.
     ///
-    /// An empty filter returns the full position range `0..total_logs`.
-    /// Fields mentioned in the filter that don't exist in this file
-    /// contribute an empty set (no logs match), which collapses the
-    /// overall result to empty — single-file SFSTs with disjoint field
-    /// sets fall out of the query naturally.
-    pub fn evaluate(&self, filter: &Filter) -> Result<RoaringBitmap, crate::Error> {
+    /// An empty filter yields the full range `0..total_logs`. A field
+    /// mentioned in the filter but absent from this file contributes the
+    /// empty set, collapsing the AND to empty — single-file SFSTs with
+    /// disjoint field sets fall out of the query naturally.
+    fn evaluate_set(&self, filter: &Filter) -> Result<PosSet, crate::Error> {
+        let total = self.summary.total_logs;
         if filter.is_empty() {
-            let mut all = RoaringBitmap::new();
-            all.insert_range(0..self.summary.total_logs);
-            return Ok(all);
+            return Ok(PosSet::full(total));
         }
 
-        let mut result: Option<RoaringBitmap> = None;
+        let mut result: Option<PosSet> = None;
         for (field, values) in &filter.selections {
-            let field_bm = self.field_values_or(field, values)?;
+            let field_set = self.field_values_or(field, values)?;
             result = Some(match result {
-                None => field_bm,
+                None => field_set,
                 Some(mut prev) => {
-                    prev &= &field_bm;
+                    prev.and_assign(&field_set);
                     prev
                 }
             });
-            if result.as_ref().is_some_and(|b| b.is_empty()) {
-                return Ok(RoaringBitmap::new());
+            if result.as_ref().is_some_and(|s| s.is_empty()) {
+                return Ok(PosSet::empty(total));
             }
         }
-        Ok(result.unwrap_or_default())
+        Ok(result.unwrap_or_else(|| PosSet::empty(total)))
     }
 
-    /// Bitmap of log positions whose timestamp falls in `window_ns`
-    /// (`[start, end)`). Built from the file's chronological
-    /// timestamps via `partition_point`, so it clamps naturally when
-    /// the window extends past the file's range. Shared by the
-    /// windowed query paths ([`facets`](Self::facets) and the
-    /// handler's matched-count) so they all clip to the same set.
-    pub fn range_bitmap(
+    /// Count logs matching `filter` whose timestamp falls in `window_ns`
+    /// (`[start, end)`). The window-clip uses the same `partition_point`
+    /// bounds as [`facets`](Self::facets), so all the windowed paths agree.
+    pub fn matched_count(
+        &self,
+        filter: &Filter,
+        window_ns: std::ops::Range<i64>,
+    ) -> Result<u64, crate::Error> {
+        let total = self.summary.total_logs;
+        let (lo, hi) = self.range_positions(window_ns)?;
+        let mut set = self.evaluate_set(filter)?;
+        set.and_assign(&PosSet::range(lo, hi, total));
+        Ok(set.len())
+    }
+
+    /// Positions (ascending) of logs matching `filter` whose timestamp
+    /// falls in `window_ns` (`[start, end)`). Same clip as
+    /// [`matched_count`](Self::matched_count); returns the positions so a
+    /// caller can build per-row cursors.
+    pub fn matched_positions(
+        &self,
+        filter: &Filter,
+        window_ns: std::ops::Range<i64>,
+    ) -> Result<Vec<u32>, crate::Error> {
+        let total = self.summary.total_logs;
+        let (lo, hi) = self.range_positions(window_ns)?;
+        let mut set = self.evaluate_set(filter)?;
+        set.and_assign(&PosSet::range(lo, hi, total));
+        Ok(set.iter().collect())
+    }
+
+    /// Position range `[lo, hi)` whose timestamps fall in `window_ns`
+    /// (`[start, end)`), via `partition_point` on the chronological
+    /// timestamps. Clamps naturally when the window extends past the
+    /// file's range; the windowed query paths use it to count directly on
+    /// the on-disk bitmaps via [`treight::Bitmap::range_cardinality`].
+    pub fn range_positions(
         &self,
         window_ns: std::ops::Range<i64>,
-    ) -> Result<RoaringBitmap, crate::Error> {
+    ) -> Result<(u32, u32), crate::Error> {
         let timestamps = self.sfst.timestamps()?;
         let lo = timestamps.partition_point(|&t| t < window_ns.start) as u32;
         let hi = timestamps.partition_point(|&t| t < window_ns.end) as u32;
-        let mut bm = RoaringBitmap::new();
-        if lo < hi {
-            bm.insert_range(lo..hi);
-        }
-        Ok(bm)
+        Ok((lo, hi))
     }
 
     /// Compute per-field value counts for the UI's facet sidebar.
@@ -359,24 +382,35 @@ impl<'a> IndexReader<'a> {
         filter: &Filter,
         window_ns: std::ops::Range<i64>,
     ) -> Result<Vec<FacetResult>, crate::Error> {
-        // Window mask applied to every counting bitmap so facet totals
-        // match the in-window histogram/matched counts.
-        let range_bm = self.range_bitmap(window_ns)?;
+        let total = self.summary.total_logs;
+        let (lo, hi) = self.range_positions(window_ns)?;
+        let range_set = PosSet::range(lo, hi, total);
 
-        // Computed once; reused by every facet whose field is not in
-        // the filter's selections.
-        let full_bm = self.evaluate(filter)? & &range_bm;
+        // Full filtered set in the window; reused by every facet whose
+        // field is not itself in the filter (cheap when the filter is
+        // empty — it's just the window range).
+        let mut full_set = self.evaluate_set(filter)?;
+        full_set.and_assign(&range_set);
 
         let mut results = Vec::with_capacity(fields.len());
         for field in fields {
             let field = field.as_ref();
-            let scoped = if filter.has_field(field) {
-                Some(self.evaluate(&filter.without(field))? & &range_bm)
+            // A field's facet excludes its own selection; the count is
+            // scoped by the *rest* of the filter. When nothing else
+            // constrains it, the scope is exactly the window range, so we
+            // count each value's positions in `[lo, hi)` directly on the
+            // on-disk bitmap — no per-value intersection (the hot path for
+            // unfiltered / single-field-filtered queries).
+            let without = filter.without(field);
+            let values = if without.is_empty() {
+                self.value_counts_in_range(field, lo, hi)?
+            } else if filter.has_field(field) {
+                let mut scope = self.evaluate_set(&without)?;
+                scope.and_assign(&range_set);
+                self.value_counts_under(field, &scope)?
             } else {
-                None
+                self.value_counts_under(field, &full_set)?
             };
-            let bm: &RoaringBitmap = scoped.as_ref().unwrap_or(&full_bm);
-            let values = self.value_counts_under(field, bm)?;
             results.push(FacetResult {
                 field: field.to_string(),
                 values,
@@ -412,40 +446,48 @@ impl<'a> IndexReader<'a> {
             return Err(crate::Error::InvalidBucketWidth(grid.bucket_width_ns));
         }
 
-        // Filter with `field`'s own selections removed.
+        // The field's own selection is excluded from its histogram (same
+        // reason as in `facets`). When nothing *else* constrains it
+        // (`fast`), each value's per-bucket count is read directly from the
+        // on-disk bitmap via `range_cardinality` — no per-value scope op.
         let excluded = filter.without(field);
-        let filter_bm = self.evaluate(&excluded)?;
+        let fast = excluded.is_empty();
+        let filter_set = self.evaluate_set(&excluded)?;
 
-        // Enumerate the field's values and pre-intersect each with the
-        // filter bitmap. Each dimension's bitmap is then queried per
-        // bucket via range_cardinality.
+        // Per-bucket position ranges `[pos_lo, pos_hi)`. `partition_point`
+        // clamps naturally: a grid extending past the file's range yields
+        // empty outer buckets.
+        let timestamps = self.sfst.timestamps()?;
+        let bucket_ranges: Vec<(u32, u32)> = (0..grid.num_buckets)
+            .map(|b| {
+                let start = grid.bucket_start_ns + (b as i64) * grid.bucket_width_ns;
+                let end = start + grid.bucket_width_ns;
+                let lo = timestamps.partition_point(|&t| t < start) as u32;
+                let hi = timestamps.partition_point(|&t| t < end) as u32;
+                (lo, hi)
+            })
+            .collect();
+
+        // Enumerate the field's values into dimensions + per-bucket counts
+        // (dimension-major; transposed below). An absent field leaves both
+        // empty, so every matching log lands in `unset`.
         let prefix = format!("{field}=");
         let prefix_len = prefix.len();
         let mut dimensions: Vec<String> = Vec::new();
-        let mut intersections: Vec<RoaringBitmap> = Vec::new();
-
-        // An absent field leaves `dimensions`/`intersections` empty, so
-        // the bucket loop below routes every matching log into `unset`
-        // (dim_sum == 0 ⇒ unset == bucket_total).
+        let mut dim_counts: Vec<Vec<u64>> = Vec::new();
         match self.locate_field(field) {
             None => {}
             Some(FieldLocation::Low) => {
                 for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
-                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
-                    let mut value_bm = bitmap_value_to_roaring(bv);
-                    value_bm &= &filter_bm;
-                    dimensions.push(value);
-                    intersections.push(value_bm);
+                    dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
+                    dim_counts.push(bucket_counts(bv, fast, &filter_set, &bucket_ranges));
                 }
             }
             Some(FieldLocation::Mid(idx)) => {
                 let chunk = self.sfst.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
-                    let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
-                    let mut value_bm = bitmap_value_to_roaring(bv);
-                    value_bm &= &filter_bm;
-                    dimensions.push(value);
-                    intersections.push(value_bm);
+                    dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
+                    dim_counts.push(bucket_counts(bv, fast, &filter_set, &bucket_ranges));
                 });
             }
             Some(FieldLocation::High(_)) => {
@@ -453,30 +495,22 @@ impl<'a> IndexReader<'a> {
             }
         }
 
-        let timestamps = self.sfst.timestamps()?;
+        // Transpose dimension-major counts into bucket-major and derive
+        // `unset`. `bucket_total` comes from `filter_set` — in the fast path
+        // that's the full range, so its cardinality over the bucket equals
+        // the bucket's log count. OTel attribute keys are unique per
+        // LogRecord, so every matching log lands in exactly one dimension
+        // or in `unset` — the subtraction is exact.
         let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
         let mut unset = vec![0u64; grid.num_buckets];
-        for bucket_i in 0..grid.num_buckets {
-            let bucket_start = grid.bucket_start_ns + (bucket_i as i64) * grid.bucket_width_ns;
-            let bucket_end = bucket_start + grid.bucket_width_ns;
-            // `partition_point` clamps naturally: positions before
-            // bucket_start_ns yield pos_lo=0, after the file's last
-            // timestamp yield pos_hi=timestamps.len(). Outer buckets of
-            // a request grid that extends past the file's range pick up
-            // no positions and contribute zero counts.
-            let pos_lo = timestamps.partition_point(|&t| t < bucket_start) as u32;
-            let pos_hi = timestamps.partition_point(|&t| t < bucket_end) as u32;
+        for (bucket_i, &(pos_lo, pos_hi)) in bucket_ranges.iter().enumerate() {
             let mut dim_sum: u64 = 0;
-            for (dim_i, intersection) in intersections.iter().enumerate() {
-                let c = intersection.range_cardinality(pos_lo..pos_hi);
+            for (dim_i, counts) in dim_counts.iter().enumerate() {
+                let c = counts[bucket_i];
                 buckets[bucket_i][dim_i] = c;
                 dim_sum += c;
             }
-            // Logs matching the filter that don't have this field set.
-            // OTel attribute keys are unique per LogRecord, so every
-            // matching log lands in exactly one of `dimensions` or
-            // `unset` — the subtraction is exact.
-            let bucket_total = filter_bm.range_cardinality(pos_lo..pos_hi);
+            let bucket_total = filter_set.range_cardinality(pos_lo, pos_hi);
             unset[bucket_i] = bucket_total.saturating_sub(dim_sum);
         }
 
@@ -531,42 +565,43 @@ impl<'a> IndexReader<'a> {
         panic!("high_kv_id: high_idx {high_idx} out of range");
     }
 
-    /// Position bitmap matching `field=v` for any `v` in `values` (OR
-    /// within field). Returns an empty bitmap if the field is absent
-    /// from this file.
-    fn field_values_or(
-        &self,
-        field: &str,
-        values: &[String],
-    ) -> Result<RoaringBitmap, crate::Error> {
+    /// Position set matching `field=v` for any `v` in `values` (OR within
+    /// field). Returns the empty set if the field is absent from this file.
+    fn field_values_or(&self, field: &str, values: &[String]) -> Result<PosSet, crate::Error> {
+        let total = self.summary.total_logs;
         let location = match self.locate_field(field) {
             Some(loc) => loc,
-            None => return Ok(RoaringBitmap::new()),
+            None => return Ok(PosSet::empty(total)),
         };
-        let mut result = RoaringBitmap::new();
 
         match location {
             FieldLocation::Low => {
+                let mut result = PosSet::empty(total);
                 for value in values {
                     let kv = format!("{field}={value}");
                     if let Some(bv) = self.primary.get(kv.as_bytes()) {
-                        result |= bitmap_value_to_roaring(bv);
+                        result.or_assign(&PosSet::from_value(bv));
                     }
                 }
+                Ok(result)
             }
             FieldLocation::Mid(idx) => {
                 let chunk = self.sfst.mid_field(idx)?;
+                let mut result = PosSet::empty(total);
                 for value in values {
                     let kv = format!("{field}={value}");
                     if let Some(bv) = chunk.get(kv.as_bytes()) {
-                        result |= bitmap_value_to_roaring(bv);
+                        result.or_assign(&PosSet::from_value(bv));
                     }
                 }
+                Ok(result)
             }
             FieldLocation::High(idx) => {
-                // High-card values are addressed by KvId; the filter
-                // bitmap is built by scanning the SB batches indicated
-                // by the union of the values' batch masks.
+                // High-card values are addressed by KvId; the set is built
+                // by scanning the SB batches indicated by the union of the
+                // values' batch masks. Matched positions are ascending
+                // (batch start increases, position within increases), so
+                // they feed `from_sorted` directly.
                 let hf = self.sfst.high_field(idx)?;
                 let mut targets: Vec<KvId> = Vec::new();
                 let mut combined_mask: u8 = 0;
@@ -578,11 +613,11 @@ impl<'a> IndexReader<'a> {
                     }
                 }
                 if targets.is_empty() {
-                    return Ok(result);
+                    return Ok(PosSet::empty(total));
                 }
-                let total_logs = self.summary.total_logs;
-                let batch_size = crate::stream_batch_size(total_logs);
-                let num_batches = crate::num_stream_batches(total_logs);
+                let batch_size = crate::stream_batch_size(total);
+                let num_batches = crate::num_stream_batches(total);
+                let mut positions: Vec<u32> = Vec::new();
                 for b in 0..num_batches {
                     if (combined_mask >> b) & 1 == 0 {
                         continue;
@@ -591,24 +626,23 @@ impl<'a> IndexReader<'a> {
                     let batch = self.sfst.stream_batch(b)?;
                     for (i, kv_ids) in batch.iter().enumerate() {
                         if kv_ids.iter().any(|id| targets.contains(id)) {
-                            result.insert(batch_start + i as u32);
+                            positions.push(batch_start + i as u32);
                         }
                     }
                 }
+                Ok(PosSet::from_sorted(positions, total))
             }
         }
-
-        Ok(result)
     }
 
-    /// Per-value `(value, count)` pairs for `field` restricted to
-    /// `filter_bm`. Walks the field's chunk once. Errors with
-    /// [`crate::Error::UnknownField`] / [`crate::Error::HighCardFacet`]
-    /// as appropriate.
+    /// Per-value `(value, count)` pairs for `field` restricted to `scope`.
+    /// Walks the field's chunk once, intersecting each value's set with
+    /// `scope`. Errors with [`crate::Error::UnknownField`] /
+    /// [`crate::Error::HighCardFacet`] as appropriate.
     fn value_counts_under(
         &self,
         field: &str,
-        filter_bm: &RoaringBitmap,
+        scope: &PosSet,
     ) -> Result<Vec<(String, u32)>, crate::Error> {
         let location = self
             .locate_field(field)
@@ -621,9 +655,9 @@ impl<'a> IndexReader<'a> {
             FieldLocation::Low => {
                 for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
-                    let mut bm = bitmap_value_to_roaring(bv);
-                    bm &= filter_bm;
-                    let count = bm.len() as u32;
+                    let mut set = PosSet::from_value(bv);
+                    set.and_assign(scope);
+                    let count = set.len() as u32;
                     if count > 0 {
                         results.push((value, count));
                     }
@@ -633,10 +667,56 @@ impl<'a> IndexReader<'a> {
                 let chunk = self.sfst.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
-                    let mut bm = bitmap_value_to_roaring(bv);
-                    bm &= filter_bm;
-                    let count = bm.len() as u32;
+                    let mut set = PosSet::from_value(bv);
+                    set.and_assign(scope);
+                    let count = set.len() as u32;
                     if count > 0 {
+                        results.push((value, count));
+                    }
+                });
+            }
+            FieldLocation::High(_) => {
+                return Err(crate::Error::HighCardFacet(field.to_string()));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Per-value `(value, count)` pairs for `field`, counting each value's
+    /// set positions in `[lo, hi)` directly on the on-disk bitmap (no
+    /// per-value intersection). Used when no other field constrains the
+    /// scope, so the count is exactly the value's positions in the window
+    /// range. Errors as [`value_counts_under`](Self::value_counts_under).
+    fn value_counts_in_range(
+        &self,
+        field: &str,
+        lo: u32,
+        hi: u32,
+    ) -> Result<Vec<(String, u32)>, crate::Error> {
+        let location = self
+            .locate_field(field)
+            .ok_or_else(|| crate::Error::UnknownField(field.to_string()))?;
+        let prefix = format!("{field}=");
+        let prefix_len = prefix.len();
+        let mut results = Vec::new();
+
+        match location {
+            FieldLocation::Low => {
+                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                    let count = bv.desc.range_cardinality(&bv.data, lo..hi) as u32;
+                    if count > 0 {
+                        let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
+                        results.push((value, count));
+                    }
+                }
+            }
+            FieldLocation::Mid(idx) => {
+                let chunk = self.sfst.mid_field(idx)?;
+                chunk.for_each(|kv_bytes, bv| {
+                    let count = bv.desc.range_cardinality(&bv.data, lo..hi) as u32;
+                    if count > 0 {
+                        let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                         results.push((value, count));
                     }
                 });
@@ -650,11 +730,131 @@ impl<'a> IndexReader<'a> {
     }
 }
 
+/// Per-bucket set-position counts for one value's on-disk bitmap.
+///
+/// Fast path (`fast` — nothing else constrains the scope): count directly
+/// on the [`treight::Bitmap`] via `range_cardinality`. Slow path: intersect
+/// the value with `scope`, then count each bucket on the result.
+fn bucket_counts(
+    bv: &crate::BitmapValue,
+    fast: bool,
+    scope: &PosSet,
+    bucket_ranges: &[(u32, u32)],
+) -> Vec<u64> {
+    if fast {
+        bucket_ranges
+            .iter()
+            .map(|&(lo, hi)| bv.desc.range_cardinality(&bv.data, lo..hi))
+            .collect()
+    } else {
+        let mut set = PosSet::from_value(bv);
+        set.and_assign(scope);
+        bucket_ranges
+            .iter()
+            .map(|&(lo, hi)| set.range_cardinality(lo, hi))
+            .collect()
+    }
+}
+
 /// Tier + tier-relative chunk index for a single field. Private; used by
-/// the query helpers ([`IndexReader::evaluate`], [`IndexReader::facets`],
-/// [`IndexReader::timeline`]).
+/// the query helpers ([`IndexReader::facets`], [`IndexReader::timeline`]).
 enum FieldLocation {
     Low,
     Mid(u16),
     High(u16),
+}
+
+/// A set of log positions within one file, backed by a native
+/// [`treight::Bitmap`] (a `Copy` descriptor plus its external tree bytes).
+/// The whole query path operates on these — on-disk value bitmaps are used
+/// as-is, and unions/intersections stay native (no Roaring round-trip). The
+/// universe (position upper bound) is the file's `total_logs`; every set
+/// built for a file shares it so boolean ops line up.
+struct PosSet {
+    bitmap: treight::Bitmap,
+    data: Vec<u8>,
+}
+
+impl PosSet {
+    /// The empty set over `universe` positions.
+    fn empty(universe: u32) -> Self {
+        Self {
+            bitmap: treight::Bitmap::empty(universe),
+            data: Vec::new(),
+        }
+    }
+
+    /// Every position `0..universe`. `full` is an inverted-empty
+    /// descriptor, so it needs no tree bytes.
+    fn full(universe: u32) -> Self {
+        Self {
+            bitmap: treight::Bitmap::full(universe),
+            data: Vec::new(),
+        }
+    }
+
+    /// The contiguous half-open range `[lo, hi)` over `universe` positions.
+    fn range(lo: u32, hi: u32, universe: u32) -> Self {
+        let mut data = Vec::new();
+        let bitmap = treight::Bitmap::from_range(lo..hi, universe, &mut data);
+        Self { bitmap, data }
+    }
+
+    /// The positions set in an on-disk value bitmap. The descriptor is
+    /// `Copy`; only the tree bytes are cloned.
+    ///
+    /// Invariant: every value bitmap in a file is built with the same
+    /// `universe_size` (`== total_logs`; see the writer's `remap_one_bitmap`),
+    /// which is what lets the resulting set combine with `range`/`full`/other
+    /// values via `and`/`or` — those require matching universes (a mismatch
+    /// is only a debug assert, so it would be silently wrong in release).
+    fn from_value(bv: &BitmapValue) -> Self {
+        Self {
+            bitmap: bv.desc,
+            data: bv.data.clone(),
+        }
+    }
+
+    /// A set built from positions in **ascending** order (high-card scan).
+    fn from_sorted(positions: Vec<u32>, universe: u32) -> Self {
+        let mut data = Vec::new();
+        let bitmap = treight::Bitmap::from_sorted_iter(positions.into_iter(), universe, &mut data);
+        Self { bitmap, data }
+    }
+
+    /// In-place union (`self |= other`).
+    fn or_assign(&mut self, other: &Self) {
+        let mut out = Vec::new();
+        self.bitmap = self.bitmap.or(&self.data, &other.bitmap, &other.data, &mut out);
+        self.data = out;
+    }
+
+    /// In-place intersection (`self &= other`).
+    fn and_assign(&mut self, other: &Self) {
+        let mut out = Vec::new();
+        self.bitmap = self
+            .bitmap
+            .and(&self.data, &other.bitmap, &other.data, &mut out);
+        self.data = out;
+    }
+
+    /// Whether the set is empty.
+    fn is_empty(&self) -> bool {
+        self.bitmap.is_empty(&self.data)
+    }
+
+    /// Total number of set positions.
+    fn len(&self) -> u64 {
+        self.bitmap.len(&self.data)
+    }
+
+    /// Number of set positions in `[lo, hi)`.
+    fn range_cardinality(&self, lo: u32, hi: u32) -> u64 {
+        self.bitmap.range_cardinality(&self.data, lo..hi)
+    }
+
+    /// Set positions in ascending order.
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.bitmap.iter(&self.data)
+    }
 }

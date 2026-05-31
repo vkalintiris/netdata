@@ -6,12 +6,10 @@
 //!   with **OR within a field** and **AND across fields**.
 //! - [`FacetResult`] — per-field `(value, count)` breakdown for the UI.
 //! - [`Timeline`] — 2D time-bucket × dimension count grid for chart rendering.
-//! - [`bitmap_value_to_roaring`] — convert an on-disk
-//!   [`BitmapValue`](crate::BitmapValue) to a [`RoaringBitmap`] for set algebra.
 //!
-//! The query methods themselves ([`crate::IndexReader::evaluate`],
-//! [`crate::IndexReader::facets`], [`crate::IndexReader::timeline`]) live on
-//! the reader. They consume types defined here.
+//! The query methods themselves ([`crate::IndexReader::facets`],
+//! [`crate::IndexReader::timeline`]) live on the reader. They consume types
+//! defined here.
 //!
 //! # Filter semantics
 //!
@@ -26,10 +24,6 @@
 //! [`Filter::without`].
 
 use std::collections::BTreeMap;
-
-use roaring::RoaringBitmap;
-
-use crate::BitmapValue;
 
 /// A conjunction of per-field disjunctions.
 ///
@@ -149,11 +143,4 @@ pub struct Timeline {
 pub struct MaterializedRow {
     pub timestamp_ns: i64,
     pub fields: Vec<(String, String)>,
-}
-
-/// Convert an on-disk `BitmapValue` to a `RoaringBitmap`. `treight::Bitmap`
-/// iterates set positions in ascending order, so the bulk-load path applies.
-pub fn bitmap_value_to_roaring(bv: &BitmapValue) -> RoaringBitmap {
-    RoaringBitmap::from_sorted_iter(bv.desc.iter(&bv.data))
-        .expect("treight::Bitmap::iter yields sorted positions")
 }
