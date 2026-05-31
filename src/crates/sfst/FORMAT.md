@@ -81,11 +81,23 @@ within its tier in the trailing bytes.
     ──────────  ────────────────────────────────────────────  ──────────
     "SUMR"      Summary                                       No (always emitted)
     "META"      Metadata                                      No (always emitted)
+    "TIMS"      Vec<i64>  (per-log nanosecond timestamps)     Yes
     "PRIM"      FstIndex<BitmapValue>                         Yes
     "MF{hi}{lo}" FstIndex<BitmapValue>  (mid-card field)      No (one per mid field)
     "HF{hi}{lo}" HighField  (high-card field, columnar SoA)   No (one per high field)
-    "TIMS"      Vec<i64>  (per-log nanosecond timestamps)     Yes
     "SB0{N}"    Vec<Vec<KvId>>  (stream-batch N, 0..=7)       Yes (at least 1)
+
+The rows are listed in the order the canonical producer emits chunk
+bodies. This order is **not** part of the format contract — readers
+resolve chunks through the TOC and must not assume positions (see
+above) — but the producer groups the chunks a query's statistics phase
+always reads (`SUMR`, `META`, `TIMS`, `PRIM`) into a hot prefix, ahead
+of the mid/high field chunks (read only when a field is filtered or
+faceted) and the stream batches (read only when materializing rows).
+`PRIM` sits last in the prefix, next to the structurally-identical
+mid/high field FSTs. This keeps the hot prefix resident in the page
+cache while the cold remainder can be advised away as a single
+contiguous span.
 
 Indexed ids:
 

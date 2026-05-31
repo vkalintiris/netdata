@@ -150,8 +150,16 @@ impl Writer {
         w.write_all(&VERSION.to_le_bytes())?;
         w.write_all(&(num_chunks as u32).to_le_bytes())?;
 
-        // Plan chunks. SUMR first so a recovery-only reader can stop
-        // after the summary without paging through META/PRIM.
+        // Plan chunks. The physical order is not part of the format
+        // contract — readers resolve every chunk through the TOC — but the
+        // producer deliberately groups the chunks a query's statistics
+        // phase always reads (SUMR, META, TIMS, PRIM) into a hot prefix,
+        // ahead of the touch-then-drop mid/high field chunks and the
+        // stream batches. That lets a reader keep the prefix resident in
+        // the page cache and advise the cold remainder away as one span.
+        // SUMR stays first so a recovery-only reader can stop after the
+        // summary without paging through the rest; PRIM sits last in the
+        // prefix, next to the structurally-identical mid/high field FSTs.
         let mut index = gix_chunk::file::Index::for_writing();
         if let Some(sum) = &self.summary {
             index.plan_chunk(CHUNK_SUMMARY, sum.len() as u64);
@@ -159,6 +167,7 @@ impl Writer {
         if let Some(meta) = &self.metadata {
             index.plan_chunk(CHUNK_META, meta.len() as u64);
         }
+        index.plan_chunk(CHUNK_TIMS, timestamps.len() as u64);
         index.plan_chunk(CHUNK_PRIMARY, primary.len() as u64);
         for (i, chunk) in self.mid_fields.iter().enumerate() {
             index.plan_chunk(mid_field_id(i as u16), chunk.len() as u64);
@@ -166,7 +175,6 @@ impl Writer {
         for (i, chunk) in self.high_fields.iter().enumerate() {
             index.plan_chunk(high_field_id(i as u16), chunk.len() as u64);
         }
-        index.plan_chunk(CHUNK_TIMS, timestamps.len() as u64);
         for (i, batch) in self.stream_batches.iter().enumerate() {
             index.plan_chunk(stream_batch_id(i as u8), batch.len() as u64);
         }
@@ -188,6 +196,12 @@ impl Writer {
             chunk_writer.write_all(meta)?;
         }
 
+        let id = chunk_writer
+            .next_chunk()
+            .expect("expected timestamps chunk");
+        assert_eq!(id, CHUNK_TIMS);
+        chunk_writer.write_all(timestamps)?;
+
         let id = chunk_writer.next_chunk().expect("expected primary chunk");
         assert_eq!(id, CHUNK_PRIMARY);
         chunk_writer.write_all(primary)?;
@@ -204,11 +218,6 @@ impl Writer {
             assert_eq!(id, high_field_id(i as u16));
             chunk_writer.write_all(chunk)?;
         }
-        let id = chunk_writer
-            .next_chunk()
-            .expect("expected timestamps chunk");
-        assert_eq!(id, CHUNK_TIMS);
-        chunk_writer.write_all(timestamps)?;
         for (i, batch) in self.stream_batches.iter().enumerate() {
             let id = chunk_writer
                 .next_chunk()
