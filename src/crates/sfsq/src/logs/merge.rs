@@ -123,27 +123,29 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 pub fn union_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
     use std::collections::BTreeMap;
 
-    // name → (max_cardinality_so_far, tier, ever_high_card)
-    let mut by_name: BTreeMap<String, (u32, sfst::FieldTier, bool)> = BTreeMap::new();
-    for table in per_file {
-        for field in table.iter() {
-            let is_high = field.is_high_card();
+    // name → (max cardinality across files, tier). The tier is bumped to
+    // `High` if the field is high-card in *any* file; those entries are
+    // dropped below, since `facets`/`timeline` reject high-card fields.
+    let mut by_name: BTreeMap<String, (u32, sfst::FieldTier)> = BTreeMap::new();
+
+    for field_table in per_file {
+        for field in field_table.iter() {
             by_name
                 .entry(field.name.clone())
-                .and_modify(|(card, tier, ever_high)| {
-                    *card = (*card).max(field.cardinality);
-                    if is_high {
+                .and_modify(|(cardinality, tier)| {
+                    *cardinality = (*cardinality).max(field.cardinality);
+                    if field.is_high_card() {
                         *tier = sfst::FieldTier::High;
-                        *ever_high = true;
                     }
                 })
-                .or_insert((field.cardinality, field.tier, is_high));
+                .or_insert((field.cardinality, field.tier));
         }
     }
+
     by_name
         .into_iter()
-        .filter(|(_, (_, _, ever_high))| !ever_high)
-        .map(|(name, (cardinality, tier, _))| sfst::FieldEntry {
+        .filter(|(_, (_, tier))| *tier != sfst::FieldTier::High)
+        .map(|(name, (cardinality, tier))| sfst::FieldEntry {
             name,
             cardinality,
             tier,
