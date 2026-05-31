@@ -14,11 +14,11 @@
 //! caller's job) — but since it reads and decompresses files the caller
 //! is expected to invoke it off any async runtime thread.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::cursor::Cursor;
-use super::merge::{merge_facet_results, merge_timelines, union_field_tables};
+use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
 use super::query::{Anchor, Direction, LogsQuery};
 use super::result::LogsData;
 
@@ -118,10 +118,20 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         };
     }
 
-    // Picked facet field set against the unioned table — gives a
-    // consumer a consistent facet sidebar across files.
-    let union_table = union_field_tables(&field_tables);
-    let facet_fields = pick_facet_fields(&query.facet_fields, &union_table);
+    // Merge every file's field table into one (all tiers kept; tier
+    // bumped to High if high-card in any file). `available_fields` is
+    // that table with high-card fields dropped — the set offerable as
+    // facets / histogram dimensions — while `columns` (below) keeps the
+    // full name set including high-card. The high-card drop happens here
+    // at the root: `merge_field_tables` keeps `High` entries so the rule
+    // stays correct when merges nest (child then parent).
+    let merged_fields = merge_field_tables(&field_tables);
+    let available_fields: sfst::FieldTable = merged_fields
+        .iter()
+        .filter(|field| !field.is_high_card())
+        .cloned()
+        .collect();
+    let facet_fields = pick_facet_fields(&query.facet_fields, &available_fields);
 
     // Every per-file query is bounded by the same grid, so matched,
     // facets, and the histogram describe the same set of logs and agree.
@@ -169,14 +179,10 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let merged_timeline =
         merge_timelines(per_file_timelines).unwrap_or_else(|| empty_timeline(grid));
 
-    // The row-table column schema is the union of every candidate file's
-    // field names — all tiers, so high-card attributes still get a
-    // column — sorted for a stable schema.
-    let mut field_set: BTreeSet<String> = BTreeSet::new();
-    for field_table in &field_tables {
-        field_set.extend(field_table.names().map(str::to_owned));
-    }
-    let columns: Vec<String> = field_set.into_iter().collect();
+    // The row-table column schema: every candidate file's field names,
+    // all tiers (so high-card attributes still get a column), sorted.
+    // `merge_field_tables` already keys by name in sorted order.
+    let columns: Vec<String> = merged_fields.names().map(str::to_owned).collect();
 
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(reader_seqs.iter().copied()).collect();
@@ -203,7 +209,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         facets: merged_facets,
         histogram_field,
         histogram: merged_timeline,
-        available_fields: union_table,
+        available_fields,
         columns,
         rows: page.rows,
         has_newer: page.has_newer,

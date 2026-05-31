@@ -111,21 +111,27 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
     })
 }
 
-/// Union per-file field tables into the set of fields usable as facets
-/// or histogram dimensions. A field is dropped if it's
-/// [`sfst::FieldTier::High`] in **any** file — both
-/// [`sfst::IndexReader::facets`] and [`sfst::IndexReader::timeline`]
-/// reject high-card fields, so offering one that errors on some files
-/// would yield a runtime failure when a consumer picks it. Per-file
-/// `cardinality` values are not summed (the concept is per-file, not
-/// global); the union keeps the maximum as a conservative estimate.
-/// Output is sorted by name.
-pub fn union_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
+/// Merge per-file field tables into one, keyed by name and sorted by
+/// name. Keeps **every** field across **all** tiers; a field's tier is
+/// bumped to [`sfst::FieldTier::High`] if it's high-card in *any* input,
+/// and its `cardinality` is the max across inputs (the concept is
+/// per-file, not global, so the max is a conservative estimate).
+///
+/// The merge is associative and drops nothing, so it is safe to apply at
+/// every level of a fan-out: a child merges its own files' tables, the
+/// parent merges the children's, and the result is identical to merging
+/// all files at once. Crucially, high-card fields are *kept* (marked
+/// `High`) rather than removed — a downstream merge must still see that a
+/// field is high-card somewhere to apply the rule. The actual drop of
+/// high-card fields from the offerable set happens once, at the root,
+/// when the caller builds `available_fields` (see
+/// [`run`](super::run)).
+pub fn merge_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
     use std::collections::BTreeMap;
 
     // name → (max cardinality across files, tier). The tier is bumped to
-    // `High` if the field is high-card in *any* file; those entries are
-    // dropped below, since `facets`/`timeline` reject high-card fields.
+    // `High` if the field is high-card in *any* file so the marker
+    // survives nested merges and the root-level high-card drop.
     let mut by_name: BTreeMap<String, (u32, sfst::FieldTier)> = BTreeMap::new();
 
     for field_table in per_file {
@@ -144,7 +150,6 @@ pub fn union_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
 
     by_name
         .into_iter()
-        .filter(|(_, (_, tier))| *tier != sfst::FieldTier::High)
         .map(|(name, (cardinality, tier))| sfst::FieldEntry {
             name,
             cardinality,

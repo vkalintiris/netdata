@@ -100,10 +100,11 @@ fn merge_timelines_empty_input_yields_none() {
 }
 
 #[test]
-fn union_field_tables_drops_field_high_in_any_file() {
+fn merge_field_tables_marks_field_high_if_high_in_any_file() {
     // File A: `level` is Low (card 3); File B: `level` is High (card 50k).
-    // Merged should DROP `level` entirely — it's high-card in B, so
-    // facets()/timeline() would error if a consumer picked it.
+    // The merge KEEPS `level` but bumps it to High, so a nested merge and
+    // the root-level available-fields drop still see it as unofferable.
+    // The actual drop happens at the root, not here.
     let a: sfst::FieldTable = vec![
         sfst::FieldEntry {
             name: "level".into(),
@@ -131,14 +132,17 @@ fn union_field_tables_drops_field_high_in_any_file() {
     ]
     .into();
 
-    let merged = union_field_tables(&[a, b]);
+    let merged = merge_field_tables(&[a, b]);
     let names: Vec<&str> = merged.iter().map(|f| f.name.as_str()).collect();
-    // `level` dropped; remaining fields sorted by name.
-    assert_eq!(names, vec!["host", "service"]);
+    // All fields kept, sorted by name; `level` survives as High.
+    assert_eq!(names, vec!["host", "level", "service"]);
+    let level = merged.get("level").expect("level kept");
+    assert!(level.is_high_card());
+    assert_eq!(level.cardinality, 50_000);
 }
 
 #[test]
-fn union_field_tables_keeps_max_cardinality() {
+fn merge_field_tables_keeps_max_cardinality() {
     // Same field across files with different cardinalities: union keeps
     // the max as a conservative estimate.
     let a: sfst::FieldTable = vec![sfst::FieldEntry {
@@ -153,7 +157,7 @@ fn union_field_tables_keeps_max_cardinality() {
         tier: sfst::FieldTier::Mid,
     }]
     .into();
-    let merged = union_field_tables(&[a, b]);
+    let merged = merge_field_tables(&[a, b]);
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].name, "level");
     assert_eq!(merged[0].cardinality, 20);
