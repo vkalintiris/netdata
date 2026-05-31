@@ -58,13 +58,13 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 
     // Collect into a Vec so we can iterate it twice (union pass +
     // reindex pass).
-    let mut all: Vec<sfst::Timeline> = vec![first];
-    all.extend(iter);
+    let mut timelines: Vec<sfst::Timeline> = vec![first];
+    timelines.extend(iter);
 
     // Union of dimension labels across all files.
     let mut dim_set: BTreeSet<String> = BTreeSet::new();
-    for t in &all {
-        for d in &t.dimensions {
+    for timeline in &timelines {
+        for d in &timeline.dimensions {
             dim_set.insert(d.clone());
         }
     }
@@ -78,25 +78,28 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
     let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
     let mut unset = vec![0u64; grid.num_buckets];
 
-    for t in &all {
+    for timeline in &timelines {
         // Hard-assert the precondition: every input must share the
         // grid established by `first`. A violation silently produces
         // wrong merged data — better to panic than serve misaligned
         // buckets. The cost is one comparison per file, not per bucket,
         // so the check is free at runtime.
-        assert_eq!(t.grid, grid);
-        assert_eq!(t.buckets.len(), grid.num_buckets);
-        assert_eq!(t.unset.len(), grid.num_buckets);
+        assert_eq!(timeline.grid, grid);
+        assert_eq!(timeline.buckets.len(), grid.num_buckets);
+        assert_eq!(timeline.unset.len(), grid.num_buckets);
 
         // Map this file's local dim index → union dim index.
-        let local_to_union: Vec<usize> =
-            t.dimensions.iter().map(|d| dim_index[d.as_str()]).collect();
+        let local_to_union: Vec<usize> = timeline
+            .dimensions
+            .iter()
+            .map(|d| dim_index[d.as_str()])
+            .collect();
 
-        for (bucket_i, file_bucket) in t.buckets.iter().enumerate() {
+        for (bucket_i, file_bucket) in timeline.buckets.iter().enumerate() {
             for (local_i, count) in file_bucket.iter().enumerate() {
                 buckets[bucket_i][local_to_union[local_i]] += count;
             }
-            unset[bucket_i] += t.unset[bucket_i];
+            unset[bucket_i] += timeline.unset[bucket_i];
         }
     }
 
@@ -123,18 +126,18 @@ pub fn union_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
     // name → (max_cardinality_so_far, tier, ever_high_card)
     let mut by_name: BTreeMap<String, (u32, sfst::FieldTier, bool)> = BTreeMap::new();
     for table in per_file {
-        for f in table.iter() {
-            let is_high = f.is_high_card();
+        for field in table.iter() {
+            let is_high = field.is_high_card();
             by_name
-                .entry(f.name.clone())
+                .entry(field.name.clone())
                 .and_modify(|(card, tier, ever_high)| {
-                    *card = (*card).max(f.cardinality);
+                    *card = (*card).max(field.cardinality);
                     if is_high {
                         *tier = sfst::FieldTier::High;
                         *ever_high = true;
                     }
                 })
-                .or_insert((f.cardinality, f.tier, is_high));
+                .or_insert((field.cardinality, field.tier, is_high));
         }
     }
     by_name

@@ -488,15 +488,15 @@ impl<'a> IndexReader<'a> {
     fn locate_field(&self, field_name: &str) -> Option<FieldLocation> {
         let mut mid_idx = 0u16;
         let mut high_idx = 0u16;
-        for f in self.metadata().fields.iter() {
-            if f.name == field_name {
-                return Some(match f.tier {
+        for field in self.metadata().fields.iter() {
+            if field.name == field_name {
+                return Some(match field.tier {
                     FieldTier::Low => FieldLocation::Low,
                     FieldTier::Mid => FieldLocation::Mid(mid_idx),
                     FieldTier::High => FieldLocation::High(high_idx),
                 });
             }
-            match f.tier {
+            match field.tier {
                 FieldTier::Mid => mid_idx += 1,
                 FieldTier::High => high_idx += 1,
                 _ => {}
@@ -512,12 +512,12 @@ impl<'a> IndexReader<'a> {
         let id_ranges = &self.metadata().id_ranges;
         let mut kv = id_ranges.mid_end.0;
         let mut current = 0u16;
-        for f in self.metadata().fields.iter() {
-            if let FieldTier::High = f.tier {
+        for field in self.metadata().fields.iter() {
+            if let FieldTier::High = field.tier {
                 if current == high_idx {
                     return KvId(kv + local as u32);
                 }
-                kv += f.cardinality;
+                kv += field.cardinality;
                 current += 1;
             }
         }

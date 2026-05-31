@@ -113,6 +113,10 @@ pub struct FieldTable(Vec<FieldEntry>);
 
 impl FieldTable {
     /// The entry for `name`, or `None` if absent from this table.
+    ///
+    /// O(n) linear scan. The table is tier-ordered (not globally sorted
+    /// by name), and holds only a handful of fields per file, so a scan
+    /// is the right tradeoff; add a side index only if tables ever grow.
     pub fn get(&self, name: &str) -> Option<&FieldEntry> {
         self.0.iter().find(|f| f.name == name)
     }

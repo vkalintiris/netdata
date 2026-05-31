@@ -120,8 +120,8 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
 
     // Picked facet field set against the unioned table — gives a
     // consumer a consistent facet sidebar across files.
-    let unioned = union_field_tables(&field_tables);
-    let facet_fields = pick_facet_fields(&query.facet_fields, &unioned);
+    let union_table = union_field_tables(&field_tables);
+    let facet_fields = pick_facet_fields(&query.facet_fields, &union_table);
 
     // Every per-file query is bounded by the same grid, so matched,
     // facets, and the histogram describe the same set of logs and agree.
@@ -132,7 +132,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     for (reader, path) in readers.iter().zip(reader_paths.iter()) {
         // matched: filter-matching logs restricted to the grid window.
         match per_file_matched(reader, &filter, grid) {
-            Ok(m) => matched_total += m,
+            Ok(count) => matched_total += count,
             Err(e) => tracing::warn!("sfsq: matched count failed for {}: {e}", path.display()),
         }
 
@@ -156,7 +156,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         // `matched`. (`timeline` only errors here if the picked field
         // is high-card, which `available_fields` never offers.)
         match reader.timeline(&histogram_field, &filter, grid) {
-            Ok(t) => per_file_timelines.push(t),
+            Ok(timeline) => per_file_timelines.push(timeline),
             Err(e) => tracing::warn!("sfsq: timeline failed for {}: {e}", path.display()),
         }
     }
@@ -173,8 +173,8 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     // field names — all tiers, so high-card attributes still get a
     // column — sorted for a stable schema.
     let mut field_set: BTreeSet<String> = BTreeSet::new();
-    for t in &field_tables {
-        field_set.extend(t.names().map(str::to_owned));
+    for field_table in &field_tables {
+        field_set.extend(field_table.names().map(str::to_owned));
     }
     let columns: Vec<String> = field_set.into_iter().collect();
 
@@ -184,7 +184,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     // cursor is used directly; a timestamp becomes a synthetic cursor at
     // the end of that instant (file_seq/position maxed), so a backward
     // page shows the newest rows up to that time.
-    let anchor = query.anchor.map(|a| match a {
+    let anchor = query.anchor.map(|anchor| match anchor {
         Anchor::Cursor(c) => c,
         Anchor::Timestamp(ns) => Cursor {
             timestamp_ns: ns,
@@ -203,7 +203,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         facets: merged_facets,
         histogram_field,
         histogram: merged_timeline,
-        available_fields: unioned,
+        available_fields: union_table,
         columns,
         rows: page.rows,
         has_newer: page.has_newer,
@@ -259,7 +259,7 @@ fn select_page(
 ) -> Result<Page, sfst::Error> {
     let window_ns = grid.range_ns();
     // 1. Gather (cursor, file_index, position) for every window match.
-    let mut all: Vec<(Cursor, usize, u32)> = Vec::new();
+    let mut matches: Vec<(Cursor, usize, u32)> = Vec::new();
     for (file_index, (reader, seq)) in files.iter().enumerate() {
         let matched = reader.evaluate(filter)? & &reader.range_bitmap(window_ns.clone())?;
         if matched.is_empty() {
@@ -268,7 +268,7 @@ fn select_page(
         let timestamps = reader.load_timestamps()?;
         for position in matched.iter() {
             let timestamp_ns = timestamps.get(position as usize).copied().unwrap_or(0);
-            all.push((
+            matches.push((
                 Cursor {
                     timestamp_ns,
                     file_seq: *seq,
@@ -279,22 +279,22 @@ fn select_page(
             ));
         }
     }
-    all.sort_by_key(|(c, _, _)| *c);
-    let len = all.len();
+    matches.sort_by_key(|(c, _, _)| *c);
+    let len = matches.len();
 
-    // 2. Slice the page. `all` is ascending (oldest→newest); the anchor
+    // 2. Slice the page. `matches` is ascending (oldest→newest); the anchor
     //    comparison is exclusive so the boundary row never repeats.
     let (lo, hi) = match direction {
         Direction::Backward => {
             let hi = match anchor {
-                Some(a) => all.partition_point(|(c, _, _)| *c < a),
+                Some(a) => matches.partition_point(|(c, _, _)| *c < a),
                 None => len,
             };
             (hi.saturating_sub(limit), hi)
         }
         Direction::Forward => {
             let lo = match anchor {
-                Some(a) => all.partition_point(|(c, _, _)| *c <= a),
+                Some(a) => matches.partition_point(|(c, _, _)| *c <= a),
                 None => 0,
             };
             (lo, (lo + limit).min(len))
@@ -302,7 +302,7 @@ fn select_page(
     };
     let has_older = lo > 0;
     let has_newer = hi < len;
-    let page = &all[lo..hi];
+    let page = &matches[lo..hi];
 
     // 3. Materialize, batching positions per file so each file's chunks
     //    decompress once. Reassemble newest-first.
