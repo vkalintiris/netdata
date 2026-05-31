@@ -32,8 +32,11 @@ pub fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>
 /// results into a single sequential writer.
 ///
 /// On-disk ordering is fixed regardless of the order setters are
-/// called: SUMR → META → PRIM → mid-card fields → high-card fields →
-/// TIMS → stream-batch chunks (SB00..SB07) in append order.
+/// called: SUMR → META → TIMS → PRIM → mid-card fields → high-card
+/// fields → stream-batch chunks (SB00..SB07) in append order. The
+/// always-read chunks (SUMR/META/TIMS/PRIM) lead so they form a hot
+/// page-cache prefix ahead of the touch-then-drop field chunks; see the
+/// note in [`write_to`](Writer::write_to).
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,
@@ -122,10 +125,10 @@ impl Writer {
 
     /// Serialize the entire SFST file to `w`.
     ///
-    /// Fixed on-disk order: SUMR (if present), META (if present),
+    /// Fixed on-disk order: SUMR (if present), META (if present), TIMS,
     /// PRIM, mid-card field chunks in append order, high-card field
-    /// chunks in append order, TIMS, stream-batch chunks in append
-    /// order (SB00..SB{N-1}).
+    /// chunks in append order, stream-batch chunks in append order
+    /// (SB00..SB{N-1}).
     ///
     /// Returns [`Error::InvalidStreamBatchCount`] if the number of
     /// stream batches isn't in `1..=`[`MAX_STREAM_BATCHES`].

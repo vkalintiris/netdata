@@ -259,6 +259,9 @@ fn page_size() -> usize {
         // SAFETY: `sysconf(_SC_PAGESIZE)` takes no pointer arguments and
         // cannot fail for this query.
         let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        // 4096 is the minimum page size on every supported architecture;
+        // `sysconf` only returns <= 0 when `_SC_PAGESIZE` is unsupported,
+        // which doesn't happen on the platforms we run on.
         if value > 0 { value as usize } else { 4096 }
     })
 }
@@ -280,8 +283,11 @@ fn release_cold_region(mmap: &Mmap, region: (usize, usize)) {
     // SFST file. `MADV_DONTNEED` frees only clean pages, which re-fault to
     // identical bytes from the file on next access, so the mapping's
     // contents are unchanged and any later borrow observes the same data.
-    unsafe {
-        let _ = mmap.unchecked_advise_range(UncheckedAdvice::DontNeed, start, end - start);
+    let advised =
+        unsafe { mmap.unchecked_advise_range(UncheckedAdvice::DontNeed, start, end - start) };
+    if let Err(e) = advised {
+        // Best-effort hint — on failure the cold pages simply stay cached.
+        tracing::debug!("sfsq: releasing cold field region failed: {e}");
     }
 }
 
