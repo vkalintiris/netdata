@@ -23,13 +23,17 @@
 //! request window, and scheduling the work off an async runtime thread,
 //! is left to the caller.
 
+mod aggregate;
 mod cursor;
 mod engine;
 mod merge;
+mod page;
 mod query;
 mod result;
 
+pub use aggregate::{LogsShard, evaluate};
 pub use cursor::Cursor;
-pub use engine::{LogsShard, PageShard, SfstCandidate, evaluate, evaluate_page, run};
+pub use engine::{SfstCandidate, run};
+pub use page::{PageShard, evaluate_page};
 pub use query::{Anchor, Direction, LogsQuery};
 pub use result::LogsData;
