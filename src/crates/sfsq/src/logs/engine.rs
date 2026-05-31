@@ -544,11 +544,15 @@ fn paginate(candidates: &[SfstCandidate], query: &LogsQuery, anchor: Option<Curs
     let files: Vec<(&sfst::IndexReader<'_>, u64)> =
         readers.iter().zip(seqs.iter().copied()).collect();
 
-    // Map: one candidate shard per file. Unbounded for now (`None`); a
-    // later step bounds each shard to the page size.
+    // Map: one candidate shard per file, each bounded to the page size.
+    // A page of `limit` rows draws at most `limit` from any one file, so
+    // `limit + 1` candidates per file suffice — the `+1` lets the root
+    // detect a row beyond the page (the has-more flag). This is the
+    // bounded top-K: a node ships only a page-sized candidate set.
+    let bound = Some(query.limit.saturating_add(1));
     let mut shards: Vec<PageShard> = Vec::with_capacity(files.len());
     for (reader, seq) in &files {
-        match evaluate_page(reader, *seq, query, anchor, None) {
+        match evaluate_page(reader, *seq, query, anchor, bound) {
             Ok(shard) => shards.push(shard),
             Err(e) => tracing::warn!("sfsq: page candidates failed: {e}"),
         }
@@ -557,7 +561,7 @@ fn paginate(candidates: &[SfstCandidate], query: &LogsQuery, anchor: Option<Curs
     // Reduce + finalize: choose the page, then materialize its rows. A
     // materialize failure collapses to an empty page rather than reporting
     // has-more flags with no rows behind them.
-    let merged = PageShard::merge(shards, query.direction, None);
+    let merged = PageShard::merge(shards, query.direction, bound);
     let selected = finalize_page(merged, query.direction, query.limit);
     match materialize(&files, &selected) {
         Ok(rows) => Page {
