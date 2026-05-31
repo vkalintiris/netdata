@@ -1,21 +1,35 @@
 //! Multi-file log-query engine.
 //!
-//! Opens every SFST in the supplied candidate set, runs
-//! [`sfst::IndexReader::evaluate`] + [`sfst::IndexReader::facets`] +
-//! [`sfst::IndexReader::timeline`] per file against the query's bucket
-//! grid, paginates and materializes a page of rows, and merges
-//! everything into a single [`LogsData`].
+//! Satisfying a log query is two discrete steps, and the engine exposes
+//! each so they can run apart:
+//!
+//! 1. **Statistics** — matched count, facets, histogram, field set. This
+//!    step is an aggregatable monoid: [`evaluate`] turns one candidate
+//!    file into a [`LogsShard`], and [`LogsShard::merge`] folds many
+//!    shards into one. The fold is associative, so a child can merge the
+//!    files it owns and a parent can merge the children's shards with the
+//!    same function — the basis for fanning the query out across nodes
+//!    without opening every file in one place.
+//! 2. **Materialization** — selecting and decompressing the page of rows
+//!    to return. This needs a global order across files, so it isn't a
+//!    plain fold; it lives in the pagination path.
+//!
+//! [`run`] is the all-in-one convenience for the local case: it evaluates
+//! every candidate, merges the shards, paginates, and assembles a single
+//! [`LogsData`]. (It opens each file once for step 1 and again for step
+//! 2; the re-open is deliberate — step 1's shards are fully owned and
+//! drop their readers, and the heavy work is the bounded page
+//! materialization, not the re-read.)
 //!
 //! The caller supplies a fully-specified [`LogsQuery`] — including the
 //! histogram [`grid`](LogsQuery::grid), whose span is the query window —
-//! selects the candidates whose range overlaps that window, then hands
-//! both to [`run`]. `run` is pure and synchronous — no I/O scheduling, no
-//! locks, and no window/geometry policy (deciding the grid is the
-//! caller's job) — but since it reads and decompresses files the caller
-//! is expected to invoke it off any async runtime thread.
+//! and selects the candidates whose range overlaps that window. The work
+//! is pure and synchronous — no I/O scheduling, no locks, no
+//! window/geometry policy — but since it reads and decompresses files the
+//! caller is expected to invoke it off any async runtime thread.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::cursor::Cursor;
 use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
@@ -50,142 +64,203 @@ pub struct SfstCandidate {
     pub path: std::path::PathBuf,
 }
 
+// ── Step 1: statistics (aggregatable) ────────────────────────────────
+
+/// One file's (or one node's) contribution to a query's statistics:
+/// matched count, facets, histogram, and field table — everything in
+/// step 1, with no materialized rows.
+///
+/// A shard is the unit of delegated work. [`evaluate`] produces one from
+/// a single file; [`LogsShard::merge`] folds many into one. Because the
+/// fold is an associative monoid, a node can merge the files it owns into
+/// a single shard and a parent can merge those node-shards the same way —
+/// the result is identical to merging every file at once.
+#[derive(Debug, Default)]
+pub struct LogsShard {
+    /// Filter-matching logs within the window, summed across the shard.
+    pub matched: u64,
+    /// Per-field facet counts (unmerged across files until [`merge`]).
+    ///
+    /// [`merge`]: LogsShard::merge
+    pub facets: Vec<sfst::FacetResult>,
+    /// The histogram on the query grid, or `None` if this shard
+    /// contributed none (histogram field high-card here, or the timeline
+    /// errored). Merging keeps it `None` only when *no* shard had one.
+    pub timeline: Option<sfst::Timeline>,
+    /// The field table, all tiers kept and the tier bumped to `High` if
+    /// high-card anywhere in the shard (see [`merge_field_tables`]).
+    pub fields: sfst::FieldTable,
+}
+
+impl LogsShard {
+    /// Fold per-file (or per-node) shards into one.
+    ///
+    /// `matched` sums; facets and timelines combine via the cross-file
+    /// merge helpers; field tables merge associatively. Facets for a
+    /// field that is high-card in *any* shard are dropped here — each
+    /// shard's [`evaluate`] already skips a field high-card in its own
+    /// file, and this completes the rule across shards so the facet set
+    /// stays consistent with the offerable `available_fields`. The merged
+    /// `timeline` is `None` only when no shard contributed one.
+    ///
+    /// The fold is associative and has an identity (the
+    /// [`Default`](LogsShard::default) shard), so it is safe to apply at
+    /// every level of a fan-out.
+    pub fn merge(shards: Vec<LogsShard>) -> LogsShard {
+        let mut matched: u64 = 0;
+        let mut field_tables: Vec<sfst::FieldTable> = Vec::with_capacity(shards.len());
+        let mut per_shard_facets: Vec<Vec<sfst::FacetResult>> = Vec::with_capacity(shards.len());
+        let mut timelines: Vec<sfst::Timeline> = Vec::new();
+
+        for shard in shards {
+            matched += shard.matched;
+            field_tables.push(shard.fields);
+            per_shard_facets.push(shard.facets);
+            if let Some(timeline) = shard.timeline {
+                timelines.push(timeline);
+            }
+        }
+
+        let fields = merge_field_tables(&field_tables);
+        let facets = merge_facet_results(per_shard_facets)
+            .into_iter()
+            .filter(|facet| {
+                !fields
+                    .get(facet.field.as_str())
+                    .is_some_and(|entry| entry.is_high_card())
+            })
+            .collect();
+        let timeline = merge_timelines(timelines);
+
+        LogsShard {
+            matched,
+            facets,
+            timeline,
+            fields,
+        }
+    }
+}
+
+/// Evaluate one candidate file into a [`LogsShard`] — step 1 for a single
+/// file. Opens the file, computes the matched count, facets, histogram,
+/// and field table against the query's [`grid`](LogsQuery::grid), and
+/// returns a fully-owned shard (the reader is dropped before returning).
+///
+/// Any failure — unreadable/corrupt file, a per-computation error — is
+/// logged and degrades that part to empty (an empty shard if the file
+/// can't be opened), so one bad file never sinks the others when its
+/// shard is merged.
+///
+/// Facets are picked against *this file's* table, so a field that's
+/// high-card here is skipped; a field high-card in some *other* file is
+/// dropped later, in [`LogsShard::merge`].
+pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
+    let bytes = match std::fs::read(&candidate.path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!("sfsq: failed to read {}: {e}", candidate.path.display());
+            return LogsShard::default();
+        }
+    };
+    let reader = match sfst::IndexReader::open(&bytes) {
+        Ok(reader) => reader,
+        Err(e) => {
+            tracing::warn!("sfsq: failed to open {}: {e}", candidate.path.display());
+            return LogsShard::default();
+        }
+    };
+
+    let grid = query.grid;
+    let filter = build_filter(&query.selections);
+    let fields = reader.field_table().clone();
+
+    // matched: filter-matching logs restricted to the grid window.
+    let matched = match per_file_matched(&reader, &filter, grid) {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::warn!(
+                "sfsq: matched count failed for {}: {e}",
+                candidate.path.display()
+            );
+            0
+        }
+    };
+
+    // Facets: pick the requested set against this file's table (skipping
+    // a field high-card *here*), then keep only fields actually present —
+    // an unknown field would make `facets()` error and cost the whole
+    // file.
+    let facet_fields: Vec<String> = pick_facet_fields(&query.facet_fields, &fields)
+        .into_iter()
+        .filter(|name| fields.contains(name))
+        .collect();
+    let facets = match reader.facets(&facet_fields, &filter, grid.range_ns()) {
+        Ok(facets) => facets,
+        Err(e) => {
+            tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
+            Vec::new()
+        }
+    };
+
+    // Histogram: a file lacking the field yields a dimensionless timeline
+    // whose matching logs all land in `unset`; only a high-card field
+    // errors, in which case the file contributes no timeline.
+    let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
+    let timeline = match reader.timeline(&histogram_field, &filter, grid) {
+        Ok(timeline) => Some(timeline),
+        Err(e) => {
+            tracing::warn!("sfsq: timeline failed for {}: {e}", candidate.path.display());
+            None
+        }
+    };
+
+    LogsShard {
+        matched,
+        facets,
+        timeline,
+        fields,
+    }
+}
+
+// ── Composition: the all-in-one local query ──────────────────────────
+
 /// Run the merged query over the candidate files.
 ///
-/// Opens every SFST candidate, runs the three per-file queries against
-/// the query's [`grid`](LogsQuery::grid), merges the per-file results,
-/// and assembles the [`LogsData`]. The grid's span is the window every
-/// count and the materialized page clip to.
+/// Evaluates every candidate into a [`LogsShard`] (step 1), merges them,
+/// then paginates and materializes a page (step 2), and assembles the
+/// [`LogsData`]. The grid's span is the window every count and the
+/// materialized page clip to.
 ///
 /// Per-file errors (corrupt file, missing field, etc.) are logged and
 /// that file is skipped — other files still contribute. An empty
 /// candidate set (or one where every file fails to open) yields an empty
-/// `LogsData` aligned to the grid.
+/// `LogsData` aligned to the grid (the monoid identity).
 ///
 /// Pure sync — no I/O scheduling, no locks, no geometry policy — but
 /// since it reads and decompresses files the caller is expected to invoke
 /// it off any async runtime thread.
 pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let grid = query.grid;
-    let filter = build_filter(&query.selections);
-    let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
 
-    // Read every candidate's bytes, pairing each buffer with its path
-    // and file `seq`. The `IndexReader` borrows from the bytes, so the
-    // owned buffers must outlive the readers — we hold them in `opened`
-    // for the duration of the per-file work. Files that fail to read
-    // are logged and skipped.
-    let mut opened: Vec<(Vec<u8>, &PathBuf, u64)> = Vec::with_capacity(candidates.len());
-    for c in &candidates {
-        match std::fs::read(&c.path) {
-            Ok(bytes) => opened.push((bytes, &c.path, c.seq)),
-            Err(e) => tracing::warn!("sfsq: failed to read {}: {e}", c.path.display()),
-        }
-    }
+    // Step 1: evaluate each file, then merge into one statistics shard.
+    let stats = LogsShard::merge(candidates.iter().map(|c| evaluate(c, &query)).collect());
 
-    // Open readers + collect field tables; skip on open failure. The
-    // reader, its path, its `seq`, and its field table travel together
-    // by position across the parallel vecs.
-    let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
-    let mut reader_paths: Vec<&PathBuf> = Vec::new();
-    let mut reader_seqs: Vec<u64> = Vec::new();
-    let mut field_tables: Vec<sfst::FieldTable> = Vec::new();
-    for (bytes, path, seq) in &opened {
-        match sfst::IndexReader::open(bytes) {
-            Ok(reader) => {
-                field_tables.push(reader.field_table().clone());
-                reader_paths.push(path);
-                reader_seqs.push(*seq);
-                readers.push(reader);
-            }
-            Err(e) => {
-                tracing::warn!("sfsq: failed to open {}: {e}", path.display());
-            }
-        }
-    }
-
-    if readers.is_empty() {
-        return LogsData {
-            matched: 0,
-            facets: Vec::new(),
-            histogram_field,
-            histogram: empty_timeline(grid),
-            available_fields: sfst::FieldTable::default(),
-            columns: Vec::new(),
-            rows: Vec::new(),
-            has_newer: false,
-            has_older: false,
-        };
-    }
-
-    // Merge every file's field table into one (all tiers kept; tier
-    // bumped to High if high-card in any file). `available_fields` is
-    // that table with high-card fields dropped — the set offerable as
-    // facets / histogram dimensions — while `columns` (below) keeps the
-    // full name set including high-card. The high-card drop happens here
-    // at the root: `merge_field_tables` keeps `High` entries so the rule
-    // stays correct when merges nest (child then parent).
-    let merged_fields = merge_field_tables(&field_tables);
-    let available_fields: sfst::FieldTable = merged_fields
+    // `available_fields` is the merged table with high-card fields
+    // dropped — the offerable facet / histogram set — while `columns`
+    // keeps the full name set, all tiers. The high-card drop happens
+    // here, once, at the root.
+    let available_fields: sfst::FieldTable = stats
+        .fields
         .iter()
         .filter(|field| !field.is_high_card())
         .cloned()
         .collect();
-    let facet_fields = pick_facet_fields(&query.facet_fields, &available_fields);
+    let columns: Vec<String> = stats.fields.names().map(str::to_owned).collect();
+    let histogram = stats.timeline.unwrap_or_else(|| empty_timeline(grid));
+    let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
 
-    // Every per-file query is bounded by the same grid, so matched,
-    // facets, and the histogram describe the same set of logs and agree.
-    let mut matched_total: u64 = 0;
-    let mut per_file_facets: Vec<Vec<sfst::FacetResult>> = Vec::new();
-    let mut per_file_timelines: Vec<sfst::Timeline> = Vec::new();
-
-    for (reader, path) in readers.iter().zip(reader_paths.iter()) {
-        // matched: filter-matching logs restricted to the grid window.
-        match per_file_matched(reader, &filter, grid) {
-            Ok(count) => matched_total += count,
-            Err(e) => tracing::warn!("sfsq: matched count failed for {}: {e}", path.display()),
-        }
-
-        // Facets: filter the picked set to fields that exist in this
-        // file. Unknown fields would make `facets()` error and cost us
-        // the whole file.
-        let file_facet_fields: Vec<String> = facet_fields
-            .iter()
-            .filter(|name| reader.field_table().contains(name))
-            .cloned()
-            .collect();
-        match reader.facets(&file_facet_fields, &filter, grid.range_ns()) {
-            Ok(facets) => per_file_facets.push(facets),
-            Err(e) => tracing::warn!("sfsq: facets failed for {}: {e}", path.display()),
-        }
-
-        // Histogram: every file contributes a timeline on the shared
-        // grid. A file that lacks the histogram field yields a
-        // dimensionless timeline whose matching logs all land in
-        // `unset`, so the merged histogram total stays equal to
-        // `matched`. (`timeline` only errors here if the picked field
-        // is high-card, which `available_fields` never offers.)
-        match reader.timeline(&histogram_field, &filter, grid) {
-            Ok(timeline) => per_file_timelines.push(timeline),
-            Err(e) => tracing::warn!("sfsq: timeline failed for {}: {e}", path.display()),
-        }
-    }
-
-    let merged_facets = merge_facet_results(per_file_facets);
-
-    // If no file contributed a timeline (histogram field absent
-    // everywhere, or all timelines errored), synthesize an empty one
-    // aligned to the grid so the shape stays valid.
-    let merged_timeline =
-        merge_timelines(per_file_timelines).unwrap_or_else(|| empty_timeline(grid));
-
-    // The row-table column schema: every candidate file's field names,
-    // all tiers (so high-card attributes still get a column), sorted.
-    // `merge_field_tables` already keys by name in sorted order.
-    let columns: Vec<String> = merged_fields.names().map(str::to_owned).collect();
-
-    let files: Vec<(&sfst::IndexReader<'_>, u64)> =
-        readers.iter().zip(reader_seqs.iter().copied()).collect();
+    // Step 2: select and materialize one page across the same files.
+    let filter = build_filter(&query.selections);
     // Resolve the anchor to a cursor in the global total order. A row
     // cursor is used directly; a timestamp becomes a synthetic cursor at
     // the end of that instant (file_seq/position maxed), so a backward
@@ -198,17 +273,13 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
             position: u32::MAX,
         },
     });
-    let page = select_page(&files, &filter, grid, anchor, query.direction, query.limit)
-        .unwrap_or_else(|e| {
-            tracing::warn!("sfsq: page selection failed: {e}");
-            Page::default()
-        });
+    let page = paginate(&candidates, &filter, grid, anchor, query.direction, query.limit);
 
     LogsData {
-        matched: matched_total as usize,
-        facets: merged_facets,
+        matched: stats.matched as usize,
+        facets: stats.facets,
         histogram_field,
-        histogram: merged_timeline,
+        histogram,
         available_fields,
         columns,
         rows: page.rows,
@@ -237,6 +308,52 @@ struct Page {
     has_older: bool,
     /// A newer row exists beyond the page.
     has_newer: bool,
+}
+
+// ── Step 2: pagination + materialization ─────────────────────────────
+
+/// Open the candidate files and select one page of rows across them.
+///
+/// This re-opens the files step 1 already read (see the module docs):
+/// step 1's shards are fully owned and dropped their readers, so the page
+/// path opens the files again. The readers borrow from the byte buffers,
+/// so the buffers are held alive for the duration. Files that fail to
+/// read or open are logged and skipped; an empty candidate set yields an
+/// empty page.
+fn paginate(
+    candidates: &[SfstCandidate],
+    filter: &sfst::Filter,
+    grid: sfst::Grid,
+    anchor: Option<Cursor>,
+    direction: Direction,
+    limit: usize,
+) -> Page {
+    let mut buffers: Vec<(Vec<u8>, &Path, u64)> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        match std::fs::read(&candidate.path) {
+            Ok(bytes) => buffers.push((bytes, candidate.path.as_path(), candidate.seq)),
+            Err(e) => tracing::warn!("sfsq: failed to read {}: {e}", candidate.path.display()),
+        }
+    }
+
+    let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
+    let mut seqs: Vec<u64> = Vec::new();
+    for (bytes, path, seq) in &buffers {
+        match sfst::IndexReader::open(bytes) {
+            Ok(reader) => {
+                readers.push(reader);
+                seqs.push(*seq);
+            }
+            Err(e) => tracing::warn!("sfsq: failed to open {}: {e}", path.display()),
+        }
+    }
+
+    let files: Vec<(&sfst::IndexReader<'_>, u64)> =
+        readers.iter().zip(seqs.iter().copied()).collect();
+    select_page(&files, filter, grid, anchor, direction, limit).unwrap_or_else(|e| {
+        tracing::warn!("sfsq: page selection failed: {e}");
+        Page::default()
+    })
 }
 
 /// Select one page of log rows across all candidate files.

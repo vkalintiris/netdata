@@ -2,7 +2,15 @@
 //!
 //! The pipeline that turns a set of overlapping SFST files plus a
 //! [`LogsQuery`] into a single [`LogsData`]: filter → facets / histogram
-//! → pagination → row materialization. [`run`] is the entry point.
+//! → pagination → row materialization. [`run`] is the all-in-one entry
+//! point for the local case.
+//!
+//! The work splits into two steps. Step 1 (statistics — matched, facets,
+//! histogram, fields) is an aggregatable monoid: [`evaluate`] produces a
+//! [`LogsShard`] per file and [`LogsShard::merge`] folds them, so the
+//! query can fan out across nodes and aggregate. Step 2 (row
+//! materialization) needs a global order and lives in the pagination
+//! path. [`run`] composes both.
 //!
 //! The API is neutral — plain Rust data in ([`LogsQuery`]), plain Rust
 //! data out ([`LogsData`], built from `sfst` types). It carries no
@@ -22,6 +30,6 @@ mod query;
 mod result;
 
 pub use cursor::Cursor;
-pub use engine::{SfstCandidate, run};
+pub use engine::{LogsShard, SfstCandidate, evaluate, run};
 pub use query::{Anchor, Direction, LogsQuery};
 pub use result::LogsData;
