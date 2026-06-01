@@ -18,7 +18,6 @@
 use std::collections::HashMap;
 
 use memmap2::Mmap;
-use sfst::Filter;
 
 use super::cursor::Cursor;
 use super::engine::SfstCandidate;
@@ -84,8 +83,8 @@ impl PageShard {
         anchor: Option<Cursor>,
         bound: Option<usize>,
     ) -> Result<PageShard, sfst::Error> {
-        let filter = Filter::from(&query.selections);
-        let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
+        let filter = &query.filter;
+        let matched = reader.matched_positions(filter, query.grid.range_ns())?;
         let timestamps = reader.load_timestamps()?;
 
         // Cursors for every match, ascending — within a file, position order

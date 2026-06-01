@@ -2,13 +2,14 @@ use super::*;
 
 #[test]
 fn into_query_maps_histogram_and_anchor_forms() {
-    // Empty histogram → None; a cursor string parses to Anchor::Cursor.
+    // Empty histogram → the builder's default; a cursor string parses to
+    // Anchor::Cursor.
     let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"histogram":"","anchor":"100:2:3"}"#).unwrap();
     let q = req.into_query();
-    assert!(q.histogram_field.is_none());
+    assert_eq!(q.histogram_field(), "severity_text");
     assert!(matches!(
-        q.anchor,
+        q.anchor(),
         Some(Anchor::Cursor(c)) if c.timestamp_ns == 100 && c.file_seq == 2 && c.position == 3
     ));
 
@@ -17,13 +18,13 @@ fn into_query_maps_histogram_and_anchor_forms() {
     let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"histogram":"service","anchor":5000}"#).unwrap();
     let q = req.into_query();
-    assert_eq!(q.histogram_field.as_deref(), Some("service"));
-    assert!(matches!(q.anchor, Some(Anchor::Timestamp(5_000_000))));
+    assert_eq!(q.histogram_field(), "service");
+    assert!(matches!(q.anchor(), Some(Anchor::Timestamp(5_000_000))));
 
     // A malformed cursor string is dropped → no anchor.
     let req: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":"not-a-cursor"}"#).unwrap();
     let q = req.into_query();
-    assert!(q.anchor.is_none());
+    assert!(q.anchor().is_none());
 }
 
 #[test]

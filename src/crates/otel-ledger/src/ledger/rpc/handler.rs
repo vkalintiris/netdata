@@ -59,7 +59,7 @@ impl FunctionHandler for OtelLogsHandler {
         // before any I/O.
         let last = req.last;
         let query = req.into_query();
-        let time_range = window_secs(&query.grid);
+        let time_range = window_secs(&query.grid());
         let candidates = {
             let guard = self.registries.read().await;
             let q = file_registry::Query {

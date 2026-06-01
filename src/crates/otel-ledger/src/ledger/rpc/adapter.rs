@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use sfsq::logs::{Anchor, Cursor, LogsData, LogsQuery};
+use sfsq::logs::{Anchor, Cursor, LogsData, LogsQuery, LogsQueryBuilder};
 
 use super::wire::{
     ACCEPTED_PARAMS, AnchorParam, AvailableHistogram, Chart, ChartDimensions, ChartPoint,
@@ -77,20 +77,27 @@ impl OtelLogsRequest {
             ((before - after) / bucket_width_s) as usize,
         );
 
-        LogsQuery {
-            grid,
-            selections: self.selections,
-            histogram_field: (!self.histogram.is_empty()).then_some(self.histogram),
-            facet_fields: self.facets,
-            anchor: self.anchor.and_then(|a| match a {
-                AnchorParam::Cursor(s) => Cursor::decode(&s).map(Anchor::Cursor),
-                AnchorParam::TimestampUs(us) => {
-                    Some(Anchor::Timestamp((us as i64).saturating_mul(1_000)))
-                }
-            }),
-            direction: self.direction,
-            limit: self.last,
+        let anchor = self.anchor.and_then(|a| match a {
+            AnchorParam::Cursor(s) => Cursor::decode(&s).map(Anchor::Cursor),
+            AnchorParam::TimestampUs(us) => {
+                Some(Anchor::Timestamp((us as i64).saturating_mul(1_000)))
+            }
+        });
+
+        let mut builder = LogsQueryBuilder::new(grid)
+            .selections(self.selections)
+            .facet_fields(self.facets)
+            .direction(self.direction)
+            .limit(self.last);
+        // Empty histogram / no anchor fall through to the builder's
+        // defaults (the engine's default dimension; start at the edge).
+        if !self.histogram.is_empty() {
+            builder = builder.histogram_field(self.histogram);
         }
+        if let Some(anchor) = anchor {
+            builder = builder.anchor(anchor);
+        }
+        builder.build()
     }
 }
 
