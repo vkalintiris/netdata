@@ -10,8 +10,6 @@
 //! That's the basis for fanning the query out across nodes without opening
 //! every file in one place.
 
-use sfst::Filter;
-
 use super::engine::SfstCandidate;
 use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
 use super::mmap;
@@ -118,10 +116,11 @@ impl LogsShard {
 
         let grid = query.grid;
         let filter = &query.filter;
+        // `matched`/`facets` clip to the window; the timeline needs the grid.
+        let window = grid.range_ns();
         let fields = reader.field_table().clone();
 
-        // matched: filter-matching logs restricted to the grid window.
-        let matched = match per_file_matched(&reader, filter, grid) {
+        let matched = match reader.matched_count(filter, window.clone()) {
             Ok(count) => count,
             Err(e) => {
                 tracing::warn!(
@@ -137,7 +136,7 @@ impl LogsShard {
         // would make `facets()` error and cost the whole file; a high-card
         // one is dropped across files later, in `merge`).
         let facet_fields = eligible_facet_fields(&query.facet_fields, &fields);
-        let facets = match reader.facets(&facet_fields, filter, grid.range_ns()) {
+        let facets = match reader.facets(&facet_fields, filter, window) {
             Ok(facets) => facets,
             Err(e) => {
                 tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
@@ -176,17 +175,6 @@ impl LogsShard {
             fields,
         }
     }
-}
-
-/// Per-file matched count: filter-matching logs restricted to the grid's
-/// window. Delegates to [`sfst::IndexReader::matched_count`], which clips to
-/// the window the same way `facets` does.
-fn per_file_matched(
-    reader: &sfst::IndexReader<'_>,
-    filter: &Filter,
-    grid: sfst::Grid,
-) -> Result<u64, sfst::Error> {
-    reader.matched_count(filter, grid.range_ns())
 }
 
 /// The query's facet fields that are usable in *this* file: present in its
