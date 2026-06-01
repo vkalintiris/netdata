@@ -72,7 +72,6 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
         .collect();
     let columns: Vec<String> = stats.fields.names().map(str::to_owned).collect();
     let histogram = stats.timeline.unwrap_or_else(|| empty_timeline(grid));
-    let histogram_field = query.histogram_field.clone();
 
     // Step 2: select and materialize one page across the same files.
     // Resolve the anchor to a cursor in the global total order. A row
@@ -92,7 +91,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     LogsData {
         matched: stats.matched as usize,
         facets: stats.facets,
-        histogram_field,
+        histogram_field: query.histogram_field,
         histogram,
         available_fields,
         columns,
