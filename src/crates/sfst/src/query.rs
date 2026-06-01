@@ -1,45 +1,56 @@
 //! Query primitives over an SFST index.
 //!
-//! This module exposes:
+//! This module defines the inputs and outputs of the reader's query API;
+//! the methods themselves ([`crate::IndexReader::facets`],
+//! [`crate::IndexReader::timeline`], and the matched-count helpers) live on
+//! the reader and consume these types.
 //!
-//! - [`Filter`] — a netdata-style selection set: `field → allowed values`,
-//!   with **OR within a field** and **AND across fields**.
-//! - [`FacetResult`] — per-field `(value, count)` breakdown for the UI.
-//! - [`Timeline`] — 2D time-bucket × dimension count grid for chart rendering.
-//!
-//! The query methods themselves ([`crate::IndexReader::facets`],
-//! [`crate::IndexReader::timeline`]) live on the reader. They consume types
-//! defined here.
+//! - [`Filter`] — a selection set (`field → allowed values`) with **OR
+//!   within a field** and **AND across fields**.
+//! - [`FacetResult`] — a per-field `(value, count)` breakdown: the
+//!   distribution of a field's values across the matched logs.
+//! - [`Grid`] / [`Timeline`] — a time-bucketed, per-value count grid for
+//!   plotting a stacked time series of the matched logs.
 //!
 //! # Filter semantics
 //!
-//! `Filter` mirrors netdata's UI selection model:
-//! `HashMap<field, Vec<value>>`. A log matches the filter iff, for every
-//! field present in the selection, the log has at least one of the allowed
-//! values for that field.
+//! A `Filter` is a `field → values` map. A log matches iff, for every field
+//! present in the filter, the log's value for that field is one of the
+//! allowed values — disjunction within a field, conjunction across fields.
+//! An empty filter matches every log.
 //!
-//! Facet and timeline computations automatically *exclude* the field they
-//! are computing for, so a selection on `PRIORITY=error` doesn't hide the
-//! sibling values of the `PRIORITY` facet — see
+//! When computing a facet or timeline *for* a field, that field's own
+//! selection is excluded from the filter, so selecting `level=error`
+//! doesn't collapse the `level` facet to a single value — see
 //! [`Filter::without`].
 
 use std::collections::{BTreeMap, HashMap};
 
 /// A conjunction of per-field disjunctions.
 ///
-/// `selections[field]` is the list of allowed values for `field`. A log
-/// matches the filter iff for every entry `(field, values)` in
-/// `selections`, the log's attribute for `field` is in `values`.
+/// Each entry maps a `field` to its list of allowed values. A log matches
+/// the filter iff for every entry `(field, values)`, the log's attribute
+/// for `field` is in `values`.
 ///
-/// An empty `Filter` matches every log.
+/// An empty `Filter` matches every log. Build one with [`new`](Self::new) +
+/// [`select`](Self::select) or [`From`] a `field → values` map; inspect it
+/// with [`iter`](Self::iter), [`has_field`](Self::has_field), and
+/// [`is_empty`](Self::is_empty).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
-    pub selections: BTreeMap<String, Vec<String>>,
+    selections: BTreeMap<String, Vec<String>>,
 }
 
 impl Filter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Iterate the `(field, values)` selections — disjunction within a
+    /// field, conjunction across fields. Fields are yielded in sorted
+    /// order; within a field, values keep insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<String>)> {
+        self.selections.iter()
     }
 
     /// Add `value` to the allowed values for `field`. Multiple values on
@@ -131,18 +142,20 @@ impl Grid {
     }
 }
 
-/// 2D time × dimension count grid for chart rendering.
+/// A 2D time × value count grid: for each time bucket, the number of
+/// matched logs carrying each value of the histogram field. Suitable for
+/// plotting a stacked time series.
 ///
 /// `buckets[i]` corresponds to the time window described by
 /// `grid` (see [`Grid`]). `buckets[i][j]` is the count for
-/// dimension `dimensions[j]`.
+/// dimension `dimensions[j]` (the `j`-th value of the field).
 ///
 /// `unset[i]` is the count of logs in bucket `i` that match the
 /// (without-field) filter but **don't have the histogram field set**.
 /// Computed as `filter_total_in_bucket - sum(buckets[i])`, exact
-/// because OTel attribute keys are unique per LogRecord
-/// (`common.proto §KeyValue`): every matching log either appears in
-/// exactly one dimension or in `unset`.
+/// because attribute keys are unique per log record (as in an OpenTelemetry
+/// `LogRecord`, `common.proto §KeyValue`): every matching log either appears
+/// in exactly one dimension or in `unset`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
     pub grid: Grid,
@@ -156,8 +169,8 @@ pub struct Timeline {
 ///
 /// Produced by [`IndexReader::materialize_rows`](crate::IndexReader::materialize_rows).
 /// Pairs appear in the order the position's `KvId`s were stored; keys
-/// are not deduplicated (OTel attribute keys are unique per LogRecord,
-/// so duplicates don't arise in practice).
+/// are not deduplicated (where attribute keys are unique per record, as in
+/// an OpenTelemetry `LogRecord`, duplicates don't arise in practice).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedRow {
     pub timestamp_ns: i64,

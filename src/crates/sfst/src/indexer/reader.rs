@@ -293,7 +293,7 @@ impl<'a> IndexReader<'a> {
         }
 
         let mut result: Option<PosSet> = None;
-        for (field, values) in &filter.selections {
+        for (field, values) in filter.iter() {
             let field_set = self.field_values_or(field, values)?;
             result = Some(match result {
                 None => field_set,
