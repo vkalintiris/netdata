@@ -209,22 +209,34 @@ impl Timestamps {
 /// matched logs carrying each value of the histogram field. Suitable for
 /// plotting a stacked time series.
 ///
-/// `buckets[i]` corresponds to the time window described by
-/// `grid` (see [`Grid`]). `buckets[i][j]` is the count for
-/// dimension `dimensions[j]` (the `j`-th value of the field).
-///
-/// `unset[i]` is the count of logs in bucket `i` that match the
-/// (without-field) filter but **don't have the histogram field set**.
-/// Computed as `filter_total_in_bucket - sum(buckets[i])`, exact
-/// because attribute keys are unique per log record (as in an OpenTelemetry
-/// `LogRecord`, `common.proto §KeyValue`): every matching log either appears
-/// in exactly one dimension or in `unset`.
+/// `buckets[i]` holds the counts for the `i`-th bucket of `grid` (see
+/// [`Grid`]), in time order. The field-value labels live once in
+/// `dimensions`, parallel to each [`Bucket::counts`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
     pub grid: Grid,
+    /// Field-value labels, parallel to each [`Bucket::counts`].
     pub dimensions: Vec<String>,
-    pub buckets: Vec<Vec<u64>>,
-    pub unset: Vec<u64>,
+    /// One entry per `grid` bucket, in time order.
+    pub buckets: Vec<Bucket>,
+}
+
+/// Counts for one time bucket of a [`Timeline`].
+///
+/// `counts[j]` is the number of matched logs in this bucket carrying value
+/// [`dimensions[j]`](Timeline::dimensions); `unset` is the count of matched
+/// logs in this bucket that don't have the field set at all.
+///
+/// `unset` is `bucket_total - sum(counts)`, exact because attribute keys are
+/// unique per log record (as in an OpenTelemetry `LogRecord`,
+/// `common.proto §KeyValue`): every matching log lands in exactly one
+/// dimension or in `unset`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bucket {
+    /// Per-dimension counts, parallel to [`Timeline::dimensions`].
+    pub counts: Vec<u64>,
+    /// Matched logs in this bucket lacking the field.
+    pub unset: u64,
 }
 
 /// A single materialized log row: its timestamp plus the full set of

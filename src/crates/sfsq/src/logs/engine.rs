@@ -102,7 +102,12 @@ fn empty_timeline(grid: sfst::Grid) -> sfst::Timeline {
     sfst::Timeline {
         grid,
         dimensions: Vec::new(),
-        buckets: vec![Vec::new(); grid.num_buckets],
-        unset: vec![0u64; grid.num_buckets],
+        buckets: vec![
+            sfst::Bucket {
+                counts: Vec::new(),
+                unset: 0,
+            };
+            grid.num_buckets
+        ],
     }
 }

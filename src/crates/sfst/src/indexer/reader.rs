@@ -11,8 +11,8 @@
 use fst_index::FstIndex;
 
 use crate::{
-    BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram, IdRanges,
-    KvId, Metadata, ServiceStream, Summary, Timeline, Timestamps,
+    BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram,
+    IdRanges, KvId, Metadata, ServiceStream, Summary, Timeline, Timestamps,
 };
 
 /// A successfully opened split-FST index.
@@ -488,24 +488,21 @@ impl<'a> IndexReader<'a> {
         // the bucket's log count. OTel attribute keys are unique per
         // LogRecord, so every matching log lands in exactly one dimension
         // or in `unset` — the subtraction is exact.
-        let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
-        let mut unset = vec![0u64; grid.num_buckets];
+        let mut buckets = Vec::with_capacity(grid.num_buckets);
         for (bucket_i, &(pos_lo, pos_hi)) in bucket_ranges.iter().enumerate() {
-            let mut dim_sum: u64 = 0;
-            for (dim_i, counts) in dim_counts.iter().enumerate() {
-                let c = counts[bucket_i];
-                buckets[bucket_i][dim_i] = c;
-                dim_sum += c;
-            }
+            let counts: Vec<u64> = dim_counts.iter().map(|dc| dc[bucket_i]).collect();
+            let dim_sum: u64 = counts.iter().sum();
             let bucket_total = filter_set.range_cardinality(pos_lo, pos_hi);
-            unset[bucket_i] = bucket_total.saturating_sub(dim_sum);
+            buckets.push(Bucket {
+                counts,
+                unset: bucket_total.saturating_sub(dim_sum),
+            });
         }
 
         Ok(Timeline {
             grid,
             dimensions,
             buckets,
-            unset,
         })
     }
 

@@ -75,8 +75,12 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
         .map(|(i, d)| (d.as_str(), i))
         .collect();
 
-    let mut buckets = vec![vec![0u64; dimensions.len()]; grid.num_buckets];
-    let mut unset = vec![0u64; grid.num_buckets];
+    let mut buckets: Vec<sfst::Bucket> = (0..grid.num_buckets)
+        .map(|_| sfst::Bucket {
+            counts: vec![0u64; dimensions.len()],
+            unset: 0,
+        })
+        .collect();
 
     for timeline in &timelines {
         // Hard-assert the precondition: every input must share the
@@ -86,7 +90,6 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
         // so the check is free at runtime.
         assert_eq!(timeline.grid, grid);
         assert_eq!(timeline.buckets.len(), grid.num_buckets);
-        assert_eq!(timeline.unset.len(), grid.num_buckets);
 
         // Map this file's local dim index → union dim index.
         let local_to_union: Vec<usize> = timeline
@@ -95,11 +98,11 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
             .map(|d| dim_index[d.as_str()])
             .collect();
 
-        for (bucket_i, file_bucket) in timeline.buckets.iter().enumerate() {
-            for (local_i, count) in file_bucket.iter().enumerate() {
-                buckets[bucket_i][local_to_union[local_i]] += count;
+        for (merged, file_bucket) in buckets.iter_mut().zip(&timeline.buckets) {
+            for (local_i, count) in file_bucket.counts.iter().enumerate() {
+                merged.counts[local_to_union[local_i]] += count;
             }
-            unset[bucket_i] += timeline.unset[bucket_i];
+            merged.unset += file_bucket.unset;
         }
     }
 
@@ -107,7 +110,6 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
         grid,
         dimensions,
         buckets,
-        unset,
     })
 }
 

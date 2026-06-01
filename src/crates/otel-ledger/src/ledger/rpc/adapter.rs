@@ -260,11 +260,11 @@ fn histogram_from_sfst(field: &str, timeline: &sfst::Timeline) -> Histogram {
         .buckets
         .iter()
         .enumerate()
-        .map(|(bucket_i, counts)| {
+        .map(|(bucket_i, bucket)| {
             let timestamp_ms = bucket_start_ms + (bucket_i as u64) * bucket_width_ms;
-            let mut items: Vec<[usize; 3]> = counts.iter().map(|&c| [c as usize, 0, 0]).collect();
-            let unset = timeline.unset.get(bucket_i).copied().unwrap_or(0);
-            items.push([unset as usize, 0, 0]);
+            let mut items: Vec<[usize; 3]> =
+                bucket.counts.iter().map(|&c| [c as usize, 0, 0]).collect();
+            items.push([bucket.unset as usize, 0, 0]);
             DataPoint {
                 timestamp_ms,
                 items,

@@ -104,8 +104,20 @@ fn histogram_emits_one_datapoint_per_bucket() {
     let t = sfst::Timeline {
         grid: sfst::Grid::new(1_700_000_000 * NS_PER_S, 2 * NS_PER_S, 3),
         dimensions: vec!["error".into(), "info".into()],
-        buckets: vec![vec![1, 4], vec![0, 3], vec![2, 2]],
-        unset: vec![2, 1, 0],
+        buckets: vec![
+            sfst::Bucket {
+                counts: vec![1, 4],
+                unset: 2,
+            },
+            sfst::Bucket {
+                counts: vec![0, 3],
+                unset: 1,
+            },
+            sfst::Bucket {
+                counts: vec![2, 2],
+                unset: 0,
+            },
+        ],
     };
 
     let h = histogram_from_sfst("level", &t);
@@ -144,7 +156,6 @@ fn histogram_with_zero_buckets_still_well_formed() {
         grid: sfst::Grid::new(0, NS_PER_S, 0),
         dimensions: Vec::new(),
         buckets: Vec::new(),
-        unset: Vec::new(),
     };
     let h = histogram_from_sfst("severity_text", &t);
     assert!(h.chart.result.data.is_empty());

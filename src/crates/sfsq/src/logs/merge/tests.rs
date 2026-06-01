@@ -2,6 +2,11 @@ use super::*;
 
 const NS_PER_S: i64 = 1_000_000_000;
 
+/// Terse `sfst::Bucket` constructor for the timeline tests.
+fn bucket(counts: Vec<u64>, unset: u64) -> sfst::Bucket {
+    sfst::Bucket { counts, unset }
+}
+
 #[test]
 fn merge_facet_results_unions_fields_and_sums_counts() {
     // File A: level={info:3, error:1}, service={api:4}
@@ -65,14 +70,12 @@ fn merge_timelines_unions_dimensions_and_sums_buckets() {
     let a = sfst::Timeline {
         grid,
         dimensions: vec!["error".into(), "info".into()],
-        buckets: vec![vec![1, 2], vec![0, 3], vec![4, 0]],
-        unset: vec![1, 0, 2],
+        buckets: vec![bucket(vec![1, 2], 1), bucket(vec![0, 3], 0), bucket(vec![4, 0], 2)],
     };
     let b = sfst::Timeline {
         grid,
         dimensions: vec!["debug".into(), "info".into()],
-        buckets: vec![vec![5, 0], vec![1, 1], vec![0, 0]],
-        unset: vec![0, 3, 0],
+        buckets: vec![bucket(vec![5, 0], 0), bucket(vec![1, 1], 3), bucket(vec![0, 0], 0)],
     };
 
     let merged = merge_timelines(vec![a, b]).unwrap();
@@ -81,17 +84,17 @@ fn merge_timelines_unions_dimensions_and_sums_buckets() {
     assert_eq!(merged.dimensions, vec!["debug", "error", "info"]);
 
     // Bucket 0: a[error=1, info=2], b[debug=5, info=0]
-    //         → merged[debug=5, error=1, info=2]
-    assert_eq!(merged.buckets[0], vec![5, 1, 2]);
+    //         → merged[debug=5, error=1, info=2]; unset 1+0
+    assert_eq!(merged.buckets[0].counts, vec![5, 1, 2]);
+    assert_eq!(merged.buckets[0].unset, 1);
     // Bucket 1: a[error=0, info=3], b[debug=1, info=1]
-    //         → merged[debug=1, error=0, info=4]
-    assert_eq!(merged.buckets[1], vec![1, 0, 4]);
+    //         → merged[debug=1, error=0, info=4]; unset 0+3
+    assert_eq!(merged.buckets[1].counts, vec![1, 0, 4]);
+    assert_eq!(merged.buckets[1].unset, 3);
     // Bucket 2: a[error=4, info=0], b[debug=0, info=0]
-    //         → merged[debug=0, error=4, info=0]
-    assert_eq!(merged.buckets[2], vec![0, 4, 0]);
-
-    // unset sums bucket-wise.
-    assert_eq!(merged.unset, vec![1, 3, 2]);
+    //         → merged[debug=0, error=4, info=0]; unset 2+0
+    assert_eq!(merged.buckets[2].counts, vec![0, 4, 0]);
+    assert_eq!(merged.buckets[2].unset, 2);
 }
 
 #[test]

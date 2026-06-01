@@ -48,7 +48,7 @@ pub mod registry;
 pub use error::{Error, IndexError};
 pub use file_registry::ServiceStream;
 pub use indexer::{IndexReader, IndexResult, build_and_write, index, index_with_options};
-pub use query::{FacetResult, Filter, Grid, MaterializedRow, Timeline, Timestamps};
+pub use query::{Bucket, FacetResult, Filter, Grid, MaterializedRow, Timeline, Timestamps};
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 

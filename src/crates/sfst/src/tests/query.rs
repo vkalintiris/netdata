@@ -277,11 +277,11 @@ fn timeline_buckets_match_filter() {
     // Dimensions are FST-iteration-order: "error", "info".
     assert_eq!(timeline.dimensions, vec!["error", "info"]);
     // Bucket 0 (pos 0-1): info=1, error=1
-    assert_eq!(timeline.buckets[0], vec![1, 1]);
+    assert_eq!(timeline.buckets[0].counts, vec![1, 1]);
     // Bucket 1 (pos 2-3): info=1, error=1
-    assert_eq!(timeline.buckets[1], vec![1, 1]);
+    assert_eq!(timeline.buckets[1].counts, vec![1, 1]);
     // Bucket 2 (pos 4-5): info=1, error=1
-    assert_eq!(timeline.buckets[2], vec![1, 1]);
+    assert_eq!(timeline.buckets[2].counts, vec![1, 1]);
 }
 
 #[test]
@@ -297,13 +297,13 @@ fn timeline_unset_counts_match_logs_missing_the_field() {
             Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
         )
         .unwrap();
-    assert_eq!(t.unset, vec![0, 0, 0]);
+    assert!(t.buckets.iter().all(|b| b.unset == 0));
     // And the per-bucket dim sums equal the bucket totals (no
     // logs "fall off" the dimensions list — the partition is exact).
-    for (bucket, unset) in t.buckets.iter().zip(t.unset.iter()) {
-        let dim_sum: u64 = bucket.iter().sum();
+    for bucket in &t.buckets {
+        let dim_sum: u64 = bucket.counts.iter().sum();
         // 2 logs per bucket in this fixture.
-        assert_eq!(dim_sum + unset, 2);
+        assert_eq!(dim_sum + bucket.unset, 2);
     }
 }
 
@@ -326,7 +326,7 @@ fn timeline_excludes_own_field_from_filter() {
     // Both dimensions visible.
     assert_eq!(timeline.dimensions, vec!["error", "info"]);
     // Counts reflect the full bitmap (filter excluded its own field).
-    assert_eq!(timeline.buckets[0], vec![3, 3]);
+    assert_eq!(timeline.buckets[0].counts, vec![3, 3]);
 }
 
 #[test]
@@ -359,11 +359,11 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
     // Leading buckets all zero.
     for i in 0..4 {
         assert_eq!(
-            timeline.buckets[i],
+            timeline.buckets[i].counts,
             vec![0, 0],
             "bucket {i} should be empty"
         );
-        assert_eq!(timeline.unset[i], 0);
+        assert_eq!(timeline.buckets[i].unset, 0);
     }
     // Each subsequent bucket holds one log; FST order puts "error"
     // first, then "info". Positions in the fixture: 0=info, 1=error,
@@ -377,7 +377,12 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
         vec![1, 0], // pos 5: error
     ];
     for (i, exp) in expected.iter().enumerate() {
-        assert_eq!(timeline.buckets[i + 4], *exp, "bucket {} mismatch", i + 4);
+        assert_eq!(
+            timeline.buckets[i + 4].counts,
+            *exp,
+            "bucket {} mismatch",
+            i + 4
+        );
     }
 }
 
@@ -452,8 +457,12 @@ fn timeline_absent_field_routes_all_logs_to_unset() {
         )
         .unwrap();
     assert!(timeline.dimensions.is_empty());
-    assert_eq!(timeline.buckets, vec![Vec::<u64>::new(); 3]);
-    assert_eq!(timeline.unset, vec![2, 2, 2]);
+    // No dimensions → empty `counts`; every matching log lands in `unset`.
+    for bucket in &timeline.buckets {
+        assert!(bucket.counts.is_empty());
+        assert_eq!(bucket.unset, 2);
+    }
+    assert_eq!(timeline.buckets.len(), 3);
 }
 
 /// Fixture with a value dense enough to be stored *complemented* (inverted
