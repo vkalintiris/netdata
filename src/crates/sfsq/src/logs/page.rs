@@ -18,11 +18,12 @@
 use std::collections::HashMap;
 
 use memmap2::Mmap;
+use sfst::Filter;
 
 use super::cursor::Cursor;
 use super::engine::SfstCandidate;
 use super::mmap;
-use super::query::{Direction, LogsQuery, build_filter};
+use super::query::{Direction, LogsQuery};
 
 const NS_PER_S: i64 = 1_000_000_000;
 
@@ -84,7 +85,7 @@ pub fn evaluate_page(
     anchor: Option<Cursor>,
     bound: Option<usize>,
 ) -> Result<PageShard, sfst::Error> {
-    let filter = build_filter(&query.selections);
+    let filter = Filter::from(&query.selections);
     let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
     let timestamps = reader.load_timestamps()?;
 

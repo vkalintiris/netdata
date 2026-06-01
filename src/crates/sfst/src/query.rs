@@ -23,7 +23,7 @@
 //! sibling values of the `PRIORITY` facet — see
 //! [`Filter::without`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A conjunction of per-field disjunctions.
 ///
@@ -70,6 +70,25 @@ impl Filter {
 
     pub fn is_empty(&self) -> bool {
         self.selections.is_empty()
+    }
+}
+
+impl From<&HashMap<String, Vec<String>>> for Filter {
+    /// Build a filter from a `field -> values` map (OR within a field, AND
+    /// across fields).
+    ///
+    /// A field whose value list is empty is **skipped** (it adds no
+    /// constraint), rather than being stored as an empty selection — an
+    /// empty list would otherwise mean "OR of no values", collapsing the
+    /// whole filter to match nothing. So a cleared field clears its filter.
+    fn from(selections: &HashMap<String, Vec<String>>) -> Self {
+        let mut filter = Filter::new();
+        for (field, values) in selections {
+            for value in values {
+                filter = filter.select(field.clone(), value.clone());
+            }
+        }
+        filter
     }
 }
 

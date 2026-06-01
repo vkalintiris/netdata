@@ -10,10 +10,12 @@
 //! That's the basis for fanning the query out across nodes without opening
 //! every file in one place.
 
+use sfst::Filter;
+
 use super::engine::SfstCandidate;
 use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
 use super::mmap;
-use super::query::{LogsQuery, build_filter};
+use super::query::LogsQuery;
 
 /// Default histogram dimension when the query doesn't specify one.
 /// Always `severity_text` — it's the OTel canonical log-level field,
@@ -133,7 +135,7 @@ pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
     };
 
     let grid = query.grid;
-    let filter = build_filter(&query.selections);
+    let filter = Filter::from(&query.selections);
     let fields = reader.field_table().clone();
 
     // matched: filter-matching logs restricted to the grid window.
@@ -202,7 +204,7 @@ pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
 /// the window the same way `facets` does.
 fn per_file_matched(
     reader: &sfst::IndexReader<'_>,
-    filter: &sfst::Filter,
+    filter: &Filter,
     grid: sfst::Grid,
 ) -> Result<u64, sfst::Error> {
     reader.matched_count(filter, grid.range_ns())

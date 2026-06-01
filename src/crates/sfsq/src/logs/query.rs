@@ -64,17 +64,3 @@ pub enum Direction {
     #[default]
     Backward,
 }
-
-/// Translate a query's `selections` map into an [`sfst::Filter`]. Same
-/// shape, just a constructor walk: OR within field, AND across fields.
-/// Shared by both query steps (`aggregate::evaluate` and
-/// `page::evaluate_page`).
-pub(super) fn build_filter(selections: &HashMap<String, Vec<String>>) -> sfst::Filter {
-    let mut filter = sfst::Filter::new();
-    for (field, values) in selections {
-        for value in values {
-            filter = filter.select(field.clone(), value.clone());
-        }
-    }
-    filter
-}

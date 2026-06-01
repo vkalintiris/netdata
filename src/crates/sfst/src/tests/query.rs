@@ -612,3 +612,22 @@ fn complemented_value_bitmap_counts_correctly() {
     assert_eq!(lvl.get("hi"), Some(&3));
     assert_eq!(lvl.get("lo"), None); // lo ∩ {0,1,2} is empty → omitted
 }
+
+#[test]
+fn filter_from_selections_map() {
+    let mut selections: std::collections::HashMap<String, Vec<String>> = Default::default();
+    selections.insert("level".into(), vec!["info".into(), "error".into()]);
+    selections.insert("service".into(), vec!["api".into()]);
+    // A field with no values must be dropped (no constraint), not stored as
+    // an empty selection that would collapse the filter to match-nothing.
+    selections.insert("cleared".into(), vec![]);
+
+    let filter = Filter::from(&selections);
+
+    let expected = Filter::new()
+        .select("level", "info")
+        .select("level", "error")
+        .select("service", "api");
+    assert_eq!(filter, expected);
+    assert!(!filter.has_field("cleared"));
+}
