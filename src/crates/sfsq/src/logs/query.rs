@@ -70,11 +70,9 @@ impl LogsQuery {
     pub fn anchor(&self) -> Option<Anchor> {
         self.anchor
     }
-    /// Page direction relative to the anchor.
     pub fn direction(&self) -> Direction {
         self.direction
     }
-    /// Maximum number of rows to materialize for the page.
     pub fn limit(&self) -> usize {
         self.limit
     }
@@ -118,31 +116,26 @@ impl LogsQueryBuilder {
         self
     }
 
-    /// Set the histogram dimension field, overriding the default.
     pub fn histogram_field(mut self, field: impl Into<String>) -> Self {
         self.histogram_field = Some(field.into());
         self
     }
 
-    /// Set the facet fields to tabulate, overriding the default.
     pub fn facet_fields(mut self, fields: Vec<String>) -> Self {
         self.facet_fields = fields;
         self
     }
 
-    /// Set the pagination anchor.
     pub fn anchor(mut self, anchor: Anchor) -> Self {
         self.anchor = Some(anchor);
         self
     }
 
-    /// Set the page direction.
     pub fn direction(mut self, direction: Direction) -> Self {
         self.direction = direction;
         self
     }
 
-    /// Set the maximum number of rows to materialize for the page.
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = limit;
         self
