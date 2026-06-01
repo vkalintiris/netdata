@@ -6,8 +6,8 @@
 //! point for the local case.
 //!
 //! The work splits into two steps. Step 1 (statistics — matched, facets,
-//! histogram, fields) is an aggregatable monoid: [`evaluate`] produces a
-//! [`LogsShard`] per file and [`LogsShard::merge`] folds them, so the
+//! histogram, fields) is an aggregatable monoid: [`LogsShard::evaluate`]
+//! produces a [`LogsShard`] per file and [`LogsShard::merge`] folds them, so the
 //! query can fan out across nodes and aggregate. Step 2 (row
 //! materialization) needs a global order and lives in the pagination
 //! path. [`run`] composes both.
@@ -32,9 +32,9 @@ mod page;
 mod query;
 mod result;
 
-pub use aggregate::{LogsShard, evaluate};
+pub use aggregate::LogsShard;
 pub use cursor::Cursor;
 pub use engine::{SfstCandidate, run};
-pub use page::{PageShard, evaluate_page};
+pub use page::PageShard;
 pub use query::{Anchor, Direction, LogsQuery};
 pub use result::LogsData;

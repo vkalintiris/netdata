@@ -5,7 +5,7 @@
 //! it isn't a plain fold. It decomposes into seams a cross-node fan-out
 //! reuses:
 //!
-//! - [`evaluate_page`] (map: one file -> its page candidates),
+//! - [`PageShard::evaluate`] (map: one file -> its page candidates),
 //! - [`PageShard::merge`] (reduce: combine candidate sets — associative),
 //! - [`finalize_page`] (root: pick the page + the has-more flags),
 //! - [`materialize`] (fetch: chosen cursors -> row bodies).
@@ -32,7 +32,7 @@ const NS_PER_S: i64 = 1_000_000_000;
 /// first, plus whether the file has any match on the *opposite* side
 /// (which becomes the opposite direction's has-more flag).
 ///
-/// [`evaluate_page`] produces one per file; [`PageShard::merge`] folds
+/// [`PageShard::evaluate`] produces one per file; [`PageShard::merge`] folds
 /// them. The candidate list may be bounded to the page size (a later
 /// step) — all a fan-out needs to ship — or unbounded.
 #[derive(Debug, Default)]
@@ -68,64 +68,64 @@ impl PageShard {
             has_opposite,
         }
     }
-}
 
-/// Map: evaluate one file's page candidates against the query.
-///
-/// Intersects the filter with the window, tags each matching position
-/// with its [`Cursor`], and splits at `anchor` (exclusive): the candidates
-/// are the matches on `query.direction`'s side, ordered closest-to-anchor
-/// first and optionally truncated to `bound`; `has_opposite` records
-/// whether any match falls on the other side. `anchor == None` starts at
-/// the edge — every match is a candidate and there is no opposite side.
-pub fn evaluate_page(
-    reader: &sfst::IndexReader<'_>,
-    seq: u64,
-    query: &LogsQuery,
-    anchor: Option<Cursor>,
-    bound: Option<usize>,
-) -> Result<PageShard, sfst::Error> {
-    let filter = Filter::from(&query.selections);
-    let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
-    let timestamps = reader.load_timestamps()?;
+    /// Map: evaluate one file's page candidates against the query.
+    ///
+    /// Intersects the filter with the window, tags each matching position
+    /// with its [`Cursor`], and splits at `anchor` (exclusive): the candidates
+    /// are the matches on `query.direction`'s side, ordered closest-to-anchor
+    /// first and optionally truncated to `bound`; `has_opposite` records
+    /// whether any match falls on the other side. `anchor == None` starts at
+    /// the edge — every match is a candidate and there is no opposite side.
+    pub fn evaluate(
+        reader: &sfst::IndexReader<'_>,
+        seq: u64,
+        query: &LogsQuery,
+        anchor: Option<Cursor>,
+        bound: Option<usize>,
+    ) -> Result<PageShard, sfst::Error> {
+        let filter = Filter::from(&query.selections);
+        let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
+        let timestamps = reader.load_timestamps()?;
 
-    // Cursors for every match, ascending — within a file, position order
-    // is cursor order (timestamps are chronological and `seq` is constant).
-    let mut ascending: Vec<Cursor> = matched
-        .into_iter()
-        .map(|position| Cursor {
-            timestamp_ns: timestamps.at(position).unwrap_or(0),
-            file_seq: seq,
-            position,
+        // Cursors for every match, ascending — within a file, position order
+        // is cursor order (timestamps are chronological and `seq` is constant).
+        let mut ascending: Vec<Cursor> = matched
+            .into_iter()
+            .map(|position| Cursor {
+                timestamp_ns: timestamps.at(position).unwrap_or(0),
+                file_seq: seq,
+                position,
+            })
+            .collect();
+
+        // Split at the anchor (exclusive). Backward's page side is `< anchor`
+        // (opposite `>= anchor`); forward's is `> anchor` (opposite `<= anchor`).
+        let (mut cursors, has_opposite) = match (anchor, query.direction) {
+            (None, _) => (std::mem::take(&mut ascending), false),
+            (Some(a), Direction::Backward) => {
+                let split = ascending.partition_point(|c| *c < a);
+                let has_opposite = split < ascending.len();
+                ascending.truncate(split);
+                (ascending, has_opposite)
+            }
+            (Some(a), Direction::Forward) => {
+                let split = ascending.partition_point(|c| *c <= a);
+                let has_opposite = split > 0;
+                (ascending.split_off(split), has_opposite)
+            }
+        };
+
+        order_by_closeness(&mut cursors, query.direction);
+        if let Some(bound) = bound {
+            cursors.truncate(bound);
+        }
+
+        Ok(PageShard {
+            cursors,
+            has_opposite,
         })
-        .collect();
-
-    // Split at the anchor (exclusive). Backward's page side is `< anchor`
-    // (opposite `>= anchor`); forward's is `> anchor` (opposite `<= anchor`).
-    let (mut cursors, has_opposite) = match (anchor, query.direction) {
-        (None, _) => (std::mem::take(&mut ascending), false),
-        (Some(a), Direction::Backward) => {
-            let split = ascending.partition_point(|c| *c < a);
-            let has_opposite = split < ascending.len();
-            ascending.truncate(split);
-            (ascending, has_opposite)
-        }
-        (Some(a), Direction::Forward) => {
-            let split = ascending.partition_point(|c| *c <= a);
-            let has_opposite = split > 0;
-            (ascending.split_off(split), has_opposite)
-        }
-    };
-
-    order_by_closeness(&mut cursors, query.direction);
-    if let Some(bound) = bound {
-        cursors.truncate(bound);
     }
-
-    Ok(PageShard {
-        cursors,
-        has_opposite,
-    })
 }
 
 /// Order cursors closest-to-anchor first for `direction`: backward walks
@@ -279,7 +279,7 @@ pub(super) fn paginate(
                 continue;
             }
         };
-        match evaluate_page(&reader, candidate.seq, query, anchor, bound) {
+        match PageShard::evaluate(&reader, candidate.seq, query, anchor, bound) {
             Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
             Err(e) => {
                 tracing::warn!(

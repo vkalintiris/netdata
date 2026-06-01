@@ -1,7 +1,7 @@
 //! Step 1: statistics (the aggregatable step).
 //!
 //! Computes a query's matched count, facets, histogram, and field table.
-//! This step is an associative monoid: [`evaluate`] turns one candidate
+//! This step is an associative monoid: [`LogsShard::evaluate`] turns one candidate
 //! file into a [`LogsShard`], and [`LogsShard::merge`] folds many shards
 //! into one. Because the fold is associative with the
 //! [`Default`](LogsShard::default) shard as identity, a node can merge the
@@ -38,7 +38,7 @@ const DEFAULT_FACET_FIELD: &str = "severity_text";
 /// matched count, facets, histogram, and field table — everything in
 /// step 1, with no materialized rows.
 ///
-/// A shard is the unit of delegated work. [`evaluate`] produces one from
+/// A shard is the unit of delegated work. [`LogsShard::evaluate`] produces one from
 /// a single file; [`LogsShard::merge`] folds many into one. Because the
 /// fold is an associative monoid, a node can merge the files it owns into
 /// a single shard and a parent can merge those node-shards the same way —
@@ -66,7 +66,7 @@ impl LogsShard {
     /// `matched` sums; facets and timelines combine via the cross-file
     /// merge helpers; field tables merge associatively. Facets for a
     /// field that is high-card in *any* shard are dropped here — each
-    /// shard's [`evaluate`] already skips a field high-card in its own
+    /// shard's [`LogsShard::evaluate`] already skips a field high-card in its own
     /// file, and this completes the rule across shards so the facet set
     /// stays consistent with the offerable `available_fields`. The merged
     /// `timeline` is `None` only when no shard contributed one.
@@ -107,95 +107,95 @@ impl LogsShard {
             fields,
         }
     }
-}
 
-/// Evaluate one candidate file into a [`LogsShard`] — step 1 for a single
-/// file. Opens the file, computes the matched count, facets, histogram,
-/// and field table against the query's [`grid`](LogsQuery::grid), and
-/// returns a fully-owned shard (the reader is dropped before returning).
-///
-/// Any failure — unreadable/corrupt file, a per-computation error — is
-/// logged and degrades that part to empty (an empty shard if the file
-/// can't be opened), so one bad file never sinks the others when its
-/// shard is merged.
-///
-/// Facets are picked against *this file's* table, so a field that's
-/// high-card here is skipped; a field high-card in some *other* file is
-/// dropped later, in [`LogsShard::merge`].
-pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
-    let Some(mapping) = mmap::map_file(&candidate.path) else {
-        return LogsShard::default();
-    };
-    let reader = match sfst::IndexReader::open(&mapping) {
-        Ok(reader) => reader,
-        Err(e) => {
-            tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
+    /// Evaluate one candidate file into a [`LogsShard`] — step 1 for a single
+    /// file. Opens the file, computes the matched count, facets, histogram,
+    /// and field table against the query's [`grid`](LogsQuery::grid), and
+    /// returns a fully-owned shard (the reader is dropped before returning).
+    ///
+    /// Any failure — unreadable/corrupt file, a per-computation error — is
+    /// logged and degrades that part to empty (an empty shard if the file
+    /// can't be opened), so one bad file never sinks the others when its
+    /// shard is merged.
+    ///
+    /// Facets are picked against *this file's* table, so a field that's
+    /// high-card here is skipped; a field high-card in some *other* file is
+    /// dropped later, in [`LogsShard::merge`].
+    pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
+        let Some(mapping) = mmap::map_file(&candidate.path) else {
             return LogsShard::default();
+        };
+        let reader = match sfst::IndexReader::open(&mapping) {
+            Ok(reader) => reader,
+            Err(e) => {
+                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
+                return LogsShard::default();
+            }
+        };
+
+        let grid = query.grid;
+        let filter = Filter::from(&query.selections);
+        let fields = reader.field_table().clone();
+
+        // matched: filter-matching logs restricted to the grid window.
+        let matched = match per_file_matched(&reader, &filter, grid) {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::warn!(
+                    "sfsq: matched count failed for {}: {e}",
+                    candidate.path.display()
+                );
+                0
+            }
+        };
+
+        // Facets: pick the requested set against this file's table (skipping
+        // a field high-card *here*), then keep only fields actually present —
+        // an unknown field would make `facets()` error and cost the whole
+        // file.
+        let facet_fields: Vec<String> = pick_facet_fields(&query.facet_fields, &fields)
+            .into_iter()
+            .filter(|name| fields.contains(name))
+            .collect();
+        let facets = match reader.facets(&facet_fields, &filter, grid.range_ns()) {
+            Ok(facets) => facets,
+            Err(e) => {
+                tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
+                Vec::new()
+            }
+        };
+
+        // Histogram: a file lacking the field yields a dimensionless timeline
+        // whose matching logs all land in `unset`; only a high-card field
+        // errors, in which case the file contributes no timeline.
+        let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
+        let timeline = match reader.timeline(&histogram_field, &filter, grid) {
+            Ok(timeline) => Some(timeline),
+            Err(e) => {
+                tracing::warn!(
+                    "sfsq: timeline failed for {}: {e}",
+                    candidate.path.display()
+                );
+                None
+            }
+        };
+
+        // Release the file's cold suffix (mid/high field chunks + stream
+        // batches) from the page cache so it doesn't evict the hot prefix
+        // (summary / metadata / timestamps / primary) across queries. Release
+        // the reader's borrows of the mapping before advising it.
+        let cold_region = reader.cold_region();
+        drop(reader);
+        if let Some(region) = cold_region {
+            mmap::release_cold_region(&mapping, region);
         }
-    };
 
-    let grid = query.grid;
-    let filter = Filter::from(&query.selections);
-    let fields = reader.field_table().clone();
-
-    // matched: filter-matching logs restricted to the grid window.
-    let matched = match per_file_matched(&reader, &filter, grid) {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::warn!(
-                "sfsq: matched count failed for {}: {e}",
-                candidate.path.display()
-            );
-            0
+        LogsShard {
+            matched,
+            facets,
+            timeline,
+            fields,
         }
-    };
-
-    // Facets: pick the requested set against this file's table (skipping
-    // a field high-card *here*), then keep only fields actually present —
-    // an unknown field would make `facets()` error and cost the whole
-    // file.
-    let facet_fields: Vec<String> = pick_facet_fields(&query.facet_fields, &fields)
-        .into_iter()
-        .filter(|name| fields.contains(name))
-        .collect();
-    let facets = match reader.facets(&facet_fields, &filter, grid.range_ns()) {
-        Ok(facets) => facets,
-        Err(e) => {
-            tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
-            Vec::new()
-        }
-    };
-
-    // Histogram: a file lacking the field yields a dimensionless timeline
-    // whose matching logs all land in `unset`; only a high-card field
-    // errors, in which case the file contributes no timeline.
-    let histogram_field = pick_histogram_field(query.histogram_field.as_deref());
-    let timeline = match reader.timeline(&histogram_field, &filter, grid) {
-        Ok(timeline) => Some(timeline),
-        Err(e) => {
-            tracing::warn!(
-                "sfsq: timeline failed for {}: {e}",
-                candidate.path.display()
-            );
-            None
-        }
-    };
-
-    // Release the file's cold suffix (mid/high field chunks + stream
-    // batches) from the page cache so it doesn't evict the hot prefix
-    // (summary / metadata / timestamps / primary) across queries. Release
-    // the reader's borrows of the mapping before advising it.
-    let cold_region = reader.cold_region();
-    drop(reader);
-    if let Some(region) = cold_region {
-        mmap::release_cold_region(&mapping, region);
-    }
-
-    LogsShard {
-        matched,
-        facets,
-        timeline,
-        fields,
     }
 }
 

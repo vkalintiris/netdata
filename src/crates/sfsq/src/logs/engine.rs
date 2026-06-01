@@ -17,7 +17,7 @@
 //! window/geometry policy — but since it reads and decompresses files the
 //! caller is expected to invoke it off any async runtime thread.
 
-use super::aggregate::{LogsShard, evaluate, pick_histogram_field};
+use super::aggregate::{LogsShard, pick_histogram_field};
 use super::cursor::Cursor;
 use super::page::paginate;
 use super::query::{Anchor, LogsQuery};
@@ -53,7 +53,12 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let grid = query.grid;
 
     // Step 1: evaluate each file, then merge into one statistics shard.
-    let stats = LogsShard::merge(candidates.iter().map(|c| evaluate(c, &query)).collect());
+    let stats = LogsShard::merge(
+        candidates
+            .iter()
+            .map(|c| LogsShard::evaluate(c, &query))
+            .collect(),
+    );
 
     // `available_fields` is the merged table with high-card fields
     // dropped — the offerable facet / histogram set — while `columns`

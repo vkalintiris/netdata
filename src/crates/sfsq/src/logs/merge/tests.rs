@@ -70,12 +70,20 @@ fn merge_timelines_unions_dimensions_and_sums_buckets() {
     let a = sfst::Timeline {
         grid,
         dimensions: vec!["error".into(), "info".into()],
-        buckets: vec![bucket(vec![1, 2], 1), bucket(vec![0, 3], 0), bucket(vec![4, 0], 2)],
+        buckets: vec![
+            bucket(vec![1, 2], 1),
+            bucket(vec![0, 3], 0),
+            bucket(vec![4, 0], 2),
+        ],
     };
     let b = sfst::Timeline {
         grid,
         dimensions: vec!["debug".into(), "info".into()],
-        buckets: vec![bucket(vec![5, 0], 0), bucket(vec![1, 1], 3), bucket(vec![0, 0], 0)],
+        buckets: vec![
+            bucket(vec![5, 0], 0),
+            bucket(vec![1, 1], 3),
+            bucket(vec![0, 0], 0),
+        ],
     };
 
     let merged = merge_timelines(vec![a, b]).unwrap();
