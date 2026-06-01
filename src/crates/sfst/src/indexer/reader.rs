@@ -730,6 +730,15 @@ impl<'a> IndexReader<'a> {
 /// Fast path (`fast` — nothing else constrains the scope): count directly
 /// on the [`treight::Bitmap`] via `range_cardinality`. Slow path: intersect
 /// the value with `scope`, then count each bucket on the result.
+///
+/// TODO(perf): this calls `range_cardinality` once per bucket, re-walking the
+/// tree from the root ~num_buckets times. The buckets are a contiguous sorted
+/// partition, so a single-pass `treight::Bitmap::range_counts(data, &edges)`
+/// that tallies all buckets in one traversal (skip full sub-trees into their
+/// bucket, descend only at the ~N boundaries) would collapse the histogram's
+/// dominant `skip_subtree` cost (≈40% on a wide-OR + faceted query) from
+/// `(dims+1) × buckets` walks to `dims+1`. Helps `timeline` only — facets'
+/// per-value `len()` is already a single walk. Needs a treight addition.
 fn bucket_counts(
     bv: &crate::BitmapValue,
     fast: bool,
