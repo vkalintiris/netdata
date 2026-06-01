@@ -21,8 +21,7 @@
 //!
 //! When computing a facet or timeline *for* a field, that field's own
 //! selection is excluded from the filter, so selecting `level=error`
-//! doesn't collapse the `level` facet to a single value — see
-//! [`Filter::without`].
+//! doesn't collapse the `level` facet to a single value.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -62,17 +61,6 @@ impl Filter {
             .or_default()
             .push(value.into());
         self
-    }
-
-    /// Returns a copy of this filter with `field`'s entry removed.
-    ///
-    /// Used by facet and timeline computations to exclude a field's own
-    /// selection when computing counts for that field — so a selection of
-    /// `level=error` doesn't reduce the `level` facet to a single bar.
-    pub fn without(&self, field: &str) -> Self {
-        let mut s = self.selections.clone();
-        s.remove(field);
-        Self { selections: s }
     }
 
     /// True iff `field` has a selection entry.

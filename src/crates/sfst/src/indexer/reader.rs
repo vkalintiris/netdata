@@ -279,34 +279,43 @@ impl<'a> IndexReader<'a> {
 
     // ── Query API ────────────────────────────────────────────────────
 
-    /// Build the position set matching a [`Filter`] (OR within field, AND
-    /// across fields) over this file's full range.
+    /// Compile a [`Filter`] against this file into a [`BitmapFilter`]:
+    /// resolve each field's selected values to a position bitmap once, plus
+    /// their AND (the full scope). The statistics methods take the compiled
+    /// filter, so a query that touches `matched`/`facets`/`timeline`
+    /// resolves the filter once instead of per call.
     ///
-    /// An empty filter yields the full range `0..total_logs`. A field
-    /// mentioned in the filter but absent from this file contributes the
-    /// empty set, collapsing the AND to empty — single-file SFSTs with
-    /// disjoint field sets fall out of the query naturally.
-    fn evaluate_set(&self, filter: &Filter) -> Result<PosSet, crate::Error> {
-        let total = self.summary.total_logs;
-        if filter.is_empty() {
-            return Ok(PosSet::full(total));
-        }
-
-        let mut result: Option<PosSet> = None;
+    /// An empty filter compiles to the full range `0..total_logs`. A field
+    /// mentioned in the filter but absent from this file resolves to the
+    /// empty set, collapsing the full scope to empty — single-file SFSTs
+    /// with disjoint field sets fall out of the query naturally.
+    pub fn compile_filter(&self, filter: &Filter) -> Result<BitmapFilter, crate::Error> {
+        let universe = self.summary.total_logs;
+        let mut per_field: Vec<(String, PosSet)> = Vec::new();
         for (field, values) in filter.iter() {
-            let field_set = self.field_values_or(field, values)?;
-            result = Some(match result {
-                None => field_set,
-                Some(mut prev) => {
-                    prev.and_assign(&field_set);
-                    prev
+            per_field.push((field.clone(), self.field_values_or(field, values)?));
+        }
+        // full = AND of every field; an empty filter is the full range.
+        let mut full: Option<PosSet> = None;
+        for (_, field_set) in &per_field {
+            full = Some(match full {
+                None => field_set.clone(),
+                Some(mut acc) => {
+                    acc.and_assign(field_set);
+                    acc
                 }
             });
-            if result.as_ref().is_some_and(|s| s.is_empty()) {
-                return Ok(PosSet::empty(total));
+            if full.as_ref().is_some_and(|s| s.is_empty()) {
+                full = Some(PosSet::empty(universe));
+                break;
             }
         }
-        Ok(result.unwrap_or_else(|| PosSet::empty(total)))
+        let full = full.unwrap_or_else(|| PosSet::full(universe));
+        Ok(BitmapFilter {
+            universe,
+            per_field,
+            full,
+        })
     }
 
     /// Count logs matching `filter` whose timestamp falls in `window_ns`
@@ -314,12 +323,12 @@ impl<'a> IndexReader<'a> {
     /// bounds as [`facets`](Self::facets), so all the windowed paths agree.
     pub fn matched_count(
         &self,
-        filter: &Filter,
+        filter: &BitmapFilter,
         window_ns: std::ops::Range<i64>,
     ) -> Result<u64, crate::Error> {
         let total = self.summary.total_logs;
         let (lo, hi) = self.range_positions(window_ns)?;
-        let mut set = self.evaluate_set(filter)?;
+        let mut set = filter.full().clone();
         set.and_assign(&PosSet::range(lo, hi, total));
         Ok(set.len())
     }
@@ -330,12 +339,12 @@ impl<'a> IndexReader<'a> {
     /// caller can build per-row cursors.
     pub fn matched_positions(
         &self,
-        filter: &Filter,
+        filter: &BitmapFilter,
         window_ns: std::ops::Range<i64>,
     ) -> Result<Vec<u32>, crate::Error> {
         let total = self.summary.total_logs;
         let (lo, hi) = self.range_positions(window_ns)?;
-        let mut set = self.evaluate_set(filter)?;
+        let mut set = filter.full().clone();
         set.and_assign(&PosSet::range(lo, hi, total));
         Ok(set.iter().collect())
     }
@@ -376,7 +385,7 @@ impl<'a> IndexReader<'a> {
     pub fn facets<S: AsRef<str>>(
         &self,
         fields: &[S],
-        filter: &Filter,
+        filter: &BitmapFilter,
         window_ns: std::ops::Range<i64>,
     ) -> Result<Vec<FacetResult>, crate::Error> {
         let total = self.summary.total_logs;
@@ -386,7 +395,7 @@ impl<'a> IndexReader<'a> {
         // Full filtered set in the window; reused by every facet whose
         // field is not itself in the filter (cheap when the filter is
         // empty — it's just the window range).
-        let mut full_set = self.evaluate_set(filter)?;
+        let mut full_set = filter.full().clone();
         full_set.and_assign(&range_set);
 
         let mut results = Vec::with_capacity(fields.len());
@@ -398,11 +407,10 @@ impl<'a> IndexReader<'a> {
             // count each value's positions in `[lo, hi)` directly on the
             // on-disk bitmap — no per-value intersection (the hot path for
             // unfiltered / single-field-filtered queries).
-            let without = filter.without(field);
-            let values = if without.is_empty() {
+            let values = if filter.is_unconstrained(field) {
                 self.value_counts_in_range(field, lo, hi)?
-            } else if filter.has_field(field) {
-                let mut scope = self.evaluate_set(&without)?;
+            } else if filter.contains_field(field) {
+                let mut scope = filter.without(field);
                 scope.and_assign(&range_set);
                 self.value_counts_under(field, &scope)?
             } else {
@@ -436,7 +444,7 @@ impl<'a> IndexReader<'a> {
     pub fn timeline(
         &self,
         field: &str,
-        filter: &Filter,
+        filter: &BitmapFilter,
         grid: Grid,
     ) -> Result<Timeline, crate::Error> {
         if grid.bucket_width_ns <= 0 {
@@ -447,9 +455,12 @@ impl<'a> IndexReader<'a> {
         // reason as in `facets`). When nothing *else* constrains it
         // (`fast`), each value's per-bucket count is read directly from the
         // on-disk bitmap via `range_cardinality` — no per-value scope op.
-        let excluded = filter.without(field);
-        let fast = excluded.is_empty();
-        let filter_set = self.evaluate_set(&excluded)?;
+        let fast = filter.is_unconstrained(field);
+        let filter_set = if filter.contains_field(field) {
+            filter.without(field)
+        } else {
+            filter.full().clone()
+        };
 
         // Per-bucket position ranges `[pos_lo, pos_hi)`, clamped naturally:
         // a grid extending past the file's range yields empty outer buckets.
@@ -748,12 +759,70 @@ enum FieldLocation {
     High(u16),
 }
 
+/// A [`Filter`](crate::Filter) compiled against one file: each filter
+/// field's value-OR bitmap, plus their AND (the full scope). Built by
+/// [`IndexReader::compile_filter`] so the statistics methods resolve the
+/// filter once. Opaque — the scope helpers below are crate-internal.
+#[derive(Debug)]
+pub struct BitmapFilter {
+    universe: u32,
+    /// Each filter field paired with the OR of its selected values'
+    /// position bitmaps (empty if the field is absent from this file).
+    per_field: Vec<(String, PosSet)>,
+    /// AND of every field's bitmap — the full filter scope. The full range
+    /// when the filter is empty.
+    full: PosSet,
+}
+
+impl BitmapFilter {
+    /// The full filter scope (AND of every field; full range if empty).
+    fn full(&self) -> &PosSet {
+        &self.full
+    }
+
+    /// Whether `field` has its own selection in the filter.
+    fn contains_field(&self, field: &str) -> bool {
+        self.per_field.iter().any(|(name, _)| name == field)
+    }
+
+    /// Whether no field *other than* `field` constrains the result — then
+    /// `field`'s own facet/histogram can count directly over the window
+    /// (the fast path), with no scope to intersect. Purely structural;
+    /// builds no bitmap.
+    fn is_unconstrained(&self, field: &str) -> bool {
+        !self.per_field.iter().any(|(name, _)| name != field)
+    }
+
+    /// The filter scope with `field`'s own selection excluded — the AND of
+    /// the *other* fields. For a facet/histogram on a field that is itself
+    /// filtered and has siblings (otherwise it's [`is_unconstrained`]).
+    ///
+    /// [`is_unconstrained`]: Self::is_unconstrained
+    fn without(&self, field: &str) -> PosSet {
+        let mut acc: Option<PosSet> = None;
+        for (name, field_set) in &self.per_field {
+            if name == field {
+                continue;
+            }
+            acc = Some(match acc {
+                None => field_set.clone(),
+                Some(mut a) => {
+                    a.and_assign(field_set);
+                    a
+                }
+            });
+        }
+        acc.unwrap_or_else(|| PosSet::full(self.universe))
+    }
+}
+
 /// A set of log positions within one file, backed by a native
 /// [`treight::Bitmap`] (a `Copy` descriptor plus its external tree bytes).
 /// The whole query path operates on these — on-disk value bitmaps are used
 /// as-is, and unions/intersections stay native (no Roaring round-trip). The
 /// universe (position upper bound) is the file's `total_logs`; every set
 /// built for a file shares it so boolean ops line up.
+#[derive(Clone, Debug)]
 struct PosSet {
     bitmap: treight::Bitmap,
     data: Vec<u8>,
@@ -809,7 +878,9 @@ impl PosSet {
     /// In-place union (`self |= other`).
     fn or_assign(&mut self, other: &Self) {
         let mut out = Vec::new();
-        self.bitmap = self.bitmap.or(&self.data, &other.bitmap, &other.data, &mut out);
+        self.bitmap = self
+            .bitmap
+            .or(&self.data, &other.bitmap, &other.data, &mut out);
         self.data = out;
     }
 

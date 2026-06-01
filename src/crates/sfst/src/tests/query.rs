@@ -4,6 +4,12 @@
 
 use crate::*;
 
+/// Compile `filter` against `reader` — test convenience for the
+/// `BitmapFilter`-taking query methods.
+fn bf(reader: &IndexReader<'_>, filter: Filter) -> BitmapFilter {
+    reader.compile_filter(&filter).unwrap()
+}
+
 /// Synthetic SFST for query tests. 6 logs, 1 second apart.
 ///
 /// `level` (low-card): `info` at positions 0, 2, 4; `error` at 1, 3, 5.
@@ -116,7 +122,9 @@ const FULL_WINDOW: std::ops::Range<i64> = FILE_MIN_NS..(FILE_MIN_NS + 6 * 1_000_
 fn matched_empty_filter_matches_all() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    let count = reader.matched_count(&Filter::new(), FULL_WINDOW).unwrap();
+    let count = reader
+        .matched_count(&bf(&reader, Filter::new()), FULL_WINDOW)
+        .unwrap();
     assert_eq!(count, 6);
 }
 
@@ -125,7 +133,10 @@ fn matched_single_selection() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     let positions = reader
-        .matched_positions(&Filter::new().select("level", "info"), FULL_WINDOW)
+        .matched_positions(
+            &bf(&reader, Filter::new().select("level", "info")),
+            FULL_WINDOW,
+        )
         .unwrap();
     assert_eq!(positions, vec![0, 2, 4]);
 }
@@ -135,14 +146,13 @@ fn matched_or_within_field() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // level=info OR level=error → all positions.
-    let count = reader
-        .matched_count(
-            &Filter::new()
-                .select("level", "info")
-                .select("level", "error"),
-            FULL_WINDOW,
-        )
-        .unwrap();
+    let filter = bf(
+        &reader,
+        Filter::new()
+            .select("level", "info")
+            .select("level", "error"),
+    );
+    let count = reader.matched_count(&filter, FULL_WINDOW).unwrap();
     assert_eq!(count, 6);
 }
 
@@ -151,14 +161,13 @@ fn matched_and_across_fields() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     // level=info AND service=worker → only position 4.
-    let positions = reader
-        .matched_positions(
-            &Filter::new()
-                .select("level", "info")
-                .select("service", "worker"),
-            FULL_WINDOW,
-        )
-        .unwrap();
+    let filter = bf(
+        &reader,
+        Filter::new()
+            .select("level", "info")
+            .select("service", "worker"),
+    );
+    let positions = reader.matched_positions(&filter, FULL_WINDOW).unwrap();
     assert_eq!(positions, vec![4]);
 }
 
@@ -168,7 +177,10 @@ fn matched_unknown_field_yields_empty() {
     let reader = IndexReader::open(&data).unwrap();
     // Unknown field → no matches in this file (not an error).
     let positions = reader
-        .matched_positions(&Filter::new().select("nonexistent", "anything"), FULL_WINDOW)
+        .matched_positions(
+            &bf(&reader, Filter::new().select("nonexistent", "anything")),
+            FULL_WINDOW,
+        )
         .unwrap();
     assert!(positions.is_empty());
 }
@@ -179,7 +191,7 @@ fn facets_show_all_values_with_self_exclusion() {
     let reader = IndexReader::open(&data).unwrap();
     // Selecting `level=info` should NOT hide `level=error` from the
     // `level` facet — that's the whole point of self-exclusion.
-    let filter = Filter::new().select("level", "info");
+    let filter = bf(&reader, Filter::new().select("level", "info"));
     // Window spans all 6 logs, so counts are unaffected by clipping.
     let results = reader
         .facets(
@@ -211,7 +223,7 @@ fn facets_unknown_field_errors() {
     let err = reader
         .facets(
             &["nonexistent"],
-            &Filter::new(),
+            &bf(&reader, Filter::new()),
             FILE_MIN_NS..FILE_MIN_NS + 6 * 1_000_000_000,
         )
         .unwrap_err();
@@ -228,7 +240,7 @@ fn facets_clip_to_window() {
     // exactly once, vs. 3 each over the whole file.
     let window = (FILE_MIN_NS + 2 * 1_000_000_000)..(FILE_MIN_NS + 4 * 1_000_000_000);
     let results = reader
-        .facets(&["level", "service"], &Filter::new(), window)
+        .facets(&["level", "service"], &bf(&reader, Filter::new()), window)
         .unwrap();
 
     let level: std::collections::HashMap<_, _> = results
@@ -267,7 +279,7 @@ fn timeline_buckets_match_filter() {
     let timeline = reader
         .timeline(
             "level",
-            &Filter::new(),
+            &bf(&reader, Filter::new()),
             Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
         )
         .unwrap();
@@ -293,7 +305,7 @@ fn timeline_unset_counts_match_logs_missing_the_field() {
     let t = reader
         .timeline(
             "level",
-            &Filter::new(),
+            &bf(&reader, Filter::new()),
             Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
         )
         .unwrap();
@@ -313,7 +325,7 @@ fn timeline_excludes_own_field_from_filter() {
     let reader = IndexReader::open(&data).unwrap();
     // Selecting `level=info` shouldn't collapse the `level` timeline
     // to a single dimension.
-    let filter = Filter::new().select("level", "info");
+    let filter = bf(&reader, Filter::new().select("level", "info"));
     let timeline = reader
         .timeline(
             "level",
@@ -334,7 +346,11 @@ fn timeline_invalid_bucket_width_errors() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
     let err = reader
-        .timeline("level", &Filter::new(), Grid::new(FILE_MIN_NS, 0, 1))
+        .timeline(
+            "level",
+            &bf(&reader, Filter::new()),
+            Grid::new(FILE_MIN_NS, 0, 1),
+        )
         .unwrap_err();
     assert!(matches!(err, Error::InvalidBucketWidth(0)));
 }
@@ -351,7 +367,7 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
     let timeline = reader
         .timeline(
             "level",
-            &Filter::new(),
+            &bf(&reader, Filter::new()),
             Grid::new(grid_start, 1_000_000_000, 10),
         )
         .unwrap();
@@ -452,7 +468,7 @@ fn timeline_absent_field_routes_all_logs_to_unset() {
     let timeline = reader
         .timeline(
             "nonexistent",
-            &Filter::new(),
+            &bf(&reader, Filter::new()),
             Grid::new(FILE_MIN_NS, 2 * 1_000_000_000, 3),
         )
         .unwrap();
@@ -580,7 +596,9 @@ fn complemented_value_bitmap_counts_correctly() {
     // treight path and confirm the inverted representation is transparent.
 
     // Fast facet path: `range_cardinality` on the inverted bitmap.
-    let facets = reader.facets(&["lvl"], &Filter::new(), FULL_WINDOW).unwrap();
+    let facets = reader
+        .facets(&["lvl"], &bf(&reader, Filter::new()), FULL_WINDOW)
+        .unwrap();
     let lvl: std::collections::HashMap<_, _> = facets
         .iter()
         .find(|f| f.field == "lvl")
@@ -594,7 +612,7 @@ fn complemented_value_bitmap_counts_correctly() {
 
     // matched_count / matched_positions: `from_value` on the inverted bitmap,
     // intersected with the (full) window range, then counted / iterated.
-    let hi = Filter::new().select("lvl", "hi");
+    let hi = bf(&reader, Filter::new().select("lvl", "hi"));
     assert_eq!(reader.matched_count(&hi, FULL_WINDOW).unwrap(), 5);
     assert_eq!(
         reader.matched_positions(&hi, FULL_WINDOW).unwrap(),
@@ -602,13 +620,20 @@ fn complemented_value_bitmap_counts_correctly() {
     );
 
     // Intersection of the inverted bitmap with another field's set.
-    let hi_and_a = Filter::new().select("lvl", "hi").select("svc", "a");
+    let hi_and_a = bf(
+        &reader,
+        Filter::new().select("lvl", "hi").select("svc", "a"),
+    );
     assert_eq!(reader.matched_count(&hi_and_a, FULL_WINDOW).unwrap(), 3);
 
     // Slow facet path: `value_counts_under` intersects the inverted bitmap
     // with a scope from a *different* filter field.
     let facets = reader
-        .facets(&["lvl"], &Filter::new().select("svc", "a"), FULL_WINDOW)
+        .facets(
+            &["lvl"],
+            &bf(&reader, Filter::new().select("svc", "a")),
+            FULL_WINDOW,
+        )
         .unwrap();
     let lvl: std::collections::HashMap<_, _> = facets
         .iter()

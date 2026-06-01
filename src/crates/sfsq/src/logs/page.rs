@@ -83,8 +83,8 @@ impl PageShard {
         anchor: Option<Cursor>,
         bound: Option<usize>,
     ) -> Result<PageShard, sfst::Error> {
-        let filter = &query.filter;
-        let matched = reader.matched_positions(filter, query.grid.range_ns())?;
+        let filter = reader.compile_filter(&query.filter)?;
+        let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
         let timestamps = reader.load_timestamps()?;
 
         // Cursors for every match, ascending — within a file, position order

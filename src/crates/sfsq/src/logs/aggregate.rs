@@ -115,12 +115,30 @@ impl LogsShard {
         };
 
         let grid = query.grid;
-        let filter = &query.filter;
         // `matched`/`facets` clip to the window; the timeline needs the grid.
         let window = grid.range_ns();
         let fields = reader.field_table().clone();
 
-        let matched = match reader.matched_count(filter, window.clone()) {
+        // Resolve the filter to per-field bitmaps once; the stats methods
+        // below reuse it. A failure here means the filter can't be resolved
+        // against this file, so the file contributes no stats.
+        let filter = match reader.compile_filter(&query.filter) {
+            Ok(filter) => filter,
+            Err(e) => {
+                tracing::warn!(
+                    "sfsq: compile filter failed for {}: {e}",
+                    candidate.path.display()
+                );
+                return LogsShard {
+                    matched: 0,
+                    facets: Vec::new(),
+                    timeline: None,
+                    fields,
+                };
+            }
+        };
+
+        let matched = match reader.matched_count(&filter, window.clone()) {
             Ok(count) => count,
             Err(e) => {
                 tracing::warn!(
@@ -136,7 +154,7 @@ impl LogsShard {
         // would make `facets()` error and cost the whole file; a high-card
         // one is dropped across files later, in `merge`).
         let facet_fields = eligible_facet_fields(&query.facet_fields, &fields);
-        let facets = match reader.facets(&facet_fields, filter, window) {
+        let facets = match reader.facets(&facet_fields, &filter, window) {
             Ok(facets) => facets,
             Err(e) => {
                 tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
@@ -147,7 +165,7 @@ impl LogsShard {
         // Histogram: a file lacking the field yields a dimensionless timeline
         // whose matching logs all land in `unset`; only a high-card field
         // errors, in which case the file contributes no timeline.
-        let timeline = match reader.timeline(&query.histogram_field, filter, grid) {
+        let timeline = match reader.timeline(&query.histogram_field, &filter, grid) {
             Ok(timeline) => Some(timeline),
             Err(e) => {
                 tracing::warn!(

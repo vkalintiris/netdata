@@ -23,7 +23,7 @@ pub mod wal_index;
 
 pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
-pub use reader::IndexReader;
+pub use reader::{BitmapFilter, IndexReader};
 
 use std::path::Path;
 
