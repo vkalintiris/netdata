@@ -614,6 +614,36 @@ fn complemented_value_bitmap_counts_correctly() {
 }
 
 #[test]
+fn timestamps_lookups() {
+    // Ascending ns, with a duplicate at 20.
+    let ts = Timestamps::new(vec![10, 20, 20, 40]);
+    assert_eq!(ts.len(), 4);
+    assert!(!ts.is_empty());
+
+    // position -> time
+    assert_eq!(ts.at(0), Some(10));
+    assert_eq!(ts.at(3), Some(40));
+    assert_eq!(ts.at(4), None); // out of range
+
+    // time -> position window `[start, end)`
+    assert_eq!(ts.window(20..40), (1, 3)); // positions 1,2 (both t=20)
+    assert_eq!(ts.window(0..100), (0, 4)); // whole file
+    assert_eq!(ts.window(100..200), (4, 4)); // past the last log → empty
+    assert_eq!(ts.window(15..16), (1, 1)); // between values → empty
+
+    // buckets [0,20), [20,40), [40,60) → positions {0}, {1,2}, {3}
+    assert_eq!(
+        ts.bucket_ranges(Grid::new(0, 20, 3)),
+        vec![(0, 1), (1, 3), (3, 4)]
+    );
+    // no buckets → no ranges
+    assert_eq!(
+        ts.bucket_ranges(Grid::new(0, 20, 0)),
+        Vec::<(u32, u32)>::new()
+    );
+}
+
+#[test]
 fn filter_from_selections_map() {
     let mut selections: std::collections::HashMap<String, Vec<String>> = Default::default();
     selections.insert("level".into(), vec!["info".into(), "error".into()]);

@@ -94,7 +94,7 @@ pub fn evaluate_page(
     let mut ascending: Vec<Cursor> = matched
         .into_iter()
         .map(|position| Cursor {
-            timestamp_ns: timestamps.get(position as usize).copied().unwrap_or(0),
+            timestamp_ns: timestamps.at(position).unwrap_or(0),
             file_seq: seq,
             position,
         })

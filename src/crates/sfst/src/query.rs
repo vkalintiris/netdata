@@ -25,6 +25,7 @@
 //! [`Filter::without`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
 /// A conjunction of per-field disjunctions.
 ///
@@ -137,8 +138,70 @@ impl Grid {
 
     /// The half-open nanosecond range this grid covers:
     /// `bucket_start_ns .. bucket_start_ns + bucket_width_ns * num_buckets`.
-    pub fn range_ns(&self) -> std::ops::Range<i64> {
+    pub fn range_ns(&self) -> Range<i64> {
         self.bucket_start_ns..self.bucket_start_ns + self.bucket_width_ns * self.num_buckets as i64
+    }
+}
+
+/// Per-log timestamps for one file: ascending nanoseconds, parallel-indexed
+/// to log positions (position `p` has timestamp `at(p)`).
+///
+/// A sorted position↔time index. The windowed query paths use it both ways:
+/// *time → position* ([`window`](Self::window), [`bucket_ranges`](Self::bucket_ranges))
+/// and *position → time* ([`at`](Self::at)).
+pub struct Timestamps(Vec<i64>);
+
+impl Timestamps {
+    /// Wrap the decoded per-log timestamps. They must be ascending (the
+    /// on-disk TIMS chunk stores them in chronological order).
+    pub(crate) fn new(timestamps: Vec<i64>) -> Self {
+        Self(timestamps)
+    }
+
+    /// Number of logs (one timestamp per log position).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are no logs.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The raw ascending timestamps, parallel-indexed to log positions.
+    pub fn as_slice(&self) -> &[i64] {
+        &self.0
+    }
+
+    /// Timestamp (ns) at log position `pos`, or `None` if out of range.
+    pub fn at(&self, pos: u32) -> Option<i64> {
+        self.0.get(pos as usize).copied()
+    }
+
+    /// First position whose timestamp is `>= t_ns` — i.e. the number of
+    /// logs strictly before `t_ns`. Clamps to `len()` past the last log.
+    fn lower_bound(&self, t_ns: i64) -> u32 {
+        self.0.partition_point(|&t| t < t_ns) as u32
+    }
+
+    /// Position range `[lo, hi)` whose timestamps fall in `window`
+    /// (`[start, end)`). Clamps naturally when the window extends past the
+    /// file's range.
+    pub fn window(&self, window: Range<i64>) -> (u32, u32) {
+        (self.lower_bound(window.start), self.lower_bound(window.end))
+    }
+
+    /// Per-bucket position ranges `[lo, hi)` for `grid`. Each bucket edge is
+    /// resolved once — a bucket's `hi` is the next bucket's `lo` — and a
+    /// grid extending past the file's range yields empty outer buckets.
+    pub fn bucket_ranges(&self, grid: Grid) -> Vec<(u32, u32)> {
+        let edges: Vec<u32> = (0..=grid.num_buckets)
+            .map(|b| {
+                let edge_ns = grid.bucket_start_ns + (b as i64) * grid.bucket_width_ns;
+                self.lower_bound(edge_ns)
+            })
+            .collect();
+        edges.windows(2).map(|w| (w[0], w[1])).collect()
     }
 }
 

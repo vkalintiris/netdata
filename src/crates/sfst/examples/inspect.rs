@@ -159,7 +159,7 @@ fn dump(path: &PathBuf, limit: Option<u32>) -> Result<(), Box<dyn std::error::Er
             }
         }
 
-        let ts = timestamps.get(pos).copied().unwrap_or(0);
+        let ts = timestamps.at(pos as u32).unwrap_or(0);
         println!("--- log {total_printed} (pos {pos}, t={ts}ns)");
         for id in kv_ids {
             let idx = id.0 as usize;

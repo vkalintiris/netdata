@@ -12,7 +12,7 @@ use fst_index::FstIndex;
 
 use crate::{
     BitmapValue, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram, IdRanges,
-    KvId, Metadata, ServiceStream, Summary, Timeline,
+    KvId, Metadata, ServiceStream, Summary, Timeline, Timestamps,
 };
 
 /// A successfully opened split-FST index.
@@ -130,11 +130,11 @@ impl<'a> IndexReader<'a> {
 
     // ── Per-log timestamps ──────────────────────────────────────────
 
-    /// Load the per-log nanosecond timestamps, chronologically ordered
+    /// Load the per-log nanosecond [`Timestamps`], chronologically ordered
     /// and parallel-indexed to the concatenation of the stream-batch
     /// chunks (see [`load_all_stream_entries`](Self::load_all_stream_entries)).
-    pub fn load_timestamps(&self) -> Result<Vec<i64>, crate::Error> {
-        self.sfst.timestamps()
+    pub fn load_timestamps(&self) -> Result<Timestamps, crate::Error> {
+        Ok(Timestamps::new(self.sfst.timestamps()?))
     }
 
     // ── Stream-batch chunks ─────────────────────────────────────────
@@ -258,7 +258,7 @@ impl<'a> IndexReader<'a> {
             if p >= entries.len() {
                 continue;
             }
-            let timestamp_ns = timestamps.get(p).copied().unwrap_or(0);
+            let timestamp_ns = timestamps.at(pos).unwrap_or(0);
             let fields = entries[p]
                 .iter()
                 .map(|kv| {
@@ -349,10 +349,7 @@ impl<'a> IndexReader<'a> {
         &self,
         window_ns: std::ops::Range<i64>,
     ) -> Result<(u32, u32), crate::Error> {
-        let timestamps = self.sfst.timestamps()?;
-        let lo = timestamps.partition_point(|&t| t < window_ns.start) as u32;
-        let hi = timestamps.partition_point(|&t| t < window_ns.end) as u32;
-        Ok((lo, hi))
+        Ok(self.load_timestamps()?.window(window_ns))
     }
 
     /// Compute per-field value counts for the UI's facet sidebar.
@@ -454,19 +451,9 @@ impl<'a> IndexReader<'a> {
         let fast = excluded.is_empty();
         let filter_set = self.evaluate_set(&excluded)?;
 
-        // Per-bucket position ranges `[pos_lo, pos_hi)`. `partition_point`
-        // clamps naturally: a grid extending past the file's range yields
-        // empty outer buckets.
-        let timestamps = self.sfst.timestamps()?;
-        let bucket_ranges: Vec<(u32, u32)> = (0..grid.num_buckets)
-            .map(|b| {
-                let start = grid.bucket_start_ns + (b as i64) * grid.bucket_width_ns;
-                let end = start + grid.bucket_width_ns;
-                let lo = timestamps.partition_point(|&t| t < start) as u32;
-                let hi = timestamps.partition_point(|&t| t < end) as u32;
-                (lo, hi)
-            })
-            .collect();
+        // Per-bucket position ranges `[pos_lo, pos_hi)`, clamped naturally:
+        // a grid extending past the file's range yields empty outer buckets.
+        let bucket_ranges = self.load_timestamps()?.bucket_ranges(grid);
 
         // Enumerate the field's values into dimensions + per-bucket counts
         // (dimension-major; transposed below). An absent field leaves both
