@@ -176,6 +176,23 @@ pub enum Anchor {
     Timestamp(i64),
 }
 
+impl Anchor {
+    /// Resolve to a [`Cursor`] in the global total order. A row cursor is
+    /// used as-is; a timestamp becomes a synthetic cursor at the *end* of
+    /// that instant (`file_seq`/`position` maxed), so a backward page shows
+    /// the newest rows up to that time.
+    pub(super) fn to_cursor(self) -> Cursor {
+        match self {
+            Anchor::Cursor(c) => c,
+            Anchor::Timestamp(ns) => Cursor {
+                timestamp_ns: ns,
+                file_seq: u64::MAX,
+                position: u32::MAX,
+            },
+        }
+    }
+}
+
 /// Page direction relative to the anchor. `Backward` walks toward older
 /// rows (the default), `Forward` toward newer ones.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

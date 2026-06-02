@@ -22,7 +22,7 @@ use memmap2::Mmap;
 use super::cursor::Cursor;
 use super::engine::SfstCandidate;
 use super::mmap;
-use super::query::{Direction, LogsQuery};
+use super::query::{Anchor, Direction, LogsQuery};
 
 const NS_PER_S: i64 = 1_000_000_000;
 
@@ -239,11 +239,7 @@ pub(super) struct Page {
 /// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
-pub(super) fn paginate(
-    candidates: &[SfstCandidate],
-    query: &LogsQuery,
-    anchor: Option<Cursor>,
-) -> Page {
+pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page {
     // Process closest-to-anchor first so we can stop once the page is full:
     // backward walks newest -> oldest, forward oldest -> newest.
     let mut order: Vec<&SfstCandidate> = candidates.iter().collect();
@@ -266,6 +262,7 @@ pub(super) fn paginate(
     // since they're time-sorted) is entirely beyond the page boundary. The
     // `+1` on the bound lets the root detect a row past the page edge.
     let bound = Some(query.limit.saturating_add(1));
+    let anchor = query.anchor.map(Anchor::to_cursor);
     let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
     let mut seqs: Vec<u64> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();

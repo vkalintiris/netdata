@@ -18,9 +18,8 @@
 //! caller is expected to invoke it off any async runtime thread.
 
 use super::aggregate::LogsShard;
-use super::cursor::Cursor;
 use super::page::paginate;
-use super::query::{Anchor, LogsQuery};
+use super::query::LogsQuery;
 use super::result::LogsData;
 
 /// A query candidate: an SFST file whose range overlaps the request
@@ -74,19 +73,7 @@ pub fn run(candidates: Vec<SfstCandidate>, query: LogsQuery) -> LogsData {
     let histogram = stats.timeline.unwrap_or_else(|| empty_timeline(grid));
 
     // Step 2: select and materialize one page across the same files.
-    // Resolve the anchor to a cursor in the global total order. A row
-    // cursor is used directly; a timestamp becomes a synthetic cursor at
-    // the end of that instant (file_seq/position maxed), so a backward
-    // page shows the newest rows up to that time.
-    let anchor = query.anchor.map(|anchor| match anchor {
-        Anchor::Cursor(c) => c,
-        Anchor::Timestamp(ns) => Cursor {
-            timestamp_ns: ns,
-            file_seq: u64::MAX,
-            position: u32::MAX,
-        },
-    });
-    let page = paginate(&candidates, &query, anchor);
+    let page = paginate(&candidates, &query);
 
     LogsData {
         matched: stats.matched as usize,
