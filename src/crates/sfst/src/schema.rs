@@ -197,7 +197,7 @@ pub struct HighField {
 ///
 /// Not to be confused with [`file_registry::FileId`], which identifies
 /// an SFST file on disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KvId(pub u32);
 
 impl KvId {

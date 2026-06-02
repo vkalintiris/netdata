@@ -4275,6 +4275,7 @@ dependencies = [
  "gix-chunk",
  "hashbrown 0.15.5",
  "otap-df-pdata",
+ "regex",
  "roaring 0.11.2",
  "serde",
  "tempfile",

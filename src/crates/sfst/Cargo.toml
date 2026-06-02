@@ -17,6 +17,7 @@ zstd = { workspace = true }
 gix-chunk = { workspace = true }
 thiserror = { workspace = true }
 treight = { workspace = true, features = ["roaring", "serde"] }
+regex = { workspace = true }
 
 # Registry
 bridge = { path = "../netdata-plugin/bridge" }

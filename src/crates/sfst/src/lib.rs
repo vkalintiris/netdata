@@ -50,7 +50,9 @@ pub use file_registry::ServiceStream;
 pub use indexer::{
     BitmapFilter, IndexReader, IndexResult, build_and_write, index, index_with_options,
 };
-pub use query::{Bucket, FacetResult, Filter, Grid, MaterializedRow, Timeline, Timestamps};
+pub use query::{
+    Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,
+};
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};
 

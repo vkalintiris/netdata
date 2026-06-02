@@ -110,9 +110,21 @@ impl LogsQueryBuilder {
 
     /// Set the match filter from a `field -> values` selection map (OR
     /// within a field, AND across fields). Fields with an empty value list
-    /// are dropped — see [`Filter::from`].
+    /// are dropped — see [`Filter::from`]. Exact matchers only; for regex
+    /// patterns build a [`Filter`] and use [`filter`](Self::filter).
+    ///
+    /// Mutually exclusive with [`filter`](Self::filter) — both assign the
+    /// filter, so the last call wins.
     pub fn selections(mut self, selections: HashMap<String, Vec<String>>) -> Self {
         self.filter = Filter::from(&selections);
+        self
+    }
+
+    /// Set the match filter directly — the general form, supporting exact
+    /// values and regex patterns ([`Filter::select_pattern`]). Mutually
+    /// exclusive with [`selections`](Self::selections); the last call wins.
+    pub fn filter(mut self, filter: Filter) -> Self {
+        self.filter = filter;
         self
     }
 
@@ -242,5 +254,28 @@ mod tests {
 
         // No selections → an empty filter (matches everything).
         assert!(LogsQueryBuilder::new(grid()).build().filter().is_empty());
+    }
+
+    #[test]
+    fn filter_carries_patterns_and_overrides_selections() {
+        // `filter()` carries a regex-pattern filter the `selections()`
+        // convenience can't express.
+        let q = LogsQueryBuilder::new(grid())
+            .filter(Filter::new().select_pattern("trace", "abc.*"))
+            .build();
+        assert!(q.filter().has_field("trace"));
+
+        // `filter()` and `selections()` both assign the filter — last wins.
+        let mut selections = HashMap::new();
+        selections.insert("level".to_string(), vec!["info".to_string()]);
+        let q = LogsQueryBuilder::new(grid())
+            .selections(selections)
+            .filter(Filter::new().select_pattern("trace", "x.*"))
+            .build();
+        assert!(q.filter().has_field("trace"));
+        assert!(
+            !q.filter().has_field("level"),
+            "filter() replaced the earlier selections()"
+        );
     }
 }

@@ -695,3 +695,231 @@ fn filter_from_selections_map() {
     assert_eq!(filter, expected);
     assert!(!filter.has_field("cleared"));
 }
+
+// ── Regex (pattern) matchers ─────────────────────────────────────────
+
+/// A `BitmapValue` over `universe` positions from a sorted position list.
+fn bitmap_value(positions: &[u32], universe: u32) -> BitmapValue {
+    let mut data = Vec::new();
+    let desc = treight::Bitmap::from_sorted_iter(positions.iter().copied(), universe, &mut data);
+    BitmapValue { desc, data }
+}
+
+/// Synthetic SFST exercising all three tiers, for pattern-resolution tests.
+/// 6 logs, 1s apart, same time base as [`build_query_fixture`] (so
+/// [`FULL_WINDOW`] applies).
+///
+/// - `level` (Low):  info @ {0,2,4}, error @ {1,3,5}.
+/// - `host`  (Mid):  web1 @ {0,1}, web2 @ {2,3}, db1 @ {4,5}.
+/// - `trace` (High): aaa @ {0,1}, bbb @ {2,3}, ccc @ {4,5} (via stream batch).
+fn build_tiered_fixture() -> Vec<u8> {
+    const N: u32 = 6;
+
+    let primary: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(vec![
+        ("level=error", bitmap_value(&[1, 3, 5], N)),
+        ("level=info", bitmap_value(&[0, 2, 4], N)),
+    ])
+    .unwrap();
+
+    // Mid chunk: the `host` field's values + bitmaps (FST, lexicographic).
+    let mid_host: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(vec![
+        ("host=db1", bitmap_value(&[4, 5], N)),
+        ("host=web1", bitmap_value(&[0, 1], N)),
+        ("host=web2", bitmap_value(&[2, 3], N)),
+    ])
+    .unwrap();
+
+    // High chunk: `trace` values, all in the single stream batch (bit 0).
+    let high_trace = HighField {
+        keys: vec!["trace=aaa".into(), "trace=bbb".into(), "trace=ccc".into()],
+        masks: vec![0b1, 0b1, 0b1],
+    };
+
+    // KvIds in tier order: low {error=0, info=1}, mid {db1=2, web1=3,
+    // web2=4}, high {aaa=5, bbb=6, ccc=7}; `high_kv_id` = mid_end + local.
+    let stream_entries: Vec<Vec<KvId>> = vec![
+        vec![KvId(1), KvId(3), KvId(5)], // 0: info, web1, aaa
+        vec![KvId(0), KvId(3), KvId(5)], // 1: error, web1, aaa
+        vec![KvId(1), KvId(4), KvId(6)], // 2: info, web2, bbb
+        vec![KvId(0), KvId(4), KvId(6)], // 3: error, web2, bbb
+        vec![KvId(1), KvId(2), KvId(7)], // 4: info, db1, ccc
+        vec![KvId(0), KvId(2), KvId(7)], // 5: error, db1, ccc
+    ];
+
+    let summary = Summary {
+        min_timestamp_s: 1_700_000_000,
+        max_timestamp_s: 1_700_000_005,
+        total_logs: N,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    let metadata = Metadata {
+        histogram: Histogram {
+            timestamps: vec![1_700_000_000],
+            counts: vec![6],
+        },
+        id_ranges: IdRanges {
+            low_end: KvId(2),
+            mid_end: KvId(5),
+            high_end: KvId(8),
+        },
+        fields: vec![
+            FieldEntry {
+                name: "level".into(),
+                cardinality: 2,
+                tier: FieldTier::Low,
+            },
+            FieldEntry {
+                name: "host".into(),
+                cardinality: 3,
+                tier: FieldTier::Mid,
+            },
+            FieldEntry {
+                name: "trace".into(),
+                cardinality: 3,
+                tier: FieldTier::High,
+            },
+        ]
+        .into(),
+    };
+    let timestamps: Vec<i64> = (0..N as i64)
+        .map(|i| 1_700_000_000i64 * 1_000_000_000 + i * 1_000_000_000)
+        .collect();
+
+    let mut writer = Writer::new();
+    writer.set_summary(pack(&summary, 1).unwrap());
+    writer.set_metadata(pack(&metadata, 1).unwrap());
+    writer.set_primary(pack(&primary, 1).unwrap());
+    writer.add_mid_field(pack(&mid_host, 1).unwrap());
+    writer.add_high_field(pack(&high_trace, 1).unwrap());
+    writer.set_timestamps(pack(&timestamps, 1).unwrap());
+    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn pattern_low_card_is_full_value_anchored() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // `/info/` matches the whole value "info" (3 logs).
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "info")), FULL_WINDOW)
+            .unwrap(),
+        3
+    );
+    // `/inf/` does NOT — the match is anchored to the full value.
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "inf")), FULL_WINDOW)
+            .unwrap(),
+        0
+    );
+    // A substring search is the explicit `.*`.
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "inf.*")), FULL_WINDOW)
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn pattern_anchored_not_substring_at_tail() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // `/rror/` must NOT match "error".
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "rror")), FULL_WINDOW)
+            .unwrap(),
+        0
+    );
+    // `/err.*/` matches "error" → {1,3,5}.
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "err.*")), FULL_WINDOW)
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn pattern_mid_card_resolves_via_chunk() {
+    let data = build_tiered_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // host ~ /web.*/ → web1{0,1} ∪ web2{2,3}.
+    let positions = reader
+        .matched_positions(
+            &bf(&reader, Filter::new().select_pattern("host", "web.*")),
+            FULL_WINDOW,
+        )
+        .unwrap();
+    assert_eq!(positions, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn pattern_high_card_resolves_via_stream_batches() {
+    let data = build_tiered_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // trace ~ /a.*/ → aaa{0,1}.
+    assert_eq!(
+        reader
+            .matched_positions(
+                &bf(&reader, Filter::new().select_pattern("trace", "a.*")),
+                FULL_WINDOW
+            )
+            .unwrap(),
+        vec![0, 1]
+    );
+    // trace ~ /[ab].*/ → aaa{0,1} ∪ bbb{2,3} — multiple matched values,
+    // exercising the unioned mask + `HashSet<KvId>` target scan.
+    assert_eq!(
+        reader
+            .matched_positions(
+                &bf(&reader, Filter::new().select_pattern("trace", "[ab].*")),
+                FULL_WINDOW
+            )
+            .unwrap(),
+        vec![0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn pattern_mixed_with_exact_ors() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // level = "info" OR level ~ /err.*/ → all 6 logs. Exercises the
+    // exact-lookup + pattern-enumeration paths combined on one field.
+    let filter = Filter::new()
+        .select("level", "info")
+        .select_pattern("level", "err.*");
+    assert_eq!(
+        reader.matched_count(&bf(&reader, filter), FULL_WINDOW).unwrap(),
+        6
+    );
+}
+
+#[test]
+fn pattern_no_match_is_empty() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    assert_eq!(
+        reader
+            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "xyz")), FULL_WINDOW)
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn invalid_pattern_is_hard_error() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    let filter = Filter::new().select_pattern("level", "(unclosed");
+    assert!(matches!(
+        reader.compile_filter(&filter),
+        Err(Error::InvalidPattern(_))
+    ));
+}

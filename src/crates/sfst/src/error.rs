@@ -92,6 +92,15 @@ pub enum Error {
     #[error("facet/timeline not supported for high-cardinality field: {0}")]
     HighCardFacet(String),
 
+    /// A [`Filter`](crate::Filter) carried a regex pattern matcher
+    /// ([`Matcher::Pattern`](crate::Matcher)) that failed to compile. A
+    /// malformed pattern is a hard failure — the whole filter fails to
+    /// compile rather than being treated as "matches nothing". Validate
+    /// patterns at the request boundary so a bad one surfaces as a clean
+    /// user error, not a per-file degrade.
+    #[error("invalid filter pattern: {0}")]
+    InvalidPattern(String),
+
     /// [`IndexReader::timeline`](crate::IndexReader::timeline) was called
     /// with a non-positive bucket width.
     #[error("invalid bucket width: {0} (must be > 0)")]

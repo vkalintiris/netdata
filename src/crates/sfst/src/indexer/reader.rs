@@ -10,9 +10,11 @@
 
 use fst_index::FstIndex;
 
+use std::collections::HashSet;
+
 use crate::{
     BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram,
-    IdRanges, KvId, Metadata, ServiceStream, Summary, Timeline, Timestamps,
+    IdRanges, KvId, Matcher, Metadata, ServiceStream, Summary, Timeline, Timestamps,
 };
 
 /// A successfully opened split-FST index.
@@ -560,51 +562,111 @@ impl<'a> IndexReader<'a> {
         panic!("high_kv_id: high_idx {high_idx} out of range");
     }
 
-    /// Position set matching `field=v` for any `v` in `values` (OR within
-    /// field). Returns the empty set if the field is absent from this file.
-    fn field_values_or(&self, field: &str, values: &[String]) -> Result<PosSet, crate::Error> {
+    /// Position set matching `field` against `matchers` (OR within field).
+    /// Exact matchers resolve by direct lookup; pattern matchers compile
+    /// full-value-anchored and test the field's distinct values. Returns
+    /// the empty set if the field is absent from this file.
+    ///
+    /// All-exact selections (every query without a regex) take the same
+    /// lookups they always have; patterns add an enumeration pass over the
+    /// field's values only when present.
+    ///
+    /// A malformed pattern is a hard failure ([`crate::Error::InvalidPattern`]),
+    /// not "matches nothing" — validate patterns at the request boundary.
+    fn field_values_or(&self, field: &str, matchers: &[Matcher]) -> Result<PosSet, crate::Error> {
         let total = self.summary.total_logs;
         let location = match self.locate_field(field) {
             Some(loc) => loc,
             None => return Ok(PosSet::empty(total)),
         };
 
+        // Split into exact values (resolved by lookup) and compiled patterns
+        // (full-value anchored, tested against the field's distinct values).
+        let mut exacts: Vec<&str> = Vec::new();
+        let mut patterns: Vec<regex::Regex> = Vec::new();
+        for matcher in matchers {
+            match matcher {
+                Matcher::Exact(value) => exacts.push(value),
+                Matcher::Pattern(src) => {
+                    let anchored = format!("^(?:{src})$");
+                    let regex = regex::Regex::new(&anchored)
+                        .map_err(|e| crate::Error::InvalidPattern(e.to_string()))?;
+                    patterns.push(regex);
+                }
+            }
+        }
+
+        // Whether a `field=value` key's value-part matches any pattern. The
+        // value is the bytes after `field=`; non-UTF-8 keys can't occur
+        // (keys are interned strings) but are skipped defensively.
+        let prefix_len = field.len() + 1;
+        let value_matches = |kv_bytes: &[u8]| -> bool {
+            match std::str::from_utf8(&kv_bytes[prefix_len..]) {
+                Ok(value) => patterns.iter().any(|regex| regex.is_match(value)),
+                Err(_) => false,
+            }
+        };
+
         match location {
             FieldLocation::Low => {
                 let mut result = PosSet::empty(total);
-                for value in values {
+                for value in &exacts {
                     let kv = format!("{field}={value}");
                     if let Some(bv) = self.primary.get(kv.as_bytes()) {
                         result.or_assign(&PosSet::from_value(bv));
                     }
+                }
+                if !patterns.is_empty() {
+                    let prefix = format!("{field}=");
+                    self.primary.prefix_for_each(prefix.as_bytes(), |kv_bytes, bv| {
+                        if value_matches(kv_bytes) {
+                            result.or_assign(&PosSet::from_value(bv));
+                        }
+                    });
                 }
                 Ok(result)
             }
             FieldLocation::Mid(idx) => {
                 let chunk = self.sfst.mid_field(idx)?;
                 let mut result = PosSet::empty(total);
-                for value in values {
+                for value in &exacts {
                     let kv = format!("{field}={value}");
                     if let Some(bv) = chunk.get(kv.as_bytes()) {
                         result.or_assign(&PosSet::from_value(bv));
                     }
                 }
+                if !patterns.is_empty() {
+                    chunk.for_each(|kv_bytes, bv| {
+                        if value_matches(kv_bytes) {
+                            result.or_assign(&PosSet::from_value(bv));
+                        }
+                    });
+                }
                 Ok(result)
             }
             FieldLocation::High(idx) => {
-                // High-card values are addressed by KvId; the set is built
-                // by scanning the SB batches indicated by the union of the
-                // values' batch masks. Matched positions are ascending
-                // (batch start increases, position within increases), so
-                // they feed `from_sorted` directly.
+                // High-card values are addressed by KvId; the set is built by
+                // scanning the SB batches indicated by the union of the matched
+                // values' batch masks. Exact values are found by binary search
+                // over the sorted key dictionary, patterns by a linear scan of
+                // it. Matched positions are ascending (batch start increases,
+                // position within increases), so they feed `from_sorted`.
                 let hf = self.sfst.high_field(idx)?;
-                let mut targets: Vec<KvId> = Vec::new();
+                let mut targets: HashSet<KvId> = HashSet::new();
                 let mut combined_mask: u8 = 0;
-                for value in values {
+                for value in &exacts {
                     let kv = format!("{field}={value}");
                     if let Ok(local) = hf.keys.binary_search_by(|k| k.as_str().cmp(&kv)) {
-                        targets.push(self.high_kv_id(idx, local));
+                        targets.insert(self.high_kv_id(idx, local));
                         combined_mask |= hf.masks[local];
+                    }
+                }
+                if !patterns.is_empty() {
+                    for (local, key) in hf.keys.iter().enumerate() {
+                        if value_matches(key.as_bytes()) {
+                            targets.insert(self.high_kv_id(idx, local));
+                            combined_mask |= hf.masks[local];
+                        }
                     }
                 }
                 if targets.is_empty() {

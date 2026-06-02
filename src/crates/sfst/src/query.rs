@@ -26,19 +26,37 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
+/// A single value matcher within a field's selection.
+///
+/// A field's matched set is the OR of its matchers. [`Exact`](Self::Exact)
+/// matches one literal value; [`Pattern`](Self::Pattern) carries a regex
+/// *source* string, compiled full-value-anchored at resolution time (the
+/// engine wraps it as `^(?:…)$`, so `err` matches `"err"` but not `"error"`
+/// — a substring search is the explicit `.*err.*`). The source is stored
+/// uncompiled so `Filter` stays plain, comparable, wire-neutral data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Matcher {
+    /// Match this exact value.
+    Exact(String),
+    /// Match values matching this regex source (anchored at resolution).
+    Pattern(String),
+}
+
 /// A conjunction of per-field disjunctions.
 ///
-/// Each entry maps a `field` to its list of allowed values. A log matches
-/// the filter iff for every entry `(field, values)`, the log's attribute
-/// for `field` is in `values`.
+/// Each entry maps a `field` to its list of [`Matcher`]s. A log matches the
+/// filter iff for every entry `(field, matchers)`, the log's attribute for
+/// `field` matches at least one of `matchers` (OR within a field, AND
+/// across fields).
 ///
 /// An empty `Filter` matches every log. Build one with [`new`](Self::new) +
-/// [`select`](Self::select) or [`From`] a `field → values` map; inspect it
-/// with [`iter`](Self::iter), [`has_field`](Self::has_field), and
+/// [`select`](Self::select) / [`select_pattern`](Self::select_pattern), or
+/// [`From`] a `field → values` map (exact matchers); inspect it with
+/// [`iter`](Self::iter), [`has_field`](Self::has_field), and
 /// [`is_empty`](Self::is_empty).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
-    selections: BTreeMap<String, Vec<String>>,
+    selections: BTreeMap<String, Vec<Matcher>>,
 }
 
 impl Filter {
@@ -46,20 +64,32 @@ impl Filter {
         Self::default()
     }
 
-    /// Iterate the `(field, values)` selections — disjunction within a
+    /// Iterate the `(field, matchers)` selections — disjunction within a
     /// field, conjunction across fields. Fields are yielded in sorted
-    /// order; within a field, values keep insertion order.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<String>)> {
-        self.selections.iter()
+    /// order; within a field, matchers keep insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &[Matcher])> {
+        self.selections.iter().map(|(field, ms)| (field, ms.as_slice()))
     }
 
-    /// Add `value` to the allowed values for `field`. Multiple values on
-    /// the same field combine with OR; different fields combine with AND.
+    /// Add an exact `value` to the allowed matchers for `field`. Multiple
+    /// matchers on the same field combine with OR; different fields combine
+    /// with AND.
     pub fn select(mut self, field: impl Into<String>, value: impl Into<String>) -> Self {
         self.selections
             .entry(field.into())
             .or_default()
-            .push(value.into());
+            .push(Matcher::Exact(value.into()));
+        self
+    }
+
+    /// Add a regex `pattern` (source) to the allowed matchers for `field`.
+    /// Resolved full-value-anchored and OR'd with the field's other
+    /// matchers — see [`Matcher::Pattern`].
+    pub fn select_pattern(mut self, field: impl Into<String>, pattern: impl Into<String>) -> Self {
+        self.selections
+            .entry(field.into())
+            .or_default()
+            .push(Matcher::Pattern(pattern.into()));
         self
     }
 
