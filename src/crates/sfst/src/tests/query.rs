@@ -923,3 +923,21 @@ fn invalid_pattern_is_hard_error() {
         Err(Error::InvalidPattern(_))
     ));
 }
+
+#[test]
+fn validate_catches_bad_pattern_without_a_file() {
+    // Validation is file-independent: exacts always pass, a good pattern
+    // passes, a bad one is InvalidPattern — the boundary check a consumer
+    // runs before touching any file.
+    assert!(
+        Filter::new()
+            .select("level", "error")
+            .select_pattern("trace", "abc.*")
+            .validate()
+            .is_ok()
+    );
+    assert!(matches!(
+        Filter::new().select_pattern("trace", "(unclosed").validate(),
+        Err(Error::InvalidPattern(_))
+    ));
+}

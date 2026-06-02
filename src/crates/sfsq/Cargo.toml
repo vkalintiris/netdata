@@ -18,3 +18,6 @@ serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 memmap2 = { workspace = true }
 libc = { workspace = true }
+
+[dev-dependencies]
+clap = { workspace = true }

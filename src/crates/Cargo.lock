@@ -4253,6 +4253,7 @@ dependencies = [
 name = "sfsq"
 version = "0.1.3"
 dependencies = [
+ "clap",
  "libc",
  "memmap2",
  "serde",

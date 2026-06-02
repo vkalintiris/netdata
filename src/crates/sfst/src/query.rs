@@ -42,6 +42,16 @@ pub enum Matcher {
     Pattern(String),
 }
 
+/// Compile a [`Matcher::Pattern`] source full-value-anchored as `^(?:src)$`.
+///
+/// The single place the anchoring is applied, so the pattern that
+/// [`Filter::validate`] accepts is byte-for-byte the one the reader resolves.
+/// A bad source is a hard [`crate::Error::InvalidPattern`].
+pub(crate) fn compile_pattern(src: &str) -> Result<regex::Regex, crate::Error> {
+    regex::Regex::new(&format!("^(?:{src})$"))
+        .map_err(|e| crate::Error::InvalidPattern(e.to_string()))
+}
+
 /// A conjunction of per-field disjunctions.
 ///
 /// Each entry maps a `field` to its list of [`Matcher`]s. A log matches the
@@ -100,6 +110,23 @@ impl Filter {
 
     pub fn is_empty(&self) -> bool {
         self.selections.is_empty()
+    }
+
+    /// Compile every [`Matcher::Pattern`] once to surface a malformed regex
+    /// as a single [`crate::Error::InvalidPattern`], up front, before any
+    /// file is touched. A consumer parsing a user filter expression should
+    /// call this at the request boundary so a bad pattern is a clean error
+    /// rather than a per-file degrade (where some files would error and
+    /// others — lacking the field — would silently match nothing).
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for matchers in self.selections.values() {
+            for matcher in matchers {
+                if let Matcher::Pattern(src) = matcher {
+                    compile_pattern(src)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

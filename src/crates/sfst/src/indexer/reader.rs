@@ -587,12 +587,7 @@ impl<'a> IndexReader<'a> {
         for matcher in matchers {
             match matcher {
                 Matcher::Exact(value) => exacts.push(value),
-                Matcher::Pattern(src) => {
-                    let anchored = format!("^(?:{src})$");
-                    let regex = regex::Regex::new(&anchored)
-                        .map_err(|e| crate::Error::InvalidPattern(e.to_string()))?;
-                    patterns.push(regex);
-                }
+                Matcher::Pattern(src) => patterns.push(crate::query::compile_pattern(src)?),
             }
         }
 
