@@ -58,7 +58,12 @@ impl FunctionHandler for OtelLogsHandler {
         // overlapping the grid's window under a brief read lock — dropped
         // before any I/O.
         let last = req.last;
-        let query = req.into_query();
+        // A malformed free-text `query` regex is a clean request error.
+        let query = req.into_query().map_err(|e| {
+            netdata_plugin_error::NetdataPluginError::FunctionHandler {
+                message: format!("invalid query: {e}"),
+            }
+        })?;
         let time_range = window_secs(&query.grid());
         let candidates = {
             let guard = self.registries.read().await;

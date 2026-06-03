@@ -64,7 +64,11 @@ impl OtelLogsRequest {
     /// `histogram` string becomes `None`; a histogram-click µs timestamp
     /// becomes an [`Anchor::Timestamp`] in ns; a malformed cursor string
     /// is dropped (treated as "no anchor").
-    pub fn into_query(self) -> LogsQuery {
+    ///
+    /// Fails with [`sfst::Error::InvalidPattern`] if the free-text `query`
+    /// is not a valid regex — validated once here, at the boundary, so a
+    /// bad search is a clean request error rather than a per-file degrade.
+    pub fn into_query(self) -> Result<LogsQuery, sfst::Error> {
         let (after, before) = effective_window(self.after, self.before);
         let bucket_width_s = bucket_width_for_span_s(before.saturating_sub(after));
         let (after, before) = align_window(after, before, bucket_width_s);
@@ -97,7 +101,14 @@ impl OtelLogsRequest {
         if let Some(anchor) = anchor {
             builder = builder.anchor(anchor);
         }
-        builder.build()
+        // Field-less full-text search: an unanchored regex over `key=value`.
+        // Validate once here (compile-and-discard) so a malformed pattern is
+        // a clean error; the engine recompiles the source per file.
+        if !self.query.is_empty() {
+            sfst::compile_query(&self.query)?;
+            builder = builder.query(self.query);
+        }
+        Ok(builder.build())
     }
 }
 

@@ -6,7 +6,7 @@ fn into_query_maps_histogram_and_anchor_forms() {
     // Anchor::Cursor.
     let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"histogram":"","anchor":"100:2:3"}"#).unwrap();
-    let q = req.into_query();
+    let q = req.into_query().unwrap();
     assert_eq!(q.histogram_field(), "severity_text");
     assert!(matches!(
         q.anchor(),
@@ -17,14 +17,29 @@ fn into_query_maps_histogram_and_anchor_forms() {
     // an Anchor::Timestamp in nanoseconds.
     let req: OtelLogsRequest =
         serde_json::from_slice(br#"{"histogram":"service","anchor":5000}"#).unwrap();
-    let q = req.into_query();
+    let q = req.into_query().unwrap();
     assert_eq!(q.histogram_field(), "service");
     assert!(matches!(q.anchor(), Some(Anchor::Timestamp(5_000_000))));
 
     // A malformed cursor string is dropped → no anchor.
     let req: OtelLogsRequest = serde_json::from_slice(br#"{"anchor":"not-a-cursor"}"#).unwrap();
-    let q = req.into_query();
+    let q = req.into_query().unwrap();
     assert!(q.anchor().is_none());
+}
+
+#[test]
+fn into_query_wires_and_validates_full_text_query() {
+    // A non-empty `query` is carried onto the engine query verbatim.
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"query":".*GoDaddy.*"}"#).unwrap();
+    assert_eq!(req.into_query().unwrap().query(), Some(".*GoDaddy.*"));
+
+    // An empty `query` (the UI default) carries no query.
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{}"#).unwrap();
+    assert_eq!(req.into_query().unwrap().query(), None);
+
+    // A malformed query regex is a hard error at the boundary.
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"query":"("}"#).unwrap();
+    assert!(req.into_query().is_err());
 }
 
 #[test]
