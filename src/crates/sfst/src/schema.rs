@@ -169,23 +169,134 @@ pub struct BitmapValue {
 
 /// Body of a high-card field chunk (the `HF{i}` chunks).
 ///
-/// Stored as parallel columns: `keys[j]` is a `key=value` string and
-/// `masks[j]` is its bitmask over the file's stream batches (bit `b`
-/// set iff the value appears in batch `b`; see
-/// [`crate::num_stream_batches`]). The two vectors always have the same
-/// length and are sorted lexicographically by key.
+/// The `key=value` strings are stored as a **string arena**: one
+/// contiguous [`keys_blob`](Self::keys_blob) byte buffer plus the parallel
+/// [`key_lens`](Self::key_lens) (per-key byte length) and
+/// [`masks`](Self::masks) (per-key stream-batch bitmask, bit `b` set iff
+/// the value appears in batch `b` — see [`crate::num_stream_batches`]).
+/// Keys are sorted lexicographically.
 ///
-/// Compared to an interleaved `Vec<(String, u8)>`, the column-major
-/// layout compresses better because the dense, low-cardinality mask
-/// column is contiguous in the byte stream — zstd's entropy coder
-/// captures the redundancy more tightly. The string column is also
-/// uninterrupted, which slightly tightens the prefix back-references
-/// for clustered key sets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The arena is what makes decode cheap: deserializing one `Vec<u8>` blob
+/// is a single allocation, versus one heap `String` per key (which, on a
+/// full high-card scan, dominated allocation). On disk it stores **lengths,
+/// not offsets** — lengths are small varints (≈1 B/key, like the old
+/// per-string length prefix), whereas raw `u32` offsets would varint-inflate
+/// to ≈5 B/key. The columnar layout (lengths and masks each contiguous) also
+/// compresses marginally tighter under zstd than the old interleaved form.
+/// In memory, [`offsets`](Self::offsets) is the prefix-sum of `key_lens`
+/// (rebuilt on load, not serialized) so key access is O(1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HighField {
-    pub keys: Vec<String>,
+    /// All `field=value` keys concatenated, in sorted order.
+    keys_blob: Vec<u8>,
+    /// Per-key byte length, parallel to the keys. Varint-compact on disk;
+    /// prefix-summed into `offsets` in memory.
+    key_lens: Vec<u32>,
+    /// Per-key stream-batch bitmask, parallel to the keys.
     pub masks: Vec<u8>,
+    /// Prefix-sum of `key_lens` (`len() + 1` entries): key `i` is
+    /// `keys_blob[offsets[i]..offsets[i + 1]]`. Rebuilt on load via
+    /// [`rebuild_offsets`](Self::rebuild_offsets); never serialized.
+    #[serde(skip)]
+    offsets: Vec<u32>,
 }
+
+impl HighField {
+    /// Build the **write form** — ready to serialize — from sorted
+    /// `field=value` keys and their parallel masks. `keys` must be
+    /// lexicographically sorted and the same length as `masks`.
+    ///
+    /// `offsets` (the in-memory key index) is intentionally **not** built:
+    /// this value exists to be packed, not read. Key access
+    /// ([`key`](Self::key), [`keys`](Self::keys),
+    /// [`binary_search`](Self::binary_search)) is only valid after a load,
+    /// where the reader calls [`rebuild_offsets`](Self::rebuild_offsets);
+    /// calling it on a write-form value panics (debug-asserted).
+    pub fn for_write<S: AsRef<str>>(keys: &[S], masks: Vec<u8>) -> Self {
+        let mut keys_blob = Vec::new();
+        let mut key_lens = Vec::with_capacity(keys.len());
+        for key in keys {
+            let bytes = key.as_ref().as_bytes();
+            keys_blob.extend_from_slice(bytes);
+            key_lens.push(bytes.len() as u32);
+        }
+        Self {
+            keys_blob,
+            key_lens,
+            masks,
+            offsets: Vec::new(),
+        }
+    }
+
+    /// Recompute `offsets` from `key_lens`. Called after deserialize (where
+    /// `offsets` is skipped and so arrives empty).
+    pub(crate) fn rebuild_offsets(&mut self) {
+        self.offsets.clear();
+        self.offsets.reserve(self.key_lens.len() + 1);
+        let mut acc = 0u32;
+        self.offsets.push(0);
+        for &len in &self.key_lens {
+            acc += len;
+            self.offsets.push(acc);
+        }
+    }
+
+    /// Number of keys.
+    pub fn len(&self) -> usize {
+        self.key_lens.len()
+    }
+
+    /// Whether there are no keys.
+    pub fn is_empty(&self) -> bool {
+        self.key_lens.is_empty()
+    }
+
+    /// The `i`-th `field=value` key as bytes (keys are valid UTF-8). Only
+    /// valid once `offsets` is built — on load, or via
+    /// [`rebuild_offsets`](Self::rebuild_offsets); never on a
+    /// [`for_write`](Self::for_write) value.
+    pub fn key(&self, i: usize) -> &[u8] {
+        debug_assert_eq!(
+            self.offsets.len(),
+            self.key_lens.len() + 1,
+            "HighField offsets not built — call rebuild_offsets() after deserialize",
+        );
+        &self.keys_blob[self.offsets[i] as usize..self.offsets[i + 1] as usize]
+    }
+
+    /// Iterate keys (`field=value` bytes) in sorted order.
+    pub fn keys(&self) -> impl Iterator<Item = &[u8]> + '_ {
+        (0..self.len()).map(move |i| self.key(i))
+    }
+
+    /// Binary-search the sorted keys for an exact match — `Ok(index)` or
+    /// `Err(insert_pos)`, mirroring [`slice::binary_search`]. Byte order
+    /// matches the lexicographic order keys are stored in.
+    pub fn binary_search(&self, key: &[u8]) -> Result<usize, usize> {
+        let mut lo = 0usize;
+        let mut hi = self.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.key(mid).cmp(key) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => return Ok(mid),
+            }
+        }
+        Err(lo)
+    }
+}
+
+impl PartialEq for HighField {
+    /// Compares the persisted columns; `offsets` is a derived cache.
+    fn eq(&self, other: &Self) -> bool {
+        self.keys_blob == other.keys_blob
+            && self.key_lens == other.key_lens
+            && self.masks == other.masks
+    }
+}
+
+impl Eq for HighField {}
 
 // ── Stream-log-entries chunk ─────────────────────────────────────
 

@@ -193,24 +193,10 @@ fn build_mid_card_chunks(
 #[cfg(test)]
 mod tests;
 
-/// Borrowed view of a high-card chunk for write-side serialization.
-///
-/// Mirrors the field layout of [`crate::HighField`] but holds borrowed
-/// `&str` slices to avoid copying out of the interner's arena. Serde's
-/// struct serialization writes the fields in declaration order with no
-/// names on the wire, so this serializes byte-identically to
-/// [`crate::HighField`] — and the reader decodes the bytes as an owned
-/// [`crate::HighField`].
-#[derive(serde::Serialize)]
-struct HighFieldRef<'a> {
-    keys: &'a [&'a str],
-    masks: &'a [u8],
-}
-
 /// Build high-cardinality field chunks (bincode + zstd).
 ///
-/// Each chunk is a [`crate::HighField`] — two parallel columns of
-/// `key=value` strings and their `u8` batch-mask. Bit `b` of the mask
+/// Each chunk is a [`crate::HighField`] — a string arena of sorted
+/// `key=value` keys plus their per-key `u8` batch-mask. Bit `b` of the mask
 /// is set iff the value appears in stream batch `b`. Batch boundaries
 /// are defined by `batch_size` over time-sorted positions;
 /// `time_order` translates each insertion-order position from the
@@ -236,14 +222,11 @@ fn build_high_card_chunks(
         }
         paired.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
-        // Transpose to parallel columns. `unzip` does the work in one pass.
+        // Transpose to parallel columns, then pack as the arena layout.
         let (keys, masks): (Vec<&str>, Vec<u8>) = paired.iter().copied().unzip();
-        let view = HighFieldRef {
-            keys: &keys,
-            masks: &masks,
-        };
+        let high = crate::HighField::for_write(&keys, masks);
 
-        let packed = crate::pack(&view, crate::ZSTD_LEVEL_DEFAULT)?;
+        let packed = crate::pack(&high, crate::ZSTD_LEVEL_DEFAULT)?;
         total_kb += packed.len() / 1024;
         writer.add_high_field(packed);
     }

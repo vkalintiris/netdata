@@ -221,9 +221,9 @@ impl<'a> IndexReader<'a> {
                 }
                 FieldTier::High => {
                     let hf = self.sfst.high_field(high_index)?;
-                    for key in hf.keys {
+                    for key in hf.keys() {
                         if kv_id < table.len() {
-                            table[kv_id] = key;
+                            table[kv_id] = String::from_utf8_lossy(key).into_owned();
                         }
                         kv_id += 1;
                     }
@@ -671,14 +671,14 @@ impl<'a> IndexReader<'a> {
                 let mut combined_mask: u8 = 0;
                 for value in &exacts {
                     let kv = format!("{field}={value}");
-                    if let Ok(local) = hf.keys.binary_search_by(|k| k.as_str().cmp(&kv)) {
+                    if let Ok(local) = hf.binary_search(kv.as_bytes()) {
                         targets.insert(self.high_kv_id(idx, local));
                         combined_mask |= hf.masks[local];
                     }
                 }
                 if !patterns.is_empty() {
-                    for (local, key) in hf.keys.iter().enumerate() {
-                        if value_matches(key.as_bytes()) {
+                    for (local, key) in hf.keys().enumerate() {
+                        if value_matches(key) {
                             targets.insert(self.high_kv_id(idx, local));
                             combined_mask |= hf.masks[local];
                         }
@@ -749,8 +749,8 @@ impl<'a> IndexReader<'a> {
                 }
                 FieldTier::High => {
                     let hf = self.sfst.high_field(high_idx)?;
-                    for (local, key) in hf.keys.iter().enumerate() {
-                        if query.is_match(key) {
+                    for (local, key) in hf.keys().enumerate() {
+                        if std::str::from_utf8(key).is_ok_and(|kv| query.is_match(kv)) {
                             targets.insert(self.high_kv_id(high_idx, local));
                             combined_mask |= hf.masks[local];
                         }

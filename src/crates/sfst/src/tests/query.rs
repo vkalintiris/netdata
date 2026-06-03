@@ -735,10 +735,7 @@ fn build_tiered_fixture() -> Vec<u8> {
     .unwrap();
 
     // High chunk: `trace` values, all in the single stream batch (bit 0).
-    let high_trace = HighField {
-        keys: vec!["trace=aaa".into(), "trace=bbb".into(), "trace=ccc".into()],
-        masks: vec![0b1, 0b1, 0b1],
-    };
+    let high_trace = HighField::for_write(&["trace=aaa", "trace=bbb", "trace=ccc"], vec![0b1, 0b1, 0b1]);
 
     // KvIds in tier order: low {error=0, info=1}, mid {db1=2, web1=3,
     // web2=4}, high {aaa=5, bbb=6, ccc=7}; `high_kv_id` = mid_end + local.

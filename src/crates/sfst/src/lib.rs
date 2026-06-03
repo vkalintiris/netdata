@@ -74,7 +74,9 @@ pub use writer::{Writer, pack};
 // ── Format constants ─────────────────────────────────────────────
 
 const MAGIC: &[u8; 4] = b"SFST";
-const VERSION: u32 = 2;
+// v3: high-card chunks switched from `Vec<String>` keys to the string-arena
+// layout (keys_blob + key_lens). v2 files are rejected on open.
+const VERSION: u32 = 3;
 const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
 
 const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";

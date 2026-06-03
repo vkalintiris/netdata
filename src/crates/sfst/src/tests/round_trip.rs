@@ -157,11 +157,7 @@ fn round_trip_fields_and_secondary_chunks() {
     let mid_host = build_primary(&["host=h1", "host=h2"]);
     let mid_pod = build_primary(&["pod=p1", "pod=p2", "pod=p3"]);
     // Bit 0 set: the value lives in the single stream batch we emit.
-    let high_trace = HighField {
-        keys: vec!["trace_id=abc".into()],
-        // Bit 0: the value lives in the single stream batch we emit.
-        masks: vec![0b0000_0001],
-    };
+    let high_trace = HighField::for_write(&["trace_id=abc"], vec![0b0000_0001]);
     let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0), KvId(1)], vec![KvId(2)]];
     let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000, 1_700_000_000_500_000_000];
 
@@ -374,10 +370,7 @@ fn round_trip_multi_batch_stream() {
 
     let primary = build_primary(&["level=info"]);
     // A high-card value that lives only in batches 0 and 2.
-    let high_trace = HighField {
-        keys: vec!["trace_id=abc".into()],
-        masks: vec![0b0000_0101],
-    };
+    let high_trace = HighField::for_write(&["trace_id=abc"], vec![0b0000_0101]);
     let entries: Vec<Vec<KvId>> = (0..total_logs).map(|i| vec![KvId(i)]).collect();
     let timestamps: Vec<i64> = (0..total_logs as i64).collect();
 

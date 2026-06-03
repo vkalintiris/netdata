@@ -207,7 +207,11 @@ impl<'a> Reader<'a> {
     /// bits to decide which [`stream_batch`](Self::stream_batch)
     /// chunks to decompress when materialising matching log positions.
     pub fn high_field(&self, index: u16) -> Result<HighField, Error> {
-        unpack(self.high_field_raw(index)?)
+        let mut high: HighField = unpack(self.high_field_raw(index)?)?;
+        // `offsets` is `#[serde(skip)]`, so it deserializes empty — derive it
+        // from the decoded `key_lens` before the chunk is used.
+        high.rebuild_offsets();
+        Ok(high)
     }
 
     /// Raw compressed bytes of a high-card field chunk.

@@ -241,31 +241,41 @@ One chunk per mid-cardinality field, in the order those fields appear
 in `Metadata::fields`. Same payload schema as `PRIM` — an
 `FstIndex<BitmapValue>` whose keys are full `key=value` strings.
 
-### `HF{i}` — High-card field columnar
+### `HF{i}` — High-card field columnar (string arena)
 
-One chunk per high-cardinality field. Payload is a struct-of-arrays
-with parallel columns:
+One chunk per high-cardinality field. Payload is a string arena with
+parallel columns:
 
     pub struct HighField {
-        pub keys:  Vec<String>,  // sorted lex by key
-        pub masks: Vec<u8>,      // batch-membership bitmask per key
+        keys_blob: Vec<u8>,   // all "key=value" keys concatenated, sorted
+        key_lens:  Vec<u32>,  // per-key byte length, parallel to the keys
+        masks:     Vec<u8>,   // batch-membership bitmask, parallel to the keys
+        // offsets: in-memory only (#[serde(skip)]) — see below
     }
 
-`keys` is the field's `key=value` strings, sorted lexicographically.
-`masks[i]` is a bitmask over the file's stream batches: bit `b` is
-set iff `keys[i]` appears in stream batch `b`. The reader uses the
+The keys are the field's `key=value` strings, sorted lexicographically
+and stored as one contiguous `keys_blob`; key `i` is
+`keys_blob[offset(i)..offset(i+1)]`, where offsets are the prefix-sum of
+`key_lens`. `masks[i]` is a bitmask over the file's stream batches: bit
+`b` is set iff key `i` appears in stream batch `b`. The reader uses the
 mask to skip stream batches the value isn't in when materialising
-matching positions — without this index, every high-card filter
-would have to scan every `SB{i}` chunk.
+matching positions — without this index, every high-card filter would
+have to scan every `SB{i}` chunk.
 
-Why SoA rather than `Vec<(String, u8)>`: the dense, low-cardinality
-`u8` column compresses better when it's contiguous, and the
-back-references zstd uses for the string column tighten when string
-data is uninterrupted. The wire format is byte-identical regardless
-of whether the writer uses a borrowed view (`HighFieldRef<'a> {
-keys: &'a [&'a str], masks: &'a [u8] }`) or the owned form — a
-regression test in `indexer/fst_builder.rs` guards the cross-shape
-invariant.
+Why an arena rather than `Vec<String>`: deserializing one `keys_blob`
+byte buffer is a single allocation, versus one heap `String` per key —
+which, on a full high-card scan, dominated allocation. On disk it stores
+**lengths, not offsets**: lengths are small varints (≈1 B/key), whereas
+raw `u32` offsets would varint-inflate to ≈5 B/key (≈+18% on the
+high-card chunks, which are ~76% of the file). The columnar layout (the
+length and mask columns each contiguous) also compresses marginally
+tighter under zstd than an interleaved form.
+
+The `offsets` array (`key_lens.len() + 1` prefix sums) is **not
+serialized** (`#[serde(skip)]`); the reader rebuilds it from `key_lens`
+on load (`HighField::rebuild_offsets`) for O(1) key access. The write
+side (`HighField::for_write`) leaves it unbuilt — that value exists only
+to be packed, not read.
 
 ### `TIMS` — Per-log timestamps
 
@@ -349,7 +359,24 @@ payload, but the header and TOC are unprotected.
 
 ## Format Version
 
-The current version is **2**.
+The current version is **3**.
+
+### v3 changelog (from v2)
+
+- **`HF{i}` payload reshape — `Vec<String>` keys → string arena.** v2
+  stored a high-card field's keys as `HighField { keys: Vec<String>,
+  masks: Vec<u8> }`; deserializing it allocated one heap `String` per
+  key, which dominated allocation on a full high-card scan. v3 replaces
+  the keys column with a string arena (`keys_blob: Vec<u8>` +
+  `key_lens: Vec<u32>`) — see [§ `HF{i}`](#hfi--high-card-field-columnar-string-arena).
+  On disk this is size-neutral (slightly smaller; lengths are stored,
+  not offsets); on decode it collapses N allocations to ~2. The write
+  side now packs an owned `HighField` (`for_write`) directly, so the v2
+  `HighFieldRef<'a>` borrowed view is gone.
+
+v2 files cannot be read by a v3 reader and vice versa
+(`Error::UnsupportedVersion` on the version field). No migration tool
+exists.
 
 ### v2 changelog (from v1)
 
