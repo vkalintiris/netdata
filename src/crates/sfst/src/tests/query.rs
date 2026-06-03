@@ -891,7 +891,7 @@ fn pattern_high_card_resolves_via_stream_batches() {
         vec![0, 1]
     );
     // trace ~ /[ab].*/ → aaa{0,1} ∪ bbb{2,3} — multiple matched values,
-    // exercising the unioned mask + `HashSet<KvId>` target scan.
+    // exercising the unioned mask + the bitset target scan.
     assert_eq!(
         reader
             .matched_positions(

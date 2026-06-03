@@ -10,8 +10,6 @@
 
 use fst_index::FstIndex;
 
-use std::collections::HashSet;
-
 use crate::{
     BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram,
     IdRanges, KvId, Matcher, Metadata, ServiceStream, Summary, Timeline, Timestamps,
@@ -667,7 +665,9 @@ impl<'a> IndexReader<'a> {
                 // it. Matched positions are ascending (batch start increases,
                 // position within increases), so they feed `from_sorted`.
                 let hf = self.sfst.high_field(idx)?;
-                let mut targets: HashSet<KvId> = HashSet::new();
+                // Matched KvIds for this field fall in the contiguous range
+                // [base, base + cardinality).
+                let mut targets = KvIdSet::new(self.high_kv_id(idx, 0).0, hf.len() as u32);
                 let mut combined_mask: u8 = 0;
                 for value in &exacts {
                     let kv = format!("{field}={value}");
@@ -697,7 +697,7 @@ impl<'a> IndexReader<'a> {
                     let batch_start = u32::from(b) * batch_size;
                     let batch = self.sfst.stream_batch(b)?;
                     for (i, kv_ids) in batch.iter().enumerate() {
-                        if kv_ids.iter().any(|id| targets.contains(id)) {
+                        if kv_ids.iter().any(|id| targets.contains(*id)) {
                             positions.push(batch_start + i as u32);
                         }
                     }
@@ -733,7 +733,13 @@ impl<'a> IndexReader<'a> {
         // KvId targets for one stream-batch pass).
         let mut mid_idx = 0u16;
         let mut high_idx = 0u16;
-        let mut targets: HashSet<KvId> = HashSet::new();
+        // Matched high-card KvIds span the whole high-card range
+        // [mid_end, high_end) (this scan accumulates across all high fields).
+        let id_ranges = &self.metadata().id_ranges;
+        let mut targets = KvIdSet::new(
+            id_ranges.mid_end.0,
+            id_ranges.high_end.0 - id_ranges.mid_end.0,
+        );
         let mut combined_mask: u8 = 0;
         for field in self.metadata().fields.iter() {
             match field.tier {
@@ -771,7 +777,7 @@ impl<'a> IndexReader<'a> {
                 let batch_start = u32::from(b) * batch_size;
                 let batch = self.sfst.stream_batch(b)?;
                 for (i, kv_ids) in batch.iter().enumerate() {
-                    if kv_ids.iter().any(|id| targets.contains(id)) {
+                    if kv_ids.iter().any(|id| targets.contains(*id)) {
                         positions.push(batch_start + i as u32);
                     }
                 }
@@ -1084,5 +1090,47 @@ impl PosSet {
     /// Set positions in ascending order.
     fn iter(&self) -> impl Iterator<Item = u32> + '_ {
         self.bitmap.iter(&self.data)
+    }
+}
+
+/// Membership oracle for the high-card stream-batch scan — "is this `KvId`
+/// one of the matched values?", probed once per `KvId` per scanned row.
+///
+/// A dense bitset over the contiguous `KvId` range `[base, base + width)`
+/// the matched values fall in — one field's range (`field_values_or`) or
+/// the whole high-card range (`query_positions`). Membership is a direct
+/// bit test (no hashing), and at 1 bit/value the set stays cache-resident.
+struct KvIdSet {
+    bits: Vec<u64>,
+    base: u32,
+    width: u32,
+}
+
+impl KvIdSet {
+    fn new(base: u32, width: u32) -> Self {
+        Self {
+            bits: vec![0u64; width.div_ceil(64) as usize],
+            base,
+            width,
+        }
+    }
+
+    /// Record a matched value; `kvid` must lie in `[base, base + width)`.
+    fn insert(&mut self, kvid: KvId) {
+        let i = (kvid.0 - self.base) as usize;
+        self.bits[i / 64] |= 1u64 << (i % 64);
+    }
+
+    fn contains(&self, kvid: KvId) -> bool {
+        let k = kvid.0;
+        if k < self.base || k - self.base >= self.width {
+            return false;
+        }
+        let i = (k - self.base) as usize;
+        (self.bits[i / 64] >> (i % 64)) & 1 == 1
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bits.iter().all(|&word| word == 0)
     }
 }
