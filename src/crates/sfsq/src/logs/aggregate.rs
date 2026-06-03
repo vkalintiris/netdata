@@ -122,7 +122,7 @@ impl LogsShard {
         // Resolve the filter to per-field bitmaps once; the stats methods
         // below reuse it. A failure here means the filter can't be resolved
         // against this file, so the file contributes no stats.
-        let filter = match reader.compile_filter(&query.filter) {
+        let filter = match reader.compile_filter(&query.filter, query.query()) {
             Ok(filter) => filter,
             Err(e) => {
                 tracing::warn!(

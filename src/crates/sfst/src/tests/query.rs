@@ -7,7 +7,12 @@ use crate::*;
 /// Compile `filter` against `reader` — test convenience for the
 /// `BitmapFilter`-taking query methods.
 fn bf(reader: &IndexReader<'_>, filter: Filter) -> BitmapFilter {
-    reader.compile_filter(&filter).unwrap()
+    reader.compile_filter(&filter, None).unwrap()
+}
+
+/// Compile `filter` + a full-text `query` against `reader`.
+fn bfq(reader: &IndexReader<'_>, filter: Filter, query: &str) -> BitmapFilter {
+    reader.compile_filter(&filter, Some(query)).unwrap()
 }
 
 /// Synthetic SFST for query tests. 6 logs, 1 second apart.
@@ -805,21 +810,30 @@ fn pattern_low_card_is_full_value_anchored() {
     // `/info/` matches the whole value "info" (3 logs).
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "info")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "info")),
+                FULL_WINDOW
+            )
             .unwrap(),
         3
     );
     // `/inf/` does NOT — the match is anchored to the full value.
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "inf")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "inf")),
+                FULL_WINDOW
+            )
             .unwrap(),
         0
     );
     // A substring search is the explicit `.*`.
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "inf.*")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "inf.*")),
+                FULL_WINDOW
+            )
             .unwrap(),
         3
     );
@@ -832,14 +846,20 @@ fn pattern_anchored_not_substring_at_tail() {
     // `/rror/` must NOT match "error".
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "rror")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "rror")),
+                FULL_WINDOW
+            )
             .unwrap(),
         0
     );
     // `/err.*/` matches "error" → {1,3,5}.
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "err.*")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "err.*")),
+                FULL_WINDOW
+            )
             .unwrap(),
         3
     );
@@ -896,7 +916,9 @@ fn pattern_mixed_with_exact_ors() {
         .select("level", "info")
         .select_pattern("level", "err.*");
     assert_eq!(
-        reader.matched_count(&bf(&reader, filter), FULL_WINDOW).unwrap(),
+        reader
+            .matched_count(&bf(&reader, filter), FULL_WINDOW)
+            .unwrap(),
         6
     );
 }
@@ -907,7 +929,10 @@ fn pattern_no_match_is_empty() {
     let reader = IndexReader::open(&data).unwrap();
     assert_eq!(
         reader
-            .matched_count(&bf(&reader, Filter::new().select_pattern("level", "xyz")), FULL_WINDOW)
+            .matched_count(
+                &bf(&reader, Filter::new().select_pattern("level", "xyz")),
+                FULL_WINDOW
+            )
             .unwrap(),
         0
     );
@@ -919,7 +944,7 @@ fn invalid_pattern_is_hard_error() {
     let reader = IndexReader::open(&data).unwrap();
     let filter = Filter::new().select_pattern("level", "(unclosed");
     assert!(matches!(
-        reader.compile_filter(&filter),
+        reader.compile_filter(&filter, None),
         Err(Error::InvalidPattern(_))
     ));
 }
@@ -937,7 +962,67 @@ fn validate_catches_bad_pattern_without_a_file() {
             .is_ok()
     );
     assert!(matches!(
-        Filter::new().select_pattern("trace", "(unclosed").validate(),
+        Filter::new()
+            .select_pattern("trace", "(unclosed")
+            .validate(),
         Err(Error::InvalidPattern(_))
     ));
+}
+
+#[test]
+fn query_full_text_matches_key_value_across_tiers() {
+    let data = build_tiered_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Unanchored over whole `key=value`: "web" lives only in the mid-card
+    // host values (host=web1 @ {0,1}, host=web2 @ {2,3}).
+    assert_eq!(
+        reader
+            .matched_positions(&bfq(&reader, Filter::new(), "web"), FULL_WINDOW)
+            .unwrap(),
+        vec![0, 1, 2, 3]
+    );
+    // High-card key match (trace=aaa @ {0,1}) — resolved via stream batches.
+    assert_eq!(
+        reader
+            .matched_positions(&bfq(&reader, Filter::new(), "trace=aaa"), FULL_WINDOW)
+            .unwrap(),
+        vec![0, 1]
+    );
+    // The key part scopes to a field: "level=info" matches the low-card key.
+    assert_eq!(
+        reader
+            .matched_positions(&bfq(&reader, Filter::new(), "level=info"), FULL_WINDOW)
+            .unwrap(),
+        vec![0, 2, 4]
+    );
+}
+
+#[test]
+fn query_ands_with_the_field_filter() {
+    let data = build_tiered_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // level=info {0,2,4} AND query "web" {0,1,2,3} = {0,2}.
+    let bf = bfq(&reader, Filter::new().select("level", "info"), "web");
+    assert_eq!(reader.matched_count(&bf, FULL_WINDOW).unwrap(), 2);
+    assert_eq!(
+        reader.matched_positions(&bf, FULL_WINDOW).unwrap(),
+        vec![0, 2]
+    );
+}
+
+#[test]
+fn query_narrows_facet_counts() {
+    let data = build_tiered_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // Query "web" restricts the scope to host=web* logs {0,1,2,3}; the
+    // `level` facet over that scope is error:2 (pos 1,3), info:2 (pos 0,2).
+    // Confirms the query folds into the aggregate, not just the page.
+    let bf = bfq(&reader, Filter::new(), "web");
+    let facets = reader.facets(&["level"], &bf, FULL_WINDOW).unwrap();
+    assert_eq!(facets.len(), 1);
+    assert_eq!(facets[0].field, "level");
+    assert_eq!(
+        facets[0].values,
+        vec![("error".to_string(), 2), ("info".to_string(), 2)]
+    );
 }

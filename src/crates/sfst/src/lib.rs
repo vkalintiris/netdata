@@ -52,6 +52,7 @@ pub use indexer::{
 };
 pub use query::{
     Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,
+    compile_query,
 };
 pub use reader::{Reader, unpack};
 pub use registry::{File, Registry};

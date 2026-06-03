@@ -49,6 +49,9 @@ fn try_main() -> Result<(), String> {
     // before any file is opened, rather than letting it degrade per file.
     let filter = parse_filter(&args.filter)?;
     filter.validate().map_err(|e| e.to_string())?;
+    if let Some(query) = &args.query {
+        sfst::compile_query(query).map_err(|e| e.to_string())?;
+    }
 
     // Read each file's summary to build a candidate (and to derive the
     // default window). `run` opens the files itself for the actual query.
@@ -67,14 +70,25 @@ fn try_main() -> Result<(), String> {
 
     // Window: the explicit `--after/--before`, else the span covering every
     // candidate file. `before` is exclusive, so bump it past the last second.
-    let after = args
-        .after
-        .unwrap_or_else(|| candidates.iter().map(|c| c.summary.min_timestamp_s).min().unwrap());
-    let before = args
-        .before
-        .unwrap_or_else(|| candidates.iter().map(|c| c.summary.max_timestamp_s).max().unwrap() + 1);
+    let after = args.after.unwrap_or_else(|| {
+        candidates
+            .iter()
+            .map(|c| c.summary.min_timestamp_s)
+            .min()
+            .unwrap()
+    });
+    let before = args.before.unwrap_or_else(|| {
+        candidates
+            .iter()
+            .map(|c| c.summary.max_timestamp_s)
+            .max()
+            .unwrap()
+            + 1
+    });
     if before <= after {
-        return Err(format!("empty window: --after {after} >= --before {before}"));
+        return Err(format!(
+            "empty window: --after {after} >= --before {before}"
+        ));
     }
 
     // One bucket spanning the window — v1 prints rows, not the histogram, so
@@ -82,12 +96,11 @@ fn try_main() -> Result<(), String> {
     let span_ns = (i64::from(before) - i64::from(after)) * NS_PER_S;
     let grid = sfst::Grid::new(i64::from(after) * NS_PER_S, span_ns, 1);
 
-    let query = LogsQueryBuilder::new(grid)
-        .filter(filter)
-        .limit(args.last)
-        .build();
-
-    let data = run(candidates, query);
+    let mut builder = LogsQueryBuilder::new(grid).filter(filter).limit(args.last);
+    if let Some(q) = args.query {
+        builder = builder.query(q);
+    }
+    let data = run(candidates, builder.build());
     print_result(&data);
     Ok(())
 }
@@ -152,6 +165,12 @@ struct Args {
     /// AND. A bare term is rejected.
     #[arg(long, default_value = "")]
     filter: String,
+
+    /// Full-text query: an unanchored regex matched against whole `key=value`
+    /// pairs (a "contains" search; scope to fields via the key part, e.g.
+    /// `issuer\..*=.*GoDaddy`). AND'd with --filter.
+    #[arg(long)]
+    query: Option<String>,
 
     /// Maximum number of rows to return.
     #[arg(long, default_value_t = 50)]

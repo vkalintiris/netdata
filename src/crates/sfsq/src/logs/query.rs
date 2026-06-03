@@ -40,6 +40,7 @@ const DEFAULT_FACET_FIELD: &str = "severity_text";
 pub struct LogsQuery {
     pub(super) grid: sfst::Grid,
     pub(super) filter: Filter,
+    pub(super) query: Option<String>,
     pub(super) histogram_field: String,
     pub(super) facet_fields: Vec<String>,
     pub(super) anchor: Option<Anchor>,
@@ -55,6 +56,13 @@ impl LogsQuery {
     /// The match filter (OR within a field, AND across fields).
     pub fn filter(&self) -> &Filter {
         &self.filter
+    }
+    /// Field-less full-text query — an unanchored regex matched against whole
+    /// `key=value` pairs — or `None`. Resolved by the engine as a global AND
+    /// constraint (it narrows matched / facets / histogram and the page
+    /// alike).
+    pub fn query(&self) -> Option<&str> {
+        self.query.as_deref()
     }
     /// Histogram dimension field — always resolved (the default if the
     /// builder wasn't given one).
@@ -87,6 +95,7 @@ impl LogsQuery {
 pub struct LogsQueryBuilder {
     grid: sfst::Grid,
     filter: Filter,
+    query: Option<String>,
     histogram_field: Option<String>,
     facet_fields: Vec<String>,
     anchor: Option<Anchor>,
@@ -100,6 +109,7 @@ impl LogsQueryBuilder {
         Self {
             grid,
             filter: Filter::new(),
+            query: None,
             histogram_field: None,
             facet_fields: Vec::new(),
             anchor: None,
@@ -125,6 +135,15 @@ impl LogsQueryBuilder {
     /// exclusive with [`selections`](Self::selections); the last call wins.
     pub fn filter(mut self, filter: Filter) -> Self {
         self.filter = filter;
+        self
+    }
+
+    /// Set a field-less full-text query — an unanchored regex matched against
+    /// whole `key=value` pairs (a "contains" search; the key part can scope
+    /// it to a subset of fields). Resolved by the engine as a global AND
+    /// term, so it narrows the aggregate counts as well as the page.
+    pub fn query(mut self, query: impl Into<String>) -> Self {
+        self.query = Some(query.into());
         self
     }
 
@@ -168,6 +187,7 @@ impl LogsQueryBuilder {
         LogsQuery {
             grid: self.grid,
             filter: self.filter,
+            query: self.query,
             histogram_field,
             facet_fields,
             anchor: self.anchor,

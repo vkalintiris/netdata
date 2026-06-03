@@ -291,7 +291,11 @@ impl<'a> IndexReader<'a> {
     /// mentioned in the filter but absent from this file resolves to the
     /// empty set, collapsing the full scope to empty — single-file SFSTs
     /// with disjoint field sets fall out of the query naturally.
-    pub fn compile_filter(&self, filter: &Filter) -> Result<BitmapFilter, crate::Error> {
+    pub fn compile_filter(
+        &self,
+        filter: &Filter,
+        query: Option<&str>,
+    ) -> Result<BitmapFilter, crate::Error> {
         let universe = self.summary.total_logs;
         let mut per_field: Vec<(String, PosSet)> = Vec::new();
         for (field, values) in filter.iter() {
@@ -312,11 +316,26 @@ impl<'a> IndexReader<'a> {
                 break;
             }
         }
-        let full = full.unwrap_or_else(|| PosSet::full(universe));
+        let mut full = full.unwrap_or_else(|| PosSet::full(universe));
+
+        // Field-less full-text query: the positions of logs carrying any
+        // `key=value` matching the (unanchored) query regex. A global AND
+        // term, so it folds into `full` and into every facet's scope.
+        let query_set = match query {
+            Some(src) => {
+                let regex = crate::query::compile_query(src)?;
+                let set = self.query_positions(&regex)?;
+                full.and_assign(&set);
+                Some(set)
+            }
+            None => None,
+        };
+
         Ok(BitmapFilter {
             universe,
             per_field,
             full,
+            query: query_set,
         })
     }
 
@@ -613,11 +632,12 @@ impl<'a> IndexReader<'a> {
                 }
                 if !patterns.is_empty() {
                     let prefix = format!("{field}=");
-                    self.primary.prefix_for_each(prefix.as_bytes(), |kv_bytes, bv| {
-                        if value_matches(kv_bytes) {
-                            result.or_assign(&PosSet::from_value(bv));
-                        }
-                    });
+                    self.primary
+                        .prefix_for_each(prefix.as_bytes(), |kv_bytes, bv| {
+                            if value_matches(kv_bytes) {
+                                result.or_assign(&PosSet::from_value(bv));
+                            }
+                        });
                 }
                 Ok(result)
             }
@@ -685,6 +705,81 @@ impl<'a> IndexReader<'a> {
                 Ok(PosSet::from_sorted(positions, total))
             }
         }
+    }
+
+    /// Positions of logs carrying any `key=value` pair whose **whole string**
+    /// matches `query` (unanchored — a "contains" full-text search; the
+    /// `key=` part lets a pattern scope to a subset of fields).
+    ///
+    /// Scans every distinct key across all tiers: the primary FST (all
+    /// low-card fields), each mid-card chunk, and each high-card key
+    /// dictionary. Low/mid matches OR their posting bitmaps directly;
+    /// high-card matches are gathered by `KvId` and resolved through the
+    /// stream batches (as in [`field_values_or`](Self::field_values_or)).
+    /// This is a full distinct-key scan — the inherent cost of field-less
+    /// full text without a token index.
+    fn query_positions(&self, query: &regex::Regex) -> Result<PosSet, crate::Error> {
+        let total = self.summary.total_logs;
+        let mut result = PosSet::empty(total);
+
+        // Low-card: the primary FST holds every low-card field's keys.
+        self.primary.for_each(|kv_bytes, bv| {
+            if std::str::from_utf8(kv_bytes).is_ok_and(|kv| query.is_match(kv)) {
+                result.or_assign(&PosSet::from_value(bv));
+            }
+        });
+
+        // Mid-card chunks (OR bitmaps) and high-card dictionaries (gather
+        // KvId targets for one stream-batch pass).
+        let mut mid_idx = 0u16;
+        let mut high_idx = 0u16;
+        let mut targets: HashSet<KvId> = HashSet::new();
+        let mut combined_mask: u8 = 0;
+        for field in self.metadata().fields.iter() {
+            match field.tier {
+                FieldTier::Low => {}
+                FieldTier::Mid => {
+                    let chunk = self.sfst.mid_field(mid_idx)?;
+                    chunk.for_each(|kv_bytes, bv| {
+                        if std::str::from_utf8(kv_bytes).is_ok_and(|kv| query.is_match(kv)) {
+                            result.or_assign(&PosSet::from_value(bv));
+                        }
+                    });
+                    mid_idx += 1;
+                }
+                FieldTier::High => {
+                    let hf = self.sfst.high_field(high_idx)?;
+                    for (local, key) in hf.keys.iter().enumerate() {
+                        if query.is_match(key) {
+                            targets.insert(self.high_kv_id(high_idx, local));
+                            combined_mask |= hf.masks[local];
+                        }
+                    }
+                    high_idx += 1;
+                }
+            }
+        }
+
+        if !targets.is_empty() {
+            let batch_size = crate::stream_batch_size(total);
+            let num_batches = crate::num_stream_batches(total);
+            let mut positions: Vec<u32> = Vec::new();
+            for b in 0..num_batches {
+                if (combined_mask >> b) & 1 == 0 {
+                    continue;
+                }
+                let batch_start = u32::from(b) * batch_size;
+                let batch = self.sfst.stream_batch(b)?;
+                for (i, kv_ids) in batch.iter().enumerate() {
+                    if kv_ids.iter().any(|id| targets.contains(id)) {
+                        positions.push(batch_start + i as u32);
+                    }
+                }
+            }
+            result.or_assign(&PosSet::from_sorted(positions, total));
+        }
+
+        Ok(result)
     }
 
     /// Per-value `(value, count)` pairs for `field` restricted to `scope`.
@@ -835,13 +930,19 @@ pub struct BitmapFilter {
     /// Each filter field paired with the OR of its selected values'
     /// position bitmaps (empty if the field is absent from this file).
     per_field: Vec<(String, PosSet)>,
-    /// AND of every field's bitmap — the full filter scope. The full range
-    /// when the filter is empty.
+    /// AND of every field's bitmap **and** the full-text query set — the
+    /// full filter scope. The full range when the filter is empty.
     full: PosSet,
+    /// Field-less full-text query positions (logs carrying a `key=value`
+    /// matching the query regex), or `None` when no query was given. A
+    /// global AND term: already folded into `full`, and AND'd into every
+    /// facet's scope by [`without`](Self::without).
+    query: Option<PosSet>,
 }
 
 impl BitmapFilter {
-    /// The full filter scope (AND of every field; full range if empty).
+    /// The full filter scope (AND of every field and the query; full range
+    /// if empty).
     fn full(&self) -> &PosSet {
         &self.full
     }
@@ -851,17 +952,19 @@ impl BitmapFilter {
         self.per_field.iter().any(|(name, _)| name == field)
     }
 
-    /// Whether no field *other than* `field` constrains the result — then
-    /// `field`'s own facet/histogram can count directly over the window
-    /// (the fast path), with no scope to intersect. Purely structural;
-    /// builds no bitmap.
+    /// Whether no constraint *other than* `field`'s own selection applies —
+    /// then `field`'s own facet/histogram can count directly over the window
+    /// (the fast path), with no scope to intersect. A full-text query is a
+    /// global constraint, so its presence rules the fast path out. Purely
+    /// structural; builds no bitmap.
     fn is_unconstrained(&self, field: &str) -> bool {
-        !self.per_field.iter().any(|(name, _)| name != field)
+        self.query.is_none() && !self.per_field.iter().any(|(name, _)| name != field)
     }
 
     /// The filter scope with `field`'s own selection excluded — the AND of
-    /// the *other* fields. For a facet/histogram on a field that is itself
-    /// filtered and has siblings (otherwise it's [`is_unconstrained`]).
+    /// the *other* fields and the query. For a facet/histogram on a field
+    /// that is itself filtered and has siblings (otherwise it's
+    /// [`is_unconstrained`]).
     ///
     /// [`is_unconstrained`]: Self::is_unconstrained
     fn without(&self, field: &str) -> PosSet {
@@ -878,7 +981,11 @@ impl BitmapFilter {
                 }
             });
         }
-        acc.unwrap_or_else(|| PosSet::full(self.universe))
+        let mut acc = acc.unwrap_or_else(|| PosSet::full(self.universe));
+        if let Some(query_set) = &self.query {
+            acc.and_assign(query_set);
+        }
+        acc
     }
 }
 

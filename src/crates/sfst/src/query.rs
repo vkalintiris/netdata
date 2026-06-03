@@ -52,6 +52,16 @@ pub(crate) fn compile_pattern(src: &str) -> Result<regex::Regex, crate::Error> {
         .map_err(|e| crate::Error::InvalidPattern(e.to_string()))
 }
 
+/// Compile a field-less full-text `query` regex — matched **unanchored**
+/// against whole `key=value` pairs (so it's a "contains" search, and the
+/// `key` part lets it scope to a subset of fields). Unlike
+/// [`compile_pattern`] (which anchors a single field's value), this is the
+/// substring-style full-text operator. A bad source is a hard
+/// [`crate::Error::InvalidPattern`].
+pub fn compile_query(src: &str) -> Result<regex::Regex, crate::Error> {
+    regex::Regex::new(src).map_err(|e| crate::Error::InvalidPattern(e.to_string()))
+}
+
 /// A conjunction of per-field disjunctions.
 ///
 /// Each entry maps a `field` to its list of [`Matcher`]s. A log matches the
@@ -78,7 +88,9 @@ impl Filter {
     /// field, conjunction across fields. Fields are yielded in sorted
     /// order; within a field, matchers keep insertion order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &[Matcher])> {
-        self.selections.iter().map(|(field, ms)| (field, ms.as_slice()))
+        self.selections
+            .iter()
+            .map(|(field, ms)| (field, ms.as_slice()))
     }
 
     /// Add an exact `value` to the allowed matchers for `field`. Multiple

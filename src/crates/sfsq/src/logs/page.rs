@@ -83,7 +83,7 @@ impl PageShard {
         anchor: Option<Cursor>,
         bound: Option<usize>,
     ) -> Result<PageShard, sfst::Error> {
-        let filter = reader.compile_filter(&query.filter)?;
+        let filter = reader.compile_filter(&query.filter, query.query())?;
         let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
         let timestamps = reader.load_timestamps()?;
 
