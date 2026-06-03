@@ -213,7 +213,8 @@ impl HighField {
     /// where the reader calls [`rebuild_offsets`](Self::rebuild_offsets);
     /// calling it on a write-form value panics (debug-asserted).
     pub fn for_write<S: AsRef<str>>(keys: &[S], masks: Vec<u8>) -> Self {
-        let mut keys_blob = Vec::new();
+        let total_bytes: usize = keys.iter().map(|key| key.as_ref().len()).sum();
+        let mut keys_blob = Vec::with_capacity(total_bytes);
         let mut key_lens = Vec::with_capacity(keys.len());
         for key in keys {
             let bytes = key.as_ref().as_bytes();
