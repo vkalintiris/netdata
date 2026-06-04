@@ -85,7 +85,7 @@ within its tier in the trailing bytes.
     "PRIM"      FstIndex<BitmapValue>                         Yes
     "MF{hi}{lo}" FstIndex<BitmapValue>  (mid-card field)      No (one per mid field)
     "HF{hi}{lo}" HighField  (high-card field, columnar SoA)   No (one per high field)
-    "SB0{N}"    Vec<Vec<KvId>>  (stream-batch N, 0..=7)       Yes (at least 1)
+    "SB0{N}"    StreamBatch  (stream-batch N, fixed-width arena)  Yes (at least 1)
 
 The rows are listed in the order the canonical producer emits chunk
 bodies. This order is **not** part of the format contract — readers
@@ -296,18 +296,32 @@ filtering, time-of-event citation) relies on this chunk.
 
 ### `SB{i}` — Stream-batch N
 
-`Vec<Vec<KvId>>` indexed by chronological log position **within this
-batch**:
+The per-log attribute lists for one chronological partition, as a
+fixed-width arena (`StreamBatch`):
 
-    entries[local_pos] = [kv_id_1, kv_id_2, ...]
+    StreamBatch {
+        kv_bytes: Vec<u8>,    // each KvId as 4 little-endian bytes, rows concatenated
+        row_lens: Vec<u32>,   // KvId count per row
+        // row_offsets: in-memory only (#[serde(skip)]) — prefix-sum of row_lens
+    }
 
-Where `local_pos = global_pos - i * stream_batch_size(total_logs)`.
-The reader concatenates every `SB{i}` chunk in id order to recover
-the full chronological log stream.
+Row `local_pos`'s `KvId`s are `kv_bytes[4*off(p) .. 4*off(p+1)]`, where
+`off` is the prefix-sum of `row_lens` (in `KvId` units) and
+`local_pos = global_pos - i * stream_batch_size(total_logs)`.
+Concatenating every `SB{i}` chunk in id order recovers the full
+chronological log stream.
 
-Each `KvId` references a `key=value` pair via the tier-aligned id
-space below. The reader walks an `SB{i}` chunk to materialize a log's
-attributes after time-range filtering has selected positions.
+`KvId`s are stored **fixed-width little-endian, not varint**: the scan
+reads them straight from `kv_bytes` (`chunks_exact(4)` → `from_le_bytes`)
+with no per-id deserialization — the dominant decode cost — and it's
+*smaller* on disk than varint (high-card `KvId`s already cost ~4 bytes as
+varints, and the regular 4-byte stride compresses tighter under zstd). The
+column layout mirrors `HF{i}`: lengths and values each contiguous,
+`row_offsets` rebuilt on load.
+
+Each `KvId` references a `key=value` pair via the tier-aligned id space
+below. The reader walks an `SB{i}` chunk to materialize a log's attributes
+after time-range filtering has selected positions.
 
 ---
 
@@ -359,7 +373,24 @@ payload, but the header and TOC are unprotected.
 
 ## Format Version
 
-The current version is **3**.
+The current version is **4**.
+
+### v4 changelog (from v3)
+
+- **`SB{i}` payload reshape — `Vec<Vec<KvId>>` → fixed-width arena.** v3
+  stored each stream batch as `Vec<Vec<KvId>>` (varint `KvId`s, one inner
+  `Vec` per row); decoding it deserialized every `KvId` one at a time —
+  the dominant *cycle* cost on a full high-card scan. v4 stores a
+  `StreamBatch { kv_bytes: Vec<u8>, row_lens: Vec<u32> }` arena where each
+  `KvId` is 4 little-endian bytes, so the scan reads ids straight from
+  `kv_bytes` with no per-id deserialization — see
+  [§ `SB{i}`](#sbi--stream-batch-n). Fixed-width is also ~10% *smaller* on
+  disk than varint here (high-card `KvId`s already cost ~4 bytes as
+  varints, and the regular stride compresses tighter).
+
+v3 files cannot be read by a v4 reader and vice versa
+(`Error::UnsupportedVersion` on the version field). No migration tool
+exists.
 
 ### v3 changelog (from v2)
 

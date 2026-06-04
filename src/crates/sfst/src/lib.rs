@@ -66,7 +66,8 @@ pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u6
     file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
 }
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTable, FieldTier, HighField, Histogram, IdRanges, KvId, Metadata,
+    BitmapValue, FieldEntry, FieldTable, FieldTier, HighField, Histogram, IdRanges, KvId,
+    Metadata, StreamBatch,
     Summary,
 };
 pub use writer::{Writer, pack};
@@ -75,8 +76,10 @@ pub use writer::{Writer, pack};
 
 const MAGIC: &[u8; 4] = b"SFST";
 // v3: high-card chunks switched from `Vec<String>` keys to the string-arena
-// layout (keys_blob + key_lens). v2 files are rejected on open.
-const VERSION: u32 = 3;
+//     layout (keys_blob + key_lens).
+// v4: stream-batch chunks switched from `Vec<Vec<KvId>>` to the fixed-width
+//     arena (kv_bytes + row_lens). Older files are rejected on open.
+const VERSION: u32 = 4;
 const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
 
 const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";

@@ -114,7 +114,7 @@ fn build_query_fixture() -> Vec<u8> {
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     buf
@@ -586,7 +586,7 @@ fn build_complemented_fixture() -> Vec<u8> {
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     buf
@@ -794,7 +794,7 @@ fn build_tiered_fixture() -> Vec<u8> {
     writer.add_mid_field(pack(&mid_host, 1).unwrap());
     writer.add_high_field(pack(&high_trace, 1).unwrap());
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     buf

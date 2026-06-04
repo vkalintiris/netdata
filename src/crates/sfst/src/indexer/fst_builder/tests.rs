@@ -20,3 +20,31 @@ fn high_field_arena_round_trips() {
     assert_eq!(decoded.binary_search(b"zzz"), Err(3));
     assert_eq!(decoded.masks, vec![0b0000_0001, 0b0000_0011, 0b1000_0000]);
 }
+
+/// The stream-batch fixed-width arena round-trips through bincode and its
+/// rows are readable after `rebuild_offsets`. Covers a large `KvId` (4-byte),
+/// an empty row, and a single-id row.
+#[test]
+fn stream_batch_arena_round_trips() {
+    use crate::KvId;
+    let rows = vec![
+        vec![KvId(0), KvId(1), KvId(70_000)],
+        vec![],
+        vec![KvId(5)],
+    ];
+    let batch = crate::StreamBatch::for_write(&rows);
+
+    let bytes = bincode::serde::encode_to_vec(&batch, bincode::config::standard()).unwrap();
+    let (mut decoded, _): (crate::StreamBatch, _) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    decoded.rebuild_offsets();
+
+    assert_eq!(decoded, batch);
+    assert_eq!(decoded.num_rows(), 3);
+    assert_eq!(
+        decoded.row(0).collect::<Vec<_>>(),
+        vec![KvId(0), KvId(1), KvId(70_000)]
+    );
+    assert!(decoded.row(1).next().is_none());
+    assert_eq!(decoded.row(2).collect::<Vec<_>>(), vec![KvId(5)]);
+}

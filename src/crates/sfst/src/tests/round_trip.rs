@@ -23,7 +23,7 @@ fn empty_timestamps() -> Vec<u8> {
 }
 
 fn empty_stream_batch() -> Vec<u8> {
-    pack(&Vec::<Vec<KvId>>::new(), 1).unwrap()
+    pack(&StreamBatch::for_write(&[]), 1).unwrap()
 }
 
 fn sample_summary() -> Summary {
@@ -169,7 +169,7 @@ fn round_trip_fields_and_secondary_chunks() {
     assert_eq!(writer.add_high_field(pack(&high_trace, 1).unwrap()), 0);
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
     assert_eq!(
-        writer.add_stream_batch(pack(&stream_entries, 1).unwrap()),
+        writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap()),
         0
     );
 
@@ -197,8 +197,8 @@ fn round_trip_fields_and_secondary_chunks() {
 
     // Stream-batch chunk: the only batch (index 0) carries everything.
     let batch = reader.stream_batch(0).unwrap();
-    assert_eq!(batch.len(), 2);
-    assert_eq!(batch[0], vec![KvId(0), KvId(1)]);
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.row(0).collect::<Vec<_>>(), vec![KvId(0), KvId(1)]);
     // Asking for a non-existent batch yields ChunkNotFound.
     assert!(matches!(
         reader.stream_batch(1),
@@ -314,7 +314,7 @@ fn full_file_round_trip() {
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
 
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
@@ -327,7 +327,10 @@ fn full_file_round_trip() {
     assert_eq!(reader.timestamps().unwrap(), timestamps);
     // A small `total_logs` puts everything in a single batch.
     assert_eq!(reader.num_stream_batches().unwrap(), 1);
-    assert_eq!(reader.stream_batch(0).unwrap(), stream_entries);
+    assert_eq!(
+        reader.stream_batch(0).unwrap(),
+        StreamBatch::for_write(&stream_entries)
+    );
 }
 
 #[test]
@@ -381,9 +384,8 @@ fn round_trip_multi_batch_stream() {
     writer.add_high_field(pack(&high_trace, 1).unwrap());
     writer.set_timestamps(pack(&timestamps, 1).unwrap());
     for (i, batch) in entries.chunks(1024).enumerate() {
-        // pack accepts &[T] thanks to its ?Sized bound — no Vec
-        // materialisation needed.
-        assert_eq!(writer.add_stream_batch(pack(batch, 1).unwrap()) as usize, i);
+        let packed = pack(&StreamBatch::for_write(batch), 1).unwrap();
+        assert_eq!(writer.add_stream_batch(packed) as usize, i);
     }
 
     let mut buf = Vec::new();
@@ -394,9 +396,12 @@ fn round_trip_multi_batch_stream() {
     assert_eq!(reader.num_stream_batches().unwrap(), 3);
     for i in 0..3u8 {
         let batch = reader.stream_batch(i).unwrap();
-        assert_eq!(batch.len(), 1024);
-        assert_eq!(batch[0], vec![KvId(u32::from(i) * 1024)]);
-        assert_eq!(batch[1023], vec![KvId(u32::from(i) * 1024 + 1023)]);
+        assert_eq!(batch.num_rows(), 1024);
+        assert_eq!(batch.row(0).collect::<Vec<_>>(), vec![KvId(u32::from(i) * 1024)]);
+        assert_eq!(
+            batch.row(1023).collect::<Vec<_>>(),
+            vec![KvId(u32::from(i) * 1024 + 1023)]
+        );
     }
     // Out-of-range batch fails cleanly.
     assert!(matches!(

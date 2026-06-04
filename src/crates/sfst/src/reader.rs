@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, FieldTable,
-    FieldTier, HEADER_SIZE, HighField, KvId, MAGIC, MAX_STREAM_BATCHES, Metadata, Summary, VERSION,
-    high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
+    FieldTier, HEADER_SIZE, HighField, MAGIC, MAX_STREAM_BATCHES, Metadata, StreamBatch, Summary,
+    VERSION, high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
 };
 
 /// Decompress zstd, then deserialize with bincode.
@@ -244,12 +244,16 @@ impl<'a> Reader<'a> {
     /// Decompress and deserialize one stream-batch chunk by index.
     ///
     /// `index` must be in `0..num_stream_batches(summary.total_logs)`
-    /// (see [`crate::num_stream_batches`]). The returned
-    /// `Vec<Vec<KvId>>` holds the attribute lists for the logs in that
-    /// batch, in chronological order; concatenating all batches in
-    /// order yields the full chronological log stream.
-    pub fn stream_batch(&self, index: u8) -> Result<Vec<Vec<KvId>>, Error> {
-        unpack(self.stream_batch_raw(index)?)
+    /// (see [`crate::num_stream_batches`]). The returned [`StreamBatch`]
+    /// holds the attribute lists for the logs in that batch, in
+    /// chronological order; concatenating all batches in order yields the
+    /// full chronological log stream.
+    pub fn stream_batch(&self, index: u8) -> Result<StreamBatch, Error> {
+        let mut batch: StreamBatch = unpack(self.stream_batch_raw(index)?)?;
+        // `row_offsets` is `#[serde(skip)]`, so it deserializes empty —
+        // derive it from the decoded `row_lens` before the batch is used.
+        batch.rebuild_offsets();
+        Ok(batch)
     }
 
     /// Raw compressed bytes of one stream-batch chunk.

@@ -150,18 +150,23 @@ impl<'a> IndexReader<'a> {
     /// Returns the attribute lists for the logs in that batch, in
     /// chronological order. Concatenating batches in order yields the
     /// full chronological log stream.
-    pub fn load_stream_batch(&self, batch_index: u8) -> Result<Vec<Vec<KvId>>, crate::Error> {
+    pub fn load_stream_batch(&self, batch_index: u8) -> Result<crate::StreamBatch, crate::Error> {
         self.sfst.stream_batch(batch_index)
     }
 
-    /// Load and concatenate every stream-batch chunk in chronological
-    /// order. Convenience for tooling and tests that want the full log
-    /// stream rather than walking batches individually.
+    /// Load and concatenate every stream-batch chunk into per-row `KvId`
+    /// lists, in chronological order. Convenience for tooling and tests that
+    /// want the materialized form rather than walking [`StreamBatch`] rows;
+    /// it reconstructs the `Vec<Vec<KvId>>`, so the hot scan/materialize
+    /// paths use [`StreamBatch`] directly instead.
     pub fn load_all_stream_entries(&self) -> Result<Vec<Vec<KvId>>, crate::Error> {
         let n = self.num_stream_batches();
         let mut out = Vec::with_capacity(self.summary.total_logs as usize);
         for i in 0..n {
-            out.extend(self.sfst.stream_batch(i)?);
+            let batch = self.sfst.stream_batch(i)?;
+            for r in 0..batch.num_rows() {
+                out.push(batch.row(r).collect());
+            }
         }
         Ok(out)
     }
@@ -249,18 +254,38 @@ impl<'a> IndexReader<'a> {
         positions: &[u32],
     ) -> Result<Vec<crate::MaterializedRow>, crate::Error> {
         let timestamps = self.load_timestamps()?;
-        let entries = self.load_all_stream_entries()?;
         let strings = self.build_string_table(self.field_table())?;
+        let total = self.summary.total_logs;
+        let batch_size = crate::stream_batch_size(total);
+
+        // Decode only the batches the requested positions fall in (a page is
+        // a handful of rows, usually in one or two batches), and read each
+        // row's KvIds straight from the fixed-width batch.
+        let mut batches: Vec<Option<crate::StreamBatch>> =
+            (0..self.num_stream_batches()).map(|_| None).collect();
+        for &pos in positions {
+            let b = (pos / batch_size) as usize;
+            if pos < total && batches.get(b).is_some_and(Option::is_none) {
+                batches[b] = Some(self.sfst.stream_batch(b as u8)?);
+            }
+        }
 
         let mut rows = Vec::with_capacity(positions.len());
         for &pos in positions {
-            let p = pos as usize;
-            if p >= entries.len() {
+            if pos >= total {
+                continue;
+            }
+            let b = (pos / batch_size) as usize;
+            let local = (pos % batch_size) as usize;
+            let Some(batch) = batches.get(b).and_then(Option::as_ref) else {
+                continue;
+            };
+            if local >= batch.num_rows() {
                 continue;
             }
             let timestamp_ns = timestamps.at(pos).unwrap_or(0);
-            let fields = entries[p]
-                .iter()
+            let fields = batch
+                .row(local)
                 .map(|kv| {
                     let s = strings.get(kv.0 as usize).map(String::as_str).unwrap_or("");
                     match s.split_once('=') {
@@ -696,8 +721,8 @@ impl<'a> IndexReader<'a> {
                     }
                     let batch_start = u32::from(b) * batch_size;
                     let batch = self.sfst.stream_batch(b)?;
-                    for (i, kv_ids) in batch.iter().enumerate() {
-                        if kv_ids.iter().any(|id| targets.contains(*id)) {
+                    for i in 0..batch.num_rows() {
+                        if batch.row(i).any(|id| targets.contains(id)) {
                             positions.push(batch_start + i as u32);
                         }
                     }
@@ -776,8 +801,8 @@ impl<'a> IndexReader<'a> {
                 }
                 let batch_start = u32::from(b) * batch_size;
                 let batch = self.sfst.stream_batch(b)?;
-                for (i, kv_ids) in batch.iter().enumerate() {
-                    if kv_ids.iter().any(|id| targets.contains(*id)) {
+                for i in 0..batch.num_rows() {
+                    if batch.row(i).any(|id| targets.contains(id)) {
                         positions.push(batch_start + i as u32);
                     }
                 }

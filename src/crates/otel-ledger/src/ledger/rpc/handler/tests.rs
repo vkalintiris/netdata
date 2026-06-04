@@ -97,7 +97,7 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
     writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
     writer.set_primary(sfst::pack(&primary, 1).unwrap());
     writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     std::fs::write(path, &buf).unwrap();
@@ -175,7 +175,7 @@ fn write_service_only_sfst(path: &std::path::Path, min_s: u32) {
     writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
     writer.set_primary(sfst::pack(&primary, 1).unwrap());
     writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     std::fs::write(path, &buf).unwrap();
@@ -237,7 +237,7 @@ fn write_same_ts_sfst(path: &std::path::Path, ts_s: u32, n: usize) {
     writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
     writer.set_primary(sfst::pack(&primary, 1).unwrap());
     writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&stream_entries, 1).unwrap());
+    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();
     std::fs::write(path, &buf).unwrap();

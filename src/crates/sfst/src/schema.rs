@@ -318,3 +318,96 @@ impl KvId {
         self.0 as usize
     }
 }
+
+/// Body of a stream-batch chunk (the `SB{i}` chunks): the per-log attribute
+/// lists for one chronological partition, as a fixed-width arena.
+///
+/// `kv_bytes` holds every row's `KvId`s concatenated, each as **4
+/// little-endian bytes**; `row_lens[i]` is the number of `KvId`s in row
+/// `i`. Row `i`'s ids are `kv_bytes[4*off(i) .. 4*off(i+1)]`, where `off`
+/// is the prefix-sum of `row_lens` (held in `row_offsets`, in `KvId`
+/// units, rebuilt on load).
+///
+/// Fixed-width LE (vs varint `KvId`s) lets the high-card scan read ids
+/// straight from the byte buffer — no per-id deserialization, the dominant
+/// decode cost — and it's *smaller* on disk: high-card `KvId`s are large
+/// enough that varint already spends ~4 bytes, and a regular 4-byte stride
+/// compresses tighter under zstd than ragged varints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamBatch {
+    kv_bytes: Vec<u8>,
+    row_lens: Vec<u32>,
+    /// Prefix-sum of `row_lens` (`rows + 1` entries, in `KvId` units);
+    /// rebuilt on load via [`rebuild_offsets`](Self::rebuild_offsets), never
+    /// serialized.
+    #[serde(skip)]
+    row_offsets: Vec<u32>,
+}
+
+impl StreamBatch {
+    /// Build the **write form** from per-row `KvId` lists, ready to
+    /// serialize. `row_offsets` is left unbuilt (this value is for packing,
+    /// not reads) — see [`HighField::for_write`].
+    pub fn for_write(rows: &[Vec<KvId>]) -> Self {
+        let total_ids: usize = rows.iter().map(Vec::len).sum();
+        let mut kv_bytes = Vec::with_capacity(total_ids * 4);
+        let mut row_lens = Vec::with_capacity(rows.len());
+        for row in rows {
+            row_lens.push(row.len() as u32);
+            for kv in row {
+                kv_bytes.extend_from_slice(&kv.0.to_le_bytes());
+            }
+        }
+        Self {
+            kv_bytes,
+            row_lens,
+            row_offsets: Vec::new(),
+        }
+    }
+
+    /// Recompute `row_offsets` from `row_lens`. Called after deserialize.
+    pub(crate) fn rebuild_offsets(&mut self) {
+        self.row_offsets.clear();
+        self.row_offsets.reserve(self.row_lens.len() + 1);
+        let mut acc = 0u32;
+        self.row_offsets.push(0);
+        for &len in &self.row_lens {
+            acc += len;
+            self.row_offsets.push(acc);
+        }
+    }
+
+    /// Number of log rows in this batch.
+    pub fn num_rows(&self) -> usize {
+        self.row_lens.len()
+    }
+
+    /// Whether the batch has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.row_lens.is_empty()
+    }
+
+    /// The `KvId`s of row `i`, read from the fixed-width little-endian
+    /// bytes. Only valid once `row_offsets` is built (on load).
+    pub fn row(&self, i: usize) -> impl Iterator<Item = KvId> + '_ {
+        debug_assert_eq!(
+            self.row_offsets.len(),
+            self.row_lens.len() + 1,
+            "StreamBatch row_offsets not built — call rebuild_offsets() after deserialize",
+        );
+        let start = self.row_offsets[i] as usize * 4;
+        let end = self.row_offsets[i + 1] as usize * 4;
+        self.kv_bytes[start..end]
+            .chunks_exact(4)
+            .map(|bytes| KvId(u32::from_le_bytes(bytes.try_into().unwrap())))
+    }
+}
+
+impl PartialEq for StreamBatch {
+    /// Compares the persisted columns; `row_offsets` is a derived cache.
+    fn eq(&self, other: &Self) -> bool {
+        self.kv_bytes == other.kv_bytes && self.row_lens == other.row_lens
+    }
+}
+
+impl Eq for StreamBatch {}
