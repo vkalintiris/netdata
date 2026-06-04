@@ -625,7 +625,7 @@ impl<'a> IndexReader<'a> {
         // Split into exact values (resolved by lookup) and compiled patterns
         // (full-value anchored, tested against the field's distinct values).
         let mut exacts: Vec<&str> = Vec::new();
-        let mut patterns: Vec<regex::Regex> = Vec::new();
+        let mut patterns: Vec<regex::bytes::Regex> = Vec::new();
         for matcher in matchers {
             match matcher {
                 Matcher::Exact(value) => exacts.push(value),
@@ -634,14 +634,12 @@ impl<'a> IndexReader<'a> {
         }
 
         // Whether a `field=value` key's value-part matches any pattern. The
-        // value is the bytes after `field=`; non-UTF-8 keys can't occur
-        // (keys are interned strings) but are skipped defensively.
+        // value is the bytes after `field=`, matched directly — keys are UTF-8
+        // by construction, so there's no `str::from_utf8` validation to pay.
         let prefix_len = field.len() + 1;
         let value_matches = |kv_bytes: &[u8]| -> bool {
-            match std::str::from_utf8(&kv_bytes[prefix_len..]) {
-                Ok(value) => patterns.iter().any(|regex| regex.is_match(value)),
-                Err(_) => false,
-            }
+            let value = &kv_bytes[prefix_len..];
+            patterns.iter().any(|regex| regex.is_match(value))
         };
 
         match location {
@@ -743,13 +741,15 @@ impl<'a> IndexReader<'a> {
     /// stream batches (as in [`field_values_or`](Self::field_values_or)).
     /// This is a full distinct-key scan — the inherent cost of field-less
     /// full text without a token index.
-    fn query_positions(&self, query: &regex::Regex) -> Result<PosSet, crate::Error> {
+    fn query_positions(&self, query: &regex::bytes::Regex) -> Result<PosSet, crate::Error> {
         let total = self.summary.total_logs;
         let mut result = PosSet::empty(total);
 
-        // Low-card: the primary FST holds every low-card field's keys.
+        // Low-card: the primary FST holds every low-card field's keys. The
+        // query matches the raw `key=value` bytes directly — keys are UTF-8 by
+        // construction, so there's no `str::from_utf8` validation to pay.
         self.primary.for_each(|kv_bytes, bv| {
-            if std::str::from_utf8(kv_bytes).is_ok_and(|kv| query.is_match(kv)) {
+            if query.is_match(kv_bytes) {
                 result.or_assign(&PosSet::from_value(bv));
             }
         });
@@ -772,7 +772,7 @@ impl<'a> IndexReader<'a> {
                 FieldTier::Mid => {
                     let chunk = self.sfst.mid_field(mid_idx)?;
                     chunk.for_each(|kv_bytes, bv| {
-                        if std::str::from_utf8(kv_bytes).is_ok_and(|kv| query.is_match(kv)) {
+                        if query.is_match(kv_bytes) {
                             result.or_assign(&PosSet::from_value(bv));
                         }
                     });
@@ -781,7 +781,7 @@ impl<'a> IndexReader<'a> {
                 FieldTier::High => {
                     let hf = self.sfst.high_field(high_idx)?;
                     for (local, key) in hf.keys().enumerate() {
-                        if std::str::from_utf8(key).is_ok_and(|kv| query.is_match(kv)) {
+                        if query.is_match(key) {
                             targets.insert(self.high_kv_id(high_idx, local));
                             combined_mask |= hf.masks[local];
                         }

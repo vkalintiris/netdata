@@ -47,8 +47,12 @@ pub enum Matcher {
 /// The single place the anchoring is applied, so the pattern that
 /// [`Filter::validate`] accepts is byte-for-byte the one the reader resolves.
 /// A bad source is a hard [`crate::Error::InvalidPattern`].
-pub(crate) fn compile_pattern(src: &str) -> Result<regex::Regex, crate::Error> {
-    regex::Regex::new(&format!("^(?:{src})$"))
+pub(crate) fn compile_pattern(src: &str) -> Result<regex::bytes::Regex, crate::Error> {
+    // `bytes::Regex` matches directly against the `&[u8]` keys (sorted
+    // `field=value` blobs), skipping the `str::from_utf8` validation on every
+    // key — the keys are UTF-8 by construction. Unicode mode is on by default,
+    // so on valid UTF-8 this matches identically to `regex::Regex`.
+    regex::bytes::Regex::new(&format!("^(?:{src})$"))
         .map_err(|e| crate::Error::InvalidPattern(e.to_string()))
 }
 
@@ -58,8 +62,10 @@ pub(crate) fn compile_pattern(src: &str) -> Result<regex::Regex, crate::Error> {
 /// [`compile_pattern`] (which anchors a single field's value), this is the
 /// substring-style full-text operator. A bad source is a hard
 /// [`crate::Error::InvalidPattern`].
-pub fn compile_query(src: &str) -> Result<regex::Regex, crate::Error> {
-    regex::Regex::new(src).map_err(|e| crate::Error::InvalidPattern(e.to_string()))
+pub fn compile_query(src: &str) -> Result<regex::bytes::Regex, crate::Error> {
+    // Matched against `&[u8]` keys directly — see [`compile_pattern`] for why
+    // bytes rather than `&str`.
+    regex::bytes::Regex::new(src).map_err(|e| crate::Error::InvalidPattern(e.to_string()))
 }
 
 /// A conjunction of per-field disjunctions.
