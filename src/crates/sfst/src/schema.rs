@@ -162,6 +162,9 @@ impl FromIterator<FieldEntry> for FieldTable {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BitmapValue {
     pub desc: Bitmap,
+    /// `serde_bytes` decodes this as one bulk copy rather than serde's
+    /// generic per-byte `Vec<u8>` seq path; wire-identical under bincode.
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -187,12 +190,17 @@ pub struct BitmapValue {
 /// (rebuilt on load, not serialized) so key access is O(1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HighField {
-    /// All `field=value` keys concatenated, in sorted order.
+    /// All `field=value` keys concatenated, in sorted order. `serde_bytes`
+    /// decodes this in one bulk copy instead of serde's per-byte `Vec<u8>`
+    /// seq path (the dominant high-card scan cost); wire-identical under
+    /// bincode, so no format change.
+    #[serde(with = "serde_bytes")]
     keys_blob: Vec<u8>,
     /// Per-key byte length, parallel to the keys. Varint-compact on disk;
     /// prefix-summed into `offsets` in memory.
     key_lens: Vec<u32>,
     /// Per-key stream-batch bitmask, parallel to the keys.
+    #[serde(with = "serde_bytes")]
     pub masks: Vec<u8>,
     /// Prefix-sum of `key_lens` (`len() + 1` entries): key `i` is
     /// `keys_blob[offsets[i]..offsets[i + 1]]`. Rebuilt on load via
@@ -335,6 +343,9 @@ impl KvId {
 /// compresses tighter under zstd than ragged varints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamBatch {
+    /// `serde_bytes` decodes this in one bulk copy instead of serde's
+    /// per-byte `Vec<u8>` seq path; wire-identical under bincode.
+    #[serde(with = "serde_bytes")]
     kv_bytes: Vec<u8>,
     row_lens: Vec<u32>,
     /// Prefix-sum of `row_lens` (`rows + 1` entries, in `KvId` units);

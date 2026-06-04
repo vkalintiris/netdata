@@ -12,6 +12,7 @@ workspace = true
 # Format
 fst-index = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
 bincode = { workspace = true }
 zstd = { workspace = true }
 gix-chunk = { workspace = true }
