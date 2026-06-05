@@ -56,14 +56,48 @@ impl Ledger {
 
     /// Forward an `OutboundResp` event to the supervisor, dropping the
     /// transaction entry on `Result`.
+    ///
+    /// An oversized message is degraded to a per-request failure rather
+    /// than propagated: ferryboat checks the size limit *before* writing
+    /// any bytes, so the connection is still intact, and one outsized
+    /// function response must not tear down the whole ledger (it did — a
+    /// ~10 MB dashboard response crash-looped the plugin). The original
+    /// result is replaced with a small status-500 result so the agent
+    /// gets an answer instead of a timeout. All other errors remain fatal.
     pub(in crate::ledger) async fn handle_outbound_resp(
         &mut self,
         resp: LedgerResponse,
     ) -> Result<(), ferryboat::Error> {
-        if let LedgerResponse::Result(ref r) = resp {
+        let transaction = if let LedgerResponse::Result(ref r) = resp {
             self.transactions.remove(&r.transaction);
+            Some(r.transaction.clone())
+        } else {
+            None
+        };
+
+        match self.supervisor.send(resp).await {
+            Err(ferryboat::Error::MessageTooLarge { size, max }) => {
+                tracing::error!(
+                    "function response too large, replacing with an error result: \
+                     {size} bytes exceeds {max} byte limit"
+                );
+                if let Some(transaction) = transaction {
+                    let result = netdata_plugin_types::FunctionResult {
+                        transaction,
+                        status: 500,
+                        format: "text/plain".to_string(),
+                        expires: 0,
+                        payload: format!(
+                            "response too large: {size} bytes exceeds {max} byte limit"
+                        )
+                        .into_bytes(),
+                    };
+                    self.supervisor.send(LedgerResponse::Result(result)).await?;
+                }
+                Ok(())
+            }
+            other => other,
         }
-        self.supervisor.send(resp).await
     }
 
     /// Spawn a function-handler task. Pre-handler steps live here
