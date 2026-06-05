@@ -224,12 +224,22 @@ fn range_overlaps(summary: &Summary, q: &Range<u32>) -> bool {
 
 /// Read the `SUMR` chunk of an SFST file and decode the summary.
 ///
-/// Used by [`Registry::recover`] to rebuild summaries on startup. Reads the
-/// whole file into memory, which is fine for the small SFSTs typical for
-/// log indexes; switch to mmap if recovery becomes I/O-bound.
+/// Used by [`Registry::recover`] to rebuild summaries on startup. Maps the
+/// file instead of reading it: `Reader::open` touches only the header + TOC
+/// pages and `summary()` only the SUMR chunk's, so recovery faults in a few
+/// KB per file rather than the whole file — which, across thousands of
+/// files, turned startup into a multi-GB sequential read. `Advice::Random`
+/// suppresses readahead so the kernel doesn't speculatively pull
+/// neighbouring pages either.
 fn read_summary(path: &Path) -> Result<Summary, String> {
-    let data = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
-    let reader = crate::Reader::open(&data).map_err(|e| format!("open: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open: {e}"))?;
+    // SAFETY: recovery runs before the indexer and cleaner are spawned, so
+    // the file is not concurrently truncated or rewritten while mapped.
+    let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| format!("mmap: {e}"))?;
+    // `madvise` is a POSIX API; memmap2 only exposes `advise`/`Advice` on Unix.
+    #[cfg(unix)]
+    let _ = mmap.advise(memmap2::Advice::Random);
+    let reader = crate::Reader::open(&mmap).map_err(|e| format!("parse: {e}"))?;
     reader.summary().map_err(|e| format!("summary: {e}"))
 }
 

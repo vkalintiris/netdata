@@ -4285,6 +4285,7 @@ dependencies = [
  "fst-index",
  "gix-chunk",
  "hashbrown 0.15.5",
+ "memmap2",
  "otap-df-pdata",
  "regex",
  "roaring 0.11.2",
