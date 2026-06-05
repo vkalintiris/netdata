@@ -28,6 +28,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
 
     let mut supervisor: Connection<LedgerResponse, LedgerRequest> =
         Connection::connect(Endpoint::ipc(socket_path))
+            .max_message_size(bridge::IPC_MAX_MESSAGE_SIZE)
             .open()
             .await?;
 

@@ -20,6 +20,16 @@ use serde::{Deserialize, Serialize};
 
 use config::PluginConfig;
 
+/// Max ferryboat message size for the supervisor ↔ worker IPC links.
+///
+/// The limit is enforced on **both** send and recv, so every endpoint of a
+/// link must use the same value — a mismatch means one side accepts a
+/// message the other refuses, killing the connection. Function results
+/// (rows + facets + histogram) are the largest messages on these links; an
+/// oversized one is degraded to an error result by the sender, so this
+/// ceiling is headroom, not a correctness bound.
+pub const IPC_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 // --- Ingestor subprocess ---
 
 /// Messages sent from the supervisor to the ingestor worker.

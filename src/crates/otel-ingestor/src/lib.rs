@@ -37,6 +37,7 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
 
     let mut conn: Connection<IngestorResponse, IngestorRequest> =
         Connection::connect(Endpoint::ipc(socket_path))
+            .max_message_size(bridge::IPC_MAX_MESSAGE_SIZE)
             .open()
             .await?;
 

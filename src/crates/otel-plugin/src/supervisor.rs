@@ -434,6 +434,7 @@ where
     R: serde::de::DeserializeOwned + Send + 'static,
 {
     let mut listener = Listener::<S, R>::bind(Endpoint::ipc(sock.path()))
+        .max_message_size(bridge::IPC_MAX_MESSAGE_SIZE)
         .open()
         .with_context(|| format!("failed to bind {name} socket at {}", sock.path()))?;
 
