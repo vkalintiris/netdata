@@ -516,9 +516,21 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!("all workers ready, entering main loop");
 
-    let reason = supervisor.run().await?;
-    tracing::info!("{reason}, shutting down");
-    supervisor.shutdown_workers().await;
-
-    Ok(())
+    match supervisor.run().await {
+        Ok(reason) => {
+            tracing::info!("{reason}, shutting down");
+            supervisor.shutdown_workers().await;
+            Ok(())
+        }
+        Err(e) => {
+            // Log and attempt a graceful worker shutdown on the error path
+            // too: bailing straight out (the old `?`) meant ChildGuard
+            // SIGKILLed the workers within ~1ms of a worker connection
+            // dropping — killing a worker that was mid-way through logging
+            // its own fatal error, leaving no record of what went wrong.
+            tracing::error!("supervisor event loop error: {e:#}");
+            supervisor.shutdown_workers().await;
+            Err(e)
+        }
+    }
 }

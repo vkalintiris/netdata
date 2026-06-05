@@ -272,26 +272,49 @@ impl Ledger {
     }
 
     pub async fn run(&mut self) -> Result<(), ferryboat::Error> {
+        // Every exit below logs its reason *here*, while `self` (and thus
+        // the supervisor connection) is still alive. Returning drops the
+        // connection, and the supervisor SIGKILLs workers the moment it
+        // sees the connection close — anything logged after the return
+        // loses that race and is never recorded.
         loop {
             let event = tokio::select! {
-                msg = self.ingestor.recv() => LedgerEvent::WalMsg(msg?),
+                msg = self.ingestor.recv() => LedgerEvent::WalMsg(msg.inspect_err(
+                    |e| tracing::error!("writer-socket recv failed: {e}"),
+                )?),
                 resp = self.indexer.recv() => match resp {
                     Some(r) => LedgerEvent::IndexerResp(r),
-                    None => break Ok(()),
+                    None => {
+                        tracing::error!("indexer channel closed unexpectedly, exiting event loop");
+                        break Ok(());
+                    }
                 },
                 resp = self.cleaner.recv() => match resp {
                     Some(r) => LedgerEvent::CleanerResp(r),
-                    None => break Ok(()),
+                    None => {
+                        tracing::error!("cleaner channel closed unexpectedly, exiting event loop");
+                        break Ok(());
+                    }
                 },
                 resp = self.uploader.recv() => match resp {
                     Some(r) => LedgerEvent::UploaderResp(r),
-                    None => break Ok(()),
+                    None => {
+                        tracing::error!("uploader channel closed unexpectedly, exiting event loop");
+                        break Ok(());
+                    }
                 },
                 resp = self.catalog_builder.recv() => match resp {
                     Some(r) => LedgerEvent::CatalogBuilderResp(r),
-                    None => break Ok(()),
+                    None => {
+                        tracing::error!(
+                            "catalog-builder channel closed unexpectedly, exiting event loop"
+                        );
+                        break Ok(());
+                    }
                 },
-                req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req?),
+                req = self.supervisor.recv() => LedgerEvent::SupervisorReq(req.inspect_err(
+                    |e| tracing::error!("supervisor recv failed: {e}"),
+                )?),
                 Some(out) = self.outbound_rx.recv() => LedgerEvent::OutboundResp(out),
             };
 
@@ -304,11 +327,18 @@ impl Ledger {
                     self.handle_catalog_builder_resp(resp).await
                 }
                 LedgerEvent::SupervisorReq(req) => {
-                    if self.handle_supervisor_req(req).await? {
+                    let exit = self.handle_supervisor_req(req).await.inspect_err(
+                        |e| tracing::error!("supervisor request handling failed: {e}"),
+                    )?;
+                    if exit {
                         return Ok(());
                     }
                 }
-                LedgerEvent::OutboundResp(resp) => self.handle_outbound_resp(resp).await?,
+                LedgerEvent::OutboundResp(resp) => {
+                    self.handle_outbound_resp(resp).await.inspect_err(
+                        |e| tracing::error!("failed to forward response to supervisor: {e}"),
+                    )?;
+                }
             }
         }
     }

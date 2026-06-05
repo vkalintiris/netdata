@@ -48,7 +48,15 @@ pub async fn run_worker(socket_path: &str) -> Result<()> {
         .await
         .context("failed to initialize ledger")?;
 
-    ledger.run().await.context("ledger event loop error")?;
+    // Log the error while `ledger` is still in scope: returning drops its
+    // supervisor connection, and the supervisor SIGKILLs workers as soon as
+    // it sees the connection close — an error logged after the drop (e.g.
+    // in main) loses that race and is never recorded.
+    let result = ledger.run().await;
+    if let Err(e) = &result {
+        tracing::error!("ledger event loop error: {e:#}");
+    }
+    result.context("ledger event loop error")?;
 
     ledger.cancel.cancel();
 
