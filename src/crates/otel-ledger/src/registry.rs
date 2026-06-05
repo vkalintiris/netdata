@@ -246,6 +246,10 @@ impl TenantRegistries {
                 }
             }
         }
+        // A tenant present under both base dirs (the normal case) would
+        // otherwise be collected twice and pay the full disk recovery twice.
+        tenant_names.sort();
+        tenant_names.dedup();
         for name in tenant_names {
             let registry = self.get_or_create(&name);
             registry.recover();
