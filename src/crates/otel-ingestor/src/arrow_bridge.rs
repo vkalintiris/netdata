@@ -370,11 +370,14 @@ mod tests {
         prepare_log_attributes(&mut lr);
         assert_eq!(flat_pairs(&lr), vec![pair("tags", "a"), pair("tags", "b")]);
 
-        // Equivalence is the formatted value: Int(1) and String("1") both
-        // become `n=1` downstream, so they collapse too.
+        // Dedup skips only verified-equal elements. Int(1) and String("1")
+        // hash identically (same formatted value) but are different
+        // elements, so both are emitted — never drop on a hash hit alone.
+        // The redundancy is harmless: both become the pair `n=1` downstream
+        // and collapse to one interned id.
         let mut lr = record(vec![("n", arr(vec![int(1), s("1")]))]);
         prepare_log_attributes(&mut lr);
-        assert_eq!(flat_pairs(&lr), vec![pair("n", "1")]);
+        assert_eq!(flat_pairs(&lr), vec![pair("n", "1"), pair("n", "1")]);
     }
 
     #[test]
@@ -470,12 +473,18 @@ fn flatten_any_value(av: &AnyValue, key_buf: &mut String, out: &mut Vec<KeyValue
             //
             // Identical scalar siblings are deduplicated — equal elements
             // produce the identical `key=value` pair downstream, so
-            // duplicates only bloat the stream row. Equivalence is the
-            // formatted value's xxhash64 (the same hash the interner keys
-            // on), so e.g. `Int(1)` and `String("1")` — which both become
-            // `key=1` — collapse too.
+            // duplicates only bloat the stream row. The formatted value's
+            // xxhash64 is the fast path; equality of the elements is the
+            // truth (the same hash-then-verify discipline as the indexer's
+            // interner). On a hash hit with a *different* element — a
+            // 64-bit collision, or a differently-typed pair that formats
+            // identically (`Int(1)` vs `String("1")`) — the element is
+            // emitted rather than dropped: a redundant pair is harmless
+            // (it collapses to the same interned id downstream), whereas
+            // a dropped value would be silent data loss.
             let base = key_buf.len();
-            let mut seen = std::collections::HashSet::new();
+            let mut seen: std::collections::HashMap<u64, &AnyValue> =
+                std::collections::HashMap::new();
             for (i, item) in arr.values.iter().enumerate() {
                 match &item.value {
                     Some(Value::KvlistValue(_)) | Some(Value::ArrayValue(_)) => {
@@ -495,7 +504,17 @@ fn flatten_any_value(av: &AnyValue, key_buf: &mut String, out: &mut Vec<KeyValue
                     Some(_) => {
                         let mut h = XxHash64::default();
                         hash_value_display(&mut h, Some(item));
-                        if seen.insert(h.finish()) {
+                        // The first occurrence stays the hash's
+                        // representative; only a verified-equal element is
+                        // skipped.
+                        let dup = match seen.entry(h.finish()) {
+                            std::collections::hash_map::Entry::Occupied(e) => *e.get() == item,
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(item);
+                                false
+                            }
+                        };
+                        if !dup {
                             key_buf.truncate(base);
                             out.push(KeyValue {
                                 key: key_buf.clone(),
