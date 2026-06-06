@@ -3069,9 +3069,7 @@ dependencies = [
 name = "otel-flatten"
 version = "0.1.3"
 dependencies = [
- "bincode",
  "opentelemetry-proto",
- "serde",
  "serde_json",
 ]
 
