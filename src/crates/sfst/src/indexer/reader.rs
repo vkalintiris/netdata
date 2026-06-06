@@ -512,17 +512,23 @@ impl<'a> IndexReader<'a> {
 
         // Enumerate the field's values into dimensions + per-bucket counts
         // (dimension-major; transposed below). An absent field leaves both
-        // empty, so every matching log lands in `unset`.
+        // empty, so every matching log lands in `unset`. `has_field`
+        // accumulates the union of every value's positions: a log carrying
+        // several values of the field (multi-valued, e.g. flattened scalar
+        // arrays) appears in several dimension bitmaps but only once in the
+        // union — which is what makes `unset` exact below.
         let prefix = format!("{field}=");
         let prefix_len = prefix.len();
         let mut dimensions: Vec<String> = Vec::new();
         let mut dim_counts: Vec<Vec<u64>> = Vec::new();
+        let mut has_field = PosSet::empty(self.summary.total_logs);
         match self.locate_field(field) {
             None => {}
             Some(FieldLocation::Low) => {
                 for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
                     dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                     dim_counts.push(bucket_counts(bv, fast, &filter_set, &bucket_ranges));
+                    has_field.or_assign(&PosSet::from_value(bv));
                 }
             }
             Some(FieldLocation::Mid(idx)) => {
@@ -530,27 +536,34 @@ impl<'a> IndexReader<'a> {
                 chunk.for_each(|kv_bytes, bv| {
                     dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                     dim_counts.push(bucket_counts(bv, fast, &filter_set, &bucket_ranges));
+                    has_field.or_assign(&PosSet::from_value(bv));
                 });
             }
             Some(FieldLocation::High(_)) => {
                 return Err(crate::Error::HighCardFacet(field.to_string()));
             }
         }
+        if !fast {
+            has_field.and_assign(&filter_set);
+        }
 
         // Transpose dimension-major counts into bucket-major and derive
         // `unset`. `bucket_total` comes from `filter_set` — in the fast path
         // that's the full range, so its cardinality over the bucket equals
-        // the bucket's log count. OTel attribute keys are unique per
-        // LogRecord, so every matching log lands in exactly one dimension
-        // or in `unset` — the subtraction is exact.
+        // the bucket's log count. `unset` counts the matching logs with *no*
+        // value for the field: `bucket_total − |has_field ∩ filter|` over
+        // the bucket. Subtracting the per-dimension sum instead would be
+        // wrong for multi-valued fields (a log carrying two values counts
+        // in two dimensions, and the inflated sum eats into `unset`).
         let mut buckets = Vec::with_capacity(grid.num_buckets);
         for (bucket_i, &(pos_lo, pos_hi)) in bucket_ranges.iter().enumerate() {
             let counts: Vec<u64> = dim_counts.iter().map(|dc| dc[bucket_i]).collect();
-            let dim_sum: u64 = counts.iter().sum();
             let bucket_total = filter_set.range_cardinality(pos_lo, pos_hi);
+            let with_field = has_field.range_cardinality(pos_lo, pos_hi);
+            debug_assert!(with_field <= bucket_total);
             buckets.push(Bucket {
                 counts,
-                unset: bucket_total.saturating_sub(dim_sum),
+                unset: bucket_total.saturating_sub(with_field),
             });
         }
 

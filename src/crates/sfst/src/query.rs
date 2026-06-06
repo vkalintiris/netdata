@@ -290,10 +290,13 @@ pub struct Timeline {
 /// [`dimensions[j]`](Timeline::dimensions); `unset` is the count of matched
 /// logs in this bucket that don't have the field set at all.
 ///
-/// `unset` is `bucket_total - sum(counts)`, exact because attribute keys are
-/// unique per log record (as in an OpenTelemetry `LogRecord`,
-/// `common.proto §KeyValue`): every matching log lands in exactly one
-/// dimension or in `unset`.
+/// `unset` is `bucket_total − |logs having the field|`, computed from the
+/// union of the field's value bitmaps — **not** `bucket_total −
+/// sum(counts)`. The two differ for multi-valued fields (e.g. flattened
+/// scalar arrays): a log carrying two values of the field counts in two
+/// dimensions, so `sum(counts)` can exceed the number of logs that have
+/// the field. For the same reason, the stacked per-dimension sum may
+/// exceed `bucket_total`; `unset` stays exact regardless.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bucket {
     /// Per-dimension counts, parallel to [`Timeline::dimensions`].

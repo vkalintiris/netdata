@@ -407,6 +407,143 @@ fn timeline_grid_before_file_yields_leading_zero_buckets() {
     }
 }
 
+/// Synthetic SFST with a multi-valued field. 3 logs, 1 second apart.
+///
+/// `lang` (low-card, multi-valued): log 0 carries BOTH `en` and `fr`,
+/// log 1 carries `en`, log 2 has no `lang` at all.
+/// `svc` (low-card): `a` at positions 0, 2; `b` at 1.
+fn build_multivalued_fixture() -> Vec<u8> {
+    let mut data = Vec::new();
+    let lang_en = treight::Bitmap::from_sorted_iter([0, 1].into_iter(), 3, &mut data);
+    let lang_en_data = std::mem::take(&mut data);
+    let lang_fr = treight::Bitmap::from_sorted_iter([0].into_iter(), 3, &mut data);
+    let lang_fr_data = std::mem::take(&mut data);
+    let svc_a = treight::Bitmap::from_sorted_iter([0, 2].into_iter(), 3, &mut data);
+    let svc_a_data = std::mem::take(&mut data);
+    let svc_b = treight::Bitmap::from_sorted_iter([1].into_iter(), 3, &mut data);
+    let svc_b_data = data;
+
+    // FST iteration order is lexicographic.
+    // KvId 0=lang=en, 1=lang=fr, 2=svc=a, 3=svc=b.
+    let primary_entries: Vec<(&str, BitmapValue)> = vec![
+        (
+            "lang=en",
+            BitmapValue {
+                desc: lang_en,
+                data: lang_en_data,
+            },
+        ),
+        (
+            "lang=fr",
+            BitmapValue {
+                desc: lang_fr,
+                data: lang_fr_data,
+            },
+        ),
+        (
+            "svc=a",
+            BitmapValue {
+                desc: svc_a,
+                data: svc_a_data,
+            },
+        ),
+        (
+            "svc=b",
+            BitmapValue {
+                desc: svc_b,
+                data: svc_b_data,
+            },
+        ),
+    ];
+    let primary: fst_index::FstIndex<BitmapValue> =
+        fst_index::FstIndex::build(primary_entries).unwrap();
+
+    let summary = Summary {
+        min_timestamp_s: 1_700_000_000,
+        max_timestamp_s: 1_700_000_002,
+        total_logs: 3,
+        stream: ServiceStream::new("ns", "svc"),
+    };
+    let metadata = Metadata {
+        histogram: Histogram {
+            timestamps: vec![1_700_000_000],
+            counts: vec![3],
+        },
+        id_ranges: IdRanges {
+            low_end: KvId(4),
+            mid_end: KvId(4),
+            high_end: KvId(4),
+        },
+        fields: vec![
+            FieldEntry {
+                name: "lang".into(),
+                cardinality: 2,
+                tier: FieldTier::Low,
+            },
+            FieldEntry {
+                name: "svc".into(),
+                cardinality: 2,
+                tier: FieldTier::Low,
+            },
+        ]
+        .into(),
+    };
+    let timestamps: Vec<i64> = (0..3)
+        .map(|i| 1_700_000_000i64 * 1_000_000_000 + i * 1_000_000_000)
+        .collect();
+    let stream_entries: Vec<Vec<KvId>> = vec![
+        vec![KvId(0), KvId(1), KvId(2)], // pos 0: lang=en, lang=fr, svc=a
+        vec![KvId(0), KvId(3)],          // pos 1: lang=en, svc=b
+        vec![KvId(2)],                   // pos 2: svc=a (no lang)
+    ];
+
+    let mut writer = Writer::new();
+    writer.set_summary(pack(&summary, 1).unwrap());
+    writer.set_metadata(pack(&metadata, 1).unwrap());
+    writer.set_primary(pack(&primary, 1).unwrap());
+    writer.set_timestamps(pack(&timestamps, 1).unwrap());
+    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    buf
+}
+
+/// `unset` must count logs *lacking the field*, not `total − Σ(counts)`:
+/// a multi-valued log inflates the per-dimension sum and the subtraction
+/// silently eats the unset count (saturating at zero).
+#[test]
+fn timeline_unset_with_multivalued_field() {
+    let data = build_multivalued_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    let window_ns = 3 * 1_000_000_000;
+
+    // Fast path (no filter), one bucket covering all 3 logs. Log 0 counts
+    // in both dimensions (en and fr); log 2 lacks `lang` entirely.
+    let t = reader
+        .timeline(
+            "lang",
+            &bf(&reader, Filter::new()),
+            Grid::new(FILE_MIN_NS, window_ns, 1),
+        )
+        .unwrap();
+    assert_eq!(t.dimensions, vec!["en", "fr"]);
+    assert_eq!(t.buckets.len(), 1);
+    assert_eq!(t.buckets[0].counts, vec![2, 1]); // dim_sum (3) == bucket_total (3)
+    assert_eq!(t.buckets[0].unset, 1); // ...but log 2 still lacks the field
+
+    // Filtered path (svc=a → positions {0, 2}). Log 0 still counts in
+    // both dimensions; log 2 matches the filter and lacks `lang`.
+    let t = reader
+        .timeline(
+            "lang",
+            &bf(&reader, Filter::new().select("svc", "a")),
+            Grid::new(FILE_MIN_NS, window_ns, 1),
+        )
+        .unwrap();
+    assert_eq!(t.buckets[0].counts, vec![1, 1]);
+    assert_eq!(t.buckets[0].unset, 1);
+}
+
 #[test]
 fn materialize_rows_resolves_timestamp_and_attributes() {
     let data = build_query_fixture();
