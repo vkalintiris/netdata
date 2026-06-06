@@ -205,3 +205,36 @@ fn available_histograms_enumerates_fields_in_order() {
     assert_eq!(av[0].order, 0);
     assert_eq!(av[1].order, 1);
 }
+
+/// Multi-valued fields (repeated keys on one row) join into a single cell
+/// in row order with duplicates skipped; the dedicated severity cell takes
+/// the last `severity_text` pair (the indexer interns the projected
+/// top-level severity after all attributes).
+#[test]
+fn build_table_joins_multivalued_fields_and_keeps_last_severity() {
+    let cursor = sfsq::logs::Cursor {
+        timestamp_ns: 1_000_000_000,
+        file_seq: 1,
+        position: 0,
+    };
+    let row = sfst::MaterializedRow {
+        timestamp_ns: 1_000_000_000,
+        fields: vec![
+            ("severity_text".into(), "attr-noise".into()),
+            ("tags".into(), "a".into()),
+            ("tags".into(), "b".into()),
+            ("tags".into(), "a".into()), // duplicate — skipped
+            ("plain".into(), "x".into()),
+            ("severity_text".into(), "ERROR".into()), // projected, last
+        ],
+    };
+    let fields = vec!["tags".to_string(), "plain".to_string()];
+    let (_, data) = build_table(&[(cursor, row)], &fields, &BTreeSet::new());
+
+    let rows = data.as_array().unwrap();
+    let cells = rows[0].as_array().unwrap();
+    // [timestamp, severity, cursor, tags, plain]
+    assert_eq!(cells[1], serde_json::json!("ERROR"));
+    assert_eq!(cells[3], serde_json::json!("a, b"));
+    assert_eq!(cells[4], serde_json::json!("x"));
+}

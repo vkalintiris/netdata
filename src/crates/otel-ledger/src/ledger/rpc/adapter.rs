@@ -388,18 +388,37 @@ fn build_table(
     let data: Vec<Value> = rows
         .iter()
         .map(|(cursor, row)| {
-            let lookup: HashMap<&str, &str> = row
-                .fields
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            // Group the row's pairs by field, preserving stream order —
+            // multi-valued fields (flattened scalar arrays) legitimately
+            // carry several values on one row; exact duplicates are
+            // skipped. The wire format is one string cell per column, so
+            // multiple values are joined for display (filters and search
+            // operate on the index, never on cells).
+            let mut lookup: HashMap<&str, Vec<&str>> = HashMap::new();
+            for (k, v) in &row.fields {
+                let vals = lookup.entry(k.as_str()).or_default();
+                if !vals.contains(&v.as_str()) {
+                    vals.push(v.as_str());
+                }
+            }
             let cell = |name: &str| match lookup.get(name) {
+                Some(vals) if vals.len() == 1 => json!(vals[0]),
+                Some(vals) => json!(vals.join(", ")),
+                None => Value::Null,
+            };
+            // The dedicated severity cell takes the *last* `severity_text`
+            // pair: the indexer interns the projected top-level LogRecord
+            // severity after all attributes, so this picks the real
+            // severity even when an attribute is also named
+            // `severity_text` (and matches the previous last-wins
+            // behavior).
+            let severity = match lookup.get("severity_text").and_then(|v| v.last()) {
                 Some(v) => json!(v),
                 None => Value::Null,
             };
             let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
             cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
-            cells.push(cell("severity_text"));
+            cells.push(severity);
             cells.push(json!(cursor.encode()));
             cells.extend(fields.iter().map(|f| cell(f)));
             Value::Array(cells)

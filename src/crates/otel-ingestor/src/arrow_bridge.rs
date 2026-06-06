@@ -190,7 +190,7 @@ fn append_hash_attributes(attrs: &mut Vec<KeyValue>, flattened_start: usize) {
         let mut h = XxHash64::default();
         h.write(kv.key.as_bytes());
         h.write(b"=");
-        hash_value_display(&mut h, &kv.value);
+        hash_value_display(&mut h, kv.value.as_ref());
         hash_bytes.extend_from_slice(&h.finish().to_le_bytes());
     }
 
@@ -204,9 +204,9 @@ fn append_hash_attributes(attrs: &mut Vec<KeyValue>, flattened_start: usize) {
 
 /// Write the Display-formatted representation of an `AnyValue` directly into
 /// a hasher, without heap allocation.
-fn hash_value_display(h: &mut XxHash64, av: &Option<AnyValue>) {
+fn hash_value_display(h: &mut XxHash64, av: Option<&AnyValue>) {
     use std::io::Write as _;
-    match av.as_ref().and_then(|v| v.value.as_ref()) {
+    match av.and_then(|v| v.value.as_ref()) {
         Some(Value::StringValue(s)) => {
             h.write(s.as_bytes());
         }
@@ -236,6 +236,187 @@ fn hash_value_display(h: &mut XxHash64, av: &Option<AnyValue>) {
         }
         // ArrayValue / KvlistValue should not appear after flattening.
         Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) | None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry_proto::tonic::common::v1::{ArrayValue, KeyValueList};
+    use opentelemetry_proto::tonic::logs::v1::LogRecord;
+
+    fn s(v: &str) -> AnyValue {
+        AnyValue {
+            value: Some(Value::StringValue(v.into())),
+        }
+    }
+
+    fn int(v: i64) -> AnyValue {
+        AnyValue {
+            value: Some(Value::IntValue(v)),
+        }
+    }
+
+    fn arr(items: Vec<AnyValue>) -> AnyValue {
+        AnyValue {
+            value: Some(Value::ArrayValue(ArrayValue { values: items })),
+        }
+    }
+
+    fn obj(pairs: Vec<(&str, AnyValue)>) -> AnyValue {
+        AnyValue {
+            value: Some(Value::KvlistValue(KeyValueList {
+                values: pairs
+                    .into_iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.into(),
+                        value: Some(v),
+                    })
+                    .collect(),
+            })),
+        }
+    }
+
+    fn record(attrs: Vec<(&str, AnyValue)>) -> LogRecord {
+        LogRecord {
+            attributes: attrs
+                .into_iter()
+                .map(|(k, v)| KeyValue {
+                    key: k.into(),
+                    value: Some(v),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The flattened `(key, value)` pairs, excluding the synthetic hash
+    /// attribute. Scalars are rendered with the same conventions as the
+    /// hash contract.
+    fn flat_pairs(lr: &LogRecord) -> Vec<(String, String)> {
+        lr.attributes
+            .iter()
+            .filter(|kv| kv.key != "_nd_kv_hash")
+            .map(|kv| {
+                let v = match kv.value.as_ref().and_then(|a| a.value.as_ref()) {
+                    Some(Value::StringValue(v)) => v.clone(),
+                    Some(Value::IntValue(v)) => v.to_string(),
+                    Some(Value::DoubleValue(v)) => v.to_string(),
+                    Some(Value::BoolValue(v)) => v.to_string(),
+                    other => format!("<{other:?}>"),
+                };
+                (kv.key.clone(), v)
+            })
+            .collect()
+    }
+
+    fn pair(k: &str, v: &str) -> (String, String) {
+        (k.into(), v.into())
+    }
+
+    #[test]
+    fn scalar_array_collapses_to_repeated_bare_key() {
+        let mut lr = record(vec![("tags", arr(vec![s("a"), s("b")]))]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(flat_pairs(&lr), vec![pair("tags", "a"), pair("tags", "b")]);
+    }
+
+    #[test]
+    fn array_of_objects_keeps_positions() {
+        let mut lr = record(vec![(
+            "endpoints",
+            arr(vec![
+                obj(vec![("host", s("a")), ("port", int(1))]),
+                obj(vec![("host", s("b"))]),
+            ]),
+        )]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(
+            flat_pairs(&lr),
+            vec![
+                pair("endpoints.0.host", "a"),
+                pair("endpoints.0.port", "1"),
+                pair("endpoints.1.host", "b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_array_numbers_sparsely() {
+        let mut lr = record(vec![("key", arr(vec![obj(vec![("x", int(1))]), s("a")]))]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(
+            flat_pairs(&lr),
+            vec![pair("key.0.x", "1"), pair("key", "a")]
+        );
+    }
+
+    #[test]
+    fn nested_scalar_arrays_collapse_inner_positions() {
+        let mut lr = record(vec![(
+            "key",
+            arr(vec![arr(vec![s("a"), s("b")]), arr(vec![s("c")])]),
+        )]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(
+            flat_pairs(&lr),
+            vec![pair("key.0", "a"), pair("key.0", "b"), pair("key.1", "c")]
+        );
+    }
+
+    #[test]
+    fn duplicate_scalar_siblings_dedupe() {
+        let mut lr = record(vec![("tags", arr(vec![s("a"), s("a"), s("b")]))]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(flat_pairs(&lr), vec![pair("tags", "a"), pair("tags", "b")]);
+
+        // Equivalence is the formatted value: Int(1) and String("1") both
+        // become `n=1` downstream, so they collapse too.
+        let mut lr = record(vec![("n", arr(vec![int(1), s("1")]))]);
+        prepare_log_attributes(&mut lr);
+        assert_eq!(flat_pairs(&lr), vec![pair("n", "1")]);
+    }
+
+    #[test]
+    fn empty_array_flattens_to_nothing() {
+        let mut lr = record(vec![("empty", arr(vec![]))]);
+        prepare_log_attributes(&mut lr);
+        assert!(flat_pairs(&lr).is_empty());
+        // No attributes → no hash attribute either.
+        assert!(lr.attributes.is_empty());
+    }
+
+    #[test]
+    fn body_scalar_array_collapses_under_log_body() {
+        let mut lr = record(vec![]);
+        lr.body = Some(obj(vec![("domains", arr(vec![s("a.com"), s("b.com")]))]));
+        prepare_log_attributes(&mut lr);
+        assert_eq!(
+            flat_pairs(&lr),
+            vec![
+                pair("log.body.domains", "a.com"),
+                pair("log.body.domains", "b.com"),
+            ]
+        );
+    }
+
+    /// One hash per flattened attribute, repeated keys included — the
+    /// consumer indexes the hash blob positionally.
+    #[test]
+    fn hash_attribute_counts_repeated_keys() {
+        let mut lr = record(vec![
+            ("tags", arr(vec![s("a"), s("b")])),
+            ("plain", s("x")),
+        ]);
+        prepare_log_attributes(&mut lr);
+        let hash = lr.attributes.last().unwrap();
+        assert_eq!(hash.key, "_nd_kv_hash");
+        let Some(Value::BytesValue(bytes)) = hash.value.as_ref().and_then(|a| a.value.as_ref())
+        else {
+            panic!("hash attribute is not BytesValue");
+        };
+        // 3 flattened pairs (tags=a, tags=b, plain=x) → 3 × 8 hash bytes.
+        assert_eq!(bytes.len(), 3 * 8);
     }
 }
 
@@ -269,21 +450,63 @@ fn flatten_any_value(av: &AnyValue, key_buf: &mut String, out: &mut Vec<KeyValue
             key_buf.truncate(base);
         }
         Some(Value::ArrayValue(arr)) => {
-            // Flatten array elements with index suffixes.
+            // Per-element rule:
+            //
+            // - A **scalar** element is emitted under the **bare** array key
+            //   (no positional suffix), so the array becomes one
+            //   multi-valued field: `all_domains: ["a","b"]` →
+            //   `all_domains=a`, `all_domains=b`. Element order carries no
+            //   indexable meaning, and positional keys exploded the field
+            //   table (one field per position, scattered across cardinality
+            //   tiers) while making "any element equals X" filters
+            //   impossible to express.
+            // - A **structured** element (kvlist / nested array) keeps its
+            //   positional segment: the index is what associates the
+            //   sub-fields of one element (`endpoints.0.host` /
+            //   `endpoints.0.port`) and allows per-element conjunction.
+            //
+            // Mixed arrays therefore number sparsely: `[{x:1}, "a"]` →
+            // `key.0.x=1` + `key=a`.
+            //
+            // Identical scalar siblings are deduplicated — equal elements
+            // produce the identical `key=value` pair downstream, so
+            // duplicates only bloat the stream row. Equivalence is the
+            // formatted value's xxhash64 (the same hash the interner keys
+            // on), so e.g. `Int(1)` and `String("1")` — which both become
+            // `key=1` — collapse too.
             let base = key_buf.len();
+            let mut seen = std::collections::HashSet::new();
             for (i, item) in arr.values.iter().enumerate() {
-                key_buf.truncate(base);
-                key_buf.push('.');
-                // Inline integer formatting without allocating.
-                let mut itoa_buf = [0u8; 20];
-                let n = {
-                    use std::io::Write;
-                    let mut cursor = std::io::Cursor::new(&mut itoa_buf[..]);
-                    write!(cursor, "{i}").unwrap();
-                    cursor.position() as usize
-                };
-                key_buf.push_str(std::str::from_utf8(&itoa_buf[..n]).unwrap());
-                flatten_any_value(item, key_buf, out);
+                match &item.value {
+                    Some(Value::KvlistValue(_)) | Some(Value::ArrayValue(_)) => {
+                        key_buf.truncate(base);
+                        key_buf.push('.');
+                        // Inline integer formatting without allocating.
+                        let mut itoa_buf = [0u8; 20];
+                        let n = {
+                            use std::io::Write;
+                            let mut cursor = std::io::Cursor::new(&mut itoa_buf[..]);
+                            write!(cursor, "{i}").unwrap();
+                            cursor.position() as usize
+                        };
+                        key_buf.push_str(std::str::from_utf8(&itoa_buf[..n]).unwrap());
+                        flatten_any_value(item, key_buf, out);
+                    }
+                    Some(_) => {
+                        let mut h = XxHash64::default();
+                        hash_value_display(&mut h, Some(item));
+                        if seen.insert(h.finish()) {
+                            key_buf.truncate(base);
+                            out.push(KeyValue {
+                                key: key_buf.clone(),
+                                value: Some(item.clone()),
+                            });
+                        }
+                    }
+                    // A valueless element flattens to nothing (same as the
+                    // scalar arm below for `None`).
+                    None => {}
+                }
             }
             key_buf.truncate(base);
         }
