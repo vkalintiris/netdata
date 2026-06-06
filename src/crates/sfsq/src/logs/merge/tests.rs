@@ -173,3 +173,31 @@ fn merge_field_tables_keeps_max_cardinality() {
     assert_eq!(merged[0].name, "level");
     assert_eq!(merged[0].cardinality, 20);
 }
+
+/// A union exceeding `MAX_FACET_VALUES` keeps the top values by count
+/// (lexicographically-first among ties) and stays lexicographically
+/// ordered — the wire payload is bounded no matter how many distinct
+/// values the window unions (e.g. near-unique-per-log journald fields).
+#[test]
+fn merge_facet_results_caps_values_at_hard_limit() {
+    // 1500 distinct values, zero-padded so lexicographic == numeric order.
+    // v0000..v0199 are "popular" (count 5); the rest have count 1.
+    let values: Vec<(String, u32)> = (0..1500)
+        .map(|i| (format!("v{i:04}"), if i < 200 { 5 } else { 1 }))
+        .collect();
+    let file = vec![sfst::FacetResult {
+        field: "seq".into(),
+        values,
+    }];
+
+    let merged = merge_facet_results(vec![file]);
+    let f = &merged[0];
+    assert_eq!(f.values.len(), MAX_FACET_VALUES);
+    // All popular values survive.
+    assert!(f.values.iter().filter(|(_, c)| *c == 5).count() == 200);
+    // Ties (count 1) keep the lexicographically-first 800: v0200..v0999.
+    assert!(f.values.iter().any(|(v, _)| v == "v0999"));
+    assert!(!f.values.iter().any(|(v, _)| v == "v1000"));
+    // Output remains lexicographically ordered.
+    assert!(f.values.windows(2).all(|w| w[0].0 < w[1].0));
+}

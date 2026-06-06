@@ -4,11 +4,24 @@
 //! then folds the per-file results together. These are the pure folds —
 //! no I/O, no wire shaping — operating entirely on `sfst` types.
 
+/// Hard ceiling on the number of values a merged facet may carry.
+///
+/// Per-file facets are bounded by the mid-card tier threshold (<1000
+/// distinct values), but the cross-file union is not: the value count
+/// grows with `window × files × per-file cardinality`, and a
+/// near-unique-per-log field (e.g. journald's `__SEQNUM` in small,
+/// fast-rotated files) can union into many thousands of options — a
+/// response-size liability and useless as a facet. When the union
+/// exceeds the cap, the top values by count survive.
+pub const MAX_FACET_VALUES: usize = 1000;
+
 /// Merge per-file [`sfst::FacetResult`] sets into a single combined set.
 /// Union by field name; per field, sum counts across files for each
-/// value. Output values are emitted in BTreeMap iteration order
-/// (lexicographic by value string), matching the FST iteration-order
-/// contract documented on [`sfst::FacetResult`].
+/// value. Output values are emitted in lexicographic order by value
+/// string, matching the FST iteration-order contract documented on
+/// [`sfst::FacetResult`]. Unions exceeding [`MAX_FACET_VALUES`] keep the
+/// top values by count (ties broken lexicographically-first), then
+/// restore lexicographic order.
 pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::FacetResult> {
     use std::collections::BTreeMap;
 
@@ -26,12 +39,23 @@ pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::F
     }
     by_field
         .into_iter()
-        .map(|(field, values)| sfst::FacetResult {
-            field,
-            values: values
-                .into_iter()
-                .map(|(v, c)| (v, c.min(u32::MAX as u64) as u32))
-                .collect(),
+        .map(|(field, values)| {
+            // BTreeMap iteration yields lexicographic order.
+            let mut values: Vec<(String, u64)> = values.into_iter().collect();
+            if values.len() > MAX_FACET_VALUES {
+                // Stable sort: equal counts keep their lexicographic
+                // order, so the cutoff is deterministic.
+                values.sort_by(|a, b| b.1.cmp(&a.1));
+                values.truncate(MAX_FACET_VALUES);
+                values.sort_by(|a, b| a.0.cmp(&b.0));
+            }
+            sfst::FacetResult {
+                field,
+                values: values
+                    .into_iter()
+                    .map(|(v, c)| (v, c.min(u32::MAX as u64) as u32))
+                    .collect(),
+            }
         })
         .collect()
 }
