@@ -117,6 +117,55 @@ fn full_text_query_is_unanchored_over_whole_pairs() {
 }
 
 #[test]
+fn exact_filter_field_containing_eq_matches_nothing() {
+    // External-review regression (divergence #1): the stored pair
+    // `a=b=c` has field `a` and value `b=c` (first-`=` split). A filter
+    // on field `a=b` with exact value `c` concatenates to the same
+    // `a=b=c` string — but no field named `a=b` exists, so the SFST
+    // path (gated on `locate_field`) matches nothing, and so must we.
+    let scan = scan_from(&[(1, &["a=b=c"])]);
+    let f = Filter::new().select("a=b", "c");
+    let shard = run(&scan, query(wide_grid()).filter(f).build());
+    assert_eq!(shard.matched, 0);
+
+    // The legitimate spelling of the same selection still matches.
+    let f = Filter::new().select("a", "b=c");
+    let shard = run(&scan, query(wide_grid()).filter(f).build());
+    assert_eq!(shard.matched, 1);
+}
+
+#[test]
+fn invalid_pattern_on_absent_field_is_not_an_error() {
+    // External-review regression (divergence #2): the SFST path
+    // resolves an absent filter field to the empty set *before*
+    // compiling its patterns, so a malformed pattern on an absent
+    // field is not an error — the result is a normal zero-match shard
+    // (facet and timeline structure intact), not the fields-only
+    // degrade shape.
+    let scan = scan_from(&[(1, &["level=info"])]);
+    let f = Filter::new().select_pattern("missing", "(unclosed");
+    let shard = run(
+        &scan,
+        query(wide_grid())
+            .filter(f)
+            .facet_fields(vec!["level".into()])
+            .histogram_field("level")
+            .build(),
+    );
+    assert_eq!(shard.matched, 0);
+    // The facet exists, scoped to the (empty) rest of the filter — no
+    // values survive, but the entry is present.
+    assert_eq!(shard.facets.len(), 1);
+    assert!(shard.facets[0].values.is_empty());
+    // The timeline exists too: dimensions enumerated from the file,
+    // all counts zero under the empty scope.
+    let timeline = shard.timeline.expect("timeline");
+    assert_eq!(timeline.dimensions, vec!["info"]);
+    assert_eq!(timeline.buckets[0].counts, vec![0]);
+    assert_eq!(timeline.buckets[0].unset, 0);
+}
+
+#[test]
 fn invalid_pattern_degrades_to_fields_only() {
     let scan = scan_from(&[(1, &["a=x"])]);
     let f = Filter::new().select_pattern("a", "(unclosed");

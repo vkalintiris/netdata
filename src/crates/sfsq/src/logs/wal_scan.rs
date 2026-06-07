@@ -58,7 +58,26 @@ impl std::fmt::Display for WalScanError {
     }
 }
 
-impl std::error::Error for WalScanError {}
+impl std::error::Error for WalScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            WalScanError::Wal(e) => Some(e),
+            WalScanError::Decode(e) => Some(e),
+        }
+    }
+}
+
+impl From<wal::Error> for WalScanError {
+    fn from(e: wal::Error) -> Self {
+        WalScanError::Wal(e)
+    }
+}
+
+impl From<sfst::IndexError> for WalScanError {
+    fn from(e: sfst::IndexError) -> Self {
+        WalScanError::Decode(e)
+    }
+}
 
 /// One distinct `key=value` pair seen during the scan.
 struct Pair {
@@ -120,10 +139,10 @@ impl WalScan {
     /// (`valid_up_to`) of an actively-written file is the bounded-reader
     /// concern layered on top (milestone 2 of `docs/wal-query-design.md`).
     pub fn scan(path: &Path) -> Result<WalScan, WalScanError> {
-        let mut reader = wal::Reader::open(path).map_err(WalScanError::Wal)?;
+        let mut reader = wal::Reader::open(path)?;
         let mut sink = ScanSink::default();
-        while let Some(frame) = reader.next_frame().map_err(WalScanError::Wal)? {
-            sfst::indexer::decode_frame(&frame, &mut sink).map_err(WalScanError::Decode)?;
+        while let Some(frame) = reader.next_frame()? {
+            sfst::indexer::decode_frame(&frame, &mut sink)?;
         }
         Ok(sink.finish())
     }
@@ -172,11 +191,12 @@ impl WalScan {
 
         let mut matched: u64 = 0;
         let mut scratch: Vec<u32> = Vec::new();
+        let mut conjuncts = RowMatch::default();
         for row in &self.rows {
             // Which filter conjuncts this row satisfies, plus the
             // full-text query term. `full` is their AND — identical to
             // the bitmap path's `filter.full()` membership.
-            let conjuncts = compiled.match_row(row);
+            compiled.match_row_into(row, &mut conjuncts);
             let in_window = window.contains(&row.ts_ns);
 
             if in_window && conjuncts.full {
@@ -242,6 +262,24 @@ impl WalScan {
     /// (so its conjunct matches nothing).
     fn field_matches(&self, field: &str, matchers: &[Matcher]) -> Result<TokenSet, sfst::Error> {
         let mut set = TokenSet::new(self.pairs.len());
+
+        // Absent field → empty set, before any pattern compiles — the
+        // same gate order as the SFST path, whose `field_values_or`
+        // returns empty on a `locate_field` miss without touching the
+        // matchers (so a malformed pattern on an absent field is not an
+        // error there, and must not be one here).
+        //
+        // The gate also makes the exact-match lookup below sound. Field
+        // names in `field_tokens` never contain `=` (extraction splits
+        // on the first one), so for any field that passes the gate,
+        // `"{field}={value}"` re-splits at the intended boundary.
+        // Without the gate, a requested field `a=b` with exact value
+        // `c` would concatenate to `a=b=c` and false-match that stored
+        // pair — whose field is `a` — where the SFST path matches
+        // nothing.
+        if !self.field_tokens.contains_key(field) {
+            return Ok(set);
+        }
 
         let mut patterns: Vec<regex::bytes::Regex> = Vec::new();
         for matcher in matchers {
@@ -411,7 +449,10 @@ struct CompiledFilter {
     query: Option<TokenSet>,
 }
 
-/// Which parts of the filter one row satisfies.
+/// Which parts of the filter one row satisfies. Reused across rows
+/// (the `fields` buffer is refilled in place by
+/// [`CompiledFilter::match_row_into`]).
+#[derive(Default)]
 struct RowMatch {
     /// Per filter-field conjunct, parallel to `CompiledFilter::per_field`.
     fields: Vec<bool>,
@@ -422,22 +463,18 @@ struct RowMatch {
 }
 
 impl CompiledFilter {
-    fn match_row(&self, row: &Row) -> RowMatch {
-        let fields: Vec<bool> = self
-            .per_field
-            .iter()
-            .map(|(_, set)| row.tokens.iter().any(|&t| set.contains(t)))
-            .collect();
-        let query = match &self.query {
+    fn match_row_into(&self, row: &Row, m: &mut RowMatch) {
+        m.fields.clear();
+        m.fields.extend(
+            self.per_field
+                .iter()
+                .map(|(_, set)| row.tokens.iter().any(|&t| set.contains(t))),
+        );
+        m.query = match &self.query {
             Some(set) => row.tokens.iter().any(|&t| set.contains(t)),
             None => true,
         };
-        let full = query && fields.iter().all(|&m| m);
-        RowMatch {
-            fields,
-            query,
-            full,
-        }
+        m.full = m.query && m.fields.iter().all(|&ok| ok);
     }
 
     /// Whether the row satisfies every conjunct *except* `field`'s own
@@ -595,11 +632,13 @@ impl<'q> TimelineAcc<'q> {
         distinct_tokens: &[u32],
     ) {
         let Some(state) = &mut self.state else { return };
-        if !compiled.matches_without(conjuncts, state.field) {
-            return;
-        }
+        // Range check first: it's a pair of comparisons, while the scope
+        // check iterates the filter's conjuncts.
         let grid = state.grid;
         if !grid.range_ns().contains(&ts_ns) {
+            return;
+        }
+        if !compiled.matches_without(conjuncts, state.field) {
             return;
         }
         let bucket = ((ts_ns - grid.bucket_start_ns) / grid.bucket_width_ns) as usize;
