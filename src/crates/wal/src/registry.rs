@@ -30,7 +30,13 @@ pub enum FileStatus {
 /// summary footer, so the values can only come from in-process events.
 /// A re-index of the WAL produces an SFST whose summary has the
 /// authoritative range.
+///
+/// `#[non_exhaustive]`: this entry has grown fields over time
+/// (`valid_up_to`, `entry_count`) and will likely grow more; external
+/// crates read its fields but never construct it, so marking it spares
+/// them a breaking change on the next addition.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct File {
     pub id: FileId,
     pub status: FileStatus,

@@ -28,10 +28,20 @@ pub struct Reader {
     data_buf: Vec<u8>,
     /// Absolute byte offset of the next frame to read.
     position: u64,
-    /// Frames are read while they fit fully below this offset. For
-    /// [`open`](Self::open) it is the file length (read to EOF); for
-    /// [`open_range`](Self::open_range) it is the caller's `end` bound.
-    end_bound: u64,
+    /// The durable read bound, or `None` for an unbounded read.
+    ///
+    /// `Some(end)` ([`open_range`](Self::open_range)): frames are yielded
+    /// only while they fit fully below `end`; a frame crossing it is a
+    /// torn tail past the durable boundary and stops the read **cleanly**
+    /// (it is expected — the writer may have a partial frame there).
+    ///
+    /// `None` ([`open`](Self::open)): read to EOF. A frame whose payload
+    /// is short — a *truncated or corrupt* file, not an expected torn
+    /// tail — surfaces as an error from the payload read, never a silent
+    /// short read. This preserves the pre-bounded-reader behavior for
+    /// whole-file callers (the indexer), which have no entry-count
+    /// cross-check to catch a silently-dropped frame.
+    end_bound: Option<u64>,
 }
 
 impl Reader {
@@ -65,26 +75,31 @@ impl Reader {
 
     fn open_inner(path: &Path, start: u64, end: Option<u64>) -> Result<Self> {
         let file = File::open(path)?;
-        let file_len = file.metadata()?.len();
 
-        let end_bound = match end {
-            Some(end) => {
-                if end > file_len {
-                    return Err(Error::Deserialization(format!(
-                        "durable bound ({end} bytes) exceeds file length ({file_len} bytes)"
-                    )));
-                }
-                end
+        // Validate the durable bound against the physical file: it must
+        // actually be present on disk. (Unbounded reads have nothing to
+        // validate — they stop at EOF.)
+        if let Some(end) = end {
+            let file_len = file.metadata()?.len();
+            if end > file_len {
+                return Err(Error::Deserialization(format!(
+                    "durable bound ({end} bytes) exceeds file length ({file_len} bytes)"
+                )));
             }
-            None => file_len,
-        };
+        }
 
-        if start < HEADER_SIZE as u64 || start > end_bound {
+        if start < HEADER_SIZE as u64 || end.is_some_and(|e| start > e) {
             return Err(Error::Deserialization(format!(
-                "start offset ({start}) outside [{}, {end_bound}]",
-                HEADER_SIZE
+                "start offset ({start}) outside the readable range (header={HEADER_SIZE}, end={end:?})"
             )));
         }
+        // `start` must be a frame boundary; we can't fully verify that
+        // (we don't know the boundaries without reading), but alignment
+        // is necessary, and a dev-time assert catches the obvious misuse.
+        debug_assert!(
+            start == HEADER_SIZE as u64 || start % FRAME_ALIGNMENT as u64 == 0,
+            "start offset {start} is not frame-aligned"
+        );
 
         let mut reader = BufReader::new(file);
 
@@ -104,7 +119,7 @@ impl Reader {
             compressed_buf: Vec::with_capacity(1024 * 1024),
             data_buf: Vec::with_capacity(1024 * 1024),
             position: start,
-            end_bound,
+            end_bound: end,
         })
     }
 
@@ -128,12 +143,15 @@ impl Reader {
     }
 
     pub fn next_frame(&mut self) -> Result<Option<Frame<'_>>> {
-        // Stop cleanly at the bound: only read a header if the whole
-        // header fits below it. `valid_up_to` (and a padded file length)
-        // is frame-aligned, so in the normal case this fires exactly at
-        // the last frame's end.
-        if self.position + FRAME_HEADER_SIZE as u64 > self.end_bound {
-            return Ok(None);
+        // Bounded read: stop cleanly when the next frame's header
+        // wouldn't fit below the durable bound. `valid_up_to` is
+        // frame-aligned, so in the normal case this fires exactly at the
+        // last whole frame's end. Unbounded reads fall through to the
+        // EOF/short-read handling below.
+        if let Some(end) = self.end_bound {
+            if self.position + FRAME_HEADER_SIZE as u64 > end {
+                return Ok(None);
+            }
         }
 
         let mut frame_header = [0u8; FRAME_HEADER_SIZE];
@@ -164,14 +182,18 @@ impl Reader {
         let padding = (FRAME_ALIGNMENT - (frame_bytes % FRAME_ALIGNMENT)) % FRAME_ALIGNMENT;
         let total = (frame_bytes + padding) as u64;
 
-        // The header fit, but the payload would cross the bound: the
-        // prefix isn't frame-aligned at `end_bound` (a torn or misaligned
-        // tail). Don't read the partial payload; latch done so a re-call
-        // also stops, and stop cleanly — the caller's entry-count
-        // cross-check catches the resulting short read.
-        if self.position + total > self.end_bound {
-            self.position = self.end_bound;
-            return Ok(None);
+        // Bounded read: the header fit, but the whole frame would cross
+        // the durable bound — a torn tail past `valid_up_to`. Don't read
+        // the partial payload; latch done (so a re-call also stops) and
+        // stop cleanly, leaving the resulting short read for the caller's
+        // entry-count cross-check. (For an unbounded read this branch is
+        // skipped, so a truncated payload reaches the `read_exact` below
+        // and errors — corruption is not silently dropped.)
+        if let Some(end) = self.end_bound {
+            if self.position + total > end {
+                self.position = end;
+                return Ok(None);
+            }
         }
 
         self.compressed_buf.clear();
@@ -323,16 +345,48 @@ mod tests {
     }
 
     #[test]
-    fn open_range_mid_frame_bound_stops_at_prior_boundary() {
+    fn open_range_header_fits_but_payload_crosses_bound() {
         let dir = tempfile::tempdir().unwrap();
         let (path, bounds) = write_frames(dir.path(), &[b"alpha", b"bravo", b"charlie"]);
 
-        // A bound one byte into frame 2: frame 2 doesn't fit fully, so
-        // only the first two frames are yielded (the partial tail is
-        // never read).
-        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bounds[1] + 1).unwrap();
+        // A bound exactly one frame-header past frame 2's start: frame
+        // 2's *header* fits below the bound (so it is read and parsed),
+        // but its payload would cross the bound — exercising the
+        // payload-fit latch, not the header-room guard. Only the first
+        // two frames are yielded; the partial tail is never read.
+        let bound = bounds[1] + FRAME_HEADER_SIZE as u64;
+        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bound).unwrap();
         let frames = collect(&mut reader);
         assert_eq!(frames, vec![(1, b"alpha".to_vec()), (1, b"bravo".to_vec())]);
+        // Re-entrancy: the latch holds — a further call still stops.
+        assert!(reader.next_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn open_to_eof_errors_on_a_truncated_payload() {
+        // A whole-file read (no durable bound) must not silently drop a
+        // torn/corrupt final frame: a header that promises a payload the
+        // file doesn't contain is an error, not a clean stop. (The
+        // bounded reader treats the same shape as an expected torn tail;
+        // `open` must not, since its callers have no count cross-check.)
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bounds) = write_frames(dir.path(), &[b"alpha", b"bravo"]);
+
+        // Truncate mid-payload of frame 1: keep its 24-byte header plus
+        // 2 payload bytes, drop the rest.
+        let truncated_len = bounds[0] + FRAME_HEADER_SIZE as u64 + 2;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(truncated_len)
+            .unwrap();
+
+        let mut reader = Reader::open(&path).unwrap();
+        // Frame 0 is intact.
+        assert_eq!(reader.next_frame().unwrap().map(|f| f.data.to_vec()), Some(b"alpha".to_vec()));
+        // Frame 1's payload is truncated → error, not Ok(None).
+        assert!(reader.next_frame().is_err());
     }
 
     #[test]
