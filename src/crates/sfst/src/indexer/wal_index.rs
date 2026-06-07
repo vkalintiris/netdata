@@ -167,6 +167,7 @@ impl<'a> super::decode::KvSink for WalIndex<'a> {
 
     fn reserve_rows(&mut self, additional: usize) {
         self.log_entries.reserve(additional);
+        self.timestamps.reserve(additional);
     }
 
     fn row(&mut self, ts_ns: i64, tokens: &[KvSlot]) {

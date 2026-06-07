@@ -15,8 +15,8 @@
 //! Keeping the interning point *inside* the consumer preserves the
 //! `_nd_kv_hash` fast path: attribute pairs repeat across thousands of
 //! rows, and a hash-only [`KvSink::lookup_hash`] hit skips `key=value`
-//! string formatting entirely (see [`super::arrow_columns`] for the
-//! producer-side hash contract). Sharing the decode also means two
+//! string formatting entirely (see the `arrow_columns` module docs for
+//! the producer-side hash contract). Sharing the decode also means two
 //! consumers can never disagree about *what rows a frame contains* —
 //! only about how they evaluate them.
 
@@ -43,17 +43,51 @@ pub trait KvSink {
     /// `xxhash64("key=value")` carried in the frame's `_nd_kv_hash`
     /// sidecar. Return the token if this pair was interned before;
     /// return `None` to make the decoder format the string and call
-    /// [`intern`](Self::intern). A sink without a hash index may always
-    /// return `None` — only performance is affected, never the output.
+    /// [`intern`](Self::intern).
+    ///
+    /// # Collision safety
+    ///
+    /// On `Some`, the decoder uses the token *without ever formatting
+    /// the string* — there is nothing left to verify against. A sink
+    /// may therefore return `Some` **only if** it can guarantee that
+    /// exactly one `key=value` string maps to `hash`. xxhash64 is not
+    /// collision-free (nor adversary-proof — log content is
+    /// attacker-influenced), and a sink that answers by hash alone
+    /// hands back the *other* string's token when two pairs collide,
+    /// silently corrupting every consumer downstream. The indexer's
+    /// interner upholds the rule by answering `None` for any hash it
+    /// has seen more than one distinct string for (see
+    /// [`KeyValueInterner::lookup_hash`](super::kv_interner::KeyValueInterner::lookup_hash)).
+    ///
+    /// Returning `None` is always safe — only the formatting shortcut
+    /// is lost. A sink without a collision-tracking hash index should
+    /// simply always return `None` and dedup by string in
+    /// [`intern`](Self::intern).
     fn lookup_hash(&mut self, hash: u64) -> Option<Self::Token>;
 
-    /// Intern a formatted `key=value` string. `hash` is the producer's
-    /// pre-computed hash when the pair came from an attribute batch with
-    /// a `_nd_kv_hash` sidecar, `None` otherwise (projected columns such
-    /// as `scope.name` or `severity_text`, or frames without the
-    /// sidecar). Called whenever [`lookup_hash`](Self::lookup_hash)
-    /// misses or no hash is available — the sink is expected to dedup
-    /// internally.
+    /// Intern a formatted `key=value` string, deduplicating by the
+    /// **full string**. `hash` is the producer's pre-computed
+    /// `xxhash64(kv)` when the pair came from an attribute group with a
+    /// `_nd_kv_hash` sidecar, `None` otherwise (projected columns such
+    /// as `scope.name` or `severity_text`, or attribute groups without
+    /// the sidecar — the sidecar is per-group, not per-frame, so one
+    /// frame can mix both cases). Called whenever
+    /// [`lookup_hash`](Self::lookup_hash) misses or no hash is
+    /// available.
+    ///
+    /// # Collision safety
+    ///
+    /// `Some(hash)` does *not* mean the hash is new to the sink: the
+    /// collision path arrives exactly this way —
+    /// [`lookup_hash`](Self::lookup_hash) declined a
+    /// known-but-ambiguous hash, and this call carries the same hash
+    /// with a different string. A sink keeping a hash-keyed table must
+    /// compare `kv` against the stored string on a hash hit and
+    /// allocate a fresh token when they differ; a bare
+    /// `entry(hash).or_insert(…)` hands back the *colliding* pair's
+    /// token. See
+    /// [`KeyValueInterner::intern_with_hash`](super::kv_interner::KeyValueInterner::intern_with_hash)
+    /// for the reference implementation.
     fn intern(&mut self, hash: Option<u64>, kv: &str) -> Self::Token;
 
     /// Hint that up to `additional` rows are about to be delivered.
@@ -67,6 +101,11 @@ pub trait KvSink {
     /// carries, in stream order. The slice may contain repeated tokens
     /// (multi-valued fields emit one pair per value) and its backing
     /// buffer is reused between rows — copy what you need.
+    ///
+    /// Infallible by design: the decoder cannot be aborted mid-frame.
+    /// If a future sink needs early termination (query cancellation, a
+    /// work budget), the extension is mechanical — return
+    /// `ControlFlow` here and thread it through [`decode_frame`].
     fn row(&mut self, ts_ns: i64, tokens: &[Self::Token]);
 }
 
