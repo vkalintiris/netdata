@@ -138,19 +138,28 @@ involvement.
   the indexer and the row-loop consume the same row stream.
 - Implement the row-loop evaluator: given a row stream and a `LogsQuery`,
   produce a `LogsShard` (matched, facets, timeline with `unset`, complete
-  field table) and materialized page rows.
+  field table). **Done** (`sfsq::logs::WalScan`).
 - Build the equivalence harness: for generated WAL fixtures, index the
   same data into an SFST, run the engine on it, run the row-loop on the
-  row stream, and assert identical output — shard and rows. Corpus must
-  cover: multi-valued fields (repeated keys), missing fields (no match;
-  counts toward `unset`), fields at the cardinality-threshold boundary,
-  timestamps at histogram bucket boundaries, equal-timestamp runs,
-  out-of-order timestamps, empty/degenerate inputs, regex over arbitrary
-  bytes.
+  row stream, and assert identical output. **Done**
+  (`sfsq/tests/wal_equivalence.rs`); covers multi-valued fields (repeated
+  keys), missing fields (counts toward `unset`), cardinality-threshold
+  boundaries, bucket-edge / equal-run / out-of-order / fallback-tier
+  timestamps, degenerate inputs, byte-oriented regex over multi-byte
+  UTF-8, and the cross-field `=` / absent-field regressions.
 
-Exit criterion: the row-loop's output is indistinguishable from
-index-then-query on the same data, under a property test, for every query
-shape we serve.
+Exit criterion (**statistics: met**): the row-loop's `LogsShard` is
+indistinguishable from index-then-query on the same data, under a
+property test, for every query shape we serve.
+
+**Deferred to milestone 4 — row equivalence.** `WalScan` produces only
+the statistics shard today; it has no pagination. Materialized page
+rows, their global ordering, and the pagination cursor are produced by
+the engine's `paginate`, which must interleave chunk-SFST rows and
+decoded tail rows under one cursor order — that interleave *is*
+milestone 4. Row-level equivalence (and its harness cases) lands there,
+not here. "Milestone 1 complete" therefore means statistics
+equivalence; the row half is explicitly milestone-4 scope.
 
 ### Milestone 2 — bounded and offset WAL reading
 
@@ -178,7 +187,10 @@ shape we serve.
   unmodified engine (in-memory byte source) and the tail through the
   row-loop; fold all shards via the existing monoid merge.
 - Pagination interleave across chunks + tail under the cursor total
-  order; resolve the deferred tail-tiebreaker decision here.
+  order; resolve the deferred tail-tiebreaker decision here. This is
+  where `WalScan` grows row materialization, so the **row half of the
+  milestone-1 equivalence** (page rows, ordering, cursors — deferred
+  from M1) is proven here, extending the existing harness.
 
 ### Milestone 5 — operations
 

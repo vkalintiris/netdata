@@ -1,14 +1,23 @@
 //! Equivalence harness: `WalScan` vs index-then-query, over identical
 //! WAL files.
 //!
-//! The exit criterion of milestone 1 in `docs/wal-query-design.md`: for
-//! any WAL file and any query, the row-scan evaluator's output must be
-//! indistinguishable from indexing that WAL into an SFST and running
+//! Toward the milestone-1 exit criterion in `docs/wal-query-design.md`:
+//! for any WAL file and any query, the row-scan evaluator's output must
+//! be indistinguishable from indexing that WAL into an SFST and running
 //! the engine. Every fixture here goes through the *production* path —
 //! OTLP `ResourceLogs` → `otel_ingestor::arrow_bridge::encode` (real
 //! OTAP frames, `_nd_kv_hash` sidecars included) → `wal::Writer` →
 //! either `sfst::index` + `LogsShard::evaluate` or `WalScan::scan` +
 //! `evaluate` — and the two shards are compared component by component.
+//!
+//! Scope: this covers the **statistics** shard (matched count, facets,
+//! timeline, field table) — the whole of what `WalScan::evaluate`
+//! produces today. It does **not** cover materialized page rows,
+//! ordering, or pagination cursors: `WalScan` has no pagination yet
+//! (the engine's `paginate` interleaves chunk and tail rows under one
+//! cursor order, which is milestone 4). Row-level equivalence is added
+//! with that work; until then "milestone 1" means statistics
+//! equivalence.
 //!
 //! Corpora are generated from a seeded deterministic RNG (failures
 //! reproduce by seed), sweeping timestamp regimes (monotonic, shuffled,
@@ -113,6 +122,15 @@ fn gen_corpus(seed: u64) -> Corpus {
     let levels = ["info", "error", "warn", "debug"];
     let tags = ["red", "green", "blue", "alpha", "beta"];
     let severities = ["", "INFO", "ERROR", "WARN"];
+    // Multi-byte UTF-8 values, for byte-oriented regex coverage.
+    let cities = ["Zürich", "São Paulo", "日本語", "naïve", "Köln"];
+    // Varied body text so full-text search can hit body-flattened pairs.
+    let bodies = [
+        "connection reset by peer",
+        "request completed in 12ms",
+        "free text message",
+        "user signed out",
+    ];
 
     let mut records: Vec<LogRecord> = Vec::new();
     for i in 0..num_logs {
@@ -162,14 +180,23 @@ fn gen_corpus(seed: u64) -> Corpus {
             // Empty value (`blank=`).
             attributes.push(kv("blank", s("")));
         }
+        if rng.chance(40) {
+            // Multi-byte UTF-8 values: both evaluators match patterns
+            // over the raw value *bytes* (`regex::bytes`), so a `.` or
+            // `\w` spanning a multi-byte codepoint must behave the same
+            // on each side.
+            attributes.push(kv("city", s(cities[rng.below(cities.len() as u64) as usize])));
+        }
 
         records.push(LogRecord {
             time_unix_nano: time_ns,
             observed_time_unix_nano: observed_ns,
             severity_number: [0, 9, 17][rng.below(3) as usize],
             severity_text: severities[rng.below(4) as usize].to_string(),
-            body: if rng.chance(25) {
-                Some(s("free text message"))
+            // Body text varies so a full-text query can discriminate
+            // among body-flattened (`log.body=…`) pairs.
+            body: if rng.chance(35) {
+                Some(s(bodies[rng.below(bodies.len() as u64) as usize]))
             } else {
                 None
             },
@@ -280,8 +307,15 @@ fn assert_equiv(ctx: &str, via_sfst: &LogsShard, via_scan: &LogsShard) {
     );
 }
 
-/// Run every query against both paths and assert equivalence.
-fn check_corpus(label: &str, corpus: &Corpus, queries: impl Fn(&sfst::Summary) -> Vec<(String, LogsQuery)>) {
+/// Run every query against both paths and assert equivalence. Returns
+/// the number of queries that matched at least one row (so the caller
+/// can guard against an all-vacuous matrix — a matrix where every query
+/// trivially agrees at zero matches proves little).
+fn check_corpus(
+    label: &str,
+    corpus: &Corpus,
+    queries: impl Fn(&sfst::Summary) -> Vec<(String, LogsQuery)>,
+) -> usize {
     let dir = tempfile::tempdir().expect("tempdir");
     let wal_path = write_wal(dir.path(), corpus);
     let candidate = index_candidate(&wal_path, dir.path());
@@ -293,11 +327,16 @@ fn check_corpus(label: &str, corpus: &Corpus, queries: impl Fn(&sfst::Summary) -
         "row count diverged [{label}]"
     );
 
+    let mut nonzero = 0usize;
     for (qlabel, query) in queries(&candidate.summary) {
         let via_sfst = LogsShard::evaluate(&candidate, &query);
         let via_scan = scan.evaluate(&query);
         assert_equiv(&format!("{label} / {qlabel}"), &via_sfst, &via_scan);
+        if via_sfst.matched > 0 {
+            nonzero += 1;
+        }
     }
+    nonzero
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +459,39 @@ fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
             .histogram_field("env")
             .build(),
     ));
+    out.push((
+        // Byte-oriented regex over multi-byte UTF-8 values: `.` spans a
+        // codepoint boundary differently in `regex::bytes`, so both
+        // evaluators must agree on the same value bytes.
+        "non-ascii-pattern".into(),
+        b(g_eight)
+            .filter(Filter::new().select_pattern("city", "Z.rich|.*Paulo"))
+            .facet_fields(vec!["city".into()])
+            .build(),
+    ));
+    out.push((
+        // Full-text against body-flattened pairs (`log.body=…`).
+        "fulltext-body".into(),
+        b(g_eight).query("request|reset").build(),
+    ));
+    out.push((
+        // Pre-epoch (negative) bucket origin: the bucket arithmetic
+        // `(ts − start) / width` must agree with the SFST partition.
+        "negative-grid".into(),
+        b(Grid::new(-3600 * NS as i64, (start + span + 3600 * NS as i64) / 6, 6))
+            .histogram_field("level")
+            .build(),
+    ));
+    out.push((
+        // A window entirely after the data: every count is zero, the
+        // timeline is all-empty — both paths must produce the same
+        // empty shard, not merely "no rows".
+        "window-past-data".into(),
+        b(Grid::new(start + span + NS as i64, NS as i64, 4))
+            .facet_fields(vec!["level".into()])
+            .histogram_field("level")
+            .build(),
+    ));
     out
 }
 
@@ -429,10 +501,62 @@ fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
 
 #[test]
 fn random_corpora_match_index_then_query() {
+    // Coverage facts accumulated across the sweep — a fixture refactor
+    // that quietly stops exercising a claimed dimension trips these,
+    // rather than silently shrinking what the equivalence proves.
+    let mut multi_frame = false;
+    let mut has_multivalued = false;
+    let mut has_non_ascii = false;
+    let mut total_nonzero = 0usize;
+
     for seed in 1..=18 {
         let corpus = gen_corpus(seed);
-        check_corpus(&format!("seed={seed}"), &corpus, query_matrix);
+
+        if corpus.batches.len() > 1 {
+            multi_frame = true;
+        }
+        for batch in &corpus.batches {
+            for rl in batch {
+                for sl in &rl.scope_logs {
+                    for lr in &sl.log_records {
+                        // A multi-valued field is an array attribute with
+                        // ≥2 elements: `encode` flattens it into that many
+                        // repeated bare-key pairs. (In the raw record it's
+                        // still one `KeyValue` holding an `ArrayValue`.)
+                        let multivalued = lr.attributes.iter().any(|a| {
+                            matches!(
+                                a.value.as_ref().and_then(|v| v.value.as_ref()),
+                                Some(Value::ArrayValue(arr)) if arr.values.len() > 1
+                            )
+                        });
+                        if multivalued {
+                            has_multivalued = true;
+                        }
+                        if lr.attributes.iter().any(|a| a.key == "city") {
+                            has_non_ascii = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        total_nonzero += check_corpus(&format!("seed={seed}"), &corpus, query_matrix);
     }
+
+    // Each corpus is split into frames per its own RNG draw; one frame
+    // is a `ResourceLogs` per batch, and `write_wal` concatenates the
+    // batches into a single multi-frame WAL — so a multi-frame corpus
+    // is what actually exercises cross-frame pair dedup.
+    assert!(multi_frame, "no multi-frame corpus generated");
+    assert!(has_multivalued, "no multi-valued (repeated-key) field generated");
+    assert!(has_non_ascii, "no non-ASCII attribute generated");
+    // Across 18 corpora × the query matrix, the great majority of
+    // queries must actually match rows — otherwise the sweep is
+    // agreeing trivially at zero.
+    assert!(
+        total_nonzero >= 18 * 8,
+        "matrix is too sparse: only {total_nonzero} matching queries across the sweep"
+    );
 }
 
 #[test]
@@ -440,7 +564,12 @@ fn cardinality_tier_boundaries_match() {
     // One corpus with fields engineered to land exactly on the tier
     // boundaries (threshold 100): 99 distinct → low, 100 → mid,
     // 999 → mid, 1000+ → high. `unique` is per-log-unique (high).
-    let num_logs: usize = 1100;
+    //
+    // 6000 logs → 5 stream batches (one per ~1024 logs, capped at 8),
+    // so the high-card field's *multi-batch* scan — the batch-mask
+    // union and cross-batch position gather — is exercised, not just
+    // the single-batch degenerate case.
+    let num_logs: usize = 6000;
     let mut records = Vec::new();
     for i in 0..num_logs {
         records.push(LogRecord {
@@ -508,6 +637,14 @@ fn cardinality_tier_boundaries_match() {
                 b(g)
                     .filter(Filter::new().select_pattern("unique", "u000.[13]"))
                     .build(),
+            ),
+            (
+                // Full-text over a high-card field exercises the SFST's
+                // `query_positions` high-card branch (dictionary scan +
+                // stream-batch position gather), distinct from the
+                // `field_values_or` path the two queries above hit.
+                "fulltext-on-high".into(),
+                b(g).query("unique=u00[0-9]42").build(),
             ),
         ]
     });
@@ -588,6 +725,50 @@ fn named_regressions_match() {
                 b(g)
                     .histogram_field("lang")
                     .facet_fields(vec!["lang".into()])
+                    .build(),
+            ),
+        ]
+    });
+}
+
+#[test]
+fn single_row_degenerate_corpus_matches() {
+    // The smallest non-empty file: one record, one bucket. Exercises
+    // the degenerate end of every loop on both sides.
+    let corpus = Corpus {
+        batches: vec![vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![kv("service.name", s("harness"))],
+                ..Resource::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    time_unix_nano: BASE_S * NS,
+                    severity_text: "INFO".to_string(),
+                    attributes: vec![kv("level", s("info"))],
+                    ..LogRecord::default()
+                }],
+                ..ScopeLogs::default()
+            }],
+            ..ResourceLogs::default()
+        }]],
+    };
+
+    check_corpus("single-row", &corpus, |summary| {
+        let start = summary.min_timestamp_s as i64 * NS as i64;
+        let b = LogsQueryBuilder::new;
+        vec![
+            // Matches the one row.
+            ("match".into(), b(Grid::new(start, NS as i64, 1)).build()),
+            // A window before the only row: zero matches, empty shard.
+            (
+                "miss-before".into(),
+                b(Grid::new(start - 10 * NS as i64, NS as i64, 4)).build(),
+            ),
+            (
+                "filtered-out".into(),
+                b(Grid::new(start, NS as i64, 1))
+                    .filter(Filter::new().select("level", "error"))
                     .build(),
             ),
         ]
