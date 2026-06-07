@@ -45,9 +45,11 @@ pub enum Matcher {
 /// Compile a [`Matcher::Pattern`] source full-value-anchored as `^(?:src)$`.
 ///
 /// The single place the anchoring is applied, so the pattern that
-/// [`Filter::validate`] accepts is byte-for-byte the one the reader resolves.
+/// [`Filter::validate`] accepts is byte-for-byte the one the reader resolves
+/// — and public so every other evaluator of [`Filter`] semantics (the WAL
+/// row scan in `sfsq`) anchors identically by construction.
 /// A bad source is a hard [`crate::Error::InvalidPattern`].
-pub(crate) fn compile_pattern(src: &str) -> Result<regex::bytes::Regex, crate::Error> {
+pub fn compile_pattern(src: &str) -> Result<regex::bytes::Regex, crate::Error> {
     // `bytes::Regex` matches directly against the `&[u8]` keys (sorted
     // `field=value` blobs), skipping the `str::from_utf8` validation on every
     // key — the keys are UTF-8 by construction. Unicode mode is on by default,

@@ -4264,9 +4264,11 @@ dependencies = [
  "clap",
  "libc",
  "memmap2",
+ "regex",
  "serde",
  "sfst",
  "tracing",
+ "wal",
 ]
 
 [[package]]

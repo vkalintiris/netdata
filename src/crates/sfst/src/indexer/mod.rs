@@ -36,8 +36,11 @@ use bumpalo::Bump;
 use crate::{IndexError, Metadata, Summary};
 use wal_index::WalIndex;
 
-/// Default cardinality threshold for tier classification (see [`crate::FieldTier`]).
-const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
+/// Default cardinality threshold for tier classification (see
+/// [`crate::FieldTier`]). Public so every producer of field tables — the
+/// indexer here and the WAL row scan in `sfsq` — classifies with the same
+/// boundaries unless explicitly overridden.
+pub const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 
 /// Result of indexing a WAL file.
 ///

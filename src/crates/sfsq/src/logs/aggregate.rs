@@ -200,7 +200,9 @@ impl LogsShard {
 /// (and cost the whole file); a field high-card in this file is skipped now
 /// and dropped across files later, in [`LogsShard::merge`]. The query's
 /// `facet_fields` is already non-empty (the builder applies the default).
-fn eligible_facet_fields(requested: &[String], fields: &sfst::FieldTable) -> Vec<String> {
+/// Shared with the WAL row scan ([`super::wal_scan`]), which applies the
+/// same per-file rule.
+pub(super) fn eligible_facet_fields(requested: &[String], fields: &sfst::FieldTable) -> Vec<String> {
     requested
         .iter()
         .filter(|name| fields.get(name).is_some_and(|f| !f.is_high_card()))

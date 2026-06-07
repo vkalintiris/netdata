@@ -31,6 +31,7 @@ mod mmap;
 mod page;
 mod query;
 mod result;
+mod wal_scan;
 
 pub use aggregate::LogsShard;
 pub use cursor::Cursor;
@@ -38,3 +39,4 @@ pub use engine::{SfstCandidate, run};
 pub use page::PageShard;
 pub use query::{Anchor, Direction, LogsQuery, LogsQueryBuilder};
 pub use result::LogsData;
+pub use wal_scan::{WalScan, WalScanError};
