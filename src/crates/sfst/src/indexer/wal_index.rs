@@ -148,6 +148,38 @@ impl<'a> WalIndex<'a> {
     }
 }
 
+/// The indexer is one consumer of the shared frame decode
+/// ([`decode_frame`](super::decode::decode_frame)): tokens are interner
+/// slots, and each decoded row lands in the four Phase-1 structures.
+impl<'a> super::decode::KvSink for WalIndex<'a> {
+    type Token = KvSlot;
+
+    fn lookup_hash(&mut self, hash: u64) -> Option<KvSlot> {
+        self.kv_interner.lookup_hash(hash)
+    }
+
+    fn intern(&mut self, hash: Option<u64>, kv: &str) -> KvSlot {
+        match hash {
+            Some(h) => self.kv_interner.intern_with_hash(h, kv),
+            None => self.kv_interner.intern(kv),
+        }
+    }
+
+    fn reserve_rows(&mut self, additional: usize) {
+        self.log_entries.reserve(additional);
+    }
+
+    fn row(&mut self, ts_ns: i64, tokens: &[KvSlot]) {
+        let log_pos = self.log_entries.len() as u32;
+        self.timestamps.push(ts_ns);
+        for &kv_slot in tokens {
+            self.ensure_bitmap(kv_slot);
+            self.kv_bitmaps[kv_slot.idx()].insert(log_pos);
+        }
+        self.log_entries.push(tokens.to_vec());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Time-sort remap and sparse histogram
 // ---------------------------------------------------------------------------

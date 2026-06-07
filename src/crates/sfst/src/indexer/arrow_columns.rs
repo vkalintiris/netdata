@@ -1,9 +1,10 @@
 //! Pre-downcast Arrow column accessors for OTAP attribute RecordBatches,
-//! and the [`AttrsMap`] builder that turns them into interned `key=value` IDs.
+//! and the [`AttrsMap`] builder that turns them into interned `key=value`
+//! tokens via a [`KvSink`].
 //!
 //! # Pre-computed hash optimization
 //!
-//! Building the inverted index requires converting each attribute row into a
+//! Consuming a frame requires converting each attribute row into a
 //! `"key=value"` string, hashing it, and interning it. This is expensive:
 //! strings average ~80 bytes, and the same pairs repeat across thousands of
 //! log records. The producer (`otel-ingestor`) pre-computes `xxhash64("key=value")`
@@ -17,14 +18,15 @@
 //! 2. The last row of each group is checked for `_nd_kv_hash`.
 //! 3. If present, its bytes contain N little-endian `u64` hashes, one per
 //!    preceding attribute row, in order.
-//! 4. For each attribute, try a **hash-only lookup** in the string interner.
-//!    On hit (the `key=value` was already interned from a previous record),
-//!    skip string formatting entirely. On miss (first encounter), format the
-//!    string and intern it with the pre-computed hash so future lookups hit.
+//! 4. For each attribute, try a **hash-only lookup** in the sink
+//!    ([`KvSink::lookup_hash`]). On hit (the `key=value` was already
+//!    interned from a previous record), skip string formatting entirely.
+//!    On miss (first encounter), format the string and intern it with the
+//!    pre-computed hash so future lookups hit.
 //!
-//! The string interner uses an identity hasher (see [`super::kv_interner`])
-//! so the pre-computed `u64` is used directly as the HashMap bucket key —
-//! no re-hashing.
+//! The indexer's sink is its string interner, which uses an identity
+//! hasher (see [`super::kv_interner`]) so the pre-computed `u64` is used
+//! directly as the HashMap bucket key — no re-hashing.
 //!
 //! See `otel-ingestor/src/arrow_bridge.rs` for the producer side, including
 //! the hash contract (value formatting rules that must match
@@ -35,8 +37,7 @@ use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use hashbrown::HashMap;
 
-use super::KvSlot;
-use super::kv_interner::KeyValueInterner;
+use super::decode::KvSink;
 
 /// Name of the synthetic attribute holding pre-computed key=value hashes.
 const KV_HASH_ATTR: &str = "_nd_kv_hash";
@@ -304,31 +305,37 @@ impl<'a> AttrsColumns<'a> {
     }
 }
 
-/// Maps `parent_id` → list of interned `key=value` pair IDs for a single
-/// frame's attribute batch.
-#[derive(Default)]
-pub struct AttrsMap {
-    map: HashMap<u16, Vec<KvSlot>>,
+/// Maps `parent_id` → list of interned `key=value` pair tokens for a
+/// single frame's attribute batch. `T` is the consuming sink's token
+/// type ([`KvSink::Token`]).
+pub struct AttrsMap<T> {
+    map: HashMap<u16, Vec<T>>,
 }
 
-impl AttrsMap {
+impl<T: Copy> AttrsMap<T> {
+    fn empty() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
     /// Build an `AttrsMap` from an attribute RecordBatch.
     ///
     /// For each contiguous `parent_id` group, checks whether the last row
     /// is `_nd_kv_hash`. If so, uses the pre-computed hashes for hash-only
-    /// interner lookups (fast path). On cache miss (first time seeing this
+    /// sink lookups (fast path). On cache miss (first time seeing this
     /// `key=value`), falls back to formatting the string and interning it
     /// with the pre-computed hash so subsequent lookups hit.
-    pub fn build(rb: Option<&RecordBatch>, interner: &mut KeyValueInterner) -> Self {
+    pub fn build<S: KvSink<Token = T>>(rb: Option<&RecordBatch>, sink: &mut S) -> Self {
         let Some(rb) = rb else {
-            return AttrsMap::default();
+            return AttrsMap::empty();
         };
 
         let Some(cols) = AttrsColumns::try_from(rb) else {
-            return AttrsMap::default();
+            return AttrsMap::empty();
         };
 
-        let mut map: HashMap<u16, Vec<KvSlot>> = HashMap::new();
+        let mut map: HashMap<u16, Vec<T>> = HashMap::new();
         let mut buf = String::new();
 
         let mut group_start = 0;
@@ -370,8 +377,8 @@ impl AttrsMap {
                         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
                 });
 
-                let slot = hash
-                    .and_then(|h| interner.lookup_hash(h))
+                let token = hash
+                    .and_then(|h| sink.lookup_hash(h))
                     .unwrap_or_else(|| {
                         buf.clear();
 
@@ -381,13 +388,10 @@ impl AttrsMap {
                         buf.push('=');
                         cols.append_value(row, &mut buf);
 
-                        match hash {
-                            Some(h) => interner.intern_with_hash(h, &buf),
-                            None => interner.intern(&buf),
-                        }
+                        sink.intern(hash, &buf)
                     });
 
-                map.entry(pid).or_default().push(slot);
+                map.entry(pid).or_default().push(token);
             }
 
             group_start = group_end;
@@ -396,8 +400,8 @@ impl AttrsMap {
         Self { map }
     }
 
-    /// Get the interned attribute IDs for a given `parent_id`.
-    pub fn get(&self, parent_id: u16) -> &[KvSlot] {
+    /// Get the interned attribute tokens for a given `parent_id`.
+    pub fn get(&self, parent_id: u16) -> &[T] {
         self.map
             .get(&parent_id)
             .map(|v| v.as_slice())

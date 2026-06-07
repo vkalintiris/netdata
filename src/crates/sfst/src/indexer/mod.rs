@@ -2,25 +2,29 @@
 //!
 //! Two-phase build:
 //!
-//! - **Phase 1** (read) — [`process_frame`] iterates each WAL frame, interns
-//!   `key=value` attributes, and accumulates a [`WalIndex`](wal_index::WalIndex)
-//!   (string interner + per-attribute bitmaps + per-log entries + per-log
-//!   timestamps).
+//! - **Phase 1** (read) — [`decode::decode_frame`] decodes each WAL frame
+//!   and streams its rows into the [`WalIndex`](wal_index::WalIndex) (a
+//!   [`decode::KvSink`]), which interns `key=value` attributes and
+//!   accumulates the string interner + per-attribute bitmaps + per-log
+//!   entries + per-log timestamps.
 //! - **Phase 2** (write) — [`build_and_write`] consumes the `WalIndex` and
 //!   emits the on-disk SFST file via [`crate::Writer`].
 //!
 //! The public entry points are [`index`] (defaults) and
-//! [`index_with_options`] (cardinality threshold override).
+//! [`index_with_options`] (cardinality threshold override). The frame
+//! decode is public on its own ([`decode`]) so other consumers — e.g. a
+//! query-time WAL row scan — share it rather than reimplement it.
 
 mod arrow_columns;
 mod bitset;
+pub mod decode;
 mod fst_builder;
 pub mod kv_interner;
 mod otap_frame;
-mod process_frame;
 pub mod reader;
 pub mod wal_index;
 
+pub use decode::{KvSink, decode_frame};
 pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
 pub use reader::{BitmapFilter, IndexReader};
@@ -30,7 +34,6 @@ use std::path::Path;
 use bumpalo::Bump;
 
 use crate::{IndexError, Metadata, Summary};
-use process_frame::process_frame;
 use wal_index::WalIndex;
 
 /// Default cardinality threshold for tier classification (see [`crate::FieldTier`]).
@@ -75,7 +78,7 @@ pub fn index_with_options(
     let mut num_frames = 0;
     while let Some(wal_frame) = reader.next_frame()? {
         num_frames += 1;
-        process_frame(&mut wal_index, &wal_frame)?;
+        decode_frame(&wal_frame, &mut wal_index)?;
     }
 
     tracing::info!(
