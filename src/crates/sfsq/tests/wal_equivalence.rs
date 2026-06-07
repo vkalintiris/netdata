@@ -763,6 +763,108 @@ fn index_range_whole_file_matches_disk_index() {
 }
 
 #[test]
+fn index_range_interior_split_partitions_logs() {
+    // Split a multi-frame WAL at a real frame boundary (from the
+    // header scan) into two chunks, and confirm the chunks partition
+    // the file's logs exactly — no record lost or double-counted across
+    // the split. (Full-shard equality of merge-vs-whole would *not*
+    // hold: merge_field_tables is conservative on cardinality, so a
+    // field's tier can legitimately differ; we check the
+    // partition-invariant facts instead.)
+    let mut checked = false;
+    for seed in 1..=10 {
+        let corpus = gen_corpus(seed);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = write_wal(dir.path(), &corpus);
+        let file_len = std::fs::metadata(&wal_path).unwrap().len();
+
+        let frames =
+            wal::scan_frame_boundaries(&wal_path, wal::HEADER_SIZE as u64, file_len).unwrap();
+        if frames.len() < 2 {
+            continue;
+        }
+
+        // Split after the middle frame — a real frame boundary.
+        let split = frames[frames.len() / 2 - 1].end_offset;
+        let (a_sum, a_bytes) =
+            sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, split).unwrap();
+        let (b_sum, b_bytes) = sfst::index_range(&wal_path, split, file_len).unwrap();
+
+        let whole_path = dir.path().join("whole.sfst");
+        let whole = sfst::index(&wal_path, &whole_path).unwrap();
+
+        // Logs partition exactly, by both the index and the scan.
+        assert_eq!(
+            a_sum.total_logs + b_sum.total_logs,
+            whole.summary.total_logs,
+            "seed={seed}: chunk total_logs don't sum to the whole"
+        );
+        let scan_entries: u32 = frames.iter().map(|f| f.entry_count).sum();
+        assert_eq!(
+            scan_entries, whole.summary.total_logs,
+            "seed={seed}: scanned entry counts don't sum to the whole"
+        );
+
+        // Both chunks are valid, queryable SFSTs.
+        sfst::IndexReader::open(&a_bytes).unwrap();
+        sfst::IndexReader::open(&b_bytes).unwrap();
+
+        // matched is a partition-invariant: a low-card filter over a
+        // window covering everything must match the same rows whether
+        // counted on the whole file or summed over the two chunks.
+        let a_cand = candidate_from_bytes(dir.path(), "a.sfst", a_sum, &a_bytes);
+        let b_cand = candidate_from_bytes(dir.path(), "b.sfst", b_sum, &b_bytes);
+        let whole_cand = SfstCandidate {
+            summary: whole.summary.clone(),
+            seq: 3,
+            path: whole_path,
+        };
+
+        let start = whole.summary.min_timestamp_s as i64 * NS as i64;
+        let span =
+            ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+        for (qlabel, q) in [
+            ("all", LogsQueryBuilder::new(Grid::new(start, span, 1)).build()),
+            (
+                "level=error",
+                LogsQueryBuilder::new(Grid::new(start, span, 1))
+                    .filter(Filter::new().select("level", "error"))
+                    .build(),
+            ),
+        ] {
+            let whole_matched = LogsShard::evaluate(&whole_cand, &q).matched;
+            let summed = LogsShard::evaluate(&a_cand, &q).matched
+                + LogsShard::evaluate(&b_cand, &q).matched;
+            assert_eq!(
+                whole_matched, summed,
+                "seed={seed} q={qlabel}: matched count not partitioned across the split"
+            );
+        }
+
+        checked = true;
+        break;
+    }
+    assert!(checked, "no multi-frame corpus found in seeds 1..=10");
+}
+
+/// Write SFST `bytes` to `dir/name` and wrap as a candidate with the
+/// given summary (the in-memory range index has no file of its own).
+fn candidate_from_bytes(
+    dir: &Path,
+    name: &str,
+    summary: sfst::Summary,
+    bytes: &[u8],
+) -> SfstCandidate {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    SfstCandidate {
+        summary,
+        seq: 1,
+        path,
+    }
+}
+
+#[test]
 fn index_range_empty_range_is_a_valid_zero_log_sfst() {
     // A zero-frame range (start == end) builds a valid, parseable SFST
     // with no logs — the degenerate end of the build path. No real

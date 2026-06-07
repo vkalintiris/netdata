@@ -11,7 +11,7 @@ pub use error::{Error, Result};
 /// [`Reader::open_range`] `start` and the start of a whole-prefix read.
 pub use format::HEADER_SIZE;
 pub use format::{FileEvent, Message};
-pub use reader::{Frame, Reader};
+pub use reader::{Frame, FrameBoundary, Reader, scan_frame_boundaries};
 pub use registry::{File, Registry};
 pub use writer::Writer;
 

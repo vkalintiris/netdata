@@ -247,6 +247,105 @@ impl Reader {
     }
 }
 
+/// One frame's position, read from its 24-byte header alone — no payload
+/// decompression, no CRC. Produced by [`scan_frame_boundaries`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameBoundary {
+    /// Byte offset just past this frame (its end, and the start of the
+    /// next frame). A valid `start` / `end` for [`Reader::open_range`].
+    pub end_offset: u64,
+    /// Log records in this frame.
+    pub entry_count: u32,
+}
+
+/// Walk the frame headers in `[start, end)` and report each whole
+/// frame's boundary, **without decoding any payload**.
+///
+/// This is how a caller decides where to split a WAL into chunks: it
+/// reads only the 24-byte header of each frame (for its `payload_len`
+/// and `entry_count`) and seeks past the payload + padding to the next.
+/// Cheap relative to indexing — no decompression, no CRC — so it can run
+/// on the durable prefix of an active file to plan chunk boundaries
+/// before paying to build any.
+///
+/// Same windowing and soundness rules as [`Reader::open_range`]: `start`
+/// and `end` must be frame boundaries (`HEADER_SIZE` / a prior
+/// `end_offset` / a `Synced` event's `valid_up_to`), the file must
+/// physically contain `end`, and a frame is reported only if it fits
+/// fully below `end` — a frame crossing the bound is a torn tail and
+/// ends the scan. The returned boundaries are in file order; the last
+/// one's `end_offset` is the durable extent actually covered (`<= end`,
+/// and `== end` when `end` is frame-aligned, the normal case).
+pub fn scan_frame_boundaries(path: &Path, start: u64, end: u64) -> Result<Vec<FrameBoundary>> {
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if end > file_len {
+        return Err(Error::Deserialization(format!(
+            "durable bound ({end} bytes) exceeds file length ({file_len} bytes)"
+        )));
+    }
+    if start < HEADER_SIZE as u64 || start > end {
+        return Err(Error::Deserialization(format!(
+            "start offset ({start}) outside the readable range (header={HEADER_SIZE}, end={end})"
+        )));
+    }
+    debug_assert!(
+        start == HEADER_SIZE as u64 || start % FRAME_ALIGNMENT as u64 == 0,
+        "start offset {start} is not frame-aligned"
+    );
+
+    // Validate the file header (magic / version), then walk from `start`.
+    let mut header_buf = [0u8; HEADER_SIZE];
+    file.read_exact(&mut header_buf)?;
+    FileHeader::from_bytes(&header_buf)?;
+    if start > HEADER_SIZE as u64 {
+        file.seek(SeekFrom::Start(start))?;
+    }
+
+    let mut boundaries = Vec::new();
+    let mut position = start;
+    let mut frame_header = [0u8; FRAME_HEADER_SIZE];
+    loop {
+        // The whole header must fit below the bound (mirrors
+        // `next_frame`'s header-room guard).
+        if position + FRAME_HEADER_SIZE as u64 > end {
+            break;
+        }
+        match file.read_exact(&mut frame_header) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+
+        let payload_len = u32::from_le_bytes(frame_header[0..4].try_into().unwrap()) as usize;
+        let entry_count = u32::from_le_bytes(frame_header[8..12].try_into().unwrap());
+        if payload_len > MAX_FRAME_PAYLOAD {
+            return Err(Error::Deserialization(format!(
+                "frame payload ({payload_len} bytes) exceeds maximum ({MAX_FRAME_PAYLOAD} bytes)"
+            )));
+        }
+
+        let frame_bytes = FRAME_HEADER_SIZE + payload_len;
+        let padding = (FRAME_ALIGNMENT - (frame_bytes % FRAME_ALIGNMENT)) % FRAME_ALIGNMENT;
+        let total = (frame_bytes + padding) as u64;
+        // Frame crosses the bound: a torn tail past the durable prefix.
+        if position + total > end {
+            break;
+        }
+
+        position += total;
+        boundaries.push(FrameBoundary {
+            end_offset: position,
+            entry_count,
+        });
+
+        // Skip the payload + padding (we already consumed the header).
+        file.seek(SeekFrom::Start(position))?;
+    }
+
+    Ok(boundaries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +517,106 @@ mod tests {
         let mut reader =
             Reader::open_range(&path, HEADER_SIZE as u64, HEADER_SIZE as u64).unwrap();
         assert!(reader.next_frame().unwrap().is_none());
+    }
+
+    /// Write frames with the given entry counts (one frame each),
+    /// syncing after each. Returns the path and per-frame end offsets.
+    fn write_counted_frames(dir: &Path, counts: &[usize]) -> (std::path::PathBuf, Vec<u64>) {
+        let seq = Arc::new(AtomicU64::new(0));
+        let mut writer = Writer::new(dir, Config::default(), seq).unwrap();
+        let mut bounds = Vec::new();
+        for (i, &count) in counts.iter().enumerate() {
+            writer
+                .write_frame(
+                    0,
+                    b"payload",
+                    count,
+                    TimestampNs(i as u64 + 1),
+                    TimestampNs::ZERO,
+                    TimestampNs::ZERO,
+                )
+                .unwrap();
+            writer.sync_all().unwrap();
+            let valid_up_to = writer
+                .take_all_events()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    crate::FileEvent::Synced { valid_up_to, .. } => Some(valid_up_to.0),
+                    _ => None,
+                })
+                .unwrap();
+            bounds.push(valid_up_to);
+        }
+        writer.shutdown_all().unwrap();
+        let path = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "wal"))
+            .unwrap();
+        (path, bounds)
+    }
+
+    #[test]
+    fn scan_boundaries_reports_offsets_and_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bounds) = write_counted_frames(dir.path(), &[5, 3, 7]);
+        let file_len = std::fs::metadata(&path).unwrap().len();
+
+        let scanned = scan_frame_boundaries(&path, HEADER_SIZE as u64, file_len).unwrap();
+        assert_eq!(
+            scanned,
+            vec![
+                FrameBoundary { end_offset: bounds[0], entry_count: 5 },
+                FrameBoundary { end_offset: bounds[1], entry_count: 3 },
+                FrameBoundary { end_offset: bounds[2], entry_count: 7 },
+            ]
+        );
+        // The scan never decodes payloads; the offsets it reports are
+        // valid `open_range` boundaries — read the chunk they delimit.
+        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bounds[1]).unwrap();
+        let frames = collect(&mut reader);
+        assert_eq!(frames.iter().map(|(c, _)| *c).collect::<Vec<_>>(), vec![5, 3]);
+    }
+
+    #[test]
+    fn scan_boundaries_respects_start_and_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bounds) = write_counted_frames(dir.path(), &[5, 3, 7]);
+
+        // A sub-window covering frames 1 and 2 only.
+        let scanned = scan_frame_boundaries(&path, bounds[0], bounds[2]).unwrap();
+        assert_eq!(
+            scanned,
+            vec![
+                FrameBoundary { end_offset: bounds[1], entry_count: 3 },
+                FrameBoundary { end_offset: bounds[2], entry_count: 7 },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_boundaries_stops_before_a_frame_crossing_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bounds) = write_counted_frames(dir.path(), &[5, 3, 7]);
+
+        // Bound one header past frame 2's start: its header fits but its
+        // payload crosses, so the scan reports only frames 0 and 1.
+        let bound = bounds[1] + FRAME_HEADER_SIZE as u64;
+        let scanned = scan_frame_boundaries(&path, HEADER_SIZE as u64, bound).unwrap();
+        assert_eq!(
+            scanned.iter().map(|b| b.entry_count).collect::<Vec<_>>(),
+            vec![5, 3]
+        );
+        assert_eq!(scanned.last().unwrap().end_offset, bounds[1]);
+    }
+
+    #[test]
+    fn scan_boundaries_validates_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bounds) = write_counted_frames(dir.path(), &[5]);
+        assert!(scan_frame_boundaries(&path, HEADER_SIZE as u64, bounds[0] + 4096).is_err());
+        assert!(scan_frame_boundaries(&path, 0, bounds[0]).is_err());
     }
 }
