@@ -29,6 +29,8 @@ pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
 pub use reader::{BitmapFilter, IndexReader};
 
+use fst_builder::build;
+
 use std::path::Path;
 
 use bumpalo::Bump;
@@ -98,4 +100,39 @@ pub fn index_with_options(
         metadata,
         size,
     })
+}
+
+/// Index the byte range `[start, end)` of a WAL file into an **in-memory**
+/// SFST, returning its [`Summary`] and the serialized bytes.
+///
+/// The same two-phase build as [`index`], but reading only the frames
+/// within `[start, end)` (via [`wal::Reader::open_range`]) and
+/// serializing the result to a `Vec<u8>` instead of a file. This is how a
+/// query builds an index over a chunk of an active WAL — `start` and
+/// `end` are frame boundaries (`HEADER_SIZE` / recorded chunk ends / a
+/// `Synced` event's `valid_up_to`); see `open_range` for the durable-
+/// prefix soundness checks.
+///
+/// The returned bytes parse with [`IndexReader::open`]. The caller cross-
+/// checks `summary.total_logs` against the expected record count for the
+/// range (the registry's `entry_count`) to confirm the prefix wasn't
+/// truncated — the count check that [`wal::Reader::open_range`] defers.
+pub fn index_range(
+    wal_path: &Path,
+    start: u64,
+    end: u64,
+) -> Result<(Summary, Vec<u8>), IndexError> {
+    let mut reader = wal::Reader::open_range(wal_path, start, end)?;
+    let arena = Bump::with_capacity(32 * 1024 * 1024);
+    let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
+
+    while let Some(wal_frame) = reader.next_frame()? {
+        decode_frame(&wal_frame, &mut wal_index)?;
+    }
+
+    let (writer, summary, _metadata) = build(&wal_index)?;
+    let mut bytes = Vec::new();
+    writer.write_to(&mut bytes)?;
+
+    Ok((summary, bytes))
 }

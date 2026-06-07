@@ -732,6 +732,37 @@ fn named_regressions_match() {
 }
 
 #[test]
+fn index_range_whole_file_matches_disk_index() {
+    // The in-memory range index over the whole durable prefix must
+    // produce the very same SFST the disk indexer produces: identical
+    // frames in, identical deterministic build, identical bytes out.
+    // (Interior-range / chunk-boundary correctness is exercised once the
+    // boundary scan lands and can supply real chunk offsets.)
+    for seed in 1..=6 {
+        let corpus = gen_corpus(seed);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = write_wal(dir.path(), &corpus);
+        let file_len = std::fs::metadata(&wal_path).unwrap().len();
+
+        let (mem_summary, mem_bytes) =
+            sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, file_len).expect("index_range");
+
+        let sfst_path = dir.path().join("disk.sfst");
+        let disk = sfst::index(&wal_path, &sfst_path).expect("index");
+        let disk_bytes = std::fs::read(&sfst_path).unwrap();
+
+        assert_eq!(
+            mem_summary.total_logs, disk.summary.total_logs,
+            "seed={seed}: total_logs diverged"
+        );
+        assert_eq!(
+            mem_bytes, disk_bytes,
+            "seed={seed}: in-memory range index differs from the disk index"
+        );
+    }
+}
+
+#[test]
 fn single_row_degenerate_corpus_matches() {
     // The smallest non-empty file: one record, one bucket. Exercises
     // the degenerate end of every loop on both sides.

@@ -328,6 +328,39 @@ pub fn build_and_write(
 ) -> Result<(crate::Summary, Metadata), IndexError> {
     let t_start = Instant::now();
 
+    let (writer, summary, metadata) = build(wal_index)?;
+
+    let t = Instant::now();
+    let tmp_path = out_path.with_extension("sfst.tmp");
+    let file = std::fs::File::create(&tmp_path)?;
+    let mut buf = std::io::BufWriter::new(file);
+    writer.write_to(&mut buf)?;
+    let file = buf.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    let file_size = file.metadata()?.len();
+    drop(file);
+
+    std::fs::rename(&tmp_path, out_path)?;
+    tracing::info!(
+        "index written path={} size_kb={} write_ms={} total_ms={}",
+        out_path.display(),
+        file_size / 1024,
+        t.elapsed().as_millis(),
+        t_start.elapsed().as_millis(),
+    );
+
+    Ok((summary, metadata))
+}
+
+/// Phase 2 proper: consume a [`WalIndex`] into an in-memory
+/// [`crate::Writer`] plus the [`crate::Summary`] / [`Metadata`] it
+/// carries. Shared by [`build_and_write`] (which then writes the writer
+/// to disk) and the in-memory range index
+/// ([`index_range`](super::index_range), which serializes it to a
+/// `Vec<u8>`). No I/O happens here.
+pub(super) fn build(
+    wal_index: &WalIndex,
+) -> Result<(crate::Writer, crate::Summary, Metadata), IndexError> {
     let mut writer = crate::Writer::new();
 
     let t = Instant::now();
@@ -407,26 +440,7 @@ pub fn build_and_write(
     };
     writer.set_metadata(crate::pack(&metadata, crate::ZSTD_LEVEL_DEFAULT)?);
 
-    let t = Instant::now();
-    let tmp_path = out_path.with_extension("sfst.tmp");
-    let file = std::fs::File::create(&tmp_path)?;
-    let mut buf = std::io::BufWriter::new(file);
-    writer.write_to(&mut buf)?;
-    let file = buf.into_inner().map_err(|e| e.into_error())?;
-    file.sync_all()?;
-    let file_size = file.metadata()?.len();
-    drop(file);
-
-    std::fs::rename(&tmp_path, out_path)?;
-    tracing::info!(
-        "index written path={} size_kb={} write_ms={} total_ms={}",
-        out_path.display(),
-        file_size / 1024,
-        t.elapsed().as_millis(),
-        t_start.elapsed().as_millis(),
-    );
-
-    Ok((summary, metadata))
+    Ok((writer, summary, metadata))
 }
 
 /// Remap a single roaring bitmap from insertion order to time-sorted order,

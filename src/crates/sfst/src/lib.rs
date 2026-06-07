@@ -48,7 +48,8 @@ pub mod registry;
 pub use error::{Error, IndexError};
 pub use file_registry::ServiceStream;
 pub use indexer::{
-    BitmapFilter, IndexReader, IndexResult, build_and_write, index, index_with_options,
+    BitmapFilter, IndexReader, IndexResult, build_and_write, index, index_range,
+    index_with_options,
 };
 pub use query::{
     Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,

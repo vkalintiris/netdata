@@ -7,6 +7,9 @@ mod writer;
 
 pub use config::{Config, RotationConfig};
 pub use error::{Error, Result};
+/// Byte offset of the first frame — the lower bound for
+/// [`Reader::open_range`] `start` and the start of a whole-prefix read.
+pub use format::HEADER_SIZE;
 pub use format::{FileEvent, Message};
 pub use reader::{Frame, Reader};
 pub use registry::{File, Registry};
