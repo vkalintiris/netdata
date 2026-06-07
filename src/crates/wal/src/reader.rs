@@ -619,4 +619,15 @@ mod tests {
         assert!(scan_frame_boundaries(&path, HEADER_SIZE as u64, bounds[0] + 4096).is_err());
         assert!(scan_frame_boundaries(&path, 0, bounds[0]).is_err());
     }
+
+    #[test]
+    fn scan_boundaries_empty_range_yields_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = write_counted_frames(dir.path(), &[5, 3]);
+        // start == end (at the header): a zero-length durable prefix —
+        // the header-room guard fires immediately, no frames reported.
+        let scanned =
+            scan_frame_boundaries(&path, HEADER_SIZE as u64, HEADER_SIZE as u64).unwrap();
+        assert!(scanned.is_empty());
+    }
 }
