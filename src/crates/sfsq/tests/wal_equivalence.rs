@@ -763,6 +763,23 @@ fn index_range_whole_file_matches_disk_index() {
 }
 
 #[test]
+fn index_range_empty_range_is_a_valid_zero_log_sfst() {
+    // A zero-frame range (start == end) builds a valid, parseable SFST
+    // with no logs — the degenerate end of the build path. No real
+    // caller passes this (chunks need >= 16K entries), but the behavior
+    // should be well-defined rather than a panic.
+    let corpus = gen_corpus(1);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = write_wal(dir.path(), &corpus);
+
+    let (summary, bytes) =
+        sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64)
+            .expect("index_range over an empty range");
+    assert_eq!(summary.total_logs, 0);
+    sfst::IndexReader::open(&bytes).expect("empty-range SFST parses");
+}
+
+#[test]
 fn single_row_degenerate_corpus_matches() {
     // The smallest non-empty file: one record, one bucket. Exercises
     // the degenerate end of every loop on both sides.

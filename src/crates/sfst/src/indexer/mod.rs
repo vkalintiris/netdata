@@ -122,15 +122,30 @@ pub fn index_range(
     start: u64,
     end: u64,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
-    let mut reader = wal::Reader::open_range(wal_path, start, end)?;
-    let arena = Bump::with_capacity(32 * 1024 * 1024);
-    let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
+    // Scope Phase 1 so the 32 MiB arena and the WalIndex (bitmaps,
+    // interner, per-log entries) drop before serialization: `build`'s
+    // Writer owns its packed chunks outright and borrows neither, so
+    // holding them through `write_to` would only inflate peak memory.
+    let (writer, summary) = {
+        let mut reader = wal::Reader::open_range(wal_path, start, end)?;
+        let arena = Bump::with_capacity(32 * 1024 * 1024);
+        let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
 
-    while let Some(wal_frame) = reader.next_frame()? {
-        decode_frame(&wal_frame, &mut wal_index)?;
-    }
+        let mut num_frames = 0;
+        while let Some(wal_frame) = reader.next_frame()? {
+            num_frames += 1;
+            decode_frame(&wal_frame, &mut wal_index)?;
+        }
+        tracing::debug!(
+            "WAL range read complete path={} start={start} end={end} frames={num_frames} logs={}",
+            wal_path.display(),
+            wal_index.num_logs(),
+        );
 
-    let (writer, summary, _metadata) = build(&wal_index)?;
+        let (writer, summary, _metadata) = build(&wal_index)?;
+        (writer, summary)
+    };
+
     let mut bytes = Vec::new();
     writer.write_to(&mut bytes)?;
 
