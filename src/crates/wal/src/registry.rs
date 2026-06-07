@@ -38,6 +38,21 @@ pub struct File {
     pub size: ByteSize,
     pub min_timestamp_ns: TimestampNs,
     pub max_timestamp_ns: TimestampNs,
+    /// Byte offset of the durable, fully-written prefix — the end of the
+    /// last frame fsynced to disk (the `valid_up_to` of the most recent
+    /// `Synced` event). Frame-aligned by construction. A concurrent
+    /// reader of an actively-written file must not read past this offset:
+    /// the writer's buffer can flush mid-frame, so the bytes beyond it may
+    /// be a torn frame. `ByteSize::ZERO` means "unknown" — a file recovered
+    /// from disk (no in-process event history; the format carries no
+    /// footer) or one not yet synced. For a sealed (`Archived`) file the
+    /// final `Synced` set this equal to `size`.
+    pub valid_up_to: ByteSize,
+    /// Number of log records in the durable prefix (the `entry_count` of
+    /// the most recent `Synced` event). `0` after recovery (unknown).
+    /// A bounded read of `[HEADER, valid_up_to)` must decode exactly this
+    /// many records — the cross-check that the prefix wasn't truncated.
+    pub entry_count: u64,
 }
 
 /// An ordered collection of WAL files.
@@ -83,6 +98,13 @@ impl Registry {
                     // SFST summary with the authoritative values.
                     min_timestamp_ns: TimestampNs::ZERO,
                     max_timestamp_ns: TimestampNs::ZERO,
+                    // Likewise unknown without event history: a crash may
+                    // have left a torn tail past the last sync, and the
+                    // file carries no durable-prefix marker. ZERO = "do
+                    // not trust a byte bound"; such files are re-indexed
+                    // whole by the existing pipeline.
+                    valid_up_to: ByteSize::ZERO,
+                    entry_count: 0,
                 },
             );
         }
@@ -123,12 +145,16 @@ impl Registry {
                         size: ByteSize::ZERO,
                         min_timestamp_ns: TimestampNs::ZERO,
                         max_timestamp_ns: TimestampNs::ZERO,
+                        valid_up_to: ByteSize::ZERO,
+                        entry_count: 0,
                     },
                 );
                 Ok(())
             }
             FileEvent::Synced {
                 file_id,
+                valid_up_to,
+                entry_count,
                 min_timestamp_ns,
                 max_timestamp_ns,
                 ..
@@ -141,6 +167,8 @@ impl Registry {
                     .ok_or(Error::UnknownSequence(file_id.seq))?;
                 entry.min_timestamp_ns = *min_timestamp_ns;
                 entry.max_timestamp_ns = *max_timestamp_ns;
+                entry.valid_up_to = *valid_up_to;
+                entry.entry_count = *entry_count;
                 Ok(())
             }
             FileEvent::Closed {
@@ -407,6 +435,84 @@ mod tests {
         assert_eq!(f.status, FileStatus::Archived);
         assert_eq!(f.min_timestamp_ns, TimestampNs(150));
         assert_eq!(f.max_timestamp_ns, TimestampNs(400));
+    }
+
+    #[test]
+    fn apply_event_tracks_valid_up_to_and_entry_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new(dir.path());
+        let id = test_file_id(3);
+
+        registry
+            .apply_event(&FileEvent::Created {
+                file_id: id,
+                created_at_ns: TimestampNs(1),
+            })
+            .unwrap();
+        // Created: durable prefix unknown.
+        let f = registry.get(3).unwrap();
+        assert_eq!(f.valid_up_to, ByteSize::ZERO);
+        assert_eq!(f.entry_count, 0);
+
+        // Synced carries the current durable prefix and record count.
+        registry
+            .apply_event(&FileEvent::Synced {
+                file_id: id,
+                valid_up_to: ByteSize(4608),
+                frame_count: 1,
+                entry_count: 12,
+                min_timestamp_ns: TimestampNs(100),
+                max_timestamp_ns: TimestampNs(200),
+            })
+            .unwrap();
+        let f = registry.get(3).unwrap();
+        assert_eq!(f.valid_up_to, ByteSize(4608));
+        assert_eq!(f.entry_count, 12);
+
+        // A later Synced overwrites with the grown prefix.
+        registry
+            .apply_event(&FileEvent::Synced {
+                file_id: id,
+                valid_up_to: ByteSize(8704),
+                frame_count: 2,
+                entry_count: 30,
+                min_timestamp_ns: TimestampNs(100),
+                max_timestamp_ns: TimestampNs(300),
+            })
+            .unwrap();
+        let f = registry.get(3).unwrap();
+        assert_eq!(f.valid_up_to, ByteSize(8704));
+        assert_eq!(f.entry_count, 30);
+
+        // Closed carries no prefix fields; the final Synced's values
+        // (which equal the file size for a sealed file) are preserved.
+        registry
+            .apply_event(&FileEvent::Closed {
+                file_id: id,
+                frame_count: 2,
+                min_timestamp_ns: TimestampNs(100),
+                max_timestamp_ns: TimestampNs(300),
+                size: ByteSize(8704),
+            })
+            .unwrap();
+        let f = registry.get(3).unwrap();
+        assert_eq!(f.status, FileStatus::Archived);
+        assert_eq!(f.valid_up_to, ByteSize(8704));
+        assert_eq!(f.entry_count, 30);
+    }
+
+    #[test]
+    fn recovered_files_have_unknown_durable_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let _ = write_wal_files(dir.path(), &[10]);
+
+        let mut registry = Registry::new(dir.path());
+        registry.recover().unwrap();
+        let f = registry.archived_files().next().unwrap();
+        // No event history on recovery: durable prefix is unknown, so a
+        // bounded read must not trust a byte bound from it.
+        assert_eq!(f.valid_up_to, ByteSize::ZERO);
+        assert_eq!(f.entry_count, 0);
     }
 
     #[test]
