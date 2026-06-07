@@ -4262,11 +4262,15 @@ name = "sfsq"
 version = "0.1.3"
 dependencies = [
  "clap",
+ "file-registry",
  "libc",
  "memmap2",
+ "opentelemetry-proto",
+ "otel-ingestor",
  "regex",
  "serde",
  "sfst",
+ "tempfile",
  "tracing",
  "wal",
 ]

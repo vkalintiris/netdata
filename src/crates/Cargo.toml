@@ -176,6 +176,7 @@ otel-flatten = { path = "otel-flatten" }
 
 # Ledger
 otel-ledger = { path = "otel-ledger" }
+otel-ingestor = { path = "otel-ingestor" }
 otel-catalog = { path = "otel-catalog" }
 
 # IPC / RPC crates

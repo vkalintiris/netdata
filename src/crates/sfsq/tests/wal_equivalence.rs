@@ -1,0 +1,595 @@
+//! Equivalence harness: `WalScan` vs index-then-query, over identical
+//! WAL files.
+//!
+//! The exit criterion of milestone 1 in `docs/wal-query-design.md`: for
+//! any WAL file and any query, the row-scan evaluator's output must be
+//! indistinguishable from indexing that WAL into an SFST and running
+//! the engine. Every fixture here goes through the *production* path —
+//! OTLP `ResourceLogs` → `otel_ingestor::arrow_bridge::encode` (real
+//! OTAP frames, `_nd_kv_hash` sidecars included) → `wal::Writer` →
+//! either `sfst::index` + `LogsShard::evaluate` or `WalScan::scan` +
+//! `evaluate` — and the two shards are compared component by component.
+//!
+//! Corpora are generated from a seeded deterministic RNG (failures
+//! reproduce by seed), sweeping timestamp regimes (monotonic, shuffled,
+//! equal runs, the observed-time and ingestion-time fallback tiers),
+//! multi-frame files (cross-frame pair dedup, shared resource/scope
+//! attributes), multi-valued fields, exotic pairs (`=` in values, empty
+//! values), and cardinality-tier boundaries. Queries sweep filters
+//! (exact, OR, AND, anchored patterns), full-text terms, histogram and
+//! facet field choices (present, absent, multi-valued, high-card), and
+//! grid geometries (aligned, sub-window, over-extending).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
+use file_registry::TimestampNs;
+use opentelemetry_proto::tonic::common::v1::{
+    AnyValue, ArrayValue, InstrumentationScope, KeyValue, any_value::Value,
+};
+use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use opentelemetry_proto::tonic::resource::v1::Resource;
+
+use sfsq::logs::{LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, WalScan};
+use sfst::{Filter, Grid};
+
+// ---------------------------------------------------------------------------
+// Deterministic RNG (xorshift64*) — no external dependency, reproducible
+// by seed.
+// ---------------------------------------------------------------------------
+
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed.wrapping_mul(0x9E3779B97F4A7C15).max(1))
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn chance(&mut self, percent: u64) -> bool {
+        self.below(100) < percent
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OTLP fixture builders
+// ---------------------------------------------------------------------------
+
+fn s(v: &str) -> AnyValue {
+    AnyValue {
+        value: Some(Value::StringValue(v.to_string())),
+    }
+}
+
+fn kv(key: &str, value: AnyValue) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(value),
+    }
+}
+
+fn string_array(values: &[&str]) -> AnyValue {
+    AnyValue {
+        value: Some(Value::ArrayValue(ArrayValue {
+            values: values.iter().map(|v| s(v)).collect(),
+        })),
+    }
+}
+
+/// Epoch base for fixture timestamps, in seconds. Small enough that the
+/// SFST summary's `u32` seconds hold comfortably.
+const BASE_S: u64 = 1_000_000;
+const NS: u64 = 1_000_000_000;
+
+/// One generated corpus: the batches (one `encode` call — one WAL frame
+/// — each) plus the ingestion timestamps stamped on the frames.
+struct Corpus {
+    batches: Vec<Vec<ResourceLogs>>,
+}
+
+/// Generate a corpus for `seed`. The timestamp regime cycles with the
+/// seed so the sweep covers monotonic, shuffled, equal-run, and the
+/// observed-time / ingestion-time fallback tiers.
+fn gen_corpus(seed: u64) -> Corpus {
+    let mut rng = Rng::new(seed);
+    let num_logs = 60 + rng.below(120);
+    let regime = seed % 6;
+
+    let hosts: Vec<String> = (0..2 + rng.below(8)).map(|i| format!("host-{i}")).collect();
+    let codes: Vec<String> = (0..15 + rng.below(40)).map(|i| format!("c{i:03}")).collect();
+    let levels = ["info", "error", "warn", "debug"];
+    let tags = ["red", "green", "blue", "alpha", "beta"];
+    let severities = ["", "INFO", "ERROR", "WARN"];
+
+    let mut records: Vec<LogRecord> = Vec::new();
+    for i in 0..num_logs {
+        // Timestamp regime; 0 means "unset" in OTLP, which exercises
+        // the decode's fallback tiers identically on both sides.
+        let (time_ns, observed_ns) = match regime {
+            0 => ((BASE_S + i) * NS, 0),                       // monotonic event time
+            1 => ((BASE_S + rng.below(num_logs)) * NS, 0),     // shuffled
+            2 => ((BASE_S + i / 8) * NS, 0),                   // runs of equal timestamps
+            3 => (0, (BASE_S + i) * NS),                       // observed-time fallback
+            4 => (0, 0),                                       // ingestion-time fallback
+            _ => {
+                // Mixed: mostly event time, some rows falling through.
+                if rng.chance(20) {
+                    (0, if rng.chance(50) { (BASE_S + i) * NS } else { 0 })
+                } else {
+                    ((BASE_S + rng.below(num_logs)) * NS, 0)
+                }
+            }
+        };
+
+        let mut attributes = Vec::new();
+        if rng.chance(95) {
+            attributes.push(kv("level", s(levels[rng.below(4) as usize])));
+        }
+        if rng.chance(75) {
+            attributes.push(kv("host", s(&hosts[rng.below(hosts.len() as u64) as usize])));
+        }
+        if rng.chance(55) {
+            attributes.push(kv("code", s(&codes[rng.below(codes.len() as u64) as usize])));
+        }
+        if rng.chance(30) {
+            // Multi-valued: a scalar array flattens to repeated bare-key
+            // pairs (one `tags=…` pair per element).
+            let n = 1 + rng.below(3) as usize;
+            let mut picked: Vec<&str> = Vec::new();
+            for _ in 0..n {
+                picked.push(tags[rng.below(tags.len() as u64) as usize]);
+            }
+            attributes.push(kv("tags", string_array(&picked)));
+        }
+        if rng.chance(10) {
+            // Value containing `=` — the first-`=` split must agree.
+            attributes.push(kv("note", s("x=y")));
+        }
+        if rng.chance(10) {
+            // Empty value (`blank=`).
+            attributes.push(kv("blank", s("")));
+        }
+
+        records.push(LogRecord {
+            time_unix_nano: time_ns,
+            observed_time_unix_nano: observed_ns,
+            severity_number: [0, 9, 17][rng.below(3) as usize],
+            severity_text: severities[rng.below(4) as usize].to_string(),
+            body: if rng.chance(25) {
+                Some(s("free text message"))
+            } else {
+                None
+            },
+            attributes,
+            ..LogRecord::default()
+        });
+    }
+
+    // Split into 1–4 batches → multiple WAL frames: cross-frame pair
+    // dedup and per-frame resource/scope attribute sharing both get
+    // exercised. Resource attrs vary per batch (same service.name —
+    // the indexer requires a single stream identity per file).
+    let num_batches = 1 + rng.below(4) as usize;
+    let per = records.len().div_ceil(num_batches);
+    let mut batches = Vec::new();
+    for (b, chunk) in records.chunks(per).enumerate() {
+        let resource = Resource {
+            attributes: vec![
+                kv("service.name", s("harness")),
+                kv("env", s(if b % 2 == 0 { "prod" } else { "dev" })),
+            ],
+            ..Resource::default()
+        };
+        let scope = if rng.chance(60) {
+            Some(InstrumentationScope {
+                name: format!("scope-{b}"),
+                version: "1.0".to_string(),
+                ..InstrumentationScope::default()
+            })
+        } else {
+            None
+        };
+        batches.push(vec![ResourceLogs {
+            resource: Some(resource),
+            scope_logs: vec![ScopeLogs {
+                scope,
+                log_records: chunk.to_vec(),
+                ..ScopeLogs::default()
+            }],
+            ..ResourceLogs::default()
+        }]);
+    }
+
+    Corpus { batches }
+}
+
+// ---------------------------------------------------------------------------
+// WAL writing + the two evaluation paths
+// ---------------------------------------------------------------------------
+
+/// Write the corpus as a real WAL file (production writer, LZ4 frames)
+/// and return its path.
+fn write_wal(dir: &Path, corpus: &Corpus) -> PathBuf {
+    let seq = Arc::new(AtomicU64::new(0));
+    let mut writer = wal::Writer::new(dir, wal::Config::default(), seq).expect("writer");
+    for (i, batch) in corpus.batches.iter().enumerate() {
+        let (data, count) =
+            otel_ingestor::arrow_bridge::encode(batch.clone()).expect("arrow encode");
+        // The ingestion timestamp is the tier-3 fallback base for rows
+        // with no event/observed time; +1s per frame keeps fallback
+        // rows of different frames distinguishable.
+        let ingestion = TimestampNs((BASE_S + 500 + i as u64) * NS);
+        writer
+            .write_frame(7, &data, count, ingestion, TimestampNs::ZERO, TimestampNs::ZERO)
+            .expect("write frame");
+    }
+    writer.shutdown_all().expect("shutdown");
+
+    let mut wals: Vec<PathBuf> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "wal"))
+        .collect();
+    assert_eq!(wals.len(), 1, "corpus must land in a single WAL file");
+    wals.pop().unwrap()
+}
+
+/// Index the WAL into an SFST and wrap it as an engine candidate.
+fn index_candidate(wal_path: &Path, dir: &Path) -> SfstCandidate {
+    let sfst_path = dir.join("harness.sfst");
+    let result = sfst::index(wal_path, &sfst_path).expect("index");
+    SfstCandidate {
+        summary: result.summary,
+        seq: 1,
+        path: sfst_path,
+    }
+}
+
+/// Assert the two shards are identical, component by component (better
+/// failure locality than one big comparison).
+fn assert_equiv(ctx: &str, via_sfst: &LogsShard, via_scan: &LogsShard) {
+    assert_eq!(
+        via_sfst.matched, via_scan.matched,
+        "matched diverged [{ctx}]"
+    );
+    assert_eq!(
+        via_sfst.fields, via_scan.fields,
+        "field table diverged [{ctx}]"
+    );
+    assert_eq!(
+        via_sfst.facets, via_scan.facets,
+        "facets diverged [{ctx}]"
+    );
+    assert_eq!(
+        via_sfst.timeline, via_scan.timeline,
+        "timeline diverged [{ctx}]"
+    );
+}
+
+/// Run every query against both paths and assert equivalence.
+fn check_corpus(label: &str, corpus: &Corpus, queries: impl Fn(&sfst::Summary) -> Vec<(String, LogsQuery)>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = write_wal(dir.path(), corpus);
+    let candidate = index_candidate(&wal_path, dir.path());
+    let scan = WalScan::scan(&wal_path).expect("scan");
+
+    assert_eq!(
+        candidate.summary.total_logs as usize,
+        scan.num_rows(),
+        "row count diverged [{label}]"
+    );
+
+    for (qlabel, query) in queries(&candidate.summary) {
+        let via_sfst = LogsShard::evaluate(&candidate, &query);
+        let via_scan = scan.evaluate(&query);
+        assert_equiv(&format!("{label} / {qlabel}"), &via_sfst, &via_scan);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The query matrix
+// ---------------------------------------------------------------------------
+
+/// Queries derived from the file's summary range: filters (exact / OR /
+/// AND / patterns / absent fields), full-text terms, histogram and facet
+/// choices, and several grid geometries.
+fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
+    let start = summary.min_timestamp_s as i64 * NS as i64;
+    let span = ((summary.max_timestamp_s - summary.min_timestamp_s) as i64 + 1) * NS as i64;
+
+    let g_one = Grid::new(start, span, 1);
+    let g_eight = Grid::new(start, (span + 7) / 8, 8);
+    // A sub-window over the middle half — exercises clipping.
+    let g_sub = Grid::new(start + span / 4, (span / 8).max(1), 4);
+    // Over-extending on both sides — empty outer buckets.
+    let g_wide = Grid::new(start - 5 * NS as i64, (span + 3) / 4 + 3 * NS as i64, 4);
+
+    let b = LogsQueryBuilder::new;
+    let mut out: Vec<(String, LogsQuery)> = Vec::new();
+
+    out.push(("defaults".into(), b(g_eight).build()));
+    out.push((
+        "exact".into(),
+        b(g_eight)
+            .filter(Filter::new().select("level", "error"))
+            .build(),
+    ));
+    out.push((
+        "or-and".into(),
+        b(g_eight)
+            .filter(
+                Filter::new()
+                    .select("level", "error")
+                    .select("level", "info")
+                    .select("host", "host-1"),
+            )
+            .histogram_field("level")
+            .facet_fields(vec!["level".into(), "host".into(), "tags".into()])
+            .build(),
+    ));
+    out.push((
+        "patterns".into(),
+        b(g_eight)
+            .filter(
+                Filter::new()
+                    .select_pattern("code", "c0.*")
+                    .select_pattern("level", "(info|warn)"),
+            )
+            .facet_fields(vec!["code".into(), "level".into()])
+            .build(),
+    ));
+    out.push((
+        "anchored-miss".into(),
+        // `err` must not match `error` (full-value anchoring).
+        b(g_one)
+            .filter(Filter::new().select_pattern("level", "err"))
+            .build(),
+    ));
+    out.push((
+        "absent-field".into(),
+        b(g_eight)
+            .filter(Filter::new().select("nope", "x"))
+            .histogram_field("host")
+            .facet_fields(vec!["level".into(), "nope".into()])
+            .build(),
+    ));
+    out.push((
+        "fulltext".into(),
+        b(g_eight).query("err").facet_fields(vec!["level".into()]).build(),
+    ));
+    out.push((
+        "fulltext-key-scoped".into(),
+        b(g_eight)
+            .query("host=host-[02]")
+            .histogram_field("host")
+            .build(),
+    ));
+    out.push((
+        "fulltext-plus-filter".into(),
+        b(g_sub)
+            .query("o")
+            .filter(Filter::new().select("level", "info"))
+            .histogram_field("level")
+            .facet_fields(vec!["host".into(), "level".into()])
+            .build(),
+    ));
+    out.push((
+        "hist-multivalued".into(),
+        b(g_eight)
+            .histogram_field("tags")
+            .facet_fields(vec!["tags".into()])
+            .build(),
+    ));
+    out.push((
+        "hist-absent".into(),
+        b(g_eight).histogram_field("nope").build(),
+    ));
+    out.push((
+        "hist-projected-severity".into(),
+        b(g_wide)
+            .histogram_field("severity_number")
+            .facet_fields(vec!["severity_text".into(), "scope.name".into()])
+            .build(),
+    ));
+    out.push((
+        "exotic-pairs".into(),
+        b(g_one)
+            .filter(Filter::new().select("note", "x=y"))
+            .facet_fields(vec!["note".into(), "blank".into()])
+            .histogram_field("blank")
+            .build(),
+    ));
+    out.push((
+        "resource-attr".into(),
+        b(g_eight)
+            .filter(Filter::new().select("env", "prod"))
+            .histogram_field("env")
+            .build(),
+    ));
+    out
+}
+
+// ---------------------------------------------------------------------------
+// The tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn random_corpora_match_index_then_query() {
+    for seed in 1..=18 {
+        let corpus = gen_corpus(seed);
+        check_corpus(&format!("seed={seed}"), &corpus, query_matrix);
+    }
+}
+
+#[test]
+fn cardinality_tier_boundaries_match() {
+    // One corpus with fields engineered to land exactly on the tier
+    // boundaries (threshold 100): 99 distinct → low, 100 → mid,
+    // 999 → mid, 1000+ → high. `unique` is per-log-unique (high).
+    let num_logs: usize = 1100;
+    let mut records = Vec::new();
+    for i in 0..num_logs {
+        records.push(LogRecord {
+            time_unix_nano: (BASE_S as usize + i) as u64 * NS,
+            severity_text: "INFO".to_string(),
+            attributes: vec![
+                kv("low99", s(&format!("v{:02}", i % 99))),
+                kv("mid100", s(&format!("v{:03}", i % 100))),
+                kv("mid999", s(&format!("v{:03}", i % 999))),
+                kv("unique", s(&format!("u{i:05}"))),
+            ],
+            ..LogRecord::default()
+        });
+    }
+    let corpus = Corpus {
+        batches: records
+            .chunks(400)
+            .map(|chunk| {
+                vec![ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![kv("service.name", s("harness"))],
+                        ..Resource::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        log_records: chunk.to_vec(),
+                        ..ScopeLogs::default()
+                    }],
+                    ..ResourceLogs::default()
+                }]
+            })
+            .collect(),
+    };
+
+    check_corpus("tier-boundaries", &corpus, |summary| {
+        let start = summary.min_timestamp_s as i64 * NS as i64;
+        let span = ((summary.max_timestamp_s - summary.min_timestamp_s) as i64 + 1) * NS as i64;
+        let g = Grid::new(start, (span + 3) / 4, 4);
+        let b = LogsQueryBuilder::new;
+        vec![
+            // Field-table equality (tiers) is asserted on every query;
+            // these exercise the high-card refusal paths on both sides.
+            ("hist-high".into(), b(g).histogram_field("unique").build()),
+            (
+                "facet-mix".into(),
+                b(g)
+                    .facet_fields(vec![
+                        "low99".into(),
+                        "mid100".into(),
+                        "mid999".into(),
+                        "unique".into(),
+                    ])
+                    .histogram_field("mid100")
+                    .build(),
+            ),
+            (
+                "filter-high-card-field".into(),
+                b(g)
+                    .filter(Filter::new().select("unique", "u00042"))
+                    .facet_fields(vec!["low99".into()])
+                    .histogram_field("low99")
+                    .build(),
+            ),
+            (
+                "pattern-on-high".into(),
+                b(g)
+                    .filter(Filter::new().select_pattern("unique", "u000.[13]"))
+                    .build(),
+            ),
+        ]
+    });
+}
+
+#[test]
+fn named_regressions_match() {
+    // The two divergences found by external review of the row scan,
+    // plus the multi-valued `unset` fixture — kept as permanent
+    // equivalence cases.
+    let records = vec![
+        LogRecord {
+            time_unix_nano: BASE_S * NS,
+            attributes: vec![
+                kv("a", s("b=c")), // pair `a=b=c`: field `a`, value `b=c`
+                kv("lang", string_array(&["en", "fr"])),
+                kv("svc", s("x")),
+            ],
+            ..LogRecord::default()
+        },
+        LogRecord {
+            time_unix_nano: (BASE_S + 1) * NS,
+            attributes: vec![kv("lang", s("en")), kv("svc", s("y"))],
+            ..LogRecord::default()
+        },
+        LogRecord {
+            time_unix_nano: (BASE_S + 2) * NS,
+            attributes: vec![kv("svc", s("x"))],
+            ..LogRecord::default()
+        },
+    ];
+    let corpus = Corpus {
+        batches: vec![vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![kv("service.name", s("harness"))],
+                ..Resource::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: records,
+                ..ScopeLogs::default()
+            }],
+            ..ResourceLogs::default()
+        }]],
+    };
+
+    check_corpus("regressions", &corpus, |summary| {
+        let start = summary.min_timestamp_s as i64 * NS as i64;
+        let span = ((summary.max_timestamp_s - summary.min_timestamp_s) as i64 + 1) * NS as i64;
+        let g = Grid::new(start, span, 1);
+        let b = LogsQueryBuilder::new;
+        vec![
+            // Divergence #1: a requested field name containing `=`
+            // concatenates to an existing pair string — must match
+            // nothing on both paths.
+            (
+                "eq-in-field-name".into(),
+                b(g).filter(Filter::new().select("a=b", "c")).build(),
+            ),
+            (
+                "eq-in-value".into(),
+                b(g).filter(Filter::new().select("a", "b=c")).build(),
+            ),
+            // Divergence #2: a malformed pattern on an *absent* field is
+            // resolved to the empty set before compiling on both paths
+            // (normal zero-match shard, not a degrade).
+            (
+                "bad-pattern-absent-field".into(),
+                b(g)
+                    .filter(Filter::new().select_pattern("missing", "(unclosed"))
+                    .facet_fields(vec!["svc".into()])
+                    .histogram_field("lang")
+                    .build(),
+            ),
+            // Multi-valued `unset`: row 0 carries two `lang` values,
+            // row 2 none.
+            (
+                "multivalued-unset".into(),
+                b(g)
+                    .histogram_field("lang")
+                    .facet_fields(vec!["lang".into()])
+                    .build(),
+            ),
+        ]
+    });
+}
