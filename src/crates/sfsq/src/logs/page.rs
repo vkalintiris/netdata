@@ -91,16 +91,26 @@ impl PageShard {
 
         // Cursors for every match, ascending — within a file, position order
         // is cursor order (timestamps are chronological and `seq`/`sub_id`
-        // are constant).
+        // are constant). A matched position with no timestamp means the
+        // file's chunks disagree (corrupt SFST); fail so the caller skips
+        // this source rather than emitting a bogus epoch-0 cursor.
         let ascending: Vec<Cursor> = matched
             .into_iter()
-            .map(|position| Cursor {
-                timestamp_ns: timestamps.at(position).unwrap_or(0),
-                file_seq: seq,
-                sub_id,
-                position,
+            .map(|position| {
+                let timestamp_ns = timestamps.at(position).ok_or_else(|| {
+                    sfst::Error::CorruptIndex(format!(
+                        "matched position {position} has no timestamp \
+                         (file_seq={seq}, sub_id={sub_id})"
+                    ))
+                })?;
+                Ok(Cursor {
+                    timestamp_ns,
+                    file_seq: seq,
+                    sub_id,
+                    position,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, sfst::Error>>()?;
 
         Ok(Self::from_cursors(ascending, query.direction, anchor, bound))
     }

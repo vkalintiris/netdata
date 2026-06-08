@@ -105,6 +105,14 @@ pub enum Error {
     /// with a non-positive bucket width.
     #[error("invalid bucket width: {0} (must be > 0)")]
     InvalidBucketWidth(i64),
+
+    /// A consumer found the file's chunks internally inconsistent — e.g. a
+    /// matched log position has no corresponding entry in the timestamps
+    /// chunk. Indicates a corrupt SFST (bit-rot or a producer bug); a
+    /// well-formed file never triggers this. The query layer skips the
+    /// file rather than serving corrupted rows.
+    #[error("corrupt index: {0}")]
+    CorruptIndex(String),
 }
 
 /// Error type for the WAL → SFST indexing pipeline
