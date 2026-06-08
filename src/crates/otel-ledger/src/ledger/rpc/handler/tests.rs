@@ -16,7 +16,11 @@ fn make_tenant_registries() -> TenantRegistries {
 }
 
 fn make_handler(tr: TenantRegistries) -> OtelLogsHandler {
-    OtelLogsHandler::new(Arc::new(RwLock::new(tr)))
+    OtelLogsHandler::new(
+        Arc::new(RwLock::new(tr)),
+        Arc::new(crate::chunk::ChunkCache::new(64 * 1024 * 1024)),
+        16_384,
+    )
 }
 
 fn make_ctx(transaction: &str) -> FunctionCallContext {

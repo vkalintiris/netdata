@@ -23,19 +23,114 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use sfsq::logs::run;
+use sfsq::logs::{SfstCandidate, Source, WalTail, run};
 
 use super::adapter::{to_result, window_secs};
 use super::wire::{InfoResponse, LogsResult, OtelLogsRequest, OtelLogsResponse};
-use crate::registry::TenantRegistries;
+use crate::chunk::{ChunkCache, chunk_boundaries, tail_start};
+use crate::registry::{TenantRegistries, WalDesc};
 
 pub(crate) struct OtelLogsHandler {
     registries: Arc<RwLock<TenantRegistries>>,
+    /// Shared with the ledger (which drops a WAL's chunks on rotation).
+    chunk_cache: Arc<ChunkCache>,
+    /// Minimum records per chunk when indexing an active WAL's prefix.
+    min_entries: u64,
 }
 
 impl OtelLogsHandler {
-    pub(crate) fn new(registries: Arc<RwLock<TenantRegistries>>) -> Self {
-        Self { registries }
+    pub(crate) fn new(
+        registries: Arc<RwLock<TenantRegistries>>,
+        chunk_cache: Arc<ChunkCache>,
+        min_entries: u64,
+    ) -> Self {
+        Self {
+            registries,
+            chunk_cache,
+            min_entries,
+        }
+    }
+
+    /// Resolve one active-WAL descriptor into in-memory chunk SFST
+    /// candidates plus the sub-chunk tail. Off the registry lock.
+    ///
+    /// Scans the durable prefix's frame headers, groups them into chunks
+    /// at `min_entries`, and builds each missing chunk through the cache
+    /// (singleflight). A chunk that fails to build or whose record count
+    /// doesn't match the scan is logged and skipped — its data is absent
+    /// from this response and reappears once it (or the whole WAL's
+    /// SFST) is available, mirroring the engine's per-source degrade.
+    async fn resolve_wal(&self, wal: WalDesc) -> (Vec<SfstCandidate>, Option<WalTail>) {
+        let header = wal::HEADER_SIZE as u64;
+        let scan_path = wal.path.clone();
+        let valid_up_to = wal.valid_up_to;
+        let frames = match tokio::task::spawn_blocking(move || {
+            wal::scan_frame_boundaries(&scan_path, header, valid_up_to)
+        })
+        .await
+        {
+            Ok(Ok(frames)) => frames,
+            Ok(Err(e)) => {
+                tracing::warn!(seq = wal.seq, "WAL boundary scan failed: {e}");
+                return (Vec::new(), None);
+            }
+            Err(e) => {
+                tracing::warn!(seq = wal.seq, "WAL boundary scan task failed: {e}");
+                return (Vec::new(), None);
+            }
+        };
+
+        let chunks = chunk_boundaries(&frames, header, self.min_entries);
+        let mut candidates = Vec::new();
+        for chunk in &chunks {
+            let seq = wal.seq;
+            let path = wal.path.clone();
+            let (start, end, expected) = (chunk.start, chunk.end, chunk.entry_count);
+            // The build future: index the byte range on a blocking
+            // thread and cross-check the record count (the truncation
+            // check open_range defers). Runs once per (seq, index) under
+            // singleflight; skipped entirely on a cache hit.
+            let init = async move {
+                match tokio::task::spawn_blocking(move || sfst::index_range(&path, start, end))
+                    .await
+                {
+                    Ok(Ok((summary, bytes))) => {
+                        if u64::from(summary.total_logs) != expected {
+                            Err(format!(
+                                "chunk record count {} != expected {expected}",
+                                summary.total_logs
+                            ))
+                        } else {
+                            Ok(Arc::new(bytes))
+                        }
+                    }
+                    Ok(Err(e)) => Err(format!("index_range: {e}")),
+                    Err(e) => Err(format!("build task: {e}")),
+                }
+            };
+
+            match self.chunk_cache.get_or_build(seq, chunk.index, init).await {
+                Ok(bytes) => match sfst::IndexReader::open(&bytes[..]) {
+                    Ok(reader) => candidates.push(SfstCandidate {
+                        summary: reader.summary().clone(),
+                        seq,
+                        source: Source::Memory(bytes),
+                    }),
+                    Err(e) => {
+                        tracing::warn!(seq, index = chunk.index, "chunk parse failed: {e}")
+                    }
+                },
+                Err(e) => tracing::warn!(seq, index = chunk.index, "chunk build skipped: {e}"),
+            }
+        }
+
+        let tail = WalTail {
+            seq: wal.seq,
+            path: wal.path,
+            start: tail_start(&chunks, header),
+            end: wal.valid_up_to,
+        };
+        (candidates, Some(tail))
     }
 }
 
@@ -65,27 +160,44 @@ impl FunctionHandler for OtelLogsHandler {
             }
         })?;
         let time_range = window_secs(&query.grid());
-        let candidates = {
+        // Snapshot the candidate set under a brief read lock: on-disk
+        // SFSTs plus the unindexed WALs overlapping the window, owned so
+        // the lock drops before any I/O. `valid_up_to` is captured here,
+        // once — every chunk and tail derives from this single value, so
+        // the whole query sees one consistent durable prefix even as
+        // ingestion advances it.
+        let (mut sfst_candidates, wal_descs) = {
             let guard = self.registries.read().await;
             let q = file_registry::Query {
                 time_range: time_range.clone(),
                 stream: None,
             };
-            guard.sfst_candidates(&q)
+            guard.query_snapshot(&q)
         };
 
+        // Resolve each WAL into in-memory chunk SFSTs + a tail (off the
+        // lock; chunk builds are singleflighted through the cache).
+        let mut wal_tails: Vec<WalTail> = Vec::new();
+        for wal in wal_descs {
+            let (chunks, tail) = self.resolve_wal(wal).await;
+            sfst_candidates.extend(chunks);
+            if let Some(tail) = tail {
+                wal_tails.push(tail);
+            }
+        }
+
         let (after, before) = (time_range.start, time_range.end);
-        if candidates.is_empty() {
+        if sfst_candidates.is_empty() && wal_tails.is_empty() {
             return Ok(OtelLogsResponse::Logs(LogsResult::empty_stub(
                 after, before, last,
             )));
         }
 
         // The query is synchronous and CPU/IO-bound (opens + decompresses
-        // SFSTs); run it and shape the neutral result into the wire
-        // envelope off the runtime thread.
+        // SFSTs, row-scans the tails); run it and shape the neutral
+        // result into the wire envelope off the runtime thread.
         let result = match tokio::task::spawn_blocking(move || {
-            to_result(run(candidates, query), last)
+            to_result(run(sfst_candidates, wal_tails, query), last)
         })
         .await
         {

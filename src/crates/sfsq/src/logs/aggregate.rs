@@ -103,13 +103,13 @@ impl LogsShard {
     /// high-card here is skipped; a field high-card in some *other* file is
     /// dropped later, in [`LogsShard::merge`].
     pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
-        let Some(mapping) = mmap::map_file(&candidate.path) else {
+        let Some(mapped) = mmap::map_source(&candidate.source) else {
             return LogsShard::default();
         };
-        let reader = match sfst::IndexReader::open(&mapping) {
+        let reader = match sfst::IndexReader::open(mapped.bytes()) {
             Ok(reader) => reader,
             Err(e) => {
-                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
+                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.source.describe());
                 return LogsShard::default();
             }
         };
@@ -127,7 +127,7 @@ impl LogsShard {
             Err(e) => {
                 tracing::warn!(
                     "sfsq: compile filter failed for {}: {e}",
-                    candidate.path.display()
+                    candidate.source.describe()
                 );
                 return LogsShard {
                     matched: 0,
@@ -143,7 +143,7 @@ impl LogsShard {
             Err(e) => {
                 tracing::warn!(
                     "sfsq: matched count failed for {}: {e}",
-                    candidate.path.display()
+                    candidate.source.describe()
                 );
                 0
             }
@@ -157,7 +157,7 @@ impl LogsShard {
         let facets = match reader.facets(&facet_fields, &filter, window) {
             Ok(facets) => facets,
             Err(e) => {
-                tracing::warn!("sfsq: facets failed for {}: {e}", candidate.path.display());
+                tracing::warn!("sfsq: facets failed for {}: {e}", candidate.source.describe());
                 Vec::new()
             }
         };
@@ -170,7 +170,7 @@ impl LogsShard {
             Err(e) => {
                 tracing::warn!(
                     "sfsq: timeline failed for {}: {e}",
-                    candidate.path.display()
+                    candidate.source.describe()
                 );
                 None
             }
@@ -179,11 +179,13 @@ impl LogsShard {
         // Release the file's cold suffix (mid/high field chunks + stream
         // batches) from the page cache so it doesn't evict the hot prefix
         // (summary / metadata / timestamps / primary) across queries. Release
-        // the reader's borrows of the mapping before advising it.
+        // the reader's borrows of the mapping before advising it. Only a
+        // file mapping has page-cache pages to drop; an in-memory chunk has
+        // none.
         let cold_region = reader.cold_region();
         drop(reader);
-        if let Some(region) = cold_region {
-            mmap::release_cold_region(&mapping, region);
+        if let (Some(region), mmap::Mapped::File(mmap)) = (cold_region, &mapped) {
+            mmap::release_cold_region(mmap, region);
         }
 
         LogsShard {

@@ -43,6 +43,12 @@ impl Ledger {
                     return;
                 };
 
+                // Drop the WAL's query-time chunks: its authoritative
+                // SFST is now registered (above) and supersedes them. The
+                // SFST is visible before the WAL is deleted, so a query
+                // racing this resolves the seq to the SFST, never a gap.
+                self.chunk_cache.drop_seq(file_id.seq).await;
+
                 // Delete WAL file
                 let req = CleanerRequest::DeleteWalFile {
                     sequence: file_id.seq,

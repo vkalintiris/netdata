@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use memmap2::Mmap;
+use super::mmap::Mapped;
 
 use super::cursor::Cursor;
 use super::engine::SfstCandidate;
@@ -239,10 +239,10 @@ pub(super) struct Page {
 /// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
-pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page {
+pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page {
     // Process closest-to-anchor first so we can stop once the page is full:
     // backward walks newest -> oldest, forward oldest -> newest.
-    let mut order: Vec<&SfstCandidate> = candidates.iter().collect();
+    let mut order: Vec<&SfstCandidate> = candidates.to_vec();
     match query.direction {
         Direction::Backward => {
             order.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
@@ -252,9 +252,9 @@ pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page 
 
     // Map up front (cheap — no chunk is read until a reader opens) so the
     // readers borrowing the mappings see a stable Vec.
-    let mappings: Vec<(Mmap, &SfstCandidate)> = order
+    let mappings: Vec<(Mapped, &SfstCandidate)> = order
         .iter()
-        .filter_map(|candidate| mmap::map_file(&candidate.path).map(|m| (m, *candidate)))
+        .filter_map(|candidate| mmap::map_source(&candidate.source).map(|m| (m, *candidate)))
         .collect();
 
     // Open + evaluate one file at a time, folding into a running merge, and
@@ -268,10 +268,10 @@ pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page 
     let mut reader_mapping: Vec<usize> = Vec::new();
     let mut merged = PageShard::default();
     for (index, (mapping, candidate)) in mappings.iter().enumerate() {
-        let reader = match sfst::IndexReader::open(mapping) {
+        let reader = match sfst::IndexReader::open(mapping.bytes()) {
             Ok(reader) => reader,
             Err(e) => {
-                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.path.display());
+                tracing::warn!("sfsq: failed to parse {}: {e}", candidate.source.describe());
                 continue;
             }
         };
@@ -280,7 +280,7 @@ pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page 
             Err(e) => {
                 tracing::warn!(
                     "sfsq: page candidates failed for {}: {e}",
-                    candidate.path.display()
+                    candidate.source.describe()
                 );
                 continue;
             }
@@ -334,7 +334,9 @@ pub(super) fn paginate(candidates: &[SfstCandidate], query: &LogsQuery) -> Page 
     drop(files);
     drop(readers);
     for (index, region) in cold {
-        mmap::release_cold_region(&mappings[index].0, region);
+        if let Mapped::File(m) = &mappings[index].0 {
+            mmap::release_cold_region(m, region);
+        }
     }
 
     page

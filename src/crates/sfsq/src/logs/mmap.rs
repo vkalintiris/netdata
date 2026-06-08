@@ -9,8 +9,42 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 use memmap2::{Mmap, UncheckedAdvice};
+
+use super::engine::Source;
+
+/// A candidate's bytes, however they are backed: a memory-mapped file or
+/// an in-memory chunk image. Both deref to `&[u8]` for
+/// [`sfst::IndexReader::open`]; only the file variant participates in
+/// cold-suffix page-cache release (an in-memory chunk has no file pages
+/// to advise away).
+pub(super) enum Mapped {
+    File(Mmap),
+    Memory(Arc<Vec<u8>>),
+}
+
+impl Mapped {
+    pub(super) fn bytes(&self) -> &[u8] {
+        match self {
+            Mapped::File(m) => m,
+            Mapped::Memory(v) => v,
+        }
+    }
+}
+
+/// Obtain a candidate's bytes from its [`Source`], logging and returning
+/// `None` on failure (so one bad source never sinks a query). A `File`
+/// is memory-mapped; a `Memory` chunk's `Arc` is cloned (cheap — a
+/// refcount bump that keeps the bytes alive for the query even if the
+/// producing cache evicts the entry).
+pub(super) fn map_source(source: &Source) -> Option<Mapped> {
+    match source {
+        Source::File(path) => map_file(path).map(Mapped::File),
+        Source::Memory(bytes) => Some(Mapped::Memory(Arc::clone(bytes))),
+    }
+}
 
 /// Memory-map an SFST file read-only, logging and returning `None` on
 /// failure (so one bad file never sinks a query).

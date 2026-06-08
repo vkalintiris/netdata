@@ -64,7 +64,7 @@ fn try_main() -> Result<(), String> {
         candidates.push(SfstCandidate {
             summary,
             seq: seq as u64,
-            path: path.clone(),
+            source: sfsq::logs::Source::File(path.clone()),
         });
     }
 
@@ -100,7 +100,8 @@ fn try_main() -> Result<(), String> {
     if let Some(q) = args.query {
         builder = builder.query(q);
     }
-    let data = run(candidates, builder.build());
+    // This example queries sealed SFSTs only; no active-WAL tails.
+    let data = run(candidates, Vec::new(), builder.build());
     print_result(&data);
     Ok(())
 }

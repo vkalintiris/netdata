@@ -1,8 +1,21 @@
-use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use file_registry::{FileId, TenantId};
 use sfsq::logs::SfstCandidate;
+
+/// An active (or sealed-but-unindexed) WAL file overlapping a query
+/// window — owned so it outlives the registry read lock. The query path
+/// resolves it into chunk SFSTs + a tail by scanning to `valid_up_to`;
+/// `entry_count` is the durable-prefix record count used to cross-check
+/// each built chunk.
+#[derive(Debug, Clone)]
+pub struct WalDesc {
+    pub seq: u64,
+    pub path: PathBuf,
+    pub valid_up_to: u64,
+    pub entry_count: u64,
+}
 
 // ---------------------------------------------------------------------------
 // Composition
@@ -286,10 +299,42 @@ impl TenantRegistries {
                 r.sfst.candidates(q).map(move |f| SfstCandidate {
                     summary: f.summary.clone(),
                     seq: f.id.seq,
-                    path: r.sfst.file_path(f.id),
+                    source: sfsq::logs::Source::File(r.sfst.file_path(f.id)),
                 })
             })
             .collect()
+    }
+
+    /// The full candidate set for `q`: every overlapping on-disk SFST,
+    /// plus every overlapping WAL that has **not** been indexed yet
+    /// (active or sealed-but-unindexed). Deduplicated by sequence number
+    /// — an SFST always wins over the WAL of the same seq, covering the
+    /// post-index/pre-delete window where both exist. WALs with no known
+    /// durable prefix (`valid_up_to == 0`: recovered from disk, or not
+    /// yet synced) are excluded — there is no trustworthy byte bound to
+    /// read them by.
+    ///
+    /// Both lists are owned, so the caller can drop the read lock before
+    /// resolving the WALs (scan + chunk build) off the lock.
+    pub fn query_snapshot(&self, q: &file_registry::Query) -> (Vec<SfstCandidate>, Vec<WalDesc>) {
+        let sfsts = self.sfst_candidates(q);
+        let sfst_seqs: HashSet<u64> = sfsts.iter().map(|c| c.seq).collect();
+
+        let mut wals = Vec::new();
+        for r in self.tenants.values() {
+            for f in r.wal.candidates(q) {
+                if sfst_seqs.contains(&f.id.seq) || f.valid_up_to.0 == 0 {
+                    continue;
+                }
+                wals.push(WalDesc {
+                    seq: f.id.seq,
+                    path: r.wal.file_path(f.id),
+                    valid_up_to: f.valid_up_to.0,
+                    entry_count: f.entry_count,
+                });
+            }
+        }
+        (sfsts, wals)
     }
 }
 

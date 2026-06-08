@@ -35,7 +35,7 @@ mod wal_scan;
 
 pub use aggregate::LogsShard;
 pub use cursor::Cursor;
-pub use engine::{SfstCandidate, run};
+pub use engine::{SfstCandidate, Source, WalTail, run};
 pub use page::PageShard;
 pub use query::{Anchor, Direction, LogsQuery, LogsQueryBuilder};
 pub use result::LogsData;

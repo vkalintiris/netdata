@@ -40,7 +40,7 @@ use opentelemetry_proto::tonic::common::v1::{
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
-use sfsq::logs::{LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, WalScan};
+use sfsq::logs::{LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, Source, WalScan, WalTail, run};
 use sfst::{Filter, Grid};
 
 // ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ fn index_candidate(wal_path: &Path, dir: &Path) -> SfstCandidate {
     SfstCandidate {
         summary: result.summary,
         seq: 1,
-        path: sfst_path,
+        source: sfsq::logs::Source::File(sfst_path),
     }
 }
 
@@ -817,7 +817,7 @@ fn index_range_interior_split_partitions_logs() {
         let whole_cand = SfstCandidate {
             summary: whole.summary.clone(),
             seq: 3,
-            path: whole_path,
+            source: sfsq::logs::Source::File(whole_path),
         };
 
         let start = whole.summary.min_timestamp_s as i64 * NS as i64;
@@ -860,8 +860,134 @@ fn candidate_from_bytes(
     SfstCandidate {
         summary,
         seq: 1,
-        path,
+        source: sfsq::logs::Source::File(path),
     }
+}
+
+/// Group frame boundaries into chunks of >= `min_entries` records,
+/// returning `(start, end)` byte ranges — the inline equivalent of the
+/// ledger's `chunk_boundaries` (which sfsq tests can't import). The tail
+/// is everything after the last returned chunk.
+fn group_chunks(frames: &[wal::FrameBoundary], start: u64, min_entries: u64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let mut chunk_start = start;
+    let mut acc = 0u64;
+    for f in frames {
+        acc += u64::from(f.entry_count);
+        if acc >= min_entries {
+            out.push((chunk_start, f.end_offset));
+            chunk_start = f.end_offset;
+            acc = 0;
+        }
+    }
+    out
+}
+
+#[test]
+fn wal_data_stats_equal_whole_file_index() {
+    // The milestone-4a gate: querying an active WAL through the live
+    // path — chunk SFSTs (built by index_range, fed in as Source::Memory)
+    // plus a row-scanned tail, folded by the engine — must yield the
+    // same *statistics* (matched, facets, histogram) as indexing the
+    // whole WAL and querying that. Only stats: M4a paginates on-disk
+    // SFSTs only, and chunk/whole field-table cardinality can legitimately
+    // differ (conservative merge), so rows/fields are out of scope here.
+    let header = wal::HEADER_SIZE as u64;
+
+    for seed in 1..=8 {
+        let corpus = gen_corpus(seed);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = write_wal(dir.path(), &corpus);
+        let file_len = std::fs::metadata(&wal_path).unwrap().len();
+
+        // Ground truth: the whole WAL as one on-disk SFST.
+        let whole = index_candidate(&wal_path, dir.path());
+        let total = whole.summary.total_logs;
+        let start = whole.summary.min_timestamp_s as i64 * NS as i64;
+        let span =
+            ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+
+        let queries = || -> Vec<(String, LogsQuery)> {
+            let b = LogsQueryBuilder::new;
+            vec![
+                (
+                    "all".into(),
+                    b(Grid::new(start, (span + 7) / 8, 8))
+                        .histogram_field("level")
+                        .facet_fields(vec!["level".into()])
+                        .build(),
+                ),
+                (
+                    "level=error".into(),
+                    b(Grid::new(start, span, 1))
+                        .filter(Filter::new().select("level", "error"))
+                        .histogram_field("level")
+                        .facet_fields(vec!["level".into()])
+                        .build(),
+                ),
+            ]
+        };
+
+        // Two splits: all-tail (no chunks → pure WalScan path) and a
+        // small threshold (chunks + maybe a tail → the merge path).
+        for min_entries in [u64::MAX, 25] {
+            let chunks = group_chunks(
+                &wal::scan_frame_boundaries(&wal_path, header, file_len).unwrap(),
+                header,
+                min_entries,
+            );
+            let mut live_candidates: Vec<SfstCandidate> = Vec::new();
+            for (i, &(s, e)) in chunks.iter().enumerate() {
+                let (summary, bytes) = sfst::index_range(&wal_path, s, e).unwrap();
+                live_candidates.push(SfstCandidate {
+                    summary,
+                    seq: i as u64,
+                    source: Source::Memory(Arc::new(bytes)),
+                });
+            }
+            let tail_begin = chunks.last().map_or(header, |&(_, e)| e);
+            let tails = vec![WalTail {
+                seq: 9999,
+                path: wal_path.clone(),
+                start: tail_begin,
+                end: file_len,
+            }];
+
+            for (qlabel, q) in queries() {
+                let live = run(live_candidates_clone(&live_candidates), tails_clone(&tails), q.clone());
+                let truth = run(vec![clone_candidate(&whole)], Vec::new(), q);
+                let ctx = format!("seed={seed} min_entries={min_entries} q={qlabel}");
+                assert_eq!(live.matched, truth.matched, "matched [{ctx}]");
+                assert_eq!(live.facets, truth.facets, "facets [{ctx}]");
+                assert_eq!(live.histogram, truth.histogram, "histogram [{ctx}]");
+                // Sanity: the WAL actually had data in scope.
+                let _ = total;
+            }
+        }
+    }
+}
+
+// run() consumes its candidates; these clone the small fixtures so the
+// loop can reuse them across queries.
+fn clone_candidate(c: &SfstCandidate) -> SfstCandidate {
+    SfstCandidate {
+        summary: c.summary.clone(),
+        seq: c.seq,
+        source: c.source.clone(),
+    }
+}
+fn live_candidates_clone(cs: &[SfstCandidate]) -> Vec<SfstCandidate> {
+    cs.iter().map(clone_candidate).collect()
+}
+fn tails_clone(ts: &[WalTail]) -> Vec<WalTail> {
+    ts.iter()
+        .map(|t| WalTail {
+            seq: t.seq,
+            path: t.path.clone(),
+            start: t.start,
+            end: t.end,
+        })
+        .collect()
 }
 
 #[test]

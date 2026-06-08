@@ -135,11 +135,23 @@ pub struct WalScan {
 impl WalScan {
     /// Decode every frame of the WAL file at `path` into rows.
     ///
-    /// Reads the whole file; reading only a bounded prefix
-    /// (`valid_up_to`) of an actively-written file is the bounded-reader
-    /// concern layered on top (milestone 2 of `docs/wal-query-design.md`).
+    /// Reads the whole file. To scan only the durable, not-yet-indexed
+    /// tail of an active file, use [`scan_range`](Self::scan_range).
     pub fn scan(path: &Path) -> Result<WalScan, WalScanError> {
         let mut reader = wal::Reader::open(path)?;
+        Self::drain(&mut reader)
+    }
+
+    /// Decode the frames in the byte range `[start, end)` into rows — the
+    /// active-WAL tail. `start` is a frame boundary (a chunk end), `end`
+    /// the durable bound (`valid_up_to`); see [`wal::Reader::open_range`]
+    /// for the soundness checks. An empty range yields a zero-row scan.
+    pub fn scan_range(path: &Path, start: u64, end: u64) -> Result<WalScan, WalScanError> {
+        let mut reader = wal::Reader::open_range(path, start, end)?;
+        Self::drain(&mut reader)
+    }
+
+    fn drain(reader: &mut wal::Reader) -> Result<WalScan, WalScanError> {
         let mut sink = ScanSink::default();
         while let Some(frame) = reader.next_frame()? {
             sfst::indexer::decode_frame(&frame, &mut sink)?;

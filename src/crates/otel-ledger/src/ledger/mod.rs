@@ -30,6 +30,7 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog_builder::{CatalogBuilder, CatalogBuilderArgs};
+use crate::chunk::ChunkCache;
 use crate::cleaner::Cleaner;
 use crate::component::ComponentHandle;
 use crate::event::LedgerEvent;
@@ -45,6 +46,13 @@ use crate::recovery::{
 use crate::registry::TenantRegistries;
 use crate::uploader::Uploader;
 
+/// Minimum records per chunk when indexing an active WAL's prefix at
+/// query time. A fixed default for now; made configurable with the rest
+/// of chunk-cache governance.
+const CHUNK_MIN_ENTRIES: u64 = 16_384;
+/// Byte budget for the query-time chunk cache (LRU eviction above it).
+const CHUNK_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
 pub struct Ledger {
     supervisor: Connection<LedgerResponse, LedgerRequest>,
     ingestor: Connection<(), wal::Message>,
@@ -53,6 +61,9 @@ pub struct Ledger {
     uploader: ComponentHandle<UploaderRequest, UploaderResponse>,
     catalog_builder: ComponentHandle<CatalogBuilderRequest, CatalogBuilderResponse>,
     registries: Arc<RwLock<TenantRegistries>>,
+    /// Query-time chunk SFSTs of active WALs; the ledger drops a WAL's
+    /// chunks here when its authoritative SFST is registered.
+    chunk_cache: Arc<ChunkCache>,
     logs_config: LogsConfig,
     expected_frame_seq: u64,
     pub(crate) cancel: CancellationToken,
@@ -238,7 +249,17 @@ impl Ledger {
 
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
 
-        let otel_handler = OtelLogsHandler::new(registries.clone());
+        // Query-time chunk cache, shared between the handler (populates
+        // it) and the indexer-response path (drops a WAL's chunks on
+        // rotation). The budget and chunk size are fixed defaults for
+        // now; tuning is deferred with the rest of cache governance.
+        let chunk_cache = Arc::new(ChunkCache::new(CHUNK_CACHE_BYTES));
+
+        let otel_handler = OtelLogsHandler::new(
+            registries.clone(),
+            chunk_cache.clone(),
+            CHUNK_MIN_ENTRIES,
+        );
 
         // Signal Ready between handler setup and the ingestor accept;
         // see the method docstring for the full ordering rationale.
@@ -261,6 +282,7 @@ impl Ledger {
             uploader,
             catalog_builder,
             registries,
+            chunk_cache,
             logs_config: logs_config.clone(),
             expected_frame_seq: 1,
             cancel,
