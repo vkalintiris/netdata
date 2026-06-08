@@ -6,15 +6,14 @@ use sfsq::logs::SfstCandidate;
 
 /// An active (or sealed-but-unindexed) WAL file overlapping a query
 /// window — owned so it outlives the registry read lock. The query path
-/// resolves it into chunk SFSTs + a tail by scanning to `valid_up_to`;
-/// `entry_count` is the durable-prefix record count used to cross-check
-/// each built chunk.
-#[derive(Debug, Clone)]
+/// resolves it into chunk SFSTs + tails by scanning to `valid_up_to`
+/// (the durable read bound); each chunk is cross-checked against the
+/// record count from its own frame-header scan.
+#[derive(Debug)]
 pub struct WalDesc {
     pub seq: u64,
     pub path: PathBuf,
     pub valid_up_to: u64,
-    pub entry_count: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +307,15 @@ impl TenantRegistries {
     /// The full candidate set for `q`: every overlapping on-disk SFST,
     /// plus every overlapping WAL that has **not** been indexed yet
     /// (active or sealed-but-unindexed). Deduplicated by sequence number
-    /// — an SFST always wins over the WAL of the same seq, covering the
-    /// post-index/pre-delete window where both exist. WALs with no known
-    /// durable prefix (`valid_up_to == 0`: recovered from disk, or not
-    /// yet synced) are excluded — there is no trustworthy byte bound to
-    /// read them by.
+    /// — an SFST always wins over the WAL of the same seq (seq is a
+    /// single global counter shared across tenants and streams, so a
+    /// plain `seq` key is unambiguous), covering the post-index/pre-delete
+    /// window where both exist. WALs with no known durable prefix
+    /// (`valid_up_to == 0`: recovered from disk, or not yet synced) are
+    /// excluded — there is no trustworthy byte bound to read them by.
+    /// (Recovered WALs are already excluded upstream by `candidates`,
+    /// which skips files whose log-data range is unknown; this is the
+    /// belt-and-suspenders bound check.)
     ///
     /// Both lists are owned, so the caller can drop the read lock before
     /// resolving the WALs (scan + chunk build) off the lock.
@@ -330,7 +333,6 @@ impl TenantRegistries {
                     seq: f.id.seq,
                     path: r.wal.file_path(f.id),
                     valid_up_to: f.valid_up_to.0,
-                    entry_count: f.entry_count,
                 });
             }
         }

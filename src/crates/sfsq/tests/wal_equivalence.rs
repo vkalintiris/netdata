@@ -893,6 +893,7 @@ fn wal_data_stats_equal_whole_file_index() {
     // SFSTs only, and chunk/whole field-table cardinality can legitimately
     // differ (conservative merge), so rows/fields are out of scope here.
     let header = wal::HEADER_SIZE as u64;
+    let mut any_matched = false;
 
     for seed in 1..=8 {
         let corpus = gen_corpus(seed);
@@ -928,6 +929,8 @@ fn wal_data_stats_equal_whole_file_index() {
             ]
         };
 
+        assert!(total > 0, "seed={seed}: fixture WAL has no records");
+
         // Two splits: all-tail (no chunks → pure WalScan path) and a
         // small threshold (chunks + maybe a tail → the merge path).
         for min_entries in [u64::MAX, 25] {
@@ -936,6 +939,16 @@ fn wal_data_stats_equal_whole_file_index() {
                 header,
                 min_entries,
             );
+            // Confirm each split exercises the path it's meant to: the
+            // MAX threshold yields no chunks (everything is tail), and
+            // the small threshold yields at least one chunk (the
+            // Source::Memory merge path is actually under test).
+            if min_entries == u64::MAX {
+                assert!(chunks.is_empty(), "seed={seed}: MAX threshold should make all tail");
+            } else {
+                assert!(!chunks.is_empty(), "seed={seed}: small threshold should produce a chunk");
+            }
+
             let mut live_candidates: Vec<SfstCandidate> = Vec::new();
             for (i, &(s, e)) in chunks.iter().enumerate() {
                 let (summary, bytes) = sfst::index_range(&wal_path, s, e).unwrap();
@@ -960,11 +973,15 @@ fn wal_data_stats_equal_whole_file_index() {
                 assert_eq!(live.matched, truth.matched, "matched [{ctx}]");
                 assert_eq!(live.facets, truth.facets, "facets [{ctx}]");
                 assert_eq!(live.histogram, truth.histogram, "histogram [{ctx}]");
-                // Sanity: the WAL actually had data in scope.
-                let _ = total;
+                if truth.matched > 0 {
+                    any_matched = true;
+                }
             }
         }
     }
+    // Guard against a silently-vacuous sweep (every query matching zero
+    // on both sides would "pass" while testing nothing).
+    assert!(any_matched, "no query matched any rows across the sweep");
 }
 
 // run() consumes its candidates; these clone the small fixtures so the

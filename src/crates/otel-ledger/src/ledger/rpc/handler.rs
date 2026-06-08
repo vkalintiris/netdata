@@ -52,15 +52,19 @@ impl OtelLogsHandler {
     }
 
     /// Resolve one active-WAL descriptor into in-memory chunk SFST
-    /// candidates plus the sub-chunk tail. Off the registry lock.
+    /// candidates plus the WAL-tail byte ranges to row-scan. Off the
+    /// registry lock.
     ///
     /// Scans the durable prefix's frame headers, groups them into chunks
-    /// at `min_entries`, and builds each missing chunk through the cache
-    /// (singleflight). A chunk that fails to build or whose record count
-    /// doesn't match the scan is logged and skipped — its data is absent
-    /// from this response and reappears once it (or the whole WAL's
-    /// SFST) is available, mirroring the engine's per-source degrade.
-    async fn resolve_wal(&self, wal: WalDesc) -> (Vec<SfstCandidate>, Option<WalTail>) {
+    /// at `min_entries`, and builds each through the cache (singleflight).
+    /// A chunk that fails to build or parse does **not** drop its data:
+    /// its byte range is added to the tails for the row scanner to cover
+    /// instead, so the chunks (built) and tails (everything else)
+    /// together still partition `[HEADER, valid_up_to)` exactly once —
+    /// even if a *middle* chunk fails. Returns no candidates and no tails
+    /// only when the WAL can't be read at all (rotated/deleted under us);
+    /// that seq's data reappears via its SFST.
+    async fn resolve_wal(&self, wal: WalDesc) -> (Vec<SfstCandidate>, Vec<WalTail>) {
         let header = wal::HEADER_SIZE as u64;
         let scan_path = wal.path.clone();
         let valid_up_to = wal.valid_up_to;
@@ -72,16 +76,26 @@ impl OtelLogsHandler {
             Ok(Ok(frames)) => frames,
             Ok(Err(e)) => {
                 tracing::warn!(seq = wal.seq, "WAL boundary scan failed: {e}");
-                return (Vec::new(), None);
+                return (Vec::new(), Vec::new());
             }
             Err(e) => {
                 tracing::warn!(seq = wal.seq, "WAL boundary scan task failed: {e}");
-                return (Vec::new(), None);
+                return (Vec::new(), Vec::new());
             }
         };
 
         let chunks = chunk_boundaries(&frames, header, self.min_entries);
         let mut candidates = Vec::new();
+        let mut tails = Vec::new();
+        // A chunk's range that ends up row-scanned instead of indexed.
+        let mut fallback = |start: u64, end: u64| {
+            tails.push(WalTail {
+                seq: wal.seq,
+                path: wal.path.clone(),
+                start,
+                end,
+            });
+        };
         for chunk in &chunks {
             let seq = wal.seq;
             let path = wal.path.clone();
@@ -116,21 +130,35 @@ impl OtelLogsHandler {
                         seq,
                         source: Source::Memory(bytes),
                     }),
+                    // Parsed-back failure is unexpected; cover the range
+                    // via the row scanner rather than drop it.
                     Err(e) => {
-                        tracing::warn!(seq, index = chunk.index, "chunk parse failed: {e}")
+                        tracing::warn!(seq, index = chunk.index, "chunk parse failed: {e}");
+                        fallback(chunk.start, chunk.end);
                     }
                 },
-                Err(e) => tracing::warn!(seq, index = chunk.index, "chunk build skipped: {e}"),
+                // Build failed (decode error, count mismatch, panic): the
+                // row scanner is the source of truth for the actual
+                // records — cover the range with it.
+                Err(e) => {
+                    tracing::warn!(seq, index = chunk.index, "chunk build fell back to scan: {e}");
+                    fallback(chunk.start, chunk.end);
+                }
             }
         }
 
-        let tail = WalTail {
-            seq: wal.seq,
-            path: wal.path,
-            start: tail_start(&chunks, header),
-            end: wal.valid_up_to,
-        };
-        (candidates, Some(tail))
+        // The final tail after the last complete chunk. Skip it when
+        // empty (the prefix divided evenly into chunks).
+        let tail_begin = tail_start(&chunks, header);
+        if tail_begin < wal.valid_up_to {
+            tails.push(WalTail {
+                seq: wal.seq,
+                path: wal.path.clone(),
+                start: tail_begin,
+                end: wal.valid_up_to,
+            });
+        }
+        (candidates, tails)
     }
 }
 
@@ -179,11 +207,9 @@ impl FunctionHandler for OtelLogsHandler {
         // lock; chunk builds are singleflighted through the cache).
         let mut wal_tails: Vec<WalTail> = Vec::new();
         for wal in wal_descs {
-            let (chunks, tail) = self.resolve_wal(wal).await;
+            let (chunks, tails) = self.resolve_wal(wal).await;
             sfst_candidates.extend(chunks);
-            if let Some(tail) = tail {
-                wal_tails.push(tail);
-            }
+            wal_tails.extend(tails);
         }
 
         let (after, before) = (time_range.start, time_range.end);
