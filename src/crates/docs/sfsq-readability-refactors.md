@@ -35,8 +35,10 @@ the headline.
 
 | ID | Item | Evidence | Status |
 |----|------|----------|--------|
-| C-1 | `PageShard::evaluate` builds cursors with `timestamps.at(position).unwrap_or(0)`. A `None` would emit a `1970` timestamp that sorts to the oldest position and corrupts the page / resets the consumer window. **Verified**: `at` is `None` only when `pos >= len` (`query.rs:242`); for a well-formed file matched positions are always in range, so this never fires in normal operation. It is a silent-corruption guard for *malformed* files only. | `page.rs:96-103` | **Verified — not a live bug.** Apply fail-fast (warn + skip the shard, or error) to match the M4b convention (`dca70b6e4d`), which chose loud-fail over silent drop for exactly this shape. |
+| C-1 ✅ | `PageShard::evaluate` built cursors with `timestamps.at(position).unwrap_or(0)`. A `None` would emit a `1970` timestamp that sorts to the oldest position and corrupts the page / resets the consumer window. **Verified**: `at` is `None` only when `pos >= len` (`query.rs:242`); for a well-formed file matched positions are always in range, so this never fires in normal operation. It is a silent-corruption guard for *malformed* files only. | `page.rs:96-103` | **Done (`0c001e1092`)** — returns `sfst::Error::CorruptIndex`; `paginate` skips the source with a warning, consistent with the engine's per-source degradation. |
 | C-2 | `matched` is `u64` in `LogsShard` but `usize` in `LogsData`, bridged by `as usize`. Truncates on 32-bit (theoretical for a 64-bit server). | `aggregate.rs:30`, `result.rs:19`, `engine.rs:190` | **API-facing — not trivial cleanup.** `LogsData::matched` is public and the wire `Items` uses `usize`; `u64` is the cleaner long-term type, but treat it as a coordinated engine+wire decision. Do **not** batch with trivial cleanups. |
+| C-3 | `sfst::IndexReader::materialize_rows` silently drops positions on inconsistency (out-of-range / missing batch / over-local `continue`s) and zeroes the timestamp via `at(pos).unwrap_or(0)`. The sfst-crate analog of the M4b `WalScan::materialize_rows` fix. **Lower priority than C-1**: it's the *fetch* path (wrong displayed value, not corrupted ordering), the `unwrap_or(0)` is already guarded by the `pos >= total` check, and for any selected position `PageShard::evaluate` (post-C-1) already validated its timestamp — so it's effectively unreachable in the query path. Fixing properly means `materialize_rows -> Result` threaded through `page.rs` materialize (which collapses the whole page on failure). | `reader.rs:261-273` | Low priority; robustness, not a live bug. |
+| C-4 | No negative-path test for C-1's `CorruptIndex` skip. Forge a corrupt SFST (mismatched matched-positions vs timestamps chunk), assert `PageShard::evaluate` errors and `paginate` skips the source while other sources still contribute. Needs test infra (forged file or a mock reader). | `page.rs:97-113` | Follow-up to C-1; non-trivial test infra. |
 
 ### Readability / maintainability
 
@@ -86,6 +88,7 @@ Each step lands as its own commit, gated by `wal_equivalence` + clippy.
 7. **P-1** — WAL double-scan (perf; around or after the cursor pass). Preserve separate step-1/step-2 products for fan-out.
 8. **C-2** — `u64`/`usize` count type, on its own: a coordinated engine+wire decision, not batched with trivial cleanups.
 9. Remaining perf (P-2, P-5) only with a benchmark; P-3/P-4 and the nits as encountered.
+10. **C-3, C-4** — low-priority follow-ups (sfst `materialize_rows` robustness; `CorruptIndex` negative-path test).
 
 Rationale: correctness first, then the cheap local readability wins, then the
 load-bearing structural refactor once the spine is understood, then perf.
