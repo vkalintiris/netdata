@@ -442,7 +442,7 @@ async fn populated_response_carries_facets_and_histogram() {
     // The cursor cell is the opaque "{ts_ns}:{seq}:{pos}" string.
     assert_eq!(
         row0[2],
-        format!("{}:1:5", (min_s as i64 + 5) * 1_000_000_000)
+        format!("{}:1:0:5", (min_s as i64 + 5) * 1_000_000_000)
     );
 }
 
@@ -729,7 +729,7 @@ async fn forward_pagination_returns_newer_rows_newest_first() {
 
     // Forward from pos 2 (seq 1) → the rows strictly newer: pos 3,4,5,
     // returned newest-first.
-    let anchor = format!("{}:1:2", (min_s as i64 + 2) * 1_000_000_000);
+    let anchor = format!("{}:1:0:2", (min_s as i64 + 2) * 1_000_000_000);
     let req: OtelLogsRequest = serde_json::from_slice(
         format!(r#"{{"info":false,{win},"last":3,"direction":"forward","anchor":"{anchor}"}}"#)
             .as_bytes(),

@@ -5,12 +5,13 @@ fn into_query_maps_histogram_and_anchor_forms() {
     // Empty histogram → the builder's default; a cursor string parses to
     // Anchor::Cursor.
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"histogram":"","anchor":"100:2:3"}"#).unwrap();
+        serde_json::from_slice(br#"{"histogram":"","anchor":"100:2:0:3"}"#).unwrap();
     let q = req.into_query().unwrap();
     assert_eq!(q.histogram_field(), "severity_text");
     assert!(matches!(
         q.anchor(),
-        Some(Anchor::Cursor(c)) if c.timestamp_ns == 100 && c.file_seq == 2 && c.position == 3
+        Some(Anchor::Cursor(c))
+            if c.timestamp_ns == 100 && c.file_seq == 2 && c.sub_id == 0 && c.position == 3
     ));
 
     // Non-empty histogram is carried through; a bare µs integer becomes
@@ -215,6 +216,7 @@ fn build_table_joins_multivalued_fields_and_keeps_last_severity() {
     let cursor = sfsq::logs::Cursor {
         timestamp_ns: 1_000_000_000,
         file_seq: 1,
+        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
         position: 0,
     };
     let row = sfst::MaterializedRow {

@@ -52,11 +52,15 @@ impl Source {
 /// A query candidate: an SFST whose range overlaps the request window —
 /// a sealed file or an in-memory chunk of an active WAL. Owned so the
 /// caller can release any lock on its file source before the query does
-/// I/O. `seq` is the file's monotonic per-file id, used as the
-/// cross-file tiebreaker in the pagination cursor's total order.
+/// I/O. `seq` is the file's monotonic per-file id; `sub_id` distinguishes
+/// the parts of one active WAL that share a `seq`
+/// ([`Cursor::SFST_SUB_ID`](super::cursor::Cursor::SFST_SUB_ID) for an
+/// on-disk SFST, the chunk index for an in-memory chunk). Together they
+/// place the candidate's rows in the pagination cursor's total order.
 pub struct SfstCandidate {
     pub summary: sfst::Summary,
     pub seq: u64,
+    pub sub_id: u32,
     pub source: Source,
 }
 
@@ -132,12 +136,11 @@ pub fn run(
     let columns: Vec<String> = stats.fields.names().map(str::to_owned).collect();
     let histogram = stats.timeline.unwrap_or_else(|| empty_timeline(grid));
 
-    // Step 2: paginate the on-disk SFSTs only (see the doc note above).
-    let page_candidates: Vec<&SfstCandidate> = sfst_candidates
-        .iter()
-        .filter(|c| matches!(c.source, Source::File(_)))
-        .collect();
-    let page = paginate(&page_candidates, &query);
+    // Step 2: paginate across every source under the unified cursor
+    // order — on-disk SFSTs, in-memory chunks (`sub_id` = chunk index),
+    // and the WAL tails (`sub_id` = TAIL).
+    let page_candidates: Vec<&SfstCandidate> = sfst_candidates.iter().collect();
+    let page = paginate(&page_candidates, &wal_tails, &query);
 
     LogsData {
         matched: stats.matched as usize,

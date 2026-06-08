@@ -10,14 +10,14 @@
 //! either `sfst::index` + `LogsShard::evaluate` or `WalScan::scan` +
 //! `evaluate` — and the two shards are compared component by component.
 //!
-//! Scope: this covers the **statistics** shard (matched count, facets,
-//! timeline, field table) — the whole of what `WalScan::evaluate`
-//! produces today. It does **not** cover materialized page rows,
-//! ordering, or pagination cursors: `WalScan` has no pagination yet
-//! (the engine's `paginate` interleaves chunk and tail rows under one
-//! cursor order, which is milestone 4). Row-level equivalence is added
-//! with that work; until then "milestone 1" means statistics
-//! equivalence.
+//! Scope: this covers both the **statistics** shard (matched count,
+//! facets, timeline, field table — `wal_data_stats_equal_whole_file_index`)
+//! and the **row table** served through the live path (chunk SFSTs
+//! interleaved with the row-scanned tail under the cursor order —
+//! `wal_data_rows_match_whole_file_index`, milestone 4b). The row test
+//! uses monotonic timestamps so the chunked and whole-file total orders
+//! coincide; equal-timestamp tie-break legitimately differs across the
+//! WAL→SFST transition (the documented cursor seam).
 //!
 //! Corpora are generated from a seeded deterministic RNG (failures
 //! reproduce by seed), sweeping timestamp regimes (monotonic, shuffled,
@@ -282,6 +282,7 @@ fn index_candidate(wal_path: &Path, dir: &Path) -> SfstCandidate {
     SfstCandidate {
         summary: result.summary,
         seq: 1,
+        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
         source: sfsq::logs::Source::File(sfst_path),
     }
 }
@@ -817,6 +818,7 @@ fn index_range_interior_split_partitions_logs() {
         let whole_cand = SfstCandidate {
             summary: whole.summary.clone(),
             seq: 3,
+            sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
             source: sfsq::logs::Source::File(whole_path),
         };
 
@@ -860,6 +862,7 @@ fn candidate_from_bytes(
     SfstCandidate {
         summary,
         seq: 1,
+        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
         source: sfsq::logs::Source::File(path),
     }
 }
@@ -955,6 +958,7 @@ fn wal_data_stats_equal_whole_file_index() {
                 live_candidates.push(SfstCandidate {
                     summary,
                     seq: i as u64,
+                    sub_id: 0,
                     source: Source::Memory(Arc::new(bytes)),
                 });
             }
@@ -990,6 +994,7 @@ fn clone_candidate(c: &SfstCandidate) -> SfstCandidate {
     SfstCandidate {
         summary: c.summary.clone(),
         seq: c.seq,
+        sub_id: c.sub_id,
         source: c.source.clone(),
     }
 }
@@ -1005,6 +1010,110 @@ fn tails_clone(ts: &[WalTail]) -> Vec<WalTail> {
             end: t.end,
         })
         .collect()
+}
+
+#[test]
+fn wal_data_rows_match_whole_file_index() {
+    // The milestone-4b gate: the row table served from the live path
+    // (chunk SFSTs interleaved with the row-scanned tail under the
+    // cursor order) must match the rows from indexing the whole WAL.
+    //
+    // Timestamps are strictly monotonic here on purpose: equal-timestamp
+    // rows tie-break by (seq, sub_id, position), which legitimately
+    // differs between a chunked WAL and its eventual single SFST (the
+    // documented WAL->SFST cursor seam). With distinct timestamps the two
+    // total orders coincide, so we can assert exact row order.
+    let header = wal::HEADER_SIZE as u64;
+    let levels = ["info", "error", "warn"];
+    let records: Vec<LogRecord> = (0..200)
+        .map(|i| LogRecord {
+            time_unix_nano: (BASE_S + i) * NS,
+            severity_text: "INFO".to_string(),
+            attributes: vec![
+                kv("level", s(levels[(i % 3) as usize])),
+                kv("row", s(&format!("r{i:04}"))),
+            ],
+            ..LogRecord::default()
+        })
+        .collect();
+    // 40 records per frame; min_entries 50 → 2 chunks of 80 + an 40-row
+    // tail, so the page interleaves chunk and tail rows.
+    let corpus = Corpus {
+        batches: records
+            .chunks(40)
+            .map(|chunk| {
+                vec![ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![kv("service.name", s("harness"))],
+                        ..Resource::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        log_records: chunk.to_vec(),
+                        ..ScopeLogs::default()
+                    }],
+                    ..ResourceLogs::default()
+                }]
+            })
+            .collect(),
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = write_wal(dir.path(), &corpus);
+    let file_len = std::fs::metadata(&wal_path).unwrap().len();
+    let whole = index_candidate(&wal_path, dir.path());
+
+    let chunks = group_chunks(
+        &wal::scan_frame_boundaries(&wal_path, header, file_len).unwrap(),
+        header,
+        50,
+    );
+    assert_eq!(chunks.len(), 2, "fixture should split into 2 chunks");
+    let tail_begin = chunks.last().map(|&(_, e)| e).unwrap();
+    assert!(tail_begin < file_len, "fixture should leave a non-empty tail");
+
+    let mut live: Vec<SfstCandidate> = Vec::new();
+    for (i, &(s_off, e_off)) in chunks.iter().enumerate() {
+        let (summary, bytes) = sfst::index_range(&wal_path, s_off, e_off).unwrap();
+        live.push(SfstCandidate {
+            summary,
+            seq: 1,
+            sub_id: i as u32,
+            source: Source::Memory(Arc::new(bytes)),
+        });
+    }
+    let tails = vec![WalTail {
+        seq: 1,
+        path: wal_path.clone(),
+        start: tail_begin,
+        end: file_len,
+    }];
+
+    let start = whole.summary.min_timestamp_s as i64 * NS as i64;
+    let span =
+        ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+
+    let rows_of = |data: &sfsq::logs::LogsData| -> Vec<sfst::MaterializedRow> {
+        data.rows.iter().map(|(_, row)| row.clone()).collect()
+    };
+
+    for (qlabel, q) in [
+        (
+            "all",
+            LogsQueryBuilder::new(Grid::new(start, span, 1)).limit(300).build(),
+        ),
+        (
+            "level=error",
+            LogsQueryBuilder::new(Grid::new(start, span, 1))
+                .filter(Filter::new().select("level", "error"))
+                .limit(300)
+                .build(),
+        ),
+    ] {
+        let live_rows = rows_of(&run(live_candidates_clone(&live), tails_clone(&tails), q.clone()));
+        let whole_rows = rows_of(&run(vec![clone_candidate(&whole)], Vec::new(), q));
+        assert!(!live_rows.is_empty(), "q={qlabel}: no rows");
+        assert_eq!(live_rows, whole_rows, "q={qlabel}: live rows != whole-file rows");
+    }
 }
 
 #[test]

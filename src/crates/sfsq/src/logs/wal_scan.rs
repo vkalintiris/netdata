@@ -36,6 +36,8 @@ use std::path::Path;
 use sfst::{FacetResult, FieldEntry, FieldTable, FieldTier, Grid, Matcher, Timeline};
 
 use super::aggregate::{LogsShard, eligible_facet_fields};
+use super::cursor::Cursor;
+use super::page::PageShard;
 use super::query::LogsQuery;
 
 /// A scan failure: the WAL file couldn't be read or a frame couldn't be
@@ -162,6 +164,62 @@ impl WalScan {
     /// Number of decoded log rows.
     pub fn num_rows(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Page candidates for the tail — the row-scan counterpart of
+    /// [`PageShard::evaluate`]. Every row matching the filter within the
+    /// window becomes a [`Cursor`] tagged `sub_id =
+    /// `[`Cursor::TAIL_SUB_ID`] (the tail sorts after all chunks of the
+    /// same `seq`) with `position` the row's **insertion index** — stable
+    /// while the row stays in the tail. Unlike an SFST the tail isn't
+    /// time-ordered, so the cursors are sorted explicitly before the
+    /// shared split/order/bound.
+    pub fn page_shard(
+        &self,
+        seq: u64,
+        query: &LogsQuery,
+        anchor: Option<Cursor>,
+        bound: Option<usize>,
+    ) -> Result<PageShard, sfst::Error> {
+        let compiled = self.compile(query)?;
+        let window = query.grid.range_ns();
+        let mut conjuncts = RowMatch::default();
+        let mut cursors: Vec<Cursor> = Vec::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            compiled.match_row_into(row, &mut conjuncts);
+            if conjuncts.full && window.contains(&row.ts_ns) {
+                cursors.push(Cursor {
+                    timestamp_ns: row.ts_ns,
+                    file_seq: seq,
+                    sub_id: Cursor::TAIL_SUB_ID,
+                    position: i as u32,
+                });
+            }
+        }
+        cursors.sort_unstable();
+        Ok(PageShard::from_cursors(cursors, query.direction, anchor, bound))
+    }
+
+    /// Materialize tail rows by insertion index — the row-scan
+    /// counterpart of `IndexReader::materialize_rows`. Each row's pairs
+    /// are emitted in stored (stream) order, keys not deduplicated, to
+    /// match the SFST path.
+    pub fn materialize_rows(&self, positions: &[u32]) -> Vec<sfst::MaterializedRow> {
+        positions
+            .iter()
+            .filter_map(|&pos| self.rows.get(pos as usize))
+            .map(|row| sfst::MaterializedRow {
+                timestamp_ns: row.ts_ns,
+                fields: row
+                    .tokens
+                    .iter()
+                    .map(|&t| {
+                        let pair = &self.pairs[t as usize];
+                        (pair.field().to_string(), pair.value().to_string())
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Evaluate `query` into a [`LogsShard`] — the row-scan counterpart

@@ -219,6 +219,7 @@ impl Anchor {
             Anchor::Timestamp(ns) => Cursor {
                 timestamp_ns: ns,
                 file_seq: u64::MAX,
+                sub_id: u32::MAX,
                 position: u32::MAX,
             },
         }

@@ -192,6 +192,20 @@ equivalence; the row half is explicitly milestone-4 scope.
   milestone-1 equivalence** (page rows, ordering, cursors — deferred
   from M1) is proven here, extending the existing harness.
 
+  **Done.** The cursor gained a `sub_id` field —
+  `(timestamp_ns, file_seq, sub_id, position)` — distinguishing the
+  parts of one active WAL that share a `seq`: `0` for an on-disk SFST,
+  the chunk index for an in-memory chunk, `u32::MAX` for the tail (which
+  sorts after every chunk). It is purely the equal-`(timestamp, seq)`
+  tiebreaker, and `materialize` routes by `(seq, sub_id)`. `WalScan`
+  grew `page_shard` + `materialize_rows` over the tail (position = the
+  row's insertion index — **tail-tiebreaker decision (a)**: stable while
+  the row is in the tail; on promotion into a chunk it flips to the
+  chunk-local time-sorted position, the documented seam, to be tracked
+  by the M5 mismatch metric). `wal_data_rows_match_whole_file_index`
+  proves the live page (chunks + tail) equals the whole-file index's
+  page on monotonic-timestamp corpora.
+
 ### Milestone 5 — operations
 
 - Chunk-cache governance (budget, min-age, pinning) — design deferred

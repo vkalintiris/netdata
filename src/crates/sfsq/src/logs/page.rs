@@ -20,9 +20,10 @@ use std::collections::HashMap;
 use super::mmap::Mapped;
 
 use super::cursor::Cursor;
-use super::engine::SfstCandidate;
+use super::engine::{SfstCandidate, WalTail};
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
+use super::wal_scan::WalScan;
 
 const NS_PER_S: i64 = 1_000_000_000;
 
@@ -79,6 +80,7 @@ impl PageShard {
     pub fn evaluate(
         reader: &sfst::IndexReader<'_>,
         seq: u64,
+        sub_id: u32,
         query: &LogsQuery,
         anchor: Option<Cursor>,
         bound: Option<usize>,
@@ -88,19 +90,36 @@ impl PageShard {
         let timestamps = reader.load_timestamps()?;
 
         // Cursors for every match, ascending — within a file, position order
-        // is cursor order (timestamps are chronological and `seq` is constant).
-        let mut ascending: Vec<Cursor> = matched
+        // is cursor order (timestamps are chronological and `seq`/`sub_id`
+        // are constant).
+        let ascending: Vec<Cursor> = matched
             .into_iter()
             .map(|position| Cursor {
                 timestamp_ns: timestamps.at(position).unwrap_or(0),
                 file_seq: seq,
+                sub_id,
                 position,
             })
             .collect();
 
+        Ok(Self::from_cursors(ascending, query.direction, anchor, bound))
+    }
+
+    /// Build a shard from this source's cursors, already sorted ascending
+    /// by [`Cursor`] order. Splits at `anchor` (exclusive), keeps the
+    /// page side ordered closest-to-anchor first, and bounds it. Shared
+    /// by the SFST path ([`evaluate`](Self::evaluate), whose cursors are
+    /// ascending by position) and the WAL-tail row scan (whose cursors
+    /// must be sorted first, since the tail isn't time-ordered).
+    pub fn from_cursors(
+        mut ascending: Vec<Cursor>,
+        direction: Direction,
+        anchor: Option<Cursor>,
+        bound: Option<usize>,
+    ) -> PageShard {
         // Split at the anchor (exclusive). Backward's page side is `< anchor`
         // (opposite `>= anchor`); forward's is `> anchor` (opposite `<= anchor`).
-        let (mut cursors, has_opposite) = match (anchor, query.direction) {
+        let (mut cursors, has_opposite) = match (anchor, direction) {
             (None, _) => (std::mem::take(&mut ascending), false),
             (Some(a), Direction::Backward) => {
                 let split = ascending.partition_point(|c| *c < a);
@@ -115,15 +134,15 @@ impl PageShard {
             }
         };
 
-        order_by_closeness(&mut cursors, query.direction);
+        order_by_closeness(&mut cursors, direction);
         if let Some(bound) = bound {
             cursors.truncate(bound);
         }
 
-        Ok(PageShard {
+        PageShard {
             cursors,
             has_opposite,
-        })
+        }
     }
 }
 
@@ -183,26 +202,40 @@ fn finalize_page(merged: PageShard, direction: Direction, limit: usize) -> Selec
 /// rows in the page's newest-first order. Locally the files are the open
 /// readers; a cross-node fetch would route each cursor to its owning node.
 fn materialize(
-    files: &[(&sfst::IndexReader<'_>, u64)],
+    sfst_readers: &[(sfst::IndexReader<'_>, u64, u32)],
+    tail_scans: &[(u64, WalScan)],
     selected: &SelectedPage,
 ) -> Result<Vec<(Cursor, sfst::MaterializedRow)>, sfst::Error> {
-    let by_seq: HashMap<u64, &sfst::IndexReader<'_>> =
-        files.iter().map(|(reader, seq)| (*seq, *reader)).collect();
+    // Route by `(file_seq, sub_id)`: an SFST reader (on-disk or chunk)
+    // for `sub_id != TAIL`, the WAL row scanner for `sub_id == TAIL`.
+    let sfst_by_key: HashMap<(u64, u32), &sfst::IndexReader<'_>> = sfst_readers
+        .iter()
+        .map(|(reader, seq, sub_id)| ((*seq, *sub_id), reader))
+        .collect();
+    let tail_by_seq: HashMap<u64, &WalScan> =
+        tail_scans.iter().map(|(seq, scan)| (*seq, scan)).collect();
 
-    let mut positions_by_seq: HashMap<u64, Vec<u32>> = HashMap::new();
+    // Batch positions per source so each source decompresses once.
+    let mut positions: HashMap<(u64, u32), Vec<u32>> = HashMap::new();
     for cursor in &selected.cursors {
-        positions_by_seq
-            .entry(cursor.file_seq)
+        positions
+            .entry((cursor.file_seq, cursor.sub_id))
             .or_default()
             .push(cursor.position);
     }
-    let mut row_by_key: HashMap<(u64, u32), sfst::MaterializedRow> = HashMap::new();
-    for (seq, positions) in &positions_by_seq {
-        let Some(reader) = by_seq.get(seq) else {
-            continue;
-        };
-        for (position, row) in positions.iter().zip(reader.materialize_rows(positions)?) {
-            row_by_key.insert((*seq, *position), row);
+
+    let mut row_by_key: HashMap<(u64, u32, u32), sfst::MaterializedRow> = HashMap::new();
+    for ((seq, sub_id), pos) in &positions {
+        if *sub_id == Cursor::TAIL_SUB_ID {
+            if let Some(scan) = tail_by_seq.get(seq) {
+                for (p, row) in pos.iter().zip(scan.materialize_rows(pos)) {
+                    row_by_key.insert((*seq, *sub_id, *p), row);
+                }
+            }
+        } else if let Some(reader) = sfst_by_key.get(&(*seq, *sub_id)) {
+            for (p, row) in pos.iter().zip(reader.materialize_rows(pos)?) {
+                row_by_key.insert((*seq, *sub_id, *p), row);
+            }
         }
     }
 
@@ -211,7 +244,7 @@ fn materialize(
         .iter()
         .filter_map(|cursor| {
             row_by_key
-                .remove(&(cursor.file_seq, cursor.position))
+                .remove(&(cursor.file_seq, cursor.sub_id, cursor.position))
                 .map(|row| (*cursor, row))
         })
         .collect();
@@ -239,10 +272,47 @@ pub(super) struct Page {
 /// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
-pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page {
-    // Process closest-to-anchor first so we can stop once the page is full:
-    // backward walks newest -> oldest, forward oldest -> newest.
-    let mut order: Vec<&SfstCandidate> = candidates.to_vec();
+pub(super) fn paginate(
+    sfst_candidates: &[&SfstCandidate],
+    wal_tails: &[WalTail],
+    query: &LogsQuery,
+) -> Page {
+    let bound = Some(query.limit.saturating_add(1));
+    let anchor = query.anchor.map(Anchor::to_cursor);
+    let mut merged = PageShard::default();
+
+    // WAL tails first: there are few and each must be scanned anyway, so
+    // seeding the merge with their cursors means the SFST early-
+    // termination boundary below already accounts for them. The scans are
+    // kept for the materialize step.
+    let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
+    for tail in wal_tails {
+        let scan = match WalScan::scan_range(&tail.path, tail.start, tail.end) {
+            Ok(scan) => scan,
+            Err(e) => {
+                tracing::warn!(
+                    "sfsq: tail scan failed for {} [{}..{}]: {e}",
+                    tail.path.display(),
+                    tail.start,
+                    tail.end
+                );
+                continue;
+            }
+        };
+        match scan.page_shard(tail.seq, query, anchor, bound) {
+            Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
+            Err(e) => {
+                tracing::warn!("sfsq: tail page candidates failed (seq={}): {e}", tail.seq);
+                continue;
+            }
+        }
+        tail_scans.push((tail.seq, scan));
+    }
+
+    // SFSTs (on-disk + in-memory chunks) closest-to-anchor first so we can
+    // stop once the page is full and the next file (hence every later one,
+    // since they're time-sorted) is entirely beyond the page boundary.
+    let mut order: Vec<&SfstCandidate> = sfst_candidates.to_vec();
     match query.direction {
         Direction::Backward => {
             order.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
@@ -257,16 +327,8 @@ pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page
         .filter_map(|candidate| mmap::map_source(&candidate.source).map(|m| (m, *candidate)))
         .collect();
 
-    // Open + evaluate one file at a time, folding into a running merge, and
-    // stop once the page is full and the next file (hence every later one,
-    // since they're time-sorted) is entirely beyond the page boundary. The
-    // `+1` on the bound lets the root detect a row past the page edge.
-    let bound = Some(query.limit.saturating_add(1));
-    let anchor = query.anchor.map(Anchor::to_cursor);
-    let mut readers: Vec<sfst::IndexReader<'_>> = Vec::new();
-    let mut seqs: Vec<u64> = Vec::new();
+    let mut readers: Vec<(sfst::IndexReader<'_>, u64, u32)> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();
-    let mut merged = PageShard::default();
     for (index, (mapping, candidate)) in mappings.iter().enumerate() {
         let reader = match sfst::IndexReader::open(mapping.bytes()) {
             Ok(reader) => reader,
@@ -275,7 +337,7 @@ pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page
                 continue;
             }
         };
-        match PageShard::evaluate(&reader, candidate.seq, query, anchor, bound) {
+        match PageShard::evaluate(&reader, candidate.seq, candidate.sub_id, query, anchor, bound) {
             Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
             Err(e) => {
                 tracing::warn!(
@@ -285,8 +347,7 @@ pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page
                 continue;
             }
         }
-        readers.push(reader);
-        seqs.push(candidate.seq);
+        readers.push((reader, candidate.seq, candidate.sub_id));
         reader_mapping.push(index);
 
         if query.limit > 0 && merged.cursors.len() > query.limit {
@@ -304,14 +365,12 @@ pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page
             }
         }
     }
-    let files: Vec<(&sfst::IndexReader<'_>, u64)> =
-        readers.iter().zip(seqs.iter().copied()).collect();
 
     // Finalize the page, then materialize its rows. A materialize failure
     // collapses to an empty page rather than reporting has-more flags with
     // no rows behind them.
     let selected = finalize_page(merged, query.direction, query.limit);
-    let page = match materialize(&files, &selected) {
+    let page = match materialize(&readers, &tail_scans, &selected) {
         Ok(rows) => Page {
             rows,
             has_newer: selected.has_newer,
@@ -324,14 +383,13 @@ pub(super) fn paginate(candidates: &[&SfstCandidate], query: &LogsQuery) -> Page
     };
 
     // Release each opened file's cold suffix (mid/high field chunks + stream
-    // batches), keeping the hot prefix resident. Compute the regions while
-    // the readers are alive, then drop the borrows before advising.
+    // batches), keeping the hot prefix resident. In-memory chunks have no
+    // file pages to drop.
     let cold: Vec<(usize, (usize, usize))> = readers
         .iter()
         .zip(&reader_mapping)
-        .filter_map(|(reader, &index)| reader.cold_region().map(|region| (index, region)))
+        .filter_map(|((reader, _, _), &index)| reader.cold_region().map(|region| (index, region)))
         .collect();
-    drop(files);
     drop(readers);
     for (index, region) in cold {
         if let Mapped::File(m) = &mappings[index].0 {

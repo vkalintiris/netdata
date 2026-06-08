@@ -64,6 +64,7 @@ fn try_main() -> Result<(), String> {
         candidates.push(SfstCandidate {
             summary,
             seq: seq as u64,
+            sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
             source: sfsq::logs::Source::File(path.clone()),
         });
     }

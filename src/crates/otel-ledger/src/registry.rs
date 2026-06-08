@@ -298,6 +298,7 @@ impl TenantRegistries {
                 r.sfst.candidates(q).map(move |f| SfstCandidate {
                     summary: f.summary.clone(),
                     seq: f.id.seq,
+                    sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
                     source: sfsq::logs::Source::File(r.sfst.file_path(f.id)),
                 })
             })

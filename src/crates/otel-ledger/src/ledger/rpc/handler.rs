@@ -128,6 +128,9 @@ impl OtelLogsHandler {
                     Ok(reader) => candidates.push(SfstCandidate {
                         summary: reader.summary().clone(),
                         seq,
+                        // Distinguishes this chunk from the WAL's other
+                        // chunks and tail, which share `seq`.
+                        sub_id: chunk.index,
                         source: Source::Memory(bytes),
                     }),
                     // Parsed-back failure is unexpected; cover the range

@@ -4,6 +4,7 @@ fn cursor_at(ts: i64) -> Cursor {
     Cursor {
         timestamp_ns: ts,
         file_seq: 1,
+        sub_id: Cursor::SFST_SUB_ID,
         position: ts as u32,
     }
 }
