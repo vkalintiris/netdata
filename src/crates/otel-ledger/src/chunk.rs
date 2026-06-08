@@ -65,6 +65,12 @@ pub struct ChunkBoundary {
 /// longer prefix yields the same chunks plus possibly more — never a
 /// different split of the same data.
 pub fn chunk_boundaries(frames: &[FrameBoundary], start: u64, min_entries: u64) -> Vec<ChunkBoundary> {
+    // `min_entries == 0` would make every frame its own chunk —
+    // degenerate, and contrary to the >=16K design intent. The caller's
+    // threshold is a config knob, so guard it in debug rather than at
+    // runtime cost.
+    debug_assert!(min_entries > 0, "min_entries must be positive");
+
     let mut chunks = Vec::new();
     let mut chunk_start = start;
     let mut acc: u64 = 0;
@@ -106,6 +112,14 @@ pub struct ChunkCache {
     /// [`drop_seq`](Self::drop_seq) can invalidate each key by hand
     /// (per-key `invalidate` is immediately consistent, unlike the
     /// predicate-based bulk invalidation).
+    ///
+    /// May **overcount** relative to moka's live contents — moka can
+    /// evict a chunk under byte pressure that this still tracks — but
+    /// never undercounts: every successful build is recorded. Overcount
+    /// is benign: [`drop_seq`](Self::drop_seq) invalidating an
+    /// already-evicted key is a no-op. Entries are removed only by
+    /// `drop_seq`; a `wal_seq` that rotates without one (an M4 contract
+    /// violation) leaks a single `u64 -> u32` until restart.
     built: Mutex<HashMap<u64, u32>>,
 }
 
@@ -121,6 +135,10 @@ impl ChunkCache {
     /// a chunk is a pure function of immutable WAL bytes, so an evicted
     /// chunk simply rebuilds on its next request.
     pub fn new(max_bytes: u64) -> Self {
+        // A budget below one chunk would thrash (rebuild every query).
+        // The caller should size it well above a single chunk (the M4/M5
+        // config picks the value); guard the obviously-broken zero.
+        debug_assert!(max_bytes > 0, "ChunkCache budget must be positive");
         let cache = Cache::builder()
             .max_capacity(max_bytes)
             .weigher(|_k: &ChunkKey, v: &Arc<Vec<u8>>| v.len().min(u32::MAX as usize) as u32)
@@ -152,6 +170,16 @@ impl ChunkCache {
         let bytes = self.cache.try_get_with(key, init).await?;
         // Record the index so drop_seq can find it later. Idempotent —
         // a cache hit re-records the same max.
+        //
+        // RACE: a query that began before rotation can resolve its
+        // try_get_with after drop_seq(wal_seq) already ran, re-inserting
+        // the seq here. Benign: the chunk is correct (immutable WAL
+        // bytes, and the file still exists — SFST registration precedes
+        // WAL deletion), and the re-acquired `built` entry is bounded to
+        // one per affected rotation (LRU reclaims the chunk memory; no
+        // further drop_seq occurs for a rotated seq). M4's contract that
+        // no new query targets a rotated seq keeps this window unreached
+        // in steady state.
         {
             let mut built = self.built.lock().unwrap();
             let n = built.entry(wal_seq).or_insert(0);

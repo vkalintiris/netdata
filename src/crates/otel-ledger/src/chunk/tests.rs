@@ -167,6 +167,13 @@ async fn build_errors_are_not_cached() {
 }
 
 #[tokio::test]
+async fn drop_seq_unknown_is_a_noop() {
+    let cache = cache();
+    // Never built anything for seq 99 — dropping it must not panic.
+    cache.drop_seq(99).await;
+}
+
+#[tokio::test]
 async fn drop_seq_invalidates_every_chunk_of_a_wal() {
     let cache = cache();
     let builds = Arc::new(AtomicUsize::new(0));
