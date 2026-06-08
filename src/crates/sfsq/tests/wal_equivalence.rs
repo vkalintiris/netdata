@@ -40,7 +40,9 @@ use opentelemetry_proto::tonic::common::v1::{
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
-use sfsq::logs::{LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, Source, WalScan, WalTail, run};
+use sfsq::logs::{
+    LogSource, LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, Source, WalScan, WalTail, run,
+};
 use sfst::{Filter, Grid};
 
 // ---------------------------------------------------------------------------
@@ -971,8 +973,11 @@ fn wal_data_stats_equal_whole_file_index() {
             }];
 
             for (qlabel, q) in queries() {
-                let live = run(live_candidates_clone(&live_candidates), tails_clone(&tails), q.clone());
-                let truth = run(vec![clone_candidate(&whole)], Vec::new(), q);
+                let live = run(
+                    sources(live_candidates_clone(&live_candidates), tails_clone(&tails)),
+                    q.clone(),
+                );
+                let truth = run(vec![LogSource::Sfst(clone_candidate(&whole))], q);
                 let ctx = format!("seed={seed} min_entries={min_entries} q={qlabel}");
                 assert_eq!(live.matched, truth.matched, "matched [{ctx}]");
                 assert_eq!(live.facets, truth.facets, "facets [{ctx}]");
@@ -986,6 +991,15 @@ fn wal_data_stats_equal_whole_file_index() {
     // Guard against a silently-vacuous sweep (every query matching zero
     // on both sides would "pass" while testing nothing).
     assert!(any_matched, "no query matched any rows across the sweep");
+}
+
+// Combine the two source kinds into the single list `run` now takes.
+fn sources(candidates: Vec<SfstCandidate>, tails: Vec<WalTail>) -> Vec<LogSource> {
+    candidates
+        .into_iter()
+        .map(LogSource::Sfst)
+        .chain(tails.into_iter().map(LogSource::Tail))
+        .collect()
 }
 
 // run() consumes its candidates; these clone the small fixtures so the
@@ -1118,8 +1132,11 @@ fn wal_data_rows_match_whole_file_index() {
                 .build(),
         ),
     ] {
-        let live_rows = rows_of(&run(live_candidates_clone(&live), tails_clone(&tails), q.clone()));
-        let whole_rows = rows_of(&run(vec![clone_candidate(&whole)], Vec::new(), q));
+        let live_rows = rows_of(&run(
+            sources(live_candidates_clone(&live), tails_clone(&tails)),
+            q.clone(),
+        ));
+        let whole_rows = rows_of(&run(vec![LogSource::Sfst(clone_candidate(&whole))], q));
         assert!(!live_rows.is_empty(), "q={qlabel}: no rows");
         assert_eq!(live_rows, whole_rows, "q={qlabel}: live rows != whole-file rows");
     }

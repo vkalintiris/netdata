@@ -99,16 +99,40 @@ pub struct WalTail {
     pub end: u64,
 }
 
-/// Run the merged query over the candidate files.
+/// A source of log rows for a query: an SFST — a sealed on-disk file or
+/// an in-memory chunk of an active WAL, evaluated through the indexed
+/// engine — or an active WAL's row-scanned [`tail`](WalTail). [`run`]
+/// folds every source into the same merged result, so the caller passes
+/// one mixed list rather than pre-bucketing by kind.
+pub enum LogSource {
+    /// A sealed on-disk SFST or an in-memory WAL chunk.
+    Sfst(SfstCandidate),
+    /// An active WAL's un-indexed tail, evaluated by a row scan.
+    Tail(WalTail),
+}
+
+impl From<SfstCandidate> for LogSource {
+    fn from(c: SfstCandidate) -> Self {
+        LogSource::Sfst(c)
+    }
+}
+
+impl From<WalTail> for LogSource {
+    fn from(t: WalTail) -> Self {
+        LogSource::Tail(t)
+    }
+}
+
+/// Run the merged query over the query's log sources.
 ///
-/// Evaluates every candidate into a [`LogsShard`] (step 1), merges them,
+/// Evaluates every source into a [`LogsShard`] (step 1), merges them,
 /// then paginates and materializes a page (step 2), and assembles the
 /// [`LogsData`]. The grid's span is the window every count and the
 /// materialized page clip to.
 ///
 /// Per-source errors (corrupt file, missing field, unreadable WAL tail,
 /// etc.) are logged and that source is skipped — others still
-/// contribute. An empty candidate set (or one where everything fails)
+/// contribute. An empty source set (or one where everything fails)
 /// yields an empty `LogsData` aligned to the grid (the monoid identity).
 ///
 /// Statistics (matched, facets, histogram, field table) and the row
@@ -120,28 +144,26 @@ pub struct WalTail {
 /// Pure sync — no I/O scheduling, no locks, no geometry policy — but
 /// since it reads and decompresses files the caller is expected to invoke
 /// it off any async runtime thread.
-pub fn run(
-    sfst_candidates: Vec<SfstCandidate>,
-    wal_tails: Vec<WalTail>,
-    query: LogsQuery,
-) -> LogsData {
+pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
     let grid = query.grid;
 
-    // Step 1: evaluate every SFST (on-disk + in-memory chunk) and every
-    // WAL tail (row scan) into a shard, then merge into one.
-    let mut shards: Vec<LogsShard> = sfst_candidates
-        .iter()
-        .map(|c| LogsShard::evaluate(c, &query))
-        .collect();
-    for tail in &wal_tails {
-        match WalScan::scan_range(&tail.path, tail.start, tail.end) {
-            Ok(scan) => shards.push(scan.evaluate(&query)),
-            Err(e) => tracing::warn!(
-                "sfsq: WAL tail scan failed for {} [{}..{}]: {e}",
-                tail.path.display(),
-                tail.start,
-                tail.end
-            ),
+    // Step 1: evaluate every source into a shard — the indexed engine for
+    // an SFST (sealed file or in-memory chunk), a row scan for a WAL tail
+    // — then merge into one. The merge is a monoid, so source order here
+    // is irrelevant.
+    let mut shards: Vec<LogsShard> = Vec::with_capacity(sources.len());
+    for source in &sources {
+        match source {
+            LogSource::Sfst(c) => shards.push(LogsShard::evaluate(c, &query)),
+            LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.start, tail.end) {
+                Ok(scan) => shards.push(scan.evaluate(&query)),
+                Err(e) => tracing::warn!(
+                    "sfsq: WAL tail scan failed for {} [{}..{}]: {e}",
+                    tail.path.display(),
+                    tail.start,
+                    tail.end
+                ),
+            },
         }
     }
     let stats = LogsShard::merge(shards);
@@ -162,8 +184,7 @@ pub fn run(
     // Step 2: paginate across every source under the unified cursor
     // order — on-disk SFSTs, in-memory chunks (`sub_id` = chunk index),
     // and the WAL tails (`sub_id` = TAIL).
-    let page_candidates: Vec<&SfstCandidate> = sfst_candidates.iter().collect();
-    let page = paginate(&page_candidates, &wal_tails, &query);
+    let page = paginate(&sources, &query);
 
     LogsData {
         matched: stats.matched as usize,

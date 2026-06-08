@@ -27,7 +27,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use sfsq::logs::{LogsData, LogsQueryBuilder, SfstCandidate, run};
+use sfsq::logs::{LogSource, LogsData, LogsQueryBuilder, SfstCandidate, run};
 use sfst::Filter;
 
 const NS_PER_S: i64 = 1_000_000_000;
@@ -102,7 +102,10 @@ fn try_main() -> Result<(), String> {
         builder = builder.query(q);
     }
     // This example queries sealed SFSTs only; no active-WAL tails.
-    let data = run(candidates, Vec::new(), builder.build());
+    let data = run(
+        candidates.into_iter().map(LogSource::Sfst).collect(),
+        builder.build(),
+    );
     print_result(&data);
     Ok(())
 }

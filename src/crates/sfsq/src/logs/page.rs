@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use super::mmap::Mapped;
 
 use super::cursor::Cursor;
-use super::engine::{SfstCandidate, WalTail};
+use super::engine::{LogSource, SfstCandidate, WalTail};
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
 use super::wal_scan::WalScan;
@@ -272,11 +272,24 @@ pub(super) struct Page {
 /// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
-pub(super) fn paginate(
-    sfst_candidates: &[&SfstCandidate],
-    wal_tails: &[WalTail],
-    query: &LogsQuery,
-) -> Page {
+pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
+    // Split into tails and SFSTs up front. Tails must seed the merge
+    // first: the SFST early-termination below samples
+    // `merged.cursors[limit - 1]` as its boundary, and that sample must
+    // already include every tail cursor. Adding tails later can only push
+    // the boundary older, so a boundary taken without them is too new —
+    // `beyond_boundary` would fire too eagerly and could skip an SFST
+    // whose rows belong on the page. (Order *within* each kind is
+    // irrelevant; the merge re-sorts by cursor.)
+    let mut wal_tails: Vec<&WalTail> = Vec::new();
+    let mut sfst_candidates: Vec<&SfstCandidate> = Vec::new();
+    for source in sources {
+        match source {
+            LogSource::Tail(t) => wal_tails.push(t),
+            LogSource::Sfst(c) => sfst_candidates.push(c),
+        }
+    }
+
     let bound = Some(query.limit.saturating_add(1));
     let anchor = query.anchor.map(Anchor::to_cursor);
     let mut merged = PageShard::default();
@@ -286,7 +299,7 @@ pub(super) fn paginate(
     // termination boundary below already accounts for them. The scans are
     // kept for the materialize step.
     let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
-    for tail in wal_tails {
+    for &tail in &wal_tails {
         let scan = match WalScan::scan_range(&tail.path, tail.start, tail.end) {
             Ok(scan) => scan,
             Err(e) => {
@@ -312,7 +325,7 @@ pub(super) fn paginate(
     // SFSTs (on-disk + in-memory chunks) closest-to-anchor first so we can
     // stop once the page is full and the next file (hence every later one,
     // since they're time-sorted) is entirely beyond the page boundary.
-    let mut order: Vec<&SfstCandidate> = sfst_candidates.to_vec();
+    let mut order = sfst_candidates;
     match query.direction {
         Direction::Backward => {
             order.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));

@@ -23,7 +23,7 @@ use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
 
-use sfsq::logs::{SfstCandidate, Source, WalTail, run};
+use sfsq::logs::{LogSource, SfstCandidate, Source, WalTail, run};
 
 use super::adapter::{to_result, window_secs};
 use super::wire::{InfoResponse, LogsResult, OtelLogsRequest, OtelLogsResponse};
@@ -215,8 +215,16 @@ impl FunctionHandler for OtelLogsHandler {
             wal_tails.extend(tails);
         }
 
+        // One mixed source list for the engine: indexed SFSTs (sealed +
+        // in-memory chunks) and the row-scanned WAL tails.
+        let sources: Vec<LogSource> = sfst_candidates
+            .into_iter()
+            .map(LogSource::Sfst)
+            .chain(wal_tails.into_iter().map(LogSource::Tail))
+            .collect();
+
         let (after, before) = (time_range.start, time_range.end);
-        if sfst_candidates.is_empty() && wal_tails.is_empty() {
+        if sources.is_empty() {
             return Ok(OtelLogsResponse::Logs(LogsResult::empty_stub(
                 after, before, last,
             )));
@@ -226,7 +234,7 @@ impl FunctionHandler for OtelLogsHandler {
         // SFSTs, row-scans the tails); run it and shape the neutral
         // result into the wire envelope off the runtime thread.
         let result = match tokio::task::spawn_blocking(move || {
-            to_result(run(sfst_candidates, wal_tails, query), last)
+            to_result(run(sources, query), last)
         })
         .await
         {
