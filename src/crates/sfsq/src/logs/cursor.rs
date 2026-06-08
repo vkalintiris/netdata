@@ -8,6 +8,11 @@
 //! NaN-guards a numeric parse of the pagination column, so a purely
 //! numeric anchor would instead coerce to a wrong value.
 
+/// Nanoseconds per second. The cursor orders by `timestamp_ns` (nanoseconds);
+/// code holding second-granular values (e.g. `beyond_boundary` comparing SFST
+/// summary bounds) multiplies by it to convert seconds → nanoseconds.
+pub(super) const NS_PER_S: i64 = 1_000_000_000;
+
 /// A decoded pagination cursor.
 ///
 /// Ordering is lexicographic over `(timestamp_ns, file_seq, sub_id,

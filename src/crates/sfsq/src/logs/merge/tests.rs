@@ -1,6 +1,5 @@
 use super::*;
-
-const NS_PER_S: i64 = 1_000_000_000;
+use crate::logs::cursor::NS_PER_S;
 
 /// Terse `sfst::Bucket` constructor for the timeline tests.
 fn bucket(counts: Vec<u64>, unset: u64) -> sfst::Bucket {

@@ -1,4 +1,7 @@
 use super::*;
+// Explicit (not via the `use super::*` glob) so the tests don't depend on
+// `page.rs` happening to import NS_PER_S.
+use crate::logs::cursor::NS_PER_S;
 
 fn cursor_at(ts: i64) -> Cursor {
     Cursor {

@@ -19,13 +19,11 @@ use std::collections::HashMap;
 
 use super::mmap::Mapped;
 
-use super::cursor::Cursor;
+use super::cursor::{Cursor, NS_PER_S};
 use super::engine::{LogSource, SfstCandidate, WalTail};
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
 use super::wal_scan::WalScan;
-
-const NS_PER_S: i64 = 1_000_000_000;
 
 /// One file's (or one node's) page candidates: the window-matching
 /// cursors on the requested side of the anchor, ordered closest-to-anchor
@@ -141,6 +139,10 @@ impl PageShard {
         anchor: Option<Cursor>,
         bound: Option<usize>,
     ) -> PageShard {
+        debug_assert!(
+            ascending.is_sorted(),
+            "from_cursors requires ascending-by-cursor input"
+        );
         // Split at the anchor (exclusive). Backward's page side is `< anchor`
         // (opposite `>= anchor`); forward's is `> anchor` (opposite `<= anchor`).
         let (mut cursors, has_opposite) = match (anchor, direction) {
@@ -299,7 +301,9 @@ pub(super) struct Page {
 pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
     let (wal_tails, sfst_candidates) = partition_sources(sources);
 
-    let bound = Some(query.limit.saturating_add(1));
+    // limit + 1: one extra candidate past the page so finalize can set the
+    // has-more flags.
+    let page_bound = Some(query.limit.saturating_add(1));
     let anchor = query.anchor.map(Anchor::to_cursor);
     let mut merged = PageShard::default();
 
@@ -308,14 +312,14 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
     // boundary, which must already include every tail cursor — adding tails
     // later can only push the boundary older, letting `beyond_boundary`
     // wrongly skip an SFST whose rows belong on the page.
-    let tail_scans = scan_tails(&wal_tails, query, anchor, bound, &mut merged);
+    let tail_scans = scan_tails(&wal_tails, query, anchor, page_bound, &mut merged);
 
     // SFSTs (on-disk + in-memory chunks): map up front so the readers,
     // which borrow the mappings, see a stable `Vec`, then open + evaluate +
     // fold them closest-to-anchor first with early termination.
     let mappings = map_sfsts(sfst_candidates, query.direction);
     let (readers, reader_mapping) =
-        open_and_evaluate_sfsts(&mappings, query, anchor, bound, &mut merged);
+        open_and_evaluate_sfsts(&mappings, query, anchor, page_bound, &mut merged);
 
     let page = build_page(merged, &readers, &tail_scans, query);
     release_cold(readers, &reader_mapping, &mappings);
