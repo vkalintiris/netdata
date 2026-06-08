@@ -1,27 +1,41 @@
-//! Multi-file log-query subsystem over SFST indexes.
+//! Multi-source log-query subsystem.
 //!
-//! The pipeline that turns a set of overlapping SFST files plus a
-//! [`LogsQuery`] into a single [`LogsData`]: filter → facets / histogram
-//! → pagination → row materialization. [`run`] is the all-in-one entry
-//! point for the local case.
+//! Turns a set of time-overlapping sources plus a [`LogsQuery`] into a
+//! single [`LogsData`] — filter → facets / histogram → pagination → row
+//! materialization. [`run`] is the all-in-one entry point for the local
+//! case.
+//!
+//! Two kinds of source feed the *same* query, so there is one query
+//! semantics rather than two:
+//! - [`SfstCandidate`] — a sealed on-disk SFST, or an in-memory SFST
+//!   built from a chunk of an active WAL's durable prefix; evaluated
+//!   through the indexed SFST engine.
+//! - [`WalTail`] — an active WAL's most-recent records, not yet in any
+//!   SFST; evaluated by a bounded row scan ([`WalScan`]) instead of an
+//!   index.
+//!
+//! All sources interleave under one cursor order
+//! `(timestamp_ns, file_seq, sub_id, position)`, so the statistics and
+//! the row table reflect every source as if it were a single index.
 //!
 //! The work splits into two steps. Step 1 (statistics — matched, facets,
 //! histogram, fields) is an aggregatable monoid: [`LogsShard::evaluate`]
-//! produces a [`LogsShard`] per file and [`LogsShard::merge`] folds them, so the
-//! query can fan out across nodes and aggregate. Step 2 (row
+//! produces a [`LogsShard`] per source and [`LogsShard::merge`] folds
+//! them, so the query can fan out across nodes and aggregate. Step 2 (row
 //! materialization) needs a global order and lives in the pagination
 //! path. [`run`] composes both.
 //!
 //! The API is neutral — plain Rust data in ([`LogsQuery`]), plain Rust
-//! data out ([`LogsData`], built from `sfst` types). It carries no
-//! transport or wire concerns; a consumer maps its own request format
-//! onto [`LogsQuery`] and shapes [`LogsData`] into whatever its frontend
-//! expects.
+//! data out ([`LogsData`], built from `sfst` types); no transport or wire
+//! concerns.
 //!
-//! The query itself is pure and synchronous; opening and decompressing
-//! the SFST files is its only I/O. Resolving which files overlap a
-//! request window, and scheduling the work off an async runtime thread,
-//! is left to the caller.
+//! This subsystem is the query *mechanism*: it evaluates the sources it
+//! is handed. Which bytes become a sealed SFST, an in-memory chunk, or a
+//! tail — and why the durable prefix is indexed while the tail is scanned
+//! — is *policy* resolved by the caller (the ledger); that rationale and
+//! the cost model live in `docs/wal-query-design.md`. The query is pure
+//! and synchronous; opening and decompressing sources is its only I/O,
+//! which the caller schedules off any async runtime thread.
 
 mod aggregate;
 mod cursor;

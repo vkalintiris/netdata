@@ -49,18 +49,29 @@ impl Source {
     }
 }
 
-/// A query candidate: an SFST whose range overlaps the request window —
-/// a sealed file or an in-memory chunk of an active WAL. Owned so the
-/// caller can release any lock on its file source before the query does
-/// I/O. `seq` is the file's monotonic per-file id; `sub_id` distinguishes
-/// the parts of one active WAL that share a `seq`
-/// ([`Cursor::SFST_SUB_ID`](super::cursor::Cursor::SFST_SUB_ID) for an
-/// on-disk SFST, the chunk index for an in-memory chunk). Together they
-/// place the candidate's rows in the pagination cursor's total order.
+/// A query candidate: an SFST whose time range overlaps the request
+/// window — either a sealed on-disk file or an in-memory chunk built
+/// from an active WAL's durable prefix. Owned, so the caller can release
+/// any lock on the file source before the query does I/O.
+///
+/// `seq` and `sub_id` together place this candidate's rows in the
+/// pagination cursor's total order (see [`Cursor`](super::cursor::Cursor)).
 pub struct SfstCandidate {
+    /// Cheap time/stream/size facts ([`sfst::Summary`]); its `[min, max]`
+    /// second-range is what overlapped the request window to make this a
+    /// candidate.
     pub summary: sfst::Summary,
+    /// Globally-unique sequence of the underlying file — the sealed
+    /// SFST's own seq, or the active WAL's seq for an in-memory chunk
+    /// (so all chunks of one WAL share it). The cursor's second key.
     pub seq: u64,
+    /// Distinguishes the parts of one active WAL that share a `seq`:
+    /// [`Cursor::SFST_SUB_ID`](super::cursor::Cursor::SFST_SUB_ID) (`0`)
+    /// for a sealed SFST, or the chunk index for an in-memory chunk. The
+    /// cursor's third key, breaking ties at equal `(timestamp, seq)`.
     pub sub_id: u32,
+    /// Where the candidate's bytes come from — [`Source::File`] for a
+    /// sealed index, [`Source::Memory`] for an in-memory WAL chunk.
     pub source: Source,
 }
 
@@ -69,9 +80,22 @@ pub struct SfstCandidate {
 /// ([`WalScan`]) rather than the SFST engine. Bounded (< one chunk) by
 /// construction, so re-scanning it per query is affordable.
 pub struct WalTail {
+    /// The active WAL's sequence — the same globally-unique id the
+    /// pagination cursor orders by as `file_seq`. The tail's rows sort
+    /// under it with `sub_id` =
+    /// [`Cursor::TAIL_SUB_ID`](super::cursor::Cursor::TAIL_SUB_ID), after
+    /// every chunk of the same seq.
     pub seq: u64,
+    /// Path to the active WAL file to scan.
     pub path: PathBuf,
+    /// Byte offset of the first frame to scan — a frame boundary (the end
+    /// of the last indexed chunk, or `HEADER_SIZE` if none was built). A
+    /// mid-frame offset would decode garbage.
     pub start: u64,
+    /// Byte offset just past the last frame — the WAL's durable bound
+    /// (`valid_up_to`), also a frame boundary. The range is half-open
+    /// `[start, end)`: a frame is scanned only if it fits fully below
+    /// `end`, so a torn trailing frame past the bound is never read.
     pub end: u64,
 }
 
