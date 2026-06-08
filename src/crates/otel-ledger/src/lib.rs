@@ -1,4 +1,5 @@
 pub mod catalog_builder;
+pub mod chunk;
 pub mod cleaner;
 pub mod component;
 pub mod event;
