@@ -297,33 +297,58 @@ pub(super) struct Page {
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
 pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
-    // Split into tails and SFSTs up front. Tails must seed the merge
-    // first: the SFST early-termination below samples
-    // `merged.cursors[limit - 1]` as its boundary, and that sample must
-    // already include every tail cursor. Adding tails later can only push
-    // the boundary older, so a boundary taken without them is too new —
-    // `beyond_boundary` would fire too eagerly and could skip an SFST
-    // whose rows belong on the page. (Order *within* each kind is
-    // irrelevant; the merge re-sorts by cursor.)
-    let mut wal_tails: Vec<&WalTail> = Vec::new();
-    let mut sfst_candidates: Vec<&SfstCandidate> = Vec::new();
+    let (wal_tails, sfst_candidates) = partition_sources(sources);
+
+    let bound = Some(query.limit.saturating_add(1));
+    let anchor = query.anchor.map(Anchor::to_cursor);
+    let mut merged = PageShard::default();
+
+    // Seed the merge with the WAL tails *before* the SFSTs: the early-
+    // termination below samples `merged.cursors[limit - 1]` as its
+    // boundary, which must already include every tail cursor — adding tails
+    // later can only push the boundary older, letting `beyond_boundary`
+    // wrongly skip an SFST whose rows belong on the page.
+    let tail_scans = scan_tails(&wal_tails, query, anchor, bound, &mut merged);
+
+    // SFSTs (on-disk + in-memory chunks): map up front so the readers,
+    // which borrow the mappings, see a stable `Vec`, then open + evaluate +
+    // fold them closest-to-anchor first with early termination.
+    let mappings = map_sfsts(sfst_candidates, query.direction);
+    let (readers, reader_mapping) =
+        open_and_evaluate_sfsts(&mappings, query, anchor, bound, &mut merged);
+
+    let page = build_page(merged, &readers, &tail_scans, query);
+    release_cold(readers, &reader_mapping, &mappings);
+    page
+}
+
+/// Split sources by kind. Order *within* each kind is irrelevant — the
+/// merge re-sorts by cursor; the ordering that matters (tails before
+/// SFSTs) is enforced by [`paginate`]'s call order, not here.
+fn partition_sources(sources: &[LogSource]) -> (Vec<&WalTail>, Vec<&SfstCandidate>) {
+    let mut wal_tails = Vec::new();
+    let mut sfst_candidates = Vec::new();
     for source in sources {
         match source {
             LogSource::Tail(t) => wal_tails.push(t),
             LogSource::Sfst(c) => sfst_candidates.push(c),
         }
     }
+    (wal_tails, sfst_candidates)
+}
 
-    let bound = Some(query.limit.saturating_add(1));
-    let anchor = query.anchor.map(Anchor::to_cursor);
-    let mut merged = PageShard::default();
-
-    // WAL tails first: there are few and each must be scanned anyway, so
-    // seeding the merge with their cursors means the SFST early-
-    // termination boundary below already accounts for them. The scans are
-    // kept for the materialize step.
+/// Scan each WAL tail, fold its page shard into `merged`, and keep the
+/// scans for the materialize step. A tail that fails to scan or evaluate
+/// is logged and skipped.
+fn scan_tails(
+    wal_tails: &[&WalTail],
+    query: &LogsQuery,
+    anchor: Option<Cursor>,
+    bound: Option<usize>,
+    merged: &mut PageShard,
+) -> Vec<(u64, WalScan)> {
     let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
-    for &tail in &wal_tails {
+    for &tail in wal_tails {
         let scan = match WalScan::scan_range(&tail.path, tail.start, tail.end) {
             Ok(scan) => scan,
             Err(e) => {
@@ -345,26 +370,43 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
         }
         tail_scans.push((tail.seq, scan));
     }
+    tail_scans
+}
 
-    // SFSTs (on-disk + in-memory chunks) closest-to-anchor first so we can
-    // stop once the page is full and the next file (hence every later one,
-    // since they're time-sorted) is entirely beyond the page boundary.
-    let mut order = sfst_candidates;
-    match query.direction {
+/// Sort candidates closest-to-anchor first (backward: newest file first;
+/// forward: oldest first) and memory-map each. Mapping is cheap — no chunk
+/// is read until a reader opens — and is done up front so the readers,
+/// which borrow the mappings, see a stable `Vec`.
+fn map_sfsts<'a>(
+    mut candidates: Vec<&'a SfstCandidate>,
+    direction: Direction,
+) -> Vec<(Mapped, &'a SfstCandidate)> {
+    match direction {
         Direction::Backward => {
-            order.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
+            candidates.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
         }
-        Direction::Forward => order.sort_by_key(|c| c.summary.min_timestamp_s),
+        Direction::Forward => candidates.sort_by_key(|c| c.summary.min_timestamp_s),
     }
-
-    // Map up front (cheap — no chunk is read until a reader opens) so the
-    // readers borrowing the mappings see a stable Vec.
-    let mappings: Vec<(Mapped, &SfstCandidate)> = order
+    candidates
         .iter()
         .filter_map(|candidate| mmap::map_source(&candidate.source).map(|m| (m, *candidate)))
-        .collect();
+        .collect()
+}
 
-    let mut readers: Vec<(sfst::IndexReader<'_>, u64, u32)> = Vec::new();
+/// Open and evaluate each mapped SFST closest-to-anchor first, folding its
+/// page shard into `merged`. Stops once the page is full *and* the next
+/// file is entirely beyond the page boundary — later files (time-sorted)
+/// can't contribute, so they're never opened. Returns the opened readers
+/// (which borrow `mappings`) and their mapping indices, for materialize and
+/// cold-release. A file that fails to parse/evaluate is logged and skipped.
+fn open_and_evaluate_sfsts<'a>(
+    mappings: &'a [(Mapped, &SfstCandidate)],
+    query: &LogsQuery,
+    anchor: Option<Cursor>,
+    bound: Option<usize>,
+    merged: &mut PageShard,
+) -> (Vec<(sfst::IndexReader<'a>, u64, u32)>, Vec<usize>) {
+    let mut readers: Vec<(sfst::IndexReader<'a>, u64, u32)> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();
     for (index, (mapping, candidate)) in mappings.iter().enumerate() {
         let reader = match sfst::IndexReader::open(mapping.bytes()) {
@@ -402,12 +444,20 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
             }
         }
     }
+    (readers, reader_mapping)
+}
 
-    // Finalize the page, then materialize its rows. A materialize failure
-    // collapses to an empty page rather than reporting has-more flags with
-    // no rows behind them.
+/// Finalize the merged shard into a page and materialize its rows. A
+/// materialize failure collapses to an empty page rather than reporting
+/// has-more flags with no rows behind them.
+fn build_page(
+    merged: PageShard,
+    readers: &[(sfst::IndexReader<'_>, u64, u32)],
+    tail_scans: &[(u64, WalScan)],
+    query: &LogsQuery,
+) -> Page {
     let selected = finalize_page(merged, query.direction, query.limit);
-    let page = match materialize(&readers, &tail_scans, &selected) {
+    match materialize(readers, tail_scans, &selected) {
         Ok(rows) => Page {
             rows,
             has_newer: selected.has_newer,
@@ -417,24 +467,31 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
             tracing::warn!("sfsq: materialize failed: {e}");
             Page::default()
         }
-    };
+    }
+}
 
-    // Release each opened file's cold suffix (mid/high field chunks + stream
-    // batches), keeping the hot prefix resident. In-memory chunks have no
-    // file pages to drop.
+/// Release each opened file's cold suffix (mid/high field chunks + stream
+/// batches) from the page cache, keeping the hot prefix resident. In-memory
+/// chunks have no file pages to drop.
+fn release_cold(
+    readers: Vec<(sfst::IndexReader<'_>, u64, u32)>,
+    reader_mapping: &[usize],
+    mappings: &[(Mapped, &SfstCandidate)],
+) {
     let cold: Vec<(usize, (usize, usize))> = readers
         .iter()
-        .zip(&reader_mapping)
+        .zip(reader_mapping)
         .filter_map(|((reader, _, _), &index)| reader.cold_region().map(|region| (index, region)))
         .collect();
+    // Free the readers before the advise loop. Not load-bearing — the
+    // borrows of `mappings` are shared, and `release_cold_region` re-faults
+    // identical bytes — but it keeps the lifetime story tidy.
     drop(readers);
     for (index, region) in cold {
         if let Mapped::File(m) = &mappings[index].0 {
             mmap::release_cold_region(m, region);
         }
     }
-
-    page
 }
 
 /// Whether a candidate with second-granular range `[min_ts_s, max_ts_s]`
