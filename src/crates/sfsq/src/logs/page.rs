@@ -69,6 +69,20 @@ impl PageShard {
         }
     }
 
+    /// Fold `other` into `self` in place — the incremental form of
+    /// [`merge`](PageShard::merge) used to combine sources one at a time.
+    /// Same per-step semantics as `merge(vec![take(self), other], …)`
+    /// (re-order and re-bound after each fold), without the intermediate
+    /// `Vec`.
+    pub fn merge_into(&mut self, other: PageShard, direction: Direction, bound: Option<usize>) {
+        self.cursors.extend(other.cursors);
+        self.has_opposite |= other.has_opposite;
+        order_by_closeness(&mut self.cursors, direction);
+        if let Some(bound) = bound {
+            self.cursors.truncate(bound);
+        }
+    }
+
     /// Map: evaluate one file's page candidates against the query.
     ///
     /// Intersects the filter with the window, tags each matching position
@@ -323,7 +337,7 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
             }
         };
         match scan.page_shard(tail.seq, query, anchor, bound) {
-            Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
+            Ok(shard) => merged.merge_into(shard, query.direction, bound),
             Err(e) => {
                 tracing::warn!("sfsq: tail page candidates failed (seq={}): {e}", tail.seq);
                 continue;
@@ -361,7 +375,7 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
             }
         };
         match PageShard::evaluate(&reader, candidate.seq, candidate.sub_id, query, anchor, bound) {
-            Ok(shard) => merged = PageShard::merge(vec![merged, shard], query.direction, bound),
+            Ok(shard) => merged.merge_into(shard, query.direction, bound),
             Err(e) => {
                 tracing::warn!(
                     "sfsq: page candidates failed for {}: {e}",
