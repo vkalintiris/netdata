@@ -1108,6 +1108,15 @@ fn wal_data_rows_match_whole_file_index() {
                 .limit(300)
                 .build(),
         ),
+        (
+            // Forward exercises the `<=` partition_point (vs backward's
+            // `<`) and the page reversal in finalize.
+            "forward",
+            LogsQueryBuilder::new(Grid::new(start, span, 1))
+                .direction(sfsq::logs::Direction::Forward)
+                .limit(300)
+                .build(),
+        ),
     ] {
         let live_rows = rows_of(&run(live_candidates_clone(&live), tails_clone(&tails), q.clone()));
         let whole_rows = rows_of(&run(vec![clone_candidate(&whole)], Vec::new(), q));

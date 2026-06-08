@@ -1,7 +1,7 @@
 //! Step 2: row materialization (select-then-fetch).
 //!
 //! Returning a page of rows needs a global order over cursors
-//! `(timestamp_ns, file_seq, position)` across files, so — unlike step 1 —
+//! `(timestamp_ns, file_seq, sub_id, position)` across files, so — unlike step 1 —
 //! it isn't a plain fold. It decomposes into seams a cross-node fan-out
 //! reuses:
 //!

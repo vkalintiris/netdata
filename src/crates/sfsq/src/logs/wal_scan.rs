@@ -207,17 +207,24 @@ impl WalScan {
     pub fn materialize_rows(&self, positions: &[u32]) -> Vec<sfst::MaterializedRow> {
         positions
             .iter()
-            .filter_map(|&pos| self.rows.get(pos as usize))
-            .map(|row| sfst::MaterializedRow {
-                timestamp_ns: row.ts_ns,
-                fields: row
-                    .tokens
-                    .iter()
-                    .map(|&t| {
-                        let pair = &self.pairs[t as usize];
-                        (pair.field().to_string(), pair.value().to_string())
-                    })
-                    .collect(),
+            .map(|&pos| {
+                // Positions are insertion indices this scan produced via
+                // `page_shard`, so they are always in range. Index
+                // directly (not `get`): a silent drop would misalign the
+                // caller's `zip(positions, rows)` and corrupt the page —
+                // fail fast instead.
+                let row = &self.rows[pos as usize];
+                sfst::MaterializedRow {
+                    timestamp_ns: row.ts_ns,
+                    fields: row
+                        .tokens
+                        .iter()
+                        .map(|&t| {
+                            let pair = &self.pairs[t as usize];
+                            (pair.field().to_string(), pair.value().to_string())
+                        })
+                        .collect(),
+                }
             })
             .collect()
     }

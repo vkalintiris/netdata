@@ -87,12 +87,11 @@ pub struct WalTail {
 /// contribute. An empty candidate set (or one where everything fails)
 /// yields an empty `LogsData` aligned to the grid (the monoid identity).
 ///
-/// Statistics (matched, facets, histogram, field table) reflect **every**
-/// source — sealed SFSTs, in-memory chunks of active WALs, and the WAL
-/// tails. Pagination (the row table), however, is over the on-disk SFSTs
-/// only: chunk SFSTs and tails share a WAL's `seq` and need the cursor
-/// extension that lands with row materialization (milestone 4b), so
-/// their rows do not yet appear in the page — only their aggregates do.
+/// Statistics (matched, facets, histogram, field table) and the row
+/// table both reflect **every** source — sealed SFSTs, in-memory chunks
+/// of active WALs, and the WAL tails — interleaved under the unified
+/// cursor order `(timestamp_ns, file_seq, sub_id, position)`, where
+/// `sub_id` distinguishes the parts of one active WAL that share a `seq`.
 ///
 /// Pure sync — no I/O scheduling, no locks, no geometry policy — but
 /// since it reads and decompresses files the caller is expected to invoke
