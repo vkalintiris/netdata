@@ -11,16 +11,41 @@ use treight::Bitmap;
 
 // ── SUMR ─────────────────────────────────────────────────────────
 
-/// Cheap-to-read summary of an SFST file (the `SUMR` chunk payload).
+/// The cheap facts a registry needs to pick this SFST as a query
+/// candidate — its time span, its stream, and its size — without
+/// opening the file's heavy metadata.
 ///
-/// Stored in its own chunk so a registry can rebuild itself from the
-/// file without decompressing the heavier `META` chunk (histogram +
-/// id_ranges).
+/// A query keeps this file as a candidate when its
+/// `[min_timestamp_s, max_timestamp_s]` span overlaps the request
+/// window and its [`stream`](Self::stream) matches; both checks read
+/// only these four fields. See [`Registry::candidates`](crate::Registry::candidates).
+///
+/// Stored as its own `SUMR` chunk, kept separate from the heavier
+/// `META` chunk ([`Metadata`]: histogram + id ranges + field table), so
+/// a registry can rebuild itself on startup by faulting in only the
+/// header, TOC, and SUMR — never decompressing META.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
+    /// Second of the earliest log in the file — seconds since the Unix
+    /// epoch, **inclusive**. First bucket of the sparse [`Histogram`];
+    /// `0` for an empty file.
     pub min_timestamp_s: u32,
+    /// Second of the latest log in the file — seconds since the Unix
+    /// epoch, **inclusive**; also the file's age for retention. `0` for
+    /// an empty file.
+    ///
+    /// Granularity matters: these bounds drive *which files* a query
+    /// opens at second resolution, whereas rows are ordered within a
+    /// page by nanosecond timestamp — the two are not the same clock.
     pub max_timestamp_s: u32,
+    /// Number of log records in the file. `0` marks an empty SFST (which
+    /// also has `min == max == 0` and ages out immediately) and sets the
+    /// file's stream-batch geometry (see
+    /// [`stream_batch_size`](crate::stream_batch_size)).
     pub total_logs: u32,
+    /// The single `(namespace, name)` [`stream`](ServiceStream) this
+    /// file holds. A query's stream filter is exact equality — each SFST
+    /// contains exactly one stream by construction.
     pub stream: ServiceStream,
 }
 
@@ -189,7 +214,7 @@ pub struct BitmapValue {
 /// In memory, [`offsets`](Self::offsets) is the prefix-sum of `key_lens`
 /// (rebuilt on load, not serialized) so key access is O(1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HighField {
+pub(crate) struct HighField {
     /// All `field=value` keys concatenated, in sorted order. `serde_bytes`
     /// decodes this in one bulk copy instead of serde's per-byte `Vec<u8>`
     /// seq path (the dominant high-card scan cost); wire-identical under
@@ -253,11 +278,6 @@ impl HighField {
     /// Number of keys.
     pub fn len(&self) -> usize {
         self.key_lens.len()
-    }
-
-    /// Whether there are no keys.
-    pub fn is_empty(&self) -> bool {
-        self.key_lens.is_empty()
     }
 
     /// The `i`-th `field=value` key as bytes (keys are valid UTF-8). Only
@@ -358,7 +378,7 @@ pub struct StreamBatch {
 impl StreamBatch {
     /// Build the **write form** from per-row `KvId` lists, ready to
     /// serialize. `row_offsets` is left unbuilt (this value is for packing,
-    /// not reads) — see [`HighField::for_write`].
+    /// not reads) — mirrors `HighField::for_write`.
     pub fn for_write(rows: &[Vec<KvId>]) -> Self {
         let total_ids: usize = rows.iter().map(Vec::len).sum();
         let mut kv_bytes = Vec::with_capacity(total_ids * 4);

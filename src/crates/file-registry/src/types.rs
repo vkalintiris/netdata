@@ -162,17 +162,24 @@ pub fn compute_ns_hash(namespace: Option<&str>, name: Option<&str>) -> u64 {
 /// `(namespace, name)` pair identifying a log stream.
 ///
 /// Each WAL/SFST file holds exactly one stream — the WAL writer
-/// partitions frames by `ns_hash = compute_ns_hash(namespace, name)`,
-/// and the indexer asserts that all data in a single WAL file resolves
-/// to one `(namespace, name)` pair. Hash collisions are detected at the
-/// ingestor; a colliding WAL file is permanently un-indexable until the
-/// operator removes it.
+/// partitions frames by `ns_hash = compute_ns_hash(namespace, name)`
+/// (see [`compute_ns_hash`]), and the indexer asserts that all data in a
+/// single WAL file resolves to one `(namespace, name)` pair. Hash
+/// collisions are detected at the ingestor; a colliding WAL file is
+/// permanently un-indexable until the operator removes it.
 ///
 /// This is the canonical stream identifier across the codebase — the
 /// registry, the catalog, the indexer, and the query planner all use it.
+/// Identity is the exact pair: the derived `PartialEq`/`Hash` compare
+/// both fields byte-for-byte, with no case-folding or trimming, so
+/// `("Prod", "api")` and `("prod", "api")` are distinct streams.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ServiceStream {
+    /// The OTLP `service.namespace` resource attribute, stored verbatim;
+    /// empty string when the source carries no such attribute.
     pub namespace: String,
+    /// The OTLP `service.name` resource attribute, stored verbatim;
+    /// empty string when the source carries no such attribute.
     pub name: String,
 }
 

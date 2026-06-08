@@ -3,7 +3,7 @@
 //! Two-phase build:
 //!
 //! - **Phase 1** (read) — [`decode::decode_frame`] decodes each WAL frame
-//!   and streams its rows into the [`WalIndex`](wal_index::WalIndex) (a
+//!   and streams its rows into the [`WalIndex`] (a
 //!   [`decode::KvSink`]), which interns `key=value` attributes and
 //!   accumulates the string interner + per-attribute bitmaps + per-log
 //!   entries + per-log timestamps.

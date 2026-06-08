@@ -20,7 +20,7 @@ pub struct Frame<'a> {
     pub data: &'a [u8],
 }
 
-/// Reads WAL files produced by [`WalWriter`](crate::WalWriter).
+/// Reads WAL files produced by [`Writer`](crate::Writer).
 pub struct Reader {
     reader: BufReader<File>,
     header: FileHeader,

@@ -67,10 +67,12 @@ pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u6
     file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
 }
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTable, FieldTier, HighField, Histogram, IdRanges, KvId,
-    Metadata, StreamBatch,
-    Summary,
+    BitmapValue, FieldEntry, FieldTable, FieldTier, Histogram, IdRanges, KvId, Metadata,
+    StreamBatch, Summary,
 };
+// Internal on-disk chunk representation: re-exported crate-wide for the
+// indexer/reader but kept out of the public API (no external consumers).
+pub(crate) use schema::HighField;
 pub use writer::{Writer, pack};
 
 // ── Format constants ─────────────────────────────────────────────

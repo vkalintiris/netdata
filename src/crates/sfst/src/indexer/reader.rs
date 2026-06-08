@@ -11,7 +11,7 @@
 use fst_index::FstIndex;
 
 use crate::{
-    BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, HighField, Histogram,
+    BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, Histogram,
     IdRanges, KvId, Matcher, Metadata, ServiceStream, Summary, Timeline, Timestamps,
 };
 
@@ -115,19 +115,6 @@ impl<'a> IndexReader<'a> {
         self.sfst.mid_field(mid_index)
     }
 
-    /// Load a high-cardinality field's columnar entries. `high_index`
-    /// is `0..num_high`.
-    ///
-    /// Returns the decompressed [`HighField`] for that field — parallel
-    /// `keys` (sorted lexicographically) and `masks` vectors. Each
-    /// `masks[j]` is a `u8` bitmask over the file's stream batches; bit
-    /// `b` set iff `keys[j]` appears in batch `b`. Walk the set bits to
-    /// decide which [`load_stream_batch`](Self::load_stream_batch)
-    /// calls to make when resolving positions for the value.
-    pub fn load_high_field(&self, high_index: u16) -> Result<HighField, crate::Error> {
-        self.sfst.high_field(high_index)
-    }
-
     // ── Per-log timestamps ──────────────────────────────────────────
 
     /// Load the per-log nanosecond [`Timestamps`], chronologically ordered
@@ -156,9 +143,9 @@ impl<'a> IndexReader<'a> {
 
     /// Load and concatenate every stream-batch chunk into per-row `KvId`
     /// lists, in chronological order. Convenience for tooling and tests that
-    /// want the materialized form rather than walking [`StreamBatch`] rows;
+    /// want the materialized form rather than walking [`StreamBatch`](crate::StreamBatch) rows;
     /// it reconstructs the `Vec<Vec<KvId>>`, so the hot scan/materialize
-    /// paths use [`StreamBatch`] directly instead.
+    /// paths use [`StreamBatch`](crate::StreamBatch) directly instead.
     pub fn load_all_stream_entries(&self) -> Result<Vec<Vec<KvId>>, crate::Error> {
         let n = self.num_stream_batches();
         let mut out = Vec::with_capacity(self.summary.total_logs as usize);
@@ -964,7 +951,7 @@ enum FieldLocation {
     High(u16),
 }
 
-/// A [`Filter`](crate::Filter) compiled against one file: each filter
+/// A [`Filter`] compiled against one file: each filter
 /// field's value-OR bitmap, plus their AND (the full scope). Built by
 /// [`IndexReader::compile_filter`] so the statistics methods resolve the
 /// filter once. Opaque — the scope helpers below are crate-internal.
