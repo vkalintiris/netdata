@@ -198,7 +198,7 @@ pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
     let page = paginate(&sources, &query);
 
     LogsData {
-        matched: stats.matched as usize,
+        matched: stats.matched,
         facets: stats.facets,
         histogram_field: query.histogram_field,
         histogram,

@@ -15,8 +15,10 @@ use super::cursor::Cursor;
 /// within the query window; the histogram is bucketed on the query's
 /// grid; the page is materialized newest-first.
 pub struct LogsData {
-    /// Filter-matching logs within the window, summed across files.
-    pub matched: usize,
+    /// Filter-matching logs within the window, summed across files. A
+    /// bitmap-cardinality count (`u64`, like the histogram buckets);
+    /// callers narrow to a UI integer at their wire boundary.
+    pub matched: u64,
     /// One entry per requested facet field, values summed across files
     /// (FST iteration order: lexicographic by value).
     pub facets: Vec<sfst::FacetResult>,

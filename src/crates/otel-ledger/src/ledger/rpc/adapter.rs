@@ -173,7 +173,7 @@ pub fn to_result(data: LogsData, max_to_return: usize) -> LogsResult {
     let available_histograms = available_histograms_from_fields(&data.available_fields);
     let facetable = data.facetable();
     let (columns, rows) = build_table(&data.rows, &data.columns, &facetable);
-    let matched = data.matched;
+    let matched = data.matched as usize;
 
     LogsResult {
         progress: 100,
