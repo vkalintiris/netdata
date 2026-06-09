@@ -297,8 +297,8 @@ impl TenantRegistries {
             .flat_map(|r| {
                 r.sfst.candidates(q).map(move |f| SfstCandidate {
                     summary: f.summary.clone(),
-                    seq: f.id.seq,
-                    sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+                    file_seq: f.id.seq,
+                    part: sfsq::logs::Part::Indexed(0), // sealed SFST
                     source: sfsq::logs::Source::File(r.sfst.file_path(f.id)),
                 })
             })
@@ -322,7 +322,7 @@ impl TenantRegistries {
     /// resolving the WALs (scan + chunk build) off the lock.
     pub fn query_snapshot(&self, q: &file_registry::Query) -> (Vec<SfstCandidate>, Vec<WalDesc>) {
         let sfsts = self.sfst_candidates(q);
-        let sfst_seqs: HashSet<u64> = sfsts.iter().map(|c| c.seq).collect();
+        let sfst_seqs: HashSet<u64> = sfsts.iter().map(|c| c.file_seq).collect();
 
         let mut wals = Vec::new();
         for r in self.tenants.values() {

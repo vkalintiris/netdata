@@ -283,8 +283,8 @@ fn index_candidate(wal_path: &Path, dir: &Path) -> SfstCandidate {
     let result = sfst::index(wal_path, &sfst_path).expect("index");
     SfstCandidate {
         summary: result.summary,
-        seq: 1,
-        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+        file_seq: 1,
+        part: sfsq::logs::Part::Indexed(0), // sealed SFST
         source: sfsq::logs::Source::File(sfst_path),
     }
 }
@@ -819,8 +819,8 @@ fn index_range_interior_split_partitions_logs() {
         let b_cand = candidate_from_bytes(dir.path(), "b.sfst", b_sum, &b_bytes);
         let whole_cand = SfstCandidate {
             summary: whole.summary.clone(),
-            seq: 3,
-            sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+            file_seq: 3,
+            part: sfsq::logs::Part::Indexed(0), // sealed SFST
             source: sfsq::logs::Source::File(whole_path),
         };
 
@@ -863,8 +863,8 @@ fn candidate_from_bytes(
     std::fs::write(&path, bytes).unwrap();
     SfstCandidate {
         summary,
-        seq: 1,
-        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+        file_seq: 1,
+        part: sfsq::logs::Part::Indexed(0), // sealed SFST
         source: sfsq::logs::Source::File(path),
     }
 }
@@ -959,14 +959,14 @@ fn wal_data_stats_equal_whole_file_index() {
                 let (summary, bytes) = sfst::index_range(&wal_path, s, e).unwrap();
                 live_candidates.push(SfstCandidate {
                     summary,
-                    seq: i as u64,
-                    sub_id: 0,
+                    file_seq: i as u64,
+                    part: sfsq::logs::Part::Indexed(0),
                     source: Source::Memory(Arc::new(bytes)),
                 });
             }
             let tail_begin = chunks.last().map_or(header, |&(_, e)| e);
             let tails = vec![WalTail {
-                seq: 9999,
+                file_seq: 9999,
                 path: wal_path.clone(),
                 start: tail_begin,
                 end: file_len,
@@ -1007,8 +1007,8 @@ fn sources(candidates: Vec<SfstCandidate>, tails: Vec<WalTail>) -> Vec<LogSource
 fn clone_candidate(c: &SfstCandidate) -> SfstCandidate {
     SfstCandidate {
         summary: c.summary.clone(),
-        seq: c.seq,
-        sub_id: c.sub_id,
+        file_seq: c.file_seq,
+        part: c.part,
         source: c.source.clone(),
     }
 }
@@ -1018,7 +1018,7 @@ fn live_candidates_clone(cs: &[SfstCandidate]) -> Vec<SfstCandidate> {
 fn tails_clone(ts: &[WalTail]) -> Vec<WalTail> {
     ts.iter()
         .map(|t| WalTail {
-            seq: t.seq,
+            file_seq: t.file_seq,
             path: t.path.clone(),
             start: t.start,
             end: t.end,
@@ -1033,7 +1033,7 @@ fn wal_data_rows_match_whole_file_index() {
     // cursor order) must match the rows from indexing the whole WAL.
     //
     // Timestamps are strictly monotonic here on purpose: equal-timestamp
-    // rows tie-break by (seq, sub_id, position), which legitimately
+    // rows tie-break by (seq, part, position), which legitimately
     // differs between a chunked WAL and its eventual single SFST (the
     // documented WAL->SFST cursor seam). With distinct timestamps the two
     // total orders coincide, so we can assert exact row order.
@@ -1090,13 +1090,13 @@ fn wal_data_rows_match_whole_file_index() {
         let (summary, bytes) = sfst::index_range(&wal_path, s_off, e_off).unwrap();
         live.push(SfstCandidate {
             summary,
-            seq: 1,
-            sub_id: i as u32,
+            file_seq: 1,
+            part: sfsq::logs::Part::Indexed(i as u32),
             source: Source::Memory(Arc::new(bytes)),
         });
     }
     let tails = vec![WalTail {
-        seq: 1,
+        file_seq: 1,
         path: wal_path.clone(),
         start: tail_begin,
         end: file_len,

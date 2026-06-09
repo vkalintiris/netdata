@@ -47,12 +47,57 @@ the headline.
 | M-1 ✅ | `paginate` was ~130 lines doing six jobs (partition, tail scan, SFST sort, open+evaluate+early-terminate, finalize, cold-release). Extracted named helpers so the body reads as the documented map→reduce→root→fetch pipeline. | `page.rs` | **Done.** Extracted `partition_sources`, `scan_tails`, `map_sfsts`, `open_and_evaluate_sfsts`, `build_page`, `release_cold`; `paginate` is now a ~12-line recipe. The SFST loop *was* extractable after all — the `IndexReader`-borrows-`Mapped` constraint is handled by passing `mappings` by ref + a lifetime param on the helper. Pure structure, zero behavior change. |
 | M-2 ✅ | `paginate` folded with `PageShard::merge(vec![merged, shard], …)` once per source, allocating a 2-element `Vec` each time. Added `PageShard::merge_into(&mut self, other, …)` and fold in place. **Verified faithful**: `PageShard` is exactly `{cursors, has_opposite}`; `merge` = extend + OR + `order_by_closeness` + truncate, which `merge_into` replicates. | `page.rs` | **Done.** Readability win + tiny alloc saving. Does **not** reduce sort count (`merge_into` still re-orders per fold, like before); sort-once is a separate change. Parity test added; `merge` kept (all-at-once reduce, still tested). |
 | M-3 ✅ | The step-1 per-source dispatch (`match` on `LogSource` → `LogsShard::evaluate` vs `WalScan::scan_range().evaluate()`, with per-arm error handling) lived at the call site. Moved it onto `LogSource::to_shard(&self, &LogsQuery) -> LogsShard`. | `engine.rs` | **Done.** Co-locates the step-1 *dispatch* + the tail scan-failure handling (not the SFST internal degrade, which stays in `LogsShard::evaluate`). Tail-failure now degrades to an empty shard (monoid identity) instead of skipping — behavior-equivalent under `merge`; added `merge_ignores_interspersed_default_shards` to prove it. Named `to_shard` (not `into_shard` — takes `&self`). Multi-LLM consult confirmed sound + advised against unifying step-1/step-2 dispatch and against a trait (over-engineering for 2 variants). |
-| **M-4** | **The cursor discriminator (headline, load-bearing).** `sub_id: u32` is overloaded `0`=sealed / chunk-index / `u32::MAX`=tail; `position` means "chronological index in an SFST" *or* "insertion index in a tail"; routing uses anonymous tuple keys `(u64,u32)` and `(u64,u32,u32)`. Replace with a `CursorPart` enum (Sealed / Chunk(n) / Tail) that centralizes the magic mapping and the sealed-xor-active invariant in one documented wire conversion, plus a named key type instead of the tuples. Settle the `seq` vs `Cursor.file_seq` naming split here too. | `cursor.rs:33-36`, `cursor.rs:21`, `page.rs:211,219` | **Load-bearing — do after fully reading `cursor.rs`/`page.rs`.** Rejected alternatives: `chunk_id` (wrong for sealed/tail), `Option<NonZero>` (chunk indices are 0-based). Tracked in memory `deferred-readability-refactors`. |
+| **M-4** ✅ | **The cursor discriminator (headline, load-bearing).** `sub_id: u32` was overloaded `0`=sealed / chunk-index / `u32::MAX`=tail; `position` meant "chronological index in an SFST" *or* "insertion index in a tail"; routing used anonymous tuple keys `(u64,u32)` and `(u64,u32,u32)`. Replaced with a typed `Part` enum centralizing the magic mapping in one documented wire conversion, plus named key types; `seq`→`file_seq`. | `cursor.rs`, `page.rs`, `engine.rs` | **Done — see "§ M-4 — agreed design" below.** Shipped as M-4a (`9addc40ab4`), M-4b (`373e2c32cc`), M-4c. Reading + multi-LLM consult (glm-5.1, minimax-m3-coder, deepseek-v4-pro:max) drove the design. Rejected: 3-way `{Sealed,Chunk,Tail}` enum (sealed/chunk-0 collide on the wire → not faithfully decodable); `Indexed(NonZeroU32)` (can't hold 0-based chunk 0 without a +1 wire shift = wire break); `chunk_id` name; `Option<NonZero>`. **Skipped** the planned `Cursor::sealed/chunk/tail` constructors — `otel-ledger` builds `SfstCandidate` (not `Cursor`), so they'd be unused; sites write `Part::Indexed(..)` directly. |
 | M-5 ✅ | `NS_PER_S` was defined in two places. Centralized in `cursor.rs` (`pub(super)`), used by `page.rs` + `merge/tests.rs`. | `cursor.rs` | **Done.** |
 | M-6 ✅ | `from_cursors` requires its input already sorted ascending, previously stated only in prose. Added `debug_assert!(ascending.is_sorted())` so a future caller that forgets fails loudly. | `page.rs` | **Done.** |
 | M-7 ✅ | `bound` (= `limit + 1`) in `paginate` renamed to `page_bound` with a clarifying comment. Helper params stay generic `bound`. | `page.rs` | **Done.** |
 | M-8 | `build_table` computes a field→values map, then reads it twice (per-column cell + the dedicated `severity_text` cell). Split into named helpers for testability. **Adjacent — `otel-ledger`, not `sfsq`.** | `otel-ledger/.../adapter.rs:388-425` | Minor; out of the `sfsq` focus. |
 | M-9 | Doc nits: a one-line note that `LogSource::Sfst`'s name tracks the inner type, not storage; a note in `handler.rs` that caller source-order is cosmetic (the engine re-partitions). | `engine.rs:107-112`, `handler.rs:~220` | Skip unless touching those lines. |
+
+### § M-4 — agreed design (decided)
+
+Decided after a full read of `cursor.rs`/`page.rs` and a 3-model consult
+(`/tmp/vk-consult-m4-cursor/*.md`). The wire string the consumer round-trips
+(`Cursor::encode`/`decode`, `otel-ledger/.../adapter.rs:85,422`) stays
+**byte-identical**; `wal_equivalence.rs` gates every step. Decisions:
+
+1. **Discriminator type.** `Cursor.sub_id: u32` → `part: Part`, a 2-variant
+   enum `enum Part { Indexed(u32), Tail }`. `Indexed(n)` covers a sealed SFST
+   (`n == 0`) *and* an in-memory chunk (`n` = chunk index); the sealed-vs-chunk
+   distinction is construction-site knowledge the wire cannot carry and the
+   engine never needs (the only runtime branch is tail-vs-not, `page.rs:255`).
+   Plain `u32`, **not** `NonZeroU32` (chunk indices are 0-based — `NonZeroU32`
+   would force a +1 wire shift).
+2. **Wire conversion.** `Part::to_wire()/from_wire()` own the single mapping
+   (`Indexed(n) ⇄ n`, `Tail ⇄ u32::MAX`); `encode`/`decode` stay thin wrappers
+   on `Cursor` in `cursor.rs` (no separate codec module). Drop the
+   `SFST_SUB_ID`/`TAIL_SUB_ID` public constants.
+3. **Ordering.** Keep **derived** `Ord` — with `Indexed` declared before `Tail`,
+   the derived order reproduces today's `0 < … < u32::MAX` exactly. Add a
+   load-bearing variant-order doc comment + extend `cursor/tests.rs` to assert
+   `Indexed(0) < Indexed(MAX-1) < Tail`. (Hand-written `cmp` rejected: more
+   error-prone for no gain given the test + comment.)
+4. **`position`.** Stays `u32` + doc comment. Nothing interprets it
+   cross-source; the enum already prevents source misrouting. (Newtypes
+   `InChunk`/`InTail` rejected as over-modeling.)
+5. **Construction + visibility.** Add `Cursor::sealed()/chunk()/tail()`
+   constructors so `otel-ledger` never builds a `Part` directly;
+   `Anchor::Timestamp` uses `Part::Tail` with the "synthetic max sorts last"
+   coupling documented (`query.rs:219-224`). **Keep `Cursor` fields `pub`** —
+   privatizing + accessors is a larger cross-crate read-site break, deferred as
+   a separate item (adjacent to C-2).
+6. **Naming + keys.** Rename `SfstCandidate.seq` / `WalTail.seq` → `file_seq`
+   (match `Cursor.file_seq`, the doc-referenced name). Replace the anonymous
+   `(u64,u32)` / `(u64,u32,u32)` routing tuples in `materialize` with named
+   `SourceKey { file_seq, part }` / `RowKey { file_seq, part, position }`.
+
+**Commit plan (each gated by `wal_equivalence` + clippy) — all landed:**
+- **M-4a** (`9addc40ab4`) — `Part` enum + wire codec + derived-`Ord`
+  comment/test + `Anchor::Timestamp` fix + migrate the construction sites
+  and `SfstCandidate.sub_id` → `part`. (Constructors skipped — see above.)
+- **M-4b** (`373e2c32cc`) — `SourceKey`/`RowKey` named routing structs in
+  `materialize`.
+- **M-4c** — `seq` → `file_seq` rename on `SfstCandidate`/`WalTail`.
 
 ### Performance (deferred / needs measurement)
 

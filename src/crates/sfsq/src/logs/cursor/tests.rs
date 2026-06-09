@@ -5,11 +5,25 @@ fn round_trips() {
     let c = Cursor {
         timestamp_ns: 1_700_000_000_123_456_789,
         file_seq: 42,
-        sub_id: 3,
+        part: Part::Indexed(3),
         position: 7,
     };
     let s = c.encode();
     assert_eq!(s, "1700000000123456789:42:3:7");
+    assert_eq!(Cursor::decode(&s), Some(c));
+}
+
+#[test]
+fn tail_round_trips_via_sentinel() {
+    // The tail encodes as the `u32::MAX` sentinel and decodes back to it.
+    let c = Cursor {
+        timestamp_ns: 100,
+        file_seq: 1,
+        part: Part::Tail,
+        position: 0,
+    };
+    let s = c.encode();
+    assert_eq!(s, "100:1:4294967295:0");
     assert_eq!(Cursor::decode(&s), Some(c));
 }
 
@@ -24,19 +38,23 @@ fn decode_rejects_malformed() {
 }
 
 #[test]
-fn ordering_is_ts_then_seq_then_sub_then_position() {
-    let c = |timestamp_ns, file_seq, sub_id, position| Cursor {
+fn ordering_is_ts_then_seq_then_part_then_position() {
+    let c = |timestamp_ns, file_seq, part, position| Cursor {
         timestamp_ns,
         file_seq,
-        sub_id,
+        part,
         position,
     };
     // Same timestamp → lower file_seq sorts first.
-    assert!(c(100, 0, 0, 9) < c(100, 1, 0, 0));
+    assert!(c(100, 0, Part::Indexed(0), 9) < c(100, 1, Part::Indexed(0), 0));
     // Higher timestamp wins regardless of the rest.
-    assert!(c(100, 1, 0, 0) < c(101, 0, 0, 0));
-    // Same (timestamp, seq) → lower sub_id sorts first (chunk before tail).
-    assert!(c(100, 5, 2, 99) < c(100, 5, Cursor::TAIL_SUB_ID, 0));
-    // Same (timestamp, seq, sub_id) → lower position sorts first.
-    assert!(c(100, 0, 0, 9) < c(100, 0, 0, 10));
+    assert!(c(100, 1, Part::Indexed(0), 0) < c(101, 0, Part::Indexed(0), 0));
+    // Same (timestamp, seq) → indexed sources sort by index, all before the
+    // tail: Indexed(0) < Indexed(MAX-1) < Tail. This pins the wire order
+    // 0 < … < u32::MAX that the derived `Ord` must reproduce.
+    assert!(c(100, 5, Part::Indexed(0), 0) < c(100, 5, Part::Indexed(u32::MAX - 1), 0));
+    assert!(c(100, 5, Part::Indexed(u32::MAX - 1), 0) < c(100, 5, Part::Tail, 0));
+    assert!(c(100, 5, Part::Indexed(2), 99) < c(100, 5, Part::Tail, 0));
+    // Same (timestamp, seq, part) → lower position sorts first.
+    assert!(c(100, 0, Part::Indexed(0), 9) < c(100, 0, Part::Indexed(0), 10));
 }

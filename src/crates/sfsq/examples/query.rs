@@ -63,8 +63,8 @@ fn try_main() -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         candidates.push(SfstCandidate {
             summary,
-            seq: seq as u64,
-            sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+            file_seq: seq as u64,
+            part: sfsq::logs::Part::Indexed(0), // sealed SFST
             source: sfsq::logs::Source::File(path.clone()),
         });
     }

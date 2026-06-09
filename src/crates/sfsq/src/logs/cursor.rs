@@ -1,7 +1,7 @@
 //! Opaque pagination cursor for the log-row table.
 //!
 //! Encodes the global total order over log rows — `(timestamp_ns,
-//! file_seq, sub_id, position)` — as a compact colon-delimited string.
+//! file_seq, part, position)` — as a compact colon-delimited string.
 //! It rides in the response's hidden cursor column and the consumer
 //! echoes it back verbatim as the `anchor` request param. The `:`
 //! separators keep it non-numeric, which the consuming UI relies on: it
@@ -13,51 +13,109 @@
 /// summary bounds) multiplies by it to convert seconds → nanoseconds.
 pub(super) const NS_PER_S: i64 = 1_000_000_000;
 
+/// The sub-source discriminator within one `file_seq` — the cursor's
+/// third sort key.
+///
+/// A `file_seq` is either a single sealed SFST or one active WAL (with ≥0
+/// in-memory chunks plus a row-scanned tail). [`Part::Indexed`] covers the
+/// indexed sources — a sealed SFST (index `0`) or an in-memory chunk (its
+/// 0-based index), both evaluated through the SFST engine; [`Part::Tail`]
+/// is the active WAL's tail, evaluated by a row scan.
+///
+/// Sealed-vs-chunk is deliberately *not* modelled: a sealed file and an
+/// active WAL's chunk 0 both encode to the wire integer `0`, and the two
+/// never coexist under one `file_seq`, so a decoded cursor cannot — and
+/// need not — tell them apart. The only runtime distinction is
+/// tail-vs-indexed, which routes a cursor to the WAL row scanner vs an
+/// SFST reader.
+///
+/// Variant order is load-bearing: `Indexed` is declared before `Tail`, so
+/// the derived `Ord` gives `Indexed(0) < … < Indexed(n) < Tail`, which
+/// reproduces the wire order `0 < … < u32::MAX` exactly (the tail sorts
+/// after every chunk of the same `file_seq`). Keep `Indexed` first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Part {
+    /// An indexed source: a sealed SFST (index `0`) or an in-memory WAL
+    /// chunk (its 0-based index).
+    Indexed(u32),
+    /// An active WAL's row-scanned tail. Sorts after every `Indexed(_)` of
+    /// the same `file_seq`.
+    Tail,
+}
+
+impl Part {
+    /// Wire sentinel for [`Part::Tail`]; `Indexed` owns the rest of the
+    /// `u32` space (`0..u32::MAX`).
+    const TAIL_WIRE: u32 = u32::MAX;
+
+    /// The `u32` this part encodes as on the wire (see [`Cursor::encode`]).
+    fn to_wire(self) -> u32 {
+        match self {
+            Part::Indexed(n) => {
+                debug_assert!(n != Self::TAIL_WIRE, "chunk index collides with the tail sentinel");
+                n
+            }
+            Part::Tail => Self::TAIL_WIRE,
+        }
+    }
+
+    /// Inverse of [`to_wire`](Self::to_wire): the sentinel decodes to the
+    /// tail, every other value to an indexed source.
+    fn from_wire(n: u32) -> Part {
+        if n == Self::TAIL_WIRE {
+            Part::Tail
+        } else {
+            Part::Indexed(n)
+        }
+    }
+}
+
 /// A decoded pagination cursor.
 ///
-/// Ordering is lexicographic over `(timestamp_ns, file_seq, sub_id,
+/// Ordering is lexicographic over `(timestamp_ns, file_seq, part,
 /// position)` — the total order the multi-file merge and the exclusive
 /// anchor comparison rely on. `file_seq` is the SFST/WAL file's monotonic
-/// `seq` (globally unique). `sub_id` distinguishes the parts of one
-/// active WAL that share a `seq`: `0` for a sealed on-disk SFST, the
-/// chunk index for an in-memory chunk, and [`Cursor::TAIL_SUB_ID`] for
-/// the row-scanned tail (which sorts after every chunk). It only breaks
-/// ties at equal `(timestamp_ns, file_seq)`, exactly as `position` breaks
-/// ties within one chunk/file. `position` is time-sorted within an SFST,
-/// or the insertion index within the tail.
+/// `seq` (globally unique). `part` distinguishes the sub-sources of one
+/// active WAL that share a `seq` (see [`Part`]); it only breaks ties at
+/// equal `(timestamp_ns, file_seq)`, exactly as `position` breaks ties
+/// within one chunk/file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cursor {
     pub timestamp_ns: i64,
     pub file_seq: u64,
-    pub sub_id: u32,
+    pub part: Part,
+    /// Tie-breaker within one `(timestamp_ns, file_seq, part)`: the
+    /// chronological row index within an SFST, or the insertion index
+    /// within a tail scan. Both are plain `u32` offsets into the source's
+    /// rows; the reader that materializes the cursor already knows which
+    /// meaning applies, so the two never need to be told apart here.
     pub position: u32,
 }
 
 impl Cursor {
-    /// `sub_id` for an on-disk SFST (the steady-state, single-part case).
-    pub const SFST_SUB_ID: u32 = 0;
-    /// `sub_id` for an active WAL's row-scanned tail — sorts after every
-    /// chunk of the same `seq` (chunk indices are `0..n`).
-    pub const TAIL_SUB_ID: u32 = u32::MAX;
-
-    /// Encode as `"{timestamp_ns}:{file_seq}:{sub_id}:{position}"`.
+    /// Encode as `"{timestamp_ns}:{file_seq}:{part}:{position}"`, where
+    /// `part` is its wire discriminator — `0..` for an indexed source,
+    /// `u32::MAX` for the tail.
     pub fn encode(&self) -> String {
         format!(
             "{}:{}:{}:{}",
-            self.timestamp_ns, self.file_seq, self.sub_id, self.position
+            self.timestamp_ns,
+            self.file_seq,
+            self.part.to_wire(),
+            self.position
         )
     }
 
     /// Decode the string form. Returns `None` for any malformed input
     /// (wrong field count, non-integer field, trailing garbage) so the
     /// handler can treat a bad anchor as "no anchor" rather than error.
-    /// A legacy 3-field cursor (pre-`sub_id`) is therefore treated as no
+    /// A legacy 3-field cursor (pre-`part`) is therefore treated as no
     /// anchor — a one-time reset to the page edge across the upgrade.
     pub fn decode(s: &str) -> Option<Cursor> {
         let mut parts = s.split(':');
         let timestamp_ns: i64 = parts.next()?.parse().ok()?;
         let file_seq: u64 = parts.next()?.parse().ok()?;
-        let sub_id: u32 = parts.next()?.parse().ok()?;
+        let part = Part::from_wire(parts.next()?.parse().ok()?);
         let position: u32 = parts.next()?.parse().ok()?;
         if parts.next().is_some() {
             return None;
@@ -65,7 +123,7 @@ impl Cursor {
         Some(Cursor {
             timestamp_ns,
             file_seq,
-            sub_id,
+            part,
             position,
         })
     }

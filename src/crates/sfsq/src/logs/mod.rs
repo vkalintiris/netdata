@@ -15,7 +15,7 @@
 //!   index.
 //!
 //! All sources interleave under one cursor order
-//! `(timestamp_ns, file_seq, sub_id, position)`, so the statistics and
+//! `(timestamp_ns, file_seq, part, position)`, so the statistics and
 //! the row table reflect every source as if it were a single index.
 //!
 //! The work splits into two steps. Step 1 (statistics — matched, facets,
@@ -48,7 +48,7 @@ mod result;
 mod wal_scan;
 
 pub use aggregate::LogsShard;
-pub use cursor::Cursor;
+pub use cursor::{Cursor, Part};
 pub use engine::{LogSource, SfstCandidate, Source, WalTail, run};
 pub use page::PageShard;
 pub use query::{Anchor, Direction, LogsQuery, LogsQueryBuilder};

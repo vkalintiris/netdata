@@ -1,7 +1,7 @@
 //! Step 2: row materialization (select-then-fetch).
 //!
 //! Returning a page of rows needs a global order over cursors
-//! `(timestamp_ns, file_seq, sub_id, position)` across files, so — unlike step 1 —
+//! `(timestamp_ns, file_seq, part, position)` across files, so — unlike step 1 —
 //! it isn't a plain fold. It decomposes into seams a cross-node fan-out
 //! reuses:
 //!
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use super::mmap::Mapped;
 
-use super::cursor::{Cursor, NS_PER_S};
+use super::cursor::{Cursor, NS_PER_S, Part};
 use super::engine::{LogSource, SfstCandidate, WalTail};
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
@@ -92,7 +92,7 @@ impl PageShard {
     pub fn evaluate(
         reader: &sfst::IndexReader<'_>,
         seq: u64,
-        sub_id: u32,
+        part: Part,
         query: &LogsQuery,
         anchor: Option<Cursor>,
         bound: Option<usize>,
@@ -102,7 +102,7 @@ impl PageShard {
         let timestamps = reader.load_timestamps()?;
 
         // Cursors for every match, ascending — within a file, position order
-        // is cursor order (timestamps are chronological and `seq`/`sub_id`
+        // is cursor order (timestamps are chronological and `seq`/`part`
         // are constant). A matched position with no timestamp means the
         // file's chunks disagree (corrupt SFST); fail so the caller skips
         // this source rather than emitting a bogus epoch-0 cursor.
@@ -112,13 +112,13 @@ impl PageShard {
                 let timestamp_ns = timestamps.at(position).ok_or_else(|| {
                     sfst::Error::CorruptIndex(format!(
                         "matched position {position} has no timestamp \
-                         (file_seq={seq}, sub_id={sub_id})"
+                         (file_seq={seq}, part={part:?})"
                     ))
                 })?;
                 Ok(Cursor {
                     timestamp_ns,
                     file_seq: seq,
-                    sub_id,
+                    part,
                     position,
                 })
             })
@@ -221,46 +221,95 @@ fn finalize_page(merged: PageShard, direction: Direction, limit: usize) -> Selec
     }
 }
 
+/// Which source (within one query) a cursor belongs to: its file plus the
+/// [`Part`] discriminator. An `Indexed` and a `Tail` cursor of the same
+/// `file_seq` route to different sources, so both fields are part of the
+/// key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SourceKey {
+    file_seq: u64,
+    part: Part,
+}
+
+/// Identifies one materialized row: its [`SourceKey`] plus the row's
+/// position within that source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RowKey {
+    source: SourceKey,
+    position: u32,
+}
+
+impl SourceKey {
+    fn of(cursor: &Cursor) -> SourceKey {
+        SourceKey {
+            file_seq: cursor.file_seq,
+            part: cursor.part,
+        }
+    }
+}
+
+impl RowKey {
+    fn of(cursor: &Cursor) -> RowKey {
+        RowKey {
+            source: SourceKey::of(cursor),
+            position: cursor.position,
+        }
+    }
+}
+
 /// Fetch: materialize the chosen cursors into rows.
 ///
-/// Routes each cursor to its owning file by `file_seq`, batches positions
-/// per file so each file's chunks decompress once, and reassembles the
-/// rows in the page's newest-first order. Locally the files are the open
+/// Routes each cursor to its owning source by [`SourceKey`], batches
+/// positions per source so each one decompresses once, and reassembles the
+/// rows in the page's newest-first order. Locally the sources are the open
 /// readers; a cross-node fetch would route each cursor to its owning node.
 fn materialize(
-    sfst_readers: &[(sfst::IndexReader<'_>, u64, u32)],
+    sfst_readers: &[(sfst::IndexReader<'_>, SourceKey)],
     tail_scans: &[(u64, WalScan)],
     selected: &SelectedPage,
 ) -> Result<Vec<(Cursor, sfst::MaterializedRow)>, sfst::Error> {
-    // Route by `(file_seq, sub_id)`: an SFST reader (on-disk or chunk)
-    // for `sub_id != TAIL`, the WAL row scanner for `sub_id == TAIL`.
-    let sfst_by_key: HashMap<(u64, u32), &sfst::IndexReader<'_>> = sfst_readers
+    // Route by `SourceKey`: an SFST reader (on-disk or chunk) for
+    // `Part::Indexed`, the WAL row scanner (keyed by `file_seq`, one tail
+    // per WAL) for `Part::Tail`.
+    let sfst_by_key: HashMap<SourceKey, &sfst::IndexReader<'_>> = sfst_readers
         .iter()
-        .map(|(reader, seq, sub_id)| ((*seq, *sub_id), reader))
+        .map(|(reader, key)| (*key, reader))
         .collect();
     let tail_by_seq: HashMap<u64, &WalScan> =
         tail_scans.iter().map(|(seq, scan)| (*seq, scan)).collect();
 
     // Batch positions per source so each source decompresses once.
-    let mut positions: HashMap<(u64, u32), Vec<u32>> = HashMap::new();
+    let mut positions: HashMap<SourceKey, Vec<u32>> = HashMap::new();
     for cursor in &selected.cursors {
         positions
-            .entry((cursor.file_seq, cursor.sub_id))
+            .entry(SourceKey::of(cursor))
             .or_default()
             .push(cursor.position);
     }
 
-    let mut row_by_key: HashMap<(u64, u32, u32), sfst::MaterializedRow> = HashMap::new();
-    for ((seq, sub_id), pos) in &positions {
-        if *sub_id == Cursor::TAIL_SUB_ID {
-            if let Some(scan) = tail_by_seq.get(seq) {
+    let mut row_by_key: HashMap<RowKey, sfst::MaterializedRow> = HashMap::new();
+    for (source, pos) in &positions {
+        if source.part == Part::Tail {
+            if let Some(scan) = tail_by_seq.get(&source.file_seq) {
                 for (p, row) in pos.iter().zip(scan.materialize_rows(pos)) {
-                    row_by_key.insert((*seq, *sub_id, *p), row);
+                    row_by_key.insert(
+                        RowKey {
+                            source: *source,
+                            position: *p,
+                        },
+                        row,
+                    );
                 }
             }
-        } else if let Some(reader) = sfst_by_key.get(&(*seq, *sub_id)) {
+        } else if let Some(reader) = sfst_by_key.get(source) {
             for (p, row) in pos.iter().zip(reader.materialize_rows(pos)?) {
-                row_by_key.insert((*seq, *sub_id, *p), row);
+                row_by_key.insert(
+                    RowKey {
+                        source: *source,
+                        position: *p,
+                    },
+                    row,
+                );
             }
         }
     }
@@ -270,7 +319,7 @@ fn materialize(
         .iter()
         .filter_map(|cursor| {
             row_by_key
-                .remove(&(cursor.file_seq, cursor.sub_id, cursor.position))
+                .remove(&RowKey::of(cursor))
                 .map(|row| (*cursor, row))
         })
         .collect();
@@ -365,14 +414,17 @@ fn scan_tails(
                 continue;
             }
         };
-        match scan.page_shard(tail.seq, query, anchor, bound) {
+        match scan.page_shard(tail.file_seq, query, anchor, bound) {
             Ok(shard) => merged.merge_into(shard, query.direction, bound),
             Err(e) => {
-                tracing::warn!("sfsq: tail page candidates failed (seq={}): {e}", tail.seq);
+                tracing::warn!(
+                    "sfsq: tail page candidates failed (file_seq={}): {e}",
+                    tail.file_seq
+                );
                 continue;
             }
         }
-        tail_scans.push((tail.seq, scan));
+        tail_scans.push((tail.file_seq, scan));
     }
     tail_scans
 }
@@ -409,8 +461,8 @@ fn open_and_evaluate_sfsts<'a>(
     anchor: Option<Cursor>,
     bound: Option<usize>,
     merged: &mut PageShard,
-) -> (Vec<(sfst::IndexReader<'a>, u64, u32)>, Vec<usize>) {
-    let mut readers: Vec<(sfst::IndexReader<'a>, u64, u32)> = Vec::new();
+) -> (Vec<(sfst::IndexReader<'a>, SourceKey)>, Vec<usize>) {
+    let mut readers: Vec<(sfst::IndexReader<'a>, SourceKey)> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();
     for (index, (mapping, candidate)) in mappings.iter().enumerate() {
         let reader = match sfst::IndexReader::open(mapping.bytes()) {
@@ -420,7 +472,7 @@ fn open_and_evaluate_sfsts<'a>(
                 continue;
             }
         };
-        match PageShard::evaluate(&reader, candidate.seq, candidate.sub_id, query, anchor, bound) {
+        match PageShard::evaluate(&reader, candidate.file_seq, candidate.part, query, anchor, bound) {
             Ok(shard) => merged.merge_into(shard, query.direction, bound),
             Err(e) => {
                 tracing::warn!(
@@ -430,7 +482,13 @@ fn open_and_evaluate_sfsts<'a>(
                 continue;
             }
         }
-        readers.push((reader, candidate.seq, candidate.sub_id));
+        readers.push((
+            reader,
+            SourceKey {
+                file_seq: candidate.file_seq,
+                part: candidate.part,
+            },
+        ));
         reader_mapping.push(index);
 
         if query.limit > 0 && merged.cursors.len() > query.limit {
@@ -456,7 +514,7 @@ fn open_and_evaluate_sfsts<'a>(
 /// has-more flags with no rows behind them.
 fn build_page(
     merged: PageShard,
-    readers: &[(sfst::IndexReader<'_>, u64, u32)],
+    readers: &[(sfst::IndexReader<'_>, SourceKey)],
     tail_scans: &[(u64, WalScan)],
     query: &LogsQuery,
 ) -> Page {
@@ -478,14 +536,14 @@ fn build_page(
 /// batches) from the page cache, keeping the hot prefix resident. In-memory
 /// chunks have no file pages to drop.
 fn release_cold(
-    readers: Vec<(sfst::IndexReader<'_>, u64, u32)>,
+    readers: Vec<(sfst::IndexReader<'_>, SourceKey)>,
     reader_mapping: &[usize],
     mappings: &[(Mapped, &SfstCandidate)],
 ) {
     let cold: Vec<(usize, (usize, usize))> = readers
         .iter()
         .zip(reader_mapping)
-        .filter_map(|((reader, _, _), &index)| reader.cold_region().map(|region| (index, region)))
+        .filter_map(|((reader, _), &index)| reader.cold_region().map(|region| (index, region)))
         .collect();
     // Free the readers before the advise loop. Not load-bearing — the
     // borrows of `mappings` are shared, and `release_cold_region` re-faults

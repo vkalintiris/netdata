@@ -1,13 +1,13 @@
 use super::*;
 // Explicit (not via the `use super::*` glob) so the tests don't depend on
-// `page.rs` happening to import NS_PER_S.
-use crate::logs::cursor::NS_PER_S;
+// `page.rs` happening to import these.
+use crate::logs::cursor::{NS_PER_S, Part};
 
 fn cursor_at(ts: i64) -> Cursor {
     Cursor {
         timestamp_ns: ts,
         file_seq: 1,
-        sub_id: Cursor::SFST_SUB_ID,
+        part: Part::Indexed(0),
         position: ts as u32,
     }
 }

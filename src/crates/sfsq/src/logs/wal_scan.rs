@@ -36,7 +36,7 @@ use std::path::Path;
 use sfst::{FacetResult, FieldEntry, FieldTable, FieldTier, Grid, Matcher, Timeline};
 
 use super::aggregate::{LogsShard, eligible_facet_fields};
-use super::cursor::Cursor;
+use super::cursor::{Cursor, Part};
 use super::page::PageShard;
 use super::query::LogsQuery;
 
@@ -168,10 +168,10 @@ impl WalScan {
 
     /// Page candidates for the tail — the row-scan counterpart of
     /// [`PageShard::evaluate`]. Every row matching the filter within the
-    /// window becomes a [`Cursor`] tagged `sub_id =
-    /// `[`Cursor::TAIL_SUB_ID`] (the tail sorts after all chunks of the
-    /// same `seq`) with `position` the row's **insertion index** — stable
-    /// while the row stays in the tail. Unlike an SFST the tail isn't
+    /// window becomes a [`Cursor`] tagged [`Part::Tail`] (the tail sorts
+    /// after all chunks of the same `seq`) with `position` the row's
+    /// **insertion index** — stable while the row stays in the tail.
+    /// Unlike an SFST the tail isn't
     /// time-ordered, so the cursors are sorted explicitly before the
     /// shared split/order/bound.
     pub fn page_shard(
@@ -191,7 +191,7 @@ impl WalScan {
                 cursors.push(Cursor {
                     timestamp_ns: row.ts_ns,
                     file_seq: seq,
-                    sub_id: Cursor::TAIL_SUB_ID,
+                    part: Part::Tail,
                     position: i as u32,
                 });
             }

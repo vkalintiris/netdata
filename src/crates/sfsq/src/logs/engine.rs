@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::aggregate::LogsShard;
+use super::cursor::Part;
 use super::page::paginate;
 use super::query::LogsQuery;
 use super::result::LogsData;
@@ -54,7 +55,7 @@ impl Source {
 /// from an active WAL's durable prefix. Owned, so the caller can release
 /// any lock on the file source before the query does I/O.
 ///
-/// `seq` and `sub_id` together place this candidate's rows in the
+/// `file_seq` and `part` together place this candidate's rows in the
 /// pagination cursor's total order (see [`Cursor`](super::cursor::Cursor)).
 pub struct SfstCandidate {
     /// Cheap time/stream/size facts ([`sfst::Summary`]); its `[min, max]`
@@ -63,13 +64,15 @@ pub struct SfstCandidate {
     pub summary: sfst::Summary,
     /// Globally-unique sequence of the underlying file — the sealed
     /// SFST's own seq, or the active WAL's seq for an in-memory chunk
-    /// (so all chunks of one WAL share it). The cursor's second key.
-    pub seq: u64,
-    /// Distinguishes the parts of one active WAL that share a `seq`:
-    /// [`Cursor::SFST_SUB_ID`](super::cursor::Cursor::SFST_SUB_ID) (`0`)
-    /// for a sealed SFST, or the chunk index for an in-memory chunk. The
-    /// cursor's third key, breaking ties at equal `(timestamp, seq)`.
-    pub sub_id: u32,
+    /// (so all chunks of one WAL share it). The cursor's second key
+    /// ([`Cursor::file_seq`](super::cursor::Cursor::file_seq)).
+    pub file_seq: u64,
+    /// Which indexed sub-source of `file_seq` this is — always a
+    /// [`Part::Indexed`]: `Indexed(0)` for a sealed SFST, or
+    /// `Indexed(chunk index)` for an in-memory chunk. The cursor's third
+    /// key, breaking ties at equal `(timestamp, seq)`. (An SFST candidate
+    /// is never [`Part::Tail`]; that is the row-scanned [`WalTail`].)
+    pub part: Part,
     /// Where the candidate's bytes come from — [`Source::File`] for a
     /// sealed index, [`Source::Memory`] for an in-memory WAL chunk.
     pub source: Source,
@@ -82,10 +85,9 @@ pub struct SfstCandidate {
 pub struct WalTail {
     /// The active WAL's sequence — the same globally-unique id the
     /// pagination cursor orders by as `file_seq`. The tail's rows sort
-    /// under it with `sub_id` =
-    /// [`Cursor::TAIL_SUB_ID`](super::cursor::Cursor::TAIL_SUB_ID), after
-    /// every chunk of the same seq.
-    pub seq: u64,
+    /// under it with [`Part::Tail`](super::cursor::Part::Tail), after
+    /// every chunk of the same `file_seq`.
+    pub file_seq: u64,
     /// Path to the active WAL file to scan.
     pub path: PathBuf,
     /// Byte offset of the first frame to scan — a frame boundary (the end
@@ -163,8 +165,8 @@ impl LogSource {
 /// Statistics (matched, facets, histogram, field table) and the row
 /// table both reflect **every** source — sealed SFSTs, in-memory chunks
 /// of active WALs, and the WAL tails — interleaved under the unified
-/// cursor order `(timestamp_ns, file_seq, sub_id, position)`, where
-/// `sub_id` distinguishes the parts of one active WAL that share a `seq`.
+/// cursor order `(timestamp_ns, file_seq, part, position)`, where
+/// `part` distinguishes the sub-sources of one active WAL that share a `seq`.
 ///
 /// Pure sync — no I/O scheduling, no locks, no geometry policy — but
 /// since it reads and decompresses files the caller is expected to invoke
@@ -191,8 +193,8 @@ pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
     let histogram = stats.timeline.unwrap_or_else(|| empty_timeline(grid));
 
     // Step 2: paginate across every source under the unified cursor
-    // order — on-disk SFSTs, in-memory chunks (`sub_id` = chunk index),
-    // and the WAL tails (`sub_id` = TAIL).
+    // order — on-disk SFSTs and in-memory chunks (`Part::Indexed`), and
+    // the WAL tails (`Part::Tail`).
     let page = paginate(&sources, &query);
 
     LogsData {

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sfst::Filter;
 
-use super::cursor::Cursor;
+use super::cursor::{Cursor, Part};
 
 /// Default histogram dimension when the query doesn't specify one.
 /// `severity_text` — the OTel canonical log-level field; what makes a
@@ -211,15 +211,19 @@ pub enum Anchor {
 impl Anchor {
     /// Resolve to a [`Cursor`] in the global total order. A row cursor is
     /// used as-is; a timestamp becomes a synthetic cursor at the *end* of
-    /// that instant (`file_seq`/`position` maxed), so a backward page shows
-    /// the newest rows up to that time.
+    /// that instant — the largest cursor at that `timestamp_ns`
+    /// (`file_seq`/`position` maxed, and [`Part::Tail`], which sorts after
+    /// every indexed source) — so a backward page shows the newest rows up
+    /// to that time. The `Part::Tail` here is the total-order maximum, not
+    /// a claim that the anchor points at a tail row; the synthetic cursor
+    /// is only ever compared, never materialized.
     pub(super) fn to_cursor(self) -> Cursor {
         match self {
             Anchor::Cursor(c) => c,
             Anchor::Timestamp(ns) => Cursor {
                 timestamp_ns: ns,
                 file_seq: u64::MAX,
-                sub_id: u32::MAX,
+                part: Part::Tail,
                 position: u32::MAX,
             },
         }

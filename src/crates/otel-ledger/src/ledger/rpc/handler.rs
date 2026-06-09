@@ -90,7 +90,7 @@ impl OtelLogsHandler {
         // A chunk's range that ends up row-scanned instead of indexed.
         let mut fallback = |start: u64, end: u64| {
             tails.push(WalTail {
-                seq: wal.seq,
+                file_seq: wal.seq,
                 path: wal.path.clone(),
                 start,
                 end,
@@ -127,10 +127,10 @@ impl OtelLogsHandler {
                 Ok(bytes) => match sfst::IndexReader::open(&bytes[..]) {
                     Ok(reader) => candidates.push(SfstCandidate {
                         summary: reader.summary().clone(),
-                        seq,
+                        file_seq: seq,
                         // Distinguishes this chunk from the WAL's other
                         // chunks and tail, which share `seq`.
-                        sub_id: chunk.index,
+                        part: sfsq::logs::Part::Indexed(chunk.index),
                         source: Source::Memory(bytes),
                     }),
                     // Parsed-back failure is unexpected; cover the range
@@ -155,7 +155,7 @@ impl OtelLogsHandler {
         let tail_begin = tail_start(&chunks, header);
         if tail_begin < wal.valid_up_to {
             tails.push(WalTail {
-                seq: wal.seq,
+                file_seq: wal.seq,
                 path: wal.path.clone(),
                 start: tail_begin,
                 end: wal.valid_up_to,

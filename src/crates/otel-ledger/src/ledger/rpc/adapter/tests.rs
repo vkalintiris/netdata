@@ -11,7 +11,7 @@ fn into_query_maps_histogram_and_anchor_forms() {
     assert!(matches!(
         q.anchor(),
         Some(Anchor::Cursor(c))
-            if c.timestamp_ns == 100 && c.file_seq == 2 && c.sub_id == 0 && c.position == 3
+            if c.timestamp_ns == 100 && c.file_seq == 2 && c.part == sfsq::logs::Part::Indexed(0) && c.position == 3
     ));
 
     // Non-empty histogram is carried through; a bare µs integer becomes
@@ -216,7 +216,7 @@ fn build_table_joins_multivalued_fields_and_keeps_last_severity() {
     let cursor = sfsq::logs::Cursor {
         timestamp_ns: 1_000_000_000,
         file_seq: 1,
-        sub_id: sfsq::logs::Cursor::SFST_SUB_ID,
+        part: sfsq::logs::Part::Indexed(0),
         position: 0,
     };
     let row = sfst::MaterializedRow {
