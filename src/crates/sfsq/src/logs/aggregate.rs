@@ -37,7 +37,7 @@ pub struct LogsShard {
     /// errored). Merging keeps it `None` only when *no* shard had one.
     pub timeline: Option<sfst::Timeline>,
     /// The field table, all tiers kept and the tier bumped to `High` if
-    /// high-card anywhere in the shard (see [`merge_field_tables`]).
+    /// high-card anywhere in the shard (see `merge_field_tables`).
     pub fields: sfst::FieldTable,
 }
 

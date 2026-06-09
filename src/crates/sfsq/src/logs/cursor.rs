@@ -42,8 +42,8 @@ pub enum Part {
     /// the [`Tail`](Part::Tail) wire sentinel, so `Indexed(u32::MAX)`
     /// would encode to the same wire integer as `Tail` and decode back as
     /// `Tail`. Real indices are bounded by the chunk count (a WAL never
-    /// approaches 2^32 chunks); [`to_wire`](Self::to_wire)'s `debug_assert!`
-    /// catches a violation in tests.
+    /// approaches 2^32 chunks); `to_wire`'s `debug_assert!` catches a
+    /// violation in tests.
     Indexed(u32),
     /// An active WAL's row-scanned tail. Sorts after every `Indexed(_)` of
     /// the same `file_seq`.

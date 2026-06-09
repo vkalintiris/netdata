@@ -36,7 +36,7 @@ use super::wal_scan::WalScan;
 #[derive(Debug, Default)]
 pub struct PageShard {
     /// Candidate cursors, ordered closest-to-anchor first — the order
-    /// [`merge`](PageShard::merge) and [`finalize_page`] take a prefix of.
+    /// [`merge`](PageShard::merge) and `finalize_page` take a prefix of.
     pub cursors: Vec<Cursor>,
     /// Whether this shard has any match on the side of the anchor *away*
     /// from the page direction (the source of the opposite has-more flag).
