@@ -103,9 +103,17 @@ impl PageShard {
 
         // Cursors for every match, ascending — within a file, position order
         // is cursor order (timestamps are chronological and `seq`/`part`
-        // are constant). A matched position with no timestamp means the
+        // are constant). A matched position with no timestamp would mean the
         // file's chunks disagree (corrupt SFST); fail so the caller skips
         // this source rather than emitting a bogus epoch-0 cursor.
+        //
+        // Defensive — unreachable today: `matched_positions` clamps the match
+        // set to `[lo, hi)` with `hi <= timestamps.len()` (the window is
+        // resolved against this same timestamps chunk via `range_positions`),
+        // so every matched position is in range. Kept as a guard against a
+        // future `matched_positions` that stops clamping. (C-4 in
+        // docs/sfsq-readability-refactors.md: a negative test would need a
+        // mock reader, since no real/forged file can reach this branch.)
         let ascending: Vec<Cursor> = matched
             .into_iter()
             .map(|position| {
