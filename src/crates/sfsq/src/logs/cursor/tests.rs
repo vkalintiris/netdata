@@ -28,6 +28,23 @@ fn tail_round_trips_via_sentinel() {
 }
 
 #[test]
+fn indexed_high_value_round_trips() {
+    // A large indexed value must stay `Indexed` across encode/decode — not
+    // get swallowed by the `u32::MAX` tail sentinel. Pins the `from_wire`
+    // boundary: the largest legal index is `u32::MAX - 1`.
+    let c = Cursor {
+        timestamp_ns: 1,
+        file_seq: 7,
+        part: Part::Indexed(u32::MAX - 1),
+        position: 2,
+    };
+    let s = c.encode();
+    assert_eq!(s, "1:7:4294967294:2");
+    assert_eq!(Cursor::decode(&s), Some(c));
+    assert_ne!(Cursor::decode(&s).unwrap().part, Part::Tail);
+}
+
+#[test]
 fn decode_rejects_malformed() {
     assert_eq!(Cursor::decode(""), None);
     assert_eq!(Cursor::decode("1:2:3"), None); // too few fields (legacy 3-field)

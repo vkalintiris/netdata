@@ -192,12 +192,15 @@ equivalence; the row half is explicitly milestone-4 scope.
   milestone-1 equivalence** (page rows, ordering, cursors — deferred
   from M1) is proven here, extending the existing harness.
 
-  **Done.** The cursor gained a `sub_id` field —
-  `(timestamp_ns, file_seq, sub_id, position)` — distinguishing the
-  parts of one active WAL that share a `seq`: `0` for an on-disk SFST,
-  the chunk index for an in-memory chunk, `u32::MAX` for the tail (which
-  sorts after every chunk). It is purely the equal-`(timestamp, seq)`
-  tiebreaker, and `materialize` routes by `(seq, sub_id)`. `WalScan`
+  **Done.** The cursor gained a third sort key —
+  `(timestamp_ns, file_seq, part, position)` — distinguishing the
+  sub-sources of one active WAL that share a `file_seq`. `part` is the
+  typed `Part` enum: `Indexed(n)` for an on-disk SFST (`n = 0`) or an
+  in-memory chunk (`n =` chunk index), and `Tail` for the row-scanned
+  tail (which sorts after every chunk). It is purely the
+  equal-`(timestamp, file_seq)` tiebreaker, and `materialize` routes by a
+  named `SourceKey { file_seq, part }` (see M-4 in
+  `sfsq-readability-refactors.md`). `WalScan`
   grew `page_shard` + `materialize_rows` over the tail (position = the
   row's insertion index — **tail-tiebreaker decision (a)**: stable while
   the row is in the tail; on promotion into a chunk it flips to the
