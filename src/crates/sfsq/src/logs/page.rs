@@ -408,6 +408,23 @@ fn scan_tails(
     bound: Option<usize>,
     merged: &mut PageShard,
 ) -> Vec<(u64, WalScan)> {
+    // `materialize` routes tail cursors by `file_seq` alone (`tail_by_seq`),
+    // and tail cursors share one `(file_seq, Part::Tail, position)` space —
+    // so each WAL must contribute at most one tail. The caller guarantees
+    // this (a WAL with an un-indexable chunk is refused whole rather than
+    // split into per-range tails; see C-5 in the readability backlog). Assert
+    // it so a future caller that violates it fails loudly here instead of
+    // silently dropping rows at materialize time.
+    debug_assert!(
+        {
+            let mut seqs: Vec<u64> = wal_tails.iter().map(|t| t.file_seq).collect();
+            seqs.sort_unstable();
+            seqs.dedup();
+            seqs.len() == wal_tails.len()
+        },
+        "WalTail file_seqs must be unique (one tail per WAL)"
+    );
+
     let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
     for &tail in wal_tails {
         let scan = match WalScan::scan_range(&tail.path, tail.start, tail.end) {
