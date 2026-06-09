@@ -123,6 +123,31 @@ impl From<WalTail> for LogSource {
     }
 }
 
+impl LogSource {
+    /// Evaluate this source into a statistics shard (step 1): the indexed
+    /// engine for an SFST (sealed file or in-memory chunk), a row scan for
+    /// a WAL tail. A per-source failure is logged and degrades to an empty
+    /// shard — the monoid identity under [`LogsShard::merge`] — so one bad
+    /// source never sinks the merged result.
+    pub(super) fn to_shard(&self, query: &LogsQuery) -> LogsShard {
+        match self {
+            LogSource::Sfst(c) => LogsShard::evaluate(c, query),
+            LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.start, tail.end) {
+                Ok(scan) => scan.evaluate(query),
+                Err(e) => {
+                    tracing::warn!(
+                        "sfsq: WAL tail scan failed for {} [{}..{}]: {e}",
+                        tail.path.display(),
+                        tail.start,
+                        tail.end
+                    );
+                    LogsShard::default()
+                }
+            },
+        }
+    }
+}
+
 /// Run the merged query over the query's log sources.
 ///
 /// Evaluates every source into a [`LogsShard`] (step 1), merges them,
@@ -147,26 +172,10 @@ impl From<WalTail> for LogSource {
 pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
     let grid = query.grid;
 
-    // Step 1: evaluate every source into a shard — the indexed engine for
-    // an SFST (sealed file or in-memory chunk), a row scan for a WAL tail
-    // — then merge into one. The merge is a monoid, so source order here
-    // is irrelevant.
-    let mut shards: Vec<LogsShard> = Vec::with_capacity(sources.len());
-    for source in &sources {
-        match source {
-            LogSource::Sfst(c) => shards.push(LogsShard::evaluate(c, &query)),
-            LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.start, tail.end) {
-                Ok(scan) => shards.push(scan.evaluate(&query)),
-                Err(e) => tracing::warn!(
-                    "sfsq: WAL tail scan failed for {} [{}..{}]: {e}",
-                    tail.path.display(),
-                    tail.start,
-                    tail.end
-                ),
-            },
-        }
-    }
-    let stats = LogsShard::merge(shards);
+    // Step 1: evaluate every source into a shard (see `LogSource::to_shard`)
+    // and merge them. The merge is a monoid, so source order is irrelevant
+    // and a failed source's empty shard is its identity.
+    let stats = LogsShard::merge(sources.iter().map(|s| s.to_shard(&query)).collect());
 
     // `available_fields` is the merged table with high-card fields
     // dropped — the offerable facet / histogram set — while `columns`

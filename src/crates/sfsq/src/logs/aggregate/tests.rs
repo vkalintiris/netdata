@@ -89,3 +89,37 @@ fn merge_empty_is_identity() {
     assert!(merged.timeline.is_none());
     assert!(merged.fields.is_empty());
 }
+
+#[test]
+fn merge_ignores_interspersed_default_shards() {
+    // M-3 relies on this: a failed source degrades to `LogsShard::default()`,
+    // so injecting default shards into the merge must not change the result
+    // (they are the monoid identity). Stronger than `merge_empty_is_identity`,
+    // which only covers the all-empty input.
+    let real = || LogsShard {
+        matched: 4,
+        facets: vec![sfst::FacetResult {
+            field: "level".into(),
+            values: vec![("info".into(), 4)],
+        }],
+        timeline: None,
+        fields: vec![sfst::FieldEntry {
+            name: "level".into(),
+            cardinality: 3,
+            tier: sfst::FieldTier::Low,
+        }]
+        .into(),
+    };
+
+    let alone = LogsShard::merge(vec![real()]);
+    let with_defaults =
+        LogsShard::merge(vec![LogsShard::default(), real(), LogsShard::default()]);
+
+    assert_eq!(with_defaults.matched, alone.matched);
+    assert_eq!(with_defaults.facets, alone.facets);
+    assert_eq!(with_defaults.timeline, alone.timeline);
+    assert_eq!(
+        with_defaults.fields.get("level").map(|e| e.cardinality),
+        alone.fields.get("level").map(|e| e.cardinality),
+    );
+}
