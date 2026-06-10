@@ -265,7 +265,7 @@ mod opt_bytesize {
                 Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
             }
         } else {
-            Option::<u64>::deserialize(d).map(|opt| opt.map(ByteSize))
+            Option::<u64>::deserialize(d).map(|opt| opt.map(ByteSize::b))
         }
     }
 }

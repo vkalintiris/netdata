@@ -16,7 +16,6 @@ anyhow = { workspace = true }
 bridge = { path = "../netdata-plugin/bridge" }
 clap = { workspace = true }
 bytesize = { workspace = true }
-bytesize-serde = { workspace = true }
 ferryboat = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }
