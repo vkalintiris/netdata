@@ -102,10 +102,28 @@ impl LogsShard {
     /// Facets are picked against *this file's* table, so a field that's
     /// high-card here is skipped; a field high-card in some *other* file is
     /// dropped later, in [`LogsShard::merge`].
+    ///
+    /// Maps the source itself — standalone entry point for callers
+    /// holding only a candidate. [`run`](super::engine::run) instead maps
+    /// every source once and goes through
+    /// [`evaluate_mapped`](LogsShard::evaluate_mapped) so the page pass
+    /// reads the same mapping.
     pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
         let Some(mapped) = mmap::map_source(&candidate.source) else {
             return LogsShard::default();
         };
+        Self::evaluate_mapped(candidate, &mapped, query)
+    }
+
+    /// [`evaluate`](LogsShard::evaluate) over pre-mapped bytes —
+    /// resolved once per query in [`run`](super::engine::run) and shared
+    /// with the page pass, so a file unlinked by retention mid-query
+    /// stays readable for both.
+    pub(super) fn evaluate_mapped(
+        candidate: &SfstCandidate,
+        mapped: &mmap::Mapped,
+        query: &LogsQuery,
+    ) -> LogsShard {
         let reader = match sfst::IndexReader::open(mapped.bytes()) {
             Ok(reader) => reader,
             Err(e) => {
@@ -187,7 +205,7 @@ impl LogsShard {
         // none.
         let cold_region = reader.cold_region();
         drop(reader);
-        if let (Some(region), mmap::Mapped::File(mmap)) = (cold_region, &mapped) {
+        if let (Some(region), mmap::Mapped::File(mmap)) = (cold_region, mapped) {
             mmap::release_cold_region(mmap, region);
         }
 

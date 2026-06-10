@@ -354,10 +354,13 @@ pub(super) struct Page {
 /// file first; forward: oldest first). Each file's bounded candidates fold
 /// into a running merge; once the page is full *and* the next file is
 /// entirely beyond the page boundary, the rest are skipped — never opened
-/// or decoded (they pay only the up-front mmap, which reads nothing).
+/// or decoded.
 ///
-/// The files are mapped up front so the readers, which borrow the
-/// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
+/// `mapped` carries each source's bytes, resolved once per query by
+/// [`run`](super::engine::run) (parallel to `sources`; `None` = tail or
+/// failed map) — the same mappings the stats pass read, so an SFST
+/// unlinked by retention between the passes is still served here.
+/// Files that fail to parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
 ///
@@ -370,10 +373,11 @@ pub(super) struct Page {
 /// only cross-request artifact is the documented WAL→SFST cursor seam.
 pub(super) fn paginate(
     sources: &[LogSource],
+    mapped: &[Option<Mapped>],
     query: &LogsQuery,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Page {
-    let (wal_tails, sfst_candidates) = partition_sources(sources);
+    let (wal_tails, sfst_candidates) = partition_sources(sources, mapped);
 
     // limit + 1: one extra candidate past the page so finalize can set the
     // has-more flags.
@@ -388,10 +392,10 @@ pub(super) fn paginate(
     // wrongly skip an SFST whose rows belong on the page.
     let tail_scans = scan_tails(&wal_tails, query, anchor, page_bound, &mut merged);
 
-    // SFSTs (on-disk + in-memory chunks): map up front so the readers,
-    // which borrow the mappings, see a stable `Vec`, then open + evaluate +
-    // fold them closest-to-anchor first with early termination.
-    let mappings = map_sfsts(sfst_candidates, query.direction);
+    // SFSTs (on-disk + in-memory chunks): order the pre-resolved
+    // mappings into a stable `Vec` the readers can borrow, then open +
+    // evaluate + fold them closest-to-anchor first with early termination.
+    let mappings = sort_mapped_sfsts(sfst_candidates, query.direction);
     let (readers, reader_mapping) =
         open_and_evaluate_sfsts(&mappings, query, anchor, page_bound, &mut merged, cancel);
 
@@ -400,16 +404,27 @@ pub(super) fn paginate(
     page
 }
 
-/// Split sources by kind. Order *within* each kind is irrelevant — the
+/// Split sources by kind, pairing each SFST with its pre-resolved
+/// mapping (an `Arc` bump). A candidate whose map failed (`None`) is
+/// dropped here — it contributed nothing to the stats pass either.
+/// Order *within* each kind is irrelevant — the
 /// merge re-sorts by cursor; the ordering that matters (tails before
 /// SFSTs) is enforced by [`paginate`]'s call order, not here.
-fn partition_sources(sources: &[LogSource]) -> (Vec<&WalTail>, Vec<&SfstCandidate>) {
+fn partition_sources<'a>(
+    sources: &'a [LogSource],
+    mapped: &[Option<Mapped>],
+) -> (Vec<&'a WalTail>, Vec<(&'a SfstCandidate, Mapped)>) {
+    debug_assert_eq!(sources.len(), mapped.len());
     let mut wal_tails = Vec::new();
     let mut sfst_candidates = Vec::new();
-    for source in sources {
+    for (source, mapping) in sources.iter().zip(mapped) {
         match source {
             LogSource::Tail(t) => wal_tails.push(t),
-            LogSource::Sfst(c) => sfst_candidates.push(c),
+            LogSource::Sfst(c) => {
+                if let Some(m) = mapping {
+                    sfst_candidates.push((c, m.clone()));
+                }
+            }
         }
     }
     (wal_tails, sfst_candidates)
@@ -471,23 +486,23 @@ fn scan_tails(
     tail_scans
 }
 
-/// Sort candidates closest-to-anchor first (backward: newest file first;
-/// forward: oldest first) and memory-map each. Mapping is cheap — no chunk
-/// is read until a reader opens — and is done up front so the readers,
-/// which borrow the mappings, see a stable `Vec`.
-fn map_sfsts<'a>(
-    mut candidates: Vec<&'a SfstCandidate>,
+/// Sort pre-mapped candidates closest-to-anchor first (backward: newest
+/// file first; forward: oldest first) into the stable `Vec` the readers
+/// borrow. The bytes were mapped once by [`run`](super::engine::run);
+/// this only orders them.
+fn sort_mapped_sfsts<'a>(
+    mut candidates: Vec<(&'a SfstCandidate, Mapped)>,
     direction: Direction,
 ) -> Vec<(Mapped, &'a SfstCandidate)> {
     match direction {
         Direction::Backward => {
-            candidates.sort_by_key(|c| std::cmp::Reverse(c.summary.max_timestamp_s));
+            candidates.sort_by_key(|(c, _)| std::cmp::Reverse(c.summary.max_timestamp_s));
         }
-        Direction::Forward => candidates.sort_by_key(|c| c.summary.min_timestamp_s),
+        Direction::Forward => candidates.sort_by_key(|(c, _)| c.summary.min_timestamp_s),
     }
     candidates
-        .iter()
-        .filter_map(|candidate| mmap::map_source(&candidate.source).map(|m| (m, *candidate)))
+        .into_iter()
+        .map(|(candidate, mapping)| (mapping, candidate))
         .collect()
 }
 

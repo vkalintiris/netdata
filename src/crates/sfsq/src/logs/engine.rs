@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::aggregate::LogsShard;
 use super::cursor::Part;
+use super::mmap::{self, Mapped};
 use super::page::paginate;
 use super::query::LogsQuery;
 use super::result::LogsData;
@@ -119,12 +120,17 @@ pub enum LogSource {
 impl LogSource {
     /// Evaluate this source into a statistics shard (step 1): the indexed
     /// engine for an SFST (sealed file or in-memory chunk), a row scan for
-    /// a WAL tail. A per-source failure is logged and degrades to an empty
-    /// shard — the monoid identity under [`LogsShard::merge`] — so one bad
-    /// source never sinks the merged result.
-    pub(super) fn to_shard(&self, query: &LogsQuery) -> LogsShard {
+    /// a WAL tail. An SFST reads the bytes `run` mapped once up front
+    /// (`mapped`; `None` means the map failed — already logged — and
+    /// degrades to empty). A per-source failure is logged and degrades to
+    /// an empty shard — the monoid identity under [`LogsShard::merge`] —
+    /// so one bad source never sinks the merged result.
+    pub(super) fn to_shard(&self, query: &LogsQuery, mapped: Option<&Mapped>) -> LogsShard {
         match self {
-            LogSource::Sfst(c) => LogsShard::evaluate(c, query),
+            LogSource::Sfst(c) => match mapped {
+                Some(m) => LogsShard::evaluate_mapped(c, m, query),
+                None => LogsShard::default(),
+            },
             LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.range) {
                 Ok(scan) => scan.evaluate(query),
                 Err(e) => {
@@ -183,16 +189,31 @@ pub fn run(
 ) -> LogsData {
     let grid = query.grid;
 
+    // Map every SFST source once, up front, and share each mapping with
+    // both passes. An open mapping pins the file's inode, so an SFST
+    // unlinked by retention mid-query stays readable and the stats and
+    // page passes always see the same source set — `matched` can no
+    // longer count rows the page pass fails to re-open. A source that
+    // fails to map (logged in `map_source`) is `None` and contributes
+    // nothing to either pass. Tails are row-scanned, not mapped.
+    let mapped: Vec<Option<Mapped>> = sources
+        .iter()
+        .map(|source| match source {
+            LogSource::Sfst(c) => mmap::map_source(&c.source),
+            LogSource::Tail(_) => None,
+        })
+        .collect();
+
     // Step 1: evaluate every source into a shard (see `LogSource::to_shard`)
     // and merge them. The merge is a monoid, so source order is irrelevant
     // and a failed source's empty shard is its identity — which also makes
     // a cancelled partial merge well-formed.
     let mut shards = Vec::with_capacity(sources.len());
-    for source in &sources {
+    for (source, mapping) in sources.iter().zip(&mapped) {
         if cancel.is_cancelled() {
             break;
         }
-        shards.push(source.to_shard(&query));
+        shards.push(source.to_shard(&query, mapping.as_ref()));
         progress.fetch_add(1, Ordering::Relaxed);
     }
     let stats = LogsShard::merge(shards);
@@ -212,8 +233,8 @@ pub fn run(
 
     // Step 2: paginate across every source under the unified cursor
     // order — on-disk SFSTs and in-memory chunks (`Part::Indexed`), and
-    // the WAL tails (`Part::Tail`).
-    let page = paginate(&sources, &query, &cancel);
+    // the WAL tails (`Part::Tail`) — reading the same mappings as step 1.
+    let page = paginate(&sources, &mapped, &query, &cancel);
 
     LogsData {
         matched: stats.matched,

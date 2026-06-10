@@ -20,8 +20,14 @@ use super::engine::Source;
 /// [`sfst::IndexReader::open`]; only the file variant participates in
 /// cold-suffix page-cache release (an in-memory chunk has no file pages
 /// to advise away).
+///
+/// Cloning is a refcount bump: one mapping created at the start of a
+/// query is shared by both the stats and the page pass, so a file
+/// unlinked by retention mid-query stays readable (the open mapping
+/// pins the inode) and both passes see the same source set.
+#[derive(Clone)]
 pub(super) enum Mapped {
-    File(Mmap),
+    File(Arc<Mmap>),
     Memory(Arc<Vec<u8>>),
 }
 
@@ -41,7 +47,7 @@ impl Mapped {
 /// producing cache evicts the entry).
 pub(super) fn map_source(source: &Source) -> Option<Mapped> {
     match source {
-        Source::File(path) => map_file(path).map(Mapped::File),
+        Source::File(path) => map_file(path).map(|m| Mapped::File(Arc::new(m))),
         Source::Memory(bytes) => Some(Mapped::Memory(Arc::clone(bytes))),
     }
 }
@@ -90,6 +96,31 @@ pub(super) fn release_cold_region(mapping: &Mmap, region: (usize, usize)) {
     if let Err(e) = advised {
         // Best-effort hint — on failure the cold pages simply stay cached.
         tracing::debug!("sfsq: releasing cold region failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the query's open-once design rests on: a mapping
+    /// taken at the start of a query pins the file's inode, so an SFST
+    /// unlinked by retention mid-query stays readable for the page pass.
+    #[test]
+    fn mapping_survives_unlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("victim.sfst");
+        std::fs::write(&path, b"bytes that outlive the unlink").unwrap();
+
+        let mapped = map_source(&Source::File(path.clone())).unwrap();
+        let shared = mapped.clone(); // the page pass's handle
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(mapped.bytes(), b"bytes that outlive the unlink");
+        assert_eq!(shared.bytes(), b"bytes that outlive the unlink");
+        // A fresh open of the unlinked path would fail — the old
+        // two-open behavior this design replaces.
+        assert!(map_source(&Source::File(path)).is_none());
     }
 }
 
