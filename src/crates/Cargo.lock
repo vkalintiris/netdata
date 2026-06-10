@@ -5408,6 +5408,7 @@ dependencies = [
  "serde",
  "sfst",
  "tempfile",
+ "tokio-util",
  "tracing",
  "wal",
 ]

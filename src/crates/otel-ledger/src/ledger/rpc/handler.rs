@@ -23,6 +23,7 @@ use file_registry::TenantId;
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use sfsq::logs::{LogSource, SfstCandidate, Source, WalTail, run};
 
@@ -54,7 +55,9 @@ impl OtelLogsHandler {
 
     /// Resolve one active-WAL descriptor into in-memory chunk SFST
     /// candidates plus the WAL-tail byte ranges to row-scan. Off the
-    /// registry lock.
+    /// registry lock. Polls `cancel` between chunk builds (each build is
+    /// one `spawn_blocking`); a cancelled call returns empty — the
+    /// caller is about to discard the result anyway.
     ///
     /// Scans the durable prefix's frame headers, groups them into chunks
     /// at `min_entries`, and builds each through the cache (singleflight).
@@ -71,7 +74,11 @@ impl OtelLogsHandler {
     /// `(file_seq, Part::Tail)`, which assumes one tail per WAL — covering a
     /// failed chunk with its own extra tail would break that (C-5 in
     /// docs/sfsq-readability-refactors.md).
-    async fn resolve_wal(&self, wal: WalDesc) -> (Vec<SfstCandidate>, Vec<WalTail>) {
+    async fn resolve_wal(
+        &self,
+        wal: WalDesc,
+        cancel: &CancellationToken,
+    ) -> (Vec<SfstCandidate>, Vec<WalTail>) {
         let header = wal::HEADER_SIZE as u64;
         let scan_path = wal.path.clone();
         let valid_up_to = wal.valid_up_to;
@@ -94,6 +101,9 @@ impl OtelLogsHandler {
         let chunks = chunk_boundaries(&frames, header, self.min_entries);
         let mut candidates = Vec::new();
         for chunk in &chunks {
+            if cancel.is_cancelled() {
+                return (Vec::new(), Vec::new());
+            }
             let seq = wal.seq;
             let path = wal.path.clone();
             let (range, expected) = (chunk.range, chunk.entry_count);
@@ -177,7 +187,7 @@ impl FunctionHandler for OtelLogsHandler {
 
     async fn on_call(
         &self,
-        _ctx: FunctionCallContext,
+        ctx: FunctionCallContext,
         req: Self::Request,
     ) -> netdata_plugin_error::Result<Self::Response> {
         if req.info {
@@ -213,10 +223,12 @@ impl FunctionHandler for OtelLogsHandler {
         };
 
         // Resolve each WAL into in-memory chunk SFSTs + a tail (off the
-        // lock; chunk builds are singleflighted through the cache).
+        // lock; chunk builds are singleflighted through the cache). The
+        // chunk-building phase can be the slow one, so it polls the
+        // call's cancellation token between builds.
         let mut wal_tails: Vec<WalTail> = Vec::new();
         for wal in wal_descs {
-            let (chunks, tails) = self.resolve_wal(wal).await;
+            let (chunks, tails) = self.resolve_wal(wal, &ctx.cancellation).await;
             sfst_candidates.extend(chunks);
             wal_tails.extend(tails);
         }
@@ -241,14 +253,28 @@ impl FunctionHandler for OtelLogsHandler {
         // The query is synchronous and CPU/IO-bound (opens + decompresses
         // SFSTs, row-scans the tails); run it and shape the neutral
         // result into the wire envelope off the runtime thread.
-        let result =
-            match tokio::task::spawn_blocking(move || to_result(run(sources, query), last)).await {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::warn!("otel-logs blocking task failed: {e}");
-                    LogsResult::empty_stub(after, before, last)
-                }
-            };
+        //
+        // Progress: total = number of query sources; the engine bumps the
+        // done counter as each source's stats shard completes and the
+        // bridge's 1 Hz ticker emits FUNCTION_PROGRESS lines from it.
+        // Cancellation is cooperative — a `spawn_blocking` closure cannot
+        // be aborted, so the engine polls the token per source and bails
+        // early; the bridge's cancel `select!` already returns the 499 to
+        // the caller and discards this partial result.
+        ctx.progress.set_total(sources.len());
+        let cancel = ctx.cancellation.clone();
+        let done = ctx.progress.done_counter();
+        let result = match tokio::task::spawn_blocking(move || {
+            to_result(run(sources, query, cancel, done), last)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!("otel-logs blocking task failed: {e}");
+                LogsResult::empty_stub(after, before, last)
+            }
+        };
 
         Ok(OtelLogsResponse::Logs(result))
     }

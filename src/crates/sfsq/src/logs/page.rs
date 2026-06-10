@@ -368,7 +368,11 @@ pub(super) struct Page {
 /// source evaluated in this same call. A stale anchor pointing at a now-
 /// absent source (e.g. a WAL since sealed) is therefore harmless here; the
 /// only cross-request artifact is the documented WAL→SFST cursor seam.
-pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
+pub(super) fn paginate(
+    sources: &[LogSource],
+    query: &LogsQuery,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Page {
     let (wal_tails, sfst_candidates) = partition_sources(sources);
 
     // limit + 1: one extra candidate past the page so finalize can set the
@@ -389,7 +393,7 @@ pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
     // fold them closest-to-anchor first with early termination.
     let mappings = map_sfsts(sfst_candidates, query.direction);
     let (readers, reader_mapping) =
-        open_and_evaluate_sfsts(&mappings, query, anchor, page_bound, &mut merged);
+        open_and_evaluate_sfsts(&mappings, query, anchor, page_bound, &mut merged, cancel);
 
     let page = build_page(merged, &readers, &tail_scans, query);
     release_cold(readers, &reader_mapping, &mappings);
@@ -493,16 +497,24 @@ fn map_sfsts<'a>(
 /// can't contribute, so they're never opened. Returns the opened readers
 /// (which borrow `mappings`) and their mapping indices, for materialize and
 /// cold-release. A file that fails to parse/evaluate is logged and skipped.
+///
+/// Polls `cancel` before each source: page work is bounded, so this is
+/// belt-and-suspenders, but it keeps a cancelled query from opening
+/// more files. The cancelled caller discards the partial page.
 fn open_and_evaluate_sfsts<'a>(
     mappings: &'a [(Mapped, &SfstCandidate)],
     query: &LogsQuery,
     anchor: Option<Cursor>,
     bound: Option<usize>,
     merged: &mut PageShard,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> (Vec<(sfst::IndexReader<'a>, SourceKey)>, Vec<usize>) {
     let mut readers: Vec<(sfst::IndexReader<'a>, SourceKey)> = Vec::new();
     let mut reader_mapping: Vec<usize> = Vec::new();
     for (index, (mapping, candidate)) in mappings.iter().enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
         let reader = match sfst::IndexReader::open(mapping.bytes()) {
             Ok(reader) => reader,
             Err(e) => {

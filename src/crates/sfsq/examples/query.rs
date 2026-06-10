@@ -105,6 +105,8 @@ fn try_main() -> Result<(), String> {
     let data = run(
         candidates.into_iter().map(LogSource::Sfst).collect(),
         builder.build(),
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     );
     print_result(&data);
     Ok(())

@@ -18,6 +18,7 @@ wal = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 memmap2 = { workspace = true }
+tokio-util = { workspace = true }
 libc = { workspace = true }
 regex = { workspace = true }
 

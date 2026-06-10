@@ -40,9 +40,21 @@ use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
 use sfsq::logs::{
-    LogSource, LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, Source, WalScan, WalTail, run,
+    LogSource, LogsData, LogsQuery, LogsQueryBuilder, LogsShard, SfstCandidate, Source, WalScan,
+    WalTail, run,
 };
 use sfst::{Filter, Grid};
+
+/// `run` with inert control parameters — the equivalence harness never
+/// cancels and ignores progress.
+fn run_plain(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
+    run(
+        sources,
+        query,
+        tokio_util::sync::CancellationToken::new(),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Deterministic RNG (xorshift64*) — no external dependency, reproducible
@@ -1012,11 +1024,11 @@ fn wal_data_stats_equal_whole_file_index() {
             }];
 
             for (qlabel, q) in queries() {
-                let live = run(
+                let live = run_plain(
                     sources(live_candidates_clone(&live_candidates), tails_clone(&tails)),
                     q.clone(),
                 );
-                let truth = run(vec![LogSource::Sfst(clone_candidate(&whole))], q);
+                let truth = run_plain(vec![LogSource::Sfst(clone_candidate(&whole))], q);
                 let ctx = format!("seed={seed} min_entries={min_entries} q={qlabel}");
                 assert_eq!(live.matched, truth.matched, "matched [{ctx}]");
                 assert_eq!(live.facets, truth.facets, "facets [{ctx}]");
@@ -1175,11 +1187,11 @@ fn wal_data_rows_match_whole_file_index() {
                 .build(),
         ),
     ] {
-        let live_rows = rows_of(&run(
+        let live_rows = rows_of(&run_plain(
             sources(live_candidates_clone(&live), tails_clone(&tails)),
             q.clone(),
         ));
-        let whole_rows = rows_of(&run(vec![LogSource::Sfst(clone_candidate(&whole))], q));
+        let whole_rows = rows_of(&run_plain(vec![LogSource::Sfst(clone_candidate(&whole))], q));
         assert!(!live_rows.is_empty(), "q={qlabel}: no rows");
         assert_eq!(
             live_rows, whole_rows,

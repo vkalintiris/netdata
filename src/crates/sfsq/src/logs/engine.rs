@@ -19,6 +19,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tokio_util::sync::CancellationToken;
 
 use super::aggregate::LogsShard;
 use super::cursor::Part;
@@ -159,13 +162,40 @@ impl LogSource {
 /// Pure sync — no I/O scheduling, no locks, no geometry policy — but
 /// since it reads and decompresses files the caller is expected to invoke
 /// it off any async runtime thread.
-pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
+///
+/// **Cancellation** is cooperative, polled once per source (a single
+/// in-flight source still runs to completion): once `cancel` fires, the
+/// loops stop opening further sources and `run` returns whatever was
+/// assembled so far. The caller racing the call against the token (the
+/// bridge's cancel `select!`) discards that partial result — its only
+/// purpose is to stop burning CPU/IO promptly. Callers that don't
+/// cancel pass `CancellationToken::new()`.
+///
+/// **Progress**: `progress` is incremented by one as each source's
+/// step-1 shard completes; the caller advertises the total
+/// (`sources.len()`) out of band. Callers that don't report pass a
+/// fresh `Arc::new(AtomicUsize::new(0))`.
+pub fn run(
+    sources: Vec<LogSource>,
+    query: LogsQuery,
+    cancel: CancellationToken,
+    progress: Arc<AtomicUsize>,
+) -> LogsData {
     let grid = query.grid;
 
     // Step 1: evaluate every source into a shard (see `LogSource::to_shard`)
     // and merge them. The merge is a monoid, so source order is irrelevant
-    // and a failed source's empty shard is its identity.
-    let stats = LogsShard::merge(sources.iter().map(|s| s.to_shard(&query)).collect());
+    // and a failed source's empty shard is its identity — which also makes
+    // a cancelled partial merge well-formed.
+    let mut shards = Vec::with_capacity(sources.len());
+    for source in &sources {
+        if cancel.is_cancelled() {
+            break;
+        }
+        shards.push(source.to_shard(&query));
+        progress.fetch_add(1, Ordering::Relaxed);
+    }
+    let stats = LogsShard::merge(shards);
 
     // `available_fields` is the merged table with high-card fields
     // dropped — the offerable facet / histogram set — while `columns`
@@ -183,7 +213,7 @@ pub fn run(sources: Vec<LogSource>, query: LogsQuery) -> LogsData {
     // Step 2: paginate across every source under the unified cursor
     // order — on-disk SFSTs and in-memory chunks (`Part::Indexed`), and
     // the WAL tails (`Part::Tail`).
-    let page = paginate(&sources, &query);
+    let page = paginate(&sources, &query, &cancel);
 
     LogsData {
         matched: stats.matched,
@@ -210,5 +240,63 @@ fn empty_timeline(grid: sfst::Grid) -> sfst::Timeline {
             };
             grid.num_buckets
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logs::LogsQueryBuilder;
+
+    /// Sources whose bytes are garbage: each one degrades to an empty
+    /// shard, but `run` still walks it — which is exactly what the
+    /// progress/cancel contract is about (one tick per source visited).
+    fn garbage_sources(n: usize) -> Vec<LogSource> {
+        (0..n)
+            .map(|i| {
+                LogSource::Sfst(SfstCandidate {
+                    summary: sfst::Summary {
+                        min_timestamp_s: 0,
+                        max_timestamp_s: 10,
+                        total_logs: 0,
+                        stream: sfst::ServiceStream::new("ns", "svc"),
+                    },
+                    file_seq: i as u64 + 1,
+                    part: Part::Indexed(0),
+                    source: Source::Memory(Arc::new(vec![0u8; 4])),
+                })
+            })
+            .collect()
+    }
+
+    fn query() -> LogsQuery {
+        LogsQueryBuilder::new(sfst::Grid::new(0, 10_000_000_000, 1)).build()
+    }
+
+    #[test]
+    fn progress_reaches_total_on_normal_run() {
+        let progress = Arc::new(AtomicUsize::new(0));
+        let data = run(
+            garbage_sources(5),
+            query(),
+            CancellationToken::new(),
+            Arc::clone(&progress),
+        );
+        assert_eq!(progress.load(Ordering::Relaxed), 5);
+        assert_eq!(data.matched, 0);
+    }
+
+    #[test]
+    fn pre_cancelled_token_evaluates_no_source_and_still_returns() {
+        let progress = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        // Returns a well-formed (empty, grid-aligned) LogsData without
+        // touching any source — the caller discards it.
+        let data = run(garbage_sources(5), query(), cancel, Arc::clone(&progress));
+        assert_eq!(progress.load(Ordering::Relaxed), 0);
+        assert_eq!(data.matched, 0);
+        assert_eq!(data.rows.len(), 0);
+        assert_eq!(data.histogram.buckets.len(), 1);
     }
 }
