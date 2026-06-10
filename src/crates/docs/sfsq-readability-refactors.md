@@ -88,6 +88,17 @@ Decided after a full read of `cursor.rs`/`page.rs` and a 3-model consult
    coupling documented (`query.rs:219-224`). **Keep `Cursor` fields `pub`** —
    privatizing + accessors is a larger cross-crate read-site break, deferred as
    a separate item (adjacent to C-2).
+   - **Resolved (follow-up).** A 3-model consult (`/tmp/vk-consult-cursor-api`)
+     converged that this is polish — M-4 was the win. Landed **only**
+     `Cursor::synthetic_max(ts)`: the `Anchor::Timestamp` site was the one
+     construction with real semantic oddness (three `MAX`/`Tail` sentinels +
+     a load-bearing comment), now a named `pub(super)` constructor in
+     `cursor.rs` that centralizes the coupling. **Skipped** field privatization
+     (`Cursor` is a `Copy` value type with no external constructor — privatizing
+     while exposing `Ord`/`Eq` is incoherent, ~nil safety gain), the
+     `tail`/`indexed`/`sealed`/`chunk` constructors (1 call site each, no info
+     added), `is_tail()`, a wire-codec split, and `position` newtypes. Kept the
+     `Indexed(u32::MAX)` guard as a `debug_assert!` for consistency with C-5.
 6. **Naming + keys.** Rename `SfstCandidate.seq` / `WalTail.seq` → `file_seq`
    (match `Cursor.file_seq`, the doc-referenced name). Replace the anonymous
    `(u64,u32)` / `(u64,u32,u32)` routing tuples in `materialize` with named

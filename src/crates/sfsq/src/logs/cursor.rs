@@ -134,6 +134,23 @@ impl Cursor {
             position,
         })
     }
+
+    /// The synthetic cursor that sorts after every real cursor at
+    /// `timestamp_ns` — the comparison-only boundary `Anchor::Timestamp`
+    /// resolves to, so a backward page shows the newest rows up to that
+    /// instant. It is the total-order maximum at that timestamp: `file_seq`
+    /// and `position` maxed, and [`Part::Tail`] (which sorts after every
+    /// indexed source). The `Part::Tail` here means "the maximum", not that
+    /// the anchor points at a tail row — this cursor is only ever compared,
+    /// never materialized.
+    pub(super) fn synthetic_max(timestamp_ns: i64) -> Cursor {
+        Cursor {
+            timestamp_ns,
+            file_seq: u64::MAX,
+            part: Part::Tail,
+            position: u32::MAX,
+        }
+    }
 }
 
 #[cfg(test)]
