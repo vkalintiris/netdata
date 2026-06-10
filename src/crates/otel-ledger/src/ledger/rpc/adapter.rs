@@ -344,12 +344,12 @@ fn available_histograms_from_fields(fields: &sfst::FieldTable) -> Vec<AvailableH
 /// `filter: "facet"` so the UI's "+ Add Filter Field" picker offers them;
 /// everything else is `"none"`. Each data row is a positional array
 /// aligned to the column `index`; absent attributes are `null`.
-fn build_table(
-    rows: &[(Cursor, sfst::MaterializedRow)],
-    fields: &[String],
-    facetable: &BTreeSet<&str>,
-) -> (serde_json::Value, serde_json::Value) {
-    use serde_json::{Value, json};
+/// Build the log table's column schema: the three fixed columns
+/// (`timestamp`, `severity`, hidden `cursor`) plus one per field. Each is a
+/// UI-specific metadata blob; a field present in `facetable` gets
+/// `filter: "facet"`, the rest `"none"`.
+fn build_columns(fields: &[String], facetable: &BTreeSet<&str>) -> serde_json::Value {
+    use serde_json::json;
 
     let mut columns = serde_json::Map::new();
     // The UI formats the cell from `valueOptions.transform`, not from
@@ -384,48 +384,71 @@ fn build_table(
                     "visible": false, "sortable": false, "filter": filter }),
         );
     }
+    serde_json::Value::Object(columns)
+}
 
-    let data: Vec<Value> = rows
+/// Group a materialized row's `(key, value)` pairs by field name,
+/// preserving stream order and skipping exact-duplicate values — a
+/// multi-valued field (e.g. a flattened scalar array) legitimately carries
+/// several values on one row.
+fn group_row_fields(row: &sfst::MaterializedRow) -> HashMap<&str, Vec<&str>> {
+    let mut lookup: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (k, v) in &row.fields {
+        let vals = lookup.entry(k.as_str()).or_default();
+        if !vals.contains(&v.as_str()) {
+            vals.push(v.as_str());
+        }
+    }
+    lookup
+}
+
+/// Build one row's positional cells — `[timestamp_µs, severity, cursor,
+/// field_0, …]`, aligned to [`build_columns`]'s schema.
+///
+/// A generic field cell joins the field's values with `", "` (the wire is
+/// one string per column; filters/search run on the index, never on
+/// cells). The dedicated severity cell takes the **last** `severity_text`
+/// value: the indexer interns the projected top-level LogRecord severity
+/// after all attributes, so this picks the real severity even when an
+/// attribute is also named `severity_text`.
+fn build_row_cells(
+    cursor: &Cursor,
+    row: &sfst::MaterializedRow,
+    fields: &[String],
+) -> Vec<serde_json::Value> {
+    use serde_json::{Value, json};
+
+    let lookup = group_row_fields(row);
+    let cell = |name: &str| match lookup.get(name) {
+        Some(vals) if vals.len() == 1 => json!(vals[0]),
+        Some(vals) => json!(vals.join(", ")),
+        None => Value::Null,
+    };
+    let severity = match lookup.get("severity_text").and_then(|v| v.last()) {
+        Some(v) => json!(v),
+        None => Value::Null,
+    };
+    let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
+    cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
+    cells.push(severity);
+    cells.push(json!(cursor.encode()));
+    cells.extend(fields.iter().map(|f| cell(f)));
+    cells
+}
+
+/// Build the wire `columns` schema and `data` rows from a materialized
+/// page — a thin orchestrator over [`build_columns`] and [`build_row_cells`].
+fn build_table(
+    rows: &[(Cursor, sfst::MaterializedRow)],
+    fields: &[String],
+    facetable: &BTreeSet<&str>,
+) -> (serde_json::Value, serde_json::Value) {
+    let columns = build_columns(fields, facetable);
+    let data = rows
         .iter()
-        .map(|(cursor, row)| {
-            // Group the row's pairs by field, preserving stream order —
-            // multi-valued fields (flattened scalar arrays) legitimately
-            // carry several values on one row; exact duplicates are
-            // skipped. The wire format is one string cell per column, so
-            // multiple values are joined for display (filters and search
-            // operate on the index, never on cells).
-            let mut lookup: HashMap<&str, Vec<&str>> = HashMap::new();
-            for (k, v) in &row.fields {
-                let vals = lookup.entry(k.as_str()).or_default();
-                if !vals.contains(&v.as_str()) {
-                    vals.push(v.as_str());
-                }
-            }
-            let cell = |name: &str| match lookup.get(name) {
-                Some(vals) if vals.len() == 1 => json!(vals[0]),
-                Some(vals) => json!(vals.join(", ")),
-                None => Value::Null,
-            };
-            // The dedicated severity cell takes the *last* `severity_text`
-            // pair: the indexer interns the projected top-level LogRecord
-            // severity after all attributes, so this picks the real
-            // severity even when an attribute is also named
-            // `severity_text` (and matches the previous last-wins
-            // behavior).
-            let severity = match lookup.get("severity_text").and_then(|v| v.last()) {
-                Some(v) => json!(v),
-                None => Value::Null,
-            };
-            let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
-            cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
-            cells.push(severity);
-            cells.push(json!(cursor.encode()));
-            cells.extend(fields.iter().map(|f| cell(f)));
-            Value::Array(cells)
-        })
+        .map(|(cursor, row)| serde_json::Value::Array(build_row_cells(cursor, row, fields)))
         .collect();
-
-    (Value::Object(columns), Value::Array(data))
+    (columns, serde_json::Value::Array(data))
 }
 
 #[cfg(test)]

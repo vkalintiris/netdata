@@ -240,3 +240,63 @@ fn build_table_joins_multivalued_fields_and_keeps_last_severity() {
     assert_eq!(cells[3], serde_json::json!("a, b"));
     assert_eq!(cells[4], serde_json::json!("x"));
 }
+
+fn dummy_cursor(timestamp_ns: i64) -> sfsq::logs::Cursor {
+    sfsq::logs::Cursor {
+        timestamp_ns,
+        file_seq: 1,
+        part: sfsq::logs::Part::Indexed(0),
+        position: 0,
+    }
+}
+
+#[test]
+fn group_row_fields_dedups_and_preserves_stream_order() {
+    let row = sfst::MaterializedRow {
+        timestamp_ns: 0,
+        fields: vec![
+            ("a".into(), "1".into()),
+            ("b".into(), "2".into()),
+            ("a".into(), "1".into()), // exact duplicate — skipped
+            ("a".into(), "3".into()), // new value — appended after "1"
+        ],
+    };
+    let grouped = group_row_fields(&row);
+    assert_eq!(grouped["a"], vec!["1", "3"]);
+    assert_eq!(grouped["b"], vec!["2"]);
+}
+
+#[test]
+fn build_row_cells_layout_join_severity_and_missing() {
+    let cursor = dummy_cursor(5_000); // 5 µs
+    let row = sfst::MaterializedRow {
+        timestamp_ns: 5_000,
+        fields: vec![
+            ("severity_text".into(), "noise".into()),
+            ("severity_text".into(), "ERROR".into()), // last wins
+            ("tags".into(), "a".into()),
+            ("tags".into(), "b".into()),
+        ],
+    };
+    let fields = vec!["tags".to_string(), "absent".to_string()];
+    let cells = build_row_cells(&cursor, &row, &fields);
+    // [timestamp_µs, severity, cursor, tags, absent]
+    assert_eq!(cells.len(), 5);
+    assert_eq!(cells[0], serde_json::json!(5)); // 5_000 ns / 1_000
+    assert_eq!(cells[1], serde_json::json!("ERROR")); // last severity_text
+    assert_eq!(cells[2], serde_json::json!(cursor.encode()));
+    assert_eq!(cells[3], serde_json::json!("a, b")); // multi-value join
+    assert_eq!(cells[4], serde_json::Value::Null); // absent field
+}
+
+#[test]
+fn build_row_cells_single_value_is_bare_and_no_severity_is_null() {
+    let cursor = dummy_cursor(0);
+    let row = sfst::MaterializedRow {
+        timestamp_ns: 0,
+        fields: vec![("host".into(), "api-1".into())],
+    };
+    let cells = build_row_cells(&cursor, &row, &["host".to_string()]);
+    assert_eq!(cells[1], serde_json::Value::Null); // no severity_text
+    assert_eq!(cells[3], serde_json::json!("api-1")); // single value, not joined
+}
