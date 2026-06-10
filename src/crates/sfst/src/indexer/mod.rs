@@ -102,7 +102,7 @@ pub fn index_with_options(
     })
 }
 
-/// Index the byte range `[start, end)` of a WAL file into an **in-memory**
+/// Index a frame-aligned byte `range` of a WAL file into an **in-memory**
 /// SFST, returning its [`Summary`] and the serialized bytes.
 ///
 /// The same two-phase build as [`index`], but reading only the frames in
@@ -119,7 +119,6 @@ pub fn index_range(
     wal_path: &Path,
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
-    let (start, end) = (range.start(), range.end());
     // Scope Phase 1 so the 32 MiB arena and the WalIndex (bitmaps,
     // interner, per-log entries) drop before serialization: `build`'s
     // Writer owns its packed chunks outright and borrows neither, so
@@ -135,8 +134,10 @@ pub fn index_range(
             decode_frame(&wal_frame, &mut wal_index)?;
         }
         tracing::debug!(
-            "WAL range read complete path={} start={start} end={end} frames={num_frames} logs={}",
+            "WAL range read complete path={} start={} end={} frames={num_frames} logs={}",
             wal_path.display(),
+            range.start(),
+            range.end(),
             wal_index.num_logs(),
         );
 

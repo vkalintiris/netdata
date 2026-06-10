@@ -265,7 +265,7 @@ pub struct FrameBoundary {
 /// one value rather than two loose offsets that could be swapped. The
 /// frame-alignment itself is checked when the range is read (the reader
 /// walks from `start`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FrameRange {
     start: u64,
     end: u64,
