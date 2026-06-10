@@ -30,7 +30,11 @@ roaring = { workspace = true }
 sfst = { workspace = true }
 sfsq = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+# preserve_order: the log-table `columns` object must serialize in insertion
+# (index) order — the Netdata UI orders columns by their JSON key position.
+# Declared here so otel-ledger is correct on its own, not by relying on a
+# sibling crate enabling the feature and Cargo unifying it into the binary.
+serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 uuid = { workspace = true }
