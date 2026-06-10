@@ -113,18 +113,6 @@ pub enum LogSource {
     Tail(WalTail),
 }
 
-impl From<SfstCandidate> for LogSource {
-    fn from(c: SfstCandidate) -> Self {
-        LogSource::Sfst(c)
-    }
-}
-
-impl From<WalTail> for LogSource {
-    fn from(t: WalTail) -> Self {
-        LogSource::Tail(t)
-    }
-}
-
 impl LogSource {
     /// Evaluate this source into a statistics shard (step 1): the indexed
     /// engine for an SFST (sealed file or in-memory chunk), a row scan for

@@ -113,8 +113,10 @@ Decided after a full read of `cursor.rs`/`page.rs` and a 3-model consult
 
 ### Explicit non-issues (recorded so they aren't re-chased)
 
-- The two `From<…> for LogSource` impls are currently unused but kept as an
-  idiomatic affordance (decision made).
+- ~~The two `From<…> for LogSource` impls are kept as an idiomatic
+  affordance.~~ **Reversed** — they were unused dead code (every `LogSource`
+  is built via the `Sfst`/`Tail` variants, e.g. `.map(LogSource::Sfst)`);
+  dropped after the overall-change consult flagged them.
 - `paginate`'s split allocates two small `Vec`s of references — O(n), n≈tens.
 - `merge.rs` `BTreeMap` for the cross-file field union is intentional.
 - `materialize`'s `HashMap` routing is the faster choice at typical page
