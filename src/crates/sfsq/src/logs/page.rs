@@ -132,7 +132,12 @@ impl PageShard {
             })
             .collect::<Result<Vec<_>, sfst::Error>>()?;
 
-        Ok(Self::from_cursors(ascending, query.direction, anchor, bound))
+        Ok(Self::from_cursors(
+            ascending,
+            query.direction,
+            anchor,
+            bound,
+        ))
     }
 
     /// Build a shard from this source's cursors, already sorted ascending
@@ -505,7 +510,14 @@ fn open_and_evaluate_sfsts<'a>(
                 continue;
             }
         };
-        match PageShard::evaluate(&reader, candidate.file_seq, candidate.part, query, anchor, bound) {
+        match PageShard::evaluate(
+            &reader,
+            candidate.file_seq,
+            candidate.part,
+            query,
+            anchor,
+            bound,
+        ) {
             Ok(shard) => merged.merge_into(shard, query.direction, bound),
             Err(e) => {
                 tracing::warn!(

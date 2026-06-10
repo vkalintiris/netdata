@@ -59,7 +59,10 @@ impl Part {
     fn to_wire(self) -> u32 {
         match self {
             Part::Indexed(n) => {
-                debug_assert!(n != Self::TAIL_WIRE, "chunk index collides with the tail sentinel");
+                debug_assert!(
+                    n != Self::TAIL_WIRE,
+                    "chunk index collides with the tail sentinel"
+                );
                 n
             }
             Part::Tail => Self::TAIL_WIRE,

@@ -407,10 +407,7 @@ mod tests {
     /// consumer indexes the hash blob positionally.
     #[test]
     fn hash_attribute_counts_repeated_keys() {
-        let mut lr = record(vec![
-            ("tags", arr(vec![s("a"), s("b")])),
-            ("plain", s("x")),
-        ]);
+        let mut lr = record(vec![("tags", arr(vec![s("a"), s("b")])), ("plain", s("x"))]);
         prepare_log_attributes(&mut lr);
         let hash = lr.attributes.last().unwrap();
         assert_eq!(hash.key, "_nd_kv_hash");

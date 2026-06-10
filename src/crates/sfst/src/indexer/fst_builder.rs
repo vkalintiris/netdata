@@ -106,14 +106,19 @@ fn build_stream_batches(
     if entries.is_empty() {
         // num_stream_batches(0) == 1: emit a single empty batch so the
         // file's chunk layout is always valid.
-        let packed = crate::pack(&crate::StreamBatch::for_write(&[]), crate::ZSTD_LEVEL_DEFAULT)?;
+        let packed = crate::pack(
+            &crate::StreamBatch::for_write(&[]),
+            crate::ZSTD_LEVEL_DEFAULT,
+        )?;
         total_packed += packed.len();
         writer.add_stream_batch(packed);
     } else {
         let batch_size = crate::stream_batch_size(total_logs) as usize;
         for batch in entries.chunks(batch_size) {
-            let packed =
-                crate::pack(&crate::StreamBatch::for_write(batch), crate::ZSTD_LEVEL_DEFAULT)?;
+            let packed = crate::pack(
+                &crate::StreamBatch::for_write(batch),
+                crate::ZSTD_LEVEL_DEFAULT,
+            )?;
             total_packed += packed.len();
             writer.add_stream_batch(packed);
         }

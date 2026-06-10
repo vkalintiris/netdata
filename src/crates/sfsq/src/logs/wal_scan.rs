@@ -197,7 +197,12 @@ impl WalScan {
             }
         }
         cursors.sort_unstable();
-        Ok(PageShard::from_cursors(cursors, query.direction, anchor, bound))
+        Ok(PageShard::from_cursors(
+            cursors,
+            query.direction,
+            anchor,
+            bound,
+        ))
     }
 
     /// Materialize tail rows by insertion index — the row-scan
@@ -681,7 +686,11 @@ impl<'q> TimelineAcc<'q> {
         // file, sorted lexicographically. An absent field yields no
         // dimensions — every matching row lands in `unset`.
         let mut tokens: Vec<u32> = scan.field_tokens.get(field).cloned().unwrap_or_default();
-        tokens.sort_by(|&a, &b| scan.pairs[a as usize].value().cmp(scan.pairs[b as usize].value()));
+        tokens.sort_by(|&a, &b| {
+            scan.pairs[a as usize]
+                .value()
+                .cmp(scan.pairs[b as usize].value())
+        });
         let dimensions: Vec<String> = tokens
             .iter()
             .map(|&t| scan.pairs[t as usize].value().to_string())

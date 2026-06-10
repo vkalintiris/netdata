@@ -397,7 +397,10 @@ fn round_trip_multi_batch_stream() {
     for i in 0..3u8 {
         let batch = reader.stream_batch(i).unwrap();
         assert_eq!(batch.num_rows(), 1024);
-        assert_eq!(batch.row(0).collect::<Vec<_>>(), vec![KvId(u32::from(i) * 1024)]);
+        assert_eq!(
+            batch.row(0).collect::<Vec<_>>(),
+            vec![KvId(u32::from(i) * 1024)]
+        );
         assert_eq!(
             batch.row(1023).collect::<Vec<_>>(),
             vec![KvId(u32::from(i) * 1024 + 1023)]

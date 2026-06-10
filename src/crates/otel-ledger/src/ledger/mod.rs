@@ -255,11 +255,8 @@ impl Ledger {
         // now; tuning is deferred with the rest of cache governance.
         let chunk_cache = Arc::new(ChunkCache::new(CHUNK_CACHE_BYTES));
 
-        let otel_handler = OtelLogsHandler::new(
-            registries.clone(),
-            chunk_cache.clone(),
-            CHUNK_MIN_ENTRIES,
-        );
+        let otel_handler =
+            OtelLogsHandler::new(registries.clone(), chunk_cache.clone(), CHUNK_MIN_ENTRIES);
 
         // Signal Ready between handler setup and the ingestor accept;
         // see the method docstring for the full ordering rationale.
@@ -349,17 +346,17 @@ impl Ledger {
                     self.handle_catalog_builder_resp(resp).await
                 }
                 LedgerEvent::SupervisorReq(req) => {
-                    let exit = self.handle_supervisor_req(req).await.inspect_err(
-                        |e| tracing::error!("supervisor request handling failed: {e}"),
-                    )?;
+                    let exit = self.handle_supervisor_req(req).await.inspect_err(|e| {
+                        tracing::error!("supervisor request handling failed: {e}")
+                    })?;
                     if exit {
                         return Ok(());
                     }
                 }
                 LedgerEvent::OutboundResp(resp) => {
-                    self.handle_outbound_resp(resp).await.inspect_err(
-                        |e| tracing::error!("failed to forward response to supervisor: {e}"),
-                    )?;
+                    self.handle_outbound_resp(resp).await.inspect_err(|e| {
+                        tracing::error!("failed to forward response to supervisor: {e}")
+                    })?;
                 }
             }
         }

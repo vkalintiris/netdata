@@ -120,7 +120,9 @@ fn gen_corpus(seed: u64) -> Corpus {
     let regime = seed % 6;
 
     let hosts: Vec<String> = (0..2 + rng.below(8)).map(|i| format!("host-{i}")).collect();
-    let codes: Vec<String> = (0..15 + rng.below(40)).map(|i| format!("c{i:03}")).collect();
+    let codes: Vec<String> = (0..15 + rng.below(40))
+        .map(|i| format!("c{i:03}"))
+        .collect();
     let levels = ["info", "error", "warn", "debug"];
     let tags = ["red", "green", "blue", "alpha", "beta"];
     let severities = ["", "INFO", "ERROR", "WARN"];
@@ -139,11 +141,11 @@ fn gen_corpus(seed: u64) -> Corpus {
         // Timestamp regime; 0 means "unset" in OTLP, which exercises
         // the decode's fallback tiers identically on both sides.
         let (time_ns, observed_ns) = match regime {
-            0 => ((BASE_S + i) * NS, 0),                       // monotonic event time
-            1 => ((BASE_S + rng.below(num_logs)) * NS, 0),     // shuffled
-            2 => ((BASE_S + i / 8) * NS, 0),                   // runs of equal timestamps
-            3 => (0, (BASE_S + i) * NS),                       // observed-time fallback
-            4 => (0, 0),                                       // ingestion-time fallback
+            0 => ((BASE_S + i) * NS, 0),                   // monotonic event time
+            1 => ((BASE_S + rng.below(num_logs)) * NS, 0), // shuffled
+            2 => ((BASE_S + i / 8) * NS, 0),               // runs of equal timestamps
+            3 => (0, (BASE_S + i) * NS),                   // observed-time fallback
+            4 => (0, 0),                                   // ingestion-time fallback
             _ => {
                 // Mixed: mostly event time, some rows falling through.
                 if rng.chance(20) {
@@ -159,10 +161,16 @@ fn gen_corpus(seed: u64) -> Corpus {
             attributes.push(kv("level", s(levels[rng.below(4) as usize])));
         }
         if rng.chance(75) {
-            attributes.push(kv("host", s(&hosts[rng.below(hosts.len() as u64) as usize])));
+            attributes.push(kv(
+                "host",
+                s(&hosts[rng.below(hosts.len() as u64) as usize]),
+            ));
         }
         if rng.chance(55) {
-            attributes.push(kv("code", s(&codes[rng.below(codes.len() as u64) as usize])));
+            attributes.push(kv(
+                "code",
+                s(&codes[rng.below(codes.len() as u64) as usize]),
+            ));
         }
         if rng.chance(30) {
             // Multi-valued: a scalar array flattens to repeated bare-key
@@ -187,7 +195,10 @@ fn gen_corpus(seed: u64) -> Corpus {
             // over the raw value *bytes* (`regex::bytes`), so a `.` or
             // `\w` spanning a multi-byte codepoint must behave the same
             // on each side.
-            attributes.push(kv("city", s(cities[rng.below(cities.len() as u64) as usize])));
+            attributes.push(kv(
+                "city",
+                s(cities[rng.below(cities.len() as u64) as usize]),
+            ));
         }
 
         records.push(LogRecord {
@@ -262,7 +273,14 @@ fn write_wal(dir: &Path, corpus: &Corpus) -> PathBuf {
         // rows of different frames distinguishable.
         let ingestion = TimestampNs((BASE_S + 500 + i as u64) * NS);
         writer
-            .write_frame(7, &data, count, ingestion, TimestampNs::ZERO, TimestampNs::ZERO)
+            .write_frame(
+                7,
+                &data,
+                count,
+                ingestion,
+                TimestampNs::ZERO,
+                TimestampNs::ZERO,
+            )
             .expect("write frame");
     }
     writer.shutdown_all().expect("shutdown");
@@ -300,10 +318,7 @@ fn assert_equiv(ctx: &str, via_sfst: &LogsShard, via_scan: &LogsShard) {
         via_sfst.fields, via_scan.fields,
         "field table diverged [{ctx}]"
     );
-    assert_eq!(
-        via_sfst.facets, via_scan.facets,
-        "facets diverged [{ctx}]"
-    );
+    assert_eq!(via_sfst.facets, via_scan.facets, "facets diverged [{ctx}]");
     assert_eq!(
         via_sfst.timeline, via_scan.timeline,
         "timeline diverged [{ctx}]"
@@ -411,7 +426,10 @@ fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
     ));
     out.push((
         "fulltext".into(),
-        b(g_eight).query("err").facet_fields(vec!["level".into()]).build(),
+        b(g_eight)
+            .query("err")
+            .facet_fields(vec!["level".into()])
+            .build(),
     ));
     out.push((
         "fulltext-key-scoped".into(),
@@ -481,9 +499,13 @@ fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
         // Pre-epoch (negative) bucket origin: the bucket arithmetic
         // `(ts − start) / width` must agree with the SFST partition.
         "negative-grid".into(),
-        b(Grid::new(-3600 * NS as i64, (start + span + 3600 * NS as i64) / 6, 6))
-            .histogram_field("level")
-            .build(),
+        b(Grid::new(
+            -3600 * NS as i64,
+            (start + span + 3600 * NS as i64) / 6,
+            6,
+        ))
+        .histogram_field("level")
+        .build(),
     ));
     out.push((
         // A window entirely after the data: every count is zero, the
@@ -551,7 +573,10 @@ fn random_corpora_match_index_then_query() {
     // batches into a single multi-frame WAL — so a multi-frame corpus
     // is what actually exercises cross-frame pair dedup.
     assert!(multi_frame, "no multi-frame corpus generated");
-    assert!(has_multivalued, "no multi-valued (repeated-key) field generated");
+    assert!(
+        has_multivalued,
+        "no multi-valued (repeated-key) field generated"
+    );
     assert!(has_non_ascii, "no non-ASCII attribute generated");
     // Across 18 corpora × the query matrix, the great majority of
     // queries must actually match rows — otherwise the sweep is
@@ -617,28 +642,25 @@ fn cardinality_tier_boundaries_match() {
             ("hist-high".into(), b(g).histogram_field("unique").build()),
             (
                 "facet-mix".into(),
-                b(g)
-                    .facet_fields(vec![
-                        "low99".into(),
-                        "mid100".into(),
-                        "mid999".into(),
-                        "unique".into(),
-                    ])
-                    .histogram_field("mid100")
-                    .build(),
+                b(g).facet_fields(vec![
+                    "low99".into(),
+                    "mid100".into(),
+                    "mid999".into(),
+                    "unique".into(),
+                ])
+                .histogram_field("mid100")
+                .build(),
             ),
             (
                 "filter-high-card-field".into(),
-                b(g)
-                    .filter(Filter::new().select("unique", "u00042"))
+                b(g).filter(Filter::new().select("unique", "u00042"))
                     .facet_fields(vec!["low99".into()])
                     .histogram_field("low99")
                     .build(),
             ),
             (
                 "pattern-on-high".into(),
-                b(g)
-                    .filter(Filter::new().select_pattern("unique", "u000.[13]"))
+                b(g).filter(Filter::new().select_pattern("unique", "u000.[13]"))
                     .build(),
             ),
             (
@@ -715,8 +737,7 @@ fn named_regressions_match() {
             // (normal zero-match shard, not a degrade).
             (
                 "bad-pattern-absent-field".into(),
-                b(g)
-                    .filter(Filter::new().select_pattern("missing", "(unclosed"))
+                b(g).filter(Filter::new().select_pattern("missing", "(unclosed"))
                     .facet_fields(vec!["svc".into()])
                     .histogram_field("lang")
                     .build(),
@@ -725,8 +746,7 @@ fn named_regressions_match() {
             // row 2 none.
             (
                 "multivalued-unset".into(),
-                b(g)
-                    .histogram_field("lang")
+                b(g).histogram_field("lang")
                     .facet_fields(vec!["lang".into()])
                     .build(),
             ),
@@ -747,8 +767,11 @@ fn index_range_whole_file_matches_disk_index() {
         let wal_path = write_wal(dir.path(), &corpus);
         let file_len = std::fs::metadata(&wal_path).unwrap().len();
 
-        let (mem_summary, mem_bytes) =
-            sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len)).expect("index_range");
+        let (mem_summary, mem_bytes) = sfst::index_range(
+            &wal_path,
+            wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+        )
+        .expect("index_range");
 
         let sfst_path = dir.path().join("disk.sfst");
         let disk = sfst::index(&wal_path, &sfst_path).expect("index");
@@ -781,17 +804,24 @@ fn index_range_interior_split_partitions_logs() {
         let wal_path = write_wal(dir.path(), &corpus);
         let file_len = std::fs::metadata(&wal_path).unwrap().len();
 
-        let frames =
-            wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len)).unwrap();
+        let frames = wal::scan_frame_boundaries(
+            &wal_path,
+            wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+        )
+        .unwrap();
         if frames.len() < 2 {
             continue;
         }
 
         // Split after the middle frame — a real frame boundary.
         let split = frames[frames.len() / 2 - 1].end_offset;
-        let (a_sum, a_bytes) =
-            sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, split)).unwrap();
-        let (b_sum, b_bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(split, file_len)).unwrap();
+        let (a_sum, a_bytes) = sfst::index_range(
+            &wal_path,
+            wal::FrameRange::new(wal::HEADER_SIZE as u64, split),
+        )
+        .unwrap();
+        let (b_sum, b_bytes) =
+            sfst::index_range(&wal_path, wal::FrameRange::new(split, file_len)).unwrap();
 
         let whole_path = dir.path().join("whole.sfst");
         let whole = sfst::index(&wal_path, &whole_path).unwrap();
@@ -825,10 +855,13 @@ fn index_range_interior_split_partitions_logs() {
         };
 
         let start = whole.summary.min_timestamp_s as i64 * NS as i64;
-        let span =
-            ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+        let span = ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1)
+            * NS as i64;
         for (qlabel, q) in [
-            ("all", LogsQueryBuilder::new(Grid::new(start, span, 1)).build()),
+            (
+                "all",
+                LogsQueryBuilder::new(Grid::new(start, span, 1)).build(),
+            ),
             (
                 "level=error",
                 LogsQueryBuilder::new(Grid::new(start, span, 1))
@@ -837,8 +870,8 @@ fn index_range_interior_split_partitions_logs() {
             ),
         ] {
             let whole_matched = LogsShard::evaluate(&whole_cand, &q).matched;
-            let summed = LogsShard::evaluate(&a_cand, &q).matched
-                + LogsShard::evaluate(&b_cand, &q).matched;
+            let summed =
+                LogsShard::evaluate(&a_cand, &q).matched + LogsShard::evaluate(&b_cand, &q).matched;
             assert_eq!(
                 whole_matched, summed,
                 "seed={seed} q={qlabel}: matched count not partitioned across the split"
@@ -910,8 +943,8 @@ fn wal_data_stats_equal_whole_file_index() {
         let whole = index_candidate(&wal_path, dir.path());
         let total = whole.summary.total_logs;
         let start = whole.summary.min_timestamp_s as i64 * NS as i64;
-        let span =
-            ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+        let span = ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1)
+            * NS as i64;
 
         let queries = || -> Vec<(String, LogsQuery)> {
             let b = LogsQueryBuilder::new;
@@ -940,7 +973,8 @@ fn wal_data_stats_equal_whole_file_index() {
         // small threshold (chunks + maybe a tail → the merge path).
         for min_entries in [u64::MAX, 25] {
             let chunks = group_chunks(
-                &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len)).unwrap(),
+                &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len))
+                    .unwrap(),
                 header,
                 min_entries,
             );
@@ -949,14 +983,21 @@ fn wal_data_stats_equal_whole_file_index() {
             // the small threshold yields at least one chunk (the
             // Source::Memory merge path is actually under test).
             if min_entries == u64::MAX {
-                assert!(chunks.is_empty(), "seed={seed}: MAX threshold should make all tail");
+                assert!(
+                    chunks.is_empty(),
+                    "seed={seed}: MAX threshold should make all tail"
+                );
             } else {
-                assert!(!chunks.is_empty(), "seed={seed}: small threshold should produce a chunk");
+                assert!(
+                    !chunks.is_empty(),
+                    "seed={seed}: small threshold should produce a chunk"
+                );
             }
 
             let mut live_candidates: Vec<SfstCandidate> = Vec::new();
             for (i, &(s, e)) in chunks.iter().enumerate() {
-                let (summary, bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(s, e)).unwrap();
+                let (summary, bytes) =
+                    sfst::index_range(&wal_path, wal::FrameRange::new(s, e)).unwrap();
                 live_candidates.push(SfstCandidate {
                     summary,
                     file_seq: i as u64,
@@ -1081,11 +1122,15 @@ fn wal_data_rows_match_whole_file_index() {
     );
     assert_eq!(chunks.len(), 2, "fixture should split into 2 chunks");
     let tail_begin = chunks.last().map(|&(_, e)| e).unwrap();
-    assert!(tail_begin < file_len, "fixture should leave a non-empty tail");
+    assert!(
+        tail_begin < file_len,
+        "fixture should leave a non-empty tail"
+    );
 
     let mut live: Vec<SfstCandidate> = Vec::new();
     for (i, &(s_off, e_off)) in chunks.iter().enumerate() {
-        let (summary, bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(s_off, e_off)).unwrap();
+        let (summary, bytes) =
+            sfst::index_range(&wal_path, wal::FrameRange::new(s_off, e_off)).unwrap();
         live.push(SfstCandidate {
             summary,
             file_seq: 1,
@@ -1110,7 +1155,9 @@ fn wal_data_rows_match_whole_file_index() {
     for (qlabel, q) in [
         (
             "all",
-            LogsQueryBuilder::new(Grid::new(start, span, 1)).limit(300).build(),
+            LogsQueryBuilder::new(Grid::new(start, span, 1))
+                .limit(300)
+                .build(),
         ),
         (
             "level=error",
@@ -1135,7 +1182,10 @@ fn wal_data_rows_match_whole_file_index() {
         ));
         let whole_rows = rows_of(&run(vec![LogSource::Sfst(clone_candidate(&whole))], q));
         assert!(!live_rows.is_empty(), "q={qlabel}: no rows");
-        assert_eq!(live_rows, whole_rows, "q={qlabel}: live rows != whole-file rows");
+        assert_eq!(
+            live_rows, whole_rows,
+            "q={qlabel}: live rows != whole-file rows"
+        );
     }
 }
 
@@ -1149,9 +1199,11 @@ fn index_range_empty_range_is_a_valid_zero_log_sfst() {
     let dir = tempfile::tempdir().expect("tempdir");
     let wal_path = write_wal(dir.path(), &corpus);
 
-    let (summary, bytes) =
-        sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64))
-            .expect("index_range over an empty range");
+    let (summary, bytes) = sfst::index_range(
+        &wal_path,
+        wal::FrameRange::new(wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64),
+    )
+    .expect("index_range over an empty range");
     assert_eq!(summary.total_logs, 0);
     sfst::IndexReader::open(&bytes).expect("empty-range SFST parses");
 }

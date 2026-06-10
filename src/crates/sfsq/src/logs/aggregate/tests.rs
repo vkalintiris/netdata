@@ -112,8 +112,7 @@ fn merge_ignores_interspersed_default_shards() {
     };
 
     let alone = LogsShard::merge(vec![real()]);
-    let with_defaults =
-        LogsShard::merge(vec![LogsShard::default(), real(), LogsShard::default()]);
+    let with_defaults = LogsShard::merge(vec![LogsShard::default(), real(), LogsShard::default()]);
 
     assert_eq!(with_defaults.matched, alone.matched);
     assert_eq!(with_defaults.facets, alone.facets);

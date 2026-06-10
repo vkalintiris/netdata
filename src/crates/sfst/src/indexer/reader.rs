@@ -11,8 +11,8 @@
 use fst_index::FstIndex;
 
 use crate::{
-    BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, Histogram,
-    IdRanges, KvId, Matcher, Metadata, ServiceStream, Summary, Timeline, Timestamps,
+    BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, Histogram, IdRanges,
+    KvId, Matcher, Metadata, ServiceStream, Summary, Timeline, Timestamps,
 };
 
 /// A successfully opened split-FST index.

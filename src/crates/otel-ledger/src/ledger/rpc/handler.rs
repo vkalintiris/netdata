@@ -101,9 +101,7 @@ impl OtelLogsHandler {
             // check open_range defers). Runs once per (seq, index) under
             // singleflight; skipped entirely on a cache hit.
             let init = async move {
-                match tokio::task::spawn_blocking(move || sfst::index_range(&path, range))
-                    .await
-                {
+                match tokio::task::spawn_blocking(move || sfst::index_range(&path, range)).await {
                     Ok(Ok((summary, bytes))) => {
                         if u64::from(summary.total_logs) != expected {
                             Err(format!(
@@ -239,17 +237,14 @@ impl FunctionHandler for OtelLogsHandler {
         // The query is synchronous and CPU/IO-bound (opens + decompresses
         // SFSTs, row-scans the tails); run it and shape the neutral
         // result into the wire envelope off the runtime thread.
-        let result = match tokio::task::spawn_blocking(move || {
-            to_result(run(sources, query), last)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::warn!("otel-logs blocking task failed: {e}");
-                LogsResult::empty_stub(after, before, last)
-            }
-        };
+        let result =
+            match tokio::task::spawn_blocking(move || to_result(run(sources, query), last)).await {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!("otel-logs blocking task failed: {e}");
+                    LogsResult::empty_stub(after, before, last)
+                }
+            };
 
         Ok(OtelLogsResponse::Logs(result))
     }

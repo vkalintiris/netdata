@@ -157,7 +157,10 @@ impl LogsShard {
         let facets = match reader.facets(&facet_fields, &filter, window) {
             Ok(facets) => facets,
             Err(e) => {
-                tracing::warn!("sfsq: facets failed for {}: {e}", candidate.source.describe());
+                tracing::warn!(
+                    "sfsq: facets failed for {}: {e}",
+                    candidate.source.describe()
+                );
                 Vec::new()
             }
         };
@@ -204,7 +207,10 @@ impl LogsShard {
 /// `facet_fields` is already non-empty (the builder applies the default).
 /// Shared with the WAL row scan ([`super::wal_scan`]), which applies the
 /// same per-file rule.
-pub(super) fn eligible_facet_fields(requested: &[String], fields: &sfst::FieldTable) -> Vec<String> {
+pub(super) fn eligible_facet_fields(
+    requested: &[String],
+    fields: &sfst::FieldTable,
+) -> Vec<String> {
     requested
         .iter()
         .filter(|name| fields.get(name).is_some_and(|f| !f.is_high_card()))

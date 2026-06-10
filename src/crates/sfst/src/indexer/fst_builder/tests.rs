@@ -27,11 +27,7 @@ fn high_field_arena_round_trips() {
 #[test]
 fn stream_batch_arena_round_trips() {
     use crate::KvId;
-    let rows = vec![
-        vec![KvId(0), KvId(1), KvId(70_000)],
-        vec![],
-        vec![KvId(5)],
-    ];
+    let rows = vec![vec![KvId(0), KvId(1), KvId(70_000)], vec![], vec![KvId(5)]];
     let batch = crate::StreamBatch::for_write(&rows);
 
     let bytes = bincode::serde::encode_to_vec(&batch, bincode::config::standard()).unwrap();
@@ -83,7 +79,6 @@ fn serde_bytes_is_wire_compatible_with_plain_vec_u8() {
 
     // And bytes written the *old* way decode through the *new* (annotated)
     // struct — i.e. a pre-change v4 file is still readable.
-    let (decoded, _): (WithBytes, _) =
-        bincode::serde::decode_from_slice(&plain, cfg).unwrap();
+    let (decoded, _): (WithBytes, _) = bincode::serde::decode_from_slice(&plain, cfg).unwrap();
     assert_eq!(decoded.blob, data);
 }

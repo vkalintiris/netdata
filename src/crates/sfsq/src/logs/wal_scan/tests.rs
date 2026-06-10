@@ -221,9 +221,7 @@ fn facet_counts_each_row_once_per_distinct_value() {
     ]);
     let shard = run(
         &scan,
-        query(wide_grid())
-            .facet_fields(vec!["tag".into()])
-            .build(),
+        query(wide_grid()).facet_fields(vec!["tag".into()]).build(),
     );
     assert_eq!(
         facet(&shard, "tag").values,
@@ -253,9 +251,7 @@ fn facets_clip_to_the_window() {
     let scan = scan_from(&[(5, &["tag=in"]), (500, &["tag=out"])]);
     let shard = run(
         &scan,
-        query(wide_grid())
-            .facet_fields(vec!["tag".into()])
-            .build(),
+        query(wide_grid()).facet_fields(vec!["tag".into()]).build(),
     );
     assert_eq!(facet(&shard, "tag").values, vec![("in".to_string(), 1)]);
 }
@@ -324,10 +320,7 @@ fn timeline_excludes_own_selection_and_keeps_zero_count_dimensions() {
 #[test]
 fn timeline_absent_field_routes_matches_to_unset() {
     let scan = scan_from(&[(1, &["a=x"]), (2, &["a=y"])]);
-    let shard = run(
-        &scan,
-        query(wide_grid()).histogram_field("missing").build(),
-    );
+    let shard = run(&scan, query(wide_grid()).histogram_field("missing").build());
     let timeline = shard.timeline.expect("timeline");
     assert!(timeline.dimensions.is_empty());
     assert_eq!(timeline.buckets[0].counts, Vec::<u64>::new());

@@ -377,19 +377,17 @@ impl<T: Copy> AttrsMap<T> {
                         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
                 });
 
-                let token = hash
-                    .and_then(|h| sink.lookup_hash(h))
-                    .unwrap_or_else(|| {
-                        buf.clear();
+                let token = hash.and_then(|h| sink.lookup_hash(h)).unwrap_or_else(|| {
+                    buf.clear();
 
-                        if let Some(k) = cols.key.value(row) {
-                            buf.push_str(k);
-                        }
-                        buf.push('=');
-                        cols.append_value(row, &mut buf);
+                    if let Some(k) = cols.key.value(row) {
+                        buf.push_str(k);
+                    }
+                    buf.push('=');
+                    cols.append_value(row, &mut buf);
 
-                        sink.intern(hash, &buf)
-                    });
+                    sink.intern(hash, &buf)
+                });
 
                 map.entry(pid).or_default().push(token);
             }

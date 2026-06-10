@@ -62,7 +62,11 @@ pub struct ChunkBoundary {
 /// Boundaries are a deterministic function of the entry counts, so a
 /// longer prefix yields the same chunks plus possibly more — never a
 /// different split of the same data.
-pub fn chunk_boundaries(frames: &[FrameBoundary], start: u64, min_entries: u64) -> Vec<ChunkBoundary> {
+pub fn chunk_boundaries(
+    frames: &[FrameBoundary],
+    start: u64,
+    min_entries: u64,
+) -> Vec<ChunkBoundary> {
     // `min_entries == 0` would make every frame its own chunk —
     // degenerate, and contrary to the >=16K design intent. The caller's
     // threshold is a config knob, so guard it in debug rather than at
