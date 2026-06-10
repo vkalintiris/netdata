@@ -220,7 +220,9 @@ impl FunctionHandler for OtelLogsHandler {
         }
 
         // One mixed source list for the engine: indexed SFSTs (sealed +
-        // in-memory chunks) and the row-scanned WAL tails.
+        // in-memory chunks) and the row-scanned WAL tails. Order is
+        // cosmetic — `run` re-partitions by kind and the stats merge is an
+        // order-independent monoid, so it sorts purely by the cursor order.
         let sources: Vec<LogSource> = sfst_candidates
             .into_iter()
             .map(LogSource::Sfst)

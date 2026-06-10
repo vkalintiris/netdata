@@ -55,7 +55,7 @@ the headline.
 | M-6 ✅ | `from_cursors` requires its input already sorted ascending, previously stated only in prose. Added `debug_assert!(ascending.is_sorted())` so a future caller that forgets fails loudly. | `page.rs` | **Done.** |
 | M-7 ✅ | `bound` (= `limit + 1`) in `paginate` renamed to `page_bound` with a clarifying comment. Helper params stay generic `bound`. | `page.rs` | **Done.** |
 | M-8 ✅ | `build_table` did column-schema building and per-row cell building (incl. the multi-value join + last-`severity_text` rule) in one body, with the per-row logic trapped in a `.map()` closure — untestable in isolation. | `otel-ledger/.../adapter.rs` | **Done.** Extracted pure helpers `build_columns`, `group_row_fields`, `build_row_cells`; `build_table` is now a thin orchestrator (signature unchanged). Output byte-identical. Added unit tests on the helpers. A 6-model consult confirmed this over a dedicated table type / module / crate (over-engineering: positional rows, one caller, no invariant). |
-| M-9 | Doc nits: a one-line note that `LogSource::Sfst`'s name tracks the inner type, not storage; a note in `handler.rs` that caller source-order is cosmetic (the engine re-partitions). | `engine.rs:107-112`, `handler.rs:~220` | Skip unless touching those lines. |
+| M-9 ✅ | Doc nits: a note that `LogSource::Sfst`'s name tracks the inner type, not storage; a note in `handler.rs` that caller source-order is cosmetic (the engine re-partitions). | `engine.rs`, `handler.rs` | **Done.** Both comments added. |
 
 ### § M-4 — agreed design (decided)
 

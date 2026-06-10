@@ -104,7 +104,10 @@ pub struct WalTail {
 /// folds every source into the same merged result, so the caller passes
 /// one mixed list rather than pre-bucketing by kind.
 pub enum LogSource {
-    /// A sealed on-disk SFST or an in-memory WAL chunk.
+    /// An indexed source evaluated through the SFST engine. The name
+    /// tracks the inner [`SfstCandidate`] type, not on-disk storage: the
+    /// bytes are a sealed on-disk file *or* an in-memory chunk of an active
+    /// WAL ([`Source`]) — both are queried as SFSTs.
     Sfst(SfstCandidate),
     /// An active WAL's un-indexed tail, evaluated by a row scan.
     Tail(WalTail),
