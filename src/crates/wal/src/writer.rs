@@ -3,7 +3,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use file_registry::FileDir;
@@ -11,6 +10,7 @@ use uuid::Uuid;
 
 use crate::Result;
 use crate::config::Config;
+use crate::seq::SeqAllocator;
 use file_registry::{ByteSize, FileId, TimestampNs};
 
 use crate::format::{
@@ -33,12 +33,14 @@ struct ActiveFile {
     first_frame_at_ns: Option<TimestampNs>,
 }
 
-/// Shared sequence counter for globally unique file numbering.
-struct SeqCounter(Arc<AtomicU64>);
+/// Shared sequence counter for globally unique file numbering. Wraps
+/// the process-wide [`SeqAllocator`], which never reissues a seq across
+/// restarts (see `seq.rs`).
+struct SeqCounter(Arc<SeqAllocator>);
 
 impl SeqCounter {
-    fn next(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::Relaxed) + 1
+    fn next(&self) -> Result<u64> {
+        self.0.next()
     }
 }
 
@@ -199,7 +201,7 @@ impl Stream {
             return Ok(());
         }
 
-        let file_seq = self.seq.next();
+        let file_seq = self.seq.next()?;
         let file_id = self.file_id(file_seq);
         let path = self.dir.file_path(file_id);
 
@@ -316,7 +318,7 @@ pub struct Writer {
     machine_id: Uuid,
     boot_id: Uuid,
     config: Config,
-    seq: Arc<AtomicU64>,
+    seq: Arc<SeqAllocator>,
     streams: HashMap<u64, Stream>,
 }
 
@@ -326,7 +328,7 @@ impl Writer {
     /// Machine and boot IDs are loaded from the system. The caller provides
     /// a shared sequence counter (e.g., shared across per-tenant writers).
     /// The directory is created if it doesn't exist.
-    pub fn new(path: &Path, config: Config, seq: Arc<AtomicU64>) -> Result<Self> {
+    pub fn new(path: &Path, config: Config, seq: Arc<SeqAllocator>) -> Result<Self> {
         let machine_id = journal_common::load_machine_id().map_err(|e| crate::Error::Io(e))?;
         let boot_id = journal_common::load_boot_id().map_err(|e| crate::Error::Io(e))?;
         let dir = Arc::new(FileDir::new(path, WAL_EXT));
@@ -417,7 +419,7 @@ impl Writer {
     }
 }
 
-fn fsync_dir(dir: &std::path::Path) -> Result<()> {
+pub(crate) fn fsync_dir(dir: &std::path::Path) -> Result<()> {
     let dir_file = File::open(dir)?;
     dir_file.sync_all()?;
     Ok(())
@@ -429,7 +431,7 @@ mod tests {
     use crate::Config;
 
     fn test_writer(tmp: &std::path::Path) -> Writer {
-        let seq = Arc::new(AtomicU64::new(0));
+        let seq = Arc::new(SeqAllocator::ephemeral(0));
         Writer::new(tmp, Config::default(), seq).unwrap()
     }
 

@@ -19,6 +19,7 @@ netdata-plugin-types = { path = "../netdata-plugin/types" }
 
 # WAL writing
 file-registry = { workspace = true }
+otel-catalog = { workspace = true }
 otel-flatten = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
@@ -43,3 +44,4 @@ twox-hash = { workspace = true, features = ["xxhash64"] }
 [dev-dependencies]
 bytesize = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }

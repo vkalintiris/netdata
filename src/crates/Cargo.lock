@@ -3934,6 +3934,7 @@ dependencies = [
  "netdata-plugin-types",
  "opentelemetry-proto",
  "otap-df-pdata",
+ "otel-catalog",
  "otel-flatten",
  "prost",
  "regex",
@@ -3947,6 +3948,7 @@ dependencies = [
  "tonic",
  "tracing",
  "twox-hash",
+ "uuid",
  "wal",
 ]
 

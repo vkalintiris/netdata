@@ -262,28 +262,29 @@ fn create_logs_service(
 ) -> Result<NetdataLogsService> {
     let wal_base_dir = logs_config.wal.dir.clone();
     let index_base_dir = logs_config.index.dir.clone();
+    let catalog_base_dir = logs_config.catalog.dir.clone();
 
-    // Seed the seq counter from the highest seq found across every
-    // directory where seq-tagged files persist. Looking at WAL alone
-    // is unsafe: post-restart the cleaner may have pruned every WAL
-    // but SFSTs at higher seqs still sit on disk; starting low would
-    // make new files appear "older" than retained ones and trigger
-    // immediate eviction by the seq-ordered retention loop.
-    let wal_max = wal::scan_max_sequence_recursive(&wal_base_dir)
-        .with_context(|| format!("scanning WAL dirs in {:?}", wal_base_dir))?;
-    let sfst_max = sfst::scan_max_sequence_recursive(&index_base_dir)
-        .with_context(|| format!("scanning SFST dirs in {:?}", index_base_dir))?;
-    let max_seq = wal_max.max(sfst_max);
-    let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(max_seq));
+    let seed = compute_seq_seed(&wal_base_dir, &index_base_dir, &catalog_base_dir)?;
+    let seq = std::sync::Arc::new(
+        wal::SeqAllocator::durable(
+            seq_highwater_path(&index_base_dir),
+            seed.seed,
+            wal::DEFAULT_RESERVE_BATCH,
+        )
+        .context("initializing seq high-water allocator")?,
+    );
 
     let sender = ledger_sender::LedgerSender::new(writer_socket_path);
 
     tracing::info!(
         wal_dir = %logs_config.wal.dir.display(),
         index_dir = %logs_config.index.dir.display(),
-        wal_max,
-        sfst_max,
-        max_seq,
+        catalog_dir = %logs_config.catalog.dir.display(),
+        wal_max = seed.wal_max,
+        sfst_max = seed.sfst_max,
+        catalog_max = seed.catalog_max,
+        highwater = seed.highwater,
+        seed = seed.seed,
         "logs ingestion enabled (multi-tenant WAL)"
     );
 
@@ -294,4 +295,150 @@ fn create_logs_service(
         seq,
         logs_config.auth.clone(),
     ))
+}
+
+/// Canonical location of the seq high-water file. Lives at the index
+/// root with no data-file extension so no recursive scanner ever picks
+/// it up.
+fn seq_highwater_path(index_base_dir: &std::path::Path) -> std::path::PathBuf {
+    index_base_dir.join(".seq_highwater")
+}
+
+/// Inputs and result of the startup seq-counter seed.
+struct SeqSeed {
+    wal_max: u64,
+    sfst_max: u64,
+    catalog_max: u64,
+    highwater: Option<u64>,
+    seed: u64,
+}
+
+/// Seed the seq counter from the highest seq found across every place
+/// where seq-tagged state persists.
+///
+/// Looking at WAL alone is unsafe: post-restart the cleaner may have
+/// pruned every WAL but SFSTs at higher seqs still sit on disk;
+/// starting low would make new files appear "older" than retained ones
+/// and trigger immediate eviction by the seq-ordered retention loop.
+/// Catalogs outlive the SFSTs they describe, so they bound the seed
+/// when the data files are gone. None of the scans is a safe upper
+/// bound on its own (age-based eviction is keyed on data timestamps,
+/// not seq), so the persisted high-water mark — the highest seq ever
+/// reserved — is the load-bearing input; the scans self-heal a missing
+/// or corrupt high-water file, which is treated as absent and never
+/// fails startup.
+fn compute_seq_seed(
+    wal_base_dir: &std::path::Path,
+    index_base_dir: &std::path::Path,
+    catalog_base_dir: &std::path::Path,
+) -> Result<SeqSeed> {
+    let wal_max = wal::scan_max_sequence_recursive(wal_base_dir)
+        .with_context(|| format!("scanning WAL dirs in {:?}", wal_base_dir))?;
+    let sfst_max = sfst::scan_max_sequence_recursive(index_base_dir)
+        .with_context(|| format!("scanning SFST dirs in {:?}", index_base_dir))?;
+    let catalog_max = otel_catalog::scan_max_sequence(catalog_base_dir)
+        .with_context(|| format!("scanning catalog dirs in {:?}", catalog_base_dir))?;
+    let highwater = wal::read_seq_highwater(&seq_highwater_path(index_base_dir));
+    let seed = wal_max
+        .max(sfst_max)
+        .max(catalog_max)
+        .max(highwater.unwrap_or(0));
+    Ok(SeqSeed {
+        wal_max,
+        sfst_max,
+        catalog_max,
+        highwater,
+        seed,
+    })
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+
+    /// `{machine:32}-{boot:32}-{seq:010}-{ns_hash:016x}.{ext}` — the
+    /// FileId filename shape both data-file scanners parse.
+    fn data_filename(seq: u64, ext: &str) -> String {
+        let machine = uuid::Uuid::from_u128(1).as_simple().to_string();
+        let boot = uuid::Uuid::from_u128(2).as_simple().to_string();
+        format!("{machine}-{boot}-{seq:010}-{:016x}.{ext}", 0xabcdu64)
+    }
+
+    #[test]
+    fn seed_is_max_of_scans_and_highwater() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let index_dir = tmp.path().join("index");
+        let catalog_dir = tmp.path().join("catalog");
+
+        // WAL max 3 < SFST max 10 < catalog max 25 < high-water 40.
+        std::fs::create_dir_all(wal_dir.join("tenant-a")).unwrap();
+        std::fs::write(wal_dir.join("tenant-a").join(data_filename(3, "wal")), b"").unwrap();
+        std::fs::create_dir_all(index_dir.join("tenant-a")).unwrap();
+        std::fs::write(
+            index_dir.join("tenant-a").join(data_filename(10, "sfst")),
+            b"",
+        )
+        .unwrap();
+        let cat_dir = catalog_dir.join("2026-06-11").join("tenant-a");
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(
+            cat_dir.join(otel_catalog::filename(
+                uuid::Uuid::from_u128(1),
+                uuid::Uuid::from_u128(2),
+                25,
+                100,
+                200,
+            )),
+            b"",
+        )
+        .unwrap();
+        wal::write_seq_highwater(&seq_highwater_path(&index_dir), 40).unwrap();
+
+        let seed = compute_seq_seed(&wal_dir, &index_dir, &catalog_dir).unwrap();
+        assert_eq!(seed.wal_max, 3);
+        assert_eq!(seed.sfst_max, 10);
+        assert_eq!(seed.catalog_max, 25);
+        assert_eq!(seed.highwater, Some(40));
+        assert_eq!(seed.seed, 40);
+
+        // The first seq the allocator hands out is above every input.
+        let alloc = wal::SeqAllocator::durable(
+            seq_highwater_path(&index_dir),
+            seed.seed,
+            wal::DEFAULT_RESERVE_BATCH,
+        )
+        .unwrap();
+        assert_eq!(alloc.next().unwrap(), 41);
+    }
+
+    #[test]
+    fn seed_survives_missing_dirs_and_corrupt_highwater() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let index_dir = tmp.path().join("index");
+        let catalog_dir = tmp.path().join("catalog");
+
+        // Catalog is the only survivor; the high-water file is corrupt
+        // garbage. Startup must not fail and the catalog bounds the seed.
+        let cat_dir = catalog_dir.join("2026-06-11").join("tenant-a");
+        std::fs::create_dir_all(&cat_dir).unwrap();
+        std::fs::write(
+            cat_dir.join(otel_catalog::filename(
+                uuid::Uuid::from_u128(1),
+                uuid::Uuid::from_u128(2),
+                7,
+                100,
+                200,
+            )),
+            b"",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(seq_highwater_path(&index_dir), b"garbage").unwrap();
+
+        let seed = compute_seq_seed(&wal_dir, &index_dir, &catalog_dir).unwrap();
+        assert_eq!(seed.highwater, None);
+        assert_eq!(seed.seed, 7);
+    }
 }

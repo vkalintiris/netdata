@@ -381,16 +381,15 @@ pub fn scan_frame_boundaries(path: &Path, range: FrameRange) -> Result<Vec<Frame
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Config, Writer};
+    use crate::{Config, SeqAllocator, Writer};
     use std::sync::Arc;
-    use std::sync::atomic::AtomicU64;
 
     /// Write one frame per payload, syncing after each so every frame
     /// boundary surfaces as a `Synced { valid_up_to }`. Returns the WAL
     /// path and the cumulative `valid_up_to` after each frame (i.e. the
     /// byte offset of the end of frame `i`).
     fn write_frames(dir: &Path, payloads: &[&[u8]]) -> (std::path::PathBuf, Vec<u64>) {
-        let seq = Arc::new(AtomicU64::new(0));
+        let seq = Arc::new(SeqAllocator::ephemeral(0));
         let mut writer = Writer::new(dir, Config::default(), seq).unwrap();
         let mut bounds = Vec::new();
         for (i, payload) in payloads.iter().enumerate() {
@@ -574,7 +573,7 @@ mod tests {
     /// Write frames with the given entry counts (one frame each),
     /// syncing after each. Returns the path and per-frame end offsets.
     fn write_counted_frames(dir: &Path, counts: &[usize]) -> (std::path::PathBuf, Vec<u64>) {
-        let seq = Arc::new(AtomicU64::new(0));
+        let seq = Arc::new(SeqAllocator::ephemeral(0));
         let mut writer = Writer::new(dir, Config::default(), seq).unwrap();
         let mut bounds = Vec::new();
         for (i, &count) in counts.iter().enumerate() {

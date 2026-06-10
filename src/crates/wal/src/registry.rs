@@ -306,7 +306,7 @@ mod tests {
             crc_enabled: false,
             compression_enabled: true,
         };
-        let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seq = std::sync::Arc::new(crate::SeqAllocator::ephemeral(0));
         let mut writer = Writer::new(dir, config, seq).unwrap();
         let mut all_events = Vec::new();
         for &count in entry_counts {

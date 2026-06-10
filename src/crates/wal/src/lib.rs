@@ -3,10 +3,12 @@ mod error;
 mod format;
 mod reader;
 pub mod registry;
+mod seq;
 mod writer;
 
 pub use config::{Config, RotationConfig};
 pub use error::{Error, Result};
+pub use seq::{DEFAULT_RESERVE_BATCH, SeqAllocator, read_seq_highwater, write_seq_highwater};
 /// Byte offset of the first frame — the lower bound for
 /// [`Reader::open_range`] `start` and the start of a whole-prefix read.
 pub use format::HEADER_SIZE;

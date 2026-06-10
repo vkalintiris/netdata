@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use bridge::config::AuthConfig;
@@ -331,7 +330,7 @@ pub struct NetdataLogsService {
     sender: LedgerSender,
     wal_base_dir: PathBuf,
     wal_config: bridge::config::WalConfig,
-    seq: Arc<AtomicU64>,
+    seq: Arc<wal::SeqAllocator>,
     auth: AuthConfig,
 }
 
@@ -340,7 +339,7 @@ impl NetdataLogsService {
         sender: LedgerSender,
         wal_base_dir: PathBuf,
         wal_config: bridge::config::WalConfig,
-        seq: Arc<AtomicU64>,
+        seq: Arc<wal::SeqAllocator>,
         auth: AuthConfig,
     ) -> Self {
         Self {
@@ -849,7 +848,7 @@ mod tests {
             sender,
             wal_dir,
             wal_config,
-            Arc::new(AtomicU64::new(0)),
+            Arc::new(wal::SeqAllocator::ephemeral(0)),
             bridge::config::AuthConfig::default(),
         )
     }

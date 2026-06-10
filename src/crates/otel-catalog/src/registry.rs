@@ -362,6 +362,76 @@ fn read_catalog_entries(path: &Path, q: &Query) -> Vec<CatalogEntry> {
     catalog.find(q).cloned().collect()
 }
 
+/// Highest `max_seq` encoded in any catalog filename under
+/// `{catalog_base}/{date}/{tenant}/*.catalog`, across **all** tenants.
+/// Returns `0` when the base dir is missing or holds no catalogs.
+///
+/// Used at startup as a defense-in-depth input to the seq-counter
+/// seed: catalogs outlive the SFSTs they describe, so they can bound
+/// the seed even after every data file at a higher seq was evicted.
+/// Reads filenames only — never a catalog body. The generic
+/// `file_registry::scan_max_sequence_recursive` is not reusable here:
+/// it walks one directory level and parses the FileId stem, while
+/// catalogs are two levels deep with their own stem shape.
+pub fn scan_max_sequence(catalog_base: &Path) -> std::io::Result<u64> {
+    let mut max_seq = 0u64;
+    let date_entries = match std::fs::read_dir(catalog_base) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    for date_entry in date_entries.flatten() {
+        if !date_entry
+            .file_type()
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        // Same convention as `Registry::recover`: non-date subdirs
+        // under the base are not catalog partitions.
+        let is_date = date_entry
+            .file_name()
+            .to_str()
+            .is_some_and(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok());
+        if !is_date {
+            continue;
+        }
+        let tenant_entries = match std::fs::read_dir(date_entry.path()) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for tenant_entry in tenant_entries.flatten() {
+            if !tenant_entry
+                .file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let files = match std::fs::read_dir(tenant_entry.path()) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            for entry in files.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let Some(stem) = name.strip_suffix(&format!(".{CATALOG_EXT}")) else {
+                    continue;
+                };
+                if let Some((_, _, seq, _, _)) = parse_stem(stem) {
+                    max_seq = max_seq.max(seq);
+                }
+            }
+        }
+    }
+    Ok(max_seq)
+}
+
 /// Format a catalog filename:
 /// `{machine:32}-{boot:32}-{max_seq:010}-{min_ts:010}-{max_ts:010}.catalog`.
 pub fn filename(
@@ -617,6 +687,43 @@ mod tests {
         let mut reg = Registry::new(&missing, TenantId::from(TENANT));
         reg.recover();
         assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn scan_max_sequence_walks_all_dates_and_tenants_by_filename_only() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Several dates and tenants; bodies are garbage on purpose —
+        // the scan must never read them.
+        write_catalog_at(&tmp.path().join("2026-04-17").join("tenant-a").join(
+            filename(machine(), boot(), 42, 100, 200),
+        ));
+        write_catalog_at(&tmp.path().join("2026-04-17").join("tenant-b").join(
+            filename(machine(), boot(), 99, 100, 200),
+        ));
+        write_catalog_at(&tmp.path().join("2026-04-18").join("tenant-a").join(
+            filename(machine(), boot(), 7, 100, 200),
+        ));
+        // Non-date subdir and unparseable filename: ignored.
+        std::fs::create_dir_all(tmp.path().join("not-a-date").join("tenant-a")).unwrap();
+        write_catalog_at(
+            &tmp.path()
+                .join("2026-04-18")
+                .join("tenant-a")
+                .join("garbage-name.catalog"),
+        );
+
+        assert_eq!(scan_max_sequence(tmp.path()).unwrap(), 99);
+    }
+
+    #[test]
+    fn scan_max_sequence_missing_or_empty_base_is_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            scan_max_sequence(&tmp.path().join("no-such-dir")).unwrap(),
+            0
+        );
+        assert_eq!(scan_max_sequence(tmp.path()).unwrap(), 0);
     }
 
     fn track_at(

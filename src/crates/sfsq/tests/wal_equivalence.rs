@@ -31,7 +31,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use file_registry::TimestampNs;
 use opentelemetry_proto::tonic::common::v1::{
@@ -263,7 +262,7 @@ fn gen_corpus(seed: u64) -> Corpus {
 /// Write the corpus as a real WAL file (production writer, LZ4 frames)
 /// and return its path.
 fn write_wal(dir: &Path, corpus: &Corpus) -> PathBuf {
-    let seq = Arc::new(AtomicU64::new(0));
+    let seq = Arc::new(wal::SeqAllocator::ephemeral(0));
     let mut writer = wal::Writer::new(dir, wal::Config::default(), seq).expect("writer");
     for (i, batch) in corpus.batches.iter().enumerate() {
         let (data, count) =
