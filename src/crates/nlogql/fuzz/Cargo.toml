@@ -1,0 +1,28 @@
+[package]
+name = "nlogql-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nlogql = { path = ".." }
+
+[[bin]]
+name = "parse_no_panic"
+path = "fuzz_targets/parse_no_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false

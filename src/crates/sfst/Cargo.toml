@@ -1,0 +1,46 @@
+[package]
+name = "sfst"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Container format for split FST indexes with gix-chunk TOC"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Format
+fst-index = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+bincode = { workspace = true }
+zstd = { workspace = true }
+gix-chunk = { workspace = true }
+thiserror = { workspace = true }
+treight = { workspace = true, features = ["roaring", "serde"] }
+regex = { workspace = true }
+
+# Registry
+bridge = { path = "../netdata-plugin/bridge" }
+file-registry = { workspace = true }
+memmap2 = { workspace = true }
+tracing = { workspace = true }
+
+# Indexer (WAL → SFST conversion)
+bumpalo = { workspace = true }
+hashbrown = { workspace = true }
+roaring = { workspace = true }
+twox-hash = { workspace = true, features = ["xxhash64"] }
+wal = { workspace = true }
+arrow = { version = "57" }
+otap-df-pdata = { git = "https://github.com/open-telemetry/otel-arrow.git", tag = "v0.46.0" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+uuid = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+
+[[example]]
+name = "inspect"
+path = "examples/inspect.rs"
