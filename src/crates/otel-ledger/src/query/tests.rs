@@ -86,7 +86,7 @@ fn track_remote(reg: &mut Registry, seq: u64, min_s: u32, max_s: u32) {
         .catalog_files
         .file_path(date, machine(), boot(), seq, min_s, max_s);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, catalog.to_json().unwrap()).unwrap();
+    std::fs::write(&path, catalog.to_container_bytes().unwrap()).unwrap();
     let size = ByteSize(std::fs::metadata(&path).unwrap().len());
     reg.catalog_files.track(
         otel_catalog::File::new(date, machine(), boot(), seq, min_s, max_s, size),

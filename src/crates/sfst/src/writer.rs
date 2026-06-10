@@ -6,11 +6,12 @@
 
 use std::io::Write;
 
+use file_registry::container::ContainerBuilder;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, HEADER_SIZE, MAGIC,
-    MAX_STREAM_BATCHES, VERSION, high_field_id, mid_field_id, stream_batch_id,
+    CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, MAGIC, MAX_STREAM_BATCHES,
+    VERSION, high_field_id, mid_field_id, stream_batch_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
@@ -140,20 +141,7 @@ impl Writer {
             return Err(Error::InvalidStreamBatchCount(num_stream_batches));
         }
 
-        let num_chunks = self.summary.is_some() as usize
-            + self.metadata.is_some() as usize
-            + 1 // primary
-            + self.mid_fields.len()
-            + self.high_fields.len()
-            + 1 // timestamps
-            + num_stream_batches;
-
-        // Header
-        w.write_all(MAGIC)?;
-        w.write_all(&VERSION.to_le_bytes())?;
-        w.write_all(&(num_chunks as u32).to_le_bytes())?;
-
-        // Plan chunks. The physical order is not part of the format
+        // Chunk order. The physical order is not part of the format
         // contract — readers resolve every chunk through the TOC — but the
         // producer deliberately groups the chunks a query's statistics
         // phase always reads (SUMR, META, TIMS, PRIM) into a hot prefix,
@@ -163,78 +151,27 @@ impl Writer {
         // SUMR stays first so a recovery-only reader can stop after the
         // summary without paging through the rest; PRIM sits last in the
         // prefix, next to the structurally-identical mid/high field FSTs.
-        let mut index = gix_chunk::file::Index::for_writing();
+        // The container preserves add order and appends each chunk's
+        // crc32 trailer.
+        let mut container = ContainerBuilder::new(*MAGIC, VERSION);
         if let Some(sum) = &self.summary {
-            index.plan_chunk(CHUNK_SUMMARY, sum.len() as u64);
+            container.add_chunk(CHUNK_SUMMARY, sum);
         }
         if let Some(meta) = &self.metadata {
-            index.plan_chunk(CHUNK_META, meta.len() as u64);
+            container.add_chunk(CHUNK_META, meta);
         }
-        index.plan_chunk(CHUNK_TIMS, timestamps.len() as u64);
-        index.plan_chunk(CHUNK_PRIMARY, primary.len() as u64);
+        container.add_chunk(CHUNK_TIMS, timestamps);
+        container.add_chunk(CHUNK_PRIMARY, primary);
         for (i, chunk) in self.mid_fields.iter().enumerate() {
-            index.plan_chunk(mid_field_id(i as u16), chunk.len() as u64);
+            container.add_chunk(mid_field_id(i as u16), chunk);
         }
         for (i, chunk) in self.high_fields.iter().enumerate() {
-            index.plan_chunk(high_field_id(i as u16), chunk.len() as u64);
+            container.add_chunk(high_field_id(i as u16), chunk);
         }
         for (i, batch) in self.stream_batches.iter().enumerate() {
-            index.plan_chunk(stream_batch_id(i as u8), batch.len() as u64);
+            container.add_chunk(stream_batch_id(i as u8), batch);
         }
-
-        // Write TOC + data
-        let mut chunk_writer = index
-            .into_write(&mut *w, HEADER_SIZE)
-            .map_err(|e| Error::Toc(format!("{e}")))?;
-
-        if let Some(sum) = &self.summary {
-            let id = chunk_writer.next_chunk().expect("expected SUMR chunk");
-            assert_eq!(id, CHUNK_SUMMARY);
-            chunk_writer.write_all(sum)?;
-        }
-
-        if let Some(meta) = &self.metadata {
-            let id = chunk_writer.next_chunk().expect("expected META chunk");
-            assert_eq!(id, CHUNK_META);
-            chunk_writer.write_all(meta)?;
-        }
-
-        let id = chunk_writer
-            .next_chunk()
-            .expect("expected timestamps chunk");
-        assert_eq!(id, CHUNK_TIMS);
-        chunk_writer.write_all(timestamps)?;
-
-        let id = chunk_writer.next_chunk().expect("expected primary chunk");
-        assert_eq!(id, CHUNK_PRIMARY);
-        chunk_writer.write_all(primary)?;
-
-        for (i, chunk) in self.mid_fields.iter().enumerate() {
-            let id = chunk_writer.next_chunk().expect("expected mid-field chunk");
-            assert_eq!(id, mid_field_id(i as u16));
-            chunk_writer.write_all(chunk)?;
-        }
-        for (i, chunk) in self.high_fields.iter().enumerate() {
-            let id = chunk_writer
-                .next_chunk()
-                .expect("expected high-field chunk");
-            assert_eq!(id, high_field_id(i as u16));
-            chunk_writer.write_all(chunk)?;
-        }
-        for (i, batch) in self.stream_batches.iter().enumerate() {
-            let id = chunk_writer
-                .next_chunk()
-                .expect("expected stream-batch chunk");
-            assert_eq!(id, stream_batch_id(i as u8));
-            chunk_writer.write_all(batch)?;
-        }
-
-        assert!(
-            chunk_writer.next_chunk().is_none(),
-            "unexpected extra chunk"
-        );
-        chunk_writer.into_inner();
-        w.flush()?;
+        container.write_to(w)?;
         Ok(())
     }
 }

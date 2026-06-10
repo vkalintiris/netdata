@@ -2,12 +2,18 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
+use file_registry::container::{ChunkId, Container, ContainerBuilder};
 use file_registry::{FileId, Query, TenantId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::entry::CatalogEntry;
-use crate::{Error, FORMAT_VERSION};
+use crate::{CONTAINER_MAGIC, CONTAINER_VERSION, Error, FORMAT_VERSION};
+
+/// Chunk id of the JSON payload inside the catalog container. A future
+/// binary payload is a new chunk id beside (or instead of) this one —
+/// not a new file format.
+const CHUNK_JSON: ChunkId = *b"JSON";
 
 /// Per-tenant, per-date, per-machine, per-boot record of uploaded SFSTs.
 ///
@@ -64,7 +70,30 @@ impl Catalog {
             .filter(move |e| q_stream.as_ref().is_none_or(|s| e.stream == *s))
     }
 
-    pub fn to_json(&self) -> Result<Vec<u8>, Error> {
+    /// Serialize to the on-disk container: magic `NCAT` + framing
+    /// version + gix_chunk TOC + a single `JSON` chunk holding the
+    /// catalog JSON, with a crc32 trailer. All durable catalog bytes go
+    /// through this — never raw JSON.
+    pub fn to_container_bytes(&self) -> Result<Vec<u8>, Error> {
+        let json = self.to_json()?;
+        let mut builder = ContainerBuilder::new(CONTAINER_MAGIC, CONTAINER_VERSION);
+        builder.add_chunk(CHUNK_JSON, &json);
+        let mut out = Vec::new();
+        builder.write_to(&mut out)?;
+        Ok(out)
+    }
+
+    /// Parse the on-disk container produced by
+    /// [`to_container_bytes`](Catalog::to_container_bytes), verifying
+    /// magic, framing version and the `JSON` chunk's crc32 before
+    /// deserializing.
+    pub fn from_container_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let container = Container::open(bytes, &CONTAINER_MAGIC, CONTAINER_VERSION)?;
+        let json = container.chunk(CHUNK_JSON)?;
+        Self::from_json(json)
+    }
+
+    fn to_json(&self) -> Result<Vec<u8>, Error> {
         let env = Envelope {
             version: FORMAT_VERSION,
             tenant_id: self.tenant_id.clone(),
@@ -76,7 +105,7 @@ impl Catalog {
         Ok(serde_json::to_vec(&env)?)
     }
 
-    pub fn from_json(bytes: &[u8]) -> Result<Self, Error> {
+    fn from_json(bytes: &[u8]) -> Result<Self, Error> {
         let env: Envelope = serde_json::from_slice(bytes)?;
         if env.version != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion(env.version));
@@ -164,14 +193,47 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_json_preserves_entries_and_metadata() {
+    fn roundtrip_container_preserves_entries_and_metadata() {
         let mut c = test_catalog();
         c.add(entry_at(1, 100, 200, ServiceStream::new("prod", "api")));
         c.add(entry_at(2, 300, 500, ServiceStream::new("", "")));
 
-        let bytes = c.to_json().unwrap();
-        let parsed = Catalog::from_json(&bytes).unwrap();
+        let bytes = c.to_container_bytes().unwrap();
+        assert_eq!(&bytes[0..4], &CONTAINER_MAGIC, "container leads with NCAT");
+        let parsed = Catalog::from_container_bytes(&bytes).unwrap();
         assert_eq!(parsed, c);
+    }
+
+    #[test]
+    fn from_container_bytes_rejects_corruption_and_foreign_bytes() {
+        let mut c = test_catalog();
+        c.add(entry_at(1, 100, 200, ServiceStream::new("prod", "api")));
+        let clean = c.to_container_bytes().unwrap();
+
+        // Any flipped payload byte fails the JSON chunk's crc32.
+        let mut corrupt = clean.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0x01;
+        match Catalog::from_container_bytes(&corrupt) {
+            Err(Error::Container(file_registry::container::Error::CrcMismatch { .. })) => {}
+            other => panic!("expected CrcMismatch, got {other:?}"),
+        }
+
+        // Raw (legacy) JSON is not a container — rejected by magic.
+        match Catalog::from_container_bytes(b"{\"version\":1}") {
+            Err(Error::Container(file_registry::container::Error::BadMagic)) => {}
+            other => panic!("expected BadMagic, got {other:?}"),
+        }
+
+        // Unknown framing version.
+        let mut wrong_version = clean;
+        wrong_version[4..8].copy_from_slice(&99u32.to_le_bytes());
+        match Catalog::from_container_bytes(&wrong_version) {
+            Err(Error::Container(
+                file_registry::container::Error::UnsupportedVersion(99),
+            )) => {}
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
     }
 
     #[test]

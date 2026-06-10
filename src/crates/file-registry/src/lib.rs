@@ -1,3 +1,5 @@
+pub mod container;
+
 mod types;
 pub use types::{ByteSize, FileId, ServiceStream, TenantId, TimestampNs, compute_ns_hash};
 

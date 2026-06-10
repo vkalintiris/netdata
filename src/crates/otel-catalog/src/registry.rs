@@ -151,9 +151,10 @@ impl Registry {
     ///
     /// File-level pre-filter: catalogs whose filename-encoded
     /// `[min_timestamp_s, max_timestamp_s]` range doesn't overlap the
-    /// query window are skipped without opening the JSON body. Catalogs
-    /// that survive the pre-filter are JSON-parsed lazily as the iterator
-    /// advances; corrupt or unreadable files are logged and skipped so a
+    /// query window are skipped without opening the body. Catalogs
+    /// that survive the pre-filter are parsed lazily (container +
+    /// crc32-verified JSON chunk) as the iterator advances; corrupt or
+    /// unreadable files are logged and skipped so a
     /// single bad file doesn't sink the whole query. Entries are yielded
     /// owned (`CatalogEntry`, not `&CatalogEntry`) because the parsed
     /// `Catalog` they came from goes out of scope between files.
@@ -348,7 +349,7 @@ fn read_catalog_entries(path: &Path, q: &Query) -> Vec<CatalogEntry> {
             return Vec::new();
         }
     };
-    let catalog = match Catalog::from_json(&bytes) {
+    let catalog = match Catalog::from_container_bytes(&bytes) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -714,7 +715,7 @@ mod tests {
             }
             c
         };
-        std::fs::write(&path, cat.to_json().unwrap()).unwrap();
+        std::fs::write(&path, cat.to_container_bytes().unwrap()).unwrap();
         let size = ByteSize(std::fs::metadata(&path).unwrap().len());
         reg.track(
             File::new(date(), machine(), boot(), max_seq, min_ts, max_ts, size),

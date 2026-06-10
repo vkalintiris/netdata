@@ -9,13 +9,14 @@
 
 use std::cell::OnceCell;
 
+use file_registry::container::{self, Container};
 use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
 use crate::{
     BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, FieldTable,
-    FieldTier, HEADER_SIZE, HighField, MAGIC, MAX_STREAM_BATCHES, Metadata, StreamBatch, Summary,
-    VERSION, high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
+    FieldTier, HighField, MAGIC, MAX_STREAM_BATCHES, Metadata, StreamBatch, Summary, VERSION,
+    high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
 };
 
 /// Decompress zstd, then deserialize with bincode.
@@ -34,7 +35,7 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
 /// secondary chunks doesn't repeatedly decompress META.
 pub struct Reader<'a> {
     data: &'a [u8],
-    toc: gix_chunk::file::Index,
+    container: Container<'a>,
     /// Lazily-decoded META payload. Populated on first call to any
     /// method that needs it (`metadata`, `fields`, `num_mid`,
     /// `num_high`).
@@ -43,37 +44,16 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     /// Open an SFST file from a byte slice (typically an mmap).
+    ///
+    /// Header, magic, version and TOC validation — including the
+    /// num_chunks sanity bound — happen in the shared
+    /// [`file_registry::container`] helper; chunk payloads are
+    /// crc32-verified lazily on access.
     pub fn open(data: &'a [u8]) -> Result<Self, Error> {
-        if data.len() < HEADER_SIZE {
-            return Err(Error::FileTooShort(data.len(), HEADER_SIZE));
-        }
-
-        if &data[0..4] != MAGIC {
-            return Err(Error::InvalidMagic);
-        }
-
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        if version != VERSION {
-            return Err(Error::UnsupportedVersion(version));
-        }
-
-        let num_chunks = u32::from_le_bytes(data[8..12].try_into().unwrap());
-        // Defense in depth: a corrupted header claiming u32::MAX chunks
-        // would lead gix-chunk to attempt ~51 GiB of TOC allocation.
-        // Each TOC entry is at least 12 bytes, so the on-disk body
-        // bounds the legal value.
-        let max_chunks = data.len().saturating_sub(HEADER_SIZE) / 12;
-        if num_chunks as usize > max_chunks {
-            return Err(Error::Toc(format!(
-                "num_chunks ({num_chunks}) exceeds plausible maximum ({max_chunks})"
-            )));
-        }
-        let toc = gix_chunk::file::Index::from_bytes(data, HEADER_SIZE, num_chunks)
-            .map_err(|e| Error::Toc(format!("{e}")))?;
-
+        let container = Container::open(data, MAGIC, VERSION)?;
         Ok(Self {
             data,
-            toc,
+            container,
             metadata: OnceCell::new(),
         })
     }
@@ -92,7 +72,7 @@ impl<'a> Reader<'a> {
 
     /// Whether a summary chunk is present.
     pub fn has_summary(&self) -> bool {
-        self.toc.data_by_id(self.data, CHUNK_SUMMARY).is_ok()
+        self.container.has_chunk(CHUNK_SUMMARY)
     }
 
     // ── META ─────────────────────────────────────────────────────────
@@ -114,7 +94,7 @@ impl<'a> Reader<'a> {
 
     /// Whether a metadata chunk is present.
     pub fn has_metadata(&self) -> bool {
-        self.toc.data_by_id(self.data, CHUNK_META).is_ok()
+        self.container.has_chunk(CHUNK_META)
     }
 
     /// Field table — convenience accessor for `metadata().fields`.
@@ -189,11 +169,11 @@ impl<'a> Reader<'a> {
         unpack(self.mid_field_raw(index)?)
     }
 
-    /// Raw compressed bytes of a mid-card field chunk.
+    /// Raw compressed bytes of a mid-card field chunk (crc32-verified).
     pub fn mid_field_raw(&self, index: u16) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, mid_field_id(index))
-            .map_err(|_| Error::ChunkNotFound(index))
+        self.container
+            .chunk(mid_field_id(index))
+            .map_err(|e| chunk_err(e, index))
     }
 
     // ── High-card per-field columnar chunks ──────────────────────────
@@ -214,11 +194,11 @@ impl<'a> Reader<'a> {
         Ok(high)
     }
 
-    /// Raw compressed bytes of a high-card field chunk.
+    /// Raw compressed bytes of a high-card field chunk (crc32-verified).
     pub fn high_field_raw(&self, index: u16) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, high_field_id(index))
-            .map_err(|_| Error::ChunkNotFound(index))
+        self.container
+            .chunk(high_field_id(index))
+            .map_err(|e| chunk_err(e, index))
     }
 
     // ── Per-log timestamps ───────────────────────────────────────────
@@ -256,14 +236,14 @@ impl<'a> Reader<'a> {
         Ok(batch)
     }
 
-    /// Raw compressed bytes of one stream-batch chunk.
+    /// Raw compressed bytes of one stream-batch chunk (crc32-verified).
     pub fn stream_batch_raw(&self, index: u8) -> Result<&'a [u8], Error> {
         if index >= MAX_STREAM_BATCHES {
             return Err(Error::ChunkNotFound(index as u16));
         }
-        self.toc
-            .data_by_id(self.data, stream_batch_id(index))
-            .map_err(|_| Error::ChunkNotFound(index as u16))
+        self.container
+            .chunk(stream_batch_id(index))
+            .map_err(|e| chunk_err(e, index as u16))
     }
 
     /// Number of stream-batch chunks in this file, derived from
@@ -275,19 +255,21 @@ impl<'a> Reader<'a> {
         Ok(num_stream_batches(self.summary()?.total_logs))
     }
 
-    // ── Positional secondary-chunk access (escape hatch) ─────────────
+    /// Resolve a chunk's payload through the shared container — the
+    /// single chokepoint where every access gets crc32 verification.
+    fn chunk_raw_by_id(&self, id: container::ChunkId) -> Result<&'a [u8], Error> {
+        self.container.chunk(id).map_err(Error::from)
+    }
+}
 
-    /// Raw compressed bytes of the secondary chunk at absolute
-    /// `position` (0-based). Most callers should prefer the typed
-    /// accessors ([`Reader::mid_field`], [`Reader::high_field`]).
-    /// This method is used by tooling that walks secondary chunks
-    /// position-by-position; the calling convention is to use the
-    /// `(mid_idx)` then `(high_idx)` indices via the typed methods
-    /// instead.
-    fn chunk_raw_by_id(&self, id: gix_chunk::Id) -> Result<&'a [u8], Error> {
-        self.toc
-            .data_by_id(self.data, id)
-            .map_err(|e| Error::Toc(format!("{e}")))
+/// Map a container error for an index-addressed chunk (mid/high field,
+/// stream batch): a TOC miss keeps the historical
+/// [`Error::ChunkNotFound`] shape with the caller's index; everything
+/// else (CRC mismatch, malformed span) converts via `From`.
+fn chunk_err(e: container::Error, index: u16) -> Error {
+    match e {
+        container::Error::ChunkNotFound { .. } => Error::ChunkNotFound(index),
+        other => other.into(),
     }
 }
 

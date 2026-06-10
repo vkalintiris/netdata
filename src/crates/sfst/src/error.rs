@@ -108,11 +108,31 @@ pub enum Error {
 
     /// A consumer found the file's chunks internally inconsistent — e.g. a
     /// matched log position has no corresponding entry in the timestamps
-    /// chunk. Indicates a corrupt SFST (bit-rot or a producer bug); a
+    /// chunk, or a chunk's crc32 trailer doesn't match its payload.
+    /// Indicates a corrupt SFST (bit-rot or a producer bug); a
     /// well-formed file never triggers this. The query layer skips the
     /// file rather than serving corrupted rows.
     #[error("corrupt index: {0}")]
     CorruptIndex(String),
+}
+
+/// Map the shared container helper's errors onto the historical SFST
+/// error shapes so callers' matching keeps working across the v5
+/// migration. A crc32 mismatch is a corrupt file, so it lands on
+/// [`Error::CorruptIndex`] and flows through the query layer's existing
+/// skip-the-file degrade path.
+impl From<file_registry::container::Error> for Error {
+    fn from(e: file_registry::container::Error) -> Self {
+        use file_registry::container::Error as C;
+        match e {
+            C::TooShort(len, need) => Error::FileTooShort(len, need),
+            C::BadMagic => Error::InvalidMagic,
+            C::UnsupportedVersion(v) => Error::UnsupportedVersion(v),
+            C::Toc(msg) => Error::Toc(msg),
+            C::ChunkNotFound { .. } => Error::Toc(e.to_string()),
+            C::CrcMismatch { .. } => Error::CorruptIndex(e.to_string()),
+        }
+    }
 }
 
 /// Error type for the WAL → SFST indexing pipeline

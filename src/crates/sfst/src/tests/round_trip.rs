@@ -422,3 +422,69 @@ fn round_trip_multi_batch_stream() {
     assert_eq!(all[0], vec![KvId(0)]);
     assert_eq!(all[total_logs as usize - 1], vec![KvId(total_logs - 1)]);
 }
+
+// ── v5 container integrity ───────────────────────────────────────
+
+/// Minimal valid file: primary + timestamps + one stream batch.
+fn minimal_file() -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.set_primary(pack(&build_primary(&["alpha"]), 1).unwrap());
+    writer.set_timestamps(empty_timestamps());
+    writer.add_stream_batch(empty_stream_batch());
+    let mut buf = Vec::new();
+    writer.write_to(&mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn v4_file_is_rejected_on_open() {
+    let mut buf = minimal_file();
+    // Patch the header's version field back to 4 — the clean break: no
+    // v4 read path exists.
+    buf[4..8].copy_from_slice(&4u32.to_le_bytes());
+    assert!(matches!(
+        Reader::open(&buf),
+        Err(Error::UnsupportedVersion(4))
+    ));
+}
+
+#[test]
+fn corrupt_chunk_byte_fails_crc_on_access() {
+    let mut buf = minimal_file();
+    // The file ends with the last chunk's payload + 4-byte crc32
+    // trailer (SB00 — stream batches are written last). Flipping the
+    // final byte corrupts that chunk's stored CRC.
+    let last = buf.len() - 1;
+    buf[last] ^= 0x01;
+
+    // Open is lazy — header and TOC are intact.
+    let reader = Reader::open(&buf).unwrap();
+    // Untouched chunks still verify and decode.
+    assert!(reader.primary().is_ok());
+    // The corrupted chunk surfaces as a corrupt-index error.
+    assert!(matches!(
+        reader.stream_batch(0),
+        Err(Error::CorruptIndex(_))
+    ));
+}
+
+#[test]
+fn corrupt_payload_byte_fails_crc_on_access() {
+    let clean = minimal_file();
+    let reader = Reader::open(&clean).unwrap();
+    // Locate the primary chunk's payload within the file and flip its
+    // first byte.
+    let payload = reader.primary_raw().unwrap();
+    let offset = payload.as_ptr() as usize - clean.as_ptr() as usize;
+    drop(reader);
+
+    let mut buf = clean;
+    buf[offset] ^= 0x01;
+    let reader = Reader::open(&buf).unwrap();
+    assert!(matches!(
+        reader.primary_raw(),
+        Err(Error::CorruptIndex(_))
+    ));
+    // Other chunks are unaffected.
+    assert!(reader.stream_batch(0).is_ok());
+}

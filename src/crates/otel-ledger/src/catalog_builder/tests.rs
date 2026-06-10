@@ -123,7 +123,7 @@ async fn rotation_fires_at_threshold_and_writes_file() {
             assert_eq!(seen, vec![1, 2, 3]);
             assert!(path.exists(), "rotated catalog file must exist on disk");
             let bytes = std::fs::read(&path).unwrap();
-            let catalog = Catalog::from_json(&bytes).unwrap();
+            let catalog = Catalog::from_container_bytes(&bytes).unwrap();
             assert_eq!(catalog.entries.len(), 3);
         }
         other => panic!("expected Rotated, got {other:?}"),
@@ -159,7 +159,7 @@ async fn accumulator_is_drained_on_rotation() {
     };
 
     assert_ne!(first_path, second_path);
-    let second = Catalog::from_json(&std::fs::read(&second_path).unwrap()).unwrap();
+    let second = Catalog::from_container_bytes(&std::fs::read(&second_path).unwrap()).unwrap();
     let seqs: Vec<u64> = second.entries.values().map(|e| e.id.seq).collect();
     let mut sorted = seqs.clone();
     sorted.sort();

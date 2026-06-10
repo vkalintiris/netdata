@@ -109,7 +109,7 @@ async fn handle_request(
         .unwrap_or(0);
     let seqs: Vec<u64> = catalog.entries.values().map(|e| e.id.seq).collect();
 
-    let bytes = match catalog.to_json() {
+    let bytes = match catalog.to_container_bytes() {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(

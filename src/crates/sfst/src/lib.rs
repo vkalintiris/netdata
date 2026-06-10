@@ -81,8 +81,11 @@ const MAGIC: &[u8; 4] = b"SFST";
 //     layout (keys_blob + key_lens).
 // v4: stream-batch chunks switched from `Vec<Vec<KvId>>` to the fixed-width
 //     arena (kv_bytes + row_lens). Older files are rejected on open.
-const VERSION: u32 = 4;
-const HEADER_SIZE: usize = 12; // magic(4) + version(4) + num_chunks(4)
+// v5: per-chunk crc32 trailers via the shared `file_registry::container`
+//     helper. Every chunk payload is followed by a crc32 over its stored
+//     (compressed) bytes, verified on access. Older files are rejected on
+//     open.
+const VERSION: u32 = 5;
 
 const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
 const CHUNK_META: gix_chunk::Id = *b"META";

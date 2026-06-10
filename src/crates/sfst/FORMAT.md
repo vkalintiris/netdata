@@ -23,12 +23,22 @@ scope here.
     │    12 × (num_chunks + 1) bytes                │
     ├───────────────────────────────────────────────┤
     │  Chunk bodies                                 │
-    │    Concatenated in TOC order.                 │
+    │    Concatenated in TOC order. Each body is    │
+    │    <payload bytes> <crc32 u32 LE>.            │
     └───────────────────────────────────────────────┘
 
 The TOC immediately follows the header. Chunk bodies follow the TOC in
 the same order their entries appear in it. Readers look chunks up by
 id through the TOC and must not assume a positional layout.
+
+Since v5 every chunk body carries a trailing crc32 (`crc32fast`,
+i.e. IEEE) computed over the payload bytes — the stored (compressed)
+form, excluding the 4-byte CRC itself. The TOC's per-chunk span covers
+`payload_len + 4`. Readers verify the CRC on every chunk access and
+reject a mismatching chunk with `Error::CorruptIndex`. This framing
+(header + TOC + per-chunk CRC) is the shared
+`file_registry::container` format, also used by the otel catalog
+(magic `NCAT`).
 
 ---
 
@@ -362,9 +372,11 @@ The crate exposes [`pack`] and [`unpack`] helpers around this. The
 zstd compression level is a caller parameter; the format does not
 fix it.
 
-There is no container-level integrity check. The zstd frame format
-includes a content checksum that catches corruption within a chunk's
-payload, but the header and TOC are unprotected.
+Container-level integrity is the per-chunk crc32 trailer (see
+[§ File Layout](#file-layout)): every chunk access verifies the
+stored bytes before they reach the zstd decoder. TOC corruption is
+caught indirectly — a corrupt offset resolves the wrong span, whose
+CRC then fails to match.
 
 [`pack`]: https://docs.rs/sfst/latest/sfst/fn.pack.html
 [`unpack`]: https://docs.rs/sfst/latest/sfst/fn.unpack.html
@@ -373,7 +385,24 @@ payload, but the header and TOC are unprotected.
 
 ## Format Version
 
-The current version is **4**.
+The current version is **5**.
+
+### v5 changelog (from v4)
+
+- **Per-chunk crc32 trailers.** Every chunk body is now
+  `<payload> <crc32 u32 LE>`, with the CRC computed over the stored
+  (compressed) payload bytes via `crc32fast`. The TOC accounts for the
+  4 extra bytes per chunk. Readers verify the CRC on every chunk
+  access; a mismatch surfaces as `Error::CorruptIndex` and the query
+  layer degrades that file to an empty shard instead of serving
+  corrupted rows. SFSTs are uploaded to remote storage that is never
+  garbage-collected, so files must be integrity-checked before any
+  permanent objects accumulate. The framing is now produced/parsed by
+  the shared `file_registry::container` helper.
+
+v4 files cannot be read by a v5 reader and vice versa
+(`Error::UnsupportedVersion` on the version field). No migration tool
+exists.
 
 ### v4 changelog (from v3)
 

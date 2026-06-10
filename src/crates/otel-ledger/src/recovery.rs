@@ -383,7 +383,7 @@ pub fn seed_from_catalog_files(registry: &mut Registry) {
                 continue;
             }
         };
-        let catalog = match Catalog::from_json(&bytes) {
+        let catalog = match Catalog::from_container_bytes(&bytes) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(path = %path.display(), "failed to parse catalog: {e}");

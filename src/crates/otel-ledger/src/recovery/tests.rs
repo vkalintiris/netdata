@@ -60,7 +60,7 @@ fn write_catalog_file(
     for entry in entries {
         catalog.add(entry.clone());
     }
-    std::fs::write(&path, catalog.to_json().unwrap()).unwrap();
+    std::fs::write(&path, catalog.to_container_bytes().unwrap()).unwrap();
     path
 }
 
