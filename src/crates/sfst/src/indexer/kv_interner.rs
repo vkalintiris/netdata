@@ -46,7 +46,7 @@ use std::hash::{BuildHasher, Hasher};
 use hashbrown::HashMap as HashbrownMap;
 
 use bumpalo::Bump;
-use hashbrown::hash_map::RawEntryMut;
+use hashbrown::hash_map::Entry;
 use twox_hash::XxHash64;
 
 /// A unique ID assigned by [`KeyValueInterner`] to each distinct `key=value`
@@ -142,8 +142,11 @@ impl<'a> KeyValueInterner<'a> {
 
     /// Intern a string with a pre-computed xxhash64 value.
     pub fn intern_with_hash(&mut self, hash: u64, s: &str) -> KvSlot {
-        let kv_slot = match self.map.raw_entry_mut().from_hash(hash, |&k| k == hash) {
-            RawEntryMut::Occupied(entry) => {
+        // The map keys on the precomputed hash with an identity hasher, so the
+        // standard `entry(hash)` lands in the same slot the removed raw-entry
+        // API did (`from_hash(hash, |&k| k == hash)`).
+        let kv_slot = match self.map.entry(hash) {
+            Entry::Occupied(entry) => {
                 let &existing_id = entry.get();
 
                 if self.strings[existing_id as usize] == s {
@@ -166,11 +169,11 @@ impl<'a> KeyValueInterner<'a> {
                 self.collisions.entry(hash).or_default().push(id);
                 KvSlot(id)
             }
-            RawEntryMut::Vacant(entry) => {
+            Entry::Vacant(entry) => {
                 let id = self.strings.len() as u32;
                 let interned = self.arena.alloc_str(s);
                 self.strings.push(interned);
-                entry.insert_hashed_nocheck(hash, hash, id);
+                entry.insert(id);
                 KvSlot(id)
             }
         };
