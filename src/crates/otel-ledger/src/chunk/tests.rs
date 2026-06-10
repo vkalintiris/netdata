@@ -23,9 +23,9 @@ fn groups_frames_into_threshold_chunks() {
     let chunks = chunk_boundaries(&frames, 50, 10);
     assert_eq!(chunks.len(), 2);
     assert_eq!(chunks[0].index, 0);
-    assert_eq!((chunks[0].start, chunks[0].end, chunks[0].entry_count), (50, 200, 16));
+    assert_eq!((chunks[0].range.start(), chunks[0].range.end(), chunks[0].entry_count), (50, 200, 16));
     assert_eq!(chunks[1].index, 1);
-    assert_eq!((chunks[1].start, chunks[1].end, chunks[1].entry_count), (200, 400, 16));
+    assert_eq!((chunks[1].range.start(), chunks[1].range.end(), chunks[1].entry_count), (200, 400, 16));
     // No leftover: the tail starts at the last chunk's end.
     assert_eq!(tail_start(&chunks, 50), 400);
 }
@@ -36,7 +36,7 @@ fn last_frame_pushes_a_chunk_over_the_threshold() {
     let frames = [fb(100, 5), fb(150, 3), fb(230, 7)];
     let chunks = chunk_boundaries(&frames, 0, 10);
     assert_eq!(chunks.len(), 1);
-    assert_eq!((chunks[0].start, chunks[0].end, chunks[0].entry_count), (0, 230, 15));
+    assert_eq!((chunks[0].range.start(), chunks[0].range.end(), chunks[0].entry_count), (0, 230, 15));
 }
 
 #[test]

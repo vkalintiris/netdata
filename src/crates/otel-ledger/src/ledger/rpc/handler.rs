@@ -75,7 +75,7 @@ impl OtelLogsHandler {
         let scan_path = wal.path.clone();
         let valid_up_to = wal.valid_up_to;
         let frames = match tokio::task::spawn_blocking(move || {
-            wal::scan_frame_boundaries(&scan_path, header, valid_up_to)
+            wal::scan_frame_boundaries(&scan_path, wal::FrameRange::new(header, valid_up_to))
         })
         .await
         {
@@ -95,13 +95,13 @@ impl OtelLogsHandler {
         for chunk in &chunks {
             let seq = wal.seq;
             let path = wal.path.clone();
-            let (start, end, expected) = (chunk.start, chunk.end, chunk.entry_count);
+            let (range, expected) = (chunk.range, chunk.entry_count);
             // The build future: index the byte range on a blocking
             // thread and cross-check the record count (the truncation
             // check open_range defers). Runs once per (seq, index) under
             // singleflight; skipped entirely on a cache hit.
             let init = async move {
-                match tokio::task::spawn_blocking(move || sfst::index_range(&path, start, end))
+                match tokio::task::spawn_blocking(move || sfst::index_range(&path, range))
                     .await
                 {
                     Ok(Ok((summary, bytes))) => {
@@ -164,8 +164,7 @@ impl OtelLogsHandler {
             tails.push(WalTail {
                 file_seq: wal.seq,
                 path: wal.path.clone(),
-                start: tail_begin,
-                end: wal.valid_up_to,
+                range: wal::FrameRange::new(tail_begin, wal.valid_up_to),
             });
         }
         (candidates, tails)

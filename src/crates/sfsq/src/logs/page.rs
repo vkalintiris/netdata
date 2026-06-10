@@ -435,14 +435,14 @@ fn scan_tails(
 
     let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
     for &tail in wal_tails {
-        let scan = match WalScan::scan_range(&tail.path, tail.start, tail.end) {
+        let scan = match WalScan::scan_range(&tail.path, tail.range) {
             Ok(scan) => scan,
             Err(e) => {
                 tracing::warn!(
                     "sfsq: tail scan failed for {} [{}..{}]: {e}",
                     tail.path.display(),
-                    tail.start,
-                    tail.end
+                    tail.range.start(),
+                    tail.range.end()
                 );
                 continue;
             }

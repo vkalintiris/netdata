@@ -29,14 +29,12 @@ fn scan_tails_rejects_duplicate_file_seq() {
     let a = WalTail {
         file_seq: 7,
         path: std::path::PathBuf::from("/nonexistent-a"),
-        start: 0,
-        end: 100,
+        range: wal::FrameRange::new(0, 100),
     };
     let b = WalTail {
         file_seq: 7,
         path: std::path::PathBuf::from("/nonexistent-b"),
-        start: 100,
-        end: 200,
+        range: wal::FrameRange::new(100, 200),
     };
     let tails = [&a, &b];
     let query = LogsQueryBuilder::new(sfst::Grid::new(0, 1_000_000_000, 1)).build();

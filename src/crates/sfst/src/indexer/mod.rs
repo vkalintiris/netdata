@@ -105,13 +105,11 @@ pub fn index_with_options(
 /// Index the byte range `[start, end)` of a WAL file into an **in-memory**
 /// SFST, returning its [`Summary`] and the serialized bytes.
 ///
-/// The same two-phase build as [`index`], but reading only the frames
-/// within `[start, end)` (via [`wal::Reader::open_range`]) and
-/// serializing the result to a `Vec<u8>` instead of a file. This is how a
-/// query builds an index over a chunk of an active WAL — `start` and
-/// `end` are frame boundaries (`HEADER_SIZE` / recorded chunk ends / a
-/// `Synced` event's `valid_up_to`); see `open_range` for the durable-
-/// prefix soundness checks.
+/// The same two-phase build as [`index`], but reading only the frames in
+/// `range` (via [`wal::Reader::open_range`]) and serializing the result to
+/// a `Vec<u8>` instead of a file. This is how a query builds an index over
+/// a chunk of an active WAL; see [`wal::FrameRange`] / `open_range` for the
+/// frame-boundary and durable-prefix soundness checks.
 ///
 /// The returned bytes parse with [`IndexReader::open`]. The caller cross-
 /// checks `summary.total_logs` against the expected record count for the
@@ -119,15 +117,15 @@ pub fn index_with_options(
 /// truncated — the count check that [`wal::Reader::open_range`] defers.
 pub fn index_range(
     wal_path: &Path,
-    start: u64,
-    end: u64,
+    range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
+    let (start, end) = (range.start(), range.end());
     // Scope Phase 1 so the 32 MiB arena and the WalIndex (bitmaps,
     // interner, per-log entries) drop before serialization: `build`'s
     // Writer owns its packed chunks outright and borrows neither, so
     // holding them through `write_to` would only inflate peak memory.
     let (writer, summary) = {
-        let mut reader = wal::Reader::open_range(wal_path, start, end)?;
+        let mut reader = wal::Reader::open_range(wal_path, range)?;
         let arena = Bump::with_capacity(32 * 1024 * 1024);
         let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
 

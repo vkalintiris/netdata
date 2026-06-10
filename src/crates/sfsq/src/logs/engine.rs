@@ -90,15 +90,12 @@ pub struct WalTail {
     pub file_seq: u64,
     /// Path to the active WAL file to scan.
     pub path: PathBuf,
-    /// Byte offset of the first frame to scan — a frame boundary (the end
-    /// of the last indexed chunk, or `HEADER_SIZE` if none was built). A
-    /// mid-frame offset would decode garbage.
-    pub start: u64,
-    /// Byte offset just past the last frame — the WAL's durable bound
-    /// (`valid_up_to`), also a frame boundary. The range is half-open
-    /// `[start, end)`: a frame is scanned only if it fits fully below
-    /// `end`, so a torn trailing frame past the bound is never read.
-    pub end: u64,
+    /// The un-indexed byte range to scan — from the end of the last
+    /// indexed chunk (or `HEADER_SIZE` if none) to the WAL's durable bound
+    /// (`valid_up_to`). Both ends are frame boundaries; the half-open
+    /// `[start, end)` rule means a torn trailing frame past the bound is
+    /// never read. See [`wal::FrameRange`].
+    pub range: wal::FrameRange,
 }
 
 /// A source of log rows for a query: an SFST — a sealed on-disk file or
@@ -122,14 +119,14 @@ impl LogSource {
     pub(super) fn to_shard(&self, query: &LogsQuery) -> LogsShard {
         match self {
             LogSource::Sfst(c) => LogsShard::evaluate(c, query),
-            LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.start, tail.end) {
+            LogSource::Tail(tail) => match WalScan::scan_range(&tail.path, tail.range) {
                 Ok(scan) => scan.evaluate(query),
                 Err(e) => {
                     tracing::warn!(
                         "sfsq: WAL tail scan failed for {} [{}..{}]: {e}",
                         tail.path.display(),
-                        tail.start,
-                        tail.end
+                        tail.range.start(),
+                        tail.range.end()
                     );
                     LogsShard::default()
                 }

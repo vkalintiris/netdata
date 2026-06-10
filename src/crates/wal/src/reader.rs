@@ -69,8 +69,8 @@ impl Reader {
     /// lie in `[HEADER_SIZE, end]`. A frame is yielded only if it fits
     /// **fully** below `end`; the bytes beyond `end` may be a torn frame
     /// (the writer's buffer can flush mid-frame) and are never read.
-    pub fn open_range(path: &Path, start: u64, end: u64) -> Result<Self> {
-        Self::open_inner(path, start, Some(end))
+    pub fn open_range(path: &Path, range: FrameRange) -> Result<Self> {
+        Self::open_inner(path, range.start(), Some(range.end()))
     }
 
     fn open_inner(path: &Path, start: u64, end: Option<u64>) -> Result<Self> {
@@ -258,8 +258,39 @@ pub struct FrameBoundary {
     pub entry_count: u32,
 }
 
-/// Walk the frame headers in `[start, end)` and report each whole
-/// frame's boundary, **without decoding any payload**.
+/// A half-open `[start, end)` byte range into a WAL, with both offsets on
+/// **frame boundaries** (`HEADER_SIZE`, a frame end offset, or a `Synced`
+/// event's `valid_up_to`). A mid-frame offset can't be detected and would
+/// decode garbage; this type names that contract so a range is passed as
+/// one value rather than two loose offsets that could be swapped. The
+/// frame-alignment itself is checked when the range is read (the reader
+/// walks from `start`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRange {
+    start: u64,
+    end: u64,
+}
+
+impl FrameRange {
+    /// A range over `[start, end)`. Requires `start <= end` (debug-checked).
+    pub fn new(start: u64, end: u64) -> Self {
+        debug_assert!(start <= end, "FrameRange start {start} exceeds end {end}");
+        Self { start, end }
+    }
+
+    /// Byte offset of the first frame (inclusive).
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// Byte offset just past the last frame (exclusive).
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+}
+
+/// Walk the frame headers in `range` and report each whole frame's
+/// boundary, **without decoding any payload**.
 ///
 /// This is how a caller decides where to split a WAL into chunks: it
 /// reads only the 24-byte header of each frame (for its `payload_len`
@@ -276,7 +307,8 @@ pub struct FrameBoundary {
 /// ends the scan. The returned boundaries are in file order; the last
 /// one's `end_offset` is the durable extent actually covered (`<= end`,
 /// and `== end` when `end` is frame-aligned, the normal case).
-pub fn scan_frame_boundaries(path: &Path, start: u64, end: u64) -> Result<Vec<FrameBoundary>> {
+pub fn scan_frame_boundaries(path: &Path, range: FrameRange) -> Result<Vec<FrameBoundary>> {
+    let (start, end) = (range.start(), range.end());
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
     if end > file_len {
@@ -426,7 +458,7 @@ mod tests {
         let (path, bounds) = write_frames(dir.path(), &[b"alpha", b"bravo", b"charlie"]);
 
         // Bound at the end of frame 1 → exactly the first two frames.
-        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bounds[1]).unwrap();
+        let mut reader = Reader::open_range(&path, FrameRange::new(HEADER_SIZE as u64, bounds[1])).unwrap();
         let frames = collect(&mut reader);
         assert_eq!(frames, vec![(1, b"alpha".to_vec()), (1, b"bravo".to_vec())]);
     }
@@ -438,7 +470,7 @@ mod tests {
 
         // Start at the end of frame 0 (= start of frame 1), read to EOF
         // of the durable prefix (end of frame 2).
-        let mut reader = Reader::open_range(&path, bounds[0], bounds[2]).unwrap();
+        let mut reader = Reader::open_range(&path, FrameRange::new(bounds[0], bounds[2])).unwrap();
         let frames = collect(&mut reader);
         assert_eq!(frames, vec![(1, b"bravo".to_vec()), (1, b"charlie".to_vec())]);
     }
@@ -454,7 +486,7 @@ mod tests {
         // payload-fit latch, not the header-room guard. Only the first
         // two frames are yielded; the partial tail is never read.
         let bound = bounds[1] + FRAME_HEADER_SIZE as u64;
-        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bound).unwrap();
+        let mut reader = Reader::open_range(&path, FrameRange::new(HEADER_SIZE as u64, bound)).unwrap();
         let frames = collect(&mut reader);
         assert_eq!(frames, vec![(1, b"alpha".to_vec()), (1, b"bravo".to_vec())]);
         // Re-entrancy: the latch holds — a further call still stops.
@@ -492,7 +524,7 @@ mod tests {
     fn open_range_rejects_bound_past_eof() {
         let dir = tempfile::tempdir().unwrap();
         let (path, bounds) = write_frames(dir.path(), &[b"alpha"]);
-        match Reader::open_range(&path, HEADER_SIZE as u64, bounds[0] + 4096) {
+        match Reader::open_range(&path, FrameRange::new(HEADER_SIZE as u64, bounds[0] + 4096)) {
             Err(Error::Deserialization(_)) => {}
             Err(e) => panic!("wrong error: {e:?}"),
             Ok(_) => panic!("expected a bound-past-EOF error"),
@@ -500,13 +532,22 @@ mod tests {
     }
 
     #[test]
-    fn open_range_rejects_start_outside_window() {
+    fn open_range_rejects_start_below_header() {
         let dir = tempfile::tempdir().unwrap();
         let (path, bounds) = write_frames(dir.path(), &[b"alpha"]);
-        // start below the header
-        assert!(Reader::open_range(&path, 0, bounds[0]).is_err());
-        // start past the end bound
-        assert!(Reader::open_range(&path, bounds[0], HEADER_SIZE as u64).is_err());
+        // A start below the header is a valid `FrameRange` structurally but
+        // an invalid read window; `open_range` rejects it.
+        assert!(Reader::open_range(&path, FrameRange::new(0, bounds[0])).is_err());
+    }
+
+    // `start > end` is rejected at construction now (it can't reach
+    // `open_range`). Debug-only: the `debug_assert` is compiled out under
+    // `--release`, where the panic wouldn't fire.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "exceeds end")]
+    fn frame_range_rejects_inverted() {
+        let _ = FrameRange::new(100, 50);
     }
 
     #[test]
@@ -515,7 +556,7 @@ mod tests {
         let (path, _) = write_frames(dir.path(), &[b"alpha", b"bravo"]);
         // start == end (at the header): a zero-length durable prefix.
         let mut reader =
-            Reader::open_range(&path, HEADER_SIZE as u64, HEADER_SIZE as u64).unwrap();
+            Reader::open_range(&path, FrameRange::new(HEADER_SIZE as u64, HEADER_SIZE as u64)).unwrap();
         assert!(reader.next_frame().unwrap().is_none());
     }
 
@@ -564,7 +605,7 @@ mod tests {
         let (path, bounds) = write_counted_frames(dir.path(), &[5, 3, 7]);
         let file_len = std::fs::metadata(&path).unwrap().len();
 
-        let scanned = scan_frame_boundaries(&path, HEADER_SIZE as u64, file_len).unwrap();
+        let scanned = scan_frame_boundaries(&path, FrameRange::new(HEADER_SIZE as u64, file_len)).unwrap();
         assert_eq!(
             scanned,
             vec![
@@ -575,7 +616,7 @@ mod tests {
         );
         // The scan never decodes payloads; the offsets it reports are
         // valid `open_range` boundaries — read the chunk they delimit.
-        let mut reader = Reader::open_range(&path, HEADER_SIZE as u64, bounds[1]).unwrap();
+        let mut reader = Reader::open_range(&path, FrameRange::new(HEADER_SIZE as u64, bounds[1])).unwrap();
         let frames = collect(&mut reader);
         assert_eq!(frames.iter().map(|(c, _)| *c).collect::<Vec<_>>(), vec![5, 3]);
     }
@@ -586,7 +627,7 @@ mod tests {
         let (path, bounds) = write_counted_frames(dir.path(), &[5, 3, 7]);
 
         // A sub-window covering frames 1 and 2 only.
-        let scanned = scan_frame_boundaries(&path, bounds[0], bounds[2]).unwrap();
+        let scanned = scan_frame_boundaries(&path, FrameRange::new(bounds[0], bounds[2])).unwrap();
         assert_eq!(
             scanned,
             vec![
@@ -604,7 +645,7 @@ mod tests {
         // Bound one header past frame 2's start: its header fits but its
         // payload crosses, so the scan reports only frames 0 and 1.
         let bound = bounds[1] + FRAME_HEADER_SIZE as u64;
-        let scanned = scan_frame_boundaries(&path, HEADER_SIZE as u64, bound).unwrap();
+        let scanned = scan_frame_boundaries(&path, FrameRange::new(HEADER_SIZE as u64, bound)).unwrap();
         assert_eq!(
             scanned.iter().map(|b| b.entry_count).collect::<Vec<_>>(),
             vec![5, 3]
@@ -616,8 +657,8 @@ mod tests {
     fn scan_boundaries_validates_the_window() {
         let dir = tempfile::tempdir().unwrap();
         let (path, bounds) = write_counted_frames(dir.path(), &[5]);
-        assert!(scan_frame_boundaries(&path, HEADER_SIZE as u64, bounds[0] + 4096).is_err());
-        assert!(scan_frame_boundaries(&path, 0, bounds[0]).is_err());
+        assert!(scan_frame_boundaries(&path, FrameRange::new(HEADER_SIZE as u64, bounds[0] + 4096)).is_err());
+        assert!(scan_frame_boundaries(&path, FrameRange::new(0, bounds[0])).is_err());
     }
 
     #[test]
@@ -627,7 +668,7 @@ mod tests {
         // start == end (at the header): a zero-length durable prefix —
         // the header-room guard fires immediately, no frames reported.
         let scanned =
-            scan_frame_boundaries(&path, HEADER_SIZE as u64, HEADER_SIZE as u64).unwrap();
+            scan_frame_boundaries(&path, FrameRange::new(HEADER_SIZE as u64, HEADER_SIZE as u64)).unwrap();
         assert!(scanned.is_empty());
     }
 }

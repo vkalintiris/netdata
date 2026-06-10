@@ -40,10 +40,8 @@ use wal::FrameBoundary;
 pub struct ChunkBoundary {
     /// 0-based index within the WAL, dense and stable across queries.
     pub index: u32,
-    /// Byte offset of the chunk's first frame (a frame boundary).
-    pub start: u64,
-    /// Byte offset just past the chunk's last frame.
-    pub end: u64,
+    /// The chunk's frame-aligned byte range, `[first frame, last frame end)`.
+    pub range: wal::FrameRange,
     /// Log records in the chunk (>= `min_entries`).
     pub entry_count: u64,
 }
@@ -58,7 +56,7 @@ pub struct ChunkBoundary {
 /// past the running `min_entries`, then a new chunk begins. Frames after
 /// the last complete chunk (cumulative `< min_entries`) are **not**
 /// returned — they are the *tail*, beginning at
-/// `chunks.last().map_or(start, |c| c.end)`, and are evaluated per query
+/// `chunks.last().map_or(start, |c| c.range.end())`, and are evaluated per query
 /// by the row scan rather than indexed.
 ///
 /// Boundaries are a deterministic function of the entry counts, so a
@@ -79,8 +77,7 @@ pub fn chunk_boundaries(frames: &[FrameBoundary], start: u64, min_entries: u64) 
         if acc >= min_entries {
             chunks.push(ChunkBoundary {
                 index: chunks.len() as u32,
-                start: chunk_start,
-                end: f.end_offset,
+                range: wal::FrameRange::new(chunk_start, f.end_offset),
                 entry_count: acc,
             });
             chunk_start = f.end_offset;
@@ -94,7 +91,7 @@ pub fn chunk_boundaries(frames: &[FrameBoundary], start: u64, min_entries: u64) 
 /// [`chunk_boundaries`] over the same `start`: the end of the last
 /// complete chunk, or `start` when there are none.
 pub fn tail_start(chunks: &[ChunkBoundary], start: u64) -> u64 {
-    chunks.last().map_or(start, |c| c.end)
+    chunks.last().map_or(start, |c| c.range.end())
 }
 
 /// A process-wide memo of built chunk SFST byte images.

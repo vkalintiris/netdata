@@ -144,12 +144,12 @@ impl WalScan {
         Self::drain(&mut reader)
     }
 
-    /// Decode the frames in the byte range `[start, end)` into rows — the
-    /// active-WAL tail. `start` is a frame boundary (a chunk end), `end`
-    /// the durable bound (`valid_up_to`); see [`wal::Reader::open_range`]
+    /// Decode the frames in `range` into rows — the active-WAL tail. The
+    /// range runs from a chunk-end frame boundary to the durable bound
+    /// (`valid_up_to`); see [`wal::FrameRange`] / [`wal::Reader::open_range`]
     /// for the soundness checks. An empty range yields a zero-row scan.
-    pub fn scan_range(path: &Path, start: u64, end: u64) -> Result<WalScan, WalScanError> {
-        let mut reader = wal::Reader::open_range(path, start, end)?;
+    pub fn scan_range(path: &Path, range: wal::FrameRange) -> Result<WalScan, WalScanError> {
+        let mut reader = wal::Reader::open_range(path, range)?;
         Self::drain(&mut reader)
     }
 

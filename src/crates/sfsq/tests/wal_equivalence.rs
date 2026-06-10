@@ -748,7 +748,7 @@ fn index_range_whole_file_matches_disk_index() {
         let file_len = std::fs::metadata(&wal_path).unwrap().len();
 
         let (mem_summary, mem_bytes) =
-            sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, file_len).expect("index_range");
+            sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len)).expect("index_range");
 
         let sfst_path = dir.path().join("disk.sfst");
         let disk = sfst::index(&wal_path, &sfst_path).expect("index");
@@ -782,7 +782,7 @@ fn index_range_interior_split_partitions_logs() {
         let file_len = std::fs::metadata(&wal_path).unwrap().len();
 
         let frames =
-            wal::scan_frame_boundaries(&wal_path, wal::HEADER_SIZE as u64, file_len).unwrap();
+            wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len)).unwrap();
         if frames.len() < 2 {
             continue;
         }
@@ -790,8 +790,8 @@ fn index_range_interior_split_partitions_logs() {
         // Split after the middle frame — a real frame boundary.
         let split = frames[frames.len() / 2 - 1].end_offset;
         let (a_sum, a_bytes) =
-            sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, split).unwrap();
-        let (b_sum, b_bytes) = sfst::index_range(&wal_path, split, file_len).unwrap();
+            sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, split)).unwrap();
+        let (b_sum, b_bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(split, file_len)).unwrap();
 
         let whole_path = dir.path().join("whole.sfst");
         let whole = sfst::index(&wal_path, &whole_path).unwrap();
@@ -940,7 +940,7 @@ fn wal_data_stats_equal_whole_file_index() {
         // small threshold (chunks + maybe a tail → the merge path).
         for min_entries in [u64::MAX, 25] {
             let chunks = group_chunks(
-                &wal::scan_frame_boundaries(&wal_path, header, file_len).unwrap(),
+                &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len)).unwrap(),
                 header,
                 min_entries,
             );
@@ -956,7 +956,7 @@ fn wal_data_stats_equal_whole_file_index() {
 
             let mut live_candidates: Vec<SfstCandidate> = Vec::new();
             for (i, &(s, e)) in chunks.iter().enumerate() {
-                let (summary, bytes) = sfst::index_range(&wal_path, s, e).unwrap();
+                let (summary, bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(s, e)).unwrap();
                 live_candidates.push(SfstCandidate {
                     summary,
                     file_seq: i as u64,
@@ -968,8 +968,7 @@ fn wal_data_stats_equal_whole_file_index() {
             let tails = vec![WalTail {
                 file_seq: 9999,
                 path: wal_path.clone(),
-                start: tail_begin,
-                end: file_len,
+                range: wal::FrameRange::new(tail_begin, file_len),
             }];
 
             for (qlabel, q) in queries() {
@@ -1020,8 +1019,7 @@ fn tails_clone(ts: &[WalTail]) -> Vec<WalTail> {
         .map(|t| WalTail {
             file_seq: t.file_seq,
             path: t.path.clone(),
-            start: t.start,
-            end: t.end,
+            range: t.range,
         })
         .collect()
 }
@@ -1077,7 +1075,7 @@ fn wal_data_rows_match_whole_file_index() {
     let whole = index_candidate(&wal_path, dir.path());
 
     let chunks = group_chunks(
-        &wal::scan_frame_boundaries(&wal_path, header, file_len).unwrap(),
+        &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len)).unwrap(),
         header,
         50,
     );
@@ -1087,7 +1085,7 @@ fn wal_data_rows_match_whole_file_index() {
 
     let mut live: Vec<SfstCandidate> = Vec::new();
     for (i, &(s_off, e_off)) in chunks.iter().enumerate() {
-        let (summary, bytes) = sfst::index_range(&wal_path, s_off, e_off).unwrap();
+        let (summary, bytes) = sfst::index_range(&wal_path, wal::FrameRange::new(s_off, e_off)).unwrap();
         live.push(SfstCandidate {
             summary,
             file_seq: 1,
@@ -1098,8 +1096,7 @@ fn wal_data_rows_match_whole_file_index() {
     let tails = vec![WalTail {
         file_seq: 1,
         path: wal_path.clone(),
-        start: tail_begin,
-        end: file_len,
+        range: wal::FrameRange::new(tail_begin, file_len),
     }];
 
     let start = whole.summary.min_timestamp_s as i64 * NS as i64;
@@ -1153,7 +1150,7 @@ fn index_range_empty_range_is_a_valid_zero_log_sfst() {
     let wal_path = write_wal(dir.path(), &corpus);
 
     let (summary, bytes) =
-        sfst::index_range(&wal_path, wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64)
+        sfst::index_range(&wal_path, wal::FrameRange::new(wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64))
             .expect("index_range over an empty range");
     assert_eq!(summary.total_logs, 0);
     sfst::IndexReader::open(&bytes).expect("empty-range SFST parses");
