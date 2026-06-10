@@ -222,10 +222,15 @@ impl Registry {
     /// skipped.
     ///
     /// All identifying data (machine, boot, seq, time bounds) comes from
-    /// the filename — the JSON body is not read during recovery.
+    /// the filename — the body is not read during recovery.
     ///
     /// Files with unparseable names are logged and skipped. Date subdirectories
     /// that don't parse as `YYYY-MM-DD` are logged and skipped.
+    ///
+    /// Stale `*.catalog.tmp` files — left behind when a rotation was
+    /// interrupted between writing the temp file and renaming it — are
+    /// deleted while walking, mirroring the SFST dir's temp sweep;
+    /// nothing else ever reaps them.
     pub fn recover(&mut self) {
         let date_entries = match std::fs::read_dir(&self.base_dir) {
             Ok(e) => e,
@@ -276,6 +281,20 @@ impl Registry {
                     Some(n) => n,
                     None => continue,
                 };
+                if name.ends_with(&format!(".{CATALOG_EXT}.tmp")) {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => tracing::info!(
+                            file = %path.display(),
+                            "removed stale catalog tmp file"
+                        ),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => tracing::warn!(
+                            file = %path.display(),
+                            "failed to remove stale catalog tmp file: {e}"
+                        ),
+                    }
+                    continue;
+                }
                 let stem = match name.strip_suffix(&format!(".{CATALOG_EXT}")) {
                     Some(s) => s,
                     None => continue,
@@ -678,6 +697,29 @@ mod tests {
         reg.recover();
 
         assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn recover_sweeps_stale_catalog_tmp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("2026-04-17").join(TENANT).join(filename(
+            machine(),
+            boot(),
+            42,
+            100,
+            200,
+        ));
+        write_catalog_at(&good);
+        // An interrupted rotation's leftover: same dir, `.catalog.tmp`.
+        let stale = good.with_extension("catalog.tmp");
+        std::fs::write(&stale, b"partial").unwrap();
+
+        let mut reg = Registry::new(tmp.path(), TenantId::from(TENANT));
+        reg.recover();
+
+        assert!(!stale.exists(), "stale .catalog.tmp must be reaped");
+        assert_eq!(reg.len(), 1, "real catalog still recovered");
+        assert!(good.exists());
     }
 
     #[test]

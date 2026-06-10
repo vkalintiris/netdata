@@ -346,6 +346,13 @@ pub fn build_and_write(
     drop(file);
 
     std::fs::rename(&tmp_path, out_path)?;
+    // Make the rename itself durable: without the parent-dir fsync a
+    // power loss can drop the new directory entry even though the WAL
+    // that produced this index was already durably deleted — losing the
+    // seq's data with no recovery path. Mirrors the WAL writer.
+    if let Some(parent) = out_path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
     tracing::info!(
         "index written path={} size_kb={} write_ms={} total_ms={}",
         out_path.display(),

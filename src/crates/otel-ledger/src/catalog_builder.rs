@@ -221,6 +221,13 @@ async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<
     file.sync_all().await?;
     drop(file);
     tokio::fs::rename(&tmp_path, final_path).await?;
+    // Make the rename itself durable: a catalog gates the eviction of
+    // the SFSTs it describes, so losing the directory entry on power
+    // loss would orphan their uploaded/rotated state. Mirrors the WAL
+    // writer's parent-dir fsync.
+    if let Some(parent) = final_path.parent() {
+        tokio::fs::File::open(parent).await?.sync_all().await?;
+    }
     Ok(())
 }
 
