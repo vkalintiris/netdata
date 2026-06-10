@@ -229,8 +229,12 @@ impl<'a> IndexReader<'a> {
     ///
     /// For each position: its timestamp plus every attribute, resolved
     /// to a `(key, value)` pair by splitting the stored `key=value`
-    /// string on the first `=`. Rows are returned in the order the
-    /// positions are supplied; positions `>= total_logs` are skipped.
+    /// string on the first `=`. Returns exactly one row per position, in
+    /// the order supplied. A position that can't be resolved (out of
+    /// range, or its stream batch / timestamp is inconsistent) means the
+    /// file is corrupt and yields [`Error::CorruptIndex`](crate::Error::CorruptIndex)
+    /// — never a silent skip, which would misalign a caller that pairs
+    /// positions with the returned rows by index.
     ///
     /// This decompresses the timestamps chunk, all stream batches, and
     /// the whole reverse string table **once**, regardless of how many
@@ -259,18 +263,32 @@ impl<'a> IndexReader<'a> {
 
         let mut rows = Vec::with_capacity(positions.len());
         for &pos in positions {
+            // The caller selected these positions from this file's own
+            // index, so each must resolve to a real row. A miss means the
+            // file's chunks disagree (corrupt SFST); fail rather than skip —
+            // a skip would shorten the result and misalign the caller's
+            // position-to-row pairing, attaching rows to the wrong cursors.
             if pos >= total {
-                continue;
+                return Err(crate::Error::CorruptIndex(format!(
+                    "materialize: position {pos} >= total_logs {total}"
+                )));
             }
             let b = (pos / batch_size) as usize;
             let local = (pos % batch_size) as usize;
             let Some(batch) = batches.get(b).and_then(Option::as_ref) else {
-                continue;
+                return Err(crate::Error::CorruptIndex(format!(
+                    "materialize: position {pos} maps to missing stream batch {b}"
+                )));
             };
             if local >= batch.num_rows() {
-                continue;
+                return Err(crate::Error::CorruptIndex(format!(
+                    "materialize: position {pos} row {local} >= batch {b} length {}",
+                    batch.num_rows()
+                )));
             }
-            let timestamp_ns = timestamps.at(pos).unwrap_or(0);
+            let timestamp_ns = timestamps.at(pos).ok_or_else(|| {
+                crate::Error::CorruptIndex(format!("materialize: position {pos} has no timestamp"))
+            })?;
             let fields = batch
                 .row(local)
                 .map(|kv| {

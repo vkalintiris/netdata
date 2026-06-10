@@ -574,11 +574,11 @@ fn materialize_rows_resolves_timestamp_and_attributes() {
 }
 
 #[test]
-fn materialize_rows_preserves_position_order_and_skips_out_of_range() {
+fn materialize_rows_preserves_position_order() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();
-    // Requested order is honored; position 99 (>= 6 logs) is skipped.
-    let rows = reader.materialize_rows(&[5, 99, 1]).unwrap();
+    // Requested order is honored: one row per position, in order.
+    let rows = reader.materialize_rows(&[5, 1]).unwrap();
     assert_eq!(rows.len(), 2);
     // pos 5 = (error, worker), pos 1 = (error, api).
     assert_eq!(rows[0].timestamp_ns, FILE_MIN_NS + 5 * 1_000_000_000);
@@ -590,6 +590,24 @@ fn materialize_rows_preserves_position_order_and_skips_out_of_range() {
     assert_eq!(
         rows[1].fields[1],
         ("service".to_string(), "api".to_string())
+    );
+}
+
+#[test]
+fn materialize_rows_errors_on_out_of_range_position() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // An out-of-range position (99 >= 6 logs) means the index is corrupt;
+    // it must error, not silently skip — a skip would shorten the result
+    // and misalign a caller pairing positions with rows by index.
+    let err = reader.materialize_rows(&[5, 99, 1]).unwrap_err();
+    assert!(
+        matches!(err, crate::Error::CorruptIndex(_)),
+        "expected CorruptIndex, got {err:?}"
+    );
+    assert!(
+        format!("{err:?}").contains("99"),
+        "error should name the offending position: {err:?}"
     );
 }
 
