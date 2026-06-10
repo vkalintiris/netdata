@@ -283,7 +283,7 @@ async fn same_timestamp_rows_paginate_without_dup_or_skip() {
             .map(|a| format!(r#","anchor":"{a}""#))
             .unwrap_or_default();
         let req: OtelLogsRequest = serde_json::from_slice(
-            format!(r#"{{"info":false,{win},"last":2,"direction":"backward"{anchor_field}}}"#)
+            format!(r#"{{"info":false,"tenant":"tenant-a",{win},"last":2,"direction":"backward"{anchor_field}}}"#)
                 .as_bytes(),
         )
         .unwrap();
@@ -341,7 +341,7 @@ async fn empty_payload_defaults_to_data_request() {
 async fn no_sfst_yields_empty_envelope() {
     let h = make_handler(make_tenant_registries());
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"info": false, "after": 100, "before": 200}"#).unwrap();
+        serde_json::from_slice(br#"{"info": false, "tenant": "tenant-a", "after": 100, "before": 200}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["status"], 200);
@@ -357,7 +357,7 @@ async fn non_overlapping_window_yields_empty_envelope() {
 
     // Request window is 1900..2000 — nowhere near the file's 1.7e9 span.
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"info": false, "after": 1900, "before": 2000}"#).unwrap();
+        serde_json::from_slice(br#"{"info": false, "tenant": "tenant-a", "after": 1900, "before": 2000}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert!(v["facets"].as_array().unwrap().is_empty());
@@ -373,7 +373,7 @@ async fn populated_response_carries_facets_and_histogram() {
 
     let req: OtelLogsRequest = serde_json::from_slice(
         format!(
-            r#"{{"info": false, "after": {}, "before": {}}}"#,
+            r#"{{"info": false, "tenant": "tenant-a", "after": {}, "before": {}}}"#,
             min_s,
             min_s + 60
         )
@@ -459,7 +459,7 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
     // values at their full counts. Both facets are requested
     // explicitly (the default set is just `severity_text`).
     let payload = format!(
-        r#"{{"info": false, "after": {a}, "before": {b}, "facets": ["severity_text", "service"], "selections": {{"service": ["api"]}}}}"#,
+        r#"{{"info": false, "tenant": "tenant-a", "after": {a}, "before": {b}, "facets": ["severity_text", "service"], "selections": {{"service": ["api"]}}}}"#,
         a = min_s,
         b = min_s + 60
     );
@@ -493,16 +493,16 @@ async fn selection_filter_narrows_facet_counts_with_self_exclusion() {
 
 #[tokio::test]
 async fn only_overlapping_file_contributes() {
-    // Two files in different tenants. The window matches only the
+    // Two files in the same tenant. The window matches only the
     // newer file's span — the older one's range is filtered out by
     // the candidate planner.
     let mut tr = make_tenant_registries();
-    install_sfst(&mut tr, "tenant-old", 1, 1_600_000_000);
-    install_sfst(&mut tr, "tenant-new", 99, 1_700_000_000);
+    install_sfst(&mut tr, "tenant-a", 1, 1_600_000_000);
+    install_sfst(&mut tr, "tenant-a", 99, 1_700_000_000);
     let h = make_handler(tr);
 
     let req: OtelLogsRequest =
-        serde_json::from_slice(br#"{"info": false, "after": 1700000000, "before": 1700000100}"#)
+        serde_json::from_slice(br#"{"info": false, "tenant": "tenant-a", "after": 1700000000, "before": 1700000100}"#)
             .unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
@@ -529,7 +529,7 @@ async fn multiple_overlapping_files_merge_counts_and_facets() {
     // explicitly (the default set is just `severity_text`) so the
     // cross-file union is exercised on both fields.
     let payload = format!(
-        r#"{{"info": false, "after": {a}, "before": {b}, "facets": ["severity_text", "service"]}}"#,
+        r#"{{"info": false, "tenant": "tenant-a", "after": {a}, "before": {b}, "facets": ["severity_text", "service"]}}"#,
         a = earlier,
         b = later + 60
     );
@@ -586,7 +586,7 @@ async fn file_without_histogram_field_routes_logs_to_unset() {
     let h = make_handler(tr);
 
     let payload = format!(
-        r#"{{"info": false, "after": {a}, "before": {b}}}"#,
+        r#"{{"info": false, "tenant": "tenant-a", "after": {a}, "before": {b}}}"#,
         a = earlier,
         b = later + 60
     );
@@ -637,7 +637,7 @@ async fn no_time_bound_falls_back_to_recent_window() {
     install_sfst(&mut tr, "tenant-a", 1, recent);
     let h = make_handler(tr);
 
-    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false, "tenant": "tenant-a"}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     // Fixture has 6 logs — all should match (the file's range
@@ -656,7 +656,7 @@ async fn no_time_bound_with_only_stale_data_yields_empty_envelope() {
     install_sfst(&mut tr, "tenant-a", 1, file_min_s);
     let h = make_handler(tr);
 
-    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false}"#).unwrap();
+    let req: OtelLogsRequest = serde_json::from_slice(br#"{"info": false, "tenant": "tenant-a"}"#).unwrap();
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["items"]["matched"], 0);
@@ -687,7 +687,7 @@ async fn backward_pagination_pages_without_overlap_or_gap() {
 
     // Page 1: no anchor, backward → newest 3 (pos 5,4,3), newest-first.
     let p1: OtelLogsRequest =
-        serde_json::from_slice(format!(r#"{{"info":false,{win},"last":3}}"#).as_bytes()).unwrap();
+        serde_json::from_slice(format!(r#"{{"info":false,"tenant":"tenant-a",{win},"last":3}}"#).as_bytes()).unwrap();
     let v1 = serde_json::to_value(&h.on_call(make_ctx("t1"), p1).await.unwrap()).unwrap();
     let d1 = v1["data"].as_array().unwrap();
     assert_eq!(d1.len(), 3);
@@ -701,7 +701,7 @@ async fn backward_pagination_pages_without_overlap_or_gap() {
 
     // Page 2: anchor = page 1's oldest row (pos 3), backward → pos 2,1,0.
     let p2: OtelLogsRequest = serde_json::from_slice(
-        format!(r#"{{"info":false,{win},"last":3,"direction":"backward","anchor":"{anchor}"}}"#)
+        format!(r#"{{"info":false,"tenant":"tenant-a",{win},"last":3,"direction":"backward","anchor":"{anchor}"}}"#)
             .as_bytes(),
     )
     .unwrap();
@@ -731,7 +731,7 @@ async fn forward_pagination_returns_newer_rows_newest_first() {
     // returned newest-first.
     let anchor = format!("{}:1:0:2", (min_s as i64 + 2) * 1_000_000_000);
     let req: OtelLogsRequest = serde_json::from_slice(
-        format!(r#"{{"info":false,{win},"last":3,"direction":"forward","anchor":"{anchor}"}}"#)
+        format!(r#"{{"info":false,"tenant":"tenant-a",{win},"last":3,"direction":"forward","anchor":"{anchor}"}}"#)
             .as_bytes(),
     )
     .unwrap();
@@ -759,7 +759,7 @@ async fn histogram_click_numeric_anchor_navigates_to_time() {
     // Anchor at +3s, as microseconds, sent as a JSON integer.
     let anchor_us = (min_s as i64 + 3) * 1_000_000;
     let payload = format!(
-        r#"{{"info":false,"after":{a},"before":{b},"last":10,"direction":"backward","anchor":{anchor_us}}}"#,
+        r#"{{"info":false,"tenant":"tenant-a","after":{a},"before":{b},"last":10,"direction":"backward","anchor":{anchor_us}}}"#,
         a = min_s,
         b = min_s + 60
     );
@@ -819,4 +819,59 @@ fn declaration_carries_legacy_flags() {
     assert!(access.contains(HttpAccess::SIGNED_ID));
     assert!(access.contains(HttpAccess::SAME_SPACE));
     assert!(access.contains(HttpAccess::SENSITIVE_DATA));
+}
+
+// ── Tenant scoping (OTL-1) ───────────────────────────────────────
+
+#[tokio::test]
+async fn tenant_scoping_isolates_unions_nothing_and_defaults() {
+    // Three tenants ingesting the same window: "tenant-a", "tenant-b",
+    // and "default". Each query must read exactly one tenant's data.
+    let min_s = 1_700_000_000u32;
+    let mut tr = make_tenant_registries();
+    install_sfst(&mut tr, "tenant-a", 1, min_s);
+    install_sfst(&mut tr, "tenant-b", 2, min_s);
+    install_sfst(&mut tr, "default", 3, min_s);
+    let h = make_handler(tr);
+
+    let win = format!(r#""after":{},"before":{}"#, min_s, min_s + 100);
+    let matched = |v: &Value| v["items"]["matched"].as_u64().unwrap();
+
+    // Explicit tenant: only that tenant's 6 rows — never the 18-row
+    // union of all three.
+    for tenant in ["tenant-a", "tenant-b"] {
+        let req: OtelLogsRequest = serde_json::from_slice(
+            format!(r#"{{"info":false,"tenant":"{tenant}",{win}}}"#).as_bytes(),
+        )
+        .unwrap();
+        let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+        assert_eq!(matched(&v), 6, "tenant {tenant} must see only its own rows");
+    }
+
+    // Omitted tenant resolves to the literal "default" tenant.
+    let req: OtelLogsRequest =
+        serde_json::from_slice(format!(r#"{{"info":false,{win}}}"#).as_bytes()).unwrap();
+    let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+    assert_eq!(matched(&v), 6, "omitted tenant must read 'default' only");
+
+    // Unknown tenant: empty grid-aligned stub, not an error.
+    let req: OtelLogsRequest = serde_json::from_slice(
+        format!(r#"{{"info":false,"tenant":"no-such-tenant",{win}}}"#).as_bytes(),
+    )
+    .unwrap();
+    let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+    assert_eq!(v["status"], 200);
+    assert_eq!(matched(&v), 0);
+
+    // Empty tenant string falls back to "default" (light hygiene).
+    let req: OtelLogsRequest =
+        serde_json::from_slice(format!(r#"{{"info":false,"tenant":"",{win}}}"#).as_bytes())
+            .unwrap();
+    let v = serde_json::to_value(&h.on_call(make_ctx("t1"), req).await.unwrap()).unwrap();
+    assert_eq!(matched(&v), 6);
+}
+
+#[test]
+fn accepted_params_advertise_tenant() {
+    assert!(super::super::wire::ACCEPTED_PARAMS.contains(&"tenant"));
 }

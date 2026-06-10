@@ -287,26 +287,33 @@ impl TenantRegistries {
         self.tenants.get_mut(tenant_id)
     }
 
-    /// Every SFST file (across all tenants) whose summary range
-    /// overlaps `q.time_range`. The caller can drop the read lock on
-    /// `TenantRegistries` before doing file I/O. Multi-tenant union by
-    /// construction.
-    pub fn sfst_candidates(&self, q: &file_registry::Query) -> Vec<SfstCandidate> {
-        self.tenants
-            .values()
-            .flat_map(|r| {
-                r.sfst.candidates(q).map(move |f| SfstCandidate {
-                    summary: f.summary.clone(),
-                    file_seq: f.id.seq,
-                    part: sfsq::logs::Part::Indexed(0), // sealed SFST
-                    source: sfsq::logs::Source::File(r.sfst.file_path(f.id)),
-                })
+    /// Every SFST file of `tenant` whose summary range overlaps
+    /// `q.time_range`. The caller can drop the read lock on
+    /// `TenantRegistries` before doing file I/O. An unknown tenant
+    /// yields an empty set — queries are tenant-scoped; there is no
+    /// implicit all-tenant union.
+    pub fn sfst_candidates(
+        &self,
+        tenant: &TenantId,
+        q: &file_registry::Query,
+    ) -> Vec<SfstCandidate> {
+        let Some(r) = self.tenants.get(tenant) else {
+            return Vec::new();
+        };
+        r.sfst
+            .candidates(q)
+            .map(|f| SfstCandidate {
+                summary: f.summary.clone(),
+                file_seq: f.id.seq,
+                part: sfsq::logs::Part::Indexed(0), // sealed SFST
+                source: sfsq::logs::Source::File(r.sfst.file_path(f.id)),
             })
             .collect()
     }
 
-    /// The full candidate set for `q`: every overlapping on-disk SFST,
-    /// plus every overlapping WAL that has **not** been indexed yet
+    /// The full candidate set for `q`, scoped to `tenant`: every
+    /// overlapping on-disk SFST, plus every overlapping WAL that has
+    /// **not** been indexed yet
     /// (active or sealed-but-unindexed). Deduplicated by sequence number
     /// — an SFST always wins over the WAL of the same seq (seq is a
     /// single global counter shared across tenants and streams, so a
@@ -319,13 +326,18 @@ impl TenantRegistries {
     /// belt-and-suspenders bound check.)
     ///
     /// Both lists are owned, so the caller can drop the read lock before
-    /// resolving the WALs (scan + chunk build) off the lock.
-    pub fn query_snapshot(&self, q: &file_registry::Query) -> (Vec<SfstCandidate>, Vec<WalDesc>) {
-        let sfsts = self.sfst_candidates(q);
+    /// resolving the WALs (scan + chunk build) off the lock. An unknown
+    /// tenant yields empty lists.
+    pub fn query_snapshot(
+        &self,
+        tenant: &TenantId,
+        q: &file_registry::Query,
+    ) -> (Vec<SfstCandidate>, Vec<WalDesc>) {
+        let sfsts = self.sfst_candidates(tenant, q);
         let sfst_seqs: HashSet<u64> = sfsts.iter().map(|c| c.file_seq).collect();
 
         let mut wals = Vec::new();
-        for r in self.tenants.values() {
+        if let Some(r) = self.tenants.get(tenant) {
             for f in r.wal.candidates(q) {
                 if sfst_seqs.contains(&f.id.seq) || f.valid_up_to.0 == 0 {
                     continue;

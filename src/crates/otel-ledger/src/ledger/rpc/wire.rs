@@ -47,6 +47,7 @@ pub const ACCEPTED_PARAMS: &[&str] = &[
     "facets",
     "histogram",
     "slice",
+    "tenant",
 ];
 
 /// Request payload. The field set follows the netdata function wire
@@ -94,6 +95,14 @@ pub struct OtelLogsRequest {
     pub selections: std::collections::HashMap<String, Vec<String>>,
     #[serde(default)]
     pub timeout: Option<u32>,
+    /// Tenant whose data the query reads. A **scoping selector**
+    /// supplied by the caller (the Cloud UI), not a security boundary —
+    /// the agent has no trusted per-caller tenant identity to enforce
+    /// with; enforcement is the UI's responsibility. Omitted → the
+    /// literal `"default"` tenant (the id ingest uses when auth is
+    /// disabled), never an implicit all-tenant union.
+    #[serde(default)]
+    pub tenant: Option<String>,
 }
 
 fn default_last() -> usize {

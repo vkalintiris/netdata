@@ -90,3 +90,58 @@ fn for_seq_mut_round_trips_routing() {
     assert_eq!(forgotten, Some(tenant_a));
     assert!(tr.for_seq(10).is_none());
 }
+
+#[test]
+fn query_snapshot_is_scoped_to_one_tenant() {
+    let wal_base = tempfile::tempdir().unwrap();
+    let index_base = tempfile::tempdir().unwrap();
+    let catalog_base = tempfile::tempdir().unwrap();
+
+    let mut tr = TenantRegistries::new(
+        wal_base.path().to_path_buf(),
+        index_base.path().to_path_buf(),
+        catalog_base.path().to_path_buf(),
+    );
+
+    let summary = sfst::Summary {
+        min_timestamp_s: 100,
+        max_timestamp_s: 200,
+        total_logs: 1,
+        stream: sfst::ServiceStream::new("ns", "svc"),
+    };
+    let tenant_a = TenantId::from("tenant-a");
+    let tenant_b = TenantId::from("tenant-b");
+    tr.get_or_create(&tenant_a).sfst.track(
+        FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 1, 0),
+        ByteSize(1),
+        summary.clone(),
+    );
+    tr.get_or_create(&tenant_b).sfst.track(
+        FileId::new(Uuid::from_u128(1), Uuid::from_u128(2), 2, 0),
+        ByteSize(1),
+        summary,
+    );
+
+    let q = file_registry::Query {
+        time_range: 0..1000,
+        stream: None,
+    };
+
+    // Each tenant sees exactly its own candidate — never the union.
+    let (sfsts, wals) = tr.query_snapshot(&tenant_a, &q);
+    assert_eq!(
+        sfsts.iter().map(|c| c.file_seq).collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert!(wals.is_empty());
+    let (sfsts, _) = tr.query_snapshot(&tenant_b, &q);
+    assert_eq!(
+        sfsts.iter().map(|c| c.file_seq).collect::<Vec<_>>(),
+        vec![2]
+    );
+
+    // Unknown tenant: empty, not a panic or an all-tenant union.
+    let (sfsts, wals) = tr.query_snapshot(&TenantId::from("nope"), &q);
+    assert!(sfsts.is_empty());
+    assert!(wals.is_empty());
+}

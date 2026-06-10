@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bridge::function::{FunctionCallContext, FunctionHandler};
+use file_registry::TenantId;
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
 use tokio::sync::RwLock;
@@ -188,6 +189,7 @@ impl FunctionHandler for OtelLogsHandler {
         // overlapping the grid's window under a brief read lock — dropped
         // before any I/O.
         let last = req.last;
+        let tenant = resolve_query_tenant(req.tenant.as_deref());
         // A malformed free-text `query` regex is a clean request error.
         let query = req.into_query().map_err(|e| {
             netdata_plugin_error::NetdataPluginError::FunctionHandler {
@@ -207,7 +209,7 @@ impl FunctionHandler for OtelLogsHandler {
                 time_range: time_range.clone(),
                 stream: None,
             };
-            guard.query_snapshot(&q)
+            guard.query_snapshot(&tenant, &q)
         };
 
         // Resolve each WAL into in-memory chunk SFSTs + a tail (off the
@@ -258,6 +260,27 @@ impl FunctionHandler for OtelLogsHandler {
         d.access =
             Some(HttpAccess::SIGNED_ID | HttpAccess::SAME_SPACE | HttpAccess::SENSITIVE_DATA);
         d
+    }
+}
+
+/// Length cap on a caller-supplied tenant id — matches ingest's
+/// `validate_tenant_id` bound.
+const MAX_QUERY_TENANT_LEN: usize = 255;
+
+/// Resolve the request's tenant selector to the registry key the query
+/// reads. Omitted, empty, or absurdly long values fall back to the
+/// literal `"default"` tenant — the id ingest uses when auth is
+/// disabled — never an implicit all-tenant union.
+///
+/// Deliberately permissive beyond that: the query side only uses the
+/// value as a `HashMap` key into registries built at ingest (it never
+/// builds a filesystem path from it), an unknown tenant just yields an
+/// empty result, and — unlike ingest's `validate_tenant_id` — querying
+/// the literal `"default"` must be allowed.
+fn resolve_query_tenant(raw: Option<&str>) -> TenantId {
+    match raw {
+        Some(s) if !s.is_empty() && s.len() <= MAX_QUERY_TENANT_LEN => TenantId::from(s),
+        _ => TenantId::from("default"),
     }
 }
 
