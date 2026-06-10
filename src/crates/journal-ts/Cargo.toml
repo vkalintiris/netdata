@@ -19,7 +19,3 @@ journal-core = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rand = { workspace = true }
 zstd = { workspace = true }
-
-[[example]]
-name = "journal-ts-generate"
-required-features = []
