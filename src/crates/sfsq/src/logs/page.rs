@@ -355,6 +355,14 @@ pub(super) struct Page {
 /// mappings, see a stable `Vec`. Files that fail to map/parse/evaluate are
 /// logged and skipped. Each opened file's cold suffix is released from the
 /// page cache once the page is materialized.
+///
+/// The `anchor` (from a prior page's cursor) is only an exclusive
+/// comparison boundary — it is never itself materialized. So the source it
+/// once came from need not be in `sources`; only the *page rows'* sources
+/// must be, and they always are, since every page cursor is produced by a
+/// source evaluated in this same call. A stale anchor pointing at a now-
+/// absent source (e.g. a WAL since sealed) is therefore harmless here; the
+/// only cross-request artifact is the documented WAL→SFST cursor seam.
 pub(super) fn paginate(sources: &[LogSource], query: &LogsQuery) -> Page {
     let (wal_tails, sfst_candidates) = partition_sources(sources);
 
