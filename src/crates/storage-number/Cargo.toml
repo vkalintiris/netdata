@@ -1,0 +1,16 @@
+[package]
+name = "storage-number"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Netdata 32-bit packed metric storage number, bit-exact with the C implementation."
+
+[lints]
+workspace = true
+
+[dependencies]
+bitflags = { workspace = true }
+zerocopy = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+proptest = { workspace = true }

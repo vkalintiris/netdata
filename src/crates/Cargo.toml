@@ -33,6 +33,9 @@ members = [
 
     # Plugin IPC library
     "netipc",
+
+    # Storage number format
+    "storage-number",
 ]
 
 [workspace.package]
@@ -163,6 +166,7 @@ journal-log-writer = { path = "journal-log-writer" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 rdp = { path = "rdp" }
+storage-number = { path = "storage-number" }
 
 # Netdata plugin crates
 netdata-plugin-error = { path = "netdata-plugin/error" }
