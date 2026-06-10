@@ -249,7 +249,8 @@ fsst-rs = "0.5"
 gix-chunk = "0.7"
 futures-util = { version = "0.3", features = ["sink"] }
 flate2 = "1"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.13.2", features = ["stream"] }
+# wiki-otel-bridge pins its own reqwest 0.12 (reqwest-eventsource has no 0.13-compatible release)
 reqwest-eventsource = "0.6"
 pco = "1.0.1"
 
