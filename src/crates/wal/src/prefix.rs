@@ -33,7 +33,8 @@ pub struct ChunkBoundary {
 /// Fold a frame-boundary scan into complete chunks of at least
 /// `min_entries` records each.
 ///
-/// `frames` are the boundaries from [`scan_frame_boundaries (see `crate::scan_frame_boundaries`)`] over
+/// `frames` are the boundaries from
+/// [`scan_frame_boundaries`](crate::scan_frame_boundaries) over
 /// `[start, valid_up_to)`, in file order; `start` is the offset of the
 /// first frame (`crate::HEADER_SIZE` for a whole-prefix scan, or a prior
 /// chunk's `end`). Each chunk extends to the first frame boundary at or
@@ -86,86 +87,86 @@ pub fn tail_start(chunks: &[ChunkBoundary], start: u64) -> u64 {
 mod tests {
     use super::*;
 
-// ── chunk_boundaries (pure) ───────────────────────────────────────
+    // ── chunk_boundaries (pure) ───────────────────────────────────────
 
-fn fb(end_offset: u64, entry_count: u32) -> FrameBoundary {
-    FrameBoundary {
-        end_offset,
-        entry_count,
+    fn fb(end_offset: u64, entry_count: u32) -> FrameBoundary {
+        FrameBoundary {
+            end_offset,
+            entry_count,
+        }
     }
-}
 
-#[test]
-fn groups_frames_into_threshold_chunks() {
-    // Threshold 10: frame counts 8,8,8,8 → chunk0 = frames[0,1] (16),
-    // chunk1 = frames[2,3] (16). Offsets are the frames' ends.
-    let frames = [fb(100, 8), fb(200, 8), fb(300, 8), fb(400, 8)];
-    let chunks = chunk_boundaries(&frames, 50, 10);
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].index, 0);
-    assert_eq!(
-        (
-            chunks[0].range.start(),
-            chunks[0].range.end(),
-            chunks[0].entry_count
-        ),
-        (50, 200, 16)
-    );
-    assert_eq!(chunks[1].index, 1);
-    assert_eq!(
-        (
-            chunks[1].range.start(),
-            chunks[1].range.end(),
-            chunks[1].entry_count
-        ),
-        (200, 400, 16)
-    );
-    // No leftover: the tail starts at the last chunk's end.
-    assert_eq!(tail_start(&chunks, 50), 400);
-}
+    #[test]
+    fn groups_frames_into_threshold_chunks() {
+        // Threshold 10: frame counts 8,8,8,8 → chunk0 = frames[0,1] (16),
+        // chunk1 = frames[2,3] (16). Offsets are the frames' ends.
+        let frames = [fb(100, 8), fb(200, 8), fb(300, 8), fb(400, 8)];
+        let chunks = chunk_boundaries(&frames, 50, 10);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].index, 0);
+        assert_eq!(
+            (
+                chunks[0].range.start(),
+                chunks[0].range.end(),
+                chunks[0].entry_count
+            ),
+            (50, 200, 16)
+        );
+        assert_eq!(chunks[1].index, 1);
+        assert_eq!(
+            (
+                chunks[1].range.start(),
+                chunks[1].range.end(),
+                chunks[1].entry_count
+            ),
+            (200, 400, 16)
+        );
+        // No leftover: the tail starts at the last chunk's end.
+        assert_eq!(tail_start(&chunks, 50), 400);
+    }
 
-#[test]
-fn last_frame_pushes_a_chunk_over_the_threshold() {
-    // 5,3,7 with threshold 10: cumulative crosses 10 only at frame 2.
-    let frames = [fb(100, 5), fb(150, 3), fb(230, 7)];
-    let chunks = chunk_boundaries(&frames, 0, 10);
-    assert_eq!(chunks.len(), 1);
-    assert_eq!(
-        (
-            chunks[0].range.start(),
-            chunks[0].range.end(),
-            chunks[0].entry_count
-        ),
-        (0, 230, 15)
-    );
-}
+    #[test]
+    fn last_frame_pushes_a_chunk_over_the_threshold() {
+        // 5,3,7 with threshold 10: cumulative crosses 10 only at frame 2.
+        let frames = [fb(100, 5), fb(150, 3), fb(230, 7)];
+        let chunks = chunk_boundaries(&frames, 0, 10);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            (
+                chunks[0].range.start(),
+                chunks[0].range.end(),
+                chunks[0].entry_count
+            ),
+            (0, 230, 15)
+        );
+    }
 
-#[test]
-fn frames_below_threshold_are_all_tail() {
-    let frames = [fb(100, 5), fb(150, 3)];
-    let chunks = chunk_boundaries(&frames, 64, 10);
-    assert!(chunks.is_empty());
-    // The whole range is tail, starting where the scan started.
-    assert_eq!(tail_start(&chunks, 64), 64);
-}
+    #[test]
+    fn frames_below_threshold_are_all_tail() {
+        let frames = [fb(100, 5), fb(150, 3)];
+        let chunks = chunk_boundaries(&frames, 64, 10);
+        assert!(chunks.is_empty());
+        // The whole range is tail, starting where the scan started.
+        assert_eq!(tail_start(&chunks, 64), 64);
+    }
 
-#[test]
-fn empty_scan_yields_no_chunks() {
-    let chunks = chunk_boundaries(&[], 64, 10);
-    assert!(chunks.is_empty());
-    assert_eq!(tail_start(&chunks, 64), 64);
-}
+    #[test]
+    fn empty_scan_yields_no_chunks() {
+        let chunks = chunk_boundaries(&[], 64, 10);
+        assert!(chunks.is_empty());
+        assert_eq!(tail_start(&chunks, 64), 64);
+    }
 
-#[test]
-fn longer_prefix_only_appends_chunks() {
-    // The first two frames must produce the same chunk whether or not
-    // more frames follow — boundaries are append-only.
-    let short = [fb(100, 6), fb(200, 6)];
-    let long = [fb(100, 6), fb(200, 6), fb(300, 6), fb(400, 6)];
-    let c_short = chunk_boundaries(&short, 0, 10);
-    let c_long = chunk_boundaries(&long, 0, 10);
-    assert_eq!(c_short.len(), 1);
-    assert_eq!(c_long.len(), 2);
-    assert_eq!(c_short[0], c_long[0]); // identical first chunk
-}
+    #[test]
+    fn longer_prefix_only_appends_chunks() {
+        // The first two frames must produce the same chunk whether or not
+        // more frames follow — boundaries are append-only.
+        let short = [fb(100, 6), fb(200, 6)];
+        let long = [fb(100, 6), fb(200, 6), fb(300, 6), fb(400, 6)];
+        let c_short = chunk_boundaries(&short, 0, 10);
+        let c_long = chunk_boundaries(&long, 0, 10);
+        assert_eq!(c_short.len(), 1);
+        assert_eq!(c_long.len(), 2);
+        assert_eq!(c_short[0], c_long[0]); // identical first chunk
+    }
 }

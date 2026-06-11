@@ -310,7 +310,7 @@ impl Config {
 // Writer
 // ---------------------------------------------------------------------------
 
-/// Manages multiple WAL output [`Stream`]s keyed by `ns_hash`, with a shared
+/// Manages multiple WAL output streams (one per `ns_hash`), with a shared
 /// monotonic sequence counter so that file sequence numbers are globally
 /// unique within the WAL directory.
 pub struct Writer {

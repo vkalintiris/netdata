@@ -122,7 +122,6 @@ impl WalScan {
         Ok(sink.finish())
     }
 
-
     /// Number of decoded log rows.
     pub fn num_rows(&self) -> usize {
         self.rows.len()

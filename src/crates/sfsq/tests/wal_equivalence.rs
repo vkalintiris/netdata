@@ -913,25 +913,6 @@ fn candidate_from_bytes(
     }
 }
 
-/// Group frame boundaries into chunks of >= `min_entries` records,
-/// returning `(start, end)` byte ranges — the inline equivalent of the
-/// ledger's `chunk_boundaries` (which sfsq tests can't import). The tail
-/// is everything after the last returned chunk.
-fn group_chunks(frames: &[wal::FrameBoundary], start: u64, min_entries: u64) -> Vec<(u64, u64)> {
-    let mut out = Vec::new();
-    let mut chunk_start = start;
-    let mut acc = 0u64;
-    for f in frames {
-        acc += u64::from(f.entry_count);
-        if acc >= min_entries {
-            out.push((chunk_start, f.end_offset));
-            chunk_start = f.end_offset;
-            acc = 0;
-        }
-    }
-    out
-}
-
 #[test]
 fn wal_data_stats_equal_whole_file_index() {
     // The milestone-4a gate: querying an active WAL through the live
@@ -982,8 +963,10 @@ fn wal_data_stats_equal_whole_file_index() {
 
         // Two splits: all-tail (no chunks → pure WalScan path) and a
         // small threshold (chunks + maybe a tail → the merge path).
+        // Partitioned by the production rule (`wal::prefix`), so the
+        // harness exercises exactly the splits the ledger would make.
         for min_entries in [u64::MAX, 25] {
-            let chunks = group_chunks(
+            let chunks = wal::prefix::chunk_boundaries(
                 &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len))
                     .unwrap(),
                 header,
@@ -1006,9 +989,8 @@ fn wal_data_stats_equal_whole_file_index() {
             }
 
             let mut live_candidates: Vec<SfstCandidate> = Vec::new();
-            for (i, &(s, e)) in chunks.iter().enumerate() {
-                let (summary, bytes) =
-                    sfst::index_range(&wal_path, wal::FrameRange::new(s, e)).unwrap();
+            for (i, chunk) in chunks.iter().enumerate() {
+                let (summary, bytes) = sfst::index_range(&wal_path, chunk.range).unwrap();
                 live_candidates.push(SfstCandidate {
                     summary,
                     file_seq: i as u64,
@@ -1016,7 +998,7 @@ fn wal_data_stats_equal_whole_file_index() {
                     source: Source::Memory(Arc::new(bytes)),
                 });
             }
-            let tail_begin = chunks.last().map_or(header, |&(_, e)| e);
+            let tail_begin = wal::prefix::tail_start(&chunks, header);
             let tails = vec![WalTail {
                 file_seq: 9999,
                 path: wal_path.clone(),
@@ -1126,22 +1108,21 @@ fn wal_data_rows_match_whole_file_index() {
     let file_len = std::fs::metadata(&wal_path).unwrap().len();
     let whole = index_candidate(&wal_path, dir.path());
 
-    let chunks = group_chunks(
+    let chunks = wal::prefix::chunk_boundaries(
         &wal::scan_frame_boundaries(&wal_path, wal::FrameRange::new(header, file_len)).unwrap(),
         header,
         50,
     );
     assert_eq!(chunks.len(), 2, "fixture should split into 2 chunks");
-    let tail_begin = chunks.last().map(|&(_, e)| e).unwrap();
+    let tail_begin = wal::prefix::tail_start(&chunks, header);
     assert!(
         tail_begin < file_len,
         "fixture should leave a non-empty tail"
     );
 
     let mut live: Vec<SfstCandidate> = Vec::new();
-    for (i, &(s_off, e_off)) in chunks.iter().enumerate() {
-        let (summary, bytes) =
-            sfst::index_range(&wal_path, wal::FrameRange::new(s_off, e_off)).unwrap();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let (summary, bytes) = sfst::index_range(&wal_path, chunk.range).unwrap();
         live.push(SfstCandidate {
             summary,
             file_seq: 1,

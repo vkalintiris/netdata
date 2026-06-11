@@ -42,7 +42,7 @@
 //! | None     | empty (zero bytes after `=`)         |                      |
 //!
 //! This contract is implemented by [`hash_value_display`] (producer) and
-//! `sfst::indexer::arrow_columns::AttrsColumns::append_value` (consumer).
+//! `wal_otap::arrow_columns::AttrsColumns::append_value` (consumer).
 //! If either side changes formatting, the hashes will silently mismatch
 //! and the consumer will fall back to the slow path (correct but slower).
 

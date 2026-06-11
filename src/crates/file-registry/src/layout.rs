@@ -179,6 +179,28 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_base_dir_errors_strict_and_empties_lossy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("2026-06-11").join("t-a")).unwrap();
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let denied = std::fs::read_dir(tmp.path()).is_err();
+        let strict = date_tenant_dirs(tmp.path());
+        let lossy = date_tenant_dirs_lossy(tmp.path());
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Under root the chmod doesn't deny anything; only assert when
+        // the listing actually failed.
+        if denied {
+            assert!(strict.is_err());
+            assert!(lossy.is_empty());
+        }
+    }
+
     #[test]
     fn path_build_matches_walk() {
         let date = parse_date_dir("2026-06-11").unwrap();
