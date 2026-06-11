@@ -62,8 +62,8 @@ pub enum Error {
     #[error("invalid stream-batch count: {0} (expected 1..=8)")]
     InvalidStreamBatchCount(usize),
 
-    /// `gix-chunk` failed to parse the TOC (on open) or lay it out
-    /// (on write). Carries `gix-chunk`'s own error message.
+    /// The TOC failed to parse (on open) or lay out (on write).
+    /// Carries the chunk-file layer's own error message.
     #[error("TOC error: {0}")]
     Toc(String),
 
@@ -121,9 +121,9 @@ pub enum Error {
 /// migration. A crc32 mismatch is a corrupt file, so it lands on
 /// [`Error::CorruptIndex`] and flows through the query layer's existing
 /// skip-the-file degrade path.
-impl From<file_registry::container::Error> for Error {
-    fn from(e: file_registry::container::Error) -> Self {
-        use file_registry::container::Error as C;
+impl From<chunk_file::container::Error> for Error {
+    fn from(e: chunk_file::container::Error) -> Self {
+        use chunk_file::container::Error as C;
         match e {
             C::TooShort(len, need) => Error::FileTooShort(len, need),
             C::BadMagic => Error::InvalidMagic,
@@ -131,6 +131,7 @@ impl From<file_registry::container::Error> for Error {
             C::Toc(msg) => Error::Toc(msg),
             C::ChunkNotFound { .. } => Error::Toc(e.to_string()),
             C::CrcMismatch { .. } => Error::CorruptIndex(e.to_string()),
+            C::Io(io) => Error::Io(io),
         }
     }
 }

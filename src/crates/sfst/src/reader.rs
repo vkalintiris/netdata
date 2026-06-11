@@ -9,7 +9,7 @@
 
 use std::cell::OnceCell;
 
-use file_registry::container::{self, Container};
+use chunk_file::container::{self, Container};
 use fst_index::FstIndex;
 use serde::de::DeserializeOwned;
 
@@ -47,7 +47,7 @@ impl<'a> Reader<'a> {
     ///
     /// Header, magic, version and TOC validation — including the
     /// num_chunks sanity bound — happen in the shared
-    /// [`file_registry::container`] helper; chunk payloads are
+    /// [`chunk_file::container`] helper; chunk payloads are
     /// crc32-verified lazily on access.
     pub fn open(data: &'a [u8]) -> Result<Self, Error> {
         let container = Container::open(data, MAGIC, VERSION)?;
@@ -257,7 +257,7 @@ impl<'a> Reader<'a> {
 
     /// Resolve a chunk's payload through the shared container — the
     /// single chokepoint where every access gets crc32 verification.
-    fn chunk_raw_by_id(&self, id: container::ChunkId) -> Result<&'a [u8], Error> {
+    fn chunk_raw_by_id(&self, id: chunk_file::ChunkId) -> Result<&'a [u8], Error> {
         self.container.chunk(id).map_err(Error::from)
     }
 }

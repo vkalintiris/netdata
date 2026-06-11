@@ -3,7 +3,7 @@
 //! An SFST file holds one **primary** [`FstIndex`](fst_index::FstIndex) of
 //! low-cardinality `key=value` pairs, zero or more **secondary** chunks
 //! (mid-cardinality per-field FSTs, high-cardinality per-field sorted lists),
-//! and one stream-log-entries chunk, all keyed by a [`gix_chunk`] TOC for
+//! and one stream-log-entries chunk, all keyed by a [`chunk_file`] TOC for
 //! O(1) random access via mmap. Each SFST covers exactly one log stream
 //! (one `(service.namespace, service.name)` pair).
 //!
@@ -81,16 +81,16 @@ const MAGIC: &[u8; 4] = b"SFST";
 //     layout (keys_blob + key_lens).
 // v4: stream-batch chunks switched from `Vec<Vec<KvId>>` to the fixed-width
 //     arena (kv_bytes + row_lens). Older files are rejected on open.
-// v5: per-chunk crc32 trailers via the shared `file_registry::container`
+// v5: per-chunk crc32 trailers via the shared `chunk_file::container`
 //     helper. Every chunk payload is followed by a crc32 over its stored
 //     (compressed) bytes, verified on access. Older files are rejected on
 //     open.
 const VERSION: u32 = 5;
 
-const CHUNK_SUMMARY: gix_chunk::Id = *b"SUMR";
-const CHUNK_META: gix_chunk::Id = *b"META";
-const CHUNK_PRIMARY: gix_chunk::Id = *b"PRIM";
-const CHUNK_TIMS: gix_chunk::Id = *b"TIMS";
+const CHUNK_SUMMARY: chunk_file::ChunkId = *b"SUMR";
+const CHUNK_META: chunk_file::ChunkId = *b"META";
+const CHUNK_PRIMARY: chunk_file::ChunkId = *b"PRIM";
+const CHUNK_TIMS: chunk_file::ChunkId = *b"TIMS";
 
 /// Minimum number of logs in each stream batch. Files with fewer than
 /// `MIN_LOGS_PER_BATCH` total logs use a single batch; otherwise the
@@ -141,20 +141,20 @@ pub fn stream_batch_size(total_logs: u32) -> u32 {
 /// Chunk id for the mid-card field FST at `index`. The id encodes the
 /// index in its trailing two bytes, big-endian, so each mid-card chunk
 /// has a unique 4-byte id of the form `b"MF{hi}{lo}"`.
-fn mid_field_id(index: u16) -> gix_chunk::Id {
+fn mid_field_id(index: u16) -> chunk_file::ChunkId {
     [b'M', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the high-card field sorted list at `index`. Same shape
 /// as [`mid_field_id`] but with prefix `b"HF"`.
-fn high_field_id(index: u16) -> gix_chunk::Id {
+fn high_field_id(index: u16) -> chunk_file::ChunkId {
     [b'H', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the stream-batch chunk at `index` (0..[`MAX_STREAM_BATCHES`]).
 /// Encodes the index as a single ASCII digit in the trailing byte, e.g.
 /// `b"SB00"` through `b"SB07"`.
-fn stream_batch_id(index: u8) -> gix_chunk::Id {
+fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
     [b'S', b'B', b'0', b'0' + index]
 }
 

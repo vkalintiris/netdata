@@ -4,7 +4,7 @@ SFST is the on-disk format for one log-index file. Each file holds the
 indexed contents of one log stream (one
 `(service.namespace, service.name)` pair) and is built from one WAL
 file by the `sfst::indexer` module. The container is chunk-based with
-a `gix-chunk` table of contents; every chunk has a 4-byte id naming
+a `chunk-file` table of contents; every chunk has a 4-byte id naming
 its role.
 
 This document defines the on-disk shape — the bytes, the chunk ids,
@@ -19,7 +19,7 @@ scope here.
     ┌───────────────────────────────────────────────┐
     │  Header                       (12 bytes)      │
     ├───────────────────────────────────────────────┤
-    │  TOC                          (gix-chunk)     │
+    │  TOC                          (chunk-file)    │
     │    12 × (num_chunks + 1) bytes                │
     ├───────────────────────────────────────────────┤
     │  Chunk bodies                                 │
@@ -37,7 +37,7 @@ form, excluding the 4-byte CRC itself. The TOC's per-chunk span covers
 `payload_len + 4`. Readers verify the CRC on every chunk access and
 reject a mismatching chunk with `Error::CorruptIndex`. This framing
 (header + TOC + per-chunk CRC) is the shared
-`file_registry::container` format, also used by the otel catalog
+`chunk_file::container` format, also used by the otel catalog
 (magic `NCAT`).
 
 ---
@@ -66,7 +66,7 @@ The TOC carries one entry per chunk plus a trailing sentinel.
 
 ## Table of Contents
 
-A `gix_chunk::file::Index`. Each entry is 12 bytes:
+A `chunk_file::Toc`. Each entry is 12 bytes:
 
     Bytes  Field
     ─────  ─────────────────────────────
@@ -398,7 +398,11 @@ The current version is **5**.
   corrupted rows. SFSTs are uploaded to remote storage that is never
   garbage-collected, so files must be integrity-checked before any
   permanent objects accumulate. The framing is now produced/parsed by
-  the shared `file_registry::container` helper.
+  the shared `chunk_file::container` helper, whose TOC stores offsets
+  little-endian as this document specifies. (The earlier in-branch v5
+  draft framed the file through the external `gix-chunk` crate, which
+  writes offsets big-endian — contradicting this spec; no such file was
+  ever shipped.)
 
 v4 files cannot be read by a v5 reader and vice versa
 (`Error::UnsupportedVersion` on the version field). No migration tool

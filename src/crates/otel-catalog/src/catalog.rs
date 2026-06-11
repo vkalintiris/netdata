@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
-use file_registry::container::{ChunkId, Container, ContainerBuilder};
+use chunk_file::ChunkId;
+use chunk_file::container::{Container, ContainerBuilder};
 use file_registry::{FileId, Query, TenantId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -71,7 +72,7 @@ impl Catalog {
     }
 
     /// Serialize to the on-disk container: magic `NCAT` + framing
-    /// version + gix_chunk TOC + a single `JSON` chunk holding the
+    /// version + chunk-file TOC + a single `JSON` chunk holding the
     /// catalog JSON, with a crc32 trailer. All durable catalog bytes go
     /// through this — never raw JSON.
     pub fn to_container_bytes(&self) -> Result<Vec<u8>, Error> {
@@ -215,13 +216,13 @@ mod tests {
         let last = corrupt.len() - 1;
         corrupt[last] ^= 0x01;
         match Catalog::from_container_bytes(&corrupt) {
-            Err(Error::Container(file_registry::container::Error::CrcMismatch { .. })) => {}
+            Err(Error::Container(chunk_file::container::Error::CrcMismatch { .. })) => {}
             other => panic!("expected CrcMismatch, got {other:?}"),
         }
 
         // Raw (legacy) JSON is not a container — rejected by magic.
         match Catalog::from_container_bytes(b"{\"version\":1}") {
-            Err(Error::Container(file_registry::container::Error::BadMagic)) => {}
+            Err(Error::Container(chunk_file::container::Error::BadMagic)) => {}
             other => panic!("expected BadMagic, got {other:?}"),
         }
 
@@ -230,7 +231,7 @@ mod tests {
         wrong_version[4..8].copy_from_slice(&99u32.to_le_bytes());
         match Catalog::from_container_bytes(&wrong_version) {
             Err(Error::Container(
-                file_registry::container::Error::UnsupportedVersion(99),
+                chunk_file::container::Error::UnsupportedVersion(99),
             )) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }

@@ -8,10 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-crc32fast = { workspace = true }
-gix-chunk = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-thiserror = { workspace = true }
 twox-hash = { workspace = true, features = ["xxhash64"] }
 uuid = { workspace = true, features = ["serde"] }
 tracing = { workspace = true }

@@ -3,7 +3,7 @@ name = "sfst"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Container format for split FST indexes with gix-chunk TOC"
+description = "Container format for split FST indexes with a chunk-file TOC"
 
 [lints]
 workspace = true
@@ -15,7 +15,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 bincode = { workspace = true }
 zstd = { workspace = true }
-gix-chunk = { workspace = true }
+chunk-file = { workspace = true }
 thiserror = { workspace = true }
 treight = { workspace = true, features = ["roaring", "serde"] }
 regex = { workspace = true }

@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use file_registry::container::ContainerBuilder;
+use chunk_file::container::ContainerBuilder;
 use serde::Serialize;
 
 use crate::{
