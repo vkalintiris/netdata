@@ -117,6 +117,13 @@ fn build_stream_batches<W: Write + Seek>(
     } else {
         let batch_size = crate::stream_batch_size(total_logs) as usize;
         for (i, batch) in entries.chunks(batch_size).enumerate() {
+            // The batch-size rule guarantees ≤ MAX_STREAM_BATCHES slices;
+            // assert it so a broken rule can't silently alias chunk ids.
+            assert!(
+                i < crate::MAX_STREAM_BATCHES as usize,
+                "stream-batch count exceeds MAX_STREAM_BATCHES ({})",
+                crate::MAX_STREAM_BATCHES,
+            );
             let packed = crate::pack(
                 &crate::StreamBatch::for_write(batch),
                 crate::ZSTD_LEVEL_DEFAULT,
@@ -186,7 +193,10 @@ fn build_mid_card_chunks<W: Write + Seek>(
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
         let packed = crate::pack(&fst, crate::ZSTD_LEVEL_FST)?;
         total_kb += packed.len() / 1024;
-        w.write_chunk(crate::mid_field_id(i as u16), &packed)?;
+        // The chunk-id encoding has 2 index bytes; silent truncation
+        // would alias two fields onto one id.
+        let idx = u16::try_from(i).expect("mid-card field count exceeds u16::MAX");
+        w.write_chunk(crate::mid_field_id(idx), &packed)?;
     }
 
     tracing::debug!(
@@ -237,7 +247,9 @@ fn build_high_card_chunks<W: Write + Seek>(
 
         let packed = crate::pack(&high, crate::ZSTD_LEVEL_DEFAULT)?;
         total_kb += packed.len() / 1024;
-        w.write_chunk(crate::high_field_id(i as u16), &packed)?;
+        // Same 2-byte index bound as the mid-card ids.
+        let idx = u16::try_from(i).expect("high-card field count exceeds u16::MAX");
+        w.write_chunk(crate::high_field_id(idx), &packed)?;
     }
 
     tracing::debug!(
@@ -271,7 +283,7 @@ fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8
     mask
 }
 
-/// Resolve and write the file's single stream.
+/// Resolve and validate the file's single stream identity.
 ///
 /// Each SFST file is required to contain exactly one `(namespace, name)`
 /// pair — the WAL writer partitions frames by `ns_hash`, and the ingestor
@@ -279,6 +291,10 @@ fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8
 /// pair for an `ns_hash`. If multiple distinct values are seen for either
 /// key, [`WalIndex::service_stream`] surfaces the offenders via
 /// [`IndexError::MultipleStreams`] and we fail the index build.
+///
+/// Resolution only — the returned pair lands in the `SUMR` chunk; the
+/// stream-batch chunks themselves are emitted later by
+/// [`build_stream_batches`].
 fn resolve_stream(wal_index: &WalIndex, total_logs: u32) -> Result<ServiceStream, IndexError> {
     let stream = wal_index.service_stream()?;
 
@@ -320,7 +336,16 @@ pub fn build_and_write(
     let t = Instant::now();
     let tmp_path = out_path.with_extension("sfst.tmp");
     let file = std::fs::File::create(&tmp_path)?;
-    let (buf, summary, metadata) = build_into(wal_index, std::io::BufWriter::new(file))?;
+    // A failed build must not leave the partial temp file behind —
+    // recovery's temp sweep would reap it at next boot, but not before
+    // it sat there confusing a crash investigation.
+    let (buf, summary, metadata) = match build_into(wal_index, std::io::BufWriter::new(file)) {
+        Ok(parts) => parts,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    };
     let file = buf.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     let file_size = file.metadata()?.len();

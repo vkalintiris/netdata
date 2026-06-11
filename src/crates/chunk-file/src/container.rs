@@ -129,6 +129,12 @@ impl<'a> Container<'a> {
         }
 
         let num_chunks = u32::from_le_bytes(data[8..12].try_into().unwrap());
+        // Both writers refuse to produce a chunkless container, so a
+        // zero here is corruption (or a foreign file), not a valid
+        // degenerate case.
+        if num_chunks == 0 {
+            return Err(Error::Toc("container has no chunks".to_string()));
+        }
         // Defense in depth: a corrupted header claiming u32::MAX chunks
         // would otherwise demand a ~51 GiB TOC. Each TOC entry is 12
         // bytes, so the on-disk body bounds the legal value.
@@ -204,10 +210,9 @@ impl<'a> ContainerBuilder<'a> {
         }
     }
 
-    /// Append a chunk. Duplicate ids are a producer bug —
-    /// [`write_to`](ContainerBuilder::write_to) panics on them (via
-    /// [`TocWriter::plan`]'s debug assertion in debug builds; release
-    /// builds surface the duplicate at read time).
+    /// Append a chunk. Duplicate ids are a producer bug, rejected by
+    /// [`write_to`](ContainerBuilder::write_to) before any byte is
+    /// written.
     pub fn add_chunk(&mut self, id: ChunkId, payload: &'a [u8]) {
         self.chunks.push((id, payload));
     }
@@ -227,6 +232,17 @@ impl<'a> ContainerBuilder<'a> {
                 "container must have at least one chunk",
             ));
         }
+        // Reject duplicate ids before any byte is written — a release
+        // build must not produce a file the reader will reject.
+        // O(n²), but a container holds at most a few dozen chunks.
+        for (i, (id, _)) in self.chunks.iter().enumerate() {
+            if self.chunks[..i].iter().any(|(prev, _)| prev == id) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("duplicate chunk id '{}'", id_str(id)),
+                ));
+            }
+        }
 
         w.write_all(&encode_header(
             self.magic,
@@ -241,7 +257,7 @@ impl<'a> ContainerBuilder<'a> {
         let mut chunk_writer = toc
             .write_toc(&mut *w, HEADER_SIZE as u64)
             .map_err(io_from_raw)?;
-        let mut trailer_buf = Vec::with_capacity(0);
+        let mut trailer_buf = Vec::new();
         for (id, payload) in &self.chunks {
             // The raw ChunkWriter validates id + exact size; hand it the
             // payload and trailer as one planned span.
@@ -295,7 +311,9 @@ impl<W: Write + Seek> StreamingWriter<W> {
             ));
         }
         out.write_all(&encode_header(magic, version, num_chunks))?;
-        // Reserve the TOC region; patched in finish().
+        // Reserve the TOC region; patched in finish(). The transient
+        // zero buffer is 12 × (num_chunks + 1) bytes — noise next to
+        // the chunk payloads.
         let toc_size = Toc::byte_size(num_chunks as usize);
         out.write_all(&vec![0u8; toc_size])?;
         Ok(Self {
@@ -315,6 +333,8 @@ impl<W: Write + Seek> StreamingWriter<W> {
                 self.num_chunks
             )));
         }
+        // O(n²) across a file's chunks, but a container holds at most a
+        // few dozen — same bound `Toc::parse` relies on.
         if self.written.iter().any(|(written_id, _)| *written_id == id) {
             return Err(Error::Toc(format!("duplicate chunk id '{}'", id_str(&id))));
         }
@@ -419,20 +439,85 @@ mod tests {
         // Fewer chunks than planned.
         let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 2).unwrap();
         w.write_chunk(*b"AAAA", b"x").unwrap();
-        assert!(w.finish().is_err());
+        assert!(matches!(w.finish(), Err(Error::Toc(msg)) if msg.contains("not written")));
 
         // More chunks than planned.
         let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 1).unwrap();
         w.write_chunk(*b"AAAA", b"x").unwrap();
-        assert!(w.write_chunk(*b"BBBB", b"y").is_err());
+        assert!(matches!(
+            w.write_chunk(*b"BBBB", b"y"),
+            Err(Error::Toc(msg)) if msg.contains("planned count")
+        ));
 
         // Duplicate id.
         let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 2).unwrap();
         w.write_chunk(*b"AAAA", b"x").unwrap();
-        assert!(w.write_chunk(*b"AAAA", b"y").is_err());
+        assert!(matches!(
+            w.write_chunk(*b"AAAA", b"y"),
+            Err(Error::Toc(msg)) if msg.contains("duplicate")
+        ));
 
         // Zero chunks is rejected up front.
-        assert!(StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 0).is_err());
+        assert!(matches!(
+            StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 0),
+            Err(Error::Toc(_))
+        ));
+    }
+
+    #[test]
+    fn builder_rejects_duplicate_ids_at_write() {
+        // Must be a runtime error in every build profile — a release
+        // producer must not write a file the reader will reject.
+        let mut b = ContainerBuilder::new(MAGIC, VERSION);
+        b.add_chunk(*b"AAAA", b"x");
+        b.add_chunk(*b"AAAA", b"y");
+        let mut out = Vec::new();
+        let err = b.write_to(&mut out).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(out.is_empty(), "no bytes written before the rejection");
+    }
+
+    #[test]
+    fn open_rejects_zero_chunk_header() {
+        // Hand-craft a header claiming zero chunks (no writer produces
+        // one): magic + version + num_chunks=0 + a sentinel-only TOC.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 12]); // end marker only
+        match Container::open(&bytes, &MAGIC, VERSION).err() {
+            Some(Error::Toc(msg)) => assert!(msg.contains("no chunks"), "{msg}"),
+            other => panic!("expected Toc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flipping_any_toc_byte_never_serves_wrong_payloads() {
+        // TOC corruption isn't directly checksummed; it is caught by the
+        // parse validators or, for flips that still parse, by the
+        // per-chunk CRC over the shifted span. Property: no single-byte
+        // TOC flip may silently change what a chunk read returns.
+        let clean = build(SAMPLE);
+        let toc_end = HEADER_SIZE + Toc::byte_size(SAMPLE.len());
+        for i in HEADER_SIZE..toc_end {
+            for bit in [0x01u8, 0x80] {
+                let mut corrupt = clean.clone();
+                corrupt[i] ^= bit;
+                let Ok(c) = Container::open(&corrupt, &MAGIC, VERSION) else {
+                    continue; // rejected at parse — fine
+                };
+                for (id, payload) in SAMPLE {
+                    match c.chunk(*id) {
+                        Ok(read) => assert_eq!(
+                            read, *payload,
+                            "flip at byte {i} bit {bit:#04x} silently changed chunk payload"
+                        ),
+                        Err(_) => {} // caught — fine
+                    }
+                }
+            }
+        }
     }
 
     #[test]

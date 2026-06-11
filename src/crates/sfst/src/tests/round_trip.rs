@@ -65,6 +65,10 @@ fn round_trip_primary_only() {
     let reader = Reader::open(&buf).unwrap();
     assert!(!reader.has_summary());
     assert!(!reader.has_metadata());
+    // Reading an absent named chunk surfaces as a TOC error (the id is
+    // in the message) — distinct from the index-addressed
+    // `ChunkNotFound(u16)` shape used by mid/high/stream accessors.
+    assert!(matches!(reader.summary(), Err(Error::Toc(_))));
 
     let p = reader.primary().unwrap();
     assert!(p.get(b"alpha").is_some());
