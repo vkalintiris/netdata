@@ -96,14 +96,22 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
         vec![sfst::KvId(1), sfst::KvId(2)], // pos 5: worker, error
     ];
 
-    let mut writer = sfst::Writer::new();
-    writer.set_summary(sfst::pack(&summary, 1).unwrap());
-    writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
-    writer.set_primary(sfst::pack(&primary, 1).unwrap());
-    writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
+    let counts = sfst::ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer
+        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
+        .unwrap();
+    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();
 }
 
@@ -174,14 +182,22 @@ fn write_service_only_sfst(path: &std::path::Path, min_s: u32) {
         vec![sfst::KvId(1)], // pos 2: worker
     ];
 
-    let mut writer = sfst::Writer::new();
-    writer.set_summary(sfst::pack(&summary, 1).unwrap());
-    writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
-    writer.set_primary(sfst::pack(&primary, 1).unwrap());
-    writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
+    let counts = sfst::ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer
+        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
+        .unwrap();
+    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();
 }
 
@@ -236,14 +252,22 @@ fn write_same_ts_sfst(path: &std::path::Path, ts_s: u32, n: usize) {
     let timestamps: Vec<i64> = vec![(ts_s as i64) * 1_000_000_000; n];
     let stream_entries: Vec<Vec<sfst::KvId>> = (0..n).map(|_| vec![sfst::KvId(0)]).collect();
 
-    let mut writer = sfst::Writer::new();
-    writer.set_summary(sfst::pack(&summary, 1).unwrap());
-    writer.set_metadata(sfst::pack(&metadata, 1).unwrap());
-    writer.set_primary(sfst::pack(&primary, 1).unwrap());
-    writer.set_timestamps(sfst::pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
+    let counts = sfst::ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer
+        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
+        .unwrap();
+    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();
 }
 

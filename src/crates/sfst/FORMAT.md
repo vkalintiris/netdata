@@ -128,11 +128,13 @@ Indices start at 0 and are contiguous within each tier. A producer
 emitting `M` mid-card chunks uses ids `MF{0}` through `MF{M-1}`;
 similarly for `HF{i}` and `SB{i}`.
 
-`PRIM`, `TIMS`, and at least one `SB{i}` are required; a writer fails
-with `Error::NoPrimary` / `Error::NoTimestamps` /
-`Error::InvalidStreamBatchCount(0)` if any is missing. The other
-named chunks are technically optional at the container level, but the
-canonical producer always emits all of them.
+`PRIM`, `TIMS`, and at least one `SB{i}` are required. The public
+writer (`sfst::StreamWriter`) enforces the full canonical shape — all
+four named chunks plus the declared secondary counts, in order — and
+fails with `Error::WriterMisuse` / `Error::InvalidStreamBatchCount`
+on any deviation. SUMR/META are technically optional at the container
+level (a raw `chunk_file` container without them still parses), but
+every produced file carries all of them.
 
 ---
 
@@ -300,9 +302,9 @@ Per-log timestamps follow the OTel hierarchy: `time_unix_nano` →
 synthesizes a fallback if both OTel timestamps are absent so that
 every log has a well-defined timestamp).
 
-Required: a writer that omits this chunk fails with
-`Error::NoTimestamps`. Downstream tooling (display, sub-second
-filtering, time-of-event citation) relies on this chunk.
+Required: the writer's ordered API makes it impossible to omit this
+chunk. Downstream tooling (display, sub-second filtering,
+time-of-event citation) relies on it.
 
 ### `SB{i}` — Stream-batch N
 

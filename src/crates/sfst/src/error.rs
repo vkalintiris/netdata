@@ -42,22 +42,17 @@ pub enum Error {
     #[error("chunk not found: index {0}")]
     ChunkNotFound(u16),
 
-    /// [`Writer::write_to`](crate::Writer::write_to) was called without
-    /// [`Writer::set_primary`](crate::Writer::set_primary) having been
-    /// called first. The `PRIM` chunk is mandatory.
-    #[error("no primary chunk set")]
-    NoPrimary,
+    /// [`StreamWriter`](crate::StreamWriter) was driven against the
+    /// canonical chunk order — a chunk out of order, beyond its
+    /// declared count, or [`finish`](crate::StreamWriter::finish)
+    /// before every declared chunk was written. A producer bug, never
+    /// a data condition; the message names the violated step.
+    #[error("writer misuse: {0}")]
+    WriterMisuse(String),
 
-    /// [`Writer::write_to`](crate::Writer::write_to) was called without
-    /// [`Writer::set_timestamps`](crate::Writer::set_timestamps) having
-    /// been called first. The `TIMS` chunk is mandatory.
-    #[error("no timestamps chunk set")]
-    NoTimestamps,
-
-    /// [`Writer::write_to`](crate::Writer::write_to) found the number of
-    /// stream-batch chunks (set via
-    /// [`Writer::add_stream_batch`](crate::Writer::add_stream_batch)) is
-    /// not in `1..=`[`MAX_STREAM_BATCHES`](crate::MAX_STREAM_BATCHES).
+    /// [`StreamWriter::new`](crate::StreamWriter::new) was given a
+    /// stream-batch count outside
+    /// `1..=`[`MAX_STREAM_BATCHES`](crate::MAX_STREAM_BATCHES).
     /// Carries the actual count that was rejected.
     #[error("invalid stream-batch count: {0} (expected 1..=8)")]
     InvalidStreamBatchCount(usize),

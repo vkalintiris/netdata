@@ -1,15 +1,16 @@
 use super::*;
-use crate::{ServiceStream, Writer, pack};
+use crate::tests::fixture::FixtureWriter;
+use crate::{ServiceStream, pack};
 use fst_index::FstIndex;
 
 fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &Summary) {
     let primary: FstIndex<u64> = FstIndex::build([("k", 1u64)]).unwrap();
-    let mut writer = Writer::new();
+    // The buffer-all fixture builder permits the missing META chunk;
+    // this test only exercises the SUMR round-trip.
+    let mut writer = FixtureWriter::new();
     writer.set_summary(pack(summary, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(pack(&Vec::<i64>::new(), 1).unwrap());
-    // Writer requires 1..=MAX_STREAM_BATCHES stream batches; emit one
-    // empty batch since this test only exercises the SUMR round-trip.
     writer.add_stream_batch(pack(&crate::StreamBatch::for_write(&[]), 1).unwrap());
     let mut buf = Vec::new();
     writer.write_to(&mut buf).unwrap();

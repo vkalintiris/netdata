@@ -23,7 +23,7 @@ use std::io::{Seek, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use chunk_file::container::StreamingWriter;
+use sfst::{ChunkCounts, StreamWriter};
 use roaring::RoaringBitmap;
 use treight::Bitmap;
 
@@ -91,7 +91,7 @@ fn build_stream_batches<W: Write + Seek>(
     time_order: &TimeOrder,
     kv_to_file: &[KvId],
     total_logs: u32,
-    w: &mut StreamingWriter<W>,
+    w: &mut StreamWriter<W>,
 ) -> Result<usize, IndexError> {
     let entries: Vec<Vec<KvId>> = time_order
         .iter_by_time()
@@ -112,23 +112,19 @@ fn build_stream_batches<W: Write + Seek>(
             sfst::ZSTD_LEVEL_DEFAULT,
         )?;
         total_packed += packed.len();
-        w.write_chunk(sfst::stream_batch_id(0), &packed)?;
+        w.add_stream_batch(&packed)?;
     } else {
         let batch_size = sfst::stream_batch_size(total_logs) as usize;
-        for (i, batch) in entries.chunks(batch_size).enumerate() {
-            // The batch-size rule guarantees ≤ MAX_STREAM_BATCHES slices;
-            // assert it so a broken rule can't silently alias chunk ids.
-            assert!(
-                i < sfst::MAX_STREAM_BATCHES as usize,
-                "stream-batch count exceeds MAX_STREAM_BATCHES ({})",
-                sfst::MAX_STREAM_BATCHES,
-            );
+        for batch in entries.chunks(batch_size) {
             let packed = sfst::pack(
                 &sfst::StreamBatch::for_write(batch),
                 sfst::ZSTD_LEVEL_DEFAULT,
             )?;
             total_packed += packed.len();
-            w.write_chunk(sfst::stream_batch_id(i as u8), &packed)?;
+            // The batch-size rule guarantees ≤ MAX_STREAM_BATCHES slices,
+            // and the writer's declared count enforces it: one slice too
+            // many is a WriterMisuse error, never an aliased chunk id.
+            w.add_stream_batch(&packed)?;
         }
     }
 
@@ -140,7 +136,7 @@ fn build_stream_batches<W: Write + Seek>(
 fn build_primary_fst<W: Write + Seek>(
     row_index: &RowIndex,
     time_order: &TimeOrder,
-    w: &mut StreamingWriter<W>,
+    w: &mut StreamWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
@@ -164,7 +160,7 @@ fn build_primary_fst<W: Write + Seek>(
         packed.len() / 1024,
         t.elapsed().as_millis(),
     );
-    w.write_chunk(sfst::CHUNK_PRIMARY, &packed)?;
+    w.primary(&packed)?;
     Ok(())
 }
 
@@ -172,7 +168,7 @@ fn build_primary_fst<W: Write + Seek>(
 fn build_mid_card_chunks<W: Write + Seek>(
     row_index: &RowIndex,
     time_order: &TimeOrder,
-    w: &mut StreamingWriter<W>,
+    w: &mut StreamWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -192,10 +188,8 @@ fn build_mid_card_chunks<W: Write + Seek>(
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
         let packed = sfst::pack(&fst, sfst::ZSTD_LEVEL_FST)?;
         total_kb += packed.len() / 1024;
-        // The chunk-id encoding has 2 index bytes; silent truncation
-        // would alias two fields onto one id.
-        let idx = u16::try_from(i).expect("mid-card field count exceeds u16::MAX");
-        w.write_chunk(sfst::mid_field_id(idx), &packed)?;
+        let idx = w.add_mid_field(&packed)?;
+        debug_assert_eq!(idx as usize, i);
     }
 
     tracing::debug!(
@@ -221,7 +215,7 @@ fn build_high_card_chunks<W: Write + Seek>(
     row_index: &RowIndex,
     time_order: &TimeOrder,
     batch_size: u32,
-    w: &mut StreamingWriter<W>,
+    w: &mut StreamWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut total_kb = 0usize;
@@ -244,9 +238,8 @@ fn build_high_card_chunks<W: Write + Seek>(
 
         let packed = sfst::pack(&high, sfst::ZSTD_LEVEL_DEFAULT)?;
         total_kb += packed.len() / 1024;
-        // Same 2-byte index bound as the mid-card ids.
-        let idx = u16::try_from(i).expect("high-card field count exceeds u16::MAX");
-        w.write_chunk(sfst::high_field_id(idx), &packed)?;
+        let idx = w.add_high_field(&packed)?;
+        debug_assert_eq!(idx as usize, i);
     }
 
     tracing::debug!(
@@ -365,10 +358,9 @@ pub fn build_and_write(
 /// classification and the stream-batch rule — so the writer reserves
 /// the TOC up front and each chunk is packed, written, and dropped in
 /// the canonical hot-prefix order (`SUMR`, `META`, `TIMS`, `PRIM`,
-/// mid-card, high-card, stream batches). Peak memory beyond the
-/// `RowIndex` itself is a single packed chunk, not the whole
-/// compressed file; the bytes produced are identical to
-/// [`sfst::Writer`]'s for the same inputs.
+/// mid-card, high-card, stream batches), which [`sfst::StreamWriter`]
+/// enforces. Peak memory beyond the `RowIndex` itself is a single
+/// packed chunk, not the whole compressed file.
 ///
 /// Shared by [`build_and_write`] (sink = the temp file) and the
 /// in-memory range index ([`index_range`](super::index_range),
@@ -435,24 +427,21 @@ pub(super) fn build_into<W: Write + Seek>(
         fields,
     };
 
-    // The chunk count is known before any payload exists: the
-    // always-present SUMR/META/TIMS/PRIM plus one chunk per mid/high
-    // field and per stream batch.
-    let num_chunks = 4
-        + row_index.mid_fields().len()
-        + row_index.high_fields().len()
-        + usize::from(sfst::num_stream_batches(total_logs));
-    let mut w = StreamingWriter::new(sink, *sfst::MAGIC, sfst::VERSION, num_chunks as u32)?;
+    // The chunk counts are known before any payload exists — one chunk
+    // per mid/high field and per stream batch — which is what lets the
+    // writer reserve the TOC up front.
+    let counts = ChunkCounts {
+        mid_fields: u16::try_from(row_index.mid_fields().len())
+            .expect("mid-card field count exceeds u16::MAX"),
+        high_fields: u16::try_from(row_index.high_fields().len())
+            .expect("high-card field count exceeds u16::MAX"),
+        stream_batches: sfst::num_stream_batches(total_logs),
+    };
+    let mut w = StreamWriter::new(sink, counts)?;
 
-    // Hot prefix first — same canonical order as `sfst::Writer`.
-    w.write_chunk(
-        sfst::CHUNK_SUMMARY,
-        &sfst::pack(&summary, sfst::ZSTD_LEVEL_DEFAULT)?,
-    )?;
-    w.write_chunk(
-        sfst::CHUNK_META,
-        &sfst::pack(&metadata, sfst::ZSTD_LEVEL_DEFAULT)?,
-    )?;
+    // Hot prefix first — the writer enforces the canonical order.
+    w.summary(&sfst::pack(&summary, sfst::ZSTD_LEVEL_DEFAULT)?)?;
+    w.metadata(&sfst::pack(&metadata, sfst::ZSTD_LEVEL_DEFAULT)?)?;
 
     // Per-log timestamps in chronological order, parallel-indexed to
     // the stream-log-entries chunks.
@@ -460,10 +449,7 @@ pub(super) fn build_into<W: Write + Seek>(
         .iter_by_time()
         .map(|ins| row_index.timestamps[ins as usize])
         .collect();
-    w.write_chunk(
-        sfst::CHUNK_TIMS,
-        &sfst::pack(&timestamps_chronological, sfst::ZSTD_LEVEL_DEFAULT)?,
-    )?;
+    w.timestamps(&sfst::pack(&timestamps_chronological, sfst::ZSTD_LEVEL_DEFAULT)?)?;
     drop(timestamps_chronological);
 
     // Low/mid-cardinality FSTs, high-cardinality chunks, then the

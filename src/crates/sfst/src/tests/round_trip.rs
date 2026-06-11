@@ -1,7 +1,10 @@
-//! Format round-trip tests: write a file via [`Writer`] / [`pack`],
-//! read it back via [`Reader`], assert the chunks decode to the
-//! values we put in.
+//! Format round-trip tests: write a file via the buffer-all
+//! [`FixtureWriter`] / [`pack`] (looser than the public
+//! [`StreamWriter`], so partial files — no SUMR, no META — can pin
+//! reader behavior), read it back via [`Reader`], assert the chunks
+//! decode to the values we put in.
 
+use super::fixture::FixtureWriter;
 use crate::*;
 use fst_index::FstIndex;
 use treight::Bitmap;
@@ -54,7 +57,7 @@ fn sample_metadata() -> Metadata {
 fn round_trip_primary_only() {
     let primary = build_primary(&["alpha", "beta", "gamma"]);
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(empty_timestamps());
     writer.add_stream_batch(empty_stream_batch());
@@ -82,7 +85,7 @@ fn round_trip_summary() {
     let summary = sample_summary();
     let primary = build_primary(&["a"]);
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_summary(pack(&summary, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(empty_timestamps());
@@ -102,7 +105,7 @@ fn round_trip_metadata() {
     let metadata = sample_metadata();
     let primary = build_primary(&["a", "b"]);
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.set_timestamps(empty_timestamps());
@@ -165,7 +168,7 @@ fn round_trip_fields_and_secondary_chunks() {
     let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0), KvId(1)], vec![KvId(2)]];
     let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000, 1_700_000_000_500_000_000];
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
     assert_eq!(writer.add_mid_field(pack(&mid_host, 1).unwrap()), 0);
@@ -248,7 +251,7 @@ fn cold_region_is_the_stream_batch_tail_without_mid_or_high() {
     // No mid/high field chunks: the cold suffix is just the stream
     // batch(es) right after PRIM. Regression: computing it must not
     // underflow.
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_metadata(pack(&sample_metadata(), 1).unwrap());
     writer.set_primary(pack(&build_primary(&["level=info"]), 1).unwrap());
     writer.set_timestamps(empty_timestamps());
@@ -272,7 +275,7 @@ fn mid_field_out_of_range_errors() {
     let primary = build_primary(&["k"]);
     let mid = build_primary(&["host=h"]);
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_primary(pack(&primary, 1).unwrap());
     writer.add_mid_field(pack(&mid, 1).unwrap());
     writer.set_timestamps(empty_timestamps());
@@ -284,19 +287,6 @@ fn mid_field_out_of_range_errors() {
     let reader = Reader::open(&buf).unwrap();
     assert!(reader.mid_field(0).is_ok());
     assert!(matches!(reader.mid_field(1), Err(Error::ChunkNotFound(1))));
-}
-
-#[test]
-fn error_on_no_timestamps() {
-    let primary = build_primary(&["k"]);
-    let mut writer = Writer::new();
-    writer.set_primary(pack(&primary, 1).unwrap());
-
-    let mut buf = Vec::new();
-    assert!(matches!(
-        writer.write_to(&mut buf),
-        Err(Error::NoTimestamps)
-    ));
 }
 
 #[test]
@@ -313,7 +303,7 @@ fn full_file_round_trip() {
     let stream_entries: Vec<Vec<KvId>> = vec![vec![KvId(0)]];
     let timestamps: Vec<i64> = vec![1_700_000_000_000_000_000];
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_summary(pack(&summary, 1).unwrap());
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
@@ -381,7 +371,7 @@ fn round_trip_multi_batch_stream() {
     let entries: Vec<Vec<KvId>> = (0..total_logs).map(|i| vec![KvId(i)]).collect();
     let timestamps: Vec<i64> = (0..total_logs as i64).collect();
 
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_summary(pack(&summary, 1).unwrap());
     writer.set_metadata(pack(&metadata, 1).unwrap());
     writer.set_primary(pack(&primary, 1).unwrap());
@@ -431,7 +421,7 @@ fn round_trip_multi_batch_stream() {
 
 /// Minimal valid file: primary + timestamps + one stream batch.
 fn minimal_file() -> Vec<u8> {
-    let mut writer = Writer::new();
+    let mut writer = FixtureWriter::new();
     writer.set_primary(pack(&build_primary(&["alpha"]), 1).unwrap());
     writer.set_timestamps(empty_timestamps());
     writer.add_stream_batch(empty_stream_batch());

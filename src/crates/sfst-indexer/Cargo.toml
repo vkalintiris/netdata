@@ -15,7 +15,6 @@ wal-otap = { workspace = true }
 
 fst-index = { workspace = true, features = ["serde"] }
 treight = { workspace = true, features = ["roaring", "serde"] }
-chunk-file = { workspace = true }
 file-registry = { workspace = true }
 
 bumpalo = { workspace = true }

@@ -109,15 +109,20 @@ fn build_query_fixture() -> Vec<u8> {
         vec![KvId(0), KvId(3)], // pos 5: error, worker
     ];
 
-    let mut writer = Writer::new();
-    writer.set_summary(pack(&summary, 1).unwrap());
-    writer.set_metadata(pack(&metadata, 1).unwrap());
-    writer.set_primary(pack(&primary, 1).unwrap());
-    writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
-    buf
+    let counts = ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
+    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
+    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    writer.finish().unwrap().into_inner()
 }
 
 /// Window covering the fixture's whole log range (all 6 logs).
@@ -497,15 +502,20 @@ fn build_multivalued_fixture() -> Vec<u8> {
         vec![KvId(2)],                   // pos 2: svc=a (no lang)
     ];
 
-    let mut writer = Writer::new();
-    writer.set_summary(pack(&summary, 1).unwrap());
-    writer.set_metadata(pack(&metadata, 1).unwrap());
-    writer.set_primary(pack(&primary, 1).unwrap());
-    writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
-    buf
+    let counts = ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
+    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
+    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    writer.finish().unwrap().into_inner()
 }
 
 /// `unset` must count logs *lacking the field*, not `total − Σ(counts)`:
@@ -736,15 +746,20 @@ fn build_complemented_fixture() -> Vec<u8> {
         vec![KvId(1), KvId(3)], // pos 5: lo, b
     ];
 
-    let mut writer = Writer::new();
-    writer.set_summary(pack(&summary, 1).unwrap());
-    writer.set_metadata(pack(&metadata, 1).unwrap());
-    writer.set_primary(pack(&primary, 1).unwrap());
-    writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
-    buf
+    let counts = ChunkCounts {
+        mid_fields: 0,
+        high_fields: 0,
+        stream_batches: 1,
+    };
+    let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
+    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
+    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    writer.finish().unwrap().into_inner()
 }
 
 #[test]
@@ -945,17 +960,22 @@ fn build_tiered_fixture() -> Vec<u8> {
         .map(|i| 1_700_000_000i64 * 1_000_000_000 + i * 1_000_000_000)
         .collect();
 
-    let mut writer = Writer::new();
-    writer.set_summary(pack(&summary, 1).unwrap());
-    writer.set_metadata(pack(&metadata, 1).unwrap());
-    writer.set_primary(pack(&primary, 1).unwrap());
-    writer.add_mid_field(pack(&mid_host, 1).unwrap());
-    writer.add_high_field(pack(&high_trace, 1).unwrap());
-    writer.set_timestamps(pack(&timestamps, 1).unwrap());
-    writer.add_stream_batch(pack(&StreamBatch::for_write(&stream_entries), 1).unwrap());
-    let mut buf = Vec::new();
-    writer.write_to(&mut buf).unwrap();
-    buf
+    let counts = ChunkCounts {
+        mid_fields: 1,
+        high_fields: 1,
+        stream_batches: 1,
+    };
+    let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
+    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
+    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
+    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer.add_mid_field(&pack(&mid_host, 1).unwrap()).unwrap();
+    writer.add_high_field(&pack(&high_trace, 1).unwrap()).unwrap();
+    writer
+        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .unwrap();
+    writer.finish().unwrap().into_inner()
 }
 
 #[test]

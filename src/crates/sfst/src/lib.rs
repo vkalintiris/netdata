@@ -14,9 +14,9 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```
 //! use fst_index::FstIndex;
-//! use sfst::BitmapValue;
+//! use sfst::{BitmapValue, ChunkCounts, StreamBatch, StreamWriter};
 //! use treight::Bitmap;
 //!
 //! // Build a minimal primary FST with one `key=value` entry.
@@ -24,11 +24,31 @@
 //! let primary: FstIndex<BitmapValue> =
 //!     FstIndex::build([("level=info", bm)]).unwrap();
 //!
-//! // Write
-//! let mut writer = sfst::Writer::new();
-//! writer.set_primary(sfst::pack(&primary, 1).unwrap());
-//! let mut buf = Vec::new();
-//! writer.write_to(&mut buf).unwrap();
+//! // Write a minimal file: the four always-present chunks in their
+//! // canonical order, plus one (empty) stream batch.
+//! let summary = sfst::Summary {
+//!     min_timestamp_s: 0,
+//!     max_timestamp_s: 0,
+//!     total_logs: 0,
+//!     stream: sfst::ServiceStream::new("ns", "svc"),
+//! };
+//! let metadata = sfst::Metadata {
+//!     histogram: sfst::Histogram { timestamps: vec![], counts: vec![] },
+//!     id_ranges: sfst::IdRanges {
+//!         low_end: sfst::KvId(1),
+//!         mid_end: sfst::KvId(1),
+//!         high_end: sfst::KvId(1),
+//!     },
+//!     fields: Default::default(),
+//! };
+//! let counts = ChunkCounts { mid_fields: 0, high_fields: 0, stream_batches: 1 };
+//! let mut w = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
+//! w.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
+//! w.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+//! w.timestamps(&sfst::pack(&Vec::<i64>::new(), 1).unwrap()).unwrap();
+//! w.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
+//! w.add_stream_batch(&sfst::pack(&StreamBatch::for_write(&[]), 1).unwrap()).unwrap();
+//! let buf = w.finish().unwrap().into_inner();
 //!
 //! // Read back
 //! let reader = sfst::Reader::open(&buf).unwrap();
@@ -67,19 +87,16 @@ pub use schema::{
     BitmapValue, DEFAULT_CARDINALITY_THRESHOLD, FieldEntry, FieldTable, FieldTier, HighField,
     Histogram, IdRanges, KvId, Metadata, StreamBatch, Summary,
 };
-pub use writer::{Writer, pack};
+pub use writer::{ChunkCounts, StreamWriter, pack};
 
-// ── Format vocabulary ────────────────────────────────────────────
+// ── Format constants ─────────────────────────────────────────────
 //
-// The container's magic, version, and chunk ids are public producer
-// vocabulary: a streaming builder (`sfst-indexer`'s `build_into`)
-// emits chunks through `chunk_file::container::StreamingWriter`
-// directly and must name them. `FORMAT.md` is the source of truth for
-// what each id carries and the canonical chunk order; [`Writer`] is
-// the reference implementation of that order.
+// The container's magic, version, and chunk ids never leave this
+// crate: producers write through [`StreamWriter`]'s typed methods, so
+// the canonical chunk order and the id encoding exist in exactly one
+// place. `FORMAT.md` is the source of truth for what each id carries.
 
-/// Container magic, first 4 bytes of every SFST file.
-pub const MAGIC: &[u8; 4] = b"SFST";
+const MAGIC: &[u8; 4] = b"SFST";
 
 // v3: high-card chunks switched from `Vec<String>` keys to the string-arena
 //     layout (keys_blob + key_lens).
@@ -89,17 +106,12 @@ pub const MAGIC: &[u8; 4] = b"SFST";
 //     helper. Every chunk payload is followed by a crc32 over its stored
 //     (compressed) bytes, verified on access. Older files are rejected on
 //     open.
-/// Current container version. Readers reject any other version.
-pub const VERSION: u32 = 5;
+const VERSION: u32 = 5;
 
-/// Chunk id of the [`Summary`] chunk.
-pub const CHUNK_SUMMARY: chunk_file::ChunkId = *b"SUMR";
-/// Chunk id of the [`Metadata`] chunk.
-pub const CHUNK_META: chunk_file::ChunkId = *b"META";
-/// Chunk id of the primary (low-cardinality) FST chunk.
-pub const CHUNK_PRIMARY: chunk_file::ChunkId = *b"PRIM";
-/// Chunk id of the chronological per-log timestamps chunk.
-pub const CHUNK_TIMS: chunk_file::ChunkId = *b"TIMS";
+const CHUNK_SUMMARY: chunk_file::ChunkId = *b"SUMR";
+const CHUNK_META: chunk_file::ChunkId = *b"META";
+const CHUNK_PRIMARY: chunk_file::ChunkId = *b"PRIM";
+const CHUNK_TIMS: chunk_file::ChunkId = *b"TIMS";
 
 /// Minimum number of logs in each stream batch. Files with fewer than
 /// `MIN_LOGS_PER_BATCH` total logs use a single batch; otherwise the
@@ -150,20 +162,20 @@ pub fn stream_batch_size(total_logs: u32) -> u32 {
 /// Chunk id for the mid-card field FST at `index`. The id encodes the
 /// index in its trailing two bytes, big-endian, so each mid-card chunk
 /// has a unique 4-byte id of the form `b"MF{hi}{lo}"`.
-pub fn mid_field_id(index: u16) -> chunk_file::ChunkId {
+fn mid_field_id(index: u16) -> chunk_file::ChunkId {
     [b'M', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the high-card field sorted list at `index`. Same shape
 /// as [`mid_field_id`] but with prefix `b"HF"`.
-pub fn high_field_id(index: u16) -> chunk_file::ChunkId {
+fn high_field_id(index: u16) -> chunk_file::ChunkId {
     [b'H', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the stream-batch chunk at `index` (0..[`MAX_STREAM_BATCHES`]).
 /// Encodes the index as a single ASCII digit in the trailing byte, e.g.
 /// `b"SB00"` through `b"SB07"`.
-pub fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
+fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
     // An out-of-range index would silently produce a non-digit trailing
     // byte (`b'0' + 8` is `b'8'`, but `b'0' + 10` is `b':'`) — an id no
     // reader looks for. The cap is a format invariant, so catch misuse

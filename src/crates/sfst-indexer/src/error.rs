@@ -2,15 +2,6 @@
 
 use sfst::Error;
 
-/// The streaming container writer's errors surface in the indexing
-/// pipeline (`build_into`); route them through [`sfst::Error`]'s
-/// mapping into [`IndexError::Format`].
-impl From<chunk_file::container::Error> for IndexError {
-    fn from(e: chunk_file::container::Error) -> Self {
-        IndexError::Format(e.into())
-    }
-}
-
 /// The read-and-decode conveniences surface a two-sided error; split
 /// it onto the pipeline error's existing WAL and decode variants.
 impl From<wal_otap::ReadError> for IndexError {
