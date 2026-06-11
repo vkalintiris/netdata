@@ -43,7 +43,7 @@ members = [
     # IPC / RPC
     "ferryboat",
 
-    "otel-flatten",
+    "otel-normalize",
     "otel-ingestor",
 
     # WAL
@@ -225,7 +225,7 @@ journal-function = { path = "journal-function" }
 # Netdata OTEL crates
 
 flatten_otel = { path = "flatten-otel" }
-otel-flatten = { path = "otel-flatten" }
+otel-normalize = { path = "otel-normalize" }
 
 # Ledger
 otel-ledger = { path = "otel-ledger" }

@@ -67,7 +67,7 @@ pub fn encode(mut resource_logs: Vec<ResourceLogs>) -> Result<(Vec<u8>, usize), 
         for sl in &mut rl.scope_logs {
             for lr in &mut sl.log_records {
                 log_count += 1;
-                otel_flatten::normalize::normalize_body(lr);
+                otel_normalize::normalize_body(lr);
                 prepare_log_attributes(lr);
             }
         }

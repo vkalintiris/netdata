@@ -3867,14 +3867,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "otel-flatten"
-version = "0.1.3"
-dependencies = [
- "opentelemetry-proto",
- "serde_json",
-]
-
-[[package]]
 name = "otel-ingestor"
 version = "0.1.3"
 dependencies = [
@@ -3889,7 +3881,7 @@ dependencies = [
  "opentelemetry-proto",
  "otap-df-pdata",
  "otel-catalog",
- "otel-flatten",
+ "otel-normalize",
  "prost",
  "regex",
  "serde",
@@ -3938,6 +3930,14 @@ dependencies = [
  "treight",
  "uuid",
  "wal",
+]
+
+[[package]]
+name = "otel-normalize"
+version = "0.1.3"
+dependencies = [
+ "opentelemetry-proto",
+ "serde_json",
 ]
 
 [[package]]

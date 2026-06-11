@@ -1,5 +1,5 @@
 [package]
-name = "otel-flatten"
+name = "otel-normalize"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
