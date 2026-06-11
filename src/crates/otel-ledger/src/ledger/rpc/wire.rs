@@ -99,7 +99,8 @@ pub struct OtelLogsRequest {
     /// supplied by the caller (the Cloud UI), not a security boundary —
     /// the agent has no trusted per-caller tenant identity to enforce
     /// with; enforcement is the UI's responsibility. Omitted → the
-    /// literal `"default"` tenant (the id ingest uses when auth is
+    /// literal `"default"` tenant ([`file_registry::TenantId::DEFAULT`],
+    /// the id ingest uses when auth is
     /// disabled), never an implicit all-tenant union.
     #[serde(default)]
     pub tenant: Option<String>,

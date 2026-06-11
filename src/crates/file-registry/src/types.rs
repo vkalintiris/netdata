@@ -26,9 +26,8 @@ impl TenantId {
     /// to name it.
     pub const DEFAULT: &'static str = "default";
 
-    pub fn new(s: impl Into<Arc<str>>) -> Self {
-        Self(s.into())
-    }
+    /// Byte-length cap shared by both validation policies.
+    pub const MAX_LEN: usize = 255;
 
     /// The [`DEFAULT`](TenantId::DEFAULT) tenant.
     pub fn default_tenant() -> Self {
@@ -42,7 +41,7 @@ impl TenantId {
     /// auth-disabled tenant). The error is the human-readable reason,
     /// for the transport layer to wrap.
     pub fn validate_ingest(id: &str) -> Result<Self, &'static str> {
-        if id.is_empty() || id.len() > 255 {
+        if id.is_empty() || id.len() > Self::MAX_LEN {
             return Err("tenant ID must be 1-255 bytes");
         }
         if id == "." || id == ".." || id == Self::DEFAULT {
@@ -65,7 +64,7 @@ impl TenantId {
     /// unknown tenant simply matches nothing downstream.
     pub fn resolve_query(raw: Option<&str>) -> Self {
         match raw {
-            Some(s) if !s.is_empty() && s.len() <= 255 => Self::from(s),
+            Some(s) if !s.is_empty() && s.len() <= Self::MAX_LEN => Self::from(s),
             _ => Self::default_tenant(),
         }
     }
@@ -452,5 +451,69 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
+    }
+}
+
+#[cfg(test)]
+mod tenant_id_tests {
+    use super::TenantId;
+
+    #[test]
+    fn validate_ingest_contract() {
+        let cases: std::collections::HashMap<&str, (&str, bool)> = [
+            ("simple id", ("tenant-a", true)),
+            ("all allowed classes", ("a.B_9-z", true)),
+            ("exactly max length", ("x".repeat(255).leak() as &str, true)),
+            ("empty", ("", false)),
+            ("over max length", ("x".repeat(256).leak() as &str, false)),
+            ("dot", (".", false)),
+            ("dotdot", ("..", false)),
+            ("reserved default", ("default", false)),
+            ("space", ("a b", false)),
+            ("slash", ("a/b", false)),
+            ("nul", ("a\0b", false)),
+            ("non-ascii", ("café", false)),
+        ]
+        .into_iter()
+        .collect();
+        for (name, (input, ok)) in cases {
+            assert_eq!(
+                TenantId::validate_ingest(input).is_ok(),
+                ok,
+                "case '{name}' (input {input:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_query_contract() {
+        // Omitted / empty / oversized fall back to the default tenant.
+        assert_eq!(TenantId::resolve_query(None), TenantId::default_tenant());
+        assert_eq!(
+            TenantId::resolve_query(Some("")),
+            TenantId::default_tenant()
+        );
+        let long = "x".repeat(256);
+        assert_eq!(
+            TenantId::resolve_query(Some(&long)),
+            TenantId::default_tenant()
+        );
+        // In-range values pass through untouched.
+        assert_eq!(
+            TenantId::resolve_query(Some("tenant-a")).as_str(),
+            "tenant-a"
+        );
+        // The asymmetric guarantee: the query side CAN name the literal
+        // default tenant that ingest refuses to let clients claim.
+        assert_eq!(
+            TenantId::resolve_query(Some(TenantId::DEFAULT)),
+            TenantId::default_tenant()
+        );
+        assert!(TenantId::validate_ingest(TenantId::DEFAULT).is_err());
+    }
+
+    #[test]
+    fn default_tenant_is_the_constant() {
+        assert_eq!(TenantId::default_tenant().as_str(), TenantId::DEFAULT);
     }
 }

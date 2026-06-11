@@ -187,7 +187,7 @@ async fn handle_request(
 /// files, so there's no `catalog/` subdir — same convention as WAL and SFST.
 ///
 /// `tenant_id` is expected to be pre-validated by
-/// `otel_ingestor::logs_service::validate_tenant_id`.
+/// [`TenantId::validate_ingest`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn scope_path(
     base: &Path,
@@ -217,9 +217,18 @@ pub(crate) fn scope_path(
 /// temp file (the guard inside `write_atomic`).
 async fn write_local_atomic(final_path: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
     let path = final_path.to_path_buf();
-    tokio::task::spawn_blocking(move || file_registry::durable::write_atomic(&path, &bytes))
+    match tokio::task::spawn_blocking(move || file_registry::durable::write_atomic(&path, &bytes))
         .await
-        .map_err(std::io::Error::other)?
+    {
+        Ok(io_result) => io_result,
+        // Keep a shutdown-time cancellation distinguishable from a real
+        // I/O failure in the "catalog local write failed" logs.
+        Err(e) if e.is_cancelled() => Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "catalog rotation cancelled",
+        )),
+        Err(e) => Err(std::io::Error::other(e)),
+    }
 }
 
 #[cfg(test)]

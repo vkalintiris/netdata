@@ -48,3 +48,23 @@ pub fn range_overlaps<T: Ord + Copy>(window: &Range<T>, min: T, max: T) -> bool 
     }
     max >= window.start && min < window.end
 }
+
+#[cfg(test)]
+mod tests {
+    use super::range_overlaps;
+
+    #[test]
+    fn overlap_rule_contract() {
+        // Inclusive data range vs half-open window.
+        assert!(range_overlaps(&(10u32..20), 5, 10)); // max == start: in
+        assert!(range_overlaps(&(10u32..20), 19, 25)); // min == end-1: in
+        assert!(!range_overlaps(&(10u32..20), 20, 25)); // min == end: out
+        assert!(!range_overlaps(&(10u32..20), 0, 9)); // max < start: out
+        assert!(range_overlaps(&(10u32..11), 10, 10)); // single-point window
+        // Empty window matches nothing — even a containing range.
+        assert!(!range_overlaps(&(10u32..10), 0, 100));
+        assert!(!range_overlaps(&(20u32..10), 0, 100));
+        // Generic over the unit (the wal registry's u64 nanoseconds).
+        assert!(range_overlaps(&(1_000u64..2_000), 1_999, 5_000));
+    }
+}

@@ -12,13 +12,18 @@
 //! entry even though the data the file replaces was already durably
 //! deleted. Producers that skip any step here have historically
 //! re-introduced exactly that loss window, so every tmp+rename write
-//! in the workspace goes through this module.
+//! in the otel subsystem (WAL, SFST, catalogs, the seq high-water
+//! file) goes through this module. (Other subsystems' writers are
+//! tracked separately — notably netflow-plugin still hand-rolls
+//! tmp+rename without fsync.)
 //!
 //! Temp naming is uniform: [`TMP_SUFFIX`] appended to the final file
 //! name (`a.catalog` → `a.catalog.tmp`), so [`is_tmp`] /
 //! [`sweep_tmp`] recognize every producer's leftovers with one rule
 //! and no data-file scanner ever matches a temp (temps never end in a
-//! data extension).
+//! data extension). The suffix is therefore **reserved**: a producer
+//! must never write a non-temp artifact ending in `.tmp` into a swept
+//! directory — recovery would silently reap it.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -61,6 +66,8 @@ pub struct AtomicFile {
 impl AtomicFile {
     /// Open `<final_path>.tmp` for writing, creating parent
     /// directories as needed. Returns the guard and the open file.
+    /// A bare relative filename writes into the working directory —
+    /// callers pass absolute (or directory-joined) paths.
     pub fn create(final_path: impl Into<PathBuf>) -> io::Result<(Self, File)> {
         let final_path = final_path.into();
         if let Some(parent) = final_path.parent() {

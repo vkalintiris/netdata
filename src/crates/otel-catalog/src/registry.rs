@@ -227,9 +227,10 @@ impl Registry {
     ///
     /// Stale `*.catalog.tmp` files — left behind when a rotation was
     /// interrupted between writing the temp file and renaming it — are
-    /// deleted while walking, mirroring the SFST dir's temp sweep
-    /// (`cleanup_temp_files` in otel-ledger's `Registry::recover`);
-    /// nothing else ever reaps them.
+    /// deleted while walking via the shared temp helpers (the SFST dir
+    /// gets the same treatment through
+    /// [`file_registry::durable::sweep_tmp`] in otel-ledger's
+    /// `Registry::recover`); nothing else ever reaps them.
     pub fn recover(&mut self) {
         // Structural enumeration through the shared layout walker;
         // recovery's softer error policy (warn and continue) wraps it.
