@@ -29,17 +29,17 @@ use treight::Bitmap;
 
 use super::bitset::Bitset;
 use super::kv_interner::KvSlot;
-use super::wal_index::{TimeOrder, WalIndex};
+use super::row_index::{TimeOrder, RowIndex};
 use crate::{
     BitmapValue, FieldEntry, FieldTier, IdRanges, IndexError, KvId, Metadata, ServiceStream,
 };
 
 /// Build tier-aligned key=value ID translation table.
 ///
-/// Uses [`WalIndex::tier_assignment`] to get the canonical ordering,
+/// Uses [`RowIndex::tier_assignment`] to get the canonical ordering,
 /// then maps each [`KvSlot`] to its sequential [`KvId`].
-fn build_id_translation(wal_index: &WalIndex) -> (Vec<KvId>, IdRanges) {
-    let [low_kv_slots, mid_kv_slots, high_kv_slots] = wal_index.tier_assignment();
+fn build_id_translation(row_index: &RowIndex) -> (Vec<KvId>, IdRanges) {
+    let [low_kv_slots, mid_kv_slots, high_kv_slots] = row_index.tier_assignment();
 
     let total_kv_slots = low_kv_slots.len() + mid_kv_slots.len() + high_kv_slots.len();
     let mut table = vec![KvId(0); total_kv_slots];
@@ -139,20 +139,20 @@ fn build_stream_batches<W: Write + Seek>(
 /// Pack and stream the primary FST: low-card `key=value` entries with
 /// bitmaps.
 fn build_primary_fst<W: Write + Seek>(
-    wal_index: &WalIndex,
+    row_index: &RowIndex,
     time_order: &TimeOrder,
     w: &mut StreamingWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
-    let low = wal_index.low_fields();
+    let low = row_index.low_fields();
     for (_, kv_slots) in &low {
         entries.reserve(kv_slots.len());
 
         for &kv_slot in *kv_slots {
-            let kv_pair = wal_index.resolve(kv_slot);
-            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_slot), time_order);
+            let kv_pair = row_index.resolve(kv_slot);
+            let (desc, data) = remap_one_bitmap(row_index.bitmap(kv_slot), time_order);
             entries.push((kv_pair, BitmapValue { desc, data }));
         }
     }
@@ -171,7 +171,7 @@ fn build_primary_fst<W: Write + Seek>(
 
 /// Pack and stream secondary FST chunks for mid-cardinality fields.
 fn build_mid_card_chunks<W: Write + Seek>(
-    wal_index: &WalIndex,
+    row_index: &RowIndex,
     time_order: &TimeOrder,
     w: &mut StreamingWriter<W>,
 ) -> Result<(), IndexError> {
@@ -180,13 +180,13 @@ fn build_mid_card_chunks<W: Write + Seek>(
 
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
-    let mid = wal_index.mid_fields();
+    let mid = row_index.mid_fields();
     for (i, &(_, kv_slots)) in mid.iter().enumerate() {
         entries.clear();
 
         for &kv_slot in kv_slots {
-            let kv_pair = wal_index.resolve(kv_slot);
-            let (desc, data) = remap_one_bitmap(wal_index.bitmap(kv_slot), time_order);
+            let kv_pair = row_index.resolve(kv_slot);
+            let (desc, data) = remap_one_bitmap(row_index.bitmap(kv_slot), time_order);
             entries.push((kv_pair, BitmapValue { desc, data }));
         }
 
@@ -221,7 +221,7 @@ mod tests;
 /// `time_order` translates each insertion-order position from the
 /// roaring bitmap into its chronological position before bucketing.
 fn build_high_card_chunks<W: Write + Seek>(
-    wal_index: &WalIndex,
+    row_index: &RowIndex,
     time_order: &TimeOrder,
     batch_size: u32,
     w: &mut StreamingWriter<W>,
@@ -231,12 +231,12 @@ fn build_high_card_chunks<W: Write + Seek>(
 
     let mut paired: Vec<(&str, u8)> = Vec::new();
 
-    let high = wal_index.high_fields();
+    let high = row_index.high_fields();
     for (i, &(_, slots)) in high.iter().enumerate() {
         paired.clear();
         for &slot in slots {
-            let key = wal_index.resolve(slot);
-            let mask = batch_mask(wal_index.bitmap(slot), time_order, batch_size);
+            let key = row_index.resolve(slot);
+            let mask = batch_mask(row_index.bitmap(slot), time_order, batch_size);
             paired.push((key, mask));
         }
         paired.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
@@ -289,14 +289,14 @@ fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8
 /// pair — the WAL writer partitions frames by `ns_hash`, and the ingestor
 /// rejects writes whose `(namespace, name)` doesn't match the canonical
 /// pair for an `ns_hash`. If multiple distinct values are seen for either
-/// key, [`WalIndex::service_stream`] surfaces the offenders via
+/// key, [`RowIndex::service_stream`] surfaces the offenders via
 /// [`IndexError::MultipleStreams`] and we fail the index build.
 ///
 /// Resolution only — the returned pair lands in the `SUMR` chunk; the
 /// stream-batch chunks themselves are emitted later by
 /// [`build_stream_batches`].
-fn resolve_stream(wal_index: &WalIndex, total_logs: u32) -> Result<ServiceStream, IndexError> {
-    let stream = wal_index.service_stream()?;
+fn resolve_stream(row_index: &RowIndex, total_logs: u32) -> Result<ServiceStream, IndexError> {
+    let stream = row_index.service_stream()?;
 
     let namespace = if stream.namespace.is_empty() {
         "<none>"
@@ -310,7 +310,7 @@ fn resolve_stream(wal_index: &WalIndex, total_logs: u32) -> Result<ServiceStream
     };
     tracing::debug!(
         "stream {namespace}/{name}: {} logs, {} batches",
-        wal_index.num_logs(),
+        row_index.num_logs(),
         crate::num_stream_batches(total_logs),
     );
 
@@ -319,7 +319,7 @@ fn resolve_stream(wal_index: &WalIndex, total_logs: u32) -> Result<ServiceStream
 
 /// Build and write a split-fst index file.
 ///
-/// This is Phase 2 of the indexing pipeline. Takes the [`WalIndex`] built by
+/// This is Phase 2 of the indexing pipeline. Takes the [`RowIndex`] built by
 /// Phase 1 and produces a split-fst file with: summary, metadata, primary FST,
 /// secondary chunks (mid/high-card), and per-stream log entries. Chunks
 /// stream to the temp file as they are packed (see [`build_into`]).
@@ -328,7 +328,7 @@ fn resolve_stream(wal_index: &WalIndex, total_logs: u32) -> Result<ServiceStream
 /// stores inline) and the heavier [`Metadata`] (only needed for query
 /// planning and execution).
 pub fn build_and_write(
-    wal_index: &WalIndex,
+    row_index: &RowIndex,
     out_path: &Path,
 ) -> Result<(crate::Summary, Metadata), IndexError> {
     let t_start = Instant::now();
@@ -342,7 +342,7 @@ pub fn build_and_write(
     // produced this index was already durably deleted, losing the
     // seq's data with no recovery path.
     let (guard, file) = file_registry::durable::AtomicFile::create(out_path)?;
-    let (buf, summary, metadata) = build_into(wal_index, std::io::BufWriter::new(file))?;
+    let (buf, summary, metadata) = build_into(row_index, std::io::BufWriter::new(file))?;
     let file = buf.into_inner().map_err(|e| e.into_error())?;
     let file_size = file.metadata()?.len();
     guard.commit(file)?;
@@ -357,7 +357,7 @@ pub fn build_and_write(
     Ok((summary, metadata))
 }
 
-/// Phase 2 proper: consume a [`WalIndex`] and **stream** the SFST into
+/// Phase 2 proper: consume a [`RowIndex`] and **stream** the SFST into
 /// `sink` (positioned at offset 0), returning the sink plus the
 /// [`crate::Summary`] / [`Metadata`] the file carries.
 ///
@@ -368,7 +368,7 @@ pub fn build_and_write(
 /// the TOC up front and each chunk is packed, written, and dropped in
 /// the canonical hot-prefix order (`SUMR`, `META`, `TIMS`, `PRIM`,
 /// mid-card, high-card, stream batches). Peak memory beyond the
-/// `WalIndex` itself is a single packed chunk, not the whole
+/// `RowIndex` itself is a single packed chunk, not the whole
 /// compressed file; the bytes produced are identical to
 /// [`crate::Writer`]'s for the same inputs.
 ///
@@ -376,24 +376,24 @@ pub fn build_and_write(
 /// in-memory range index ([`index_range`](super::index_range),
 /// sink = a `Cursor<Vec<u8>>`).
 pub(super) fn build_into<W: Write + Seek>(
-    wal_index: &WalIndex,
+    row_index: &RowIndex,
     sink: W,
 ) -> Result<(W, crate::Summary, Metadata), IndexError> {
     let t = Instant::now();
 
     // Build time order
-    let time_order = wal_index.time_order();
+    let time_order = row_index.time_order();
     tracing::debug!("time order built: {}ms", t.elapsed().as_millis());
 
     // Total log count drives the stream-batch partitioning.
-    let total_logs = wal_index.num_logs() as u32;
+    let total_logs = row_index.num_logs() as u32;
     let batch_size = crate::stream_batch_size(total_logs);
 
-    let (kv_to_file, id_ranges) = build_id_translation(wal_index);
-    let stream = resolve_stream(wal_index, total_logs)?;
+    let (kv_to_file, id_ranges) = build_id_translation(row_index);
+    let stream = resolve_stream(row_index, total_logs)?;
 
     // Field table, ordered low → mid → high (each tier sorted by name).
-    let fields: crate::FieldTable = wal_index
+    let fields: crate::FieldTable = row_index
         .low_fields()
         .iter()
         .map(|(name, ids)| FieldEntry {
@@ -401,13 +401,13 @@ pub(super) fn build_into<W: Write + Seek>(
             cardinality: ids.len() as u32,
             tier: FieldTier::Low,
         })
-        .chain(wal_index.mid_fields().iter().map(|(name, ids)| FieldEntry {
+        .chain(row_index.mid_fields().iter().map(|(name, ids)| FieldEntry {
             name: name.to_string(),
             cardinality: ids.len() as u32,
             tier: FieldTier::Mid,
         }))
         .chain(
-            wal_index
+            row_index
                 .high_fields()
                 .iter()
                 .map(|(name, ids)| FieldEntry {
@@ -420,7 +420,7 @@ pub(super) fn build_into<W: Write + Seek>(
 
     // Compute histogram once; reused by both the summary (for min/max
     // derivation) and the heavy metadata.
-    let histogram = wal_index.sparse_histogram(&time_order);
+    let histogram = row_index.sparse_histogram(&time_order);
 
     let summary = crate::Summary {
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
@@ -441,8 +441,8 @@ pub(super) fn build_into<W: Write + Seek>(
     // always-present SUMR/META/TIMS/PRIM plus one chunk per mid/high
     // field and per stream batch.
     let num_chunks = 4
-        + wal_index.mid_fields().len()
-        + wal_index.high_fields().len()
+        + row_index.mid_fields().len()
+        + row_index.high_fields().len()
         + usize::from(crate::num_stream_batches(total_logs));
     let mut w = StreamingWriter::new(sink, *crate::MAGIC, crate::VERSION, num_chunks as u32)?;
 
@@ -460,7 +460,7 @@ pub(super) fn build_into<W: Write + Seek>(
     // the stream-log-entries chunks.
     let timestamps_chronological: Vec<i64> = time_order
         .iter_by_time()
-        .map(|ins| wal_index.timestamps[ins as usize])
+        .map(|ins| row_index.timestamps[ins as usize])
         .collect();
     w.write_chunk(
         crate::CHUNK_TIMS,
@@ -470,13 +470,13 @@ pub(super) fn build_into<W: Write + Seek>(
 
     // Low/mid-cardinality FSTs, high-cardinality chunks, then the
     // stream batches — each packed, streamed, and dropped in turn.
-    build_primary_fst(wal_index, &time_order, &mut w)?;
-    build_mid_card_chunks(wal_index, &time_order, &mut w)?;
-    build_high_card_chunks(wal_index, &time_order, batch_size, &mut w)?;
+    build_primary_fst(row_index, &time_order, &mut w)?;
+    build_mid_card_chunks(row_index, &time_order, &mut w)?;
+    build_high_card_chunks(row_index, &time_order, batch_size, &mut w)?;
 
     let t = Instant::now();
     let stream_bytes = build_stream_batches(
-        &wal_index.log_entries,
+        &row_index.log_entries,
         &time_order,
         &kv_to_file,
         total_logs,

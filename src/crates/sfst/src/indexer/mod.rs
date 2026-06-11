@@ -3,11 +3,11 @@
 //! Two-phase build:
 //!
 //! - **Phase 1** (read) — [`wal_otap::decode_file`] decodes each WAL
-//!   frame and streams its rows into the [`WalIndex`] (a
+//!   frame and streams its rows into the [`RowIndex`] (a
 //!   [`wal_otap::KvSink`]), which interns `key=value` attributes and
 //!   accumulates the string interner + per-attribute bitmaps + per-log
 //!   entries + per-log timestamps.
-//! - **Phase 2** (write) — [`build_and_write`] consumes the `WalIndex` and
+//! - **Phase 2** (write) — [`build_and_write`] consumes the `RowIndex` and
 //!   emits the on-disk SFST file via [`crate::Writer`].
 //!
 //! The public entry points are [`index`] (defaults) and
@@ -20,7 +20,7 @@ mod bitset;
 mod fst_builder;
 pub mod kv_interner;
 pub mod reader;
-pub mod wal_index;
+pub mod row_index;
 
 pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
@@ -33,7 +33,7 @@ use std::path::Path;
 use bumpalo::Bump;
 
 use crate::{IndexError, Metadata, Summary};
-use wal_index::WalIndex;
+use row_index::RowIndex;
 
 /// Default cardinality threshold for tier classification (see
 /// [`crate::FieldTier`]). Public so every producer of field tables — the
@@ -74,18 +74,18 @@ pub fn index_with_options(
     cardinality_threshold: u32,
 ) -> Result<IndexResult, IndexError> {
     let arena = Bump::with_capacity(32 * 1024 * 1024);
-    let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
+    let mut row_index = RowIndex::new(&arena, cardinality_threshold);
 
-    let stats = wal_otap::decode_file(wal_path, &mut wal_index)?;
+    let stats = wal_otap::decode_file(wal_path, &mut row_index)?;
 
     tracing::info!(
         "WAL file read complete path={} frames={} logs={}",
         wal_path.display(),
         stats.frames,
-        wal_index.num_logs(),
+        row_index.num_logs(),
     );
 
-    let (summary, metadata) = build_and_write(&wal_index, sfst_path)?;
+    let (summary, metadata) = build_and_write(&row_index, sfst_path)?;
     let size = std::fs::metadata(sfst_path)?.len();
 
     Ok(IndexResult {
@@ -113,25 +113,25 @@ pub fn index_range(
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
     let arena = Bump::with_capacity(32 * 1024 * 1024);
-    let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
+    let mut row_index = RowIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
 
-    let stats = wal_otap::decode_range(wal_path, range, &mut wal_index)?;
+    let stats = wal_otap::decode_range(wal_path, range, &mut row_index)?;
     tracing::debug!(
         "WAL range read complete path={} start={} end={} frames={} logs={}",
         wal_path.display(),
         range.start(),
         range.end(),
         stats.frames,
-        wal_index.num_logs(),
+        row_index.num_logs(),
     );
 
     // Stream the chunks straight into the output buffer: each packed
     // chunk is written and dropped in turn, so beyond the arena and the
-    // WalIndex only the accumulated output plus one packed chunk are
+    // RowIndex only the accumulated output plus one packed chunk are
     // ever held — the old build-everything-then-copy model held every
     // packed chunk and then a second full copy in the output.
     let cursor = std::io::Cursor::new(Vec::new());
-    let (cursor, summary, _metadata) = build_into(&wal_index, cursor)?;
+    let (cursor, summary, _metadata) = build_into(&row_index, cursor)?;
 
     Ok((summary, cursor.into_inner()))
 }

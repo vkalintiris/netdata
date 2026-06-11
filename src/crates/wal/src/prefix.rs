@@ -168,10 +168,4 @@ fn longer_prefix_only_appends_chunks() {
     assert_eq!(c_long.len(), 2);
     assert_eq!(c_short[0], c_long[0]); // identical first chunk
 }
-
-// ── ChunkCache (async, fake builder) ──────────────────────────────
-
-#[derive(Debug, PartialEq, Eq)]
-struct BuildErr;
-
 }

@@ -1,8 +1,8 @@
 use super::*;
 use bumpalo::Bump;
 
-fn idx<'a>(arena: &'a Bump) -> WalIndex<'a> {
-    WalIndex::new(arena, 100)
+fn idx<'a>(arena: &'a Bump) -> RowIndex<'a> {
+    RowIndex::new(arena, 100)
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! The [`WalIndex`] type — in-memory index built during Phase 1 (reading).
+//! The [`RowIndex`] type — in-memory index built during Phase 1 (reading).
 //!
 //! Holds four data structures:
 //!
@@ -21,7 +21,7 @@ use super::kv_interner::{KeyValueInterner, KvSlot};
 ///
 /// Bundles the four data structures described in the module doc into a single
 /// value, making the Phase 1 → Phase 2 handoff explicit.
-pub struct WalIndex<'a> {
+pub struct RowIndex<'a> {
     pub kv_interner: KeyValueInterner<'a>,
     /// One bitmap per key=value slot. `kv_bitmaps[slot.idx()]` tracks which log
     /// positions (insertion order) contain that `key=value` pair.
@@ -33,7 +33,7 @@ pub struct WalIndex<'a> {
     pub timestamps: Vec<i64>,
 }
 
-impl<'a> WalIndex<'a> {
+impl<'a> RowIndex<'a> {
     pub fn new(arena: &'a Bump, cardinality_threshold: u32) -> Self {
         Self {
             kv_interner: KeyValueInterner::new(arena, cardinality_threshold),
@@ -151,7 +151,7 @@ impl<'a> WalIndex<'a> {
 /// The indexer is one consumer of the shared frame decode
 /// ([`wal_otap::decode_frame`]): tokens are interner
 /// slots, and each decoded row lands in the four Phase-1 structures.
-impl<'a> wal_otap::KvSink for WalIndex<'a> {
+impl<'a> wal_otap::KvSink for RowIndex<'a> {
     type Token = KvSlot;
 
     fn lookup_hash(&mut self, hash: u64) -> Option<KvSlot> {

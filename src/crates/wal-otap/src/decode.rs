@@ -7,7 +7,7 @@
 //! trait rather than as materialized values, so each keeps its own
 //! interning/dedup strategy:
 //!
-//! - the indexer's [`WalIndex`](super::wal_index::WalIndex) interns into
+//! - the indexer's [`RowIndex`](super::row_index::RowIndex) interns into
 //!   its arena-backed interner and builds posting bitmaps;
 //! - a query-time WAL row scan dedups into a per-query pair table and
 //!   evaluates filters row by row.
