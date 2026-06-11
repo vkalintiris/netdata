@@ -84,7 +84,7 @@ fn count_log_records(rl: &ResourceLogs) -> usize {
 /// Compute the `(min, max)` log-data time range for a group of `ResourceLogs`.
 ///
 /// Mirrors the OTel timestamp hierarchy used by the shared frame decode
-/// (`sfst::indexer::decode::decode_frame`) so the WAL's accumulated
+/// (`wal_otap::decode_frame`) so the WAL's accumulated
 /// range matches what the indexer will eventually compute for the
 /// file's SFST summary:
 ///

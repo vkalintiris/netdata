@@ -3,22 +3,17 @@
 //! When a query needs an active WAL — one still being written, not yet
 //! rotated into an SFST — the ledger indexes its durable prefix in
 //! fixed-entry **chunks** and serves those plus a row-scanned tail (see
-//! `docs/wal-query-design.md`, milestone 3). This module owns the two
-//! pieces that make that affordable:
-//!
-//! - [`chunk_boundaries`] — the pure policy that folds a frame-header
-//!   scan ([`wal::scan_frame_boundaries`]) into chunk boundaries at a
-//!   `min_entries` threshold. Chunk boundaries are **append-only and
-//!   immutable**: a boundary is fixed by the frame entry counts up to
-//!   it, so `valid_up_to` advancing only ever appends new higher-index
-//!   chunks — it never moves or invalidates an existing one. That is
-//!   what lets the cache below be a write-once memo.
+//! `docs/wal-query-design.md`, milestone 3). The partitioning rule
+//! itself is framing math and lives in [`wal::prefix`]; this module
+//! owns the ledger's half:
 //!
 //! - [`ChunkCache`] — a process-wide memo of built chunk SFST byte
 //!   images, keyed `(wal_seq, chunk_index)`, with build singleflight and
 //!   a byte-budget LRU (both from `moka`). Concurrent queries that need
 //!   the same chunk build it once; a chunk, once built, is reused until
 //!   the WAL rotates ([`ChunkCache::drop_seq`]) or the budget evicts it.
+//!   The write-once memo is sound because chunk boundaries are
+//!   append-only and immutable (see [`wal::prefix`]).
 //!
 //! The per-query orchestration that uses these — capturing the
 //! durable-prefix snapshot under the registry lock, building the missing
@@ -31,72 +26,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use moka::future::Cache;
-use wal::FrameBoundary;
-
-/// One complete chunk of a WAL's durable prefix: a contiguous,
-/// frame-aligned byte range carrying at least the threshold's worth of
-/// log records (the last frame can push it over).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChunkBoundary {
-    /// 0-based index within the WAL, dense and stable across queries.
-    pub index: u32,
-    /// The chunk's frame-aligned byte range, `[first frame, last frame end)`.
-    pub range: wal::FrameRange,
-    /// Log records in the chunk (>= `min_entries`).
-    pub entry_count: u64,
-}
-
-/// Fold a frame-boundary scan into complete chunks of at least
-/// `min_entries` records each.
-///
-/// `frames` are the boundaries from [`wal::scan_frame_boundaries`] over
-/// `[start, valid_up_to)`, in file order; `start` is the offset of the
-/// first frame (`wal::HEADER_SIZE` for a whole-prefix scan, or a prior
-/// chunk's `end`). Each chunk extends to the first frame boundary at or
-/// past the running `min_entries`, then a new chunk begins. Frames after
-/// the last complete chunk (cumulative `< min_entries`) are **not**
-/// returned — they are the *tail*, beginning at
-/// `chunks.last().map_or(start, |c| c.range.end())`, and are evaluated per query
-/// by the row scan rather than indexed.
-///
-/// Boundaries are a deterministic function of the entry counts, so a
-/// longer prefix yields the same chunks plus possibly more — never a
-/// different split of the same data.
-pub fn chunk_boundaries(
-    frames: &[FrameBoundary],
-    start: u64,
-    min_entries: u64,
-) -> Vec<ChunkBoundary> {
-    // `min_entries == 0` would make every frame its own chunk —
-    // degenerate, and contrary to the >=16K design intent. The caller's
-    // threshold is a config knob, so guard it in debug rather than at
-    // runtime cost.
-    debug_assert!(min_entries > 0, "min_entries must be positive");
-
-    let mut chunks = Vec::new();
-    let mut chunk_start = start;
-    let mut acc: u64 = 0;
-    for f in frames {
-        acc += u64::from(f.entry_count);
-        if acc >= min_entries {
-            chunks.push(ChunkBoundary {
-                index: chunks.len() as u32,
-                range: wal::FrameRange::new(chunk_start, f.end_offset),
-                entry_count: acc,
-            });
-            chunk_start = f.end_offset;
-            acc = 0;
-        }
-    }
-    chunks
-}
-
-/// The byte offset where the tail begins for a chunk list produced by
-/// [`chunk_boundaries`] over the same `start`: the end of the last
-/// complete chunk, or `start` when there are none.
-pub fn tail_start(chunks: &[ChunkBoundary], start: u64) -> u64 {
-    chunks.last().map_or(start, |c| c.range.end())
-}
 
 /// A process-wide memo of built chunk SFST byte images.
 ///

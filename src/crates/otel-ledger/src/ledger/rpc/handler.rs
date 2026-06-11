@@ -29,7 +29,8 @@ use sfsq::logs::{LogSource, SfstCandidate, Source, WalTail, run};
 
 use super::adapter::{to_result, window_secs};
 use super::wire::{InfoResponse, LogsResult, OtelLogsRequest, OtelLogsResponse};
-use crate::chunk::{ChunkCache, chunk_boundaries, tail_start};
+use crate::chunk::ChunkCache;
+use wal::prefix::{chunk_boundaries, tail_start};
 use crate::registry::{TenantRegistries, WalDesc};
 
 pub(crate) struct OtelLogsHandler {

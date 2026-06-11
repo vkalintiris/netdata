@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod format;
 mod reader;
+pub mod prefix;
 pub mod registry;
 mod seq;
 mod writer;
