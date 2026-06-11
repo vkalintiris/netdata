@@ -199,8 +199,7 @@ pub(crate) fn scope_path(
     min_timestamp_s: u32,
     max_timestamp_s: u32,
 ) -> PathBuf {
-    base.join(date.format("%Y-%m-%d").to_string())
-        .join(tenant_id.as_str())
+    file_registry::layout::date_tenant_dir(base, date, tenant_id.as_str())
         .join(otel_catalog::filename(
             machine_id,
             boot_id,

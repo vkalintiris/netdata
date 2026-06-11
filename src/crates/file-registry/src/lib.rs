@@ -1,4 +1,6 @@
 pub mod durable;
+pub mod layout;
+pub mod stem;
 
 mod types;
 pub use types::{ByteSize, FileId, ServiceStream, TenantId, TimestampNs, compute_ns_hash};

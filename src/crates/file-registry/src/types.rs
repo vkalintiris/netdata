@@ -274,9 +274,8 @@ impl FileId {
     /// Format the stem portion: `<machine_id>-<boot_id>-<seq:010>-<ns_hash:016x>`
     pub fn to_stem(&self) -> String {
         format!(
-            "{}-{}-{:010}-{:016x}",
-            self.machine_id.as_simple(),
-            self.boot_id.as_simple(),
+            "{}-{:010}-{:016x}",
+            crate::stem::format_uuid_pair(self.machine_id, self.boot_id),
             self.seq,
             self.ns_hash,
         )
@@ -297,29 +296,13 @@ impl FileId {
 
     /// Parse just the stem: `<machine_id>-<boot_id>-<seq>-<ns_hash>`
     pub fn parse_stem(stem: &str) -> Option<Self> {
-        // machine_id is 32 hex chars, then '-', boot_id is 32 hex chars, then '-',
-        // seq (variable digits), then '-', ns_hash (16 hex chars)
-        if stem.len() < 32 + 1 + 32 + 1 + 1 + 1 + 16 {
-            return None;
-        }
-
-        let machine_str = &stem[..32];
-        if stem.as_bytes()[32] != b'-' {
-            return None;
-        }
-        let boot_str = &stem[33..65];
-        if stem.as_bytes()[65] != b'-' {
-            return None;
-        }
+        let (machine_id, boot_id, rest) = crate::stem::parse_uuid_pair(stem)?;
 
         // Find the last '-' to separate seq from ns_hash
-        let rest = &stem[66..];
         let last_dash = rest.rfind('-')?;
         let seq_str = &rest[..last_dash];
         let hash_str = &rest[last_dash + 1..];
 
-        let machine_id = Uuid::try_parse(machine_str).ok()?;
-        let boot_id = Uuid::try_parse(boot_str).ok()?;
         let seq = seq_str.parse().ok()?;
         let ns_hash = u64::from_str_radix(hash_str, 16).ok()?;
 

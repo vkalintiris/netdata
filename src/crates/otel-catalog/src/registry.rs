@@ -113,9 +113,7 @@ impl Registry {
         min_timestamp_s: u32,
         max_timestamp_s: u32,
     ) -> PathBuf {
-        self.base_dir
-            .join(date.format("%Y-%m-%d").to_string())
-            .join(self.tenant_id.as_str())
+        file_registry::layout::date_tenant_dir(&self.base_dir, date, self.tenant_id.as_str())
             .join(filename(
                 machine_id,
                 boot_id,
@@ -233,9 +231,10 @@ impl Registry {
     /// (`cleanup_temp_files` in otel-ledger's `Registry::recover`);
     /// nothing else ever reaps them.
     pub fn recover(&mut self) {
-        let date_entries = match std::fs::read_dir(&self.base_dir) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        // Structural enumeration through the shared layout walker;
+        // recovery's softer error policy (warn and continue) wraps it.
+        let partitions = match file_registry::layout::date_tenant_dirs(&self.base_dir) {
+            Ok(p) => p,
             Err(e) => {
                 tracing::warn!(
                     dir = %self.base_dir.display(),
@@ -245,31 +244,17 @@ impl Registry {
             }
         };
 
-        for date_entry in date_entries.flatten() {
-            let date_path = date_entry.path();
-            if !date_entry
-                .file_type()
-                .map(|ft| ft.is_dir())
-                .unwrap_or(false)
-            {
+        for partition in partitions {
+            if partition.tenant != self.tenant_id.as_str() {
                 continue;
             }
-            let date_str = match date_entry.file_name().to_str() {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            let date = match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                Ok(d) => d,
-                Err(_) => continue, // non-date subdirs (e.g. per-tenant sfst dirs) live here too
-            };
-
-            let tenant_catalog_dir = date_path.join(self.tenant_id.as_str());
-            let files = match std::fs::read_dir(&tenant_catalog_dir) {
+            let date = partition.date;
+            let files = match std::fs::read_dir(&partition.path) {
                 Ok(e) => e,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
                     tracing::warn!(
-                        path = %tenant_catalog_dir.display(),
+                        path = %partition.path.display(),
                         "failed to read tenant catalog dir: {e}"
                     );
                     continue;
@@ -385,57 +370,22 @@ fn read_catalog_entries(path: &Path, q: &Query) -> Vec<CatalogEntry> {
 /// catalogs are two levels deep with their own stem shape.
 pub fn scan_max_sequence(catalog_base: &Path) -> std::io::Result<u64> {
     let mut max_seq = 0u64;
-    let date_entries = match std::fs::read_dir(catalog_base) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e),
-    };
-    for date_entry in date_entries.flatten() {
-        if !date_entry
-            .file_type()
-            .map(|ft| ft.is_dir())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        // Same convention as `Registry::recover`: non-date subdirs
-        // under the base are not catalog partitions.
-        let is_date = date_entry
-            .file_name()
-            .to_str()
-            .is_some_and(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok());
-        if !is_date {
-            continue;
-        }
-        let tenant_entries = match std::fs::read_dir(date_entry.path()) {
+    for partition in file_registry::layout::date_tenant_dirs(catalog_base)? {
+        let files = match std::fs::read_dir(&partition.path) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e),
         };
-        for tenant_entry in tenant_entries.flatten() {
-            if !tenant_entry
-                .file_type()
-                .map(|ft| ft.is_dir())
-                .unwrap_or(false)
-            {
+        for entry in files.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
-            }
-            let files = match std::fs::read_dir(tenant_entry.path()) {
-                Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e),
             };
-            for entry in files.flatten() {
-                let path = entry.path();
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                let Some(stem) = name.strip_suffix(&format!(".{CATALOG_EXT}")) else {
-                    continue;
-                };
-                if let Some((_, _, seq, _, _)) = parse_stem(stem) {
-                    max_seq = max_seq.max(seq);
-                }
+            let Some(stem) = name.strip_suffix(&format!(".{CATALOG_EXT}")) else {
+                continue;
+            };
+            if let Some((_, _, seq, _, _)) = parse_stem(stem) {
+                max_seq = max_seq.max(seq);
             }
         }
     }
@@ -452,9 +402,8 @@ pub fn filename(
     max_timestamp_s: u32,
 ) -> String {
     format!(
-        "{}-{}-{:010}-{:010}-{:010}.{CATALOG_EXT}",
-        machine_id.as_simple(),
-        boot_id.as_simple(),
+        "{}-{:010}-{:010}-{:010}.{CATALOG_EXT}",
+        file_registry::stem::format_uuid_pair(machine_id, boot_id),
         max_seq,
         min_timestamp_s,
         max_timestamp_s,
@@ -464,27 +413,7 @@ pub fn filename(
 /// Parse the stem `{machine:32}-{boot:32}-{max_seq}-{min_ts}-{max_ts}` into
 /// its components.
 pub fn parse_stem(stem: &str) -> Option<(Uuid, Uuid, u64, u32, u32)> {
-    // machine_id: 32 hex chars
-    // '-'
-    // boot_id: 32 hex chars
-    // '-'
-    // max_seq: decimal
-    // '-'
-    // min_ts: decimal
-    // '-'
-    // max_ts: decimal
-    if stem.len() < 32 + 1 + 32 + 1 + 1 + 1 + 1 + 1 + 1 {
-        return None;
-    }
-    let machine_str = &stem[..32];
-    if stem.as_bytes().get(32)? != &b'-' {
-        return None;
-    }
-    let boot_str = &stem[33..65];
-    if stem.as_bytes().get(65)? != &b'-' {
-        return None;
-    }
-    let tail = &stem[66..];
+    let (machine_id, boot_id, tail) = file_registry::stem::parse_uuid_pair(stem)?;
     // Split the remaining "max_seq-min_ts-max_ts" by '-'.
     let mut parts = tail.splitn(3, '-');
     let max_seq: u64 = parts.next()?.parse().ok()?;
@@ -493,9 +422,6 @@ pub fn parse_stem(stem: &str) -> Option<(Uuid, Uuid, u64, u32, u32)> {
     if parts.next().is_some() {
         return None;
     }
-
-    let machine_id = Uuid::try_parse(machine_str).ok()?;
-    let boot_id = Uuid::try_parse(boot_str).ok()?;
     Some((machine_id, boot_id, max_seq, min_ts, max_ts))
 }
 
