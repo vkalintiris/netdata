@@ -15,7 +15,7 @@
 //! from the same frames — the shared guarantees:
 //!
 //! - the *rows* are identical by construction: both consumers receive
-//!   them from [`wal_otap::decode_frame`];
+//!   them from `wal_otap`'s one frame decode;
 //! - filter patterns anchor identically: both compile through
 //!   [`sfst::compile_pattern`] / [`sfst::compile_query`];
 //! - field tables classify identically: same distinct-pair cardinality

@@ -6,7 +6,8 @@
 //! inverted index from the rows) and the query-time WAL row scan
 //! (evaluates queries over them directly) — and this crate is the
 //! reason they can never disagree about **what rows a frame
-//! contains**: both receive rows from the same [`decode_frame`],
+//! contains**: both receive rows from the same `decode_frame` (the
+//! crate-internal core that [`decode_file`] / [`decode_range`] drive),
 //! differing only in how they evaluate them.
 //!
 //! Rows are delivered through the [`KvSink`] trait rather than as
@@ -22,7 +23,9 @@ mod arrow_columns;
 mod decode;
 mod otap_frame;
 
-pub use decode::{KvSink, decode_frame};
+pub use decode::KvSink;
+
+use decode::decode_frame;
 
 use std::path::Path;
 

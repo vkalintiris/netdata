@@ -150,7 +150,7 @@ impl<'a> RowIndex<'a> {
 }
 
 /// The indexer is one consumer of the shared frame decode
-/// ([`wal_otap::decode_frame`]): tokens are interner
+/// (`wal_otap`'s frame decode): tokens are interner
 /// slots, and each decoded row lands in the four Phase-1 structures.
 impl<'a> wal_otap::KvSink for RowIndex<'a> {
     type Token = KvSlot;

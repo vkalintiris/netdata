@@ -96,7 +96,7 @@ pub trait KvSink {
     }
 
     /// One decoded log row: its timestamp (per the fallback rules on
-    /// [`decode_frame`]) and the tokens of every `key=value` pair it
+    /// `decode_frame`) and the tokens of every `key=value` pair it
     /// carries, in stream order. The slice may contain repeated tokens
     /// (multi-valued fields emit one pair per value) and its backing
     /// buffer is reused between rows — copy what you need.
@@ -104,7 +104,7 @@ pub trait KvSink {
     /// Infallible by design: the decoder cannot be aborted mid-frame.
     /// If a future sink needs early termination (query cancellation, a
     /// work budget), the extension is mechanical — return
-    /// `ControlFlow` here and thread it through [`decode_frame`].
+    /// `ControlFlow` here and thread it through `decode_frame`.
     fn row(&mut self, ts_ns: i64, tokens: &[Self::Token]);
 }
 
@@ -126,7 +126,10 @@ pub trait KvSink {
 ///   ordering.
 ///
 /// Returns the number of log rows processed.
-pub fn decode_frame<S: KvSink>(wal_frame: &wal::Frame, sink: &mut S) -> Result<usize, DecodeError> {
+pub(crate) fn decode_frame<S: KvSink>(
+    wal_frame: &wal::Frame,
+    sink: &mut S,
+) -> Result<usize, DecodeError> {
     let otap_frame = OtapFrame::decode(wal_frame.data)?;
     let Some(logs_batch) = otap_frame.logs.as_ref() else {
         return Ok(0);
