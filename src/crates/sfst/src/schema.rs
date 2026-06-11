@@ -288,6 +288,11 @@ impl HighField {
         self.key_lens.len()
     }
 
+    /// Whether the chunk has no keys.
+    pub fn is_empty(&self) -> bool {
+        self.key_lens.is_empty()
+    }
+
     /// The `i`-th `field=value` key as bytes (keys are valid UTF-8). Only
     /// valid once `offsets` is built — on load, or via
     /// `rebuild_offsets` (crate-internal); never on a
@@ -349,6 +354,7 @@ impl Eq for HighField {}
 pub struct KvId(pub u32);
 
 impl KvId {
+    /// The id as a `usize`, for indexing parallel tables.
     #[inline]
     pub fn idx(self) -> usize {
         self.0 as usize

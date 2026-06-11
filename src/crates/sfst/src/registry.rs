@@ -1,3 +1,16 @@
+//! Registry of the `.sfst` files present in one directory.
+//!
+//! Tracks each file's [`FileId`], size, and the cheap [`Summary`]
+//! fields lifted off its `SUMR` chunk, so the query planner picks
+//! candidate files ([`Registry::candidates`]) and retention evaluates
+//! limits ([`Registry::evaluate_retention`]) without opening any SFST.
+//! State is rebuilt on startup by [`Registry::recover`], which maps
+//! each file and faults in only the header, TOC, and SUMR pages.
+//!
+//! One registry covers one flat directory (`{base}/{tenant}/<files>`,
+//! see [`file_registry::FileDir`]); the per-tenant composition lives in
+//! `otel-ledger`, the only consumer.
+
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +20,7 @@ use crate::Summary;
 
 pub(crate) const SFST_EXT: &str = "sfst";
 
+/// One tracked `.sfst` file: identity, size, and inline summary.
 #[derive(Debug, Clone)]
 pub struct File {
     pub id: FileId,
@@ -18,17 +32,23 @@ pub struct File {
     pending_deletion: bool,
 }
 
+/// The set of `.sfst` files in one directory, keyed by their sequence
+/// number (a [`FileId::seq`] is unique within a directory — see the
+/// seq-allocation rules in `wal`).
 pub struct Registry {
     inner: FileRegistry<File>,
 }
 
 impl Registry {
+    /// A registry over `dir`. Empty until [`recover`](Self::recover) or
+    /// [`track`](Self::track) populate it; does not touch the disk.
     pub fn new(dir: &Path) -> Self {
         Self {
             inner: FileRegistry::new(FileDir::new(dir, SFST_EXT)),
         }
     }
 
+    /// The directory this registry covers.
     pub fn dir(&self) -> &Path {
         self.inner.dir().path()
     }
@@ -79,6 +99,8 @@ impl Registry {
         recovered
     }
 
+    /// Register a newly written file (the rotation path; recovery uses
+    /// [`recover`](Self::recover)). Replaces any entry with the same seq.
     pub fn track(&mut self, id: FileId, size: ByteSize, summary: Summary) {
         self.inner.insert(
             id.seq,
@@ -91,26 +113,35 @@ impl Registry {
         );
     }
 
+    /// Stop tracking `seq`, returning its entry if present.
     pub fn remove(&mut self, seq: u64) -> Option<File> {
         self.inner.remove(seq)
     }
 
+    /// Hide `seq` from [`candidates`](Self::candidates) and
+    /// [`evaluate_retention`](Self::evaluate_retention) while its
+    /// deletion is in flight. No-op if `seq` isn't tracked.
     pub fn mark_pending_deletion(&mut self, seq: u64) {
         if let Some(entry) = self.inner.get_mut(seq) {
             entry.pending_deletion = true;
         }
     }
 
+    /// Undo [`mark_pending_deletion`](Self::mark_pending_deletion) —
+    /// the deletion was cancelled or failed and the file is live again.
     pub fn clear_pending_deletion(&mut self, seq: u64) {
         if let Some(entry) = self.inner.get_mut(seq) {
             entry.pending_deletion = false;
         }
     }
 
+    /// The entry for `seq`, if tracked.
     pub fn get(&self, seq: u64) -> Option<&File> {
         self.inner.get(seq)
     }
 
+    /// Every tracked file in ascending seq order (oldest first),
+    /// including entries marked pending-deletion.
     pub fn values(&self) -> impl Iterator<Item = &File> {
         self.inner.values()
     }
@@ -142,10 +173,12 @@ impl Registry {
             .filter(move |f| q_stream.as_ref().is_none_or(|s| &f.summary.stream == s))
     }
 
+    /// Number of tracked files (including pending-deletion entries).
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Whether no files are tracked.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -168,7 +201,7 @@ impl Registry {
         let max_files = retention.max_files;
         let max_total_size = retention.max_total_size.as_u64();
         let max_age_s = retention.max_age.as_secs();
-        let now_s = (now_ns / 1_000_000_000) as u64;
+        let now_s = now_ns / 1_000_000_000;
 
         let eligible: Vec<&File> = self
             .inner

@@ -68,7 +68,7 @@ fn summary(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     print_histogram(&reader);
 
     let mut fields = reader.field_table().to_vec();
-    fields.sort_by(|a, b| b.cardinality.cmp(&a.cardinality));
+    fields.sort_by_key(|f| std::cmp::Reverse(f.cardinality));
 
     let max_name_len = fields.iter().map(|f| f.name.len()).max().unwrap_or(0);
     for f in &fields {
@@ -191,7 +191,7 @@ fn sections(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         print_section("META", raw.len(), file_size);
         total_sections += raw.len();
         let mut sorted = fields.to_vec();
-        sorted.sort_by(|a, b| a.cardinality.cmp(&b.cardinality));
+        sorted.sort_by_key(|f| f.cardinality);
         let max_name = sorted.iter().map(|f| f.name.len()).max().unwrap_or(0);
         for f in &sorted {
             println!(

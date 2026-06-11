@@ -12,6 +12,16 @@
 //! `FORMAT.md` alongside this crate. Treat it as the source of truth;
 //! the rustdoc here covers only the public API.
 //!
+//! # Crate boundaries
+//!
+//! This crate owns the **format**: writing ([`StreamWriter`]), reading
+//! ([`Reader`] for raw chunk access, [`IndexReader`] for the query
+//! API), the query vocabulary ([`query`]), and the per-directory file
+//! registry ([`Registry`]). Producing an SFST *from WAL data* — frame
+//! decode, row accumulation, tier classification — lives in the
+//! `sfst-indexer` crate, so format consumers never compile the
+//! WAL/Arrow stack.
+//!
 //! # Example
 //!
 //! ```
