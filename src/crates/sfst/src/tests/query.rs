@@ -115,12 +115,12 @@ fn build_query_fixture() -> Vec<u8> {
         stream_batches: 1,
     };
     let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
-    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
-    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&StreamBatch::for_write(&stream_entries))
         .unwrap();
     writer.finish().unwrap().into_inner()
 }
@@ -508,12 +508,12 @@ fn build_multivalued_fixture() -> Vec<u8> {
         stream_batches: 1,
     };
     let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
-    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
-    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&StreamBatch::for_write(&stream_entries))
         .unwrap();
     writer.finish().unwrap().into_inner()
 }
@@ -752,12 +752,12 @@ fn build_complemented_fixture() -> Vec<u8> {
         stream_batches: 1,
     };
     let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
-    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
-    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&StreamBatch::for_write(&stream_entries))
         .unwrap();
     writer.finish().unwrap().into_inner()
 }
@@ -966,14 +966,14 @@ fn build_tiered_fixture() -> Vec<u8> {
         stream_batches: 1,
     };
     let mut writer = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&pack(&metadata, 1).unwrap()).unwrap();
-    writer.timestamps(&pack(&timestamps, 1).unwrap()).unwrap();
-    writer.primary(&pack(&primary, 1).unwrap()).unwrap();
-    writer.add_mid_field(&pack(&mid_host, 1).unwrap()).unwrap();
-    writer.add_high_field(&pack(&high_trace, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
+    writer.add_mid_field(&mid_host).unwrap();
+    writer.add_high_field(&high_trace).unwrap();
     writer
-        .add_stream_batch(&pack(&StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&StreamBatch::for_write(&stream_entries))
         .unwrap();
     writer.finish().unwrap().into_inner()
 }

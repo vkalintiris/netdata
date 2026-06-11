@@ -1,6 +1,7 @@
 use super::*;
 use crate::tests::fixture::FixtureWriter;
-use crate::{ServiceStream, pack};
+use crate::writer::pack;
+use crate::ServiceStream;
 use fst_index::FstIndex;
 
 fn write_sfst_with_summary(dir: &Path, id: FileId, summary: &Summary) {

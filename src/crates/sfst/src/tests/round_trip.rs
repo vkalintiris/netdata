@@ -5,6 +5,7 @@
 //! decode to the values we put in.
 
 use super::fixture::FixtureWriter;
+use crate::writer::pack;
 use crate::*;
 use fst_index::FstIndex;
 use treight::Bitmap;

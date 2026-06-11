@@ -1,27 +1,31 @@
 //! SFST format writer.
 //!
 //! [`StreamWriter`] is **the** writer for the format: it owns the
-//! container magic, version, chunk ids, and the canonical hot-prefix
-//! chunk order, so producers name chunks through typed methods and can
-//! neither misorder nor underfill a file. Payloads are passed in
-//! pre-packed (typically via [`pack`]).
+//! container magic, version, chunk ids, the canonical hot-prefix chunk
+//! order, and the payload encoding (bincode + zstd at the level the
+//! format pairs with each chunk kind), so producers hand it typed
+//! payloads and can neither misorder nor underfill a file.
 
 use std::io::{Seek, Write};
 
 use chunk_file::container::StreamingWriter;
+use fst_index::FstIndex;
 use serde::Serialize;
 
 use crate::{
-    CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, MAGIC, MAX_STREAM_BATCHES,
-    VERSION, high_field_id, mid_field_id, stream_batch_id,
+    BitmapValue, CHUNK_META, CHUNK_PRIMARY, CHUNK_SUMMARY, CHUNK_TIMS, Error, HighField, MAGIC,
+    MAX_STREAM_BATCHES, Metadata, StreamBatch, Summary, VERSION, ZSTD_LEVEL_DEFAULT,
+    ZSTD_LEVEL_FST, high_field_id, mid_field_id, stream_batch_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
 ///
+/// Crate-internal: producers pass typed payloads to [`StreamWriter`],
+/// which packs at the level the format pairs with each chunk kind.
 /// The `?Sized` bound lets callers pass slice references directly
 /// (e.g. `pack(batch, 1)` where `batch: &[T]`) instead of materialising
 /// an owned `Vec`.
-pub fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> {
+pub(crate) fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>, Error> {
     let serialized = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
     zstd::encode_all(&serialized[..], zstd_level).map_err(|e| Error::Zstd(e.to_string()))
 }
@@ -63,7 +67,7 @@ impl Stage {
     }
 }
 
-/// Streams an SFST file to a sink, one pre-packed chunk at a time.
+/// Streams an SFST file to a sink, one typed payload at a time.
 ///
 /// The writer enforces the format's canonical hot-prefix order —
 /// SUMR → META → TIMS → PRIM → mid-card fields → high-card fields →
@@ -76,8 +80,9 @@ impl Stage {
 /// `IndexReader::cold_region`); SUMR stays first so a recovery-only
 /// reader can stop after the summary.
 ///
-/// Peak memory is one packed chunk: each payload is written and may be
-/// dropped immediately, which is what the production indexer
+/// Each payload is packed (bincode + zstd, at the level the format
+/// pairs with its chunk kind) and written immediately, so peak memory
+/// is one packed chunk — which is what the production indexer
 /// (`sfst-indexer`'s `build_into`) relies on. The TOC is reserved at
 /// [`new`](Self::new) (hence the declared [`ChunkCounts`]) and patched
 /// at [`finish`](Self::finish), which requires `Seek`.
@@ -135,26 +140,31 @@ impl<W: Write + Seek> StreamWriter<W> {
         Ok(())
     }
 
-    /// Write the summary chunk (pre-packed). Always the first call.
-    pub fn summary(&mut self, packed: &[u8]) -> Result<(), Error> {
-        self.prefix_chunk(Stage::Summary, Stage::Metadata, CHUNK_SUMMARY, packed)
+    /// Write the summary chunk. Always the first call.
+    pub fn summary(&mut self, summary: &Summary) -> Result<(), Error> {
+        let packed = pack(summary, ZSTD_LEVEL_DEFAULT)?;
+        self.prefix_chunk(Stage::Summary, Stage::Metadata, CHUNK_SUMMARY, &packed)
     }
 
-    /// Write the metadata chunk (pre-packed). Follows the summary.
-    pub fn metadata(&mut self, packed: &[u8]) -> Result<(), Error> {
-        self.prefix_chunk(Stage::Metadata, Stage::Timestamps, CHUNK_META, packed)
+    /// Write the metadata chunk. Follows the summary.
+    pub fn metadata(&mut self, metadata: &Metadata) -> Result<(), Error> {
+        let packed = pack(metadata, ZSTD_LEVEL_DEFAULT)?;
+        self.prefix_chunk(Stage::Metadata, Stage::Timestamps, CHUNK_META, &packed)
     }
 
-    /// Write the per-log timestamps chunk (pre-packed). Follows the
+    /// Write the per-log timestamps chunk (chronological nanosecond
+    /// timestamps, parallel-indexed to the stream batches). Follows the
     /// metadata.
-    pub fn timestamps(&mut self, packed: &[u8]) -> Result<(), Error> {
-        self.prefix_chunk(Stage::Timestamps, Stage::Primary, CHUNK_TIMS, packed)
+    pub fn timestamps(&mut self, timestamps: &[i64]) -> Result<(), Error> {
+        let packed = pack(timestamps, ZSTD_LEVEL_DEFAULT)?;
+        self.prefix_chunk(Stage::Timestamps, Stage::Primary, CHUNK_TIMS, &packed)
     }
 
-    /// Write the primary FST chunk (pre-packed), completing the hot
-    /// prefix. Follows the timestamps.
-    pub fn primary(&mut self, packed: &[u8]) -> Result<(), Error> {
-        self.prefix_chunk(Stage::Primary, Stage::Secondary, CHUNK_PRIMARY, packed)
+    /// Write the primary (low-cardinality) FST chunk, completing the
+    /// hot prefix. Follows the timestamps.
+    pub fn primary(&mut self, fst: &FstIndex<BitmapValue>) -> Result<(), Error> {
+        let packed = pack(fst, ZSTD_LEVEL_FST)?;
+        self.prefix_chunk(Stage::Primary, Stage::Secondary, CHUNK_PRIMARY, &packed)
     }
 
     fn check_secondary(&self, what: &str) -> Result<(), Error> {
@@ -167,10 +177,10 @@ impl<W: Write + Seek> StreamWriter<W> {
         Ok(())
     }
 
-    /// Write the next mid-cardinality field FST chunk (pre-packed) and
-    /// return its index. Mid-field chunks follow the primary and
-    /// precede every high-field chunk.
-    pub fn add_mid_field(&mut self, packed: &[u8]) -> Result<u16, Error> {
+    /// Write the next mid-cardinality field FST chunk and return its
+    /// index. Mid-field chunks follow the primary and precede every
+    /// high-field chunk.
+    pub fn add_mid_field(&mut self, fst: &FstIndex<BitmapValue>) -> Result<u16, Error> {
         self.check_secondary("mid-field")?;
         if self.highs > 0 || self.batches > 0 {
             return Err(Error::WriterMisuse(
@@ -183,16 +193,17 @@ impl<W: Write + Seek> StreamWriter<W> {
                 self.counts.mid_fields,
             )));
         }
+        let packed = pack(fst, ZSTD_LEVEL_FST)?;
         let idx = self.mids;
-        self.inner.write_chunk(mid_field_id(idx), packed)?;
+        self.inner.write_chunk(mid_field_id(idx), &packed)?;
         self.mids += 1;
         Ok(idx)
     }
 
-    /// Write the next high-cardinality field chunk (pre-packed) and
-    /// return its index. High-field chunks follow the declared
-    /// mid-field chunks and precede every stream batch.
-    pub fn add_high_field(&mut self, packed: &[u8]) -> Result<u16, Error> {
+    /// Write the next high-cardinality field chunk and return its
+    /// index. High-field chunks follow the declared mid-field chunks
+    /// and precede every stream batch.
+    pub fn add_high_field(&mut self, field: &HighField) -> Result<u16, Error> {
         self.check_secondary("high-field")?;
         if self.batches > 0 {
             return Err(Error::WriterMisuse(
@@ -211,16 +222,17 @@ impl<W: Write + Seek> StreamWriter<W> {
                 self.counts.high_fields,
             )));
         }
+        let packed = pack(field, ZSTD_LEVEL_DEFAULT)?;
         let idx = self.highs;
-        self.inner.write_chunk(high_field_id(idx), packed)?;
+        self.inner.write_chunk(high_field_id(idx), &packed)?;
         self.highs += 1;
         Ok(idx)
     }
 
-    /// Write the next stream-batch chunk (pre-packed, chronological
-    /// order) and return its index. Stream batches are the file's tail
-    /// and follow the declared mid- and high-field chunks.
-    pub fn add_stream_batch(&mut self, packed: &[u8]) -> Result<u8, Error> {
+    /// Write the next stream-batch chunk (chronological order) and
+    /// return its index. Stream batches are the file's tail and follow
+    /// the declared mid- and high-field chunks.
+    pub fn add_stream_batch(&mut self, batch: &StreamBatch) -> Result<u8, Error> {
         self.check_secondary("stream-batch")?;
         if self.mids != self.counts.mid_fields || self.highs != self.counts.high_fields {
             return Err(Error::WriterMisuse(format!(
@@ -235,8 +247,9 @@ impl<W: Write + Seek> StreamWriter<W> {
                 self.counts.stream_batches,
             )));
         }
+        let packed = pack(batch, ZSTD_LEVEL_DEFAULT)?;
         let idx = self.batches;
-        self.inner.write_chunk(stream_batch_id(idx), packed)?;
+        self.inner.write_chunk(stream_batch_id(idx), &packed)?;
         self.batches += 1;
         Ok(idx)
     }

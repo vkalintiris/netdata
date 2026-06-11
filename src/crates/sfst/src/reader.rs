@@ -19,8 +19,9 @@ use crate::{
     high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
 };
 
-/// Decompress zstd, then deserialize with bincode.
-pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
+/// Decompress zstd, then deserialize with bincode. Crate-internal:
+/// consumers read through [`Reader`]'s typed accessors.
+pub(crate) fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, Error> {
     let decompressed = zstd::decode_all(data).map_err(|e| Error::Zstd(e.to_string()))?;
     let (val, _len) =
         bincode::serde::decode_from_slice(&decompressed, bincode::config::standard())?;

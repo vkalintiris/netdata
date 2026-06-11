@@ -370,9 +370,11 @@ All chunk payloads go through:
     serialized = bincode::serde::encode(value, bincode::config::standard())
     payload    = zstd::encode(serialized, level)
 
-The crate exposes [`pack`] and [`unpack`] helpers around this. The
-zstd compression level is a caller parameter; the format does not
-fix it.
+The packing is internal to the crate: producers hand typed payloads
+to `sfst::StreamWriter`, which packs FST chunks (PRIM, `MF{i}`) at an
+elevated zstd level and everything else at the default level. The
+format itself does not fix the level — zstd frames are
+self-describing, so readers decode any level.
 
 Container-level integrity is the per-chunk crc32 trailer (see
 [§ File Layout](#file-layout)): every chunk access verifies the

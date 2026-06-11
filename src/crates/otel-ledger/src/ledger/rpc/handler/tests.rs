@@ -102,14 +102,12 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
         stream_batches: 1,
     };
     let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
-        .unwrap();
-    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
-    writer
-        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&sfst::StreamBatch::for_write(&stream_entries))
         .unwrap();
     let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();
@@ -188,14 +186,12 @@ fn write_service_only_sfst(path: &std::path::Path, min_s: u32) {
         stream_batches: 1,
     };
     let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
-        .unwrap();
-    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
-    writer
-        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&sfst::StreamBatch::for_write(&stream_entries))
         .unwrap();
     let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();
@@ -258,14 +254,12 @@ fn write_same_ts_sfst(path: &std::path::Path, ts_s: u32, n: usize) {
         stream_batches: 1,
     };
     let mut writer = sfst::StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-    writer.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
-    writer.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
+    writer.summary(&summary).unwrap();
+    writer.metadata(&metadata).unwrap();
+    writer.timestamps(&timestamps).unwrap();
+    writer.primary(&primary).unwrap();
     writer
-        .timestamps(&sfst::pack(&timestamps, 1).unwrap())
-        .unwrap();
-    writer.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
-    writer
-        .add_stream_batch(&sfst::pack(&sfst::StreamBatch::for_write(&stream_entries), 1).unwrap())
+        .add_stream_batch(&sfst::StreamBatch::for_write(&stream_entries))
         .unwrap();
     let buf = writer.finish().unwrap().into_inner();
     std::fs::write(path, &buf).unwrap();

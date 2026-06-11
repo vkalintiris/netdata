@@ -43,11 +43,11 @@
 //! };
 //! let counts = ChunkCounts { mid_fields: 0, high_fields: 0, stream_batches: 1 };
 //! let mut w = StreamWriter::new(std::io::Cursor::new(Vec::new()), counts).unwrap();
-//! w.summary(&sfst::pack(&summary, 1).unwrap()).unwrap();
-//! w.metadata(&sfst::pack(&metadata, 1).unwrap()).unwrap();
-//! w.timestamps(&sfst::pack(&Vec::<i64>::new(), 1).unwrap()).unwrap();
-//! w.primary(&sfst::pack(&primary, 1).unwrap()).unwrap();
-//! w.add_stream_batch(&sfst::pack(&StreamBatch::for_write(&[]), 1).unwrap()).unwrap();
+//! w.summary(&summary).unwrap();
+//! w.metadata(&metadata).unwrap();
+//! w.timestamps(&[]).unwrap();
+//! w.primary(&primary).unwrap();
+//! w.add_stream_batch(&StreamBatch::for_write(&[])).unwrap();
 //! let buf = w.finish().unwrap().into_inner();
 //!
 //! // Read back
@@ -72,7 +72,7 @@ pub use query::{
     Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,
     compile_pattern, compile_query,
 };
-pub use reader::{Reader, unpack};
+pub use reader::Reader;
 pub use registry::{File, Registry};
 
 /// Highest SFST sequence on disk across every tenant subdir of
@@ -87,7 +87,7 @@ pub use schema::{
     BitmapValue, DEFAULT_CARDINALITY_THRESHOLD, FieldEntry, FieldTable, FieldTier, HighField,
     Histogram, IdRanges, KvId, Metadata, StreamBatch, Summary,
 };
-pub use writer::{ChunkCounts, StreamWriter, pack};
+pub use writer::{ChunkCounts, StreamWriter};
 
 // ── Format constants ─────────────────────────────────────────────
 //
@@ -123,19 +123,20 @@ pub const MIN_LOGS_PER_BATCH: u32 = 1024;
 /// per-value batch-membership mask fits in a `u8` (one bit per batch).
 pub const MAX_STREAM_BATCHES: u8 = 8;
 
-/// Default zstd compression level used by [`pack`] for most chunk
-/// payloads — high-card values, stream batches, timestamps, summary,
-/// metadata. These payloads either carry random data (string columns,
-/// KvId sequences) or are small enough that higher zstd levels don't
-/// recoup their CPU cost.
-pub const ZSTD_LEVEL_DEFAULT: i32 = 1;
+/// Default zstd compression level used for most chunk payloads —
+/// high-card values, stream batches, timestamps, summary, metadata.
+/// These payloads either carry random data (string columns, KvId
+/// sequences) or are small enough that higher zstd levels don't recoup
+/// their CPU cost. Private: [`StreamWriter`] owns the level-to-chunk
+/// pairing.
+pub(crate) const ZSTD_LEVEL_DEFAULT: i32 = 1;
 
 /// Elevated zstd compression level for FST chunks (primary +
 /// mid-card). FSTs share prefix structure across many `key=value`
 /// strings; the higher level lets zstd's longer-range match search
 /// find that redundancy and pay off the extra CPU with a noticeably
-/// smaller payload.
-pub const ZSTD_LEVEL_FST: i32 = 3;
+/// smaller payload. Private: [`StreamWriter`] owns the pairing.
+pub(crate) const ZSTD_LEVEL_FST: i32 = 3;
 
 /// Number of stream-batch (`SB{i}`) chunks in a file with `total_logs`
 /// log entries. Both writer and reader call this; the rule is the

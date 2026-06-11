@@ -82,7 +82,7 @@ fn build_id_translation(row_index: &RowIndex) -> (Vec<KvId>, IdRanges) {
 /// Materialises every log's `KvId` list in chronological order, splits
 /// the result into [`num_stream_batches`](sfst::num_stream_batches)
 /// slices of `batch_size` entries each, and packs each slice into its
-/// own zstd blob — written and dropped one at a time.
+/// own chunk — packed by the writer, written, and dropped in turn.
 ///
 /// `total_logs == 0` is handled explicitly: a single empty batch is
 /// emitted so the file always carries at least one `SB{i}` chunk.
@@ -92,7 +92,7 @@ fn build_stream_batches<W: Write + Seek>(
     kv_to_file: &[KvId],
     total_logs: u32,
     w: &mut StreamWriter<W>,
-) -> Result<usize, IndexError> {
+) -> Result<(), IndexError> {
     let entries: Vec<Vec<KvId>> = time_order
         .iter_by_time()
         .map(|ins| {
@@ -103,32 +103,21 @@ fn build_stream_batches<W: Write + Seek>(
         })
         .collect();
 
-    let mut total_packed = 0usize;
     if entries.is_empty() {
         // num_stream_batches(0) == 1: emit a single empty batch so the
         // file's chunk layout is always valid.
-        let packed = sfst::pack(
-            &sfst::StreamBatch::for_write(&[]),
-            sfst::ZSTD_LEVEL_DEFAULT,
-        )?;
-        total_packed += packed.len();
-        w.add_stream_batch(&packed)?;
+        w.add_stream_batch(&sfst::StreamBatch::for_write(&[]))?;
     } else {
         let batch_size = sfst::stream_batch_size(total_logs) as usize;
         for batch in entries.chunks(batch_size) {
-            let packed = sfst::pack(
-                &sfst::StreamBatch::for_write(batch),
-                sfst::ZSTD_LEVEL_DEFAULT,
-            )?;
-            total_packed += packed.len();
             // The batch-size rule guarantees ≤ MAX_STREAM_BATCHES slices,
             // and the writer's declared count enforces it: one slice too
             // many is a WriterMisuse error, never an aliased chunk id.
-            w.add_stream_batch(&packed)?;
+            w.add_stream_batch(&sfst::StreamBatch::for_write(batch))?;
         }
     }
 
-    Ok(total_packed)
+    Ok(())
 }
 
 /// Pack and stream the primary FST: low-card `key=value` entries with
@@ -153,14 +142,12 @@ fn build_primary_fst<W: Write + Seek>(
     }
 
     let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries)?;
-    let packed = sfst::pack(&fst, sfst::ZSTD_LEVEL_FST)?;
+    w.primary(&fst)?;
     tracing::debug!(
-        "primary FST built: {} fields, {} KB, {}ms",
+        "primary FST built: {} fields, {}ms",
         low.len(),
-        packed.len() / 1024,
         t.elapsed().as_millis(),
     );
-    w.primary(&packed)?;
     Ok(())
 }
 
@@ -171,7 +158,6 @@ fn build_mid_card_chunks<W: Write + Seek>(
     w: &mut StreamWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
-    let mut total_kb = 0usize;
 
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
@@ -186,16 +172,13 @@ fn build_mid_card_chunks<W: Write + Seek>(
         }
 
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
-        let packed = sfst::pack(&fst, sfst::ZSTD_LEVEL_FST)?;
-        total_kb += packed.len() / 1024;
-        let idx = w.add_mid_field(&packed)?;
+        let idx = w.add_mid_field(&fst)?;
         debug_assert_eq!(idx as usize, i);
     }
 
     tracing::debug!(
-        "mid-card FSTs built: {} fields, {} KB, {}ms",
+        "mid-card FSTs built: {} fields, {}ms",
         mid.len(),
-        total_kb,
         t.elapsed().as_millis(),
     );
 
@@ -218,7 +201,6 @@ fn build_high_card_chunks<W: Write + Seek>(
     w: &mut StreamWriter<W>,
 ) -> Result<(), IndexError> {
     let t = Instant::now();
-    let mut total_kb = 0usize;
 
     let mut paired: Vec<(&str, u8)> = Vec::new();
 
@@ -235,17 +217,13 @@ fn build_high_card_chunks<W: Write + Seek>(
         // Transpose to parallel columns, then pack as the arena layout.
         let (keys, masks): (Vec<&str>, Vec<u8>) = paired.iter().copied().unzip();
         let high = sfst::HighField::for_write(&keys, masks);
-
-        let packed = sfst::pack(&high, sfst::ZSTD_LEVEL_DEFAULT)?;
-        total_kb += packed.len() / 1024;
-        let idx = w.add_high_field(&packed)?;
+        let idx = w.add_high_field(&high)?;
         debug_assert_eq!(idx as usize, i);
     }
 
     tracing::debug!(
-        "high-card chunks built: {} fields, {} KB, {}ms",
+        "high-card chunks built: {} fields, {}ms",
         high.len(),
-        total_kb,
         t.elapsed().as_millis(),
     );
 
@@ -440,8 +418,8 @@ pub(super) fn build_into<W: Write + Seek>(
     let mut w = StreamWriter::new(sink, counts)?;
 
     // Hot prefix first — the writer enforces the canonical order.
-    w.summary(&sfst::pack(&summary, sfst::ZSTD_LEVEL_DEFAULT)?)?;
-    w.metadata(&sfst::pack(&metadata, sfst::ZSTD_LEVEL_DEFAULT)?)?;
+    w.summary(&summary)?;
+    w.metadata(&metadata)?;
 
     // Per-log timestamps in chronological order, parallel-indexed to
     // the stream-log-entries chunks.
@@ -449,7 +427,7 @@ pub(super) fn build_into<W: Write + Seek>(
         .iter_by_time()
         .map(|ins| row_index.timestamps[ins as usize])
         .collect();
-    w.timestamps(&sfst::pack(&timestamps_chronological, sfst::ZSTD_LEVEL_DEFAULT)?)?;
+    w.timestamps(&timestamps_chronological)?;
     drop(timestamps_chronological);
 
     // Low/mid-cardinality FSTs, high-cardinality chunks, then the
@@ -459,18 +437,14 @@ pub(super) fn build_into<W: Write + Seek>(
     build_high_card_chunks(row_index, &time_order, batch_size, &mut w)?;
 
     let t = Instant::now();
-    let stream_bytes = build_stream_batches(
+    build_stream_batches(
         &row_index.log_entries,
         &time_order,
         &kv_to_file,
         total_logs,
         &mut w,
     )?;
-    tracing::debug!(
-        "stream batches built: {} KB total, {}ms",
-        stream_bytes / 1024,
-        t.elapsed().as_millis(),
-    );
+    tracing::debug!("stream batches built: {}ms", t.elapsed().as_millis());
 
     let sink = w.finish()?;
     Ok((sink, summary, metadata))
