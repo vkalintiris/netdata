@@ -222,8 +222,10 @@ impl Registry {
     /// All identifying data (machine, boot, seq, time bounds) comes from
     /// the filename — the body is not read during recovery.
     ///
-    /// Files with unparseable names are logged and skipped. Date subdirectories
-    /// that don't parse as `YYYY-MM-DD` are logged and skipped.
+    /// Files with unparseable names are logged and skipped. Date
+    /// subdirectories that don't parse as `YYYY-MM-DD` are skipped, and
+    /// an unreadable directory is warned about and skipped — recovery
+    /// never fails outright; it loads whatever is readable.
     ///
     /// Stale `*.catalog.tmp` files — left behind when a rotation was
     /// interrupted between writing the temp file and renaming it — are
@@ -232,20 +234,10 @@ impl Registry {
     /// [`file_registry::durable::sweep_tmp`] in otel-ledger's
     /// `Registry::recover`); nothing else ever reaps them.
     pub fn recover(&mut self) {
-        // Structural enumeration through the shared layout walker;
-        // recovery's softer error policy (warn and continue) wraps it.
-        let partitions = match file_registry::layout::date_tenant_dirs(&self.base_dir) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(
-                    dir = %self.base_dir.display(),
-                    "failed to read catalog base dir: {e}"
-                );
-                return;
-            }
-        };
-
-        for partition in partitions {
+        // Structural enumeration through the shared layout walker, with
+        // recovery's error policy: an unreadable directory is warned
+        // about and skipped, and everything readable is still recovered.
+        for partition in file_registry::layout::date_tenant_dirs_lossy(&self.base_dir) {
             if partition.tenant != self.tenant_id.as_str() {
                 continue;
             }
@@ -415,14 +407,13 @@ pub fn filename(
 /// its components.
 pub fn parse_stem(stem: &str) -> Option<(Uuid, Uuid, u64, u32, u32)> {
     let (machine_id, boot_id, tail) = file_registry::stem::parse_uuid_pair(stem)?;
-    // Split the remaining "max_seq-min_ts-max_ts" by '-'.
+    // Split the remaining "max_seq-min_ts-max_ts" by '-'. `splitn(3)`
+    // packs any extra '-'-joined trailing segments into the third item,
+    // so trailing garbage fails the numeric parse below.
     let mut parts = tail.splitn(3, '-');
     let max_seq: u64 = parts.next()?.parse().ok()?;
     let min_ts: u32 = parts.next()?.parse().ok()?;
     let max_ts: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
     Some((machine_id, boot_id, max_seq, min_ts, max_ts))
 }
 

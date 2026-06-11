@@ -61,9 +61,13 @@ mod tests {
         assert!(!range_overlaps(&(10u32..20), 20, 25)); // min == end: out
         assert!(!range_overlaps(&(10u32..20), 0, 9)); // max < start: out
         assert!(range_overlaps(&(10u32..11), 10, 10)); // single-point window
-        // Empty window matches nothing — even a containing range.
+        // Empty window matches nothing — even a containing range. The
+        // inverted range is deliberate: it pins that `start > end` is
+        // treated as empty, not as a panic or a wraparound match.
         assert!(!range_overlaps(&(10u32..10), 0, 100));
-        assert!(!range_overlaps(&(20u32..10), 0, 100));
+        #[allow(clippy::reversed_empty_ranges)]
+        let inverted = 20u32..10;
+        assert!(!range_overlaps(&inverted, 0, 100));
         // Generic over the unit (the wal registry's u64 nanoseconds).
         assert!(range_overlaps(&(1_000u64..2_000), 1_999, 5_000));
     }

@@ -42,9 +42,7 @@ fn write_catalog_file(
     date: NaiveDate,
     entries: &[otel_catalog::CatalogEntry],
 ) -> std::path::PathBuf {
-    let dir = catalog_dir
-        .join(date.format("%Y-%m-%d").to_string())
-        .join("tenant1");
+    let dir = file_registry::layout::date_tenant_dir(catalog_dir, date, "tenant1");
     std::fs::create_dir_all(&dir).unwrap();
     let max_seq = entries.iter().map(|e| e.id.seq).max().unwrap();
     let min_ts = entries.iter().map(|e| e.min_timestamp_s).min().unwrap_or(0);
@@ -91,10 +89,7 @@ fn seed_from_catalog_files_skips_corrupt_files() {
     let mut reg = make_registry(catalog_dir.path());
 
     let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
-    let dir = catalog_dir
-        .path()
-        .join(date.format("%Y-%m-%d").to_string())
-        .join("tenant1");
+    let dir = file_registry::layout::date_tenant_dir(catalog_dir.path(), date, "tenant1");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join(otel_catalog::filename(machine(), boot(), 1, 0, 0)),
