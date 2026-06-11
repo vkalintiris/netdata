@@ -98,9 +98,8 @@ impl<W: Write + Seek> StreamWriter<W> {
     /// Returns [`Error::InvalidStreamBatchCount`] unless
     /// `stream_batches` is in `1..=`[`MAX_STREAM_BATCHES`].
     pub fn new(sink: W, counts: ChunkCounts) -> Result<Self, Error> {
-        let batches = counts.stream_batches as usize;
-        if batches == 0 || batches > MAX_STREAM_BATCHES as usize {
-            return Err(Error::InvalidStreamBatchCount(batches));
+        if counts.stream_batches == 0 || counts.stream_batches > MAX_STREAM_BATCHES {
+            return Err(Error::InvalidStreamBatchCount(counts.stream_batches));
         }
         let num_chunks = 4u32
             + u32::from(counts.mid_fields)

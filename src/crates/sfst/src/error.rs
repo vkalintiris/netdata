@@ -55,7 +55,7 @@ pub enum Error {
     /// `1..=`[`MAX_STREAM_BATCHES`](crate::MAX_STREAM_BATCHES).
     /// Carries the actual count that was rejected.
     #[error("invalid stream-batch count: {0} (expected 1..=8)")]
-    InvalidStreamBatchCount(usize),
+    InvalidStreamBatchCount(u8),
 
     /// The TOC failed to parse (on open) or lay out (on write).
     /// Carries the chunk-file layer's own error message.
@@ -124,7 +124,13 @@ impl From<chunk_file::container::Error> for Error {
             C::BadMagic => Error::InvalidMagic,
             C::UnsupportedVersion(v) => Error::UnsupportedVersion(v),
             C::Toc(toc) => Error::Toc(toc.to_string()),
-            C::Malformed(msg) | C::Misuse(msg) => Error::Toc(msg),
+            C::Malformed(msg) => Error::Toc(msg),
+            // The container layer's Misuse is the same semantic as the
+            // writer's own misuse error: a producer bug, not a data
+            // condition. Unreachable through StreamWriter (its stage
+            // machine refuses the misuse before the container sees it),
+            // but a relaxed guard should not surface as a TOC error.
+            C::Misuse(msg) => Error::WriterMisuse(msg),
             C::ChunkNotFound { .. } => Error::Toc(e.to_string()),
             C::CrcMismatch { .. } => Error::CorruptIndex(e.to_string()),
             C::Io(io) => Error::Io(io),
