@@ -6,7 +6,7 @@ members = [
     "journal-common",
     "journal-core",
     "journal-index",
-    "journal-chunk",
+    "chunk-file",
     "fst-index",
     "treight",
     "sfst",
@@ -200,7 +200,7 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 journal-common = { path = "journal-common" }
 journal-core = { path = "journal-core" }
 journal-index = { path = "journal-index", default-features = false }
-journal-chunk = { path = "journal-chunk" }
+chunk-file = { path = "chunk-file" }
 journal-engine = { path = "journal-engine" }
 journal-registry = { path = "journal-registry" }
 rdp = { path = "rdp" }

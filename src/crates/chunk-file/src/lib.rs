@@ -1,9 +1,18 @@
-//! Zero-copy chunk file TOC for journal file formats.
+//! Chunk-based file formats: zero-copy TOC codec + integrity container.
 //!
-//! Provides a table of contents (TOC) that maps 4-byte chunk IDs to byte
-//! ranges within a file.  Designed for memory-mapped files: the TOC is parsed
-//! zero-copy via [`zerocopy`], and [`ChunkMeta`] exposes raw offsets so callers
-//! can issue `madvise` hints per chunk.
+//! This crate is the single foundation for every chunk-based on-disk
+//! format in the workspace (SFST indexes, otel catalogs, future
+//! formats). It has two layers:
+//!
+//! - **Raw TOC codec** (this module): a table of contents mapping
+//!   4-byte chunk IDs to byte ranges within a file. Designed for
+//!   memory-mapped files: the TOC is parsed zero-copy via [`zerocopy`],
+//!   and [`ChunkMeta`] exposes raw offsets so callers can issue
+//!   `madvise` hints per chunk.
+//! - **Integrity container** ([`container`]): a self-describing file
+//!   framing on top of the TOC — magic + version + num_chunks header
+//!   and a crc32 trailer per chunk — with a buffer-all builder and a
+//!   streaming `Write + Seek` writer.
 //!
 //! # On-disk TOC layout
 //!
@@ -13,10 +22,14 @@
 //! entry[0]:  id(4) + offset_le(8)    chunk 0 starts at offset
 //! entry[1]:  id(4) + offset_le(8)    chunk 1 starts at offset
 //! ...
-//! entry[N]:  __(4) + offset_le(8)    end marker (id unused, offset = end of last chunk)
+//! entry[N]:  0000 + offset_le(8)     end marker (zero id, offset = end of last chunk)
 //! ```
 //!
-//! All offsets are absolute from file start, little-endian.
+//! All offsets are **absolute from file start**, little-endian. The TOC
+//! itself may sit at any `toc_offset` within the file (the container
+//! places it after its 12-byte header); chunk bodies follow the TOC.
+
+pub mod container;
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -28,6 +41,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 /// A 4-byte chunk identifier (e.g. `*b"PRIM"`).
 pub type ChunkId = [u8; 4];
 
+/// The reserved end-marker id closing every TOC.
+pub const END_MARKER_ID: ChunkId = [0; 4];
+
 /// A single on-disk TOC entry.
 ///
 /// Exactly 12 bytes with alignment 1.  The offset is stored as `[u8; 8]`
@@ -35,7 +51,7 @@ pub type ChunkId = [u8; 4];
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Copy, Clone, Debug)]
 #[repr(C)]
 pub struct TocEntry {
-    /// Chunk identifier.  For the end-marker entry this field is unused.
+    /// Chunk identifier.  For the end-marker entry this is [`END_MARKER_ID`].
     pub id: ChunkId,
     /// Absolute byte offset from file start, little-endian.
     offset_le: [u8; 8],
@@ -95,6 +111,15 @@ pub enum Error {
     #[error("non-monotonic offset at entry {index}: {prev} >= {curr}")]
     NonMonotonicOffset { index: usize, prev: u64, curr: u64 },
 
+    #[error("first chunk offset {offset} overlaps the TOC (chunks start at {chunks_start})")]
+    ChunkOverlapsToc { offset: u64, chunks_start: u64 },
+
+    #[error("duplicate chunk id {id:?} at entry {index}")]
+    DuplicateChunkId { id: ChunkId, index: usize },
+
+    #[error("end-marker entry carries a non-zero id {id:?}")]
+    BadEndMarker { id: ChunkId },
+
     #[error("expected chunk {expected:?}, got {got:?}")]
     WrongChunkId { expected: ChunkId, got: ChunkId },
 
@@ -128,30 +153,46 @@ impl<'a> Toc<'a> {
         (num_chunks + 1) * size_of::<TocEntry>()
     }
 
-    /// Parse a TOC from the start of `data`, expecting `num_chunks` chunks.
+    /// Parse the TOC found at `toc_offset` within `file`, expecting
+    /// `num_chunks` chunks. Offsets in the entries are absolute from the
+    /// start of `file`.
     ///
-    /// This is zero-copy: the returned [`Toc`] borrows directly from `data`.
-    pub fn from_bytes(data: &'a [u8], num_chunks: u32) -> Result<Self, Error> {
+    /// This is zero-copy: the returned [`Toc`] borrows directly from
+    /// `file`. Validates that every offset is in bounds and strictly
+    /// increasing, that the first chunk starts past the TOC itself,
+    /// that no chunk id repeats, and that the closing entry carries the
+    /// zero end-marker id — so a corrupt TOC is rejected at parse time,
+    /// not discovered as a bogus slice later.
+    pub fn parse(file: &'a [u8], toc_offset: usize, num_chunks: u32) -> Result<Self, Error> {
         let n = num_chunks as usize;
         let toc_size = Self::byte_size(n);
+        let toc_end = toc_offset.saturating_add(toc_size);
 
-        if data.len() < toc_size {
+        if file.len() < toc_end {
             return Err(Error::TocTooShort {
                 expected: toc_size,
-                actual: data.len(),
+                actual: file.len().saturating_sub(toc_offset),
             });
         }
 
-        let toc_bytes = &data[..toc_size];
+        let toc_bytes = &file[toc_offset..toc_end];
         let entries: Ref<&[u8], [TocEntry]> =
             Ref::from_bytes(toc_bytes).map_err(|_| Error::TocTooShort {
                 expected: toc_size,
                 actual: toc_bytes.len(),
             })?;
 
-        // Validate: monotonically increasing offsets, within bounds.
-        let data_len = data.len();
+        // Validate: chunks start past the TOC, offsets monotonically
+        // increasing and within bounds, end marker id is zero, no
+        // duplicate ids.
+        let data_len = file.len();
         let num_entries = entries.len(); // N+1
+        if entries[0].offset() < toc_end as u64 {
+            return Err(Error::ChunkOverlapsToc {
+                offset: entries[0].offset(),
+                chunks_start: toc_end as u64,
+            });
+        }
         for i in 0..num_entries {
             let offset = entries[i].offset();
             if offset > data_len as u64 {
@@ -167,6 +208,20 @@ impl<'a> Toc<'a> {
                     prev: entries[i - 1].offset(),
                     curr: offset,
                 });
+            }
+        }
+        if entries[n].id != END_MARKER_ID {
+            return Err(Error::BadEndMarker { id: entries[n].id });
+        }
+        // O(n²), but a TOC holds at most a few dozen entries.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if entries[i].id == entries[j].id {
+                    return Err(Error::DuplicateChunkId {
+                        id: entries[j].id,
+                        index: j,
+                    });
+                }
             }
         }
 
@@ -197,8 +252,8 @@ impl<'a> Toc<'a> {
 
     /// Look up a chunk's data slice within `file`.
     ///
-    /// The `file` slice is typically the full memory-mapped file.  It need
-    /// not be the same slice that was passed to [`from_bytes`](Toc::from_bytes).
+    /// The `file` slice is typically the full memory-mapped file — the
+    /// same slice [`parse`](Toc::parse) validated the offsets against.
     pub fn data<'f>(&self, file: &'f [u8], id: ChunkId) -> Result<&'f [u8], Error> {
         let meta = self.get(id).ok_or(Error::ChunkNotFound { id })?;
         let start = meta.offset as usize;
@@ -255,10 +310,15 @@ impl TocWriter {
     }
 
     /// Write the TOC to `out` and return a [`ChunkWriter`] for streaming
-    /// chunk data.  The first chunk's data begins immediately after the TOC.
-    pub fn write_toc<W: Write>(self, mut out: W) -> Result<ChunkWriter<W>, Error> {
+    /// chunk data.
+    ///
+    /// `base_offset` is the absolute file offset at which the TOC itself
+    /// is being written (0 for a bare TOC file; the header size when a
+    /// header precedes it). Entry offsets are absolute: the first
+    /// chunk's data begins at `base_offset + toc_byte_size()`.
+    pub fn write_toc<W: Write>(self, mut out: W, base_offset: u64) -> Result<ChunkWriter<W>, Error> {
         let toc_size = self.toc_byte_size();
-        let mut current_offset = toc_size as u64;
+        let mut current_offset = base_offset + toc_size as u64;
 
         // Write N chunk entries.
         for chunk in &self.chunks {
@@ -268,7 +328,7 @@ impl TocWriter {
         }
 
         // Write end marker.
-        let end_entry = TocEntry::new([0; 4], current_offset);
+        let end_entry = TocEntry::new(END_MARKER_ID, current_offset);
         out.write_all(IntoBytes::as_bytes(&end_entry))?;
 
         Ok(ChunkWriter {
@@ -358,7 +418,7 @@ mod tests {
         for &(id, data) in chunks {
             writer.plan(id, data.len() as u64);
         }
-        let mut cw = writer.write_toc(&mut buf).unwrap();
+        let mut cw = writer.write_toc(&mut buf, 0).unwrap();
         for &(id, data) in chunks {
             cw.write_chunk(id, data).unwrap();
         }
@@ -371,7 +431,7 @@ mod tests {
         let data = b"hello world";
         let file = write_file(&[(*b"PRIM", data)]);
 
-        let toc = Toc::from_bytes(&file, 1).unwrap();
+        let toc = Toc::parse(&file, 0, 1).unwrap();
         assert_eq!(toc.num_chunks(), 1);
 
         let meta = toc.get(*b"PRIM").unwrap();
@@ -391,7 +451,7 @@ mod tests {
         ];
         let file = write_file(chunks);
 
-        let toc = Toc::from_bytes(&file, 3).unwrap();
+        let toc = Toc::parse(&file, 0, 3).unwrap();
         assert_eq!(toc.num_chunks(), 3);
 
         for &(id, expected_data) in chunks {
@@ -399,6 +459,22 @@ mod tests {
             assert_eq!(meta.size, expected_data.len() as u64);
             assert_eq!(toc.data(&file, id).unwrap(), expected_data);
         }
+    }
+
+    #[test]
+    fn parse_at_nonzero_toc_offset() {
+        // A 12-byte header precedes the TOC — the container layout.
+        let mut file = b"HDRHDRHDRHDR".to_vec();
+        let mut writer = TocWriter::new();
+        writer.plan(*b"AAAA", 5);
+        let mut cw = writer.write_toc(&mut file, 12).unwrap();
+        cw.write_chunk(*b"AAAA", b"hello").unwrap();
+        cw.finish().unwrap();
+
+        let toc = Toc::parse(&file, 12, 1).unwrap();
+        let meta = toc.get(*b"AAAA").unwrap();
+        assert_eq!(meta.offset, 12 + Toc::byte_size(1) as u64);
+        assert_eq!(toc.data(&file, *b"AAAA").unwrap(), b"hello");
     }
 
     #[test]
@@ -410,7 +486,7 @@ mod tests {
         ];
         let file = write_file(chunks);
 
-        let toc = Toc::from_bytes(&file, 3).unwrap();
+        let toc = Toc::parse(&file, 0, 3).unwrap();
         let metas: Vec<ChunkMeta> = toc.iter().collect();
 
         assert_eq!(metas.len(), 3);
@@ -429,7 +505,7 @@ mod tests {
     #[test]
     fn chunk_not_found() {
         let file = write_file(&[(*b"PRIM", b"data")]);
-        let toc = Toc::from_bytes(&file, 1).unwrap();
+        let toc = Toc::parse(&file, 0, 1).unwrap();
 
         assert!(toc.get(*b"MISS").is_none());
         assert!(matches!(
@@ -441,8 +517,55 @@ mod tests {
     #[test]
     fn toc_too_short() {
         let data = b"xxxx"; // not enough bytes for even 1 entry
-        let result = Toc::from_bytes(data, 1);
+        let result = Toc::parse(data, 0, 1);
         assert!(matches!(result, Err(Error::TocTooShort { .. })));
+    }
+
+    #[test]
+    fn rejects_duplicate_chunk_ids() {
+        // Hand-craft a TOC with the same id twice: AAAA at two entries.
+        let mut file = Vec::new();
+        let toc_size = Toc::byte_size(2) as u64;
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"AAAA", toc_size)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"AAAA", toc_size + 1)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(
+            END_MARKER_ID,
+            toc_size + 2,
+        )));
+        file.extend_from_slice(b"xy");
+
+        assert!(matches!(
+            Toc::parse(&file, 0, 2),
+            Err(Error::DuplicateChunkId { id, index: 1 }) if id == *b"AAAA"
+        ));
+    }
+
+    #[test]
+    fn rejects_nonzero_end_marker_id() {
+        let mut file = Vec::new();
+        let toc_size = Toc::byte_size(1) as u64;
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"AAAA", toc_size)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"OOPS", toc_size + 2)));
+        file.extend_from_slice(b"xy");
+
+        assert!(matches!(
+            Toc::parse(&file, 0, 1),
+            Err(Error::BadEndMarker { id }) if id == *b"OOPS"
+        ));
+    }
+
+    #[test]
+    fn rejects_chunk_overlapping_toc() {
+        // First chunk offset points inside the TOC itself.
+        let mut file = Vec::new();
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"AAAA", 4)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(END_MARKER_ID, 25)));
+        file.push(0);
+
+        assert!(matches!(
+            Toc::parse(&file, 0, 1),
+            Err(Error::ChunkOverlapsToc { .. })
+        ));
     }
 
     #[test]
@@ -450,7 +573,7 @@ mod tests {
         let mut buf = Vec::new();
         let mut writer = TocWriter::new();
         writer.plan(*b"PRIM", 4);
-        let mut cw = writer.write_toc(&mut buf).unwrap();
+        let mut cw = writer.write_toc(&mut buf, 0).unwrap();
 
         let result = cw.write_chunk(*b"WRNG", b"data");
         assert!(matches!(result, Err(Error::WrongChunkId { .. })));
@@ -461,7 +584,7 @@ mod tests {
         let mut buf = Vec::new();
         let mut writer = TocWriter::new();
         writer.plan(*b"PRIM", 4);
-        let mut cw = writer.write_toc(&mut buf).unwrap();
+        let mut cw = writer.write_toc(&mut buf, 0).unwrap();
 
         let result = cw.write_chunk(*b"PRIM", b"too long data");
         assert!(matches!(result, Err(Error::WrongChunkSize { .. })));
@@ -473,7 +596,7 @@ mod tests {
         let mut writer = TocWriter::new();
         writer.plan(*b"AAAA", 1);
         writer.plan(*b"BBBB", 1);
-        let mut cw = writer.write_toc(&mut buf).unwrap();
+        let mut cw = writer.write_toc(&mut buf, 0).unwrap();
 
         cw.write_chunk(*b"AAAA", b"x").unwrap();
         // Forget to write BBBB.
@@ -487,7 +610,7 @@ mod tests {
     #[test]
     fn zero_copy() {
         let file = write_file(&[(*b"PRIM", b"data")]);
-        let toc = Toc::from_bytes(&file, 1).unwrap();
+        let toc = Toc::parse(&file, 0, 1).unwrap();
 
         // The TocEntry slice should point into the original file buffer.
         let entries_ptr = toc.entries.as_ptr() as usize;
@@ -501,7 +624,7 @@ mod tests {
     #[test]
     fn empty_file_no_chunks() {
         let file = write_file(&[]);
-        let toc = Toc::from_bytes(&file, 0).unwrap();
+        let toc = Toc::parse(&file, 0, 0).unwrap();
         assert_eq!(toc.num_chunks(), 0);
         assert_eq!(toc.iter().count(), 0);
         assert!(toc.get(*b"PRIM").is_none());
