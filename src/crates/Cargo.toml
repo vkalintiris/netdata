@@ -49,6 +49,7 @@ members = [
     # WAL
     "file-registry",
     "wal",
+    "wal-otap",
 
     # SFST query
     "sfsq",
@@ -234,6 +235,7 @@ ferryboat = { path = "ferryboat" }
 
 file-registry = { path = "file-registry" }
 wal = { path = "wal" }
+wal-otap = { path = "wal-otap" }
 
 opendal = { version = "0.55", default-features = false, features = ["services-fs", "services-s3", "executors-tokio"] }
 

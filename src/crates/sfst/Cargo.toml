@@ -32,8 +32,7 @@ hashbrown = { workspace = true }
 roaring = { workspace = true }
 twox-hash = { workspace = true, features = ["xxhash64"] }
 wal = { workspace = true }
-arrow = { version = "57" }
-otap-df-pdata = { git = "https://github.com/open-telemetry/otel-arrow.git", tag = "v0.46.0" }
+wal-otap = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

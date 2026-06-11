@@ -15,7 +15,7 @@
 //! from the same frames — the shared guarantees:
 //!
 //! - the *rows* are identical by construction: both consumers receive
-//!   them from [`sfst::indexer::decode_frame`];
+//!   them from [`wal_otap::decode_frame`];
 //! - filter patterns anchor identically: both compile through
 //!   [`sfst::compile_pattern`] / [`sfst::compile_query`];
 //! - field tables classify identically: same distinct-pair cardinality
@@ -40,46 +40,13 @@ use super::cursor::{Cursor, Part};
 use super::page::PageShard;
 use super::query::LogsQuery;
 
-/// A scan failure: the WAL file couldn't be read or a frame couldn't be
-/// decoded. Scanning is all-or-nothing — a torn or corrupt frame fails
-/// the scan rather than silently truncating the row set (the caller
-/// decides whether to degrade, mirroring the per-file policy in
-/// [`run`](super::run)).
-#[derive(Debug)]
-pub enum WalScanError {
-    Wal(wal::Error),
-    Decode(sfst::IndexError),
-}
-
-impl std::fmt::Display for WalScanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WalScanError::Wal(e) => write!(f, "WAL read failed: {e}"),
-            WalScanError::Decode(e) => write!(f, "frame decode failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for WalScanError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            WalScanError::Wal(e) => Some(e),
-            WalScanError::Decode(e) => Some(e),
-        }
-    }
-}
-
-impl From<wal::Error> for WalScanError {
-    fn from(e: wal::Error) -> Self {
-        WalScanError::Wal(e)
-    }
-}
-
-impl From<sfst::IndexError> for WalScanError {
-    fn from(e: sfst::IndexError) -> Self {
-        WalScanError::Decode(e)
-    }
-}
+/// A scan failure: the WAL file couldn't be read or a frame couldn't
+/// be decoded — exactly [`wal_otap::ReadError`], the shared
+/// read-and-decode error. Scanning is all-or-nothing — a torn or
+/// corrupt frame fails the scan rather than silently truncating the
+/// row set (the caller decides whether to degrade, mirroring the
+/// per-file policy in [`run`](super::run)).
+pub use wal_otap::ReadError as WalScanError;
 
 /// One distinct `key=value` pair seen during the scan.
 struct Pair {
@@ -140,8 +107,9 @@ impl WalScan {
     /// Reads the whole file. To scan only the durable, not-yet-indexed
     /// tail of an active file, use [`scan_range`](Self::scan_range).
     pub fn scan(path: &Path) -> Result<WalScan, WalScanError> {
-        let mut reader = wal::Reader::open(path)?;
-        Self::drain(&mut reader)
+        let mut sink = ScanSink::default();
+        wal_otap::decode_file(path, &mut sink)?;
+        Ok(sink.finish())
     }
 
     /// Decode the frames in `range` into rows — the active-WAL tail. The
@@ -149,17 +117,11 @@ impl WalScan {
     /// (`valid_up_to`); see [`wal::FrameRange`] / [`wal::Reader::open_range`]
     /// for the soundness checks. An empty range yields a zero-row scan.
     pub fn scan_range(path: &Path, range: wal::FrameRange) -> Result<WalScan, WalScanError> {
-        let mut reader = wal::Reader::open_range(path, range)?;
-        Self::drain(&mut reader)
-    }
-
-    fn drain(reader: &mut wal::Reader) -> Result<WalScan, WalScanError> {
         let mut sink = ScanSink::default();
-        while let Some(frame) = reader.next_frame()? {
-            sfst::indexer::decode_frame(&frame, &mut sink)?;
-        }
+        wal_otap::decode_range(path, range, &mut sink)?;
         Ok(sink.finish())
     }
+
 
     /// Number of decoded log rows.
     pub fn num_rows(&self) -> usize {
@@ -395,7 +357,7 @@ impl WalScan {
 // Scan sink
 // ---------------------------------------------------------------------------
 
-/// The [`KvSink`](sfst::indexer::KvSink) that accumulates a [`WalScan`].
+/// The [`wal_otap::KvSink`] that accumulates a [`WalScan`].
 ///
 /// Tokens are dense indexes into the pair table, deduplicated by full
 /// `key=value` string. No hash index is kept: `lookup_hash` always
@@ -409,7 +371,7 @@ struct ScanSink {
     rows: Vec<Row>,
 }
 
-impl sfst::indexer::KvSink for ScanSink {
+impl wal_otap::KvSink for ScanSink {
     type Token = u32;
 
     fn lookup_hash(&mut self, _hash: u64) -> Option<u32> {

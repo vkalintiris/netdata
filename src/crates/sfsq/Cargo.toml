@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 sfst = { workspace = true }
 wal = { workspace = true }
+wal-otap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 memmap2 = { workspace = true }

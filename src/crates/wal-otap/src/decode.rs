@@ -27,7 +27,7 @@ use arrow::record_batch::RecordBatch;
 
 use super::arrow_columns::{AttrsMap, DictUtf8};
 use super::otap_frame::OtapFrame;
-use crate::IndexError;
+use crate::DecodeError;
 
 /// Consumer of decoded log rows.
 ///
@@ -127,7 +127,7 @@ pub trait KvSink {
 ///   ordering.
 ///
 /// Returns the number of log rows processed.
-pub fn decode_frame<S: KvSink>(wal_frame: &wal::Frame, sink: &mut S) -> Result<usize, IndexError> {
+pub fn decode_frame<S: KvSink>(wal_frame: &wal::Frame, sink: &mut S) -> Result<usize, DecodeError> {
     let otap_frame = OtapFrame::decode(wal_frame.data)?;
     let Some(logs_batch) = otap_frame.logs.as_ref() else {
         return Ok(0);

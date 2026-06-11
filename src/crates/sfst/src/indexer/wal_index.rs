@@ -149,9 +149,9 @@ impl<'a> WalIndex<'a> {
 }
 
 /// The indexer is one consumer of the shared frame decode
-/// ([`decode_frame`](super::decode::decode_frame)): tokens are interner
+/// ([`wal_otap::decode_frame`]): tokens are interner
 /// slots, and each decoded row lands in the four Phase-1 structures.
-impl<'a> super::decode::KvSink for WalIndex<'a> {
+impl<'a> wal_otap::KvSink for WalIndex<'a> {
     type Token = KvSlot;
 
     fn lookup_hash(&mut self, hash: u64) -> Option<KvSlot> {

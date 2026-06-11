@@ -2,9 +2,9 @@
 //!
 //! Two-phase build:
 //!
-//! - **Phase 1** (read) — [`decode::decode_frame`] decodes each WAL frame
-//!   and streams its rows into the [`WalIndex`] (a
-//!   [`decode::KvSink`]), which interns `key=value` attributes and
+//! - **Phase 1** (read) — [`wal_otap::decode_file`] decodes each WAL
+//!   frame and streams its rows into the [`WalIndex`] (a
+//!   [`wal_otap::KvSink`]), which interns `key=value` attributes and
 //!   accumulates the string interner + per-attribute bitmaps + per-log
 //!   entries + per-log timestamps.
 //! - **Phase 2** (write) — [`build_and_write`] consumes the `WalIndex` and
@@ -12,19 +12,16 @@
 //!
 //! The public entry points are [`index`] (defaults) and
 //! [`index_with_options`] (cardinality threshold override). The frame
-//! decode is public on its own ([`decode`]) so other consumers — e.g. a
-//! query-time WAL row scan — share it rather than reimplement it.
+//! decode lives in [`wal_otap`] so other consumers — e.g. the
+//! query-time WAL row scan in `sfsq` — share it rather than
+//! reimplement it.
 
-mod arrow_columns;
 mod bitset;
-pub mod decode;
 mod fst_builder;
 pub mod kv_interner;
-mod otap_frame;
 pub mod reader;
 pub mod wal_index;
 
-pub use decode::{KvSink, decode_frame};
 pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
 pub use reader::{BitmapFilter, IndexReader};
@@ -76,19 +73,15 @@ pub fn index_with_options(
     sfst_path: &Path,
     cardinality_threshold: u32,
 ) -> Result<IndexResult, IndexError> {
-    let mut reader = wal::Reader::open(wal_path)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, cardinality_threshold);
 
-    let mut num_frames = 0;
-    while let Some(wal_frame) = reader.next_frame()? {
-        num_frames += 1;
-        decode_frame(&wal_frame, &mut wal_index)?;
-    }
+    let stats = wal_otap::decode_file(wal_path, &mut wal_index)?;
 
     tracing::info!(
-        "WAL file read complete path={} frames={num_frames} logs={}",
+        "WAL file read complete path={} frames={} logs={}",
         wal_path.display(),
+        stats.frames,
         wal_index.num_logs(),
     );
 
@@ -119,20 +112,16 @@ pub fn index_range(
     wal_path: &Path,
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
-    let mut reader = wal::Reader::open_range(wal_path, range)?;
     let arena = Bump::with_capacity(32 * 1024 * 1024);
     let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
 
-    let mut num_frames = 0;
-    while let Some(wal_frame) = reader.next_frame()? {
-        num_frames += 1;
-        decode_frame(&wal_frame, &mut wal_index)?;
-    }
+    let stats = wal_otap::decode_range(wal_path, range, &mut wal_index)?;
     tracing::debug!(
-        "WAL range read complete path={} start={} end={} frames={num_frames} logs={}",
+        "WAL range read complete path={} start={} end={} frames={} logs={}",
         wal_path.display(),
         range.start(),
         range.end(),
+        stats.frames,
         wal_index.num_logs(),
     );
 

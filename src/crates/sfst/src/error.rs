@@ -146,6 +146,17 @@ impl From<chunk_file::container::Error> for IndexError {
     }
 }
 
+/// The read-and-decode conveniences surface a two-sided error; split
+/// it onto the pipeline error's existing WAL and decode variants.
+impl From<wal_otap::ReadError> for IndexError {
+    fn from(e: wal_otap::ReadError) -> Self {
+        match e {
+            wal_otap::ReadError::Wal(e) => IndexError::Wal(e),
+            wal_otap::ReadError::Decode(e) => IndexError::Decode(e),
+        }
+    }
+}
+
 /// Error type for the WAL → SFST indexing pipeline
 /// ([`crate::index`], [`crate::build_and_write`]).
 ///
@@ -169,28 +180,16 @@ pub enum IndexError {
     #[error("WAL error: {0}")]
     Wal(#[from] wal::Error),
 
-    /// Arrow IPC parsing failed while decoding an OTAP sub-stream
-    /// (schema message, record batch, or column data).
-    #[error("Arrow IPC error: {0}")]
-    Arrow(#[from] arrow::error::ArrowError),
+    /// A WAL frame's OTAP payload didn't decode into rows — Arrow IPC
+    /// failure, truncated sub-stream, or an unknown payload tag (see
+    /// [`wal_otap::DecodeError`]).
+    #[error("frame decode failed: {0}")]
+    Decode(#[from] wal_otap::DecodeError),
 
     /// FST construction failed — almost always because the key set
     /// wasn't sortable into the FST's required lexicographic order.
     #[error("FST build error: {0}")]
     FstBuild(#[from] fst_index::BuildError),
-
-    /// An OTAP sub-stream ran out of bytes mid-header or mid-payload:
-    /// the 1-byte tag + 4-byte length prefix was incomplete, or the
-    /// declared length pointed past the end of the frame.
-    #[error("truncated OTAP frame")]
-    TruncatedOtapFrame,
-
-    /// An OTAP sub-stream's 1-byte tag didn't map to any known
-    /// [`ArrowPayloadType`](otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType).
-    /// Usually means a newer protocol version produced a payload this
-    /// build doesn't recognize.
-    #[error("unknown OTAP payload type tag: {0}")]
-    UnknownOtapTag(i32),
 
     /// The WAL contains records that resolve to more than one
     /// `(service.namespace, service.name)` pair. Each SFST file is

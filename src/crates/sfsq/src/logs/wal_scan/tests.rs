@@ -4,7 +4,7 @@
 //! covered by the property harness (milestone 1 of
 //! `docs/wal-query-design.md`).
 
-use sfst::indexer::KvSink;
+use wal_otap::KvSink;
 use sfst::{FieldTier, Filter, Grid};
 
 use super::{ScanSink, WalScan};
