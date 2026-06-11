@@ -187,6 +187,16 @@ impl<'a> Container<'a> {
     pub fn has_chunk(&self, id: ChunkId) -> bool {
         self.toc.get(id).is_some()
     }
+
+    /// A chunk's on-disk span — absolute `(offset, len)` within the
+    /// container, **including** the 4-byte crc32 trailer. Resolved from
+    /// the TOC alone: no payload byte is read or verified, so this is
+    /// the right primitive for layout decisions (page-cache advice,
+    /// readahead hints) that must not fault payload pages in.
+    pub fn chunk_span(&self, id: ChunkId) -> Option<(usize, usize)> {
+        let meta = self.toc.get(id)?;
+        Some((meta.offset as usize, meta.size as usize))
+    }
 }
 
 // ── Buffer-all writer ───────────────────────────────────────────
@@ -524,6 +534,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn chunk_span_is_toc_only_and_includes_the_crc_trailer() {
+        let bytes = build(SAMPLE);
+        let c = Container::open(&bytes, &MAGIC, VERSION).unwrap();
+
+        // Spans tile the body exactly: first chunk starts right after
+        // the TOC, each span is payload + 4-byte trailer, the last ends
+        // at EOF.
+        let mut expected_offset = HEADER_SIZE + Toc::byte_size(SAMPLE.len());
+        for (id, payload) in SAMPLE {
+            let (offset, len) = c.chunk_span(*id).unwrap();
+            assert_eq!(offset, expected_offset);
+            assert_eq!(len, payload.len() + 4);
+            expected_offset += len;
+        }
+        assert_eq!(expected_offset, bytes.len());
+        assert_eq!(c.chunk_span(*b"NOPE"), None);
+
+        // TOC-only: a corrupted payload doesn't affect span resolution.
+        let mut corrupt = bytes.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0x01;
+        let cc = Container::open(&corrupt, &MAGIC, VERSION).unwrap();
+        assert_eq!(cc.chunk_span(*b"CCCC"), c.chunk_span(*b"CCCC"));
     }
 
     #[test]

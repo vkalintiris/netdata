@@ -134,14 +134,16 @@ impl<'a> Reader<'a> {
     /// Offsets are relative to the start of the slice, so the span is
     /// usable directly with an mmap's `advise_range`. In the canonical
     /// layout PRIM is the last hot-prefix chunk and the chunk bodies run to
-    /// EOF, so the span is `[end of PRIM, end of file)`. Returns `None`
+    /// EOF, so the span is `[end of PRIM's span (crc32 trailer included),
+    /// end of file)`. Resolved from the TOC alone — no payload byte is
+    /// read or verified, so computing the boundary never faults pages in
+    /// or pays a CRC pass over PRIM. Returns `None`
     /// only if the primary chunk is absent. The span is **not**
     /// page-aligned — a caller advising the kernel should align it inward
     /// to avoid touching the primary's edge page.
     pub fn cold_region(&self) -> Option<(usize, usize)> {
-        let base = self.data.as_ptr() as usize;
-        let primary = self.primary_raw().ok()?;
-        let start = (primary.as_ptr() as usize - base) + primary.len();
+        let (offset, len) = self.container.chunk_span(CHUNK_PRIMARY)?;
+        let start = offset + len;
         let end = self.data.len();
         if end > start {
             Some((start, end - start))
