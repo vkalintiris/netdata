@@ -213,15 +213,20 @@ impl<'a> Toc<'a> {
         if entries[n].id != END_MARKER_ID {
             return Err(Error::BadEndMarker { id: entries[n].id });
         }
-        // O(n²), but a TOC holds at most a few dozen entries.
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if entries[i].id == entries[j].id {
-                    return Err(Error::DuplicateChunkId {
-                        id: entries[j].id,
-                        index: j,
-                    });
-                }
+        // Duplicate-id check in O(n log n): sort (id, index) pairs and
+        // compare neighbors. Today's TOCs hold dozens of entries, but
+        // the format itself doesn't bound n — don't let the validator
+        // become the ceiling for a future consumer. Pairs sort by id
+        // then index, so the reported index is the later occurrence,
+        // matching TOC order.
+        let mut ids: Vec<(ChunkId, usize)> = (0..n).map(|i| (entries[i].id, i)).collect();
+        ids.sort_unstable();
+        for pair in ids.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(Error::DuplicateChunkId {
+                    id: pair[1].0,
+                    index: pair[1].1,
+                });
             }
         }
 

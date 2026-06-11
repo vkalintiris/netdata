@@ -37,6 +37,7 @@
 //!   for large files built chunk-by-chunk (SFST indexes): peak memory
 //!   is one chunk, not the whole file.
 
+use std::collections::HashSet;
 use std::io::{Seek, SeekFrom, Write};
 
 use crate::{ChunkId, END_MARKER_ID, Toc, TocEntry, TocWriter};
@@ -234,9 +235,9 @@ impl<'a> ContainerBuilder<'a> {
         }
         // Reject duplicate ids before any byte is written — a release
         // build must not produce a file the reader will reject.
-        // O(n²), but a container holds at most a few dozen chunks.
-        for (i, (id, _)) in self.chunks.iter().enumerate() {
-            if self.chunks[..i].iter().any(|(prev, _)| prev == id) {
+        let mut seen = HashSet::with_capacity(self.chunks.len());
+        for (id, _) in &self.chunks {
+            if !seen.insert(*id) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("duplicate chunk id '{}'", id_str(id)),
@@ -296,8 +297,12 @@ fn io_from_raw(e: crate::Error) -> std::io::Error {
 pub struct StreamingWriter<W> {
     out: W,
     num_chunks: u32,
-    /// (id, on-disk span = payload + crc) per chunk written so far.
+    /// (id, on-disk span = payload + crc) per chunk written so far —
+    /// the TOC patch in [`finish`](StreamingWriter::finish) replays it
+    /// in write order.
     written: Vec<(ChunkId, u64)>,
+    /// Ids written so far, for O(1) duplicate rejection.
+    seen: HashSet<ChunkId>,
 }
 
 impl<W: Write + Seek> StreamingWriter<W> {
@@ -320,6 +325,7 @@ impl<W: Write + Seek> StreamingWriter<W> {
             out,
             num_chunks,
             written: Vec::with_capacity(num_chunks as usize),
+            seen: HashSet::with_capacity(num_chunks as usize),
         })
     }
 
@@ -333,9 +339,7 @@ impl<W: Write + Seek> StreamingWriter<W> {
                 self.num_chunks
             )));
         }
-        // O(n²) across a file's chunks, but a container holds at most a
-        // few dozen — same bound `Toc::parse` relies on.
-        if self.written.iter().any(|(written_id, _)| *written_id == id) {
+        if !self.seen.insert(id) {
             return Err(Error::Toc(format!("duplicate chunk id '{}'", id_str(&id))));
         }
         self.out.write_all(payload)?;
