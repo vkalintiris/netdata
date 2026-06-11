@@ -20,6 +20,15 @@ pub(crate) fn date_from_summary(summary: &sfst::Summary) -> Option<chrono::Naive
 /// retention policy. Ceiling division so a non-integer `max_age` in days
 /// doesn't trim catalog coverage below SFST coverage. There is no
 /// independent knob — this is the single source of truth.
+pub(crate) fn catalog_retention_days(retention: &bridge::config::RetentionConfig) -> u32 {
+    retention
+        .max_age
+        .as_secs()
+        .div_ceil(86_400)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
 /// Lower a resolved per-tenant retention config onto sfst's plain
 /// [`RetentionPolicy`](sfst::RetentionPolicy) — the boundary where the
 /// config framework's types stop and the format crate's begin.
@@ -31,15 +40,6 @@ pub(crate) fn sfst_retention_policy(
         max_total_size: file_registry::ByteSize(retention.max_total_size.as_u64()),
         max_age: retention.max_age,
     }
-}
-
-pub(crate) fn catalog_retention_days(retention: &bridge::config::RetentionConfig) -> u32 {
-    retention
-        .max_age
-        .as_secs()
-        .div_ceil(86_400)
-        .try_into()
-        .unwrap_or(u32::MAX)
 }
 
 /// Build a [`otel_catalog::CatalogEntry`] from a registered SFST file.
@@ -62,5 +62,29 @@ pub(crate) fn build_catalog_entry(
         stream: summary.stream.clone(),
         size: sfst_file.size,
         uploaded_at_ns,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the field mapping: a swap (e.g. max_files <-> max_total_size)
+    /// would compile and still pass the evict-all recovery tests, since
+    /// `max_files: 0` evicts everything regardless of the other limits.
+    #[test]
+    fn retention_policy_maps_fields_one_to_one() {
+        let cfg = bridge::config::RetentionConfig {
+            max_files: 7,
+            max_total_size: bytesize::ByteSize::gib(10),
+            max_age: std::time::Duration::from_secs(86_400),
+        };
+        let policy = sfst_retention_policy(&cfg);
+        assert_eq!(policy.max_files, 7);
+        assert_eq!(
+            policy.max_total_size,
+            file_registry::ByteSize(10 * 1024 * 1024 * 1024)
+        );
+        assert_eq!(policy.max_age, std::time::Duration::from_secs(86_400));
     }
 }
