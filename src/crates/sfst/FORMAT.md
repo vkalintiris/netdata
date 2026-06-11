@@ -382,9 +382,6 @@ stored bytes before they reach the zstd decoder. TOC corruption is
 caught indirectly — a corrupt offset resolves the wrong span, whose
 CRC then fails to match.
 
-[`pack`]: https://docs.rs/sfst/latest/sfst/fn.pack.html
-[`unpack`]: https://docs.rs/sfst/latest/sfst/fn.unpack.html
-
 ---
 
 ## Format Version
