@@ -524,12 +524,12 @@ mod tests {
                     continue; // rejected at parse — fine
                 };
                 for (id, payload) in SAMPLE {
-                    match c.chunk(*id) {
-                        Ok(read) => assert_eq!(
+                    // An Err is the corruption being caught — fine.
+                    if let Ok(read) = c.chunk(*id) {
+                        assert_eq!(
                             read, *payload,
                             "flip at byte {i} bit {bit:#04x} silently changed chunk payload"
-                        ),
-                        Err(_) => {} // caught — fine
+                        );
                     }
                 }
             }

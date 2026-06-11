@@ -216,9 +216,13 @@ impl<'a> Toc<'a> {
         // Duplicate-id check in O(n log n): sort (id, index) pairs and
         // compare neighbors. Today's TOCs hold dozens of entries, but
         // the format itself doesn't bound n — don't let the validator
-        // become the ceiling for a future consumer. Pairs sort by id
-        // then index, so the reported index is the later occurrence,
-        // matching TOC order.
+        // become the ceiling for a future consumer. The tuple's
+        // lexicographic Ord sorts by id then index, so equal-id pairs
+        // are ordered by index *by the comparator* — the unstable sort
+        // is still fully deterministic because the distinct indices
+        // make every pair unique (stability only matters for elements
+        // that compare equal). The reported index is therefore the
+        // later occurrence of the sorted-first duplicated id.
         let mut ids: Vec<(ChunkId, usize)> = (0..n).map(|i| (entries[i].id, i)).collect();
         ids.sort_unstable();
         for pair in ids.windows(2) {
@@ -549,6 +553,30 @@ mod tests {
         assert!(matches!(
             Toc::parse(&file, 0, 2),
             Err(Error::DuplicateChunkId { id, index: 1 }) if id == *b"AAAA"
+        ));
+    }
+
+    #[test]
+    fn duplicate_report_is_deterministic_with_multiple_duplicated_ids() {
+        // Two distinct ids each duplicated, with the lexicographically
+        // smaller id appearing later in TOC order: BBBB@0, BBBB@1,
+        // AAAA@2, AAAA@3. The validator reports the later occurrence of
+        // the sorted-first duplicated id (AAAA, index 3) — pinned here
+        // so the (id, index) tuple sort stays deterministic.
+        let mut file = Vec::new();
+        let toc_size = Toc::byte_size(4) as u64;
+        for (k, id) in [*b"BBBB", *b"BBBB", *b"AAAA", *b"AAAA"]
+            .into_iter()
+            .enumerate()
+        {
+            file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(id, toc_size + k as u64)));
+        }
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(END_MARKER_ID, toc_size + 4)));
+        file.extend_from_slice(b"wxyz");
+
+        assert!(matches!(
+            Toc::parse(&file, 0, 4),
+            Err(Error::DuplicateChunkId { id, index: 3 }) if id == *b"AAAA"
         ));
     }
 
