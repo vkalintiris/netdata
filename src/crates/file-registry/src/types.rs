@@ -20,8 +20,54 @@ use uuid::Uuid;
 pub struct TenantId(Arc<str>);
 
 impl TenantId {
+    /// The tenant every record lands under when authentication is
+    /// disabled, and the tenant an unscoped query reads. Ingest rejects
+    /// clients claiming this id explicitly; the query side must be able
+    /// to name it.
+    pub const DEFAULT: &'static str = "default";
+
     pub fn new(s: impl Into<Arc<str>>) -> Self {
         Self(s.into())
+    }
+
+    /// The [`DEFAULT`](TenantId::DEFAULT) tenant.
+    pub fn default_tenant() -> Self {
+        Self::from(Self::DEFAULT)
+    }
+
+    /// Ingest-side validation: a client-supplied tenant id becomes a
+    /// per-tenant directory name, so the rules are strict — 1-255
+    /// bytes of `[a-zA-Z0-9._-]`, and never `.`, `..`, or the literal
+    /// [`DEFAULT`](TenantId::DEFAULT) (clients may not claim the
+    /// auth-disabled tenant). The error is the human-readable reason,
+    /// for the transport layer to wrap.
+    pub fn validate_ingest(id: &str) -> Result<Self, &'static str> {
+        if id.is_empty() || id.len() > 255 {
+            return Err("tenant ID must be 1-255 bytes");
+        }
+        if id == "." || id == ".." || id == Self::DEFAULT {
+            return Err("tenant ID must not be '.', '..', or 'default'");
+        }
+        if !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+        {
+            return Err("tenant ID must contain only [a-zA-Z0-9._-]");
+        }
+        Ok(Self::from(id))
+    }
+
+    /// Query-side resolution: a tenant here is a scoping selector into
+    /// registries built at ingest (a `HashMap` key, never a filesystem
+    /// path), so the rules are deliberately permissive — and unlike
+    /// ingest, the literal `default` must be nameable. Omitted, empty,
+    /// or absurdly long values fall back to the default tenant; an
+    /// unknown tenant simply matches nothing downstream.
+    pub fn resolve_query(raw: Option<&str>) -> Self {
+        match raw {
+            Some(s) if !s.is_empty() && s.len() <= 255 => Self::from(s),
+            _ => Self::default_tenant(),
+        }
     }
 
     pub fn as_str(&self) -> &str {

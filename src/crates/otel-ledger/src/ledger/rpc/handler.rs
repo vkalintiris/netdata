@@ -289,25 +289,13 @@ impl FunctionHandler for OtelLogsHandler {
     }
 }
 
-/// Length cap on a caller-supplied tenant id — matches ingest's
-/// `validate_tenant_id` bound.
-const MAX_QUERY_TENANT_LEN: usize = 255;
-
 /// Resolve the request's tenant selector to the registry key the query
-/// reads. Omitted, empty, or absurdly long values fall back to the
-/// literal `"default"` tenant — the id ingest uses when auth is
-/// disabled — never an implicit all-tenant union.
-///
-/// Deliberately permissive beyond that: the query side only uses the
-/// value as a `HashMap` key into registries built at ingest (it never
-/// builds a filesystem path from it), an unknown tenant just yields an
-/// empty result, and — unlike ingest's `validate_tenant_id` — querying
-/// the literal `"default"` must be allowed.
+/// reads — the permissive query-side policy on the type itself
+/// ([`TenantId::resolve_query`]): omitted/invalid falls back to the
+/// default tenant, never an implicit all-tenant union, and the literal
+/// `default` stays nameable (unlike ingest's strict validation).
 fn resolve_query_tenant(raw: Option<&str>) -> TenantId {
-    match raw {
-        Some(s) if !s.is_empty() && s.len() <= MAX_QUERY_TENANT_LEN => TenantId::from(s),
-        _ => TenantId::from("default"),
-    }
+    TenantId::resolve_query(raw)
 }
 
 /// Replicate the rt-level GET shim (`netdata-plugin/rt/src/lib.rs`):

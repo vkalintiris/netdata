@@ -275,32 +275,12 @@ fn format_collision_error(collisions: &[Collision]) -> String {
     )
 }
 
-fn validate_tenant_id(id: &str) -> Result<(), Status> {
-    if id.is_empty() || id.len() > 255 {
-        return Err(Status::invalid_argument("tenant ID must be 1-255 bytes"));
-    }
-    if id == "." || id == ".." || id == "default" {
-        return Err(Status::invalid_argument(
-            "tenant ID must not be '.', '..', or 'default'",
-        ));
-    }
-    if !id
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
-    {
-        return Err(Status::invalid_argument(
-            "tenant ID must contain only [a-zA-Z0-9._-]",
-        ));
-    }
-    Ok(())
-}
-
 fn extract_tenant_id(
     metadata: &tonic::metadata::MetadataMap,
     auth: &AuthConfig,
 ) -> Result<TenantId, Status> {
     if !auth.enabled {
-        return Ok(TenantId::from("default"));
+        return Ok(TenantId::default_tenant());
     }
     let value = metadata
         .get(AuthConfig::TENANT_HEADER)
@@ -308,8 +288,9 @@ fn extract_tenant_id(
     let tenant = value
         .to_str()
         .map_err(|_| Status::invalid_argument("tenant header must be valid UTF-8"))?;
-    validate_tenant_id(tenant)?;
-    Ok(TenantId::from(tenant))
+    // The id policy (strict: becomes a directory name) lives on the
+    // type; this layer only maps the reason onto the transport error.
+    TenantId::validate_ingest(tenant).map_err(Status::invalid_argument)
 }
 
 pub struct NetdataLogsService {
