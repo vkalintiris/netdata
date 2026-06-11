@@ -29,7 +29,7 @@ pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
 pub use reader::{BitmapFilter, IndexReader};
 
-use fst_builder::build;
+use fst_builder::build_into;
 
 use std::path::Path;
 
@@ -119,34 +119,30 @@ pub fn index_range(
     wal_path: &Path,
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
-    // Scope Phase 1 so the 32 MiB arena and the WalIndex (bitmaps,
-    // interner, per-log entries) drop before serialization: `build`'s
-    // Writer owns its packed chunks outright and borrows neither, so
-    // holding them through `write_to` would only inflate peak memory.
-    let (writer, summary) = {
-        let mut reader = wal::Reader::open_range(wal_path, range)?;
-        let arena = Bump::with_capacity(32 * 1024 * 1024);
-        let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
+    let mut reader = wal::Reader::open_range(wal_path, range)?;
+    let arena = Bump::with_capacity(32 * 1024 * 1024);
+    let mut wal_index = WalIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
 
-        let mut num_frames = 0;
-        while let Some(wal_frame) = reader.next_frame()? {
-            num_frames += 1;
-            decode_frame(&wal_frame, &mut wal_index)?;
-        }
-        tracing::debug!(
-            "WAL range read complete path={} start={} end={} frames={num_frames} logs={}",
-            wal_path.display(),
-            range.start(),
-            range.end(),
-            wal_index.num_logs(),
-        );
+    let mut num_frames = 0;
+    while let Some(wal_frame) = reader.next_frame()? {
+        num_frames += 1;
+        decode_frame(&wal_frame, &mut wal_index)?;
+    }
+    tracing::debug!(
+        "WAL range read complete path={} start={} end={} frames={num_frames} logs={}",
+        wal_path.display(),
+        range.start(),
+        range.end(),
+        wal_index.num_logs(),
+    );
 
-        let (writer, summary, _metadata) = build(&wal_index)?;
-        (writer, summary)
-    };
+    // Stream the chunks straight into the output buffer: each packed
+    // chunk is written and dropped in turn, so beyond the arena and the
+    // WalIndex only the accumulated output plus one packed chunk are
+    // ever held — the old build-everything-then-copy model held every
+    // packed chunk and then a second full copy in the output.
+    let cursor = std::io::Cursor::new(Vec::new());
+    let (cursor, summary, _metadata) = build_into(&wal_index, cursor)?;
 
-    let mut bytes = Vec::new();
-    writer.write_to(&mut bytes)?;
-
-    Ok((summary, bytes))
+    Ok((summary, cursor.into_inner()))
 }

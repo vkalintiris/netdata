@@ -38,6 +38,13 @@ pub fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>
 /// always-read chunks (SUMR/META/TIMS/PRIM) lead so they form a hot
 /// page-cache prefix ahead of the touch-then-drop field chunks; see the
 /// note in [`write_to`](Writer::write_to).
+///
+/// This is the format's buffer-all **reference writer** — every chunk
+/// is held in memory until [`write_to`](Writer::write_to). The
+/// production indexer instead streams chunks one at a time through
+/// `chunk_file::container::StreamingWriter` (see the indexer's
+/// `build_into`), producing byte-identical files since both follow the
+/// same canonical chunk order.
 pub struct Writer {
     summary: Option<Vec<u8>>,
     metadata: Option<Vec<u8>>,

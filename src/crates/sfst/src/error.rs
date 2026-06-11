@@ -136,6 +136,15 @@ impl From<chunk_file::container::Error> for Error {
     }
 }
 
+/// The streaming container writer's errors surface in the indexing
+/// pipeline (`build_into`); route them through the [`Error`] mapping
+/// above into [`IndexError::Format`].
+impl From<chunk_file::container::Error> for IndexError {
+    fn from(e: chunk_file::container::Error) -> Self {
+        IndexError::Format(e.into())
+    }
+}
+
 /// Error type for the WAL → SFST indexing pipeline
 /// ([`crate::index`], [`crate::build_and_write`]).
 ///
