@@ -14,7 +14,9 @@ mod retention;
 mod rpc;
 mod uploader;
 
-pub(crate) use helpers::{build_catalog_entry, catalog_retention_days, date_from_summary};
+pub(crate) use helpers::{
+    build_catalog_entry, catalog_retention_days, date_from_summary, sfst_retention_policy,
+};
 pub(crate) use rpc::OtelLogsHandler;
 
 use std::collections::HashMap;

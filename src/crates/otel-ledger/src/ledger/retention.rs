@@ -6,7 +6,7 @@ use crate::ipc::CleanerRequest;
 use crate::recovery::now_ns;
 
 use super::Ledger;
-use super::helpers::catalog_retention_days;
+use super::helpers::{catalog_retention_days, sfst_retention_policy};
 
 impl Ledger {
     /// Cancel-safety invariant: the mark-then-send-then-clear-on-failure
@@ -37,7 +37,9 @@ impl Ledger {
             };
 
             // Three-knob policy: max_files / max_total_size / max_age.
-            let to_evict = registry.sfst.evaluate_retention(&retention, now_ns());
+            let to_evict = registry
+                .sfst
+                .evaluate_retention(&sfst_retention_policy(&retention), now_ns());
             let mut reqs = Vec::with_capacity(to_evict.len());
             for seq in to_evict {
                 // Don't evict the local SFST unless its entry is already

@@ -182,7 +182,9 @@ pub async fn recover_retention(
     storage_enabled: bool,
 ) -> anyhow::Result<()> {
     // SFST pass.
-    let to_evict_sfst = registry.sfst.evaluate_retention(retention, now_ns());
+    let to_evict_sfst = registry
+        .sfst
+        .evaluate_retention(&crate::ledger::sfst_retention_policy(retention), now_ns());
     // Defer eviction when remote storage is enabled and the SFST's entry
     // isn't yet in a closed, on-disk catalog file (see the identical guard
     // in `evaluate_retention`).

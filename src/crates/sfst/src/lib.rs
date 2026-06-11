@@ -83,7 +83,7 @@ pub use query::{
     compile_pattern, compile_query,
 };
 pub use reader::Reader;
-pub use registry::{File, Registry};
+pub use registry::{File, Registry, RetentionPolicy};
 
 /// Highest SFST sequence on disk across every tenant subdir of
 /// `base`. Returns `0` when `base` is missing or empty. Paired with

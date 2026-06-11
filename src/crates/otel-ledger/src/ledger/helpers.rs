@@ -20,6 +20,19 @@ pub(crate) fn date_from_summary(summary: &sfst::Summary) -> Option<chrono::Naive
 /// retention policy. Ceiling division so a non-integer `max_age` in days
 /// doesn't trim catalog coverage below SFST coverage. There is no
 /// independent knob — this is the single source of truth.
+/// Lower a resolved per-tenant retention config onto sfst's plain
+/// [`RetentionPolicy`](sfst::RetentionPolicy) — the boundary where the
+/// config framework's types stop and the format crate's begin.
+pub(crate) fn sfst_retention_policy(
+    retention: &bridge::config::RetentionConfig,
+) -> sfst::RetentionPolicy {
+    sfst::RetentionPolicy {
+        max_files: retention.max_files,
+        max_total_size: file_registry::ByteSize(retention.max_total_size.as_u64()),
+        max_age: retention.max_age,
+    }
+}
+
 pub(crate) fn catalog_retention_days(retention: &bridge::config::RetentionConfig) -> u32 {
     retention
         .max_age

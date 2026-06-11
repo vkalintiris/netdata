@@ -21,7 +21,6 @@ treight = { workspace = true, features = ["roaring", "serde"] }
 regex = { workspace = true }
 
 # Registry
-bridge = { path = "../netdata-plugin/bridge" }
 file-registry = { workspace = true }
 memmap2 = { workspace = true }
 tracing = { workspace = true }

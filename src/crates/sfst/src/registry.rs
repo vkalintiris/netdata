@@ -20,6 +20,23 @@ use crate::Summary;
 
 pub(crate) const SFST_EXT: &str = "sfst";
 
+/// Retention limits for [`Registry::evaluate_retention`]: a file is
+/// evicted when keeping it would exceed any of the three.
+///
+/// A plain policy type so the format crate doesn't depend on any
+/// config framework — the consumer resolves its configuration (e.g.
+/// per-tenant merging) and lowers it into this.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    /// Maximum number of files to keep.
+    pub max_files: usize,
+    /// Maximum total size across all kept files.
+    pub max_total_size: ByteSize,
+    /// Maximum age, measured against each file's most recent log entry
+    /// (`summary.max_timestamp_s`).
+    pub max_age: std::time::Duration,
+}
+
 /// One tracked `.sfst` file: identity, size, and inline summary.
 #[derive(Debug, Clone)]
 pub struct File {
@@ -193,14 +210,10 @@ impl Registry {
     /// log entry in the file. An empty SFST (`total_logs == 0`,
     /// `max_timestamp_s == 0`) ages out immediately, which matches the
     /// "no useful data" disposition.
-    pub fn evaluate_retention(
-        &self,
-        retention: &bridge::config::RetentionConfig,
-        now_ns: u64,
-    ) -> Vec<u64> {
-        let max_files = retention.max_files;
-        let max_total_size = retention.max_total_size.as_u64();
-        let max_age_s = retention.max_age.as_secs();
+    pub fn evaluate_retention(&self, policy: &RetentionPolicy, now_ns: u64) -> Vec<u64> {
+        let max_files = policy.max_files;
+        let max_total_size = policy.max_total_size.as_u64();
+        let max_age_s = policy.max_age.as_secs();
         let now_s = now_ns / 1_000_000_000;
 
         let eligible: Vec<&File> = self
