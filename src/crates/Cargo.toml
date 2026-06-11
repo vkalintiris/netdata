@@ -7,7 +7,6 @@ members = [
     "journal-core",
     "journal-index",
     "journal-chunk",
-    "journal-ts",
     "fst-index",
     "treight",
     "sfst",
