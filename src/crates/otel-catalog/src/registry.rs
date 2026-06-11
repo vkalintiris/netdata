@@ -358,7 +358,7 @@ fn read_catalog_entries(path: &Path, q: &Query) -> Vec<CatalogEntry> {
 /// seed: catalogs outlive the SFSTs they describe, so they can bound
 /// the seed even after every data file at a higher seq was evicted.
 /// Reads filenames only — never a catalog body. The generic
-/// `file_registry::scan_max_sequence_recursive` is not reusable here:
+/// [`file_registry::scan_max_sequence_recursive`] is not reusable here:
 /// it walks one directory level and parses the FileId stem, while
 /// catalogs are two levels deep with their own stem shape.
 pub fn scan_max_sequence(catalog_base: &Path) -> std::io::Result<u64> {

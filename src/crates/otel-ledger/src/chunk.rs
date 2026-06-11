@@ -30,11 +30,11 @@ use moka::future::Cache;
 /// A process-wide memo of built chunk SFST byte images.
 ///
 /// Keyed `(wal_seq, chunk_index)`. Values are `Arc<Vec<u8>>` — a
-/// self-contained SFST parseable by `sfst::IndexReader::open`. The cache
+/// self-contained SFST parseable by [`sfst::IndexReader::open`]. The cache
 /// owns build singleflight (one build per key under contention) and a
 /// byte-budget LRU; it does **not** know how to build a chunk — the
 /// caller passes the build future, so the same cache serves production
-/// (`sfst_indexer::index_range` on a blocking thread) and tests (a canned
+/// ([`sfst_indexer::index_range`] on a blocking thread) and tests (a canned
 /// builder).
 pub struct ChunkCache {
     cache: Cache<ChunkKey, Arc<Vec<u8>>>,

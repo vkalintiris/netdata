@@ -211,7 +211,7 @@ pub fn to_result(data: LogsData, max_to_return: usize) -> LogsResult {
 
 /// Convert one [`sfst::FacetResult`] into a [`Facet`].
 ///
-/// Option order is preserved from the input — `sfst::IndexReader::facets`
+/// Option order is preserved from the input — [`sfst::IndexReader::facets`]
 /// already surfaces values in FST iteration order, which is lexicographic
 /// and stable across runs.
 fn facet_from_sfst(order: usize, sfst_facet: &sfst::FacetResult) -> Facet {

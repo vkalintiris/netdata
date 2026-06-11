@@ -54,9 +54,9 @@ struct Pair {
     kv: String,
     /// Byte offset of the `=` separator: field is `kv[..eq]`, value is
     /// `kv[eq + 1..]`. Same field-extraction rule as the indexer's
-    /// interner (`KeyValueInterner::track_field`): first `=`, or the
-    /// whole string when none (cannot arise — wal-otap's decode always
-    /// emits the separator; handled defensively).
+    /// interner: first `=`, or the whole string when none (cannot
+    /// arise — wal-otap's decode always emits the separator; handled
+    /// defensively).
     eq: usize,
 }
 

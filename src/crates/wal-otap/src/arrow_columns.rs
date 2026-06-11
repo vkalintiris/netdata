@@ -25,7 +25,7 @@
 //!    pre-computed hash so future lookups hit.
 //!
 //! The indexer's sink is its string interner, which uses an identity
-//! hasher (`kv_interner` in the `sfst` crate) so the pre-computed `u64`
+//! hasher (`kv_interner` in the `sfst-indexer` crate) so the pre-computed `u64`
 //! is used directly as the HashMap bucket key — no re-hashing.
 //!
 //! See `otel-ingestor/src/arrow_bridge.rs` for the producer side, including

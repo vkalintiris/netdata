@@ -17,14 +17,14 @@ use crate::registry::Registry;
 /// is an owned `CatalogEntry` parsed from a catalog file — it describes
 /// an SFST that exists in remote object storage but no longer locally.
 /// Downstream code matches on the variant to choose the right reader
-/// and access pattern (open via `sfst::Reader`, walk frames via
-/// `wal::Reader`, or fetch + cache + open for `Remote`).
+/// and access pattern (open via [`sfst::Reader`], walk frames via
+/// [`wal::Reader`], or fetch + cache + open for `Remote`).
 #[derive(Debug, Clone)]
 pub enum CandidateSource<'a> {
-    /// A sealed, indexed file on local disk. Open with `sfst::Reader::open`.
+    /// A sealed, indexed file on local disk. Open with [`sfst::Reader::open`].
     Sfst(&'a sfst::File),
     /// A WAL file (active or archived) whose data has not yet been
-    /// reflected in an SFST. Open with `wal::Reader::open`.
+    /// reflected in an SFST. Open with [`wal::Reader::open`].
     Wal(&'a wal::File),
     /// An SFST that lives only in remote object storage — described by a
     /// catalog entry. Reader needs to fetch by `entry.remote_key` first

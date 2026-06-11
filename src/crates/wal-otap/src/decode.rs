@@ -7,7 +7,7 @@
 //! trait rather than as materialized values, so each keeps its own
 //! interning/dedup strategy:
 //!
-//! - the indexer's `RowIndex` (in the `sfst` crate) interns into
+//! - the indexer's `RowIndex` (in the `sfst-indexer` crate) interns into
 //!   its arena-backed interner and builds posting bitmaps;
 //! - a query-time WAL row scan dedups into a per-query pair table and
 //!   evaluates filters row by row.
@@ -57,7 +57,7 @@ pub trait KvSink {
     /// silently corrupting every consumer downstream. The indexer's
     /// interner upholds the rule by answering `None` for any hash it
     /// has seen more than one distinct string for (see
-    /// `KeyValueInterner::lookup_hash` in the `sfst` crate).
+    /// `KeyValueInterner::lookup_hash` in the `sfst-indexer` crate).
     ///
     /// Returning `None` is always safe — only the formatting shortcut
     /// is lost. A sink without a collision-tracking hash index should
@@ -85,8 +85,8 @@ pub trait KvSink {
     /// compare `kv` against the stored string on a hash hit and
     /// allocate a fresh token when they differ; a bare
     /// `entry(hash).or_insert(…)` hands back the *colliding* pair's
-    /// token. See `KeyValueInterner::intern_with_hash` in the `sfst`
-    /// crate for the reference implementation.
+    /// token. See `KeyValueInterner::intern_with_hash` in the
+    /// `sfst-indexer` crate for the reference implementation.
     fn intern(&mut self, hash: Option<u64>, kv: &str) -> Self::Token;
 
     /// Hint that up to `additional` rows are about to be delivered.

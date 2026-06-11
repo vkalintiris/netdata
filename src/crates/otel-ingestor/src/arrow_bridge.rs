@@ -41,8 +41,8 @@
 //! | Bytes    | lowercase hex, no prefix             | `deadbeef`           |
 //! | None     | empty (zero bytes after `=`)         |                      |
 //!
-//! This contract is implemented by [`hash_value_display`] (producer) and
-//! `wal_otap::arrow_columns::AttrsColumns::append_value` (consumer).
+//! This contract is implemented by `hash_value_display` below (producer)
+//! and the attribute-column value formatting inside `wal-otap` (consumer).
 //! If either side changes formatting, the hashes will silently mismatch
 //! and the consumer will fall back to the slow path (correct but slower).
 
