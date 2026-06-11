@@ -1,8 +1,9 @@
 //! Chunk-based file formats: zero-copy TOC codec + integrity container.
 //!
-//! This crate is the single foundation for every chunk-based on-disk
-//! format in the workspace (SFST indexes, otel catalogs, future
-//! formats). It has two layers:
+//! The foundation for on-disk formats assembled from independently
+//! addressable chunks — index files, catalogs, any artifact whose
+//! reader wants O(1) random access to named sections of an mmap.
+//! Two layers:
 //!
 //! - **Raw TOC codec** (this module): a table of contents mapping
 //!   4-byte chunk IDs to byte ranges within a file. Designed for
@@ -12,7 +13,9 @@
 //! - **Integrity container** ([`container`]): a self-describing file
 //!   framing on top of the TOC — magic + version + num_chunks header
 //!   and a crc32 trailer per chunk — with a buffer-all builder and a
-//!   streaming `Write + Seek` writer.
+//!   streaming `Write + Seek` writer. Most consumers want this layer;
+//!   the raw codec is for formats that bring their own header and
+//!   integrity story.
 //!
 //! # On-disk TOC layout
 //!
@@ -25,9 +28,32 @@
 //! entry[N]:  0000 + offset_le(8)     end marker (zero id, offset = end of last chunk)
 //! ```
 //!
-//! All offsets are **absolute from file start**, little-endian. The TOC
-//! itself may sit at any `toc_offset` within the file (the container
-//! places it after its 12-byte header); chunk bodies follow the TOC.
+//! Offsets are little-endian and relative to one shared origin: the
+//! start of the slice handed to [`Toc::parse`], which is the same
+//! origin `base_offset` named at write time
+//! ([`TocWriter::write_toc`]). For a standalone file that origin is
+//! byte 0; for a TOC embedded in a larger file it is wherever the
+//! embedding starts. The TOC may sit at any `toc_offset` past that
+//! origin (the container places it after its 12-byte header); chunk
+//! bodies follow the TOC.
+//!
+//! ```
+//! use chunk_file::{Toc, TocWriter};
+//!
+//! // Plan, then stream chunk bodies in plan order.
+//! let mut writer = TocWriter::new();
+//! writer.plan(*b"HEAD", 3);
+//! writer.plan(*b"BODY", 5);
+//! let mut file = Vec::new();
+//! let mut chunks = writer.write_toc(&mut file, 0)?;
+//! chunks.write_chunk(*b"HEAD", b"abc")?;
+//! chunks.write_chunk(*b"BODY", b"defgh")?;
+//! chunks.finish()?;
+//!
+//! let toc = Toc::parse(&file, 0, 2)?;
+//! assert_eq!(toc.data(&file, *b"BODY")?, b"defgh");
+//! # Ok::<(), chunk_file::Error>(())
+//! ```
 
 pub mod container;
 
@@ -53,7 +79,8 @@ pub const END_MARKER_ID: ChunkId = [0; 4];
 pub struct TocEntry {
     /// Chunk identifier.  For the end-marker entry this is [`END_MARKER_ID`].
     pub id: ChunkId,
-    /// Absolute byte offset from file start, little-endian.
+    /// Byte offset from the TOC's origin (see the crate docs),
+    /// little-endian.
     offset_le: [u8; 8],
 }
 
@@ -85,7 +112,8 @@ impl TocEntry {
 pub struct ChunkMeta {
     /// Chunk identifier.
     pub id: ChunkId,
-    /// Absolute byte offset of the chunk's first byte.
+    /// Byte offset of the chunk's first byte, from the TOC's origin
+    /// (see the crate docs).
     pub offset: u64,
     /// Byte length of the chunk data.
     pub size: u64,
@@ -95,12 +123,16 @@ pub struct ChunkMeta {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The slice ends before the TOC does — a truncated file, or a
+    /// `num_chunks` larger than the file can hold.
     #[error("TOC needs {expected} bytes, got {actual}")]
     TocTooShort { expected: usize, actual: usize },
 
+    /// [`Toc::data`] found no entry with the requested id.
     #[error("chunk {id:?} not found")]
     ChunkNotFound { id: ChunkId },
 
+    /// A TOC entry's offset points past the end of the file.
     #[error("offset {offset} at entry {index} exceeds data length {data_len}")]
     OffsetOutOfBounds {
         index: usize,
@@ -108,21 +140,33 @@ pub enum Error {
         data_len: usize,
     },
 
+    /// TOC offsets must be strictly increasing (chunk sizes are the
+    /// deltas between consecutive entries).
     #[error("non-monotonic offset at entry {index}: {prev} >= {curr}")]
     NonMonotonicOffset { index: usize, prev: u64, curr: u64 },
 
+    /// The first chunk's offset points inside the TOC itself.
     #[error("first chunk offset {offset} overlaps the TOC (chunks start at {chunks_start})")]
     ChunkOverlapsToc { offset: u64, chunks_start: u64 },
 
+    /// Two TOC entries carry the same id; lookups by id would be
+    /// ambiguous. `index` is the later occurrence of the
+    /// lexicographically-first duplicated id.
     #[error("duplicate chunk id {id:?} at entry {index}")]
     DuplicateChunkId { id: ChunkId, index: usize },
 
+    /// The closing TOC entry doesn't carry [`END_MARKER_ID`].
     #[error("end-marker entry carries a non-zero id {id:?}")]
     BadEndMarker { id: ChunkId },
 
+    /// A chunk entry (not the closing one) carries the reserved
+    /// [`END_MARKER_ID`] — such a chunk would be unaddressable.
     #[error("chunk entry {index} uses the reserved zero end-marker id")]
     ReservedChunkId { index: usize },
 
+    /// [`Toc::data`] was handed a `file` slice shorter than the one the
+    /// offsets were validated against at parse time — a caller bug,
+    /// surfaced as an error rather than an out-of-bounds panic.
     #[error("chunk {id:?} span ends at {end} but the file slice holds {file_len} bytes")]
     ChunkOutOfBounds {
         id: ChunkId,
@@ -130,12 +174,16 @@ pub enum Error {
         file_len: usize,
     },
 
+    /// [`ChunkWriter::write_chunk`] was called after every planned
+    /// chunk had already been written.
     #[error("chunk {id:?} was not planned (all planned chunks already written)")]
     UnplannedChunk { id: ChunkId },
 
+    /// [`ChunkWriter::write_chunk`] was called out of plan order.
     #[error("expected chunk {expected:?}, got {got:?}")]
     WrongChunkId { expected: ChunkId, got: ChunkId },
 
+    /// A chunk's data doesn't match the size it was planned with.
     #[error("chunk {id:?}: expected {expected} bytes, got {got}")]
     WrongChunkSize {
         id: ChunkId,
@@ -143,9 +191,12 @@ pub enum Error {
         got: u64,
     },
 
+    /// [`ChunkWriter::finish`] was called before every planned chunk
+    /// was written.
     #[error("{remaining} planned chunks were not written")]
     IncompleteWrite { remaining: usize },
 
+    /// Underlying I/O failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -170,6 +221,10 @@ impl std::fmt::Debug for Toc<'_> {
 
 impl<'a> Toc<'a> {
     /// The byte size of a TOC with `num_chunks` chunks.
+    ///
+    /// Plain arithmetic for trusted counts; [`parse`](Toc::parse)
+    /// computes the size in `u64` itself so an untrusted on-disk count
+    /// can't wrap `usize` on 32-bit targets.
     pub const fn byte_size(num_chunks: usize) -> usize {
         (num_chunks + 1) * size_of::<TocEntry>()
     }
@@ -234,17 +289,15 @@ impl<'a> Toc<'a> {
                     curr: offset,
                 });
             }
+            // The zero id is reserved for the end marker; a chunk entry
+            // carrying it would be unaddressable (and ambiguous with
+            // the marker).
+            if i < n && entries[i].id == END_MARKER_ID {
+                return Err(Error::ReservedChunkId { index: i });
+            }
         }
         if entries[n].id != END_MARKER_ID {
             return Err(Error::BadEndMarker { id: entries[n].id });
-        }
-        // The zero id is reserved for the end marker; a chunk entry
-        // carrying it would be unaddressable (and ambiguous with the
-        // marker) — reject it like the duplicate-id case.
-        for (i, entry) in entries.iter().take(n).enumerate() {
-            if entry.id == END_MARKER_ID {
-                return Err(Error::ReservedChunkId { index: i });
-            }
         }
         // Duplicate-id check in O(n log n): sort (id, index) pairs and
         // compare neighbors. Today's TOCs hold dozens of entries, but
@@ -300,13 +353,15 @@ impl<'a> Toc<'a> {
     /// out-of-bounds panic.
     pub fn data<'f>(&self, file: &'f [u8], id: ChunkId) -> Result<&'f [u8], Error> {
         let meta = self.get(id).ok_or(Error::ChunkNotFound { id })?;
-        let start = meta.offset as usize;
-        let end = start + meta.size as usize;
-        file.get(start..end).ok_or(Error::ChunkOutOfBounds {
+        let end = meta.offset + meta.size; // u64: cannot wrap for parsed offsets
+        let out_of_bounds = || Error::ChunkOutOfBounds {
             id,
-            end: end as u64,
+            end,
             file_len: file.len(),
-        })
+        };
+        let range = usize::try_from(meta.offset).map_err(|_| out_of_bounds())?
+            ..usize::try_from(end).map_err(|_| out_of_bounds())?;
+        file.get(range).ok_or_else(out_of_bounds)
     }
 
     /// Iterate over all chunks' metadata, in TOC order.
@@ -382,13 +437,13 @@ impl TocWriter {
         // Write N chunk entries.
         for chunk in &self.chunks {
             let entry = TocEntry::new(chunk.id, current_offset);
-            out.write_all(IntoBytes::as_bytes(&entry))?;
+            out.write_all(entry.as_bytes())?;
             current_offset += chunk.size;
         }
 
         // Write end marker.
         let end_entry = TocEntry::new(END_MARKER_ID, current_offset);
-        out.write_all(IntoBytes::as_bytes(&end_entry))?;
+        out.write_all(end_entry.as_bytes())?;
 
         Ok(ChunkWriter {
             inner: out,

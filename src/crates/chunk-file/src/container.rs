@@ -1,11 +1,12 @@
 //! Integrity container: magic + version + TOC + per-chunk crc32.
 //!
-//! The self-describing framing every durable chunk-based artifact in
-//! the workspace uses (SFST indexes, otel catalogs). These files are
-//! uploaded to remote storage that is never garbage-collected, so each
-//! must carry magic + version (self-describing) and per-chunk CRCs
-//! (integrity-checked). Consumers supply their own magic and format
-//! version and own the meaning of their chunk payloads.
+//! A self-describing framing for durable chunk-based artifacts —
+//! files that outlive the process that wrote them (and possibly the
+//! machine, once shipped to long-lived remote storage), where silent
+//! corruption must surface as an error rather than wrong data. Each
+//! file carries magic + version (self-describing) and a crc32 per
+//! chunk (integrity-checked). Consumers supply their own magic and
+//! format version and own the meaning of their chunk payloads.
 //!
 //! On-disk layout:
 //!
@@ -130,6 +131,11 @@ pub struct Container<'a> {
 
 impl<'a> Container<'a> {
     /// Open a container, validating length, magic, version and the TOC.
+    ///
+    /// `data` is the container's own byte range — for a container
+    /// embedded at an offset inside a larger file, pass the sub-slice
+    /// starting there (the coordinate space [`StreamingWriter`]
+    /// established at write time).
     pub fn open(data: &'a [u8], magic: &[u8; 4], version: u32) -> Result<Self, Error> {
         if data.len() < HEADER_SIZE {
             return Err(Error::TooShort(data.len(), HEADER_SIZE));
@@ -171,11 +177,13 @@ impl<'a> Container<'a> {
     pub fn chunk(&self, id: ChunkId) -> Result<&'a [u8], Error> {
         let meta = self.toc.get(id).ok_or(Error::ChunkNotFound { id })?;
         // `Toc::parse` validated bounds and monotonicity, so the span is
-        // in-bounds; `.get` keeps this panic-free regardless.
-        let start = meta.offset as usize;
-        let span = self
-            .data
-            .get(start..start + meta.size as usize)
+        // in-bounds; the checked slicing keeps this panic-free
+        // regardless.
+        let end = meta.offset + meta.size; // u64: cannot wrap for parsed offsets
+        let span = usize::try_from(meta.offset)
+            .ok()
+            .zip(usize::try_from(end).ok())
+            .and_then(|(start, end)| self.data.get(start..end))
             .ok_or_else(|| Error::Malformed("chunk span out of bounds".to_string()))?;
         if span.len() < CRC_LEN {
             return Err(Error::Malformed(format!(
@@ -201,7 +209,7 @@ impl<'a> Container<'a> {
         self.toc.get(id).is_some()
     }
 
-    /// A chunk's on-disk placement ([`ChunkMeta`]: container-relative
+    /// A chunk's on-disk placement ([`crate::ChunkMeta`]: container-relative
     /// `offset` plus `size`, the size **including** the 4-byte crc32
     /// trailer). Resolved from the TOC alone: no payload byte is read
     /// or verified, so this is the right primitive for layout decisions
@@ -251,6 +259,7 @@ pub struct ContainerBuilder<'a> {
 }
 
 impl<'a> ContainerBuilder<'a> {
+    /// Start a container with the consumer's magic and format version.
     pub fn new(magic: [u8; 4], version: u32) -> Self {
         Self {
             magic,
@@ -300,11 +309,13 @@ impl<'a> ContainerBuilder<'a> {
             }
         }
 
-        w.write_all(&encode_header(
-            self.magic,
-            self.version,
-            self.chunks.len() as u32,
-        ))?;
+        let num_chunks = u32::try_from(self.chunks.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk count exceeds u32::MAX",
+            )
+        })?;
+        w.write_all(&encode_header(self.magic, self.version, num_chunks))?;
 
         let mut toc = TocWriter::new();
         for (id, payload) in &self.chunks {
