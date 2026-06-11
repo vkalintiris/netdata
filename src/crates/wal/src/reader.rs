@@ -224,13 +224,14 @@ impl Reader {
 
         let lz4 = self.header.compression() == COMPRESSION_LZ4;
         if lz4 {
+            // `resize` zero-fills the buffer before lz4 overwrites it —
+            // a memset that is noise next to the decompression itself,
+            // and it keeps the buffer initialized without `unsafe`
+            // (the previous reserve + set_len tripped clippy's
+            // `uninit_vec` deny). The buffer is reused across frames,
+            // so the allocation amortizes either way.
             self.data_buf.clear();
-            self.data_buf.reserve(uncompressed_len);
-            // SAFETY: decompress_into writes all output bytes before they are read.
-            // We set the length so the slice is large enough, then truncate to actual output.
-            unsafe {
-                self.data_buf.set_len(uncompressed_len);
-            }
+            self.data_buf.resize(uncompressed_len, 0);
             let n = lz4_flex::block::decompress_into(&self.compressed_buf, &mut self.data_buf)
                 .map_err(|e| Error::Decompression(e.to_string()))?;
             self.data_buf.truncate(n);
